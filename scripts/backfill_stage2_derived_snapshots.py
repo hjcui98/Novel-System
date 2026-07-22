@@ -8,7 +8,7 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 from uuid import uuid4
 
 from opensearchpy import OpenSearch
@@ -16,8 +16,12 @@ from opensearchpy import OpenSearch
 try:
     from scripts.native_models import assert_model_service, load_model_lock
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from native_models import assert_model_service, load_model_lock  # type: ignore[no-redef]
+    from native_models import (  # type: ignore[import-not-found,no-redef]
+        assert_model_service,
+        load_model_lock,
+    )
 from sqlalchemy import inspect, select
+from sqlalchemy.engine import Engine
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.model import HttpEmbeddingProvider, RetrievalModelRoute
@@ -165,7 +169,7 @@ def main() -> int:
             "project_id": project_id.root,
             "retrieval_backend_profile": RetrievalBackendProfile.REAL_HYBRID.value,
             "build_profile": args.build_profile,
-            "database_url": database_url,
+            "database_url": _safe_database_descriptor(database_url),
             "opensearch_url": search_target.geturl(),
             "completed_at": datetime.now(UTC).isoformat(),
             "rebuilt_commits": rebuilt,
@@ -181,7 +185,7 @@ def main() -> int:
         engine.dispose()
 
 
-def _assert_stage2r_schema(engine: object) -> None:
+def _assert_stage2r_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     required_tables = {
@@ -201,6 +205,13 @@ def _assert_stage2r_schema(engine: object) -> None:
         raise Stage2RBackfillError(
             f"database migration is incomplete; missing r1_record columns: {missing_columns}"
         )
+
+
+def _safe_database_descriptor(database_url: str) -> str:
+    parsed = urlparse(database_url)
+    if parsed.scheme.startswith("postgresql+"):
+        return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}{parsed.path}"
+    return database_url
 
 
 def _resolve_project(factory: object, requested: str | None) -> ProjectId:
@@ -239,7 +250,7 @@ def _project_commits(
     return tuple(CommitId(value) for value in values)
 
 
-def _loopback_url(value: str, label: str):
+def _loopback_url(value: str, label: str) -> ParseResult:
     parsed = urlparse(value)
     if (
         parsed.scheme not in {"http", "https"}
