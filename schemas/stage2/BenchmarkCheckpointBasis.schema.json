@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "FutureIsolationAttestation": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonical_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Canonical Source Ids",
+          "type": "array"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_only_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evaluator Only Source Ids",
+          "type": "array"
+        },
+        "overlap_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Overlap Source Ids",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "attestation_id",
+        "checkpoint_chapter",
+        "canonical_source_ids",
+        "evaluator_only_source_ids",
+        "passed",
+        "configuration_fingerprint"
+      ],
+      "title": "FutureIsolationAttestation",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "anchor_alias": {
+      "minLength": 1,
+      "title": "Anchor Alias",
+      "type": "string"
+    },
+    "branch": {
+      "minLength": 1,
+      "title": "Branch",
+      "type": "string"
+    },
+    "canonical_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "derived_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "future_isolation": {
+      "$ref": "#/$defs/FutureIsolationAttestation"
+    },
+    "grounded_alias": {
+      "minLength": 1,
+      "title": "Grounded Alias",
+      "type": "string"
+    },
+    "last_revealed_chapter": {
+      "minimum": 0,
+      "title": "Last Revealed Chapter",
+      "type": "integer"
+    },
+    "plan_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "project_profile": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "r1_basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "state_build_receipt_chain_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "world_root": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "case_id",
+    "project_id",
+    "branch",
+    "canonical_commit",
+    "text_root",
+    "plan_root",
+    "world_root",
+    "derived_snapshot_id",
+    "r1_basis_commit",
+    "anchor_alias",
+    "grounded_alias",
+    "project_profile",
+    "configuration_fingerprint",
+    "last_revealed_chapter",
+    "future_isolation",
+    "state_build_receipt_chain_hash"
+  ],
+  "title": "BenchmarkCheckpointBasis",
+  "type": "object"
+}

@@ -1,0 +1,89 @@
+{
+  "$defs": {
+    "ControllerStopReason": {
+      "enum": [
+        "sufficient",
+        "mandatory_gap_unresolved",
+        "budget_exhausted",
+        "freshness_blocked",
+        "access_blocked",
+        "conflict_requires_review",
+        "tool_failure",
+        "no_additional_evidence"
+      ],
+      "title": "ControllerStopReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "evidence_traceability": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Evidence Traceability",
+      "type": "number"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "gold_evidence_recall": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Gold Evidence Recall",
+      "type": "number"
+    },
+    "mandatory_constraint_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Mandatory Constraint Coverage",
+      "type": "number"
+    },
+    "observed_use_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Observed Use Coverage",
+      "type": "number"
+    },
+    "operational_constraint_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Operational Constraint Coverage",
+      "type": "number"
+    },
+    "plan_obligation_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Plan Obligation Coverage",
+      "type": "number"
+    },
+    "retrieval_call_count": {
+      "minimum": 0,
+      "title": "Retrieval Call Count",
+      "type": "integer"
+    },
+    "selected_unit_count": {
+      "minimum": 0,
+      "title": "Selected Unit Count",
+      "type": "integer"
+    },
+    "stop_reason": {
+      "$ref": "#/$defs/ControllerStopReason"
+    }
+  },
+  "required": [
+    "gold_evidence_recall",
+    "observed_use_coverage",
+    "operational_constraint_coverage",
+    "plan_obligation_coverage",
+    "mandatory_constraint_coverage",
+    "evidence_traceability",
+    "selected_unit_count",
+    "retrieval_call_count",
+    "future_leakage_count",
+    "stop_reason"
+  ],
+  "title": "PairedPilotArmMetrics",
+  "type": "object"
+}

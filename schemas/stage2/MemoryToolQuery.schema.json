@@ -1,0 +1,27 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "default": 20,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "need_id"
+  ],
+  "title": "MemoryToolQuery",
+  "type": "object"
+}

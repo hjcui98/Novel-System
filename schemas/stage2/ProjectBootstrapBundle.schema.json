@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BootstrapSource": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Index"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "earliest_visible_chapter": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Earliest Visible Chapter"
+        },
+        "evaluator_only": {
+          "default": false,
+          "title": "Evaluator Only",
+          "type": "boolean"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "source_class": {
+          "$ref": "#/$defs/SourceClass"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_class",
+        "media_type",
+        "content_hash",
+        "byte_length",
+        "artifact_ref"
+      ],
+      "title": "BootstrapSource",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SourceClass": {
+      "enum": [
+        "author_initial_brief",
+        "author_known_future_plan",
+        "baseline_setting",
+        "chapter_text_n",
+        "retrospective_summary",
+        "future_text_private",
+        "read_gold",
+        "replay_gold",
+        "style_guide",
+        "external_reference"
+      ],
+      "title": "SourceClass",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bundle_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/BootstrapSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "project_id",
+    "schema_version",
+    "sources",
+    "bundle_hash"
+  ],
+  "title": "ProjectBootstrapBundle",
+  "type": "object"
+}

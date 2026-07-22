@@ -1,0 +1,1507 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkCaseManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "annotation_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_goal_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Chapter Goal Ids",
+          "type": "array"
+        },
+        "expected_tracks": {
+          "default": [
+            "oracle_verified",
+            "end_to_end"
+          ],
+          "items": {
+            "$ref": "#/$defs/BenchmarkTrack"
+          },
+          "title": "Expected Tracks",
+          "type": "array"
+        },
+        "future_text_root_private": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "gate_eligible": {
+          "default": true,
+          "title": "Gate Eligible",
+          "type": "boolean"
+        },
+        "history_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "History Range",
+          "type": "array"
+        },
+        "input_plan_root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_summary_root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "input_world_root_verified": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_use_gold": {
+          "items": {
+            "$ref": "#/$defs/GoldItem"
+          },
+          "title": "Observed Use Gold",
+          "type": "array"
+        },
+        "operational_constraint_gold": {
+          "items": {
+            "$ref": "#/$defs/GoldItem"
+          },
+          "title": "Operational Constraint Gold",
+          "type": "array"
+        },
+        "plan_obligation_gold": {
+          "items": {
+            "$ref": "#/$defs/GoldItem"
+          },
+          "title": "Plan Obligation Gold",
+          "type": "array"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "target_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Target Range",
+          "type": "array"
+        }
+      },
+      "required": [
+        "case_id",
+        "project_id",
+        "history_range",
+        "target_range",
+        "input_text_root",
+        "future_text_root_private",
+        "observed_use_gold",
+        "operational_constraint_gold",
+        "plan_obligation_gold",
+        "annotation_version"
+      ],
+      "title": "BenchmarkCaseManifest",
+      "type": "object"
+    },
+    "BenchmarkTrack": {
+      "enum": [
+        "oracle_verified",
+        "end_to_end"
+      ],
+      "title": "BenchmarkTrack",
+      "type": "string"
+    },
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "ChapterDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scenes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SceneDocument"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index"
+      ],
+      "title": "ChapterDocument",
+      "type": "object"
+    },
+    "ChapterGoal": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "obligation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Obligation Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "chapter_index",
+        "summary"
+      ],
+      "title": "ChapterGoal",
+      "type": "object"
+    },
+    "ChapterSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index",
+        "summary",
+        "evidence_refs"
+      ],
+      "title": "ChapterSummary",
+      "type": "object"
+    },
+    "ChapterSummaryRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "source_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "summaries": {
+          "items": {
+            "$ref": "#/$defs/ChapterSummary"
+          },
+          "title": "Summaries",
+          "type": "array"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version",
+        "source_text_root",
+        "summaries"
+      ],
+      "title": "ChapterSummaryRootDocument",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "Entity": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "entity_type": {
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "identity_invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Identity Invariants",
+          "type": "array"
+        },
+        "internal_label": {
+          "minLength": 1,
+          "title": "Internal Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "entity_type",
+        "internal_label"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "EvaluatorAccessPolicy": {
+      "enum": [
+        "reveal_after_context_freeze"
+      ],
+      "title": "EvaluatorAccessPolicy",
+      "type": "string"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "effect_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Effect Refs",
+          "type": "array"
+        },
+        "event_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "event_type": {
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "narrative_order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativeOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "participant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Participant Ids",
+          "type": "array"
+        },
+        "story_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "truth_class"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "GoldItem": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "future_evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Future Evidence Refs",
+          "type": "array"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/GoldKind"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "plan_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanEvidenceRef"
+          },
+          "title": "Plan Evidence Refs",
+          "type": "array"
+        },
+        "target_chapters": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Target Chapters",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gold_id",
+        "kind",
+        "description",
+        "target_chapters",
+        "future_evidence_refs"
+      ],
+      "title": "GoldItem",
+      "type": "object"
+    },
+    "GoldKind": {
+      "enum": [
+        "observed_use",
+        "operational_constraint",
+        "plan_obligation"
+      ],
+      "title": "GoldKind",
+      "type": "string"
+    },
+    "HistoryAccessPolicy": {
+      "enum": [
+        "history_only"
+      ],
+      "title": "HistoryAccessPolicy",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "NarrativeOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativeOrder",
+      "type": "object"
+    },
+    "ObligationKind": {
+      "enum": [
+        "foreshadowing",
+        "promise",
+        "objective",
+        "unresolved_conflict"
+      ],
+      "title": "ObligationKind",
+      "type": "string"
+    },
+    "ObligationStatus": {
+      "enum": [
+        "open",
+        "progressed",
+        "resolved",
+        "abandoned"
+      ],
+      "title": "ObligationStatus",
+      "type": "string"
+    },
+    "PlanEvidenceRef": {
+      "additionalProperties": false,
+      "description": "Immutable pointer to author-visible intent without promoting it to World fact.",
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "plan_root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "plan_root_hash",
+        "goal_id",
+        "object_hash"
+      ],
+      "title": "PlanEvidenceRef",
+      "type": "object"
+    },
+    "PlanNode": {
+      "additionalProperties": false,
+      "properties": {
+        "node_type": {
+          "minLength": 1,
+          "title": "Node Type",
+          "type": "string"
+        },
+        "obligation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Obligation Ids",
+          "type": "array"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plan_node_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_node_id",
+        "node_type",
+        "title",
+        "summary"
+      ],
+      "title": "PlanNode",
+      "type": "object"
+    },
+    "PlanObligation": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "due_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Due Chapter"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObligationKind"
+        },
+        "obligation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "owner_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Owner Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ObligationStatus"
+        }
+      },
+      "required": [
+        "obligation_id",
+        "kind",
+        "description",
+        "status"
+      ],
+      "title": "PlanObligation",
+      "type": "object"
+    },
+    "PlanRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_goals": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChapterGoal"
+          },
+          "title": "Chapter Goals",
+          "type": "array"
+        },
+        "nodes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version"
+      ],
+      "title": "PlanRootDocument",
+      "type": "object"
+    },
+    "PreludeDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "prelude_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/SceneDocument"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "prelude_id",
+        "scenes"
+      ],
+      "title": "PreludeDocument",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RelationRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "object_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "relation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        }
+      },
+      "required": [
+        "relation_id",
+        "predicate",
+        "subject_id",
+        "object_id",
+        "valid_time",
+        "truth_class"
+      ],
+      "title": "RelationRecord",
+      "type": "object"
+    },
+    "ReplayCaseManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "annotation_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "chapter_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Chapter Range",
+          "type": "array"
+        },
+        "gate_eligible": {
+          "default": true,
+          "title": "Gate Eligible",
+          "type": "boolean"
+        },
+        "gold_changes": {
+          "items": {
+            "$ref": "#/$defs/ReplayGoldChange"
+          },
+          "title": "Gold Changes",
+          "type": "array"
+        },
+        "initial_world_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "replay_case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "state_checkpoints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReplayStateCheckpoint"
+          },
+          "title": "State Checkpoints",
+          "type": "array"
+        },
+        "target_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "replay_case_id",
+        "project_id",
+        "chapter_range",
+        "target_text_root",
+        "initial_world_root",
+        "gold_changes",
+        "annotation_version"
+      ],
+      "title": "ReplayCaseManifest",
+      "type": "object"
+    },
+    "ReplayExpectedRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ReplayStateCategory",
+          "default": "other"
+        },
+        "expected_record": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Expected Record",
+          "type": "object"
+        },
+        "record_kind": {
+          "$ref": "#/$defs/WorldRecordKind"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "record_kind",
+        "target_id",
+        "expected_record"
+      ],
+      "title": "ReplayExpectedRecord",
+      "type": "object"
+    },
+    "ReplayGoldChange": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "critical": {
+          "default": false,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "expected_record": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Expected Record",
+          "type": "object"
+        },
+        "gold_change_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operation": {
+          "$ref": "#/$defs/ChangeOperationType"
+        },
+        "record_kind": {
+          "$ref": "#/$defs/WorldRecordKind"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "gold_change_id",
+        "chapter_index",
+        "operation",
+        "record_kind",
+        "target_id",
+        "expected_record",
+        "evidence_refs"
+      ],
+      "title": "ReplayGoldChange",
+      "type": "object"
+    },
+    "ReplayStateCategory": {
+      "enum": [
+        "ownership",
+        "location",
+        "vital_or_injury",
+        "obligation",
+        "other"
+      ],
+      "title": "ReplayStateCategory",
+      "type": "string"
+    },
+    "ReplayStateCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "expected_records": {
+          "items": {
+            "$ref": "#/$defs/ReplayExpectedRecord"
+          },
+          "minItems": 1,
+          "title": "Expected Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "chapter_index",
+        "expected_records"
+      ],
+      "title": "ReplayStateCheckpoint",
+      "type": "object"
+    },
+    "SceneDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TextBlock"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "scene_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "scene_index": {
+          "minimum": 0,
+          "title": "Scene Index",
+          "type": "integer"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "scene_id",
+        "scene_index"
+      ],
+      "title": "SceneDocument",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "StateRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "state_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "state_id",
+        "subject_id",
+        "predicate",
+        "value",
+        "valid_time",
+        "truth_class"
+      ],
+      "title": "StateRecord",
+      "type": "object"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TextBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "narrative_index": {
+          "minimum": 0,
+          "title": "Narrative Index",
+          "type": "integer"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "chapter_id",
+        "narrative_index",
+        "text"
+      ],
+      "title": "TextBlock",
+      "type": "object"
+    },
+    "TextRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapters": {
+          "items": {
+            "$ref": "#/$defs/ChapterDocument"
+          },
+          "title": "Chapters",
+          "type": "array"
+        },
+        "prelude": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreludeDocument"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version",
+        "chapters"
+      ],
+      "title": "TextRootDocument",
+      "type": "object"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    },
+    "WorldRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "entities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Entity"
+          },
+          "title": "Entities",
+          "type": "array"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanObligation"
+          },
+          "title": "Obligations",
+          "type": "array"
+        },
+        "relations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RelationRecord"
+          },
+          "title": "Relations",
+          "type": "array"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "states": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StateRecord"
+          },
+          "title": "States",
+          "type": "array"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version",
+        "source_commit"
+      ],
+      "title": "WorldRootDocument",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "bundle_schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "case_manifests": {
+      "items": {
+        "$ref": "#/$defs/BenchmarkCaseManifest"
+      },
+      "title": "Case Manifests",
+      "type": "array"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluator_access_policy": {
+      "$ref": "#/$defs/EvaluatorAccessPolicy",
+      "default": "reveal_after_context_freeze"
+    },
+    "expected_profiles": {
+      "default": [
+        "stage1-pilot-v0.1"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Expected Profiles",
+      "type": "array"
+    },
+    "history_access_policy": {
+      "$ref": "#/$defs/HistoryAccessPolicy",
+      "default": "history_only"
+    },
+    "plan_roots": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlanRootDocument"
+      },
+      "title": "Plan Roots",
+      "type": "array"
+    },
+    "replay_manifests": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReplayCaseManifest"
+      },
+      "title": "Replay Manifests",
+      "type": "array"
+    },
+    "summary_roots": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ChapterSummaryRootDocument"
+      },
+      "title": "Summary Roots",
+      "type": "array"
+    },
+    "text_roots": {
+      "items": {
+        "$ref": "#/$defs/TextRootDocument"
+      },
+      "title": "Text Roots",
+      "type": "array"
+    },
+    "world_roots": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorldRootDocument"
+      },
+      "title": "World Roots",
+      "type": "array"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "bundle_schema_version",
+    "content_hash",
+    "text_roots",
+    "case_manifests"
+  ],
+  "title": "BenchmarkBundle",
+  "type": "object"
+}

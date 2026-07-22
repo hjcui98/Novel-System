@@ -1,0 +1,38 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Benchmark configuration stripped of all Gold content hashes.\n\nMust be the ONLY bundle-level type passed to freeze-before-evaluation\ncode paths.  The full BenchmarkBundle (with Gold-containing content_hash)\nis loaded only by the Evaluator after context freeze.",
+  "properties": {
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "expected_profiles": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Expected Profiles",
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "required": [
+    "schema_version",
+    "configuration_fingerprint",
+    "expected_profiles"
+  ],
+  "title": "PublicBenchmarkConfig",
+  "type": "object"
+}

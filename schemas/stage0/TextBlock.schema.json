@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "chapter_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "narrative_index": {
+      "minimum": 0,
+      "title": "Narrative Index",
+      "type": "integer"
+    },
+    "scene_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "block_id",
+    "chapter_id",
+    "narrative_index",
+    "text"
+  ],
+  "title": "TextBlock",
+  "type": "object"
+}

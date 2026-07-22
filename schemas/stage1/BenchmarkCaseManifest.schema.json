@@ -1,0 +1,397 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkTrack": {
+      "enum": [
+        "oracle_verified",
+        "end_to_end"
+      ],
+      "title": "BenchmarkTrack",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "GoldItem": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "future_evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Future Evidence Refs",
+          "type": "array"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/GoldKind"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "plan_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanEvidenceRef"
+          },
+          "title": "Plan Evidence Refs",
+          "type": "array"
+        },
+        "target_chapters": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Target Chapters",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gold_id",
+        "kind",
+        "description",
+        "target_chapters",
+        "future_evidence_refs"
+      ],
+      "title": "GoldItem",
+      "type": "object"
+    },
+    "GoldKind": {
+      "enum": [
+        "observed_use",
+        "operational_constraint",
+        "plan_obligation"
+      ],
+      "title": "GoldKind",
+      "type": "string"
+    },
+    "PlanEvidenceRef": {
+      "additionalProperties": false,
+      "description": "Immutable pointer to author-visible intent without promoting it to World fact.",
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "plan_root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "plan_root_hash",
+        "goal_id",
+        "object_hash"
+      ],
+      "title": "PlanEvidenceRef",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "annotation_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "chapter_goal_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Chapter Goal Ids",
+      "type": "array"
+    },
+    "expected_tracks": {
+      "default": [
+        "oracle_verified",
+        "end_to_end"
+      ],
+      "items": {
+        "$ref": "#/$defs/BenchmarkTrack"
+      },
+      "title": "Expected Tracks",
+      "type": "array"
+    },
+    "future_text_root_private": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "gate_eligible": {
+      "default": true,
+      "title": "Gate Eligible",
+      "type": "boolean"
+    },
+    "history_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "History Range",
+      "type": "array"
+    },
+    "input_plan_root": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "input_summary_root": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "input_text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "input_world_root_verified": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "observed_use_gold": {
+      "items": {
+        "$ref": "#/$defs/GoldItem"
+      },
+      "title": "Observed Use Gold",
+      "type": "array"
+    },
+    "operational_constraint_gold": {
+      "items": {
+        "$ref": "#/$defs/GoldItem"
+      },
+      "title": "Operational Constraint Gold",
+      "type": "array"
+    },
+    "plan_obligation_gold": {
+      "items": {
+        "$ref": "#/$defs/GoldItem"
+      },
+      "title": "Plan Obligation Gold",
+      "type": "array"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "target_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Target Range",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_id",
+    "project_id",
+    "history_range",
+    "target_range",
+    "input_text_root",
+    "future_text_root_private",
+    "observed_use_gold",
+    "operational_constraint_gold",
+    "plan_obligation_gold",
+    "annotation_version"
+  ],
+  "title": "BenchmarkCaseManifest",
+  "type": "object"
+}

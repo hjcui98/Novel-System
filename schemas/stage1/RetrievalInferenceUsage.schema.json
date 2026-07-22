@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Cost Usd"
+    },
+    "input_characters": {
+      "minimum": 0,
+      "title": "Input Characters",
+      "type": "integer"
+    },
+    "input_items": {
+      "minimum": 0,
+      "title": "Input Items",
+      "type": "integer"
+    },
+    "output_items": {
+      "minimum": 0,
+      "title": "Output Items",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "input_items",
+    "input_characters",
+    "output_items",
+    "cost_usd"
+  ],
+  "title": "RetrievalInferenceUsage",
+  "type": "object"
+}

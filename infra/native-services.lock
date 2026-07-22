@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "architecture": "x86_64",
+  "postgresql": {
+    "version": "17.10",
+    "conda_channel": "conda-forge",
+    "conda_build": "he06dc6e_0"
+  },
+  "artifacts": {
+    "opensearch": {
+      "version": "3.7.0",
+      "url": "https://artifacts.opensearch.org/releases/bundle/opensearch/3.7.0/opensearch-3.7.0-linux-x64.tar.gz",
+      "filename": "opensearch-3.7.0-linux-x64.tar.gz",
+      "sha256": "ae4edf0e80ff38ef9e502a51200c7f54e313cc4275020fff5b60789081546184",
+      "official_sha512": "9e481db6495cbdacd6704a19c6ed7679e1138d40dbe283642c599bf70441c968bbd7f6faf7ecfa6c9ecf0685141037079b53647c5df3595bd5b9647bcbad1a04",
+      "archive": "tar.gz",
+      "install_dir": "opensearch-3.7.0",
+      "executable": "opensearch-3.7.0/bin/opensearch",
+      "allowed_hosts": [
+        "artifacts.opensearch.org"
+      ]
+    },
+    "minio": {
+      "version": "RELEASE.2025-06-13T11-33-47Z",
+      "url": "https://dl.min.io/server/minio/release/linux-amd64/archive/minio.RELEASE.2025-06-13T11-33-47Z",
+      "filename": "minio.RELEASE.2025-06-13T11-33-47Z",
+      "sha256": "668d3fa0334da86a481da79cc88740f751bf60d8cf15ff988f4bceafa22ca4b0",
+      "archive": "binary",
+      "install_dir": "minio-RELEASE.2025-06-13T11-33-47Z",
+      "executable": "minio-RELEASE.2025-06-13T11-33-47Z/minio",
+      "allowed_hosts": [
+        "dl.min.io"
+      ]
+    },
+    "otel": {
+      "version": "0.156.0",
+      "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_linux_amd64.tar.gz",
+      "filename": "otelcol-contrib_0.156.0_linux_amd64.tar.gz",
+      "sha256": "ee70d7b1221be8a9cc4700f48bf985c04b1ab8aaeef24409fe79623849e2f9f2",
+      "archive": "tar.gz",
+      "install_dir": "otelcol-contrib-0.156.0",
+      "executable": "otelcol-contrib-0.156.0/otelcol-contrib",
+      "allowed_hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ]
+    }
+  }
+}

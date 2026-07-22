@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
+    },
+    "SelectionDecision": {
+      "enum": [
+        "selected",
+        "excluded"
+      ],
+      "title": "SelectionDecision",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_pool": {
+      "$ref": "#/$defs/CandidatePool"
+    },
+    "decision": {
+      "$ref": "#/$defs/SelectionDecision"
+    },
+    "mandatory": {
+      "default": false,
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "unit_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "unit_id",
+    "need_ids",
+    "candidate_pool",
+    "decision",
+    "reason"
+  ],
+  "title": "MemorySelection",
+  "type": "object"
+}

@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "GuardianOutcome": {
+      "enum": [
+        "approve",
+        "revise",
+        "reject",
+        "human_review"
+      ],
+      "title": "GuardianOutcome",
+      "type": "string"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "$ref": "#/$defs/GuardianOutcome"
+    },
+    "reasons": {
+      "items": {
+        "maxLength": 240,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Reasons",
+      "type": "array"
+    },
+    "revised_candidate": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "maxProperties": 8,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revised Candidate"
+    },
+    "risk_codes": {
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Risk Codes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "outcome",
+    "risk_codes",
+    "reasons"
+  ],
+  "title": "GuardianDecisionDraft",
+  "type": "object"
+}

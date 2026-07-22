@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "agent_mode": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Agent Mode"
+    },
+    "agent_spec_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model_role": {
+      "$ref": "#/$defs/ModelRole"
+    },
+    "prompt": {
+      "title": "Prompt",
+      "type": "string"
+    },
+    "prompt_contract_hashes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Prompt Contract Hashes",
+      "type": "array"
+    },
+    "purpose": {
+      "$ref": "#/$defs/ModelCallPurpose"
+    },
+    "render_fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "response_schema": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Schema"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "skill_contract_hashes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Skill Contract Hashes",
+      "type": "array"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "timeout_seconds": {
+      "default": 30.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 600.0,
+      "title": "Timeout Seconds",
+      "type": "number"
+    },
+    "tool_policy_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "trace_id": {
+      "minLength": 1,
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "task_id",
+    "model_role",
+    "purpose",
+    "trace_id",
+    "prompt"
+  ],
+  "title": "ModelRequest",
+  "type": "object"
+}

@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "RetrievalInferenceOperation": {
+      "enum": [
+        "embedding",
+        "rerank"
+      ],
+      "title": "RetrievalInferenceOperation",
+      "type": "string"
+    },
+    "RetrievalInferenceStatus": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "title": "RetrievalInferenceStatus",
+      "type": "string"
+    },
+    "RetrievalInferenceUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_characters": {
+          "minimum": 0,
+          "title": "Input Characters",
+          "type": "integer"
+        },
+        "input_items": {
+          "minimum": 0,
+          "title": "Input Items",
+          "type": "integer"
+        },
+        "output_items": {
+          "minimum": 0,
+          "title": "Output Items",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_items",
+        "input_characters",
+        "output_items",
+        "cost_usd"
+      ],
+      "title": "RetrievalInferenceUsage",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "call_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "endpoint": {
+      "minLength": 1,
+      "title": "Endpoint",
+      "type": "string"
+    },
+    "error_type": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Type"
+    },
+    "latency_ms": {
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "model_role": {
+      "$ref": "#/$defs/ModelRole"
+    },
+    "operation": {
+      "$ref": "#/$defs/RetrievalInferenceOperation"
+    },
+    "purpose": {
+      "$ref": "#/$defs/ModelCallPurpose"
+    },
+    "revision": {
+      "minLength": 1,
+      "title": "Revision",
+      "type": "string"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "runtime_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Fingerprint",
+      "type": "string"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/RetrievalInferenceStatus"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "trace_id": {
+      "minLength": 1,
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/$defs/RetrievalInferenceUsage"
+    }
+  },
+  "required": [
+    "call_id",
+    "run_id",
+    "task_id",
+    "model_role",
+    "purpose",
+    "trace_id",
+    "endpoint",
+    "model",
+    "revision",
+    "runtime_fingerprint",
+    "operation",
+    "usage",
+    "latency_ms",
+    "started_at",
+    "completed_at",
+    "status"
+  ],
+  "title": "RetrievalInferenceCallRecord",
+  "type": "object"
+}

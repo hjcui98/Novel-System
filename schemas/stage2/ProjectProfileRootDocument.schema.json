@@ -1,0 +1,156 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "PromptContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "render_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash",
+        "render_fingerprint"
+      ],
+      "title": "PromptContractRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_specs": {
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Agent Specs",
+      "type": "array"
+    },
+    "capability_profile": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Capability Profile",
+      "type": "object"
+    },
+    "model_profiles": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Model Profiles",
+      "type": "array"
+    },
+    "prompt_contracts": {
+      "items": {
+        "$ref": "#/$defs/PromptContractRef"
+      },
+      "title": "Prompt Contracts",
+      "type": "array"
+    },
+    "root_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "skill_contracts": {
+      "items": {
+        "$ref": "#/$defs/SkillContractRef"
+      },
+      "title": "Skill Contracts",
+      "type": "array"
+    },
+    "style_profile": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Style Profile",
+      "type": "object"
+    },
+    "tool_policies": {
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Tool Policies",
+      "type": "array"
+    }
+  },
+  "required": [
+    "root_hash",
+    "schema_version",
+    "agent_specs",
+    "prompt_contracts",
+    "skill_contracts",
+    "tool_policies",
+    "model_profiles"
+  ],
+  "title": "ProjectProfileRootDocument",
+  "type": "object"
+}

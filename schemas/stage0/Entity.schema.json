@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "aliases": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Aliases",
+      "type": "array"
+    },
+    "entity_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "entity_type": {
+      "minLength": 1,
+      "title": "Entity Type",
+      "type": "string"
+    },
+    "identity_invariants": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Identity Invariants",
+      "type": "array"
+    },
+    "internal_label": {
+      "minLength": 1,
+      "title": "Internal Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity_id",
+    "entity_type",
+    "internal_label"
+  ],
+  "title": "Entity",
+  "type": "object"
+}

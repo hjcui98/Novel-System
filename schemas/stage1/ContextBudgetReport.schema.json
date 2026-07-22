@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "dropped_optional_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Dropped Optional Unit Ids",
+      "type": "array"
+    },
+    "full_chapter_read_count": {
+      "minimum": 0,
+      "title": "Full Chapter Read Count",
+      "type": "integer"
+    },
+    "mandatory_tokens": {
+      "minimum": 0,
+      "title": "Mandatory Tokens",
+      "type": "integer"
+    },
+    "optional_tokens": {
+      "minimum": 0,
+      "title": "Optional Tokens",
+      "type": "integer"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "token_budget",
+    "mandatory_tokens",
+    "optional_tokens",
+    "full_chapter_read_count"
+  ],
+  "title": "ContextBudgetReport",
+  "type": "object"
+}

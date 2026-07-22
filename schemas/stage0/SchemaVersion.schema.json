@@ -1,0 +1,5 @@
+{
+  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+  "title": "SchemaVersion",
+  "type": "string"
+}

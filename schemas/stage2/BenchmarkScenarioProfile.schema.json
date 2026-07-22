@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "ScenarioBuildMode": {
+      "enum": [
+        "continuous_replay",
+        "independent_rebuild"
+      ],
+      "title": "ScenarioBuildMode",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "build_mode": {
+      "$ref": "#/$defs/ScenarioBuildMode"
+    },
+    "checkpoint_chapters": {
+      "items": {
+        "type": "integer"
+      },
+      "minItems": 1,
+      "title": "Checkpoint Chapters",
+      "type": "array"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "information_profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "profile_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "profile_id",
+    "build_mode",
+    "information_profile",
+    "checkpoint_chapters",
+    "configuration_fingerprint"
+  ],
+  "title": "BenchmarkScenarioProfile",
+  "type": "object"
+}

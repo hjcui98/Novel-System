@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "$ref": "#/$defs/ChangeOperationType"
+    },
+    "phrase": {
+      "minLength": 1,
+      "title": "Phrase",
+      "type": "string"
+    },
+    "record": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Record",
+      "type": "object"
+    },
+    "record_kind": {
+      "$ref": "#/$defs/WorldRecordKind"
+    },
+    "rule_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "rule_id",
+    "phrase",
+    "operation",
+    "record_kind",
+    "target_id",
+    "record"
+  ],
+  "title": "ExtractionRule",
+  "type": "object"
+}

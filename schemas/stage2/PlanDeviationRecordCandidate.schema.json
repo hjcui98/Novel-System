@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "affected_plan_item_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "minItems": 1,
+      "title": "Affected Plan Item Ids",
+      "type": "array"
+    },
+    "deviation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "invalidated_artifact_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Invalidated Artifact Ids",
+      "type": "array"
+    },
+    "replacement_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Replacement Item Ids",
+      "type": "array"
+    },
+    "summary": {
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "deviation_id",
+    "summary",
+    "affected_plan_item_ids"
+  ],
+  "title": "PlanDeviationRecordCandidate",
+  "type": "object"
+}

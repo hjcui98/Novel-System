@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ProposalProvenance": {
+      "enum": [
+        "author_supplied",
+        "planner_proposed"
+      ],
+      "title": "ProposalProvenance",
+      "type": "string"
+    },
+    "ProposedItem": {
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProposalProvenance"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "item_id",
+        "kind",
+        "payload",
+        "provenance"
+      ],
+      "title": "ProposedItem",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ProposedItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "proposal_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "unresolved": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Unresolved",
+      "type": "array"
+    }
+  },
+  "required": [
+    "proposal_id",
+    "project_id",
+    "items"
+  ],
+  "title": "WorldDesignProposal",
+  "type": "object"
+}

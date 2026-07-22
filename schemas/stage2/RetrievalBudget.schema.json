@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "max_anchor_expansions": {
+      "default": 8,
+      "minimum": 0,
+      "title": "Max Anchor Expansions",
+      "type": "integer"
+    },
+    "max_candidates": {
+      "default": 100,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Max Candidates",
+      "type": "integer"
+    },
+    "max_full_chapter_reads": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Max Full Chapter Reads",
+      "type": "integer"
+    },
+    "max_query_rewrites_per_need": {
+      "default": 2,
+      "minimum": 0,
+      "title": "Max Query Rewrites Per Need",
+      "type": "integer"
+    },
+    "max_rounds": {
+      "default": 3,
+      "minimum": 1,
+      "title": "Max Rounds",
+      "type": "integer"
+    },
+    "max_tool_calls": {
+      "default": 12,
+      "minimum": 1,
+      "title": "Max Tool Calls",
+      "type": "integer"
+    },
+    "token_budget": {
+      "default": 12000,
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    },
+    "wall_clock_budget_ms": {
+      "default": 30000,
+      "minimum": 1,
+      "title": "Wall Clock Budget Ms",
+      "type": "integer"
+    }
+  },
+  "title": "RetrievalBudget",
+  "type": "object"
+}

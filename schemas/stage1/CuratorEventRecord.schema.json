@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "CuratorStoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "CuratorStoryTime",
+      "type": "object"
+    },
+    "NarrativeOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativeOrder",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "effect_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 4,
+      "title": "Effect Refs",
+      "type": "array"
+    },
+    "event_type": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Event Type",
+      "type": "string"
+    },
+    "narrative_order": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NarrativeOrder"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "participant_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 6,
+      "title": "Participant Ids",
+      "type": "array"
+    },
+    "story_time": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CuratorStoryTime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "truth_class": {
+      "$ref": "#/$defs/TruthClass"
+    }
+  },
+  "required": [
+    "event_type",
+    "truth_class"
+  ],
+  "title": "CuratorEventRecord",
+  "type": "object"
+}

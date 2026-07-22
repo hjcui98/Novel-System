@@ -1,0 +1,25 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: .conda-env/bin/ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: .conda-env/bin/ruff format --check
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: .conda-env/bin/mypy
+        args: [src, tests]
+        language: system
+        pass_filenames: false
+      - id: pytest
+        name: deterministic pytest
+        entry: .conda-env/bin/python -m pytest
+        args: [-m, "not model_required and not integration"]
+        language: system
+        pass_filenames: false

@@ -1,0 +1,318 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkCheckpointDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 1,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "evaluator_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Evaluator Source Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "case_id",
+        "checkpoint_chapter",
+        "evaluator_source_ids"
+      ],
+      "title": "BenchmarkCheckpointDeclaration",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkScenarioProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "build_mode": {
+          "$ref": "#/$defs/ScenarioBuildMode"
+        },
+        "checkpoint_chapters": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Checkpoint Chapters",
+          "type": "array"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "profile_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "profile_id",
+        "build_mode",
+        "information_profile",
+        "checkpoint_chapters",
+        "configuration_fingerprint"
+      ],
+      "title": "BenchmarkScenarioProfile",
+      "type": "object"
+    },
+    "BootstrapSource": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Index"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "earliest_visible_chapter": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Earliest Visible Chapter"
+        },
+        "evaluator_only": {
+          "default": false,
+          "title": "Evaluator Only",
+          "type": "boolean"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "source_class": {
+          "$ref": "#/$defs/SourceClass"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_class",
+        "media_type",
+        "content_hash",
+        "byte_length",
+        "artifact_ref"
+      ],
+      "title": "BootstrapSource",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ScenarioBuildMode": {
+      "enum": [
+        "continuous_replay",
+        "independent_rebuild"
+      ],
+      "title": "ScenarioBuildMode",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SourceClass": {
+      "enum": [
+        "author_initial_brief",
+        "author_known_future_plan",
+        "baseline_setting",
+        "chapter_text_n",
+        "retrospective_summary",
+        "future_text_private",
+        "read_gold",
+        "replay_gold",
+        "style_guide",
+        "external_reference"
+      ],
+      "title": "SourceClass",
+      "type": "string"
+    },
+    "SourceClassification": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_destinations": {
+          "items": {
+            "$ref": "#/$defs/SourceDestination"
+          },
+          "title": "Allowed Destinations",
+          "type": "array"
+        },
+        "classification_reason": {
+          "minLength": 1,
+          "title": "Classification Reason",
+          "type": "string"
+        },
+        "forbidden_destinations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceDestination"
+          },
+          "title": "Forbidden Destinations",
+          "type": "array"
+        },
+        "source_class": {
+          "$ref": "#/$defs/SourceClass"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_class",
+        "allowed_destinations",
+        "classification_reason"
+      ],
+      "title": "SourceClassification",
+      "type": "object"
+    },
+    "SourceDestination": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile",
+        "evaluation"
+      ],
+      "title": "SourceDestination",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "branch": {
+      "minLength": 1,
+      "title": "Branch",
+      "type": "string"
+    },
+    "checkpoint_cases": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BenchmarkCheckpointDeclaration"
+      },
+      "title": "Checkpoint Cases",
+      "type": "array"
+    },
+    "classifications": {
+      "items": {
+        "$ref": "#/$defs/SourceClassification"
+      },
+      "minItems": 1,
+      "title": "Classifications",
+      "type": "array"
+    },
+    "profile": {
+      "$ref": "#/$defs/BenchmarkScenarioProfile"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "scenario_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/BootstrapSource"
+      },
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "scenario_id",
+    "project_id",
+    "branch",
+    "sources",
+    "classifications",
+    "profile"
+  ],
+  "title": "BenchmarkScenario",
+  "type": "object"
+}

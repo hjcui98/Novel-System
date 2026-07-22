@@ -1,0 +1,248 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "ControllerStopReason": {
+      "enum": [
+        "sufficient",
+        "mandatory_gap_unresolved",
+        "budget_exhausted",
+        "freshness_blocked",
+        "access_blocked",
+        "conflict_requires_review",
+        "tool_failure",
+        "no_additional_evidence"
+      ],
+      "title": "ControllerStopReason",
+      "type": "string"
+    },
+    "PairedPilotArmMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_traceability": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Evidence Traceability",
+          "type": "number"
+        },
+        "future_leakage_count": {
+          "minimum": 0,
+          "title": "Future Leakage Count",
+          "type": "integer"
+        },
+        "gold_evidence_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Gold Evidence Recall",
+          "type": "number"
+        },
+        "mandatory_constraint_coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mandatory Constraint Coverage",
+          "type": "number"
+        },
+        "observed_use_coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Observed Use Coverage",
+          "type": "number"
+        },
+        "operational_constraint_coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Operational Constraint Coverage",
+          "type": "number"
+        },
+        "plan_obligation_coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Plan Obligation Coverage",
+          "type": "number"
+        },
+        "retrieval_call_count": {
+          "minimum": 0,
+          "title": "Retrieval Call Count",
+          "type": "integer"
+        },
+        "selected_unit_count": {
+          "minimum": 0,
+          "title": "Selected Unit Count",
+          "type": "integer"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/ControllerStopReason"
+        }
+      },
+      "required": [
+        "gold_evidence_recall",
+        "observed_use_coverage",
+        "operational_constraint_coverage",
+        "plan_obligation_coverage",
+        "mandatory_constraint_coverage",
+        "evidence_traceability",
+        "selected_unit_count",
+        "retrieval_call_count",
+        "future_leakage_count",
+        "stop_reason"
+      ],
+      "title": "PairedPilotArmMetrics",
+      "type": "object"
+    },
+    "PairedPilotCaseResult": {
+      "additionalProperties": false,
+      "properties": {
+        "accuracy_gain": {
+          "title": "Accuracy Gain",
+          "type": "boolean"
+        },
+        "agentic_metrics": {
+          "$ref": "#/$defs/PairedPilotArmMetrics"
+        },
+        "blockers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "comparable": {
+          "title": "Comparable",
+          "type": "boolean"
+        },
+        "comparison_basis_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "deterministic_metrics": {
+          "$ref": "#/$defs/PairedPilotArmMetrics"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "pair_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "safety_regression": {
+          "title": "Safety Regression",
+          "type": "boolean"
+        },
+        "tool_call_reduction": {
+          "title": "Tool Call Reduction",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "case_id",
+        "information_profile",
+        "checkpoint_chapter",
+        "pair_id",
+        "request_id",
+        "comparison_basis_fingerprint",
+        "comparable",
+        "deterministic_metrics",
+        "agentic_metrics",
+        "accuracy_gain",
+        "tool_call_reduction",
+        "safety_regression"
+      ],
+      "title": "PairedPilotCaseResult",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accuracy_gain_count": {
+      "minimum": 0,
+      "title": "Accuracy Gain Count",
+      "type": "integer"
+    },
+    "bundle_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/PairedPilotCaseResult"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "comparable_results_count": {
+      "minimum": 0,
+      "title": "Comparable Results Count",
+      "type": "integer"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "held_out_complex_gain_proven": {
+      "default": false,
+      "title": "Held Out Complex Gain Proven",
+      "type": "boolean"
+    },
+    "paired_results_count": {
+      "minimum": 0,
+      "title": "Paired Results Count",
+      "type": "integer"
+    },
+    "report_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "safety_regression_count": {
+      "minimum": 0,
+      "title": "Safety Regression Count",
+      "type": "integer"
+    },
+    "tool_call_reduction_count": {
+      "minimum": 0,
+      "title": "Tool Call Reduction Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "report_id",
+    "bundle_hash",
+    "configuration_fingerprint",
+    "cases",
+    "paired_results_count",
+    "comparable_results_count",
+    "future_leakage_count",
+    "safety_regression_count",
+    "accuracy_gain_count",
+    "tool_call_reduction_count"
+  ],
+  "title": "Stage2PairedPilotReport",
+  "type": "object"
+}

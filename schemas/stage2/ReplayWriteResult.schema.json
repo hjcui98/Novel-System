@@ -1,0 +1,1204 @@
+{
+  "$defs": {
+    "AgentExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillExecutionReceipt"
+          },
+          "title": "Skill Receipts",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "agent_spec",
+        "agent_type",
+        "agent_mode",
+        "prompt_fingerprint",
+        "configuration_fingerprint",
+        "status",
+        "started_at",
+        "completed_at",
+        "latency_ms"
+      ],
+      "title": "AgentExecutionReceipt",
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "bounded_r2",
+        "risk_review"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "AuthorApprovalStatus": {
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "needs_changes"
+      ],
+      "title": "AuthorApprovalStatus",
+      "type": "string"
+    },
+    "ChangeOperation": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "operation": {
+          "$ref": "#/$defs/ChangeOperationType"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "payload": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "root_kind",
+        "operation",
+        "target_id",
+        "payload"
+      ],
+      "title": "ChangeOperation",
+      "type": "object"
+    },
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "CuratorReplayResult": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Coverage",
+          "type": "number"
+        },
+        "declared_vs_observed_diff": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Declared Vs Observed Diff",
+          "type": "array"
+        },
+        "observed_changes": {
+          "$ref": "#/$defs/ObservedChangeSet"
+        },
+        "receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "observed_changes",
+        "coverage",
+        "receipt"
+      ],
+      "title": "CuratorReplayResult",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "FreshnessDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_alias_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonical_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "manual_approval_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "r1_basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "required_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/FreshnessStatus"
+        }
+      },
+      "required": [
+        "status",
+        "canonical_commit",
+        "r1_basis_commit",
+        "required_snapshot_id",
+        "reason"
+      ],
+      "title": "FreshnessDecision",
+      "type": "object"
+    },
+    "FreshnessStatus": {
+      "enum": [
+        "ready",
+        "waiting",
+        "degraded",
+        "blocked",
+        "overridden"
+      ],
+      "title": "FreshnessStatus",
+      "type": "string"
+    },
+    "GuardianDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/GuardianOutcome"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        },
+        "revised_candidate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "risk_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Risk Codes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision_id",
+        "proposal_id",
+        "base_commit",
+        "outcome",
+        "risk_codes",
+        "reasons",
+        "receipt"
+      ],
+      "title": "GuardianDecision",
+      "type": "object"
+    },
+    "GuardianOutcome": {
+      "enum": [
+        "approve",
+        "revise",
+        "reject",
+        "human_review"
+      ],
+      "title": "GuardianOutcome",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "ObservedChangeSet": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChangeOperation"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "change_set_id",
+        "base_commit",
+        "source_artifact"
+      ],
+      "title": "ObservedChangeSet",
+      "type": "object"
+    },
+    "PatchApprovalDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "author_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "guardian_decision_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "risk_assessment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/AuthorApprovalStatus"
+        }
+      },
+      "required": [
+        "decision_id",
+        "approval_request_id",
+        "project_id",
+        "change_set_id",
+        "base_commit",
+        "risk_assessment_id",
+        "guardian_decision_id",
+        "status",
+        "author_id",
+        "reason",
+        "decided_at"
+      ],
+      "title": "PatchApprovalDecision",
+      "type": "object"
+    },
+    "PatchApprovalRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "guardian_decision_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "risk_assessment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/AuthorApprovalStatus",
+          "default": "pending"
+        }
+      },
+      "required": [
+        "approval_request_id",
+        "project_id",
+        "change_set_id",
+        "base_commit",
+        "risk_assessment_id",
+        "guardian_decision_id",
+        "requested_at"
+      ],
+      "title": "PatchApprovalRequest",
+      "type": "object"
+    },
+    "PatchRiskAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "assessment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "level": {
+          "$ref": "#/$defs/PatchRiskLevel"
+        },
+        "requires_guardian": {
+          "title": "Requires Guardian",
+          "type": "boolean"
+        },
+        "requires_human_review": {
+          "title": "Requires Human Review",
+          "type": "boolean"
+        },
+        "risk_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Risk Codes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "assessment_id",
+        "change_set_id",
+        "base_commit",
+        "level",
+        "risk_codes",
+        "requires_guardian",
+        "requires_human_review"
+      ],
+      "title": "PatchRiskAssessment",
+      "type": "object"
+    },
+    "PatchRiskLevel": {
+      "enum": [
+        "low",
+        "high",
+        "critical"
+      ],
+      "title": "PatchRiskLevel",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "ReplayWriteStatus": {
+      "enum": [
+        "committed",
+        "suspended",
+        "blocked"
+      ],
+      "title": "ReplayWriteStatus",
+      "type": "string"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "ScenarioChapterTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_artifacts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScenarioCheckpointArtifacts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "curator_receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        },
+        "freshness": {
+          "$ref": "#/$defs/FreshnessDecision"
+        },
+        "parent_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "projection_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "resulting_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "validation_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "source_id",
+        "parent_commit",
+        "resulting_commit",
+        "curator_receipt",
+        "validation_artifact",
+        "projection_snapshot_id",
+        "freshness"
+      ],
+      "title": "ScenarioChapterTransition",
+      "type": "object"
+    },
+    "ScenarioCheckpointArtifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_alias": {
+          "minLength": 1,
+          "title": "Anchor Alias",
+          "type": "string"
+        },
+        "derived_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "grounded_alias": {
+          "minLength": 1,
+          "title": "Grounded Alias",
+          "type": "string"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "project_profile": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "world_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "text_root",
+        "plan_root",
+        "world_root",
+        "derived_snapshot_id",
+        "anchor_alias",
+        "grounded_alias",
+        "project_profile"
+      ],
+      "title": "ScenarioCheckpointArtifacts",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "WriteGateDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "guardian_decision_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "human_approval_decision_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "outcome": {
+          "$ref": "#/$defs/WriteGateOutcome"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "risk_assessment_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "decision_id",
+        "change_set_id",
+        "base_commit",
+        "outcome",
+        "risk_assessment_id"
+      ],
+      "title": "WriteGateDecision",
+      "type": "object"
+    },
+    "WriteGateOutcome": {
+      "enum": [
+        "allow_commit",
+        "block_validation",
+        "require_guardian",
+        "require_human",
+        "block_guardian",
+        "block_human"
+      ],
+      "title": "WriteGateOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PatchApprovalDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "approval_request": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PatchApprovalRequest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "curator_result": {
+      "$ref": "#/$defs/CuratorReplayResult"
+    },
+    "guardian_decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GuardianDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "risk_assessment": {
+      "$ref": "#/$defs/PatchRiskAssessment"
+    },
+    "status": {
+      "$ref": "#/$defs/ReplayWriteStatus"
+    },
+    "transition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScenarioChapterTransition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "validation_report_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "write_gate": {
+      "$ref": "#/$defs/WriteGateDecision"
+    }
+  },
+  "required": [
+    "status",
+    "curator_result",
+    "validation_report_id",
+    "risk_assessment",
+    "write_gate"
+  ],
+  "title": "ReplayWriteResult",
+  "type": "object"
+}

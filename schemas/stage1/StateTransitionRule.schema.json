@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "StateTransitionEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "from_value": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "to_value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "from_value",
+        "to_value"
+      ],
+      "title": "StateTransitionEdge",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed": {
+      "items": {
+        "$ref": "#/$defs/StateTransitionEdge"
+      },
+      "minItems": 1,
+      "title": "Allowed",
+      "type": "array"
+    },
+    "predicate": {
+      "minLength": 1,
+      "title": "Predicate",
+      "type": "string"
+    }
+  },
+  "required": [
+    "predicate",
+    "allowed"
+  ],
+  "title": "StateTransitionRule",
+  "type": "object"
+}

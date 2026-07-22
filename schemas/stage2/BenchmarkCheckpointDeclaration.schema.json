@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "evaluator_source_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "minItems": 1,
+      "title": "Evaluator Source Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_id",
+    "checkpoint_chapter",
+    "evaluator_source_ids"
+  ],
+  "title": "BenchmarkCheckpointDeclaration",
+  "type": "object"
+}

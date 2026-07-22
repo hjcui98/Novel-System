@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "PatchRiskLevel": {
+      "enum": [
+        "low",
+        "high",
+        "critical"
+      ],
+      "title": "PatchRiskLevel",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assessment_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "change_set_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "level": {
+      "$ref": "#/$defs/PatchRiskLevel"
+    },
+    "requires_guardian": {
+      "title": "Requires Guardian",
+      "type": "boolean"
+    },
+    "requires_human_review": {
+      "title": "Requires Human Review",
+      "type": "boolean"
+    },
+    "risk_codes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Codes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "assessment_id",
+    "change_set_id",
+    "base_commit",
+    "level",
+    "risk_codes",
+    "requires_guardian",
+    "requires_human_review"
+  ],
+  "title": "PatchRiskAssessment",
+  "type": "object"
+}

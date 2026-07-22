@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "FailureCategory": {
+      "enum": [
+        "F-STATE",
+        "F-NEED",
+        "F-ROUTE",
+        "F-RETRIEVE",
+        "F-RANK",
+        "F-EXPAND",
+        "F-CONTEXT",
+        "F-EXTRACT",
+        "F-TRUTH",
+        "F-VALIDATE",
+        "F-COMMIT",
+        "F-FRESH",
+        "F-EVAL"
+      ],
+      "title": "FailureCategory",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage1GateVerdict": {
+      "enum": [
+        "pass",
+        "conditional_pass",
+        "fail",
+        "incomplete",
+        "not_eligible"
+      ],
+      "title": "Stage1GateVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "blockers": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Blockers",
+      "type": "array"
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checks": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "failure_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/FailureCategory"
+      },
+      "title": "Failure Counts",
+      "type": "object"
+    },
+    "read_results_expected": {
+      "minimum": 0,
+      "title": "Read Results Expected",
+      "type": "integer"
+    },
+    "read_results_present": {
+      "minimum": 0,
+      "title": "Read Results Present",
+      "type": "integer"
+    },
+    "replay_cases_expected": {
+      "minimum": 0,
+      "title": "Replay Cases Expected",
+      "type": "integer"
+    },
+    "replay_cases_present": {
+      "minimum": 0,
+      "title": "Replay Cases Present",
+      "type": "integer"
+    },
+    "verdict": {
+      "$ref": "#/$defs/Stage1GateVerdict"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "verdict",
+    "read_results_expected",
+    "read_results_present",
+    "replay_cases_expected",
+    "replay_cases_present",
+    "checks",
+    "failure_counts"
+  ],
+  "title": "Stage1GateReport",
+  "type": "object"
+}

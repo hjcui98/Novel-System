@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "node_type": {
+      "minLength": 1,
+      "title": "Node Type",
+      "type": "string"
+    },
+    "obligation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Obligation Ids",
+      "type": "array"
+    },
+    "parent_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "plan_node_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "plan_node_id",
+    "node_type",
+    "title",
+    "summary"
+  ],
+  "title": "PlanNode",
+  "type": "object"
+}

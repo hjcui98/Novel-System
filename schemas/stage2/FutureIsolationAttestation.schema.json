@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attestation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "canonical_source_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Canonical Source Ids",
+      "type": "array"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluator_only_source_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Evaluator Only Source Ids",
+      "type": "array"
+    },
+    "overlap_source_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Overlap Source Ids",
+      "type": "array"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "attestation_id",
+    "checkpoint_chapter",
+    "canonical_source_ids",
+    "evaluator_only_source_ids",
+    "passed",
+    "configuration_fingerprint"
+  ],
+  "title": "FutureIsolationAttestation",
+  "type": "object"
+}

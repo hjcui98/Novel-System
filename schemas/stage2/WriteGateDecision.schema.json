@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WriteGateOutcome": {
+      "enum": [
+        "allow_commit",
+        "block_validation",
+        "require_guardian",
+        "require_human",
+        "block_guardian",
+        "block_human"
+      ],
+      "title": "WriteGateOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "change_set_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "guardian_decision_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "human_approval_decision_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "outcome": {
+      "$ref": "#/$defs/WriteGateOutcome"
+    },
+    "reasons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "risk_assessment_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "decision_id",
+    "change_set_id",
+    "base_commit",
+    "outcome",
+    "risk_assessment_id"
+  ],
+  "title": "WriteGateDecision",
+  "type": "object"
+}

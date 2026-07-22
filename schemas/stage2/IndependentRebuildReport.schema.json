@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "IndependentRebuildComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 1,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "checkpoint_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "compared_chapters": {
+          "minimum": 0,
+          "title": "Compared Chapters",
+          "type": "integer"
+        },
+        "consistent": {
+          "title": "Consistent",
+          "type": "boolean"
+        },
+        "mismatched_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Mismatched Chapters",
+          "type": "array"
+        },
+        "reference_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "case_id",
+        "checkpoint_chapter",
+        "checkpoint_text_root",
+        "reference_text_root",
+        "compared_chapters",
+        "consistent"
+      ],
+      "title": "IndependentRebuildComparison",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "all_consistent": {
+      "title": "All Consistent",
+      "type": "boolean"
+    },
+    "bundle_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "comparisons": {
+      "items": {
+        "$ref": "#/$defs/IndependentRebuildComparison"
+      },
+      "title": "Comparisons",
+      "type": "array"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "reference_case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "report_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "report_id",
+    "bundle_hash",
+    "reference_case_id",
+    "comparisons",
+    "all_consistent",
+    "configuration_fingerprint"
+  ],
+  "title": "IndependentRebuildReport",
+  "type": "object"
+}

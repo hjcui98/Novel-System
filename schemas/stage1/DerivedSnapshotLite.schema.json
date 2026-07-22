@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "DerivedBuildStatus": {
+      "enum": [
+        "building",
+        "exact",
+        "partial",
+        "failed"
+      ],
+      "title": "DerivedBuildStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "anchor_build_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "anchor_index_version": {
+      "minLength": 1,
+      "title": "Anchor Index Version",
+      "type": "string"
+    },
+    "build_status": {
+      "$ref": "#/$defs/DerivedBuildStatus"
+    },
+    "embedding_profile": {
+      "minLength": 1,
+      "title": "Embedding Profile",
+      "type": "string"
+    },
+    "failure_debt": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Failure Debt",
+      "type": "array"
+    },
+    "fusion_profile": {
+      "minLength": 1,
+      "title": "Fusion Profile",
+      "type": "string"
+    },
+    "grounded_index_version": {
+      "minLength": 1,
+      "title": "Grounded Index Version",
+      "type": "string"
+    },
+    "published_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Published At"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "source_commit",
+    "anchor_build_id",
+    "anchor_index_version",
+    "grounded_index_version",
+    "embedding_profile",
+    "fusion_profile",
+    "build_status"
+  ],
+  "title": "DerivedSnapshotLite",
+  "type": "object"
+}

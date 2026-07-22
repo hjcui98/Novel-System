@@ -1,0 +1,20 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "from_value": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "to_value": {
+      "$ref": "#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "from_value",
+    "to_value"
+  ],
+  "title": "StateTransitionEdge",
+  "type": "object"
+}

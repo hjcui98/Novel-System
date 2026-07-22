@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "mandatory_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Mandatory Unit Ids",
+      "type": "array"
+    },
+    "reduction_allowed": {
+      "default": true,
+      "title": "Reduction Allowed",
+      "type": "boolean"
+    },
+    "selected_unit_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Unit Ids",
+      "type": "array"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "selected_unit_ids",
+    "token_budget"
+  ],
+  "title": "ContextAssemblySpec",
+  "type": "object"
+}

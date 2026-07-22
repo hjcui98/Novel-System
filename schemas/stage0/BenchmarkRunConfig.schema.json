@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "EvaluationParameter": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "EvaluationParameter",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "benchmark_id": {
+      "title": "Benchmark Id",
+      "type": "string"
+    },
+    "code_version": {
+      "title": "Code Version",
+      "type": "string"
+    },
+    "config_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "dataset_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "model_required": {
+      "default": false,
+      "title": "Model Required",
+      "type": "boolean"
+    },
+    "model_role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelRole"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "parameters": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvaluationParameter"
+      },
+      "title": "Parameters",
+      "type": "array"
+    },
+    "random_seed": {
+      "title": "Random Seed",
+      "type": "integer"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    }
+  },
+  "required": [
+    "config_id",
+    "benchmark_id",
+    "dataset_hash",
+    "run_id",
+    "code_version",
+    "random_seed"
+  ],
+  "title": "BenchmarkRunConfig",
+  "type": "object"
+}

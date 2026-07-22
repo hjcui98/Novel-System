@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "AuthorApprovalStatus": {
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "needs_changes"
+      ],
+      "title": "AuthorApprovalStatus",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "author_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "candidate_manifest_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "decided_at": {
+      "format": "date-time",
+      "title": "Decided At",
+      "type": "string"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/AuthorApprovalStatus"
+    },
+    "validation_report_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "decision_id",
+    "approval_request_id",
+    "project_id",
+    "candidate_manifest_hash",
+    "validation_report_id",
+    "status",
+    "author_id",
+    "reason",
+    "decided_at"
+  ],
+  "title": "AuthorApprovalDecision",
+  "type": "object"
+}

@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "anchor_alias": {
+      "minLength": 1,
+      "title": "Anchor Alias",
+      "type": "string"
+    },
+    "derived_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "grounded_alias": {
+      "minLength": 1,
+      "title": "Grounded Alias",
+      "type": "string"
+    },
+    "plan_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "project_profile": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "world_root": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "text_root",
+    "plan_root",
+    "world_root",
+    "derived_snapshot_id",
+    "anchor_alias",
+    "grounded_alias",
+    "project_profile"
+  ],
+  "title": "ScenarioCheckpointArtifacts",
+  "type": "object"
+}

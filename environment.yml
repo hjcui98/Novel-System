@@ -1,0 +1,8 @@
+name: novel-agent-dev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.13
+  - pip=26.1.2
+  - postgresql=17.10=he06dc6e_0
+  - uv=0.11.29

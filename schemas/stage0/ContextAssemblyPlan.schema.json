@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "mandatory_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Mandatory Item Ids",
+      "type": "array"
+    },
+    "optional_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Optional Item Ids",
+      "type": "array"
+    },
+    "plan_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_query_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Source Query Ids",
+      "type": "array"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "plan_id",
+    "base_commit",
+    "token_budget"
+  ],
+  "title": "ContextAssemblyPlan",
+  "type": "object"
+}

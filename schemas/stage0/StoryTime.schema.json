@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "end_ordinal": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End Ordinal"
+    },
+    "label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Label"
+    },
+    "start_ordinal": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Start Ordinal"
+    },
+    "worldline": {
+      "minLength": 1,
+      "title": "Worldline",
+      "type": "string"
+    }
+  },
+  "required": [
+    "worldline"
+  ],
+  "title": "StoryTime",
+  "type": "object"
+}

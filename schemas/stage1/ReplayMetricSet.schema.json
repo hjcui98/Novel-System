@@ -1,0 +1,219 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "commit_reject_rate": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Commit Reject Rate",
+      "type": "number"
+    },
+    "cumulative_state_drift": {
+      "default": [],
+      "items": {
+        "type": "number"
+      },
+      "title": "Cumulative State Drift",
+      "type": "array"
+    },
+    "current_state_accuracy_by_chapter": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Current State Accuracy By Chapter",
+      "type": "object"
+    },
+    "event_extraction_f1": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Event Extraction F1",
+      "type": "number"
+    },
+    "evidence_binding_accuracy": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Evidence Binding Accuracy",
+      "type": "number"
+    },
+    "false_world_fact_promotion_rate": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "False World Fact Promotion Rate",
+      "type": "number"
+    },
+    "first_pollution_chapter": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "First Pollution Chapter"
+    },
+    "invalid_state_overwrite_rate": {
+      "anyOf": [
+        {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Invalid State Overwrite Rate"
+    },
+    "manual_repair_commit_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Manual Repair Commit Count"
+    },
+    "missed_critical_change_rate": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Missed Critical Change Rate",
+      "type": "number"
+    },
+    "orphan_evidence_ref_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Orphan Evidence Ref Count"
+    },
+    "plan_obligation_update_f1": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Plan Obligation Update F1",
+      "type": "number"
+    },
+    "pollution_propagation_depth": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pollution Propagation Depth"
+    },
+    "relation_delta_f1": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Relation Delta F1",
+      "type": "number"
+    },
+    "state_delta_f1": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "State Delta F1",
+      "type": "number"
+    },
+    "state_delta_precision": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "State Delta Precision",
+      "type": "number"
+    },
+    "state_delta_recall": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "State Delta Recall",
+      "type": "number"
+    },
+    "wrong_character_location_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wrong Character Location Count"
+    },
+    "wrong_item_ownership_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wrong Item Ownership Count"
+    },
+    "wrong_obligation_debt_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wrong Obligation Debt Count"
+    },
+    "wrong_target_binding_rate": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Wrong Target Binding Rate",
+      "type": "number"
+    },
+    "wrong_vital_or_injury_state_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wrong Vital Or Injury State Count"
+    }
+  },
+  "required": [
+    "state_delta_precision",
+    "state_delta_recall",
+    "state_delta_f1",
+    "event_extraction_f1",
+    "relation_delta_f1",
+    "plan_obligation_update_f1",
+    "wrong_target_binding_rate",
+    "false_world_fact_promotion_rate",
+    "missed_critical_change_rate",
+    "evidence_binding_accuracy",
+    "commit_reject_rate"
+  ],
+  "title": "ReplayMetricSet",
+  "type": "object"
+}

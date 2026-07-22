@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "chapter_index": {
+      "minimum": 1,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "goal_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "obligation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Obligation Ids",
+      "type": "array"
+    },
+    "summary": {
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "chapter_index",
+    "summary"
+  ],
+  "title": "ChapterGoal",
+  "type": "object"
+}

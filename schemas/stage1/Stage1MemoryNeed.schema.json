@@ -1,0 +1,280 @@
+{
+  "$defs": {
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "NeedRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "NeedRisk",
+      "type": "string"
+    },
+    "RequirementLevel": {
+      "enum": [
+        "mandatory",
+        "optional"
+      ],
+      "title": "RequirementLevel",
+      "type": "string"
+    },
+    "ResolutionPath": {
+      "enum": [
+        "exact_temporal",
+        "anchor_first",
+        "hierarchy",
+        "grounded_direct",
+        "typed_graph"
+      ],
+      "title": "ResolutionPath",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage1QueryIntent": {
+      "enum": [
+        "current_state",
+        "known_id",
+        "plan_node",
+        "mandatory_constraint",
+        "semantic_history",
+        "related_event",
+        "plan_obligation",
+        "global_arc",
+        "chapter_thread",
+        "character_arc",
+        "exact_quote",
+        "rare_phrase",
+        "style_voice",
+        "dialogue_sample",
+        "causal_multi_hop",
+        "relation_chain",
+        "anchor_insufficient"
+      ],
+      "title": "Stage1QueryIntent",
+      "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_candidate_pools": {
+      "items": {
+        "$ref": "#/$defs/CandidatePool"
+      },
+      "minItems": 1,
+      "title": "Allowed Candidate Pools",
+      "type": "array"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "chapter_target": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapter Target"
+    },
+    "entity_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Entity Ids",
+      "type": "array"
+    },
+    "expected_evidence_types": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Expected Evidence Types",
+      "type": "array"
+    },
+    "horizon_target": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Horizon Target"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_type": {
+      "minLength": 1,
+      "title": "Need Type",
+      "type": "string"
+    },
+    "predicates": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Predicates",
+      "type": "array"
+    },
+    "preferred_resolution_path": {
+      "$ref": "#/$defs/ResolutionPath"
+    },
+    "query_intent": {
+      "$ref": "#/$defs/Stage1QueryIntent"
+    },
+    "query_text": {
+      "minLength": 1,
+      "title": "Query Text",
+      "type": "string"
+    },
+    "requirement": {
+      "$ref": "#/$defs/RequirementLevel"
+    },
+    "risk_level": {
+      "$ref": "#/$defs/NeedRisk"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "stop_condition": {
+      "minLength": 1,
+      "title": "Stop Condition",
+      "type": "string"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "time_scope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoryTime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "why_needed": {
+      "minLength": 1,
+      "title": "Why Needed",
+      "type": "string"
+    }
+  },
+  "required": [
+    "need_id",
+    "run_id",
+    "task_id",
+    "base_commit",
+    "need_type",
+    "query_intent",
+    "query_text",
+    "why_needed",
+    "risk_level",
+    "requirement",
+    "preferred_resolution_path",
+    "allowed_candidate_pools",
+    "stop_condition"
+  ],
+  "title": "Stage1MemoryNeed",
+  "type": "object"
+}

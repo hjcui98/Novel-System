@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "narrative_index": {
+          "minimum": 0,
+          "title": "Narrative Index",
+          "type": "integer"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "chapter_id",
+        "narrative_index",
+        "text"
+      ],
+      "title": "TextBlock",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "blocks": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TextBlock"
+      },
+      "title": "Blocks",
+      "type": "array"
+    },
+    "scene_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "scene_index": {
+      "minimum": 0,
+      "title": "Scene Index",
+      "type": "integer"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    }
+  },
+  "required": [
+    "scene_id",
+    "scene_index"
+  ],
+  "title": "SceneDocument",
+  "type": "object"
+}

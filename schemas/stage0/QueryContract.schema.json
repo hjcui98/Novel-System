@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "QueryIntent": {
+      "enum": [
+        "exact_state",
+        "temporal",
+        "semantic_history",
+        "global_arc",
+        "plan_obligation",
+        "exact_quote",
+        "style_sample"
+      ],
+      "title": "QueryIntent",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "intent": {
+      "$ref": "#/$defs/QueryIntent"
+    },
+    "query_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "result_limit": {
+      "default": 20,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Result Limit",
+      "type": "integer"
+    },
+    "worldline": {
+      "minLength": 1,
+      "title": "Worldline",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query_id",
+    "base_commit",
+    "intent",
+    "question",
+    "worldline"
+  ],
+  "title": "QueryContract",
+  "type": "object"
+}

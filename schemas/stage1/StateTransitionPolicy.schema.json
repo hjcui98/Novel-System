@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "StateTransitionEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "from_value": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "to_value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "from_value",
+        "to_value"
+      ],
+      "title": "StateTransitionEdge",
+      "type": "object"
+    },
+    "StateTransitionRule": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "items": {
+            "$ref": "#/$defs/StateTransitionEdge"
+          },
+          "minItems": 1,
+          "title": "Allowed",
+          "type": "array"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "predicate",
+        "allowed"
+      ],
+      "title": "StateTransitionRule",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allow_unlisted_predicates": {
+      "default": true,
+      "title": "Allow Unlisted Predicates",
+      "type": "boolean"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "rules": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StateTransitionRule"
+      },
+      "title": "Rules",
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "required": [
+    "policy_id",
+    "schema_version"
+  ],
+  "title": "StateTransitionPolicy",
+  "type": "object"
+}

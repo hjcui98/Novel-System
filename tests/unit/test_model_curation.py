@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from novel_agent.adapters.model import FakeModelEndpoint
+from novel_agent.domain.changes import (
+    ChangeOperationType,
+    ChapterChangeDraft,
+    CuratedOperationDraft,
+    CuratorEntityRecord,
+    CuratorEvidenceSelection,
+    CuratorObligationRecord,
+    CuratorStateRecord,
+    CuratorStoryTime,
+    WorldRecordKind,
+)
+from novel_agent.domain.ids import RunId, StableId, TaskId
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.text import EvidenceSupportStatus
+from novel_agent.domain.world import TruthClass
+from novel_agent.services.model_curation import ModelCurationContractError, ModelCurator
+from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from tests.fixtures.stage1_synthetic import make_synthetic_bundle
+
+
+def _request() -> ModelRequest:
+    return ModelRequest(
+        request_id=StableId("request.model-curator"),
+        run_id=RunId("run.model-curator"),
+        task_id=TaskId("task.model-curator"),
+        model_role=ModelRole.BATCH_TEST,
+        purpose=ModelCallPurpose.BATCH_TEST,
+        trace_id="trace-model-curator",
+        prompt="must be replaced",
+    )
+
+
+def _gateway(draft: ChapterChangeDraft) -> tuple[ModelGateway, FakeModelEndpoint]:
+    endpoint = FakeModelEndpoint(draft.model_dump_json())
+    return (
+        ModelGateway(
+            (
+                RegisteredModelEndpoint(
+                    role=ModelRole.BATCH_TEST,
+                    endpoint_name="batch-curator",
+                    model_name="fake-curator",
+                    adapter=endpoint,
+                ),
+            )
+        ),
+        endpoint,
+    )
+
+
+def _draft(chapter_index: int = 23) -> ChapterChangeDraft:
+    bundle = make_synthetic_bundle()
+    gold_evidence = bundle.replay_manifests[0].gold_changes[2].evidence_refs[0]
+    assert gold_evidence.span is not None
+    evidence = CuratorEvidenceSelection.model_validate(gold_evidence.span.model_dump())
+    return ChapterChangeDraft(
+        chapter_index=chapter_index,
+        operations=(
+            CuratedOperationDraft(
+                operation=ChangeOperationType.REPLACE,
+                record_kind=WorldRecordKind.OBLIGATION,
+                target_id=StableId("obligation.synthetic.north-tower"),
+                record=CuratorObligationRecord(
+                    kind="objective",
+                    description="林澈需要进入北塔。",
+                    status="resolved",
+                    owner_ids=(StableId("entity.synthetic.lin-che"),),
+                    due_chapter=23,
+                ),
+                evidence_refs=(evidence,),
+            ),
+        ),
+    )
+
+
+def test_model_curator_binds_audited_draft_to_deterministic_changes() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    gateway, endpoint = _gateway(_draft())
+
+    changes, call = asyncio.run(
+        ModelCurator(gateway).extract(future, 23, world.source_commit, world, _request())
+    )
+
+    assert call.model_role is ModelRole.BATCH_TEST
+    assert changes.base_commit == world.source_commit
+    assert changes.source_artifact.media_type.endswith("chapter+json")
+    assert len(changes.operations) == 1
+    operation = changes.operations[0]
+    assert operation.operation_id.root.startswith("change.model.")
+    assert operation.evidence_refs[0].span is not None
+    assert operation.evidence_refs[0].span.model_dump() == (
+        _draft().operations[0].evidence_refs[0].model_dump()
+    )
+    assert isinstance(operation.payload, dict)
+    record = operation.payload["record"]
+    assert isinstance(record, dict)
+    assert record["evidence_refs"] == [operation.evidence_refs[0].model_dump(mode="json")]
+    prompt = endpoint.requests[0].prompt
+    assert "CHAPTER=" in prompt and "终于进入北塔" in prompt
+    assert "重申旧誓言" not in prompt and "受伤仍未痊愈" not in prompt
+
+    second, _ = asyncio.run(
+        ModelCurator(_gateway(_draft())[0]).extract(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+    assert second == changes
+
+
+def test_model_curator_preserves_entity_shape_without_record_evidence_field() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    evidence = _draft().operations[0].evidence_refs[0]
+    draft = ChapterChangeDraft(
+        chapter_index=23,
+        operations=(
+            CuratedOperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.ENTITY,
+                target_id=StableId("entity.synthetic.new"),
+                record=CuratorEntityRecord(
+                    entity_type="character",
+                    internal_label="新角色",
+                ),
+                evidence_refs=(evidence,),
+            ),
+        ),
+    )
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract(future, 23, world.source_commit, world, _request())
+    )
+    payload = changes.operations[0].payload
+    assert isinstance(payload, dict) and isinstance(payload["record"], dict)
+    assert "evidence_refs" not in payload["record"]
+
+
+def test_model_curator_canonically_binds_model_evidence_metadata() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    draft = _draft()
+    gold = bundle.replay_manifests[0].gold_changes[2].evidence_refs[0]
+
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract(future, 23, world.source_commit, world, _request())
+    )
+
+    rebound = changes.operations[0].evidence_refs[0]
+    assert rebound.chapter_id == gold.chapter_id
+    assert rebound.scene_id == gold.scene_id
+    assert rebound.root_hash == future.root_hash
+    assert rebound.object_hash == gold.object_hash
+    assert rebound.quote_hash == gold.quote_hash
+
+
+def test_model_curator_filters_dangling_entity_references() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    selection = _draft().operations[0].evidence_refs[0]
+    draft = ChapterChangeDraft(
+        chapter_index=23,
+        operations=(
+            CuratedOperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.synthetic.dangling"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.synthetic.unknown"),
+                    predicate="location",
+                    value="north tower",
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=23),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                evidence_refs=(selection,),
+            ),
+        ),
+    )
+
+    changes, _, reported = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract_reported(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+
+    assert changes.operations == ()
+    assert reported.coverage == 0
+    assert "runtime filtered" in reported.unresolved[-1]
+
+
+def test_model_curator_routes_retirement_out_of_chapter_replay() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    operation = _draft().operations[0].model_copy(update={"operation": ChangeOperationType.RETIRE})
+    draft = _draft().model_copy(update={"operations": (operation,)})
+
+    changes, _, reported = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract_reported(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+
+    assert changes.operations == ()
+    assert reported.coverage == 0
+    assert operation.target_id.root in reported.unresolved[-1]
+
+
+def test_model_curator_rejects_chapter_and_duplicate_target_errors() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    gateway, _ = _gateway(_draft())
+    with pytest.raises(LookupError, match="chapter does not exist"):
+        asyncio.run(
+            ModelCurator(gateway).extract(future, 99, world.source_commit, world, _request())
+        )
+
+    wrong_gateway, _ = _gateway(_draft(22))
+    with pytest.raises(ModelCurationContractError, match="draft chapter"):
+        asyncio.run(
+            ModelCurator(wrong_gateway).extract(future, 23, world.source_commit, world, _request())
+        )
+    duplicate = _draft().model_copy(
+        update={"operations": (_draft().operations[0], _draft().operations[0])}
+    )
+    with pytest.raises(ModelCurationContractError, match="more than once"):
+        asyncio.run(
+            ModelCurator(_gateway(duplicate)[0]).extract(
+                future, 23, world.source_commit, world, _request()
+            )
+        )
+
+
+def test_model_curator_rejects_invalid_evidence_scope_and_binds_basis_and_status() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    operation = _draft().operations[0]
+
+    outside_evidence = bundle.replay_manifests[0].gold_changes[1].evidence_refs[0]
+    assert outside_evidence.span is not None
+    outside = CuratorEvidenceSelection.model_validate(outside_evidence.span.model_dump())
+    outside_draft = _draft().model_copy(
+        update={"operations": (operation.model_copy(update={"evidence_refs": (outside,)}),)}
+    )
+    filtered, _, reported = asyncio.run(
+        ModelCurator(_gateway(outside_draft)[0]).extract_reported(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+    assert filtered.operations == ()
+    assert reported.coverage == 0
+    assert "out-of-chapter" in reported.unresolved[-1]
+
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(_draft())[0]).extract(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+    evidence = changes.operations[0].evidence_refs[0]
+    assert evidence.resolved_at_commit == world.source_commit
+    assert evidence.support_status is EvidenceSupportStatus.CURRENT
+
+
+def test_model_curator_clamps_only_evidence_tail_to_selected_block() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    operation = _draft().operations[0]
+    selection = operation.evidence_refs[0]
+    chapter = next(chapter for chapter in future.chapters if chapter.chapter_index == 23)
+    block = next(
+        block
+        for scene in chapter.scenes
+        for block in scene.blocks
+        if block.block_id == selection.block_id
+    )
+    overflow = selection.model_copy(update={"end": len(block.text) + 100})
+    draft = _draft().model_copy(
+        update={"operations": (operation.model_copy(update={"evidence_refs": (overflow,)}),)}
+    )
+
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract(future, 23, world.source_commit, world, _request())
+    )
+
+    span = changes.operations[0].evidence_refs[0].span
+    assert span is not None
+    assert span.start == overflow.start
+    assert span.end == len(block.text)
+
+    invalid_coordinates = selection.model_copy(
+        update={"start": len(block.text) + 20, "end": len(block.text) + 40}
+    )
+    invalid_draft = _draft().model_copy(
+        update={
+            "operations": (operation.model_copy(update={"evidence_refs": (invalid_coordinates,)}),)
+        }
+    )
+    rebound, _ = asyncio.run(
+        ModelCurator(_gateway(invalid_draft)[0]).extract(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+    rebound_span = rebound.operations[0].evidence_refs[0].span
+    assert rebound_span is not None
+    assert (rebound_span.start, rebound_span.end) == (0, len(block.text))

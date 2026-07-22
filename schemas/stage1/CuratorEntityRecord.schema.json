@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "aliases": {
+      "default": [],
+      "items": {
+        "maxLength": 160,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Aliases",
+      "type": "array"
+    },
+    "entity_type": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Entity Type",
+      "type": "string"
+    },
+    "identity_invariants": {
+      "default": [],
+      "items": {
+        "maxLength": 160,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Identity Invariants",
+      "type": "array"
+    },
+    "internal_label": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Internal Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity_type",
+    "internal_label"
+  ],
+  "title": "CuratorEntityRecord",
+  "type": "object"
+}

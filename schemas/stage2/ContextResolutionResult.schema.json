@@ -1,0 +1,1012 @@
+{
+  "$defs": {
+    "AccessScope": {
+      "enum": [
+        "writer_safe",
+        "author_planning",
+        "evaluator"
+      ],
+      "title": "AccessScope",
+      "type": "string"
+    },
+    "AgentExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillExecutionReceipt"
+          },
+          "title": "Skill Receipts",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "agent_spec",
+        "agent_type",
+        "agent_mode",
+        "prompt_fingerprint",
+        "configuration_fingerprint",
+        "status",
+        "started_at",
+        "completed_at",
+        "latency_ms"
+      ],
+      "title": "AgentExecutionReceipt",
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "bounded_r2",
+        "risk_review"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextAssemblySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mandatory_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Mandatory Unit Ids",
+          "type": "array"
+        },
+        "reduction_allowed": {
+          "default": true,
+          "title": "Reduction Allowed",
+          "type": "boolean"
+        },
+        "selected_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Unit Ids",
+          "type": "array"
+        },
+        "token_budget": {
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "selected_unit_ids",
+        "token_budget"
+      ],
+      "title": "ContextAssemblySpec",
+      "type": "object"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "ControllerStopReason": {
+      "enum": [
+        "sufficient",
+        "mandatory_gap_unresolved",
+        "budget_exhausted",
+        "freshness_blocked",
+        "access_blocked",
+        "conflict_requires_review",
+        "tool_failure",
+        "no_additional_evidence"
+      ],
+      "title": "ControllerStopReason",
+      "type": "string"
+    },
+    "EvidenceLedgerEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "access_scope": {
+          "$ref": "#/$defs/AccessScope"
+        },
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "unit_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "unit_id",
+        "evidence_refs",
+        "basis_commit",
+        "snapshot_id",
+        "access_scope"
+      ],
+      "title": "EvidenceLedgerEntry",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "MemorySelection": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_pool": {
+          "$ref": "#/$defs/CandidatePool"
+        },
+        "decision": {
+          "$ref": "#/$defs/SelectionDecision"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "unit_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "unit_id",
+        "need_ids",
+        "candidate_pool",
+        "decision",
+        "reason"
+      ],
+      "title": "MemorySelection",
+      "type": "object"
+    },
+    "NeedRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "NeedRisk",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RequirementLevel": {
+      "enum": [
+        "mandatory",
+        "optional"
+      ],
+      "title": "RequirementLevel",
+      "type": "string"
+    },
+    "ResolutionPath": {
+      "enum": [
+        "exact_temporal",
+        "anchor_first",
+        "hierarchy",
+        "grounded_direct",
+        "typed_graph"
+      ],
+      "title": "ResolutionPath",
+      "type": "string"
+    },
+    "ResolutionStatus": {
+      "enum": [
+        "ready",
+        "partial",
+        "blocked",
+        "failed"
+      ],
+      "title": "ResolutionStatus",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SelectionDecision": {
+      "enum": [
+        "selected",
+        "excluded"
+      ],
+      "title": "SelectionDecision",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage1MemoryNeed": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_candidate_pools": {
+          "items": {
+            "$ref": "#/$defs/CandidatePool"
+          },
+          "minItems": 1,
+          "title": "Allowed Candidate Pools",
+          "type": "array"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "chapter_target": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Target"
+        },
+        "entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "expected_evidence_types": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Evidence Types",
+          "type": "array"
+        },
+        "horizon_target": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Target"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_type": {
+          "minLength": 1,
+          "title": "Need Type",
+          "type": "string"
+        },
+        "predicates": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Predicates",
+          "type": "array"
+        },
+        "preferred_resolution_path": {
+          "$ref": "#/$defs/ResolutionPath"
+        },
+        "query_intent": {
+          "$ref": "#/$defs/Stage1QueryIntent"
+        },
+        "query_text": {
+          "minLength": 1,
+          "title": "Query Text",
+          "type": "string"
+        },
+        "requirement": {
+          "$ref": "#/$defs/RequirementLevel"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/NeedRisk"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "stop_condition": {
+          "minLength": 1,
+          "title": "Stop Condition",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "time_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "why_needed": {
+          "minLength": 1,
+          "title": "Why Needed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "need_id",
+        "run_id",
+        "task_id",
+        "base_commit",
+        "need_type",
+        "query_intent",
+        "query_text",
+        "why_needed",
+        "risk_level",
+        "requirement",
+        "preferred_resolution_path",
+        "allowed_candidate_pools",
+        "stop_condition"
+      ],
+      "title": "Stage1MemoryNeed",
+      "type": "object"
+    },
+    "Stage1QueryIntent": {
+      "enum": [
+        "current_state",
+        "known_id",
+        "plan_node",
+        "mandatory_constraint",
+        "semantic_history",
+        "related_event",
+        "plan_obligation",
+        "global_arc",
+        "chapter_thread",
+        "character_arc",
+        "exact_quote",
+        "rare_phrase",
+        "style_voice",
+        "dialogue_sample",
+        "causal_multi_hop",
+        "relation_chain",
+        "anchor_insufficient"
+      ],
+      "title": "Stage1QueryIntent",
+      "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "conflicts": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Conflicts",
+      "type": "array"
+    },
+    "context_assembly_spec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextAssemblySpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evidence_ledger": {
+      "items": {
+        "$ref": "#/$defs/EvidenceLedgerEntry"
+      },
+      "title": "Evidence Ledger",
+      "type": "array"
+    },
+    "memory_selection": {
+      "items": {
+        "$ref": "#/$defs/MemorySelection"
+      },
+      "title": "Memory Selection",
+      "type": "array"
+    },
+    "normalized_needs": {
+      "items": {
+        "$ref": "#/$defs/Stage1MemoryNeed"
+      },
+      "title": "Normalized Needs",
+      "type": "array"
+    },
+    "receipt": {
+      "$ref": "#/$defs/AgentExecutionReceipt"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "resolution_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "status": {
+      "$ref": "#/$defs/ResolutionStatus"
+    },
+    "stop_reason": {
+      "$ref": "#/$defs/ControllerStopReason"
+    },
+    "unresolved_gaps": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Unresolved Gaps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "resolution_id",
+    "request_id",
+    "status",
+    "base_commit",
+    "snapshot_id",
+    "normalized_needs",
+    "memory_selection",
+    "evidence_ledger",
+    "stop_reason",
+    "receipt"
+  ],
+  "title": "ContextResolutionResult",
+  "type": "object"
+}

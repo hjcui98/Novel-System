@@ -1,0 +1,582 @@
+{
+  "$defs": {
+    "BenchmarkMetricSet": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_precision_at_k": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor Precision At K"
+        },
+        "anchor_recall_at_k": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor Recall At K"
+        },
+        "anchor_to_gold_conversion_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor To Gold Conversion Rate"
+        },
+        "average_anchors_expanded": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Average Anchors Expanded"
+        },
+        "average_scenes_expanded": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Average Scenes Expanded"
+        },
+        "average_spans_expanded": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Average Spans Expanded"
+        },
+        "conflict_exposure_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conflict Exposure Rate"
+        },
+        "context_utility_per_1k_tokens": {
+          "minimum": 0,
+          "title": "Context Utility Per 1K Tokens",
+          "type": "number"
+        },
+        "current_state_accuracy": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current State Accuracy"
+        },
+        "evidence_recall_after_expansion": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Recall After Expansion"
+        },
+        "evidence_traceability": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Evidence Traceability",
+          "type": "number"
+        },
+        "full_chapter_read_rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Full Chapter Read Rate",
+          "type": "number"
+        },
+        "future_leakage_rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Future Leakage Rate",
+          "type": "number"
+        },
+        "gold_evidence_recall": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Gold Evidence Recall",
+          "type": "number"
+        },
+        "gold_evidence_recall_at_k": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gold Evidence Recall At K"
+        },
+        "grounded_fallback_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grounded Fallback Rate"
+        },
+        "horizon_decay": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Decay"
+        },
+        "inter_chapter_context_repetition": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inter Chapter Context Repetition"
+        },
+        "irrelevant_token_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Irrelevant Token Ratio"
+        },
+        "l0_evidence_tokens_read": {
+          "minimum": 0,
+          "title": "L0 Evidence Tokens Read",
+          "type": "integer"
+        },
+        "mandatory_constraint_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Mandatory Constraint Coverage",
+          "type": "number"
+        },
+        "mean_reciprocal_rank": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Reciprocal Rank"
+        },
+        "n_plus_1_coverage": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Plus 1 Coverage"
+        },
+        "n_plus_2_coverage": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Plus 2 Coverage"
+        },
+        "n_plus_3_coverage": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Plus 3 Coverage"
+        },
+        "ndcg": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ndcg"
+        },
+        "need_f1": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Need F1"
+        },
+        "need_precision": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Need Precision"
+        },
+        "need_recall": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Need Recall"
+        },
+        "observed_use_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Observed Use Coverage",
+          "type": "number"
+        },
+        "operational_constraint_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Operational Constraint Coverage",
+          "type": "number"
+        },
+        "plan_obligation_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Plan Obligation Coverage",
+          "type": "number"
+        },
+        "premature_future_injection_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Premature Future Injection Rate"
+        },
+        "query_intent_routing_accuracy": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query Intent Routing Accuracy"
+        },
+        "reranker_pair_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reranker Pair Tokens"
+        },
+        "shared_horizon_constraint_coverage": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shared Horizon Constraint Coverage"
+        },
+        "stale_state_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale State Rate"
+        },
+        "temporal_validity_accuracy": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporal Validity Accuracy"
+        },
+        "unnecessary_channel_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unnecessary Channel Rate"
+        },
+        "unresolved_gap_calibration": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unresolved Gap Calibration"
+        },
+        "wrong_entity_binding_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wrong Entity Binding Rate"
+        },
+        "wrong_route_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wrong Route Rate"
+        }
+      },
+      "required": [
+        "gold_evidence_recall",
+        "observed_use_coverage",
+        "operational_constraint_coverage",
+        "plan_obligation_coverage",
+        "mandatory_constraint_coverage",
+        "evidence_traceability",
+        "future_leakage_rate",
+        "l0_evidence_tokens_read",
+        "full_chapter_read_rate",
+        "context_utility_per_1k_tokens"
+      ],
+      "title": "BenchmarkMetricSet",
+      "type": "object"
+    },
+    "FailureCategory": {
+      "enum": [
+        "F-STATE",
+        "F-NEED",
+        "F-ROUTE",
+        "F-RETRIEVE",
+        "F-RANK",
+        "F-EXPAND",
+        "F-CONTEXT",
+        "F-EXTRACT",
+        "F-TRUTH",
+        "F-VALIDATE",
+        "F-COMMIT",
+        "F-FRESH",
+        "F-EVAL"
+      ],
+      "title": "FailureCategory",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "failure_categories": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FailureCategory"
+      },
+      "title": "Failure Categories",
+      "type": "array"
+    },
+    "metrics": {
+      "$ref": "#/$defs/BenchmarkMetricSet"
+    },
+    "profile": {
+      "minLength": 1,
+      "title": "Profile",
+      "type": "string"
+    },
+    "retrieved_evidence_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieved Evidence Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "profile",
+    "metrics"
+  ],
+  "title": "BenchmarkProfileResult",
+  "type": "object"
+}

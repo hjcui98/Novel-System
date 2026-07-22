@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "mandatory_reserve_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Mandatory Reserve Tokens",
+      "type": "integer"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "token_budget"
+  ],
+  "title": "ContextBudget",
+  "type": "object"
+}

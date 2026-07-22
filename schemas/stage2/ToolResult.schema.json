@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "ToolFailureCode": {
+      "enum": [
+        "TOOL_SCOPE_MISMATCH",
+        "TOOL_BASE_COMMIT_MISMATCH",
+        "TOOL_SNAPSHOT_STALE",
+        "TOOL_ACCESS_DENIED",
+        "TOOL_INVALID_QUERY",
+        "TOOL_TIMEOUT",
+        "TOOL_BACKEND_UNAVAILABLE",
+        "TOOL_PARTIAL_RESULT",
+        "TOOL_EVIDENCE_UNRESOLVABLE",
+        "TOOL_BUDGET_EXCEEDED"
+      ],
+      "title": "ToolFailureCode",
+      "type": "string"
+    },
+    "ToolResultStatus": {
+      "enum": [
+        "succeeded",
+        "partial",
+        "failed"
+      ],
+      "title": "ToolResultStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "audit_ref": {
+      "$ref": "#/$defs/StableId"
+    },
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "coverage": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Coverage",
+      "type": "number"
+    },
+    "failure_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolFailureCode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "partial": {
+      "default": false,
+      "title": "Partial",
+      "type": "boolean"
+    },
+    "payload": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "$ref": "#/$defs/ToolResultStatus"
+    },
+    "tool_call_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tool_call_id",
+    "status",
+    "basis_commit",
+    "audit_ref"
+  ],
+  "title": "ToolResult",
+  "type": "object"
+}

@@ -1,0 +1,246 @@
+{
+  "$defs": {
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "bounded_r2",
+        "risk_review"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "PromptContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "render_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash",
+        "render_fingerprint"
+      ],
+      "title": "PromptContractRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "ToolPermission": {
+      "enum": [
+        "read",
+        "propose"
+      ],
+      "title": "ToolPermission",
+      "type": "string"
+    },
+    "ToolPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Tools",
+          "type": "array"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "denied_tools": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Denied Tools",
+          "type": "array"
+        },
+        "max_query_rewrites_per_need": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Query Rewrites Per Need",
+          "type": "integer"
+        },
+        "max_rounds": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Max Rounds",
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "permission": {
+          "$ref": "#/$defs/ToolPermission",
+          "default": "read"
+        },
+        "policy_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "token_budget": {
+          "default": 8000,
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "wall_clock_budget_ms": {
+          "default": 30000,
+          "minimum": 1,
+          "title": "Wall Clock Budget Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "policy_id",
+        "version",
+        "content_hash",
+        "allowed_tools"
+      ],
+      "title": "ToolPolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "agent_type": {
+      "$ref": "#/$defs/AgentType"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "input_schema": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "mode": {
+      "$ref": "#/$defs/AgentMode"
+    },
+    "output_schema": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/SkillContractRef"
+      },
+      "title": "Skills",
+      "type": "array"
+    },
+    "system_prompt": {
+      "$ref": "#/$defs/PromptContractRef"
+    },
+    "task_prompt": {
+      "$ref": "#/$defs/PromptContractRef"
+    },
+    "tool_policy": {
+      "$ref": "#/$defs/ToolPolicy"
+    },
+    "version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "required": [
+    "agent_id",
+    "agent_type",
+    "mode",
+    "version",
+    "content_hash",
+    "input_schema",
+    "output_schema",
+    "system_prompt",
+    "task_prompt",
+    "skills",
+    "tool_policy"
+  ],
+  "title": "AgentSpec",
+  "type": "object"
+}

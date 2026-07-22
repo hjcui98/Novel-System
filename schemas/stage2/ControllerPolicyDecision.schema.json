@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "ControllerPolicyAction": {
+      "enum": [
+        "call_tool",
+        "stop"
+      ],
+      "title": "ControllerPolicyAction",
+      "type": "string"
+    },
+    "ControllerStopReason": {
+      "enum": [
+        "sufficient",
+        "mandatory_gap_unresolved",
+        "budget_exhausted",
+        "freshness_blocked",
+        "access_blocked",
+        "conflict_requires_review",
+        "tool_failure",
+        "no_additional_evidence"
+      ],
+      "title": "ControllerStopReason",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ControllerPolicyAction"
+    },
+    "model_call_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "need_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rationale_code": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Rationale Code",
+      "type": "string"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControllerStopReason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tool_name": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Name"
+    }
+  },
+  "required": [
+    "action",
+    "rationale_code"
+  ],
+  "title": "ControllerPolicyDecision",
+  "type": "object"
+}

@@ -1,0 +1,105 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "novel-agent"
+version = "0.1.0"
+description = "A replayable long-form fiction agent runtime."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Novel Agent Contributors" }]
+dependencies = [
+  "alembic>=1.16,<2",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "langgraph>=1.2,<1.3",
+  "langgraph-checkpoint-postgres>=3.1,<4",
+  "minio>=7.2,<8",
+  "opensearch-py>=3,<4",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.44,<2",
+  "opentelemetry-sdk>=1.44,<2",
+  "pydantic>=2.12,<3",
+  "pydantic-settings>=2.12,<3",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pyarrow>=25,<26",
+  "pyyaml>=6.0,<7",
+  "sqlalchemy>=2.0,<2.1",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "hypothesis>=6.135,<7",
+  "mypy>=1.19,<2",
+  "pre-commit>=4.5,<5",
+  "pytest>=9.0,<10",
+  "pytest-cov>=7.0,<8",
+  "ruff>=0.14,<0.15",
+  "types-pyyaml>=6.0,<7",
+  "testcontainers[postgres]>=4.14,<5",
+]
+retrieval-models = [
+  "safetensors>=0.5,<1",
+  "sentence-transformers>=5.1,<6",
+  "sentencepiece>=0.2,<1",
+  "torch>=2.7,<3",
+  "transformers>=4.51,<5",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[project.scripts]
+novel-agent = "novel_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/novel_agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers", "testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=novel_agent --cov-report=term-missing --cov-fail-under=100"
+testpaths = ["tests"]
+markers = [
+  "model_required: test explicitly allowed to resolve the batch_test_model endpoint",
+  "integration: test requiring local infrastructure",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["novel_agent"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

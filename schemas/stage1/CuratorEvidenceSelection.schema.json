@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Minimal text-span selection emitted by a semantic Curator.",
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "end": {
+      "minimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "range_unit": {
+      "$ref": "#/$defs/RangeUnit",
+      "default": "unicode_codepoint"
+    },
+    "start": {
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "block_id",
+    "start",
+    "end"
+  ],
+  "title": "CuratorEvidenceSelection",
+  "type": "object"
+}

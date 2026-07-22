@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "AccessScope": {
+      "enum": [
+        "writer_safe",
+        "author_planning",
+        "evaluator"
+      ],
+      "title": "AccessScope",
+      "type": "string"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "bounded_r2",
+        "risk_review"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "access_scope": {
+      "$ref": "#/$defs/AccessScope"
+    },
+    "agent_mode": {
+      "$ref": "#/$defs/AgentMode"
+    },
+    "agent_type": {
+      "$ref": "#/$defs/AgentType"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "narrative_chapter": {
+      "minimum": 0,
+      "title": "Narrative Chapter",
+      "type": "integer"
+    },
+    "plan_permission": {
+      "default": false,
+      "title": "Plan Permission",
+      "type": "boolean"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "read_only": {
+      "default": true,
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "timeout_ms": {
+      "minimum": 1,
+      "title": "Timeout Ms",
+      "type": "integer"
+    },
+    "tool_call_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "worldline": {
+      "minLength": 1,
+      "title": "Worldline",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tool_call_id",
+    "run_id",
+    "task_id",
+    "agent_type",
+    "agent_mode",
+    "project_id",
+    "base_commit",
+    "worldline",
+    "narrative_chapter",
+    "access_scope",
+    "timeout_ms"
+  ],
+  "title": "ToolCallContext",
+  "type": "object"
+}

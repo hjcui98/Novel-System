@@ -1,0 +1,82 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ControllerPromotionDecision": {
+      "enum": [
+        "accept_bounded_default",
+        "freeze_deterministic_gateway",
+        "reject_architecture",
+        "defer"
+      ],
+      "title": "ControllerPromotionDecision",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage2GateVerdict": {
+      "enum": [
+        "pass",
+        "conditional_pass",
+        "fail",
+        "incomplete"
+      ],
+      "title": "Stage2GateVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "blockers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blockers",
+      "type": "array"
+    },
+    "checks": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "controller_promotion": {
+      "$ref": "#/$defs/ControllerPromotionDecision"
+    },
+    "evidence_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "memory_gateway_frozen": {
+      "title": "Memory Gateway Frozen",
+      "type": "boolean"
+    },
+    "report_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "verdict": {
+      "$ref": "#/$defs/Stage2GateVerdict"
+    }
+  },
+  "required": [
+    "report_id",
+    "evidence_id",
+    "verdict",
+    "checks",
+    "blockers",
+    "controller_promotion",
+    "memory_gateway_frozen",
+    "configuration_fingerprint"
+  ],
+  "title": "Stage2GateReport",
+  "type": "object"
+}

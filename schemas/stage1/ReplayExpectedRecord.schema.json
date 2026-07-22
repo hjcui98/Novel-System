@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "ReplayStateCategory": {
+      "enum": [
+        "ownership",
+        "location",
+        "vital_or_injury",
+        "obligation",
+        "other"
+      ],
+      "title": "ReplayStateCategory",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "$ref": "#/$defs/ReplayStateCategory",
+      "default": "other"
+    },
+    "expected_record": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Expected Record",
+      "type": "object"
+    },
+    "record_kind": {
+      "$ref": "#/$defs/WorldRecordKind"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "record_kind",
+    "target_id",
+    "expected_record"
+  ],
+  "title": "ReplayExpectedRecord",
+  "type": "object"
+}

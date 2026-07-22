@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BootstrapStrategy": {
+      "enum": [
+        "normalize_only",
+        "develop_candidates"
+      ],
+      "title": "BootstrapStrategy",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approved_source_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Approved Source Ids",
+      "type": "array"
+    },
+    "bundle_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "strategy": {
+      "$ref": "#/$defs/BootstrapStrategy"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "task_id",
+    "project_id",
+    "bundle_hash",
+    "strategy",
+    "approved_source_ids"
+  ],
+  "title": "ProjectBootstrapRequest",
+  "type": "object"
+}

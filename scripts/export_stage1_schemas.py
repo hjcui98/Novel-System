@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Export deterministic Stage 1 BenchmarkBundle contract schemas."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from novel_agent.domain.benchmark import (
+    BenchmarkBundle,
+    BenchmarkCaseManifest,
+    BenchmarkMetricSet,
+    BenchmarkProfileResult,
+    ChapterDocument,
+    ChapterGoal,
+    ChapterSummary,
+    ChapterSummaryRootDocument,
+    GoldItem,
+    PlanRootDocument,
+    ReplayCaseManifest,
+    ReplayExpectedRecord,
+    ReplayGateEvidence,
+    ReplayGoldChange,
+    ReplayMetricSet,
+    ReplayStateCheckpoint,
+    SceneDocument,
+    Stage1BenchmarkConfig,
+    Stage1BenchmarkResult,
+    Stage1GateReport,
+    TextRootDocument,
+    WorldConstructionDraft,
+)
+from novel_agent.domain.changes import (
+    ChapterChangeDraft,
+    CuratedOperationDraft,
+    CuratorEntityRecord,
+    CuratorEventRecord,
+    CuratorEvidenceSelection,
+    CuratorObligationRecord,
+    CuratorRelationRecord,
+    CuratorStateRecord,
+    CuratorStoryTime,
+    ExtractionRule,
+    ModelValidationDraft,
+    ModelValidationFindingDraft,
+    StateTransitionEdge,
+    StateTransitionPolicy,
+    StateTransitionRule,
+)
+from novel_agent.domain.memory import (
+    ChannelHit,
+    ContextBudgetReport,
+    DerivedSnapshotLite,
+    FreshnessDecision,
+    FreshnessRequest,
+    FusedCandidate,
+    HorizonNeedSet,
+    PlanObligation,
+    R1RecordView,
+    RetrievalTrace,
+    RetrievalUnit,
+    Stage1ContextPackage,
+    Stage1MemoryNeed,
+    WorldRootDocument,
+)
+from novel_agent.domain.model_calls import (
+    RetrievalInferenceCallRecord,
+    RetrievalInferenceUsage,
+)
+from novel_agent.domain.replay import (
+    ContinuousReplayResult,
+    ReplayChapterResult,
+    ReplayMaterializedRecord,
+)
+
+OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage1"
+MODELS = (
+    BenchmarkBundle,
+    BenchmarkCaseManifest,
+    BenchmarkMetricSet,
+    BenchmarkProfileResult,
+    ChapterDocument,
+    ChapterGoal,
+    ChapterSummary,
+    ChapterSummaryRootDocument,
+    GoldItem,
+    PlanRootDocument,
+    ReplayCaseManifest,
+    ReplayGoldChange,
+    ReplayExpectedRecord,
+    ReplayGateEvidence,
+    ReplayMetricSet,
+    ReplayStateCheckpoint,
+    SceneDocument,
+    Stage1BenchmarkResult,
+    Stage1GateReport,
+    Stage1BenchmarkConfig,
+    RetrievalInferenceCallRecord,
+    RetrievalInferenceUsage,
+    ChannelHit,
+    ContextBudgetReport,
+    DerivedSnapshotLite,
+    ChapterChangeDraft,
+    CuratedOperationDraft,
+    CuratorEntityRecord,
+    CuratorEvidenceSelection,
+    CuratorEventRecord,
+    CuratorObligationRecord,
+    CuratorRelationRecord,
+    CuratorStateRecord,
+    CuratorStoryTime,
+    ExtractionRule,
+    ModelValidationDraft,
+    ModelValidationFindingDraft,
+    StateTransitionEdge,
+    StateTransitionPolicy,
+    StateTransitionRule,
+    FusedCandidate,
+    FreshnessDecision,
+    FreshnessRequest,
+    HorizonNeedSet,
+    PlanObligation,
+    R1RecordView,
+    RetrievalTrace,
+    RetrievalUnit,
+    Stage1ContextPackage,
+    Stage1MemoryNeed,
+    TextRootDocument,
+    WorldRootDocument,
+    WorldConstructionDraft,
+    ContinuousReplayResult,
+    ReplayChapterResult,
+    ReplayMaterializedRecord,
+)
+
+
+def main() -> None:
+    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    for model in MODELS:
+        target = OUTPUT_DIRECTORY / f"{model.__name__}.schema.json"
+        target.write_text(
+            json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+
+
+if __name__ == "__main__":
+    main()

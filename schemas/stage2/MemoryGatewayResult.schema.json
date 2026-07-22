@@ -1,0 +1,836 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ChannelHit": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_count": {
+          "minimum": 1,
+          "title": "Candidate Count",
+          "type": "integer"
+        },
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "channel_rank": {
+          "minimum": 1,
+          "title": "Channel Rank",
+          "type": "integer"
+        },
+        "hit_reason": {
+          "minLength": 1,
+          "title": "Hit Reason",
+          "type": "string"
+        },
+        "raw_score": {
+          "title": "Raw Score",
+          "type": "number"
+        },
+        "unit": {
+          "$ref": "#/$defs/RetrievalUnit"
+        }
+      },
+      "required": [
+        "unit",
+        "channel",
+        "channel_rank",
+        "raw_score",
+        "candidate_count",
+        "hit_reason"
+      ],
+      "title": "ChannelHit",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextBudgetReport": {
+      "additionalProperties": false,
+      "properties": {
+        "dropped_optional_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dropped Optional Unit Ids",
+          "type": "array"
+        },
+        "full_chapter_read_count": {
+          "minimum": 0,
+          "title": "Full Chapter Read Count",
+          "type": "integer"
+        },
+        "mandatory_tokens": {
+          "minimum": 0,
+          "title": "Mandatory Tokens",
+          "type": "integer"
+        },
+        "optional_tokens": {
+          "minimum": 0,
+          "title": "Optional Tokens",
+          "type": "integer"
+        },
+        "token_budget": {
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "token_budget",
+        "mandatory_tokens",
+        "optional_tokens",
+        "full_chapter_read_count"
+      ],
+      "title": "ContextBudgetReport",
+      "type": "object"
+    },
+    "ControllerArm": {
+      "enum": [
+        "deterministic_stage1",
+        "bounded_r2"
+      ],
+      "title": "ControllerArm",
+      "type": "string"
+    },
+    "ControllerStopReason": {
+      "enum": [
+        "sufficient",
+        "mandatory_gap_unresolved",
+        "budget_exhausted",
+        "freshness_blocked",
+        "access_blocked",
+        "conflict_requires_review",
+        "tool_failure",
+        "no_additional_evidence"
+      ],
+      "title": "ControllerStopReason",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "FusedCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "channel_hits": {
+          "items": {
+            "$ref": "#/$defs/ChannelHit"
+          },
+          "minItems": 1,
+          "title": "Channel Hits",
+          "type": "array"
+        },
+        "fused_rank": {
+          "minimum": 1,
+          "title": "Fused Rank",
+          "type": "integer"
+        },
+        "rejection_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rejection Reason"
+        },
+        "rrf_score": {
+          "exclusiveMinimum": 0,
+          "title": "Rrf Score",
+          "type": "number"
+        },
+        "selected": {
+          "default": true,
+          "title": "Selected",
+          "type": "boolean"
+        },
+        "unit": {
+          "$ref": "#/$defs/RetrievalUnit"
+        }
+      },
+      "required": [
+        "unit",
+        "fused_rank",
+        "rrf_score",
+        "channel_hits"
+      ],
+      "title": "FusedCandidate",
+      "type": "object"
+    },
+    "PairedContextArmResult": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "$ref": "#/$defs/ControllerArm"
+        },
+        "comparison_basis_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "context": {
+          "$ref": "#/$defs/Stage1ContextPackage"
+        },
+        "future_leakage_count": {
+          "minimum": 0,
+          "title": "Future Leakage Count",
+          "type": "integer"
+        },
+        "retrieval_call_count": {
+          "minimum": 0,
+          "title": "Retrieval Call Count",
+          "type": "integer"
+        },
+        "selected_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Unit Ids",
+          "type": "array"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/ControllerStopReason"
+        }
+      },
+      "required": [
+        "arm",
+        "context",
+        "selected_unit_ids",
+        "retrieval_call_count",
+        "stop_reason",
+        "comparison_basis_fingerprint",
+        "future_leakage_count"
+      ],
+      "title": "PairedContextArmResult",
+      "type": "object"
+    },
+    "PairedContextComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "agentic": {
+          "$ref": "#/$defs/PairedContextArmResult"
+        },
+        "blockers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "comparable": {
+          "title": "Comparable",
+          "type": "boolean"
+        },
+        "deterministic": {
+          "$ref": "#/$defs/PairedContextArmResult"
+        },
+        "pair_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "pair_id",
+        "request_id",
+        "deterministic",
+        "agentic",
+        "comparable"
+      ],
+      "title": "PairedContextComparison",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "RetrievalStopReason": {
+      "enum": [
+        "exact_satisfied",
+        "budget_satisfied",
+        "candidates_exhausted",
+        "fallback_exhausted"
+      ],
+      "title": "RetrievalStopReason",
+      "type": "string"
+    },
+    "RetrievalTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_channels": {
+          "items": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Allowed Channels",
+          "type": "array"
+        },
+        "anchors_expanded": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Anchors Expanded",
+          "type": "integer"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/FusedCandidate"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "channel_candidate_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Channel Candidate Counts",
+          "type": "object"
+        },
+        "fallback_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fallback Reason"
+        },
+        "fallback_used": {
+          "default": false,
+          "title": "Fallback Used",
+          "type": "boolean"
+        },
+        "full_chapters_read": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Full Chapters Read",
+          "type": "integer"
+        },
+        "fusion_applied": {
+          "title": "Fusion Applied",
+          "type": "boolean"
+        },
+        "intent": {
+          "$ref": "#/$defs/Stage1QueryIntent"
+        },
+        "l0_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "L0 Tokens",
+          "type": "integer"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "scenes_expanded": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Scenes Expanded",
+          "type": "integer"
+        },
+        "spans_expanded": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Spans Expanded",
+          "type": "integer"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/RetrievalStopReason"
+        }
+      },
+      "required": [
+        "need_id",
+        "intent",
+        "allowed_channels",
+        "channel_candidate_counts",
+        "candidates",
+        "fusion_applied",
+        "stop_reason"
+      ],
+      "title": "RetrievalTrace",
+      "type": "object"
+    },
+    "RetrievalUnit": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "parent_unit_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "unit_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "unit_kind": {
+          "$ref": "#/$defs/RetrievalUnitKind"
+        }
+      },
+      "required": [
+        "unit_id",
+        "unit_kind",
+        "source_commit",
+        "snapshot_id",
+        "text"
+      ],
+      "title": "RetrievalUnit",
+      "type": "object"
+    },
+    "RetrievalUnitKind": {
+      "enum": [
+        "fact_anchor",
+        "state_anchor",
+        "relation_anchor",
+        "event_anchor",
+        "scene_anchor",
+        "chapter_anchor",
+        "arc_anchor",
+        "plan_anchor",
+        "grounded_block",
+        "grounded_span"
+      ],
+      "title": "RetrievalUnitKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage1ContextPackage": {
+      "additionalProperties": false,
+      "properties": {
+        "active_plan_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Active Plan Obligations",
+          "type": "array"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "budget_report": {
+          "$ref": "#/$defs/ContextBudgetReport"
+        },
+        "context_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "current_world_state": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Current World State",
+          "type": "array"
+        },
+        "mandatory_constraints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Mandatory Constraints",
+          "type": "array"
+        },
+        "raw_evidence_spans": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Raw Evidence Spans",
+          "type": "array"
+        },
+        "relevant_historical_events": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Relevant Historical Events",
+          "type": "array"
+        },
+        "retrieval_traces": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalTrace"
+          },
+          "title": "Retrieval Traces",
+          "type": "array"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "style_or_reference_optional": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Style Or Reference Optional",
+          "type": "array"
+        },
+        "task_contract": {
+          "minLength": 1,
+          "title": "Task Contract",
+          "type": "string"
+        },
+        "truth_and_knowledge_boundaries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalUnit"
+          },
+          "title": "Truth And Knowledge Boundaries",
+          "type": "array"
+        },
+        "unresolved_gaps": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "context_id",
+        "base_commit",
+        "snapshot_id",
+        "task_contract",
+        "budget_report"
+      ],
+      "title": "Stage1ContextPackage",
+      "type": "object"
+    },
+    "Stage1QueryIntent": {
+      "enum": [
+        "current_state",
+        "known_id",
+        "plan_node",
+        "mandatory_constraint",
+        "semantic_history",
+        "related_event",
+        "plan_obligation",
+        "global_arc",
+        "chapter_thread",
+        "character_arc",
+        "exact_quote",
+        "rare_phrase",
+        "style_voice",
+        "dialogue_sample",
+        "causal_multi_hop",
+        "relation_chain",
+        "anchor_insufficient"
+      ],
+      "title": "Stage1QueryIntent",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "comparison": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PairedContextComparison"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "context": {
+      "$ref": "#/$defs/Stage1ContextPackage"
+    },
+    "fallback_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Reason"
+    },
+    "fallback_used": {
+      "title": "Fallback Used",
+      "type": "boolean"
+    },
+    "frozen_context_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "gateway_result_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "promotion_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "selected_arm": {
+      "$ref": "#/$defs/ControllerArm"
+    },
+    "selected_result": {
+      "$ref": "#/$defs/PairedContextArmResult"
+    }
+  },
+  "required": [
+    "gateway_result_id",
+    "request_id",
+    "selected_arm",
+    "fallback_used",
+    "context",
+    "frozen_context_artifact",
+    "selected_result",
+    "policy_id",
+    "configuration_fingerprint"
+  ],
+  "title": "MemoryGatewayResult",
+  "type": "object"
+}

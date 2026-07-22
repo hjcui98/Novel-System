@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Checkpoint case view stripped of all Gold, future text, and evaluator data.\n\nThis type must be the ONLY case representation passed to freeze-before-evaluation\ncode paths.  Full BenchmarkCaseManifest (with Gold, private future text roots,\netc.) is loaded only by the Evaluator AFTER context freeze is persisted.",
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "history_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "History Range",
+      "type": "array"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "target_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Target Range",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_id",
+    "project_id",
+    "target_range",
+    "history_range"
+  ],
+  "title": "PublicCheckpointCase",
+  "type": "object"
+}

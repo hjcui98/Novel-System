@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "document_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "narrative_index": {
+      "minimum": 0,
+      "title": "Narrative Index",
+      "type": "integer"
+    },
+    "previous_text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "resulting_text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "source_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "source_id",
+    "narrative_index",
+    "previous_text_root",
+    "resulting_text_root",
+    "document_hash"
+  ],
+  "title": "TextRootAdvanceReceipt",
+  "type": "object"
+}

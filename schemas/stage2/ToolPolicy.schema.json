@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "ToolPermission": {
+      "enum": [
+        "read",
+        "propose"
+      ],
+      "title": "ToolPermission",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_tools": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Tools",
+      "type": "array"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "denied_tools": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Denied Tools",
+      "type": "array"
+    },
+    "max_query_rewrites_per_need": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Max Query Rewrites Per Need",
+      "type": "integer"
+    },
+    "max_rounds": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Max Rounds",
+      "type": "integer"
+    },
+    "max_tool_calls": {
+      "default": 1,
+      "minimum": 0,
+      "title": "Max Tool Calls",
+      "type": "integer"
+    },
+    "permission": {
+      "$ref": "#/$defs/ToolPermission",
+      "default": "read"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "token_budget": {
+      "default": 8000,
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    },
+    "version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "wall_clock_budget_ms": {
+      "default": 30000,
+      "minimum": 1,
+      "title": "Wall Clock Budget Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "policy_id",
+    "version",
+    "content_hash",
+    "allowed_tools"
+  ],
+  "title": "ToolPolicy",
+  "type": "object"
+}

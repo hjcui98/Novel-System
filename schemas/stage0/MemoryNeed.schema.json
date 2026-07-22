@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "MemoryRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "MemoryRisk",
+      "type": "string"
+    },
+    "MemoryUrgency": {
+      "enum": [
+        "advisory",
+        "blocking"
+      ],
+      "title": "MemoryUrgency",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "continuation_checkpoint_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "gap_type": {
+      "minLength": 1,
+      "title": "Gap Type",
+      "type": "string"
+    },
+    "known_context": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Known Context",
+      "type": "array"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "purpose": {
+      "minLength": 1,
+      "title": "Purpose",
+      "type": "string"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "requested_evidence_types": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Requested Evidence Types",
+      "type": "array"
+    },
+    "requester_agent": {
+      "minLength": 1,
+      "title": "Requester Agent",
+      "type": "string"
+    },
+    "risk": {
+      "$ref": "#/$defs/MemoryRisk"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "urgency": {
+      "$ref": "#/$defs/MemoryUrgency"
+    },
+    "worldline": {
+      "minLength": 1,
+      "title": "Worldline",
+      "type": "string"
+    }
+  },
+  "required": [
+    "need_id",
+    "requester_agent",
+    "run_id",
+    "task_id",
+    "base_commit",
+    "gap_type",
+    "question",
+    "purpose",
+    "worldline",
+    "risk",
+    "urgency"
+  ],
+  "title": "MemoryNeed",
+  "type": "object"
+}

@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "bounded_r2",
+        "risk_review"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "BootstrapStrategy": {
+      "enum": [
+        "normalize_only",
+        "develop_candidates"
+      ],
+      "title": "BootstrapStrategy",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "creative_scope": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Creative Scope",
+      "type": "array"
+    },
+    "mode": {
+      "$ref": "#/$defs/AgentMode"
+    },
+    "planning_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "source_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Source Ids",
+      "type": "array"
+    },
+    "strategy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BootstrapStrategy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "planning_task_id",
+    "project_id",
+    "mode"
+  ],
+  "title": "PlanningTask",
+  "type": "object"
+}

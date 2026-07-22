@@ -1,0 +1,7 @@
+{
+  "additionalProperties": false,
+  "description": "Base for all Stage 0 domain contracts.",
+  "properties": {},
+  "title": "DomainModel",
+  "type": "object"
+}

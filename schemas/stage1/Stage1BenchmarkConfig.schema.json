@@ -1,0 +1,91 @@
+{
+  "$defs": {
+    "BenchmarkQueryCondition": {
+      "enum": [
+        "oracle_need",
+        "generated_need"
+      ],
+      "title": "BenchmarkQueryCondition",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "config_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "embedding_profile": {
+      "minLength": 1,
+      "title": "Embedding Profile",
+      "type": "string"
+    },
+    "expansion_profile": {
+      "minLength": 1,
+      "title": "Expansion Profile",
+      "type": "string"
+    },
+    "fused_candidate_limit": {
+      "minimum": 1,
+      "title": "Fused Candidate Limit",
+      "type": "integer"
+    },
+    "need_profile": {
+      "minLength": 1,
+      "title": "Need Profile",
+      "type": "string"
+    },
+    "per_channel_candidate_limit": {
+      "minimum": 1,
+      "title": "Per Channel Candidate Limit",
+      "type": "integer"
+    },
+    "query_condition": {
+      "$ref": "#/$defs/BenchmarkQueryCondition"
+    },
+    "random_seed": {
+      "title": "Random Seed",
+      "type": "integer"
+    },
+    "reranker_profile": {
+      "minLength": 1,
+      "title": "Reranker Profile",
+      "type": "string"
+    },
+    "rrf_k": {
+      "minimum": 1,
+      "title": "Rrf K",
+      "type": "integer"
+    },
+    "summary_profile": {
+      "minLength": 1,
+      "title": "Summary Profile",
+      "type": "string"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "config_version",
+    "token_budget",
+    "per_channel_candidate_limit",
+    "fused_candidate_limit",
+    "rrf_k",
+    "embedding_profile",
+    "reranker_profile",
+    "expansion_profile",
+    "summary_profile",
+    "query_condition",
+    "need_profile",
+    "random_seed"
+  ],
+  "title": "Stage1BenchmarkConfig",
+  "type": "object"
+}

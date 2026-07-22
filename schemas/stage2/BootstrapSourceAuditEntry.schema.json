@@ -1,0 +1,82 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "SourceClass": {
+      "enum": [
+        "author_initial_brief",
+        "author_known_future_plan",
+        "baseline_setting",
+        "chapter_text_n",
+        "retrospective_summary",
+        "future_text_private",
+        "read_gold",
+        "replay_gold",
+        "style_guide",
+        "external_reference"
+      ],
+      "title": "SourceClass",
+      "type": "string"
+    },
+    "SourceDestination": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile",
+        "evaluation"
+      ],
+      "title": "SourceDestination",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_destinations": {
+      "items": {
+        "$ref": "#/$defs/SourceDestination"
+      },
+      "title": "Allowed Destinations",
+      "type": "array"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluator_only": {
+      "title": "Evaluator Only",
+      "type": "boolean"
+    },
+    "forbidden_destinations": {
+      "items": {
+        "$ref": "#/$defs/SourceDestination"
+      },
+      "title": "Forbidden Destinations",
+      "type": "array"
+    },
+    "source_class": {
+      "$ref": "#/$defs/SourceClass"
+    },
+    "source_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "source_id",
+    "source_class",
+    "content_hash",
+    "evaluator_only",
+    "allowed_destinations",
+    "forbidden_destinations"
+  ],
+  "title": "BootstrapSourceAuditEntry",
+  "type": "object"
+}
