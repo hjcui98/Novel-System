@@ -276,6 +276,7 @@ class TeacherForcedBenchmarkE2ERunner:
         try:
             project_id = source_project(bundle)
             harness = self._agent_harness(self._semantic_endpoint)
+            resume_attestation: ProjectionAttestation | None = None
             if resume:
                 commits = CommitService(session_factory)
                 manifest = commits.load_manifest(CommitId(resume_from))
@@ -299,7 +300,7 @@ class TeacherForcedBenchmarkE2ERunner:
                     update={"sources": (), "classifications": ()}
                 )
                 if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
-                    self._attestation_for_commit(project_id, genesis_commit)
+                    resume_attestation = self._attestation_for_commit(project_id, genesis_commit)
             else:
                 bootstrap_bundle, ingested = self._load_bootstrap(
                     source_directory,
@@ -477,7 +478,9 @@ class TeacherForcedBenchmarkE2ERunner:
                 if checkpoints
                 else transition.commit_count > 0
             )
-            latest_attestation = freezer.latest_attestation or transition.latest_attestation
+            latest_attestation = (
+                freezer.latest_attestation or transition.latest_attestation or resume_attestation
+            )
             retrieval_quality_eligible = bool(
                 latest_attestation is not None and latest_attestation.quality_eligible
             )
