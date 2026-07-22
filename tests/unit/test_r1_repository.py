@@ -193,6 +193,30 @@ def test_r1_backend_returns_typed_traceable_units(
         backend.search(need, RetrievalChannel.R1_EXACT, 5)
 
 
+def test_r1_current_state_keeps_canonical_assertions_retrievable(
+    r1_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, commit_id = r1_database
+    world = make_synthetic_bundle().world_roots[0]
+    assertion = world.states[0].model_copy(update={"truth_class": TruthClass.ASSERTION})
+    world = world.model_copy(update={"states": (assertion,)})
+    repository = R1WorldRepository(factory)
+    repository.materialize(ProjectId("project.test"), commit_id, world)
+
+    current = repository.exact(
+        _need(
+            commit_id,
+            Stage1QueryIntent.CURRENT_STATE,
+            entities=(assertion.subject_id,),
+            predicates=(assertion.predicate,),
+        ),
+        temporal=False,
+        limit=5,
+    )
+
+    assert tuple(item.record_id for item in current) == (assertion.state_id,)
+
+
 def test_bounded_typed_graph_uses_versioned_relation_edges(
     r1_database: tuple[Engine, sessionmaker[Session], CommitId],
 ) -> None:

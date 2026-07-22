@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 
+from novel_agent.agents.controller import StructuredControllerPolicy
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import (
     ArtifactId,
@@ -27,12 +29,15 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.retrieval_routing import (
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
 from novel_agent.domain.stage2 import (
     AccessScope,
+    AgentMode,
+    AgentType,
     ContextBudget,
     ControllerPolicyAction,
     ControllerPolicyDecision,
@@ -101,6 +106,69 @@ def test_controller_policy_decision_normalizes_mutually_exclusive_model_fields()
     )
     assert call.action is ControllerPolicyAction.CALL_TOOL
     assert call.stop_reason is None
+
+
+def test_structured_controller_receives_current_legal_need_tool_actions() -> None:
+    class CapturingRunner:
+        payload: dict[str, Any] | None = None
+
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            self.payload = json.loads(args[4])
+            return SimpleNamespace(
+                output=ControllerPolicyDecision(
+                    action=ControllerPolicyAction.CALL_TOOL,
+                    need_id=StableId("need.1"),
+                    tool_name="memory.search_exact",
+                    rationale_code="TRY_EXACT",
+                ),
+                model_call=SimpleNamespace(request_id=StableId("model-call.controller")),
+                receipt=SimpleNamespace(),
+            )
+
+    tool_policy = ToolPolicy(
+        policy_id=StableId("policy.structured-controller"),
+        version=VERSION,
+        content_hash=ArtifactId("sha256:" + "f" * 64),
+        allowed_tools=(
+            "memory.search_exact",
+            "memory.search_temporal",
+            "memory.search_anchor_bm25",
+        ),
+        max_rounds=2,
+        max_tool_calls=4,
+    )
+    runner = CapturingRunner()
+    spec = SimpleNamespace(
+        agent_type=AgentType.MEMORY_CONTROLLER,
+        mode=AgentMode.BOUNDED_R2,
+        version=VERSION,
+        tool_policy=tool_policy,
+    )
+
+    def request_factory(state: ControllerStateView, round_index: int) -> ModelRequest:
+        return ModelRequest(
+            request_id=StableId(f"request.controller.{round_index}"),
+            run_id=state["request"].run_id,
+            task_id=state["request"].task_id,
+            model_role=ModelRole.BATCH_TEST,
+            purpose=ModelCallPurpose.BATCH_TEST,
+            trace_id=f"trace.controller.{round_index}",
+            prompt="replaced",
+        )
+
+    policy = StructuredControllerPolicy(cast(Any, runner), cast(Any, spec), request_factory)
+    decision = policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
+
+    assert decision.tool_name == "memory.search_exact"
+    assert runner.payload is not None
+    assert runner.payload["available_actions"] == [
+        {
+            "need_id": "need.1",
+            "query_intent": "current_state",
+            "requirement": "mandatory",
+            "tool_names": ["memory.search_exact", "memory.search_temporal"],
+        }
+    ]
 
 
 def memory_need(

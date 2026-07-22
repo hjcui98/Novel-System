@@ -18,6 +18,7 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.runtime.memory_controller import ControllerStateView
 from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, POOL_BY_CHANNEL
 
 ControllerRequestFactory = Callable[[ControllerStateView, int], ModelRequest]
 
@@ -69,6 +70,7 @@ class StructuredControllerPolicy:
         payload = canonical_json_bytes(
             {
                 "resolution_request": state["request"].model_dump(mode="json"),
+                "available_actions": self._available_actions(state),
                 "prior_tool_results": [
                     {
                         "need_id": need_id.root,
@@ -95,3 +97,33 @@ class StructuredControllerPolicy:
         result = asyncio.run(execute())
         self._receipts[result.model_call.request_id] = result.receipt
         return result.output.model_copy(update={"model_call_id": result.model_call.request_id})
+
+    def _available_actions(self, state: ControllerStateView) -> list[dict[str, object]]:
+        """Expose the exact structured decisions the model may legally choose.
+
+        The model does not receive provider-native tools; it emits one policy
+        decision that the trusted graph executes.  Without this registry it has
+        no way to discover the sealed tool names and tends to stop immediately.
+        """
+
+        called = {(need_id, tool_name) for need_id, tool_name, _ in state["tool_calls"]}
+        actions: list[dict[str, object]] = []
+        for need in state["request"].initial_memory_needs:
+            tools = [
+                tool_name
+                for tool_name in self._spec.tool_policy.allowed_tools
+                for channel in (CHANNEL_BY_TOOL.get(tool_name),)
+                if channel is not None
+                and POOL_BY_CHANNEL[channel] in need.allowed_candidate_pools
+                and (need.need_id, tool_name) not in called
+            ]
+            if tools:
+                actions.append(
+                    {
+                        "need_id": need.need_id.root,
+                        "query_intent": need.query_intent.value,
+                        "requirement": need.requirement.value,
+                        "tool_names": tools,
+                    }
+                )
+        return actions

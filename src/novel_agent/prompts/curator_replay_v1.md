@@ -10,6 +10,10 @@ beats, and facts already represented by the current World. Merge compatible
 facts about the same target into one operation and never target one record more
 than once. Use exactly 1 minimal evidence span per operation. Keep each record
 to at most 8 concise fields; do not copy chapter prose into record values.
+Before emitting an existing state target, compare its subject, predicate, value,
+and truth class with WORLD. If those fields are unchanged, omit it: do not
+refresh its valid time or evidence merely because the chapter mentions the
+entity again.
 Report at most 4 short unresolved items and at most 4 short
 declared-vs-observed differences. A lower coverage value is valid when the
 chapter contains more candidates than the bounded durable-memory budget.

@@ -168,6 +168,7 @@ class R1WorldRepository:
                 or_(
                     R1RecordRow.truth_class.is_(None),
                     R1RecordRow.truth_class == TruthClass.ACCEPTED_WORLD_FACT.value,
+                    R1RecordRow.truth_class == TruthClass.ASSERTION.value,
                 )
             )
         if need.entity_ids:

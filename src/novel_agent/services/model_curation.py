@@ -119,6 +119,31 @@ class ModelCurator:
                     "coverage": min(draft.coverage, len(scoped_operations) / original_count),
                 }
             )
+        valid_span_operations = tuple(
+            operation
+            for operation in draft.operations
+            if all(
+                selection.start < selection.end <= len(chapter_blocks[selection.block_id].text)
+                for selection in operation.evidence_refs
+            )
+        )
+        if len(valid_span_operations) != len(draft.operations):
+            dropped = tuple(
+                operation.target_id.root
+                for operation in draft.operations
+                if operation not in valid_span_operations
+            )
+            original_count = len(draft.operations)
+            draft = draft.model_copy(
+                update={
+                    "operations": valid_span_operations,
+                    "unresolved": (
+                        *draft.unresolved,
+                        ("runtime filtered invalid evidence spans: " + ", ".join(dropped))[:160],
+                    )[:4],
+                    "coverage": min(draft.coverage, len(valid_span_operations) / original_count),
+                }
+            )
         identities = tuple(
             (operation.record_kind, operation.target_id) for operation in draft.operations
         )
@@ -134,26 +159,12 @@ class ModelCurator:
                     raise ModelCurationContractError(
                         "Curator evidence block is outside the requested chapter"
                     )
-                # Structured models occasionally report an end offset measured against
-                # the serialized block rather than its text.  The selected block is
-                # already chapter-scoped and content-addressed. Preserve valid starts
-                # and clamp their tails; if both offsets use the wrong coordinate
-                # system, conservatively bind the complete selected block. Unknown
-                # blocks remain a hard failure above.
-                if selection.start >= len(block.text) or selection.end <= selection.start:
-                    bounded_selection = selection.model_copy(
-                        update={"start": 0, "end": len(block.text)}
-                    )
-                else:
-                    bounded_selection = selection.model_copy(
-                        update={"end": min(selection.end, len(block.text))}
-                    )
-                selected = block.text[bounded_selection.start : bounded_selection.end]
+                selected = block.text[selection.start : selection.end]
                 evidence_digest = self._digest(
                     chapter.chapter_id.root.encode(),
-                    bounded_selection.block_id.root.encode(),
-                    str(bounded_selection.start).encode(),
-                    str(bounded_selection.end).encode(),
+                    selection.block_id.root.encode(),
+                    str(selection.start).encode(),
+                    str(selection.end).encode(),
                 )
                 canonical_evidence = EvidenceRef(
                     evidence_id=StableId(f"evidence.curator.{evidence_digest}"),
@@ -161,7 +172,7 @@ class ModelCurator:
                     object_hash=sha256_id(block.text.encode("utf-8")),
                     chapter_id=block.chapter_id,
                     scene_id=block.scene_id,
-                    span=TextSpanRef.model_validate(bounded_selection.model_dump()),
+                    span=TextSpanRef.model_validate(selection.model_dump()),
                     quote_hash=quote_hash(selected),
                     resolved_at_commit=base_commit,
                     support_status=EvidenceSupportStatus.CURRENT,
@@ -223,6 +234,7 @@ class ModelCurator:
             WorldRecordKind.RELATION: {item.relation_id for item in current_world.relations},
             WorldRecordKind.OBLIGATION: {item.obligation_id for item in current_world.obligations},
         }
+        current_states = {item.state_id: item for item in current_world.states}
         created_entities = {
             operation.target_id
             for operation in draft.operations
@@ -232,6 +244,7 @@ class ModelCurator:
         known_entities = current_ids[WorldRecordKind.ENTITY] | created_entities
         accepted: list[CuratedOperationDraft] = []
         dropped: list[str] = []
+        unchanged: list[str] = []
         for operation in draft.operations:
             # Chapter replay may add or revise observed memory, but it cannot
             # autonomously delete canonical memory. Destructive retirement is a
@@ -259,10 +272,33 @@ class ModelCurator:
                 normalized_type = ChangeOperationType.REPLACE
             elif operation.operation is ChangeOperationType.REPLACE and not exists:
                 normalized_type = ChangeOperationType.CREATE
+            if (
+                operation.record_kind is WorldRecordKind.STATE
+                and normalized_type is ChangeOperationType.REPLACE
+                and isinstance(record, CuratorStateRecord)
+                and (current := current_states.get(operation.target_id)) is not None
+                and (
+                    record.subject_id,
+                    record.predicate,
+                    record.value,
+                    record.truth_class,
+                )
+                == (
+                    current.subject_id,
+                    current.predicate,
+                    current.value,
+                    current.truth_class,
+                )
+            ):
+                unchanged.append(operation.target_id.root)
+                continue
             accepted.append(operation.model_copy(update={"operation": normalized_type}))
         unresolved = list(draft.unresolved)
         if dropped:
             detail = "runtime filtered dangling or missing targets: " + ", ".join(dropped)
+            unresolved.append(detail[:160])
+        if unchanged:
+            detail = "runtime filtered unchanged state targets: " + ", ".join(unchanged)
             unresolved.append(detail[:160])
         original_count = len(draft.operations)
         bounded_coverage = (

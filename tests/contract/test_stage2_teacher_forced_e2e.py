@@ -8,6 +8,7 @@ import pytest
 from novel_agent.domain.ids import ProjectId, StableId
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, PublicCheckpointCase
+from novel_agent.services.content_addressing import content_id
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
@@ -43,6 +44,7 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["comparable_results_count"] == 5
     assert summary["future_isolation_failure_count"] == 0
     assert summary["future_leakage_count"] == 0
+    assert summary["planner_agent_calls"] == 1
     assert summary["semantic_quality_eligible"] is False
     assert summary["generation_quality_eligible"] is False
     assert summary["retrieval_backend_profile"] == "scripted_smoke"
@@ -50,6 +52,17 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["retrieval_attestation"]["capability"]["status"] == "test_only"
     assert (output / "project.sqlite3").is_file()
     assert (output / "scenario_run.json").is_file()
+    scenario = json.loads((output / "scenario_run.json").read_text("utf-8"))
+    plan_by_hash = {plan.root_hash: plan for plan in bundle.plan_roots}
+    expected_checkpoint_plans: dict[str, str] = {}
+    for case in bundle.case_manifests:
+        assert case.input_plan_root is not None
+        expected_checkpoint_plans[case.case_id.root] = content_id(
+            plan_by_hash[case.input_plan_root].model_dump(mode="json")
+        ).root
+    assert {
+        checkpoint["case_id"]: checkpoint["plan_root"] for checkpoint in scenario["checkpoints"]
+    } == expected_checkpoint_plans
     report = json.loads((output / "e2e_paired_report.json").read_text("utf-8"))
     assert len(report["cases"]) == 5
     assert all(

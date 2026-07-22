@@ -272,7 +272,7 @@ def test_model_curator_rejects_invalid_evidence_scope_and_binds_basis_and_status
     assert evidence.support_status is EvidenceSupportStatus.CURRENT
 
 
-def test_model_curator_clamps_only_evidence_tail_to_selected_block() -> None:
+def test_model_curator_filters_invalid_evidence_coordinates() -> None:
     bundle = make_synthetic_bundle()
     future = bundle.text_roots[1]
     world = bundle.world_roots[0]
@@ -290,14 +290,14 @@ def test_model_curator_clamps_only_evidence_tail_to_selected_block() -> None:
         update={"operations": (operation.model_copy(update={"evidence_refs": (overflow,)}),)}
     )
 
-    changes, _ = asyncio.run(
-        ModelCurator(_gateway(draft)[0]).extract(future, 23, world.source_commit, world, _request())
+    changes, _, reported = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract_reported(
+            future, 23, world.source_commit, world, _request()
+        )
     )
 
-    span = changes.operations[0].evidence_refs[0].span
-    assert span is not None
-    assert span.start == overflow.start
-    assert span.end == len(block.text)
+    assert changes.operations == ()
+    assert "invalid evidence spans" in reported.unresolved[-1]
 
     invalid_coordinates = selection.model_copy(
         update={"start": len(block.text) + 20, "end": len(block.text) + 40}
@@ -307,11 +307,50 @@ def test_model_curator_clamps_only_evidence_tail_to_selected_block() -> None:
             "operations": (operation.model_copy(update={"evidence_refs": (invalid_coordinates,)}),)
         }
     )
-    rebound, _ = asyncio.run(
-        ModelCurator(_gateway(invalid_draft)[0]).extract(
+    rebound, _, invalid_report = asyncio.run(
+        ModelCurator(_gateway(invalid_draft)[0]).extract_reported(
             future, 23, world.source_commit, world, _request()
         )
     )
-    rebound_span = rebound.operations[0].evidence_refs[0].span
-    assert rebound_span is not None
-    assert (rebound_span.start, rebound_span.end) == (0, len(block.text))
+    assert rebound.operations == ()
+    assert "invalid evidence spans" in invalid_report.unresolved[-1]
+
+
+def test_model_curator_drops_unchanged_existing_state_replacements() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    current = world.states[0]
+    if not isinstance(current.value, (str, int, float, bool, type(None))):
+        raise AssertionError("synthetic state fixture must contain a scalar value")
+    selection = _draft().operations[0].evidence_refs[0]
+    draft = ChapterChangeDraft(
+        chapter_index=23,
+        operations=(
+            CuratedOperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=current.state_id,
+                record=CuratorStateRecord(
+                    subject_id=current.subject_id,
+                    predicate=current.predicate,
+                    value=current.value,
+                    valid_time=CuratorStoryTime(
+                        worldline=current.valid_time.worldline,
+                        start_ordinal=23,
+                    ),
+                    truth_class=current.truth_class,
+                ),
+                evidence_refs=(selection,),
+            ),
+        ),
+    )
+
+    changes, _, reported = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract_reported(
+            future, 23, world.source_commit, world, _request()
+        )
+    )
+
+    assert changes.operations == ()
+    assert current.state_id.root in reported.unresolved[-1]

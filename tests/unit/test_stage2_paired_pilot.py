@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
+from novel_agent.domain.benchmark import PlanEvidenceRef
+from novel_agent.domain.ids import StableId
+from novel_agent.domain.memory import RetrievalUnit, RetrievalUnitKind
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import PairedPilotCaseResult, Stage2PairedPilotReport
-from novel_agent.services.benchmark_importer import bundle_content_id, world_root_content_id
+from novel_agent.services.benchmark_importer import (
+    bundle_content_id,
+    content_id,
+    world_root_content_id,
+)
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
 from tests.fixtures.stage1_synthetic import PLACEHOLDER_HASH, make_synthetic_bundle
 
@@ -131,9 +140,19 @@ def test_paired_pilot_evidence_matching_handles_empty_and_span_paths() -> None:
     assert Stage2PairedPilotRunner._matches(expected, expected) is True
     distinct_id = expected.model_copy(update={"evidence_id": case.case_id})
     assert Stage2PairedPilotRunner._matches(distinct_id, expected) is True
+    assert distinct_id.span is not None
+    equivalent_prefix = distinct_id.model_copy(
+        update={
+            "root_hash": PLACEHOLDER_HASH,
+            "span": distinct_id.span.model_copy(
+                update={"block_id": StableId("block.equivalent-prefix")}
+            ),
+        }
+    )
+    assert Stage2PairedPilotRunner._matches(equivalent_prefix, expected) is True
     assert (
         Stage2PairedPilotRunner._matches(
-            distinct_id.model_copy(update={"root_hash": PLACEHOLDER_HASH}), expected
+            equivalent_prefix.model_copy(update={"object_hash": PLACEHOLDER_HASH}), expected
         )
         is False
     )
@@ -141,3 +160,45 @@ def test_paired_pilot_evidence_matching_handles_empty_and_span_paths() -> None:
         Stage2PairedPilotRunner._matches(distinct_id.model_copy(update={"span": None}), expected)
         is False
     )
+
+
+def test_paired_pilot_matches_content_addressed_r1_plan_records_only_by_exact_goal() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    goal = plan.chapter_goals[0]
+    expected = PlanEvidenceRef(
+        evidence_id=StableId("plan-evidence.synthetic"),
+        plan_root_hash=plan.root_hash,
+        goal_id=goal.goal_id,
+        object_hash=content_id(goal.model_dump(mode="json")),
+    )
+    unit = RetrievalUnit(
+        unit_id=StableId("unit.r1.content-addressed"),
+        unit_kind=RetrievalUnitKind.PLAN_ANCHOR,
+        source_commit=bundle.world_roots[0].source_commit,
+        snapshot_id=StableId("snapshot.plan"),
+        text=json.dumps(goal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+        access_scope="author_planning",
+        information_label="plan",
+    )
+
+    assert content_id(goal.model_dump(mode="json")) == expected.object_hash
+    assert Stage2PairedPilotRunner._matches_plan(unit, expected) is True
+    legacy_anchor = unit.model_copy(
+        update={
+            "unit_id": StableId(f"anchor.{goal.goal_id.root}"),
+            "source_artifact": plan.root_hash,
+        }
+    )
+    assert Stage2PairedPilotRunner._matches_plan(legacy_anchor, expected) is True
+    assert (
+        Stage2PairedPilotRunner._matches_plan(
+            legacy_anchor.model_copy(update={"source_artifact": None}), expected
+        )
+        is False
+    )
+    wrong = unit.model_copy(
+        update={"text": json.dumps(goal.model_dump(mode="json") | {"summary": "wrong"})}
+    )
+    assert Stage2PairedPilotRunner._matches_plan(wrong, expected) is False

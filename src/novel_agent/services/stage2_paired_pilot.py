@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -11,15 +12,18 @@ from novel_agent.domain.benchmark import (
     BenchmarkBundle,
     BenchmarkCaseManifest,
     GoldItem,
+    PlanEvidenceRef,
     PlanRootDocument,
     TextRootDocument,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
+    FusedCandidate,
     NeedRisk,
     RequirementLevel,
     ResolutionPath,
+    RetrievalUnit,
     Stage1ContextPackage,
     Stage1MemoryNeed,
     Stage1QueryIntent,
@@ -520,29 +524,26 @@ class Stage2PairedPilotRunner:
         mandatory = tuple(item for item in all_gold if item.mandatory)
         gold_evidence = tuple(ref for item in all_gold for ref in item.evidence_refs)
         plan_evidence = tuple(ref for item in all_gold for ref in item.plan_evidence_refs)
-        selected_ids = {item.unit.unit_id for item in selected}
         evidence_denominator = len(gold_evidence) + len(plan_evidence)
         matched_evidence = sum(
             any(cls._matches(candidate, expected) for candidate in evidence)
             for expected in gold_evidence
         ) + sum(
-            StableId(f"anchor.{expected.goal_id.root}") in selected_ids
+            any(cls._matches_plan(candidate.unit, expected) for candidate in selected)
             for expected in plan_evidence
         )
         return PairedPilotArmMetrics(
             gold_evidence_recall=(
                 matched_evidence / evidence_denominator if evidence_denominator else 1.0
             ),
-            observed_use_coverage=cls._gold_coverage(
-                case.observed_use_gold, evidence, selected_ids
-            ),
+            observed_use_coverage=cls._gold_coverage(case.observed_use_gold, evidence, selected),
             operational_constraint_coverage=cls._gold_coverage(
-                case.operational_constraint_gold, evidence, selected_ids
+                case.operational_constraint_gold, evidence, selected
             ),
             plan_obligation_coverage=cls._gold_coverage(
-                case.plan_obligation_gold, evidence, selected_ids
+                case.plan_obligation_gold, evidence, selected
             ),
-            mandatory_constraint_coverage=cls._gold_coverage(mandatory, evidence, selected_ids),
+            mandatory_constraint_coverage=cls._gold_coverage(mandatory, evidence, selected),
             evidence_traceability=(
                 sum(bool(item.unit.evidence_refs or item.unit.source_artifact) for item in selected)
                 / len(selected)
@@ -560,9 +561,8 @@ class Stage2PairedPilotRunner:
         cls,
         gold: tuple[GoldItem, ...],
         evidence: tuple[EvidenceRef, ...],
-        selected_ids: set[StableId] | None = None,
+        selected: tuple[FusedCandidate, ...] = (),
     ) -> float:
-        selected_ids = selected_ids or set()
         if not gold:
             return 1.0
         return sum(
@@ -572,7 +572,8 @@ class Stage2PairedPilotRunner:
                 for expected in item.evidence_refs
             )
             or any(
-                StableId(f"anchor.{expected.goal_id.root}") in selected_ids
+                cls._matches_plan(candidate.unit, expected)
+                for candidate in selected
                 for expected in item.plan_evidence_refs
             )
             for item in gold
@@ -651,10 +652,33 @@ class Stage2PairedPilotRunner:
         if candidate.evidence_id == expected.evidence_id:
             return True
         if (
-            candidate.root_hash != expected.root_hash
-            or candidate.span is None
+            candidate.span is None
             or expected.span is None
-            or candidate.span.block_id != expected.span.block_id
+            or candidate.object_hash != expected.object_hash
         ):
             return False
         return candidate.span.start < expected.span.end and expected.span.start < candidate.span.end
+
+    @staticmethod
+    def _matches_plan(candidate: RetrievalUnit, expected: PlanEvidenceRef) -> bool:
+        """Match both legacy Anchor ids and content-addressed R1 plan records.
+
+        Continuous E2E replay projects R1 rows under commit-specific unit ids, so
+        ``anchor.<goal_id>`` is not a stable evaluator identity.  The immutable
+        goal object hash remains stable and prevents a same-id but semantically
+        different Planner proposal from receiving Gold credit.
+        """
+
+        if candidate.unit_id == StableId(f"anchor.{expected.goal_id.root}"):
+            return candidate.source_artifact == expected.plan_root_hash
+        if candidate.information_label != "plan":
+            return False
+        try:
+            record = json.loads(candidate.text)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(record, dict)
+            and record.get("goal_id") == expected.goal_id.root
+            and content_id(record) == expected.object_hash
+        )

@@ -39,7 +39,6 @@ from novel_agent.domain.benchmark import (
     BenchmarkBundle,
     BenchmarkCaseManifest,
     ChapterDocument,
-    ChapterGoal,
     PlanRootDocument,
     PreludeDocument,
     TextRootDocument,
@@ -1373,7 +1372,7 @@ class _TeacherForcedTransition:
         )
         case = self.case_by_chapter.get(chapter)
         if case is not None and self.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
-            self.plan = self._run_checkpoint_planner(case, parent_commit)
+            self.plan = self._bind_checkpoint_author_plan(case)
         proposed_world = WorldOverlay().apply(
             self.world,
             curator.observed_changes,
@@ -1637,110 +1636,36 @@ class _TeacherForcedTransition:
         self.curator_calls += 1
         return result
 
-    def _run_checkpoint_planner(
+    def _bind_checkpoint_author_plan(
         self,
         case: BenchmarkCaseManifest,
-        base_commit: CommitId,
     ) -> PlanRootDocument:
-        """Legal input: current PlanRoot, current WorldRoot, target range only.
+        """Bind the author-supplied PlanRoot that becomes visible at this checkpoint.
 
-        The checkpoint Planner must never access the benchmark's exact target plan
-        (case.input_plan_root), Gold data, future text, or retrospective summaries.
-        Planning is always intent (PLANNER_PROPOSED), never a guaranteed World Fact.
+        In the author-plan-conditioned profile this is canonical test input, not Gold:
+        the scenario compiler classifies it for PLAN/REFERENCE and makes it visible at
+        ``history_range[1]``.  Re-generating these goals from the previous PlanRoot would
+        discard the supplied target intent and turn the benchmark into a planning test.
         """
-        source_id = StableId(f"source.plan.{case.case_id.root}")
-        source_artifact = self.artifacts.put(
-            canonical_json_bytes(self.plan.model_dump(mode="json")),
-            "application/json",
-            VERSION,
-        )
-        request = TeacherForcedBenchmarkE2ERunner._request(
-            f"planner.chapter.{case.case_id.root}", AgentMode.CHAPTER
-        )
-        TeacherForcedBenchmarkE2ERunner._script(
-            self.harness,
-            request,
-            PlannerProposalDraft(
-                mode=AgentMode.CHAPTER,
-                plan_items=tuple(
-                    ProposedItem(
-                        item_id=StableId(f"goal.teacher-forced.{case.case_id.root}.{chapter}"),
-                        kind="chapter_goal",
-                        payload={
-                            "chapter_index": chapter,
-                            "summary": (
-                                "依据 Genesis PlanRoot 的既有作者意图推进本章, "
-                                "具体事件由 Writer 在约束内决定。"
-                            ),
-                        },
-                        provenance=ProposalProvenance.PLANNER_PROPOSED,
-                    )
-                    for chapter in range(case.target_range[0], case.target_range[1] + 1)
-                ),
-                coverage=1,
-            ),
-        )
-        result, _ = asyncio.run(
-            PlannerAgent(self.harness.runner, self.artifacts).run(
-                version=VERSION,
-                task=PlanningTask(
-                    planning_task_id=StableId(f"planning.{case.case_id.root}"),
-                    project_id=case.project_id,
-                    mode=AgentMode.CHAPTER,
-                    base_commit=base_commit,
-                    source_ids=(source_id,),
-                    creative_scope=("target_chapter_goals",),
-                ),
-                source_payload=(
-                    "CHECKPOINT_OUTPUT_CONTRACT=Return exactly one concise plan_items entry "
-                    "for each chapter in TARGET_RANGE and no entries outside it. Every item "
-                    "must have kind=chapter_goal, provenance=planner_proposed, empty source_ids, "
-                    "and payload containing only chapter_index and a summary of at most 160 "
-                    "characters. Keep project_intent_items, world_design_items, profile_items, "
-                    "deviations, alternatives, and unresolved empty; strategy and "
-                    "selection_rationale must be null; coverage must be 1. Do not reproduce "
-                    "CURRENT_PLAN_SUMMARY.\n"
-                    f"TARGET_RANGE={case.target_range}\n"
-                    f"CURRENT_PLAN_SUMMARY={self.plan.model_dump_json()}\n"
-                    f"CURRENT_WORLD_SUMMARY=当前已揭示WorldEntity数量为{len(self.world.entities)}, "
-                    f"State数量为{len(self.world.states)}"
-                ),
-                source_artifacts=(source_artifact,),
-                request=request,
-            )
-        )
-        goals: list[ChapterGoal] = []
-        for item in result.plan_proposal.items:
-            if item.kind != "chapter_goal":
-                continue
-            chapter = item.payload.get("chapter_index")
-            summary = item.payload.get("summary")
-            if (
-                not isinstance(chapter, int)
-                or isinstance(chapter, bool)
-                or not case.target_range[0] <= chapter <= case.target_range[1]
-                or not isinstance(summary, str)
-                or not summary.strip()
-            ):
-                raise TeacherForcedBenchmarkError(
-                    f"Planner returned an invalid chapter goal for {case.case_id.root}"
-                )
-            goals.append(
-                ChapterGoal(
-                    goal_id=item.item_id,
-                    chapter_index=chapter,
-                    summary=summary.strip(),
-                )
-            )
-        if {goal.chapter_index for goal in goals} != set(
-            range(case.target_range[0], case.target_range[1] + 1)
-        ):
+        if case.input_plan_root is None:
             raise TeacherForcedBenchmarkError(
-                f"Planner did not cover target range for {case.case_id.root}"
+                f"checkpoint {case.case_id.root} has no author PlanRoot"
             )
-        self.planner_calls += 1
-        proposed = self.plan.model_copy(update={"chapter_goals": tuple(goals)})
-        return proposed.model_copy(update={"root_hash": plan_root_content_id(proposed)})
+        try:
+            plan = next(
+                item for item in self.bundle.plan_roots if item.root_hash == case.input_plan_root
+            )
+        except StopIteration as exc:
+            raise TeacherForcedBenchmarkError(
+                f"checkpoint {case.case_id.root} author PlanRoot is missing from the bundle"
+            ) from exc
+        expected_chapters = set(range(case.target_range[0], case.target_range[1] + 1))
+        actual_chapters = {goal.chapter_index for goal in plan.chapter_goals}
+        if actual_chapters != expected_chapters:
+            raise TeacherForcedBenchmarkError(
+                f"checkpoint {case.case_id.root} author PlanRoot does not cover target range"
+            )
+        return plan
 
     def _prelude_curator_result(self, source: Any, base: CommitId) -> CuratorReplayResult:
         source_ref = self.artifacts.put(
