@@ -92,6 +92,16 @@ class RunEventToolAuditSink:
                 "status": result.status.value,
                 "failure_code": result.failure_code.value if result.failure_code else None,
                 "coverage": result.coverage,
+                "query_variant": result.query_variant,
+                "backend_latency_ms": result.backend_latency_ms,
+                "new_information_gain": result.new_information_gain,
+                "retrieval_channel": (
+                    result.retrieval_channel.value if result.retrieval_channel else None
+                ),
+                "channel_candidate_count": result.channel_candidate_count,
+                "channel_failure_code": (
+                    result.channel_failure_code.value if result.channel_failure_code else None
+                ),
                 "basis_commit": result.basis_commit.root,
                 "snapshot_id": result.snapshot_id.root if result.snapshot_id else None,
                 "audit_ref": result.audit_ref.root,

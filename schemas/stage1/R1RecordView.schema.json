@@ -14,6 +14,12 @@
   },
   "additionalProperties": false,
   "properties": {
+    "access_scope": {
+      "default": "writer_safe",
+      "minLength": 1,
+      "title": "Access Scope",
+      "type": "string"
+    },
     "entity_ids": {
       "default": [],
       "items": {
@@ -21,6 +27,30 @@
       },
       "title": "Entity Ids",
       "type": "array"
+    },
+    "narrative_end": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Narrative End"
+    },
+    "narrative_start": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Narrative Start"
     },
     "predicate": {
       "anyOf": [
@@ -90,6 +120,18 @@
       ],
       "default": null,
       "title": "Valid Start"
+    },
+    "worldline": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Worldline"
     }
   },
   "required": [

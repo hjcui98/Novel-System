@@ -1,0 +1,50 @@
+{
+  "$defs": {
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A channel-specific count receipt produced during projection.",
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/RetrievalChannel"
+    },
+    "expected_units": {
+      "minimum": 0,
+      "title": "Expected Units",
+      "type": "integer"
+    },
+    "failed_units": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Failed Units",
+      "type": "integer"
+    },
+    "ready_units": {
+      "minimum": 0,
+      "title": "Ready Units",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "channel",
+    "expected_units",
+    "ready_units"
+  ],
+  "title": "ChannelCoverage",
+  "type": "object"
+}

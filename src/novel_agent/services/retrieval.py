@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
@@ -153,8 +154,10 @@ class RerankService:
                     update={
                         "fused_rank": rank,
                         "channel_hits": (*candidate.channel_hits, rerank_hit),
-                        "selected": rank <= limit,
-                        "rejection_reason": None if rank <= limit else "rerank_limit",
+                        "selected": rank <= limit or candidate.unit.mandatory,
+                        "rejection_reason": (
+                            None if rank <= limit or candidate.unit.mandatory else "rerank_limit"
+                        ),
                     }
                 )
             )
@@ -162,13 +165,93 @@ class RerankService:
         return tuple(reranked)
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateQuotaPolicy:
+    """Typed diversity limits applied after ranking, never to mandatory units."""
+
+    max_per_unit_kind: int = 8
+    max_per_narrative_chapter: int = 4
+    collapse_duplicate_evidence: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_per_unit_kind < 1 or self.max_per_narrative_chapter < 1:
+            raise ValueError("candidate quota limits must be positive")
+
+
+class TypedCandidateSelector:
+    def __init__(self, policy: CandidateQuotaPolicy | None = None) -> None:
+        self._policy = policy or CandidateQuotaPolicy()
+
+    def select(
+        self,
+        candidates: tuple[FusedCandidate, ...],
+        *,
+        limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        if limit < 1:
+            raise ValueError("candidate selection limit must be positive")
+        selected_optional = 0
+        kind_counts: dict[RetrievalUnitKind, int] = defaultdict(int)
+        chapter_counts: dict[int, int] = defaultdict(int)
+        evidence_seen: set[StableId] = set()
+        output: list[FusedCandidate] = []
+        for candidate in candidates:
+            unit = candidate.unit
+            evidence_ids = {item.evidence_id for item in unit.evidence_refs}
+            chapter = (
+                unit.narrative_start
+                if unit.narrative_start is not None and unit.narrative_start == unit.narrative_end
+                else None
+            )
+            reason: str | None = None
+            if not unit.mandatory:
+                if selected_optional >= limit:
+                    reason = "optional_candidate_limit"
+                elif kind_counts[unit.unit_kind] >= self._policy.max_per_unit_kind:
+                    reason = "unit_kind_quota"
+                elif (
+                    chapter is not None
+                    and chapter_counts[chapter] >= self._policy.max_per_narrative_chapter
+                ):
+                    reason = "narrative_chapter_quota"
+                elif (
+                    self._policy.collapse_duplicate_evidence
+                    and evidence_ids
+                    and evidence_ids.issubset(evidence_seen)
+                ):
+                    reason = "duplicate_evidence"
+            selected = unit.mandatory or reason is None
+            if selected:
+                if not unit.mandatory:
+                    selected_optional += 1
+                kind_counts[unit.unit_kind] += 1
+                if chapter is not None:
+                    chapter_counts[chapter] += 1
+                evidence_seen.update(evidence_ids)
+            output.append(
+                candidate.model_copy(
+                    update={
+                        "selected": selected,
+                        "rejection_reason": None if selected else reason,
+                    }
+                )
+            )
+        return tuple(output)
+
+
 class FusionService:
     """One deterministic RRF owner; input channels must still be independently ranked."""
 
-    def __init__(self, *, rrf_k: int = 60) -> None:
+    def __init__(
+        self,
+        *,
+        rrf_k: int = 60,
+        selector: TypedCandidateSelector | None = None,
+    ) -> None:
         if rrf_k < 1:
             raise ValueError("rrf_k must be positive")
         self._rrf_k = rrf_k
+        self._selector = selector or TypedCandidateSelector()
 
     def fuse(
         self,
@@ -200,17 +283,20 @@ class FusionService:
             ),
             key=lambda item: (-item[0], item[1]),
         )
-        return tuple(
+        candidates = tuple(
             FusedCandidate(
                 unit=units[identity],
                 fused_rank=rank,
                 rrf_score=score,
                 channel_hits=hits,
-                selected=rank <= limit,
-                rejection_reason=None if rank <= limit else "fusion_limit",
+                selected=rank <= limit or units[identity].mandatory,
+                rejection_reason=(
+                    None if rank <= limit or units[identity].mandatory else "fusion_limit"
+                ),
             )
             for rank, (score, identity, hits) in enumerate(scored, start=1)
         )
+        return self._selector.select(candidates, limit=limit)
 
 
 class RetrievalOrchestrator:
@@ -329,8 +415,12 @@ class RetrievalOrchestrator:
                 fused_rank=rank,
                 rrf_score=1.0 / rank,
                 channel_hits=(hit,),
-                selected=rank <= self._fused_limit,
-                rejection_reason=(None if rank <= self._fused_limit else "direct_result_limit"),
+                selected=rank <= self._fused_limit or hit.unit.mandatory,
+                rejection_reason=(
+                    None
+                    if rank <= self._fused_limit or hit.unit.mandatory
+                    else "direct_result_limit"
+                ),
             )
             for rank, hit in enumerate(hits, start=1)
         )

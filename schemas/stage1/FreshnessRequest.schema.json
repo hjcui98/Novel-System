@@ -26,6 +26,12 @@
           "title": "Anchor Index Version",
           "type": "string"
         },
+        "build_profile": {
+          "default": "unspecified",
+          "minLength": 1,
+          "title": "Build Profile",
+          "type": "string"
+        },
         "build_status": {
           "$ref": "#/$defs/DerivedBuildStatus"
         },
@@ -52,6 +58,21 @@
           "title": "Grounded Index Version",
           "type": "string"
         },
+        "projection_attestation": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Projection Attestation"
+        },
         "published_at": {
           "anyOf": [
             {
@@ -64,6 +85,12 @@
           ],
           "default": null,
           "title": "Published At"
+        },
+        "retrieval_backend_profile": {
+          "default": "unspecified",
+          "minLength": 1,
+          "title": "Retrieval Backend Profile",
+          "type": "string"
         },
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
@@ -95,6 +122,7 @@
       "title": "FreshnessMode",
       "type": "string"
     },
+    "JsonValue": {},
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",

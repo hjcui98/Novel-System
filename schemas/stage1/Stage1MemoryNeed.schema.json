@@ -137,6 +137,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "access_scope": {
+      "default": "writer_safe",
+      "minLength": 1,
+      "title": "Access Scope",
+      "type": "string"
+    },
+    "allow_plan": {
+      "default": false,
+      "title": "Allow Plan",
+      "type": "boolean"
+    },
     "allowed_candidate_pools": {
       "items": {
         "$ref": "#/$defs/CandidatePool"
@@ -175,6 +186,14 @@
         "type": "string"
       },
       "title": "Expected Evidence Types",
+      "type": "array"
+    },
+    "hierarchy_parent_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Hierarchy Parent Unit Ids",
       "type": "array"
     },
     "horizon_target": {

@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "ChannelCoverage": {
+      "additionalProperties": false,
+      "description": "A channel-specific count receipt produced during projection.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "expected_units": {
+          "minimum": 0,
+          "title": "Expected Units",
+          "type": "integer"
+        },
+        "failed_units": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Failed Units",
+          "type": "integer"
+        },
+        "ready_units": {
+          "minimum": 0,
+          "title": "Ready Units",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "channel",
+        "expected_units",
+        "ready_units"
+      ],
+      "title": "ChannelCoverage",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "SnapshotCapabilityStatus": {
+      "enum": [
+        "exact",
+        "partial",
+        "stale",
+        "failed",
+        "test_only"
+      ],
+      "title": "SnapshotCapabilityStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Trusted query-time intersection of snapshot state and runtime permissions.",
+  "properties": {
+    "available_channels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "title": "Available Channels",
+      "type": "array"
+    },
+    "coverage_by_channel": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ChannelCoverage"
+      },
+      "title": "Coverage By Channel",
+      "type": "array"
+    },
+    "degraded_channels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "title": "Degraded Channels",
+      "type": "array"
+    },
+    "embedding_profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Profile"
+    },
+    "graph_profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Graph Profile"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "status": {
+      "$ref": "#/$defs/SnapshotCapabilityStatus"
+    }
+  },
+  "required": [
+    "source_commit",
+    "snapshot_id",
+    "status"
+  ],
+  "title": "SnapshotCapability",
+  "type": "object"
+}

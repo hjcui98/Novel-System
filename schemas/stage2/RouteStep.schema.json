@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_pool": {
+      "$ref": "#/$defs/CandidatePool"
+    },
+    "channel": {
+      "$ref": "#/$defs/RetrievalChannel"
+    },
+    "mandatory": {
+      "default": false,
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "per_channel_limit": {
+      "default": 20,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Per Channel Limit",
+      "type": "integer"
+    },
+    "query_template": {
+      "minLength": 1,
+      "title": "Query Template",
+      "type": "string"
+    },
+    "step_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "step_id",
+    "channel",
+    "candidate_pool",
+    "query_template"
+  ],
+  "title": "RouteStep",
+  "type": "object"
+}

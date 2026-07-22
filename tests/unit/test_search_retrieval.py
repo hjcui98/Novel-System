@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from novel_agent.adapters.opensearch import OpenSearchIndex
-from novel_agent.domain.ids import CommitId, ProjectId, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, StableId
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
@@ -15,11 +15,15 @@ from novel_agent.domain.memory import (
     RetrievalUnitKind,
     Stage1QueryIntent,
 )
+from novel_agent.domain.retrieval_routing import L2IndexKind, L2IndexManifest
+from novel_agent.services.embedding_cache import InMemoryEmbeddingCache
 from novel_agent.services.search_retrieval import (
     CompositeRetrievalBackend,
     DeterministicHashEmbedder,
     Stage1OpenSearchBackend,
     Stage1SearchIndexer,
+    Stage2RIndexRetentionPolicy,
+    Stage2RSearchIndexer,
     _safe_name,
 )
 from tests.unit.test_stage1_retrieval import need, unit
@@ -90,6 +94,74 @@ def test_stage1_indexer_builds_separate_physical_indexes_and_publishes_aliases()
         indexer.build_and_publish(PROJECT, COMMIT, SNAPSHOT, (mismatched,))
     with pytest.raises(ValueError, match="prefix is empty"):
         _safe_name("___")
+
+
+def test_stage2r_indexer_bulk_builds_attested_indexes_with_content_cache() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    cache = InMemoryEmbeddingCache()
+    indexer = Stage2RSearchIndexer(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        embedding_cache=cache,
+    )
+
+    first = indexer.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
+    second = indexer.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
+
+    assert first.anchor_index != first.grounded_index
+    assert first.anchor_document_count == 2 and first.grounded_document_count == 1
+    assert first.embedding_cache.hits == 0 and first.embedding_cache.misses == 3
+    assert second.embedding_cache.hits == 3 and second.embedding_cache.misses == 0
+    assert adapter.bulk_index.call_count == 4
+    assert adapter.refresh.call_count == 4
+    assert adapter.publish_aliases.call_count == 2
+    assert adapter.publish_alias.call_count == 0
+    assert adapter.index_document.call_count == 0
+    anchor_alias, grounded_alias = Stage2RSearchIndexer.aliases(PROJECT)
+    assert "stage2r" in anchor_alias and "stage2r" in grounded_alias
+    mapping = adapter.ensure_index.call_args.args[1]
+    properties = mapping["mappings"]["properties"]
+    assert properties["text"]["fields"]["cjk"]["analyzer"] == "cjk"
+    assert properties["exact_terms"]["type"] == "keyword"
+    assert properties["evidence_ids"]["type"] == "keyword"
+    assert len(first.mapping_hash) == 64
+
+
+def test_stage2r_retention_pins_checkpoints_and_accepted_snapshots() -> None:
+    snapshots = {chapter: StableId(f"snapshot.chapter.{chapter}") for chapter in (20, 21, 22, 40)}
+    manifests = tuple(
+        L2IndexManifest(
+            index_id=StableId(f"index.chapter.{chapter}"),
+            index_kind=L2IndexKind.ANCHOR,
+            source_commit=COMMIT,
+            snapshot_id=snapshot_id,
+            physical_name=f"project-stage2r-anchor-{chapter}",
+            alias="project-stage2r-anchor",
+            document_count=1,
+            mapping_hash=ArtifactId("sha256:" + "f" * 64),
+            analyzer_profile="standard-cjk-exact-v0.1",
+            embedding_profile="bge-m3",
+        )
+        for chapter, snapshot_id in snapshots.items()
+    )
+    policy = Stage2RIndexRetentionPolicy()
+    index = MagicMock(spec=OpenSearchIndex)
+
+    deleted = policy.apply(
+        cast(OpenSearchIndex, index),
+        manifests,
+        chapter_by_snapshot={snapshot_id: chapter for chapter, snapshot_id in snapshots.items()},
+        accepted_snapshot_ids=(snapshots[21],),
+    )
+
+    assert deleted == ("project-stage2r-anchor-22",)
+    index.delete_index.assert_called_once_with("project-stage2r-anchor-22")
+    with pytest.raises(ValueError, match="unique"):
+        policy.indexes_to_delete(
+            manifests,
+            chapter_by_snapshot={},
+            accepted_snapshot_ids=(snapshots[21], snapshots[21]),
+        )
 
 
 def _search_backend(adapter: MagicMock, hit_unit: RetrievalUnit) -> Stage1OpenSearchBackend:
@@ -184,6 +256,94 @@ def test_opensearch_backend_fails_closed_on_invalid_queries_and_hits() -> None:
     )
     with pytest.raises(TypeError, match="score"):
         backend.search(query_need, RetrievalChannel.ANCHOR_BM25, 5)
+
+
+def test_opensearch_lexical_query_uses_phrase_matching_and_pre_score_scope_filters() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = _search_backend(adapter, _units()[1])
+    quote_need = need(
+        Stage1QueryIntent.EXACT_QUOTE,
+        "旧誓言",
+        (CandidatePool.GROUNDED,),
+    )
+
+    backend.search(quote_need, RetrievalChannel.GROUNDED_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "match_phrase" in serialized
+    assert PROJECT.root in serialized
+    assert "access_scope" in serialized and "writer_safe" in serialized
+    assert "information_label" in serialized and "observed" in serialized
+    assert "narrative_start" in serialized and "narrative_end" in serialized
+
+
+def test_author_plan_query_expands_access_without_observed_only_filter() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = Stage1OpenSearchBackend(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        access_scopes=("writer_safe", "author_planning"),
+    )
+    adapter.search_with_total.return_value = ((), 0)
+    plan_need = need(
+        Stage1QueryIntent.PLAN_OBLIGATION,
+        "未决承诺",
+        (CandidatePool.ANCHOR,),
+    ).model_copy(update={"access_scope": "author_planning", "allow_plan": True})
+
+    backend.search(plan_need, RetrievalChannel.ANCHOR_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "writer_safe" in serialized and "author_planning" in serialized
+    assert "information_label" not in serialized
+
+
+def test_factual_search_filters_nonaccepted_truth_before_scoring() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = _search_backend(adapter, _units()[0])
+    factual_need = need(
+        Stage1QueryIntent.CURRENT_STATE,
+        "林澈伤势",
+        (CandidatePool.ANCHOR,),
+    )
+
+    backend.search(factual_need, RetrievalChannel.ANCHOR_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "truth_class" in serialized
+    assert "accepted_world_fact" in serialized
+
+
+def test_hierarchy_query_is_bounded_to_declared_parent_path() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = _search_backend(adapter, _units()[2])
+    query_need = need(
+        Stage1QueryIntent.CHAPTER_THREAD,
+        "北行",
+        (CandidatePool.HIERARCHY,),
+    ).model_copy(
+        update={
+            "hierarchy_parent_unit_ids": (
+                StableId("anchor.arc.northern-expedition"),
+                StableId("anchor.chapter.20"),
+            )
+        }
+    )
+
+    backend.search(query_need, RetrievalChannel.HIERARCHY, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "parent_unit_ids" in serialized
+    assert "parent_unit_id" in serialized
+    assert "anchor.arc.northern-expedition" in serialized
+    assert "anchor.chapter.20" in serialized
 
 
 class _StaticBackend:

@@ -9,6 +9,7 @@ from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory import (
     ChannelHit,
+    FusedCandidate,
     RequirementLevel,
     RetrievalChannel,
     RetrievalStopReason,
@@ -17,6 +18,7 @@ from novel_agent.domain.memory import (
     Stage1ContextPackage,
     Stage1MemoryNeed,
 )
+from novel_agent.domain.retrieval_routing import RoutePlan
 from novel_agent.domain.stage2 import (
     ControllerArm,
     ControllerStopReason,
@@ -30,7 +32,12 @@ from novel_agent.runtime.memory_controller import (
     ControllerPolicy,
 )
 from novel_agent.services.memory_pipeline import ContextCompiler
-from novel_agent.services.retrieval import FusionService, RetrievalBackend, RetrievalOrchestrator
+from novel_agent.services.retrieval import (
+    FusionService,
+    RerankService,
+    RetrievalBackend,
+    RetrievalOrchestrator,
+)
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 from novel_agent.tools.retrieval import PLAN_INTENTS
 
@@ -63,12 +70,18 @@ class PairedMemoryControllerRunner:
         compiler: ContextCompiler,
         comparison_basis_fingerprint: ArtifactId,
         freshness_check: Callable[[MemoryResolutionRequest], bool],
+        route_plans: tuple[RoutePlan, ...] = (),
+        reranker: RerankService | None = None,
     ) -> None:
         self._backend = backend
         self._controller = controller
         self._compiler = compiler
         self._basis_fingerprint = comparison_basis_fingerprint
         self._freshness_check = freshness_check
+        self._route_plans = {plan.need_id: plan for plan in route_plans}
+        self._reranker = reranker
+        if len(self._route_plans) != len(route_plans):
+            raise ValueError("paired runner route plans must have unique memory need ids")
 
     @property
     def comparison_basis_fingerprint(self) -> ArtifactId:
@@ -86,8 +99,31 @@ class PairedMemoryControllerRunner:
         freshness_check: Callable[[MemoryResolutionRequest], bool],
         checkpointer: Any,
         comparison_basis_fingerprint: ArtifactId,
+        route_plans: tuple[RoutePlan, ...] = (),
+        reranker: RerankService | None = None,
     ) -> PairedMemoryControllerRunner:
-        adapter = RetrievalToolAdapter(backend, needs)
+        active_channels_by_need = {
+            plan.need_id: tuple(
+                dict.fromkeys(
+                    step.channel
+                    for step in (
+                        *plan.mandatory_steps,
+                        *(step for group in plan.primary_groups for step in group.steps),
+                        *(
+                            step
+                            for fallback in plan.conditional_fallbacks
+                            for step in fallback.steps
+                        ),
+                    )
+                )
+            )
+            for plan in route_plans
+        }
+        adapter = RetrievalToolAdapter(
+            backend,
+            needs,
+            allowed_channels_by_need=active_channels_by_need or None,
+        )
         binding = ToolBinding(tool_policy, adapter.handlers())
         controller = BoundedMemoryController(
             binding,
@@ -96,6 +132,8 @@ class PairedMemoryControllerRunner:
             controller_policy,
             freshness_check,
             checkpointer,
+            route_plans=route_plans,
+            reranker=reranker,
         )
         return cls(
             backend,
@@ -103,6 +141,8 @@ class PairedMemoryControllerRunner:
             compiler,
             comparison_basis_fingerprint,
             freshness_check,
+            route_plans,
+            reranker,
         )
 
     def run(
@@ -194,12 +234,23 @@ class PairedMemoryControllerRunner:
             if not fresh or (need.query_intent in PLAN_INTENTS and not request.allow_future_plan):
                 trace = self._empty_trace(need)
             else:
-                trace = RetrievalOrchestrator(
-                    budgeted,
-                    FusionService(),
-                    per_channel_limit=request.retrieval_budget.max_candidates,
-                    fused_limit=request.retrieval_budget.max_candidates,
-                ).retrieve(need)
+                plan = self._route_plans.get(need.need_id)
+                trace = (
+                    self._retrieve_route_plan(
+                        budgeted,
+                        need,
+                        plan,
+                        per_channel_limit=request.retrieval_budget.max_candidates,
+                        reranker=self._reranker,
+                    )
+                    if plan is not None
+                    else RetrievalOrchestrator(
+                        budgeted,
+                        FusionService(),
+                        per_channel_limit=request.retrieval_budget.max_candidates,
+                        fused_limit=request.retrieval_budget.max_candidates,
+                    ).retrieve(need)
+                )
             traces.append((need, trace))
         context = self._compiler.compile(
             tuple(traces),
@@ -240,6 +291,176 @@ class PairedMemoryControllerRunner:
                 )
             }
         )
+
+    @staticmethod
+    def _retrieve_route_plan(
+        backend: RetrievalBackend,
+        need: Stage1MemoryNeed,
+        plan: RoutePlan,
+        *,
+        per_channel_limit: int,
+        reranker: RerankService | None = None,
+    ) -> RetrievalTrace:
+        """Execute only the registered channels for one Need.
+
+        The legacy ``RetrievalOrchestrator`` is intentionally retained for
+        scripted Stage 1 callers.  A Stage 2R pair receives a RoutePlan,
+        though, so its deterministic arm must not reconstruct a route from
+        the old global intent table.  This method is the single owner of the
+        plan's deterministic fallback semantics and applies RRF only to a
+        declared parallel group.
+        """
+
+        if plan.need_id != need.need_id or plan.base_commit != need.base_commit:
+            raise ValueError("route plan does not belong to deterministic memory need")
+        fusion = FusionService()
+        results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
+        candidates: tuple[FusedCandidate, ...] = ()
+        called: list[RetrievalChannel] = []
+
+        def execute(channels: tuple[RetrievalChannel, ...], *, use_rrf: bool) -> None:
+            nonlocal candidates
+            group_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
+            for channel in channels:
+                if channel in results:
+                    continue
+                hits = backend.search(need, channel, per_channel_limit)
+                results[channel] = hits
+                group_results[channel] = hits
+                called.append(channel)
+            if not group_results:
+                return
+            group_candidates = (
+                fusion.fuse(group_results, limit=per_channel_limit)
+                if use_rrf and len(group_results) > 1
+                else PairedMemoryControllerRunner._direct_candidates(
+                    group_results, limit=per_channel_limit
+                )
+            )
+            candidates = PairedMemoryControllerRunner._merge_candidates(
+                candidates, group_candidates, limit=per_channel_limit
+            )
+
+        execute(tuple(step.channel for step in plan.mandatory_steps), use_rrf=False)
+        for group in plan.primary_groups:
+            execute(
+                tuple(step.channel for step in group.steps),
+                use_rrf=group.fusion_profile is not None,
+            )
+
+        fallback_used = False
+        fallback_reason: str | None = None
+        for fallback in plan.conditional_fallbacks:
+            if not PairedMemoryControllerRunner._fallback_applies(fallback.condition, candidates):
+                continue
+            fallback_used = True
+            fallback_reason = fallback.condition
+            steps = tuple(step.channel for step in fallback.steps)
+            execute(steps, use_rrf=fallback.fusion_profile is not None)
+
+        fusion_applied = any(group.fusion_profile is not None for group in plan.primary_groups) or (
+            fallback_used
+            and any(item.fusion_profile is not None for item in plan.conditional_fallbacks)
+        )
+        rerank_applied = False
+        rerank_failure: str | None = None
+        if fusion_applied and reranker is not None:
+            try:
+                candidates = reranker.rerank(need, candidates, limit=per_channel_limit)
+                rerank_applied = True
+            except Exception as error:
+                rerank_failure = f"reranker_degraded:{type(error).__name__}"
+        selected = tuple(candidate for candidate in candidates if candidate.selected)
+        return RetrievalTrace(
+            need_id=need.need_id,
+            intent=need.query_intent,
+            allowed_channels=tuple(called),
+            channel_candidate_counts={
+                channel: hits[0].candidate_count if hits else 0 for channel, hits in results.items()
+            },
+            candidates=candidates,
+            fusion_applied=fusion_applied,
+            rerank_applied=rerank_applied,
+            channel_failures=(
+                {RetrievalChannel.RERANK: rerank_failure} if rerank_failure is not None else {}
+            ),
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+            stop_reason=(
+                RetrievalStopReason.EXACT_SATISFIED
+                if selected and not fallback_used
+                else RetrievalStopReason.BUDGET_SATISFIED
+                if selected
+                else RetrievalStopReason.FALLBACK_EXHAUSTED
+                if fallback_used
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            ),
+        )
+
+    @staticmethod
+    def _direct_candidates(
+        results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+        *,
+        limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        hits: list[ChannelHit] = []
+        seen: set[StableId] = set()
+        for channel_hits in results.values():
+            for hit in channel_hits:
+                if hit.unit.unit_id in seen:
+                    continue
+                seen.add(hit.unit.unit_id)
+                hits.append(hit)
+        return tuple(
+            FusedCandidate(
+                unit=hit.unit,
+                fused_rank=rank,
+                rrf_score=1.0 / rank,
+                channel_hits=(hit,),
+                selected=rank <= limit or hit.unit.mandatory,
+                rejection_reason=(
+                    None if rank <= limit or hit.unit.mandatory else "direct_result_limit"
+                ),
+            )
+            for rank, hit in enumerate(hits, start=1)
+        )
+
+    @staticmethod
+    def _merge_candidates(
+        existing: tuple[FusedCandidate, ...],
+        incoming: tuple[FusedCandidate, ...],
+        *,
+        limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        """Keep route-stage order without making a second cross-channel fusion pass."""
+
+        unique: dict[StableId, FusedCandidate] = {}
+        for candidate in (*existing, *incoming):
+            unique.setdefault(candidate.unit.unit_id, candidate)
+        return tuple(
+            candidate.model_copy(
+                update={
+                    "fused_rank": rank,
+                    "selected": rank <= limit or candidate.unit.mandatory,
+                    "rejection_reason": (
+                        None if rank <= limit or candidate.unit.mandatory else "route_result_limit"
+                    ),
+                }
+            )
+            for rank, candidate in enumerate(unique.values(), start=1)
+        )
+
+    @staticmethod
+    def _fallback_applies(
+        condition: str,
+        candidates: tuple[FusedCandidate, ...],
+    ) -> bool:
+        has_candidates = any(candidate.selected for candidate in candidates)
+        if condition in {"anchor_evidence_insufficient", "plan_anchor_insufficient"}:
+            return not has_candidates
+        if condition == "hierarchy_scope_resolved":
+            return has_candidates
+        raise ValueError(f"unregistered deterministic fallback condition: {condition}")
 
     @staticmethod
     def _empty_trace(need: Stage1MemoryNeed) -> RetrievalTrace:

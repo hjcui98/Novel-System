@@ -140,6 +140,9 @@ def test_retrieval_adapter_exposes_all_typed_channels_and_clamps_limits() -> Non
         assert result.status is ToolResultStatus.SUCCEEDED
         assert result.payload is not None
         assert result.coverage == 1
+        assert result.retrieval_channel is channel
+        assert result.channel_candidate_count == 1
+        assert result.channel_failure_code is None
         assert backend.calls[-1] == (channel, 7)
 
     empty = RetrievalToolAdapter(Backend(empty=True), (need(),))
@@ -193,6 +196,31 @@ def test_retrieval_adapter_returns_distinct_query_scope_basis_and_access_failure
         invoke(restricted, "memory.search_exact", {"need_id": "need.1"}).failure_code
         is ToolFailureCode.SCOPE_MISMATCH
     )
+
+
+def test_retrieval_adapter_enforces_per_need_route_channel_allowlist() -> None:
+    backend = Backend()
+    adapter = RetrievalToolAdapter(
+        backend,
+        (need(),),
+        allowed_channels_by_need={StableId("need.1"): (RetrievalChannel.R1_EXACT,)},
+    )
+
+    assert (
+        invoke(adapter, "memory.search_anchor_bm25", {"need_id": "need.1"}).failure_code
+        is ToolFailureCode.SCOPE_MISMATCH
+    )
+    assert backend.calls == []
+    assert (
+        invoke(adapter, "memory.search_exact", {"need_id": "need.1"}).status
+        is ToolResultStatus.SUCCEEDED
+    )
+    with pytest.raises(ValueError, match="unknown memory need"):
+        RetrievalToolAdapter(
+            backend,
+            (need(),),
+            allowed_channels_by_need={StableId("need.unknown"): (RetrievalChannel.R1_EXACT,)},
+        )
 
 
 def test_retrieval_adapter_rejects_backend_results_from_another_basis() -> None:

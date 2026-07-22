@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/RetrievalChannel"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "channel",
+    "reason"
+  ],
+  "title": "ExcludedChannel",
+  "type": "object"
+}

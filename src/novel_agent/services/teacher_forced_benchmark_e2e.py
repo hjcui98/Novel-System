@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,6 +67,12 @@ from novel_agent.domain.memory import (
     WorldRootDocument,
 )
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.retrieval_routing import (
+    ProjectionAttestation,
+    RetrievalBackendProfile,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
+)
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -141,6 +148,7 @@ from novel_agent.services.projection import (
 )
 from novel_agent.services.replay import ExactReplayProjectionBuilder
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
+from novel_agent.services.stage2_retrieval_backend import Stage2RetrievalBackendBundle
 from novel_agent.services.teacher_forced_scenario import TeacherForcedScenarioRunner
 from novel_agent.services.text_timeline import SequentialTextRootService
 from novel_agent.services.validation import Stage1Validator
@@ -153,6 +161,9 @@ ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 class TeacherForcedBenchmarkError(RuntimeError):
     pass
+
+
+RealHybridBackendProvider = Callable[[ProjectId, CommitId], Stage2RetrievalBackendBundle]
 
 
 class _ResponseBook:
@@ -197,7 +208,7 @@ class _FrozenState:
 
 
 class TeacherForcedBenchmarkE2ERunner:
-    """Run the real orchestration with a clearly labelled scripted semantic backend."""
+    """Run teacher-forced construction with an explicitly qualified retrieval mode."""
 
     def __init__(
         self,
@@ -205,12 +216,19 @@ class TeacherForcedBenchmarkE2ERunner:
         token_budget: int = 4000,
         max_candidates: int = 20,
         semantic_endpoint: ModelEndpointPort | None = None,
+        retrieval_backend_profile: RetrievalBackendProfile = RetrievalBackendProfile.SCRIPTED_SMOKE,
+        real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
+        database_url: str | None = None,
     ) -> None:
         self._paired = Stage2PairedPilotRunner(
             token_budget=token_budget,
             max_candidates=max_candidates,
+            retrieval_backend_profile=retrieval_backend_profile,
         )
         self._semantic_endpoint = semantic_endpoint
+        self._retrieval_backend_profile = retrieval_backend_profile
+        self._real_hybrid_backend_provider = real_hybrid_backend_provider
+        self._database_url = database_url
 
     def run(
         self,
@@ -222,8 +240,11 @@ class TeacherForcedBenchmarkE2ERunner:
         stop_after_genesis: bool = False,
         max_chapter: int | None = None,
         resume: bool = False,
+        project_directory: Path | None = None,
     ) -> dict[str, Any]:
-        progress_path = output_directory / "progress_manifest.json"
+        self._require_registered_retrieval_backend()
+        resolved_project_directory = (project_directory or output_directory).resolve()
+        progress_path = resolved_project_directory / "progress_manifest.json"
         if resume:
             if not progress_path.exists():
                 raise TeacherForcedBenchmarkError("resume requested but no progress manifest found")
@@ -240,10 +261,15 @@ class TeacherForcedBenchmarkE2ERunner:
             resume_from = None
             resume_chapter = 0
         output_directory.mkdir(parents=True, exist_ok=True)
-        artifacts = ArtifactRepository(FilesystemObjectStore(output_directory / "objects"))
-        database_path = output_directory / "project.sqlite3"
-        engine = build_engine(f"sqlite:///{database_path.resolve()}")
-        Base.metadata.create_all(engine)
+        resolved_project_directory.mkdir(parents=True, exist_ok=True)
+        artifacts = ArtifactRepository(
+            FilesystemObjectStore(resolved_project_directory / "objects")
+        )
+        database_path = resolved_project_directory / "project.sqlite3"
+        database_url = self._database_url or f"sqlite:///{database_path}"
+        engine = build_engine(database_url)
+        if self._retrieval_backend_profile is RetrievalBackendProfile.SCRIPTED_SMOKE:
+            Base.metadata.create_all(engine)
         session_factory = build_session_factory(engine)
         try:
             project_id = source_project(bundle)
@@ -288,6 +314,8 @@ class TeacherForcedBenchmarkE2ERunner:
                 genesis_commit = genesis.commit_id
                 genesis_commit_id_for_report = genesis_commit.root
             if stop_after_genesis:
+                retrieval_attestation = self._attestation_for_commit(project_id, genesis_commit)
+                retrieval_quality_eligible = retrieval_attestation.quality_eligible
                 self._write_progress(
                     progress_path,
                     genesis_commit=genesis_commit_id_for_report,
@@ -304,7 +332,15 @@ class TeacherForcedBenchmarkE2ERunner:
                         if harness.responses is not None
                         else "configured_structured_generation_model"
                     ),
+                    "retrieval_backend_profile": self._retrieval_backend_profile.value,
+                    "retrieval_backend": self._retrieval_backend_profile.value,
+                    "retrieval_attestation": retrieval_attestation.model_dump(mode="json"),
+                    "retrieval_quality_eligible": retrieval_quality_eligible,
+                    "semantic_quality_eligible": (
+                        harness.responses is None and retrieval_quality_eligible
+                    ),
                     "project_database": str(database_path),
+                    "project_directory": str(resolved_project_directory),
                 }
             scenario = BenchmarkScenarioCompiler().compile(bundle, information_profile)
             chapter_sources = tuple(
@@ -397,6 +433,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 artifacts,
                 self._paired,
                 controller_policy_factory=harness.controller_request_factory,
+                real_hybrid_backend_provider=self._real_hybrid_backend_provider,
             )
             evaluator = _E2EEvaluator(bundle, information_profile, freezer, artifacts, self._paired)
             segment_preamble = (
@@ -439,8 +476,16 @@ class TeacherForcedBenchmarkE2ERunner:
                 if checkpoints
                 else transition.commit_count > 0
             )
+            latest_attestation = freezer.latest_attestation
+            retrieval_quality_eligible = bool(
+                latest_attestation is not None and latest_attestation.quality_eligible
+            )
             summary: dict[str, Any] = {
-                "status": "teacher_forced_contract_smoke_completed",
+                "status": (
+                    "teacher_forced_real_hybrid_completed"
+                    if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID
+                    else "teacher_forced_contract_smoke_completed"
+                ),
                 "bundle_id": bundle.bundle_id.root,
                 "information_profile": information_profile.value,
                 "bootstrap_source_count": len(bootstrap_bundle.sources),
@@ -482,19 +527,91 @@ class TeacherForcedBenchmarkE2ERunner:
                     if harness.responses is not None
                     else "configured_structured_generation_model"
                 ),
-                "semantic_quality_eligible": harness.responses is None,
+                "generation_quality_eligible": harness.responses is None,
+                "retrieval_backend_profile": self._retrieval_backend_profile.value,
+                "retrieval_backend": self._retrieval_backend_profile.value,
+                "retrieval_attestation": (
+                    latest_attestation.model_dump(mode="json")
+                    if latest_attestation is not None
+                    else self._scripted_smoke_attestation(
+                        CommitService(session_factory).current_commit(project_id)
+                    ).model_dump(mode="json")
+                ),
+                "retrieval_quality_eligible": retrieval_quality_eligible,
+                "semantic_quality_eligible": (
+                    harness.responses is None and retrieval_quality_eligible
+                ),
                 "curator_semantic_extraction_enabled": harness.responses is None,
-                "quality_blocker": (
-                    "replace scripted model endpoint with a configured structured generation model"
-                    if harness.responses is not None
-                    else None
+                "quality_blocker": self._quality_blocker(
+                    harness.responses is None, retrieval_quality_eligible
                 ),
                 "project_database": str(database_path),
+                "project_directory": str(resolved_project_directory),
             }
             self._write_json(output_directory / "flow_summary.json", summary)
             return summary
         finally:
             engine.dispose()
+
+    def _require_registered_retrieval_backend(self) -> None:
+        if (
+            self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID
+            and self._real_hybrid_backend_provider is None
+        ):
+            raise TeacherForcedBenchmarkError(
+                "real_hybrid requires the Stage 2R commit-scoped FullDerivedProjectionBuilder "
+                "and CompositeRetrievalBackend provider; scripted smoke fallback is disabled"
+            )
+
+    def _scripted_smoke_attestation(self, source_commit: CommitId) -> ProjectionAttestation:
+        snapshot_id = snapshot_id_for_commit(source_commit)
+        return ProjectionAttestation(
+            attestation_id=StableId(
+                f"attestation.scripted-smoke.{source_commit.root.removeprefix('sha256:')[:24]}"
+            ),
+            retrieval_backend_profile=RetrievalBackendProfile.SCRIPTED_SMOKE,
+            source_commit=source_commit,
+            snapshot_id=snapshot_id,
+            capability=SnapshotCapability(
+                source_commit=source_commit,
+                snapshot_id=snapshot_id,
+                status=SnapshotCapabilityStatus.TEST_ONLY,
+            ),
+            r1_record_count=0,
+            r1_entity_association_count=0,
+            graph_node_count=0,
+            graph_edge_count=0,
+        )
+
+    def _attestation_for_commit(
+        self,
+        project_id: ProjectId,
+        source_commit: CommitId,
+    ) -> ProjectionAttestation:
+        if self._retrieval_backend_profile is RetrievalBackendProfile.SCRIPTED_SMOKE:
+            return self._scripted_smoke_attestation(source_commit)
+        if self._real_hybrid_backend_provider is None:  # guarded before any state mutation
+            raise TeacherForcedBenchmarkError("real_hybrid backend provider is not configured")
+        backend_bundle = self._real_hybrid_backend_provider(project_id, source_commit)
+        return backend_bundle.attestation
+
+    @staticmethod
+    def _quality_blocker(
+        generation_quality_eligible: bool,
+        retrieval_quality_eligible: bool,
+    ) -> str:
+        blockers: list[str] = []
+        if not generation_quality_eligible:
+            blockers.insert(
+                0,
+                "replace scripted model endpoint with a configured structured generation model",
+            )
+        if not retrieval_quality_eligible:
+            blockers.append(
+                "real_hybrid capability and projection attestation are required; "
+                "scripted_smoke retrieval is test-only"
+            )
+        return "; ".join(blockers)
 
     @staticmethod
     def _load_bootstrap(
@@ -1665,13 +1782,20 @@ class _E2EContextFreezer:
         paired: Stage2PairedPilotRunner,
         *,
         controller_policy_factory: Any | None = None,
+        real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
     ) -> None:
         self.config = config
         self.transition = transition
         self.artifacts = artifacts
         self.paired = paired
         self.controller_policy_factory = controller_policy_factory
+        self.real_hybrid_backend_provider = real_hybrid_backend_provider
         self.comparisons: dict[StableId, PairedContextComparison] = {}
+        self._latest_attestation: ProjectionAttestation | None = None
+
+    @property
+    def latest_attestation(self) -> ProjectionAttestation | None:
+        return self._latest_attestation
 
     def freeze(self, basis: Any) -> ArtifactRef:
         case_id = basis.case_id
@@ -1685,6 +1809,28 @@ class _E2EContextFreezer:
             history_range=case.history_range,
         )
         state = self.transition.states[case.case_id]
+        retrieval_backend = None
+        snapshot_capability = None
+        reranker = None
+        if self.paired.retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
+            if self.real_hybrid_backend_provider is None:
+                raise TeacherForcedBenchmarkError(
+                    "real_hybrid freeze requires a commit-scoped retrieval backend provider"
+                )
+            backend_bundle = self.real_hybrid_backend_provider(case.project_id, state.commit)
+            attestation = backend_bundle.attestation
+            if (
+                attestation.source_commit != state.commit
+                or not attestation.quality_eligible
+                or attestation.capability.status is not SnapshotCapabilityStatus.EXACT
+            ):
+                raise TeacherForcedBenchmarkError(
+                    "real_hybrid freeze received an incomplete or stale projection attestation"
+                )
+            retrieval_backend = backend_bundle.backend
+            snapshot_capability = attestation.capability
+            reranker = backend_bundle.reranker
+            self._latest_attestation = attestation
         comparison = self.paired.resolve_state_case(
             self.config,
             public,
@@ -1694,6 +1840,9 @@ class _E2EContextFreezer:
             plan=state.plan,
             base_commit=state.commit,
             controller_policy_factory=self.controller_policy_factory,
+            retrieval_backend=retrieval_backend,
+            snapshot_capability=snapshot_capability,
+            reranker=reranker,
         )
         self.comparisons[case.case_id] = comparison
         return self.artifacts.put(

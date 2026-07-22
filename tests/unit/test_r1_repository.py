@@ -249,5 +249,63 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
     )
     assert len(hits) == 2
     assert {hit.hit_reason for hit in hits} == {"bounded_typed_graph_path"}
+    paths = repository.typed_graph_paths(
+        commit_id,
+        (base.entities[0].entity_id,),
+        max_depth=2,
+        limit=10,
+        time_scope=StoryTime(worldline="main", start_ordinal=21),
+    )
+    assert any(path.relation_ids == tuple(item.relation_id for item in relations) for path in paths)
+    assert all(path.edge_semantics == ("canonical",) * len(path.relation_ids) for path in paths)
+    assert (
+        repository.typed_graph_paths(
+            commit_id,
+            (base.entities[0].entity_id,),
+            max_depth=2,
+            limit=10,
+            time_scope=StoryTime(worldline="main", start_ordinal=20),
+        )
+        == ()
+    )
+    with pytest.raises(ValueError, match="canonical/evidence"):
+        repository.typed_graph_paths(
+            commit_id,
+            (base.entities[0].entity_id,),
+            max_depth=2,
+            limit=10,
+            allowed_edge_semantics=("inferred",),
+        )
     with pytest.raises(ValueError, match="positive"):
         repository.typed_graph(commit_id, (base.entities[0].entity_id,), max_depth=0, limit=10)
+
+
+def test_r1_materializes_plan_nodes_and_exposes_exact_alias_and_evidence_reverse_lookups(
+    r1_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, commit_id = r1_database
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    plan = bundle.plan_roots[0]
+    repository = R1WorldRepository(factory)
+
+    repository.materialize(ProjectId("project.test"), commit_id, world, plan)
+
+    assert repository.resolve_entity_alias(commit_id, world.entities[0].internal_label) == (
+        world.entities[0].entity_id,
+    )
+    assert repository.resolve_entity_alias(commit_id, "missing") == ()
+    if world.states[0].evidence_refs:
+        reverse = repository.records_for_evidence(
+            commit_id, world.states[0].evidence_refs[0].evidence_id
+        )
+        assert world.states[0].state_id in {item.record_id for item in reverse}
+    plan_records = repository.exact(
+        _need(commit_id, Stage1QueryIntent.PLAN_NODE).model_copy(
+            update={"access_scope": "author_planning", "allow_plan": True}
+        ),
+        temporal=False,
+        limit=20,
+        access_scopes=("writer_safe", "author_planning"),
+    )
+    assert {item.record_id for item in plan_records} >= {item.plan_node_id for item in plan.nodes}

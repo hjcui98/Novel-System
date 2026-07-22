@@ -12,7 +12,7 @@ export
 .PHONY: bootstrap quality infra-up infra-health migrate demo integration stage0 stage1-smoke infra-down \
 	models-bootstrap models-up models-health model-smoke models-down \
 	model-benchmark-smoke stage1-native-benchmark stage2-benchmark-read-pilot \
-	stage2-teacher-forced-e2e
+	stage2-teacher-forced-e2e stage2r-backfill stage2r-gate stage2r-diagnose
 
 bootstrap:
 	@if test -x "$(UV)"; then \
@@ -136,12 +136,41 @@ stage2-benchmark-read-pilot:
 stage2-teacher-forced-e2e:
 	@test -n "$(SOURCE)" || { echo "SOURCE is required" >&2; exit 2; }
 	@test -n "$(OUTPUT)" || { echo "OUTPUT is required" >&2; exit 2; }
+	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@test -n "$(STAGE2R_DATABASE_URL)" || { echo "STAGE2R_DATABASE_URL is required" >&2; exit 2; }
 	@"$(PYTHON)" scripts/run_stage2_teacher_forced_e2e.py \
 		--source "$(SOURCE)" --output-directory "$(OUTPUT)" \
+		--resume-project "$(PROJECT_DIRECTORY)" \
+		--database-url "$(STAGE2R_DATABASE_URL)" \
 		--information-profile "$${PROFILE:-author_plan_conditioned}" \
 		--semantic-backend "$${SEMANTIC_BACKEND:-local_openai}" \
+		--retrieval-backend "$${RETRIEVAL_BACKEND:-real_hybrid}" \
 		--model-base-url "$${MODEL_BASE_URL:-http://127.0.0.1:8002/v1}" \
 		--model "$${MODEL:-qwen36-27b-nvfp4}"
+
+stage2r-backfill:
+	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@$(MAKE) infra-health
+	@$(MAKE) models-health
+	@"$(PYTHON)" scripts/backfill_stage2_derived_snapshots.py \
+		--project-directory "$(PROJECT_DIRECTORY)" --retrieval-backend real_hybrid \
+		--build-profile "$${BUILD_PROFILE:-stage2r-hybrid-v0.1}" $${RESUME:+--resume}
+
+stage2r-gate:
+	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@"$(PYTHON)" scripts/run_stage2_retrieval_gate.py \
+		--project-directory "$(PROJECT_DIRECTORY)" \
+		--checkpoints "$${CHECKPOINTS:-20,40,60,80,95}"
+
+stage2r-diagnose:
+	@test -n "$(SOURCE)" || { echo "SOURCE is required" >&2; exit 2; }
+	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@test -n "$(CASE_ID)" || { echo "CASE_ID is required" >&2; exit 2; }
+	@test -n "$(CHECKPOINT)" || { echo "CHECKPOINT is required" >&2; exit 2; }
+	@"$(PYTHON)" scripts/diagnose_stage2_retrieval_case.py \
+		--source "$(SOURCE)" --project-directory "$(PROJECT_DIRECTORY)" \
+		--case-id "$(CASE_ID)" --checkpoint "$(CHECKPOINT)" \
+		--query-condition "$${QUERY_CONDITION:-oracle}"
 
 infra-down:
 	@if test "$(INFRA_BACKEND)" = "native"; then \

@@ -65,6 +65,10 @@ class AnchorBuilder:
                         f"{_evidence_snippets(state.evidence_refs, text, blocks)}"
                     ),
                     entity_ids=(state.subject_id,),
+                    predicate=state.predicate,
+                    story_time_start=state.valid_time.start_ordinal,
+                    story_time_end=state.valid_time.end_ordinal,
+                    truth_class=state.truth_class,
                     evidence_refs=state.evidence_refs,
                     mandatory=state.predicate in {"alive", "injury", "location", "owns"},
                 )
@@ -83,6 +87,14 @@ class AnchorBuilder:
                         f"{_evidence_snippets(event.evidence_refs, text, blocks)}"
                     ).strip(),
                     entity_ids=event.participant_ids,
+                    predicate=event.event_type,
+                    story_time_start=(
+                        None if event.story_time is None else event.story_time.start_ordinal
+                    ),
+                    story_time_end=(
+                        None if event.story_time is None else event.story_time.end_ordinal
+                    ),
+                    truth_class=event.truth_class,
                     evidence_refs=event.evidence_refs,
                 )
             )
@@ -100,6 +112,10 @@ class AnchorBuilder:
                         f"{_evidence_snippets(relation.evidence_refs, text, blocks)}"
                     ),
                     entity_ids=(relation.subject_id, relation.object_id),
+                    predicate=relation.predicate,
+                    story_time_start=relation.valid_time.start_ordinal,
+                    story_time_end=relation.valid_time.end_ordinal,
+                    truth_class=relation.truth_class,
                     evidence_refs=relation.evidence_refs,
                 )
             )
@@ -117,6 +133,9 @@ class AnchorBuilder:
                         f"{_evidence_snippets(obligation.evidence_refs, text, blocks)}"
                     ).strip(),
                     entity_ids=obligation.owner_ids,
+                    predicate=obligation.kind.value,
+                    access_scope="writer_safe",
+                    information_label="plan",
                     evidence_refs=obligation.evidence_refs,
                     mandatory=obligation.status.value != "resolved",
                 )
@@ -136,6 +155,13 @@ class AnchorBuilder:
                             if node.parent_id is not None
                             else None
                         ),
+                        parent_unit_ids=(
+                            ()
+                            if node.parent_id is None
+                            else (StableId(f"anchor.{node.parent_id.root}"),)
+                        ),
+                        access_scope="author_planning",
+                        information_label="plan",
                     )
                 )
             for goal in plan.chapter_goals:
@@ -147,6 +173,10 @@ class AnchorBuilder:
                         snapshot_id=snapshot_id,
                         source_artifact=plan.root_hash,
                         text=f"chapter {goal.chapter_index} {goal.summary}",
+                        narrative_start=goal.chapter_index,
+                        narrative_end=goal.chapter_index,
+                        access_scope="author_planning",
+                        information_label="plan",
                         mandatory=True,
                     )
                 )
@@ -166,6 +196,8 @@ class AnchorBuilder:
                             snapshot_id=snapshot_id,
                             source_artifact=text.root_hash,
                             text=block.text,
+                            narrative_start=block.narrative_index,
+                            narrative_end=block.narrative_index,
                             evidence_refs=(evidence,),
                         )
                     )
@@ -177,6 +209,8 @@ class AnchorBuilder:
                     snapshot_id=snapshot_id,
                     source_artifact=text.root_hash,
                     text=" ".join(prelude_texts),
+                    narrative_start=0,
+                    narrative_end=0,
                     evidence_refs=tuple(prelude_evidence),
                 )
             )
@@ -196,6 +230,8 @@ class AnchorBuilder:
                             snapshot_id=snapshot_id,
                             source_artifact=text.root_hash,
                             text=block.text,
+                            narrative_start=block.narrative_index,
+                            narrative_end=block.narrative_index,
                             evidence_refs=(evidence,),
                         )
                     )
@@ -207,12 +243,14 @@ class AnchorBuilder:
                     snapshot_id=snapshot_id,
                     source_artifact=text.root_hash,
                     text=f"{chapter.title or ''} {' '.join(chapter_texts)}".strip(),
+                    narrative_start=chapter.chapter_index,
+                    narrative_end=chapter.chapter_index,
                     evidence_refs=tuple(chapter_evidence),
                 )
             )
         if len({unit.unit_id for unit in units}) != len(units):
             raise ValueError("anchor build produced duplicate retrieval unit ids")
-        return tuple(units)
+        return tuple(_with_content_metadata(unit) for unit in units)
 
 
 class EvidenceExpander:
@@ -250,11 +288,34 @@ class EvidenceExpander:
                         text=selected_text,
                         entity_ids=candidate.unit.entity_ids,
                         parent_unit_id=candidate.unit.unit_id,
+                        parent_unit_ids=(candidate.unit.unit_id,),
+                        worldline=candidate.unit.worldline,
+                        narrative_start=candidate.unit.narrative_start,
+                        narrative_end=candidate.unit.narrative_end,
+                        truth_class=candidate.unit.truth_class,
+                        access_scope=candidate.unit.access_scope,
+                        information_label=candidate.unit.information_label,
                         evidence_refs=(evidence,),
                         mandatory=candidate.unit.mandatory,
                     )
                 )
-        return tuple(expanded)
+        return tuple(_with_content_metadata(unit) for unit in expanded)
+
+
+def _with_content_metadata(unit: RetrievalUnit) -> RetrievalUnit:
+    """Fill v0.2 content identity without changing a stable semantic unit id."""
+
+    source_refs = () if unit.source_artifact is None else (unit.source_artifact,)
+    parent_ids = unit.parent_unit_ids
+    if unit.parent_unit_id is not None and unit.parent_unit_id not in parent_ids:
+        parent_ids = (*parent_ids, unit.parent_unit_id)
+    return unit.model_copy(
+        update={
+            "source_refs": source_refs,
+            "content_hash": sha256_id(unit.text.encode("utf-8")),
+            "parent_unit_ids": parent_ids,
+        }
+    )
 
 
 class ContextCompiler:

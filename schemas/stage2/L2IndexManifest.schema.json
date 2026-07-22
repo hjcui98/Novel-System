@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "L2IndexKind": {
+      "enum": [
+        "anchor",
+        "grounded",
+        "hierarchy"
+      ],
+      "title": "L2IndexKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Physical-index receipt; the index remains a rebuildable L2 structure.",
+  "properties": {
+    "alias": {
+      "minLength": 1,
+      "title": "Alias",
+      "type": "string"
+    },
+    "analyzer_profile": {
+      "minLength": 1,
+      "title": "Analyzer Profile",
+      "type": "string"
+    },
+    "document_count": {
+      "minimum": 0,
+      "title": "Document Count",
+      "type": "integer"
+    },
+    "embedding_profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Profile"
+    },
+    "index_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "index_kind": {
+      "$ref": "#/$defs/L2IndexKind"
+    },
+    "mapping_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "physical_name": {
+      "minLength": 1,
+      "title": "Physical Name",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    }
+  },
+  "required": [
+    "index_id",
+    "index_kind",
+    "source_commit",
+    "snapshot_id",
+    "physical_name",
+    "alias",
+    "document_count",
+    "mapping_hash",
+    "analyzer_profile"
+  ],
+  "title": "L2IndexManifest",
+  "type": "object"
+}

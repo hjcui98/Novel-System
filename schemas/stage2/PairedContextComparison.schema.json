@@ -364,6 +364,16 @@
           "title": "Channel Candidate Counts",
           "type": "object"
         },
+        "channel_failures": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Channel Failures",
+          "type": "object"
+        },
         "fallback_reason": {
           "anyOf": [
             {
@@ -403,6 +413,11 @@
         "need_id": {
           "$ref": "#/$defs/StableId"
         },
+        "rerank_applied": {
+          "default": false,
+          "title": "Rerank Applied",
+          "type": "boolean"
+        },
         "scenes_expanded": {
           "default": 0,
           "minimum": 0,
@@ -434,6 +449,31 @@
     "RetrievalUnit": {
       "additionalProperties": false,
       "properties": {
+        "access_scope": {
+          "default": "writer_safe",
+          "minLength": 1,
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "content_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "derivation_taint": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Derivation Taint",
+          "type": "array"
+        },
         "entity_ids": {
           "default": [],
           "items": {
@@ -450,10 +490,42 @@
           "title": "Evidence Refs",
           "type": "array"
         },
+        "information_label": {
+          "default": "observed",
+          "minLength": 1,
+          "title": "Information Label",
+          "type": "string"
+        },
         "mandatory": {
           "default": false,
           "title": "Mandatory",
           "type": "boolean"
+        },
+        "narrative_end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative End"
+        },
+        "narrative_start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative Start"
         },
         "parent_unit_id": {
           "anyOf": [
@@ -465,6 +537,26 @@
             }
           ],
           "default": null
+        },
+        "parent_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Parent Unit Ids",
+          "type": "array"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predicate"
         },
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
@@ -483,16 +575,77 @@
         "source_commit": {
           "$ref": "#/$defs/CommitId"
         },
+        "source_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "story_time_end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Time End"
+        },
+        "story_time_start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Time Start"
+        },
+        "support_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Support Status"
+        },
         "text": {
           "minLength": 1,
           "title": "Text",
           "type": "string"
+        },
+        "truth_class": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TruthClass"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "unit_id": {
           "$ref": "#/$defs/StableId"
         },
         "unit_kind": {
           "$ref": "#/$defs/RetrievalUnitKind"
+        },
+        "worldline": {
+          "default": "main",
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
         }
       },
       "required": [
@@ -680,6 +833,23 @@
       ],
       "title": "TextSpanRef",
       "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
     }
   },
   "additionalProperties": false,

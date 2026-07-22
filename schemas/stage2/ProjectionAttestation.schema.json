@@ -1,0 +1,438 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ChannelCoverage": {
+      "additionalProperties": false,
+      "description": "A channel-specific count receipt produced during projection.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "expected_units": {
+          "minimum": 0,
+          "title": "Expected Units",
+          "type": "integer"
+        },
+        "failed_units": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Failed Units",
+          "type": "integer"
+        },
+        "ready_units": {
+          "minimum": 0,
+          "title": "Ready Units",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "channel",
+        "expected_units",
+        "ready_units"
+      ],
+      "title": "ChannelCoverage",
+      "type": "object"
+    },
+    "ChannelFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "code": {
+          "$ref": "#/$defs/ChannelFailureCode"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "channel",
+        "code",
+        "reason"
+      ],
+      "title": "ChannelFailure",
+      "type": "object"
+    },
+    "ChannelFailureCode": {
+      "enum": [
+        "backend_unavailable",
+        "coverage_incomplete",
+        "profile_mismatch",
+        "basis_mismatch",
+        "stale",
+        "forbidden",
+        "timeout",
+        "build_failed"
+      ],
+      "title": "ChannelFailureCode",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "L2IndexKind": {
+      "enum": [
+        "anchor",
+        "grounded",
+        "hierarchy"
+      ],
+      "title": "L2IndexKind",
+      "type": "string"
+    },
+    "L2IndexManifest": {
+      "additionalProperties": false,
+      "description": "Physical-index receipt; the index remains a rebuildable L2 structure.",
+      "properties": {
+        "alias": {
+          "minLength": 1,
+          "title": "Alias",
+          "type": "string"
+        },
+        "analyzer_profile": {
+          "minLength": 1,
+          "title": "Analyzer Profile",
+          "type": "string"
+        },
+        "document_count": {
+          "minimum": 0,
+          "title": "Document Count",
+          "type": "integer"
+        },
+        "embedding_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedding Profile"
+        },
+        "index_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "index_kind": {
+          "$ref": "#/$defs/L2IndexKind"
+        },
+        "mapping_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "physical_name": {
+          "minLength": 1,
+          "title": "Physical Name",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        }
+      },
+      "required": [
+        "index_id",
+        "index_kind",
+        "source_commit",
+        "snapshot_id",
+        "physical_name",
+        "alias",
+        "document_count",
+        "mapping_hash",
+        "analyzer_profile"
+      ],
+      "title": "L2IndexManifest",
+      "type": "object"
+    },
+    "RetrievalBackendProfile": {
+      "description": "Whether a run is a scripted contract smoke or a real hybrid retrieval run.",
+      "enum": [
+        "scripted_smoke",
+        "real_hybrid"
+      ],
+      "title": "RetrievalBackendProfile",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "SnapshotCapability": {
+      "additionalProperties": false,
+      "description": "Trusted query-time intersection of snapshot state and runtime permissions.",
+      "properties": {
+        "available_channels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Available Channels",
+          "type": "array"
+        },
+        "coverage_by_channel": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChannelCoverage"
+          },
+          "title": "Coverage By Channel",
+          "type": "array"
+        },
+        "degraded_channels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Degraded Channels",
+          "type": "array"
+        },
+        "embedding_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedding Profile"
+        },
+        "graph_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Graph Profile"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "status": {
+          "$ref": "#/$defs/SnapshotCapabilityStatus"
+        }
+      },
+      "required": [
+        "source_commit",
+        "snapshot_id",
+        "status"
+      ],
+      "title": "SnapshotCapability",
+      "type": "object"
+    },
+    "SnapshotCapabilityStatus": {
+      "enum": [
+        "exact",
+        "partial",
+        "stale",
+        "failed",
+        "test_only"
+      ],
+      "title": "SnapshotCapabilityStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Auditable proof of the R1, index, vector, and graph projection basis.",
+  "properties": {
+    "attestation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "capability": {
+      "$ref": "#/$defs/SnapshotCapability"
+    },
+    "embedding_cache_hits": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Embedding Cache Hits",
+      "type": "integer"
+    },
+    "embedding_cache_misses": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Embedding Cache Misses",
+      "type": "integer"
+    },
+    "embedding_dimension": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Dimension"
+    },
+    "embedding_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Model"
+    },
+    "embedding_normalized": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Normalized"
+    },
+    "embedding_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Embedding Revision"
+    },
+    "embedding_runtime_fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "failures": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ChannelFailure"
+      },
+      "title": "Failures",
+      "type": "array"
+    },
+    "graph_edge_count": {
+      "minimum": 0,
+      "title": "Graph Edge Count",
+      "type": "integer"
+    },
+    "graph_node_count": {
+      "minimum": 0,
+      "title": "Graph Node Count",
+      "type": "integer"
+    },
+    "indexes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/L2IndexManifest"
+      },
+      "title": "Indexes",
+      "type": "array"
+    },
+    "r1_entity_association_count": {
+      "minimum": 0,
+      "title": "R1 Entity Association Count",
+      "type": "integer"
+    },
+    "r1_record_count": {
+      "minimum": 0,
+      "title": "R1 Record Count",
+      "type": "integer"
+    },
+    "reranker_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reranker Model"
+    },
+    "reranker_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reranker Revision"
+    },
+    "retrieval_backend_profile": {
+      "$ref": "#/$defs/RetrievalBackendProfile"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    }
+  },
+  "required": [
+    "attestation_id",
+    "retrieval_backend_profile",
+    "source_commit",
+    "snapshot_id",
+    "capability",
+    "r1_record_count",
+    "r1_entity_association_count",
+    "graph_node_count",
+    "graph_edge_count"
+  ],
+  "title": "ProjectionAttestation",
+  "type": "object"
+}

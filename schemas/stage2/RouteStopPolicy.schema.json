@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "max_rounds": {
+      "default": 2,
+      "minimum": 1,
+      "title": "Max Rounds",
+      "type": "integer"
+    },
+    "max_tool_calls": {
+      "default": 12,
+      "minimum": 0,
+      "title": "Max Tool Calls",
+      "type": "integer"
+    },
+    "stop_when": {
+      "minLength": 1,
+      "title": "Stop When",
+      "type": "string"
+    }
+  },
+  "required": [
+    "stop_when"
+  ],
+  "title": "RouteStopPolicy",
+  "type": "object"
+}

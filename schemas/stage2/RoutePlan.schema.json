@@ -1,0 +1,430 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ConditionalFallback": {
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "minLength": 1,
+          "title": "Condition",
+          "type": "string"
+        },
+        "fallback_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "fusion_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fusion Profile"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/RouteStep"
+          },
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "fallback_id",
+        "condition",
+        "steps"
+      ],
+      "title": "ConditionalFallback",
+      "type": "object"
+    },
+    "EvidenceExpansionPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_anchor_expansions": {
+          "default": 10,
+          "minimum": 0,
+          "title": "Max Anchor Expansions",
+          "type": "integer"
+        },
+        "max_full_chapter_reads": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Full Chapter Reads",
+          "type": "integer"
+        },
+        "max_scene_expansions": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Scene Expansions",
+          "type": "integer"
+        },
+        "required_strength": {
+          "minLength": 1,
+          "title": "Required Strength",
+          "type": "string"
+        }
+      },
+      "required": [
+        "required_strength"
+      ],
+      "title": "EvidenceExpansionPolicy",
+      "type": "object"
+    },
+    "ExcludedChannel": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "reason"
+      ],
+      "title": "ExcludedChannel",
+      "type": "object"
+    },
+    "GraphTraversalPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_edge_semantics": {
+          "default": [
+            "canonical",
+            "evidence"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Allowed Edge Semantics",
+          "type": "array"
+        },
+        "max_depth": {
+          "default": 2,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Max Depth",
+          "type": "integer"
+        }
+      },
+      "title": "GraphTraversalPolicy",
+      "type": "object"
+    },
+    "InformationDomain": {
+      "enum": [
+        "working",
+        "world_semantic",
+        "plan_intent",
+        "textual_evidence",
+        "reference_knowledge",
+        "procedural",
+        "operational"
+      ],
+      "title": "InformationDomain",
+      "type": "string"
+    },
+    "ResolutionTier": {
+      "enum": [
+        "r0",
+        "r1",
+        "r2"
+      ],
+      "title": "ResolutionTier",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "RouteExecution": {
+      "enum": [
+        "serial",
+        "parallel"
+      ],
+      "title": "RouteExecution",
+      "type": "string"
+    },
+    "RouteStep": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_pool": {
+          "$ref": "#/$defs/CandidatePool"
+        },
+        "channel": {
+          "$ref": "#/$defs/RetrievalChannel"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "per_channel_limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Per Channel Limit",
+          "type": "integer"
+        },
+        "query_template": {
+          "minLength": 1,
+          "title": "Query Template",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "step_id",
+        "channel",
+        "candidate_pool",
+        "query_template"
+      ],
+      "title": "RouteStep",
+      "type": "object"
+    },
+    "RouteStepGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "$ref": "#/$defs/RouteExecution"
+        },
+        "fusion_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fusion Profile"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/RouteStep"
+          },
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "group_id",
+        "execution",
+        "steps"
+      ],
+      "title": "RouteStepGroup",
+      "type": "object"
+    },
+    "RouteStopPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_rounds": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Max Rounds",
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "default": 12,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "stop_when": {
+          "minLength": 1,
+          "title": "Stop When",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stop_when"
+      ],
+      "title": "RouteStopPolicy",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage1QueryIntent": {
+      "enum": [
+        "current_state",
+        "known_id",
+        "plan_node",
+        "mandatory_constraint",
+        "semantic_history",
+        "related_event",
+        "plan_obligation",
+        "global_arc",
+        "chapter_thread",
+        "character_arc",
+        "exact_quote",
+        "rare_phrase",
+        "style_voice",
+        "dialogue_sample",
+        "causal_multi_hop",
+        "relation_chain",
+        "anchor_insufficient"
+      ],
+      "title": "Stage1QueryIntent",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "conditional_fallbacks": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConditionalFallback"
+      },
+      "title": "Conditional Fallbacks",
+      "type": "array"
+    },
+    "domains": {
+      "items": {
+        "$ref": "#/$defs/InformationDomain"
+      },
+      "minItems": 1,
+      "title": "Domains",
+      "type": "array"
+    },
+    "evidence_policy": {
+      "$ref": "#/$defs/EvidenceExpansionPolicy"
+    },
+    "excluded_channels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ExcludedChannel"
+      },
+      "title": "Excluded Channels",
+      "type": "array"
+    },
+    "graph_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraphTraversalPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "mandatory_steps": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RouteStep"
+      },
+      "title": "Mandatory Steps",
+      "type": "array"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "normalized_intent": {
+      "$ref": "#/$defs/Stage1QueryIntent"
+    },
+    "policy_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "primary_groups": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RouteStepGroup"
+      },
+      "title": "Primary Groups",
+      "type": "array"
+    },
+    "profile_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "resolution_tier": {
+      "$ref": "#/$defs/ResolutionTier"
+    },
+    "route_plan_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "routing_features_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "stop_policy": {
+      "$ref": "#/$defs/RouteStopPolicy"
+    }
+  },
+  "required": [
+    "route_plan_id",
+    "profile_id",
+    "need_id",
+    "base_commit",
+    "snapshot_id",
+    "resolution_tier",
+    "domains",
+    "normalized_intent",
+    "routing_features_hash",
+    "evidence_policy",
+    "stop_policy",
+    "policy_version"
+  ],
+  "title": "RoutePlan",
+  "type": "object"
+}

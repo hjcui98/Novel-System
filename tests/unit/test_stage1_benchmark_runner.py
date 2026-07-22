@@ -19,6 +19,7 @@ from novel_agent.domain.memory import (
 from novel_agent.services.benchmark_importer import bundle_content_id
 from novel_agent.services.stage1_benchmark import (
     FrozenHorizonNeedGenerator,
+    OracleGoldNeedGenerator,
     Stage1BenchmarkRunner,
     Stage1NeedGenerator,
     _evidence_matches,
@@ -114,6 +115,28 @@ def test_runner_is_deterministic_for_the_same_bundle_and_profile() -> None:
     assert first == second
     assert first.config.query_condition is BenchmarkQueryCondition.GENERATED
     assert first.config.need_profile == Stage1NeedGenerator.profile
+
+
+def test_oracle_gold_need_generator_is_distinct_and_plan_scoped() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+
+    needs = OracleGoldNeedGenerator().generate(world, case)
+
+    expected_count = sum(
+        len(items)
+        for items in (
+            case.observed_use_gold,
+            case.operational_constraint_gold,
+            case.plan_obligation_gold,
+        )
+    )
+    assert len(needs) == expected_count
+    assert all(need.need_id.root.startswith("need.oracle.") for need in needs)
+    plan_needs = tuple(need for need in needs if need.allow_plan)
+    assert len(plan_needs) == len(case.plan_obligation_gold)
+    assert all(need.access_scope == "author_planning" for need in plan_needs)
 
 
 def test_runner_accepts_frozen_oracle_or_generated_horizon_needs() -> None:

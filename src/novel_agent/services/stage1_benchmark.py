@@ -16,6 +16,7 @@ from novel_agent.domain.benchmark import (
     ChapterSummaryRootDocument,
     FailureCategory,
     GoldItem,
+    GoldKind,
     Stage1BenchmarkConfig,
     Stage1BenchmarkResult,
     TextRootDocument,
@@ -159,6 +160,8 @@ class Stage1NeedGenerator:
                     query_intent=Stage1QueryIntent.PLAN_OBLIGATION,
                     query_text=obligation.description,
                     entity_ids=obligation.owner_ids,
+                    access_scope="author_planning",
+                    allow_plan=True,
                     why_needed="active plan obligation is due in the target horizon",
                     risk_level=NeedRisk.HIGH,
                     requirement=RequirementLevel.MANDATORY,
@@ -166,6 +169,62 @@ class Stage1NeedGenerator:
                     allowed_candidate_pools=(CandidatePool.ANCHOR, CandidatePool.GROUNDED),
                     expected_evidence_types=("text_span",),
                     stop_condition="at least one traceable current source",
+                )
+            )
+        return tuple(needs)
+
+
+class OracleGoldNeedGenerator:
+    """Evaluator-only diagnostic needs derived directly from annotated Gold."""
+
+    profile = "oracle-gold-annotation-v1"
+    query_condition = BenchmarkQueryCondition.ORACLE
+
+    def generate(
+        self,
+        world: WorldRootDocument,
+        case: BenchmarkCaseManifest,
+    ) -> tuple[Stage1MemoryNeed, ...]:
+        run_id = RunId(f"run.oracle.{case.case_id.root}")
+        task_id = TaskId(f"task.oracle.{case.case_id.root}")
+        gold_items = (
+            *case.observed_use_gold,
+            *case.operational_constraint_gold,
+            *case.plan_obligation_gold,
+        )
+        needs: list[Stage1MemoryNeed] = []
+        for gold in gold_items:
+            is_plan = gold.kind is GoldKind.PLAN_OBLIGATION
+            is_constraint = gold.kind is GoldKind.OPERATIONAL_CONSTRAINT
+            needs.append(
+                Stage1MemoryNeed(
+                    need_id=StableId(f"need.oracle.{gold.gold_id.root}"),
+                    run_id=run_id,
+                    task_id=task_id,
+                    base_commit=world.source_commit,
+                    horizon_target=case.target_range,
+                    need_type=f"oracle_{gold.kind.value}",
+                    query_intent=(
+                        Stage1QueryIntent.PLAN_OBLIGATION
+                        if is_plan
+                        else Stage1QueryIntent.MANDATORY_CONSTRAINT
+                        if is_constraint
+                        else Stage1QueryIntent.SEMANTIC_HISTORY
+                    ),
+                    query_text=gold.description,
+                    access_scope="author_planning" if is_plan else "writer_safe",
+                    allow_plan=is_plan,
+                    why_needed="evaluator-only Oracle Gold retrieval diagnosis",
+                    risk_level=NeedRisk.HIGH if gold.mandatory else NeedRisk.MEDIUM,
+                    requirement=(
+                        RequirementLevel.MANDATORY
+                        if gold.mandatory or is_constraint or is_plan
+                        else RequirementLevel.OPTIONAL
+                    ),
+                    preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
+                    allowed_candidate_pools=(CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+                    expected_evidence_types=("text_span",),
+                    stop_condition="annotated Gold evidence is recovered",
                 )
             )
         return tuple(needs)

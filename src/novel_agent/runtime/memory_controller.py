@@ -20,9 +20,11 @@ from novel_agent.domain.memory import (
     RetrievalChannel,
     RetrievalStopReason,
     RetrievalTrace,
+    RetrievalUnit,
     Stage1ContextPackage,
     Stage1MemoryNeed,
 )
+from novel_agent.domain.retrieval_routing import RoutePlan
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -39,6 +41,7 @@ from novel_agent.domain.stage2 import (
     MemorySelection,
     ResolutionStatus,
     SelectionDecision,
+    SufficiencyReport,
     ToolCallContext,
     ToolPolicy,
     ToolResult,
@@ -47,9 +50,9 @@ from novel_agent.domain.stage2 import (
 from novel_agent.prompts.registry import content_hash
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.memory_pipeline import ContextCompiler
-from novel_agent.services.retrieval import ROUTES
+from novel_agent.services.retrieval import ROUTES, FusionService, RerankService
 from novel_agent.tools.contracts import ToolBinding, ToolBudget, ToolInvocation
-from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, POOL_BY_CHANNEL
+from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, PLAN_INTENTS, POOL_BY_CHANNEL
 
 TOOL_BY_CHANNEL = {channel: name for name, channel in CHANNEL_BY_TOOL.items()}
 
@@ -87,6 +90,12 @@ class ControllerPolicy(Protocol):
 class RouteBoundControllerPolicy:
     """Safe baseline policy: registered route order, no query invention, no duplicate calls."""
 
+    def __init__(self, route_plans: tuple[RoutePlan, ...] = ()) -> None:
+        plans = {plan.need_id: plan for plan in route_plans}
+        if len(plans) != len(route_plans):
+            raise ValueError("controller route plans must have unique memory need ids")
+        self._route_plans = plans
+
     @property
     def contract_ref(self) -> ContractRef:
         fingerprint = content_hash(b"route-bound-controller-policy-v2")
@@ -107,6 +116,8 @@ class RouteBoundControllerPolicy:
     def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
         request = state["request"]
         calls = state["tool_calls"]
+        if self._route_plans:
+            return self._decide_registered_route_plans(request, calls)
         successful = {
             need_id
             for need_id, _, result in calls
@@ -138,8 +149,7 @@ class RouteBoundControllerPolicy:
                 rationale_code="REQUEST_CALL_BUDGET_EXHAUSTED",
             )
         for need in (*mandatory_missing, *optional_missing):
-            route = ROUTES[need.query_intent]
-            channels = (*route.channels, *route.fallback_channels)
+            channels = self._channels_for_need(need)
             for channel in channels:
                 if POOL_BY_CHANNEL[channel] not in need.allowed_candidate_pools:
                     continue
@@ -155,6 +165,134 @@ class RouteBoundControllerPolicy:
             action=ControllerPolicyAction.STOP,
             stop_reason=ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
             rationale_code="REGISTERED_ROUTES_EXHAUSTED",
+        )
+
+    def _decide_registered_route_plans(
+        self,
+        request: MemoryResolutionRequest,
+        calls: tuple[tuple[StableId, str, ToolResult], ...],
+    ) -> ControllerPolicyDecision:
+        """Advance each Need through its registered plan without broad fallback calls."""
+
+        max_calls = min(
+            request.retrieval_budget.max_tool_calls,
+            request.retrieval_budget.max_rounds * max(1, len(request.initial_memory_needs)),
+        )
+        if len(calls) >= max_calls:
+            return ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                rationale_code="REQUEST_CALL_BUDGET_EXHAUSTED",
+            )
+        unresolved = False
+        fallback_exhausted_without_gain = False
+        for need in request.initial_memory_needs:
+            if need.requirement is not RequirementLevel.MANDATORY:
+                continue
+            plan = self._route_plans.get(need.need_id)
+            if plan is None:
+                raise ValueError("route-bound controller has no plan for a mandatory memory need")
+            need_calls = tuple(item for item in calls if item[0] == need.need_id)
+            next_tool = self._next_registered_tool(plan, need_calls)
+            if next_tool is not None:
+                return ControllerPolicyDecision(
+                    action=ControllerPolicyAction.CALL_TOOL,
+                    need_id=need.need_id,
+                    tool_name=next_tool,
+                    rationale_code="NEXT_REGISTERED_ROUTE_STEP",
+                )
+            if not any(
+                result.status is ToolResultStatus.SUCCEEDED and result.coverage > 0
+                for _, _, result in need_calls
+            ):
+                unresolved = True
+                fallback_tools = {
+                    TOOL_BY_CHANNEL[step.channel]
+                    for fallback in plan.conditional_fallbacks
+                    for step in fallback.steps
+                }
+                fallback_results = tuple(
+                    result for _, tool_name, result in need_calls if tool_name in fallback_tools
+                )
+                fallback_exhausted_without_gain = fallback_exhausted_without_gain or (
+                    bool(fallback_results)
+                    and all(result.new_information_gain == 0 for result in fallback_results)
+                )
+        if unresolved:
+            return ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=(
+                    ControllerStopReason.NO_ADDITIONAL_EVIDENCE
+                    if fallback_exhausted_without_gain
+                    else ControllerStopReason.MANDATORY_GAP_UNRESOLVED
+                ),
+                rationale_code=(
+                    "REGISTERED_FALLBACK_ADDED_NO_INFORMATION"
+                    if fallback_exhausted_without_gain
+                    else "REGISTERED_ROUTE_EXHAUSTED_WITHOUT_EVIDENCE"
+                ),
+            )
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.STOP,
+            stop_reason=ControllerStopReason.SUFFICIENT,
+            rationale_code="MANDATORY_REGISTERED_ROUTES_COMPLETED",
+        )
+
+    @staticmethod
+    def _next_registered_tool(
+        plan: RoutePlan,
+        calls: tuple[tuple[StableId, str, ToolResult], ...],
+    ) -> str | None:
+        called_tools = {tool_name for _, tool_name, _ in calls}
+        primary_steps = (
+            *plan.mandatory_steps,
+            *(step for group in plan.primary_groups for step in group.steps),
+        )
+        for step in primary_steps:
+            tool_name = TOOL_BY_CHANNEL[step.channel]
+            if tool_name not in called_tools:
+                return tool_name
+        primary_channels = {step.channel for step in primary_steps}
+        primary_succeeded = any(
+            TOOL_BY_CHANNEL.get(channel) == tool_name
+            and result.status is ToolResultStatus.SUCCEEDED
+            and result.coverage > 0
+            for _, tool_name, result in calls
+            for channel in primary_channels
+        )
+        for fallback in plan.conditional_fallbacks:
+            if not RouteBoundControllerPolicy._fallback_applies(
+                fallback.condition, primary_succeeded
+            ):
+                continue
+            for step in fallback.steps:
+                tool_name = TOOL_BY_CHANNEL[step.channel]
+                if tool_name not in called_tools:
+                    return tool_name
+        return None
+
+    @staticmethod
+    def _fallback_applies(condition: str, primary_succeeded: bool) -> bool:
+        if condition in {"anchor_evidence_insufficient", "plan_anchor_insufficient"}:
+            return not primary_succeeded
+        if condition == "hierarchy_scope_resolved":
+            return primary_succeeded
+        raise ValueError(f"unregistered route fallback condition: {condition}")
+
+    def _channels_for_need(self, need: Stage1MemoryNeed) -> tuple[RetrievalChannel, ...]:
+        plan = self._route_plans.get(need.need_id)
+        if plan is None:
+            route = ROUTES[need.query_intent]
+            return (*route.channels, *route.fallback_channels)
+        return tuple(
+            dict.fromkeys(
+                step.channel
+                for step in (
+                    *plan.mandatory_steps,
+                    *(step for group in plan.primary_groups for step in group.steps),
+                    *(step for fallback in plan.conditional_fallbacks for step in fallback.steps),
+                )
+            )
         )
 
     def decision_receipt(self, model_call_id: StableId) -> AgentExecutionReceipt | None:
@@ -177,6 +315,9 @@ class BoundedMemoryController:
         policy: ControllerPolicy,
         freshness_check: Callable[[MemoryResolutionRequest], bool],
         checkpointer: Any,
+        *,
+        route_plans: tuple[RoutePlan, ...] = (),
+        reranker: RerankService | None = None,
     ) -> None:
         policy_tool_hash = getattr(policy, "tool_policy_hash", None)
         if policy_tool_hash is not None and policy_tool_hash != tool_policy.content_hash:
@@ -196,6 +337,10 @@ class BoundedMemoryController:
             "prompt_fingerprint",
             fallback_policy.prompt_fingerprint,
         )
+        self._route_plans = {plan.need_id: plan for plan in route_plans}
+        self._reranker = reranker
+        if len(self._route_plans) != len(route_plans):
+            raise ValueError("bounded controller route plans must have unique memory need ids")
         self._freshness_check = freshness_check
         self._budgets: dict[str, ToolBudget] = {}
         builder = StateGraph(ControllerGraphState)
@@ -342,6 +487,8 @@ class BoundedMemoryController:
             )
 
         result = asyncio.run(invoke())
+        gain = self._new_information_gain(calls, result)
+        result = result.model_copy(update={"new_information_gain": gain})
         return {
             "tool_calls": [
                 *calls,
@@ -353,6 +500,39 @@ class BoundedMemoryController:
             ]
         }
 
+    @staticmethod
+    def _new_information_gain(
+        prior_calls: list[dict[str, Any]],
+        result: ToolResult,
+    ) -> int:
+        if result.status is not ToolResultStatus.SUCCEEDED:
+            return 0
+        prior_ids = {
+            unit_id
+            for call in prior_calls
+            for unit_id in BoundedMemoryController._result_unit_ids(
+                ToolResult.model_validate_json(json.dumps(call["result"]))
+            )
+        }
+        return len(set(BoundedMemoryController._result_unit_ids(result)) - prior_ids)
+
+    @staticmethod
+    def _result_unit_ids(result: ToolResult) -> tuple[StableId, ...]:
+        if result.status is not ToolResultStatus.SUCCEEDED or not isinstance(result.payload, dict):
+            return ()
+        raw_hits = result.payload.get("hits")
+        if not isinstance(raw_hits, list):
+            return ()
+        ids: list[StableId] = []
+        for raw in raw_hits:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                ids.append(ChannelHit.model_validate(raw).unit.unit_id)
+            except (TypeError, ValueError):
+                continue
+        return tuple(ids)
+
     def _finalize(
         self,
         request: MemoryResolutionRequest,
@@ -361,7 +541,11 @@ class BoundedMemoryController:
     ) -> BoundedControllerRun:
         calls = self._parse_calls(state.get("tool_calls", []))
         stop_reason = ControllerStopReason(state["stop_reason"])
-        traces = self._build_traces(request.initial_memory_needs, calls)
+        traces = self._build_traces(
+            request.initial_memory_needs,
+            calls,
+            candidate_limit=request.retrieval_budget.max_candidates,
+        )
         unresolved = tuple(
             need.query_text
             for need, trace in zip(request.initial_memory_needs, traces, strict=True)
@@ -400,6 +584,27 @@ class BoundedMemoryController:
             ready = False
             stop_reason = ControllerStopReason.BUDGET_EXHAUSTED
             unresolved = (*unresolved, "mandatory context exceeds token budget")
+        evidence_strength_satisfied = all(
+            unit.evidence_refs
+            or unit.source_artifact is not None
+            or unit.truth_class is not None
+            or unit.information_label == "plan"
+            or bool(unit.text.strip())
+            for unit in selected
+        )
+        if ready and not evidence_strength_satisfied:
+            ready = False
+            stop_reason = ControllerStopReason.NO_ADDITIONAL_EVIDENCE
+            unresolved = (*unresolved, "selected candidates lack qualifying evidence")
+        sufficiency = self._sufficiency_report(
+            request,
+            traces,
+            selected,
+            calls,
+            unresolved,
+            evidence_strength_satisfied=evidence_strength_satisfied,
+            stop_reason=stop_reason,
+        )
         resolution = ContextResolutionResult(
             resolution_id=StableId(f"resolution.{request.request_id.root}"),
             request_id=request.request_id,
@@ -436,6 +641,7 @@ class BoundedMemoryController:
             ),
             unresolved_gaps=unresolved,
             context_assembly_spec=assembly if ready else None,
+            sufficiency_report=sufficiency,
             stop_reason=stop_reason,
             receipt=receipt,
         )
@@ -452,6 +658,93 @@ class BoundedMemoryController:
             "tool_results": tuple(result for _, _, result in calls),
             "decision_receipts": tuple(decision_receipts),
         }
+
+    def _sufficiency_report(
+        self,
+        request: MemoryResolutionRequest,
+        traces: tuple[RetrievalTrace, ...],
+        selected: tuple[RetrievalUnit, ...],
+        calls: tuple[tuple[StableId, str, ToolResult], ...],
+        unresolved: tuple[str, ...],
+        *,
+        evidence_strength_satisfied: bool,
+        stop_reason: ControllerStopReason,
+    ) -> SufficiencyReport:
+        selected_entities = {entity for unit in selected for entity in unit.entity_ids}
+        requested_entities = {
+            entity for need in request.initial_memory_needs for entity in need.entity_ids
+        }
+        temporal_needs = tuple(
+            need for need in request.initial_memory_needs if need.time_scope is not None
+        )
+        plan_needs = tuple(
+            need for need in request.initial_memory_needs if need.query_intent in PLAN_INTENTS
+        )
+        resolved = {
+            trace.need_id for trace in traces if any(item.selected for item in trace.candidates)
+        }
+        recommended_fallback = next(
+            (
+                fallback.condition
+                for need in request.initial_memory_needs
+                if need.need_id not in resolved
+                for plan in (self._route_plans.get(need.need_id),)
+                if plan is not None
+                for fallback in plan.conditional_fallbacks
+            ),
+            None,
+        )
+        truth_groups: dict[tuple[tuple[StableId, ...], str | None], list[RetrievalUnit]] = {}
+        for unit in selected:
+            key = (tuple(sorted(unit.entity_ids, key=lambda item: item.root)), unit.predicate)
+            truth_groups.setdefault(key, []).append(unit)
+        conflicting_evidence = tuple(
+            sorted(
+                {
+                    unit.unit_id
+                    for units in truth_groups.values()
+                    if len({unit.truth_class for unit in units if unit.truth_class is not None}) > 1
+                    for unit in units
+                },
+                key=lambda item: item.root,
+            )
+        )
+        return SufficiencyReport(
+            mandatory_gaps_closed=not unresolved,
+            evidence_strength_satisfied=evidence_strength_satisfied,
+            entity_coverage=(
+                len(requested_entities & selected_entities) / len(requested_entities)
+                if requested_entities
+                else 1.0
+            ),
+            temporal_coverage=(
+                sum(need.need_id in resolved for need in temporal_needs) / len(temporal_needs)
+                if temporal_needs
+                else 1.0
+            ),
+            plan_obligation_coverage=(
+                sum(need.need_id in resolved for need in plan_needs) / len(plan_needs)
+                if plan_needs
+                else 1.0
+            ),
+            conflicting_evidence=conflicting_evidence,
+            unresolved_unknowns=unresolved,
+            scope_access_warnings=(
+                ("runtime access policy blocked retrieval",)
+                if stop_reason is ControllerStopReason.ACCESS_BLOCKED
+                else ()
+            ),
+            freshness_warnings=(
+                ("snapshot freshness gate blocked retrieval",)
+                if stop_reason is ControllerStopReason.FRESHNESS_BLOCKED
+                else ()
+            ),
+            new_information_gain_by_round=tuple(
+                result.new_information_gain for _, _, result in calls
+            ),
+            recommended_fallback=recommended_fallback,
+            stop_reason=stop_reason,
+        )
 
     def _finalize_without_tools(
         self,
@@ -484,6 +777,8 @@ class BoundedMemoryController:
         self,
         needs: tuple[Stage1MemoryNeed, ...],
         calls: tuple[tuple[StableId, str, ToolResult], ...],
+        *,
+        candidate_limit: int = 20,
     ) -> tuple[RetrievalTrace, ...]:
         traces: list[RetrievalTrace] = []
         for need in needs:
@@ -502,15 +797,15 @@ class BoundedMemoryController:
                     hits.extend(
                         ChannelHit.model_validate_json(json.dumps(hit)) for hit in payload_hits
                     )
-            unique = {hit.unit.unit_id: hit for hit in hits}
-            candidates = tuple(
-                FusedCandidate(
-                    unit=hit.unit,
-                    fused_rank=rank,
-                    rrf_score=1.0 / rank,
-                    channel_hits=(hit,),
-                )
-                for rank, hit in enumerate(unique.values(), start=1)
+            channel_results = {
+                channel: tuple(hit for hit in hits if hit.channel is channel)
+                for channel in dict.fromkeys(channels)
+            }
+            candidates, fusion_applied, rerank_applied, rerank_failure = self._route_candidates(
+                need,
+                self._route_plans.get(need.need_id),
+                channel_results,
+                candidate_limit=candidate_limit,
             )
             traces.append(
                 RetrievalTrace(
@@ -521,7 +816,13 @@ class BoundedMemoryController:
                         channel: sum(hit.channel is channel for hit in hits) for channel in channels
                     },
                     candidates=candidates,
-                    fusion_applied=False,
+                    fusion_applied=fusion_applied,
+                    rerank_applied=rerank_applied,
+                    channel_failures=(
+                        {RetrievalChannel.RERANK: rerank_failure}
+                        if rerank_failure is not None
+                        else {}
+                    ),
                     stop_reason=(
                         RetrievalStopReason.EXACT_SATISFIED
                         if candidates
@@ -530,6 +831,123 @@ class BoundedMemoryController:
                 )
             )
         return tuple(traces)
+
+    def _route_candidates(
+        self,
+        need: Stage1MemoryNeed,
+        plan: RoutePlan | None,
+        channel_results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+        *,
+        candidate_limit: int,
+    ) -> tuple[tuple[FusedCandidate, ...], bool, bool, str | None]:
+        """Fuse only the groups declared by the route; no cross-pool RRF."""
+
+        if plan is None:
+            direct_candidates = self._direct_candidates(channel_results, candidate_limit)
+            return direct_candidates, False, False, None
+        consumed: set[RetrievalChannel] = set()
+        stages: list[tuple[dict[RetrievalChannel, tuple[ChannelHit, ...]], bool]] = []
+        mandatory = {
+            step.channel: channel_results[step.channel]
+            for step in plan.mandatory_steps
+            if step.channel in channel_results
+        }
+        if mandatory:
+            stages.append((mandatory, False))
+            consumed.update(mandatory)
+        for group in plan.primary_groups:
+            results = {
+                step.channel: channel_results[step.channel]
+                for step in group.steps
+                if step.channel in channel_results
+            }
+            if results:
+                stages.append((results, group.fusion_profile is not None))
+                consumed.update(results)
+        for fallback in plan.conditional_fallbacks:
+            results = {
+                step.channel: channel_results[step.channel]
+                for step in fallback.steps
+                if step.channel in channel_results
+            }
+            if results:
+                stages.append((results, fallback.fusion_profile is not None))
+                consumed.update(results)
+        remaining = {
+            channel: hits for channel, hits in channel_results.items() if channel not in consumed
+        }
+        if remaining:
+            stages.append((remaining, False))
+        candidates: tuple[FusedCandidate, ...] = ()
+        fusion_applied = False
+        for results, should_fuse in stages:
+            stage_candidates = (
+                FusionService().fuse(results, limit=candidate_limit)
+                if should_fuse and len(results) > 1
+                else self._direct_candidates(results, candidate_limit)
+            )
+            fusion_applied = fusion_applied or (should_fuse and len(results) > 1)
+            candidates = self._merge_candidates(
+                candidates,
+                stage_candidates,
+                candidate_limit,
+            )
+        rerank_applied = False
+        rerank_failure: str | None = None
+        if fusion_applied and self._reranker is not None:
+            try:
+                candidates = self._reranker.rerank(need, candidates, limit=candidate_limit)
+                rerank_applied = True
+            except Exception as error:
+                rerank_failure = f"reranker_degraded:{type(error).__name__}"
+        return candidates, fusion_applied, rerank_applied, rerank_failure
+
+    @staticmethod
+    def _direct_candidates(
+        channel_results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+        candidate_limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        unique: dict[StableId, ChannelHit] = {}
+        for hits in channel_results.values():
+            for hit in hits:
+                unique.setdefault(hit.unit.unit_id, hit)
+        return tuple(
+            FusedCandidate(
+                unit=hit.unit,
+                fused_rank=rank,
+                rrf_score=1.0 / rank,
+                channel_hits=(hit,),
+                selected=rank <= candidate_limit or hit.unit.mandatory,
+                rejection_reason=(
+                    None if rank <= candidate_limit or hit.unit.mandatory else "route_result_limit"
+                ),
+            )
+            for rank, hit in enumerate(unique.values(), start=1)
+        )
+
+    @staticmethod
+    def _merge_candidates(
+        current: tuple[FusedCandidate, ...],
+        incoming: tuple[FusedCandidate, ...],
+        candidate_limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        unique: dict[StableId, FusedCandidate] = {}
+        for candidate in (*current, *incoming):
+            unique.setdefault(candidate.unit.unit_id, candidate)
+        return tuple(
+            candidate.model_copy(
+                update={
+                    "fused_rank": rank,
+                    "selected": rank <= candidate_limit or candidate.unit.mandatory,
+                    "rejection_reason": (
+                        None
+                        if rank <= candidate_limit or candidate.unit.mandatory
+                        else "route_result_limit"
+                    ),
+                }
+            )
+            for rank, candidate in enumerate(unique.values(), start=1)
+        )
 
     def _receipt(
         self,

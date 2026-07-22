@@ -25,6 +25,12 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
     WorldRootDocument,
 )
+from novel_agent.domain.retrieval_routing import (
+    RetrievalBackendProfile,
+    RoutePlan,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
+)
 from novel_agent.domain.stage2 import (
     AccessScope,
     BenchmarkInformationProfile,
@@ -46,23 +52,45 @@ from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
 from novel_agent.services.benchmark_importer import BenchmarkBundleImporter, content_id
 from novel_agent.services.memory_pipeline import AnchorBuilder, ContextCompiler, EvidenceExpander
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
-from novel_agent.services.retrieval import InMemoryRetrievalBackend
+from novel_agent.services.retrieval import (
+    InMemoryRetrievalBackend,
+    RerankService,
+    RetrievalBackend,
+)
+from novel_agent.services.retrieval_routing import DeterministicChannelPlanner
 from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
 from novel_agent.tools.retrieval import CHANNEL_BY_TOOL
 
 
 class Stage2PairedPilotRunner:
-    """Execute both arms against one immutable in-memory Oracle basis per case."""
+    """Execute both arms against one immutable retrieval basis per case.
+
+    The in-memory implementation is retained solely for deterministic contract
+    smoke tests.  A formal ``real_hybrid`` execution must inject the
+    commit-scoped backend introduced by Stage 2R projection work; it may never
+    silently receive this synthetic backend.
+    """
 
     version = "stage2-paired-pilot-v0.2"
 
-    def __init__(self, *, token_budget: int = 4000, max_candidates: int = 20) -> None:
+    def __init__(
+        self,
+        *,
+        token_budget: int = 4000,
+        max_candidates: int = 20,
+        retrieval_backend_profile: RetrievalBackendProfile = RetrievalBackendProfile.SCRIPTED_SMOKE,
+    ) -> None:
         if token_budget < 1:
             raise ValueError("paired Pilot token budget must be positive")
         if max_candidates < 1 or max_candidates > 100:
             raise ValueError("paired Pilot candidate limit must be between 1 and 100")
         self._token_budget = token_budget
         self._max_candidates = max_candidates
+        self._retrieval_backend_profile = retrieval_backend_profile
+
+    @property
+    def retrieval_backend_profile(self) -> RetrievalBackendProfile:
+        return self._retrieval_backend_profile
 
     def run(self, bundle: BenchmarkBundle) -> Stage2PairedPilotReport:
         BenchmarkBundleImporter().validate(bundle)
@@ -115,8 +143,7 @@ class Stage2PairedPilotRunner:
         base_commit = base_commit_override or world.source_commit
         world = world.model_copy(update={"source_commit": base_commit})
         snapshot_id = StableId(f"snapshot.{case.case_id.root}.stage2-paired")
-        units = AnchorBuilder().build(world, history, plan, snapshot_id=snapshot_id)
-        backend = InMemoryRetrievalBackend(units)
+        backend = self._scripted_smoke_backend(world, history, plan, snapshot_id=snapshot_id)
         world_needs = Stage1NeedGenerator().generate(world, case)
         needs = (
             (
@@ -131,6 +158,7 @@ class Stage2PairedPilotRunner:
             if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
             else world_needs
         )
+        needs = self._scope_needs(needs, profile)
         if not needs:
             raise ValueError(f"paired Pilot case has no generated needs: {case.case_id.root}")
         max_calls = max(1, len(needs) * 2)
@@ -252,6 +280,9 @@ class Stage2PairedPilotRunner:
         plan: PlanRootDocument,
         base_commit: CommitId,
         controller_policy_factory: Any | None = None,
+        retrieval_backend: RetrievalBackend | None = None,
+        snapshot_capability: SnapshotCapability | None = None,
+        reranker: RerankService | None = None,
     ) -> PairedContextComparison:
         """Resolve both arms on E2E state without consulting private Gold.
 
@@ -262,15 +293,28 @@ class Stage2PairedPilotRunner:
 
         world = world.model_copy(update={"source_commit": base_commit})
         fingerprint = config.configuration_fingerprint
-        snapshot_id = StableId(f"snapshot.{case.case_id.root}.stage2-e2e")
-        units = AnchorBuilder().build(
-            world,
-            history,
-            plan,
-            snapshot_id=snapshot_id,
-            canonical_commit=base_commit,
-        )
-        backend = InMemoryRetrievalBackend(units)
+        if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
+            if retrieval_backend is None or snapshot_capability is None:
+                raise RuntimeError(
+                    "real_hybrid paired execution requires an injected commit-scoped backend "
+                    "and exact snapshot capability"
+                )
+            if (
+                snapshot_capability.source_commit != base_commit
+                or snapshot_capability.status is not SnapshotCapabilityStatus.EXACT
+            ):
+                raise ValueError("real_hybrid paired capability must be exact for the state basis")
+            snapshot_id = snapshot_capability.snapshot_id
+            backend = retrieval_backend
+        else:
+            snapshot_id = StableId(f"snapshot.{case.case_id.root}.stage2-e2e")
+            backend = self._scripted_smoke_backend(
+                world,
+                history,
+                plan,
+                snapshot_id=snapshot_id,
+                canonical_commit=base_commit,
+            )
         world_needs = Stage1NeedGenerator().generate(world, case)  # type: ignore[arg-type]
         needs = (
             (
@@ -280,15 +324,17 @@ class Stage2PairedPilotRunner:
             if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
             else world_needs
         )
+        needs = self._scope_needs(needs, profile)
         if not needs:
             raise ValueError(f"E2E state produced no memory needs: {case.case_id.root}")
+        route_plans = self._route_plans(needs, snapshot_capability)
         max_calls = max(1, len(needs) * 2)
         tool_policy = seal_tool_policy(
             ToolPolicy(
                 policy_id=StableId(f"policy.stage2-e2e.v0.1.{profile.value}"),
                 version=config.schema_version,
                 content_hash=fingerprint,
-                allowed_tools=tuple(sorted(CHANNEL_BY_TOOL)),
+                allowed_tools=self._allowed_tools(route_plans),
                 max_rounds=2,
                 max_tool_calls=max_calls,
                 max_query_rewrites_per_need=0,
@@ -298,7 +344,7 @@ class Stage2PairedPilotRunner:
         controller_policy = (
             controller_policy_factory(tool_policy)
             if controller_policy_factory is not None
-            else RouteBoundControllerPolicy()
+            else RouteBoundControllerPolicy(route_plans)
         )
         runner = PairedMemoryControllerRunner.from_shared_backend(
             backend=backend,
@@ -309,6 +355,8 @@ class Stage2PairedPilotRunner:
             freshness_check=lambda _: True,
             checkpointer=InMemorySaver(),
             comparison_basis_fingerprint=fingerprint,
+            route_plans=route_plans,
+            reranker=reranker,
         )
         first = needs[0]
         suffix = profile.value.replace("_", "-")
@@ -347,6 +395,60 @@ class Stage2PairedPilotRunner:
             history,
             thread_id=f"stage2-e2e.{case.case_id.root}.{suffix}",
             evaluator_only_artifacts=(),
+        )
+
+    @staticmethod
+    def _allowed_tools(route_plans: tuple[RoutePlan, ...]) -> tuple[str, ...]:
+        if not route_plans:
+            return tuple(sorted(CHANNEL_BY_TOOL))
+        active_channels = {
+            step.channel
+            for plan in route_plans
+            for step in (
+                *plan.mandatory_steps,
+                *(step for group in plan.primary_groups for step in group.steps),
+                *(step for fallback in plan.conditional_fallbacks for step in fallback.steps),
+            )
+        }
+        return tuple(
+            tool_name
+            for tool_name, channel in sorted(CHANNEL_BY_TOOL.items())
+            if channel in active_channels
+        )
+
+    @staticmethod
+    def _route_plans(
+        needs: tuple[Stage1MemoryNeed, ...],
+        capability: SnapshotCapability | None,
+    ) -> tuple[RoutePlan, ...]:
+        if capability is None:
+            return ()
+        planner = DeterministicChannelPlanner()
+        return tuple(planner.plan(need, capability) for need in needs)
+
+    def _scripted_smoke_backend(
+        self,
+        world: WorldRootDocument,
+        history: TextRootDocument,
+        plan: PlanRootDocument,
+        *,
+        snapshot_id: StableId,
+        canonical_commit: CommitId | None = None,
+    ) -> InMemoryRetrievalBackend:
+        if self._retrieval_backend_profile is not RetrievalBackendProfile.SCRIPTED_SMOKE:
+            raise RuntimeError(
+                "real_hybrid paired execution requires an injected commit-scoped "
+                "retrieval backend; "
+                "InMemoryRetrievalBackend is scripted_smoke only"
+            )
+        return InMemoryRetrievalBackend(
+            AnchorBuilder().build(
+                world,
+                history,
+                plan,
+                snapshot_id=snapshot_id,
+                canonical_commit=canonical_commit,
+            )
         )
 
     @classmethod
@@ -505,6 +607,9 @@ class Stage2PairedPilotRunner:
                 need_type="plan_obligation",
                 query_intent=Stage1QueryIntent.PLAN_NODE,
                 query_text=goal.summary,
+                predicates=("chapter_goal",),
+                access_scope="author_planning",
+                allow_plan=True,
                 why_needed="author-visible chapter goal constrains the target horizon",
                 risk_level=NeedRisk.HIGH,
                 requirement=RequirementLevel.MANDATORY,
@@ -514,6 +619,20 @@ class Stage2PairedPilotRunner:
             )
             for goal in goals
         )
+
+    @staticmethod
+    def _scope_needs(
+        needs: tuple[Stage1MemoryNeed, ...],
+        profile: BenchmarkInformationProfile,
+    ) -> tuple[Stage1MemoryNeed, ...]:
+        """Inject runtime-owned audience scope without granting plan access to world needs."""
+
+        scope = (
+            "author_planning"
+            if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+            else "writer_safe"
+        )
+        return tuple(need.model_copy(update={"access_scope": scope}) for need in needs)
 
     @classmethod
     def _evidence_coverage(

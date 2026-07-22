@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
+from novel_agent.domain.memory import (
+    CandidatePool,
+    NeedRisk,
+    RetrievalChannel,
+    RetrievalUnit,
+    RetrievalUnitKind,
+    Stage1QueryIntent,
+)
+from novel_agent.domain.retrieval_routing import (
+    ChannelCoverage,
+    ChannelFailure,
+    ChannelFailureCode,
+    ConditionalFallback,
+    CounterfactualRouteRecord,
+    EvidenceExpansionPolicy,
+    GraphTraversalPolicy,
+    InformationDomain,
+    L2IndexKind,
+    L2IndexManifest,
+    ProjectionAttestation,
+    ResolutionTier,
+    RetrievalBackendProfile,
+    RetrievalRoutingFeatures,
+    RouteExecution,
+    RoutePlan,
+    RouteProfile,
+    RouteStep,
+    RouteStepGroup,
+    RouteStopPolicy,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
+)
+
+HASH_A = ArtifactId("sha256:" + "a" * 64)
+COMMIT = CommitId(HASH_A.root)
+SNAPSHOT = StableId("snapshot.stage2r")
+
+
+def capability(
+    *,
+    status: SnapshotCapabilityStatus = SnapshotCapabilityStatus.EXACT,
+    channels: tuple[RetrievalChannel, ...] = (RetrievalChannel.R1_EXACT,),
+    coverage: tuple[ChannelCoverage, ...] | None = None,
+) -> SnapshotCapability:
+    return SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=status,
+        available_channels=channels,
+        coverage_by_channel=(
+            coverage
+            if coverage is not None
+            else tuple(
+                ChannelCoverage(channel=channel, expected_units=1, ready_units=1)
+                for channel in channels
+            )
+        ),
+    )
+
+
+def step(channel: RetrievalChannel = RetrievalChannel.R1_EXACT) -> RouteStep:
+    return RouteStep(
+        step_id=StableId(f"step.{channel.value}"),
+        channel=channel,
+        candidate_pool=CandidatePool.R1
+        if channel in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}
+        else CandidatePool.ANCHOR,
+        query_template="registered-template-v1",
+    )
+
+
+def policy() -> tuple[EvidenceExpansionPolicy, RouteStopPolicy]:
+    return (
+        EvidenceExpansionPolicy(required_strength="text_supported"),
+        RouteStopPolicy(stop_when="mandatory_gaps_closed_and_evidence_sufficient"),
+    )
+
+
+def test_retrieval_unit_v02_keeps_legacy_fields_compatible_and_validates_projection_metadata() -> (
+    None
+):
+    legacy = RetrievalUnit(
+        unit_id=StableId("unit.legacy"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="hero location academy",
+    )
+    assert legacy.content_hash is None
+    assert legacy.parent_unit_ids == ()
+
+    unit = legacy.model_copy(
+        update={
+            "source_refs": (HASH_A,),
+            "content_hash": HASH_A,
+            "predicate": "location",
+            "parent_unit_ids": (StableId("anchor.chapter.20"),),
+            "narrative_start": 20,
+            "narrative_end": 20,
+            "story_time_start": 100,
+            "story_time_end": 101,
+            "access_scope": "writer_safe",
+        }
+    )
+    assert unit.content_hash == HASH_A
+    with pytest.raises(ValidationError, match="narrative end"):
+        RetrievalUnit.model_validate(unit.model_dump() | {"narrative_end": 19})
+    with pytest.raises(ValidationError, match="story time end"):
+        RetrievalUnit.model_validate(unit.model_dump() | {"story_time_end": 99})
+    with pytest.raises(ValidationError, match="parent ids must be unique"):
+        RetrievalUnit.model_validate(
+            unit.model_dump() | {"parent_unit_ids": ("anchor.chapter.20", "anchor.chapter.20")}
+        )
+
+
+def test_snapshot_capability_and_coverage_enforce_exact_and_test_only_boundaries() -> None:
+    assert capability().status is SnapshotCapabilityStatus.EXACT
+    with pytest.raises(ValidationError, match="exceed expected"):
+        ChannelCoverage(
+            channel=RetrievalChannel.R1_EXACT,
+            expected_units=1,
+            ready_units=1,
+            failed_units=1,
+        )
+    with pytest.raises(ValidationError, match="exact snapshot"):
+        capability(
+            coverage=(
+                ChannelCoverage(
+                    channel=RetrievalChannel.R1_EXACT,
+                    expected_units=2,
+                    ready_units=1,
+                ),
+            )
+        )
+    with pytest.raises(ValidationError, match="both available and degraded"):
+        SnapshotCapability(
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            status=SnapshotCapabilityStatus.PARTIAL,
+            available_channels=(RetrievalChannel.R1_EXACT,),
+            degraded_channels=(RetrievalChannel.R1_EXACT,),
+        )
+    with pytest.raises(ValidationError, match="test-only"):
+        capability(status=SnapshotCapabilityStatus.TEST_ONLY)
+
+
+def test_projection_attestation_requires_real_vector_evidence_for_exact_real_hybrid() -> None:
+    manifest = L2IndexManifest(
+        index_id=StableId("index.anchor"),
+        index_kind=L2IndexKind.ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        physical_name="project-stage2r-anchor-123",
+        alias="project-stage2r-anchor",
+        document_count=4,
+        mapping_hash=HASH_A,
+        analyzer_profile="standard-cjk-exact-v1",
+        embedding_profile="narrative-bge-m3-v0.1",
+    )
+    with pytest.raises(ValidationError, match="lacks R1 or locked retrieval-model"):
+        ProjectionAttestation(
+            attestation_id=StableId("attestation.missing"),
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            capability=capability(),
+            r1_record_count=0,
+            r1_entity_association_count=0,
+            graph_node_count=0,
+            graph_edge_count=0,
+        )
+    exact = ProjectionAttestation(
+        attestation_id=StableId("attestation.real"),
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        capability=capability(),
+        r1_record_count=4,
+        r1_entity_association_count=5,
+        graph_node_count=4,
+        graph_edge_count=2,
+        indexes=(manifest,),
+        embedding_model="BAAI/bge-m3",
+        embedding_revision="5617a9f61b028005a4858fdac845db406aefb181",
+        embedding_dimension=1024,
+        embedding_normalized=True,
+        embedding_runtime_fingerprint=HASH_A,
+        reranker_model="BAAI/bge-reranker-v2-m3",
+        reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    )
+    assert exact.quality_eligible is True
+    blocked = exact.model_copy(
+        update=(
+            {
+                "failures": (
+                    ChannelFailure(
+                        channel=RetrievalChannel.ANCHOR_DENSE,
+                        code=ChannelFailureCode.TIMEOUT,
+                        reason="embedding service timeout",
+                    ),
+                )
+            }
+        )
+    )
+    assert blocked.quality_eligible is False
+    smoke = ProjectionAttestation(
+        attestation_id=StableId("attestation.smoke"),
+        retrieval_backend_profile=RetrievalBackendProfile.SCRIPTED_SMOKE,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        capability=SnapshotCapability(
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            status=SnapshotCapabilityStatus.TEST_ONLY,
+        ),
+        r1_record_count=0,
+        r1_entity_association_count=0,
+        graph_node_count=0,
+        graph_edge_count=0,
+    )
+    assert smoke.quality_eligible is False
+    with pytest.raises(ValidationError, match="scripted smoke"):
+        ProjectionAttestation.model_validate(
+            smoke.model_dump() | {"embedding_model": "deterministic-test-embedding"}
+        )
+
+
+def test_routing_features_and_route_contracts_reject_fanout_and_unsafe_graph_proof() -> None:
+    features = RetrievalRoutingFeatures(
+        query_intent=Stage1QueryIntent.EXACT_QUOTE,
+        information_domains=(InformationDomain.TEXTUAL_EVIDENCE,),
+        quoted_phrase_length=8,
+        risk=NeedRisk.HIGH,
+        access_sensitivity="writer_safe",
+        latency_budget_ms=2000,
+        token_budget=4000,
+        snapshot_capabilities=(RetrievalChannel.GROUNDED_BM25,),
+    )
+    assert features.quoted_phrase_length == 8
+    with pytest.raises(ValidationError, match="lexical quote intent"):
+        RetrievalRoutingFeatures.model_validate(
+            features.model_dump() | {"query_intent": Stage1QueryIntent.CURRENT_STATE}
+        )
+    with pytest.raises(ValidationError, match="inferred"):
+        GraphTraversalPolicy(allowed_edge_semantics=("canonical", "inferred"))
+
+    evidence, stop = policy()
+    primary = RouteStepGroup(
+        group_id=StableId("group.primary"),
+        execution=RouteExecution.PARALLEL,
+        steps=(
+            step(RetrievalChannel.ANCHOR_BM25),
+            step(RetrievalChannel.ANCHOR_DENSE),
+        ),
+        fusion_profile="application-rrf-v1",
+    )
+    profile = RouteProfile(
+        profile_id=StableId("profile.related-event"),
+        version=SchemaVersion("0.1.0"),
+        query_intent=Stage1QueryIntent.RELATED_EVENT,
+        resolution_tier=ResolutionTier.R2,
+        allowed_channels=(RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+        primary_groups=(primary,),
+        evidence_policy=evidence,
+        stop_policy=stop,
+    )
+    assert profile.primary_groups == (primary,)
+    with pytest.raises(ValidationError, match="not allowed"):
+        RouteProfile.model_validate(
+            profile.model_dump() | {"allowed_channels": (RetrievalChannel.ANCHOR_BM25,)}
+        )
+    with pytest.raises(ValidationError, match="parallel step group"):
+        RouteStepGroup(
+            group_id=StableId("group.serial"),
+            execution=RouteExecution.SERIAL,
+            steps=(step(),),
+            fusion_profile="application-rrf-v1",
+        )
+    with pytest.raises(ValidationError, match="only R2"):
+        RouteProfile(
+            profile_id=StableId("profile.r1"),
+            version=SchemaVersion("0.1.0"),
+            query_intent=Stage1QueryIntent.CURRENT_STATE,
+            resolution_tier=ResolutionTier.R1,
+            allowed_channels=(RetrievalChannel.R1_EXACT,),
+            conditional_fallbacks=(
+                ConditionalFallback(
+                    fallback_id=StableId("fallback.1"),
+                    condition="miss",
+                    steps=(step(),),
+                ),
+            ),
+            evidence_policy=evidence,
+            stop_policy=stop,
+        )
+
+
+def test_route_plan_and_counterfactual_records_enforce_runtime_authority_boundaries() -> None:
+    evidence, stop = policy()
+    primary_step = step(RetrievalChannel.R1_EXACT)
+    plan = RoutePlan(
+        route_plan_id=StableId("route.1"),
+        profile_id=StableId("profile.1"),
+        need_id=StableId("need.1"),
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        resolution_tier=ResolutionTier.R1,
+        domains=(InformationDomain.WORLD_SEMANTIC,),
+        normalized_intent=Stage1QueryIntent.CURRENT_STATE,
+        routing_features_hash=HASH_A,
+        mandatory_steps=(primary_step,),
+        evidence_policy=evidence,
+        stop_policy=stop,
+        policy_version=SchemaVersion("0.1.0"),
+    )
+    assert plan.resolution_tier is ResolutionTier.R1
+    with pytest.raises(ValidationError, match="active and excluded"):
+        RoutePlan.model_validate(
+            plan.model_dump()
+            | {
+                "excluded_channels": (
+                    {"channel": RetrievalChannel.R1_EXACT, "reason": "forbidden"},
+                )
+            }
+        )
+    record = CounterfactualRouteRecord(
+        record_id=StableId("counterfactual.1"),
+        route_plan_id=plan.route_plan_id,
+        need_id=plan.need_id,
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        added_channels=(RetrievalChannel.ANCHOR_DENSE,),
+        candidate_count=3,
+        selected_count=1,
+    )
+    assert record.evaluator_only is True
+    with pytest.raises(ValidationError, match="evaluator-only"):
+        CounterfactualRouteRecord.model_validate(record.model_dump() | {"evaluator_only": False})

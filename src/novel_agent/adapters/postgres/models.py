@@ -135,6 +135,21 @@ class DerivedSnapshotRow(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class EmbeddingCacheRow(Base):
+    """Content-addressed, rebuildable vector cache for derived L2 indexes."""
+
+    __tablename__ = "embedding_cache"
+    __table_args__ = (UniqueConstraint("content_hash", "embedding_profile", "input_profile"),)
+
+    cache_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    content_hash: Mapped[str] = mapped_column(String(71), nullable=False, index=True)
+    embedding_profile: Mapped[str] = mapped_column(String(1024), nullable=False)
+    input_profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    vector_json: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AuthorApprovalRow(Base):
     __tablename__ = "author_approval"
 
@@ -177,6 +192,10 @@ class R1RecordRow(Base):
     predicate: Mapped[str | None] = mapped_column(String(128), nullable=True)
     valid_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     valid_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worldline: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    narrative_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    narrative_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    access_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="writer_safe")
     truth_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     record_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 

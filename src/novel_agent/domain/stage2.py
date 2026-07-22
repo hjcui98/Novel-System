@@ -23,9 +23,11 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory import (
     CandidatePool,
     FreshnessDecision,
+    RetrievalChannel,
     Stage1ContextPackage,
     Stage1MemoryNeed,
 )
+from novel_agent.domain.retrieval_routing import ChannelFailureCode
 from novel_agent.domain.text import EvidenceRef
 
 
@@ -801,6 +803,38 @@ class ControllerStopReason(StrEnum):
     NO_ADDITIONAL_EVIDENCE = "no_additional_evidence"
 
 
+class SufficiencyReport(DomainModel):
+    """Auditable stopping evidence for a bounded RoutePlan execution."""
+
+    mandatory_gaps_closed: bool
+    evidence_strength_satisfied: bool
+    entity_coverage: float = Field(ge=0, le=1)
+    temporal_coverage: float = Field(ge=0, le=1)
+    plan_obligation_coverage: float = Field(ge=0, le=1)
+    conflicting_evidence: tuple[StableId, ...] = ()
+    unresolved_unknowns: tuple[str, ...] = ()
+    scope_access_warnings: tuple[str, ...] = ()
+    freshness_warnings: tuple[str, ...] = ()
+    new_information_gain_by_round: tuple[int, ...] = ()
+    recommended_fallback: str | None = None
+    stop_reason: ControllerStopReason
+
+    @model_validator(mode="after")
+    def validate_stopping_claim(self) -> SufficiencyReport:
+        if self.stop_reason is ControllerStopReason.SUFFICIENT and (
+            not self.mandatory_gaps_closed
+            or not self.evidence_strength_satisfied
+            or self.unresolved_unknowns
+            or self.freshness_warnings
+        ):
+            raise ValueError(
+                "sufficient report cannot retain a mandatory, evidence, or freshness gap"
+            )
+        if any(value < 0 for value in self.new_information_gain_by_round):
+            raise ValueError("new information gain must be non-negative")
+        return self
+
+
 class ControllerPolicyAction(StrEnum):
     CALL_TOOL = "call_tool"
     STOP = "stop"
@@ -863,6 +897,7 @@ class ContextResolutionResult(DomainModel):
     conflicts: tuple[str, ...] = ()
     unresolved_gaps: tuple[str, ...] = ()
     context_assembly_spec: ContextAssemblySpec | None = None
+    sufficiency_report: SufficiencyReport | None = None
     stop_reason: ControllerStopReason
     receipt: AgentExecutionReceipt
 
@@ -872,6 +907,8 @@ class ContextResolutionResult(DomainModel):
             raise ValueError("sufficient resolution cannot retain unresolved gaps")
         if self.status is ResolutionStatus.READY and self.context_assembly_spec is None:
             raise ValueError("ready resolution requires an assembly specification")
+        if self.status is ResolutionStatus.READY and self.sufficiency_report is None:
+            raise ValueError("ready resolution requires a sufficiency report")
         return self
 
 
@@ -1138,6 +1175,12 @@ class ToolResult(DomainModel):
     coverage: float = Field(default=0, ge=0, le=1)
     partial: bool = False
     warnings: tuple[str, ...] = ()
+    query_variant: str | None = Field(default=None, min_length=1, max_length=128)
+    backend_latency_ms: int | None = Field(default=None, ge=0)
+    new_information_gain: int = Field(default=0, ge=0)
+    retrieval_channel: RetrievalChannel | None = None
+    channel_candidate_count: int | None = Field(default=None, ge=0)
+    channel_failure_code: ChannelFailureCode | None = None
     failure_code: ToolFailureCode | None = None
     audit_ref: StableId
 
@@ -1147,6 +1190,10 @@ class ToolResult(DomainModel):
             raise ValueError("failed tool result requires a failure code")
         if self.status is ToolResultStatus.SUCCEEDED and self.failure_code is not None:
             raise ValueError("successful tool result cannot carry a failure code")
+        if self.status is ToolResultStatus.SUCCEEDED and self.channel_failure_code is not None:
+            raise ValueError("successful tool result cannot carry a channel failure code")
+        if self.channel_failure_code is not None and self.retrieval_channel is None:
+            raise ValueError("channel failure requires a retrieval channel")
         if self.status is ToolResultStatus.PARTIAL and not self.partial:
             raise ValueError("partial tool result must set partial=true")
         return self

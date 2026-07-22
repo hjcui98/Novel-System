@@ -7,10 +7,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Select, and_, delete, exists, literal, or_, select
-from sqlalchemy.orm import Session, aliased, sessionmaker
+from sqlalchemy import Select, delete, exists, func, or_, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import R1RecordEntityRow, R1RecordRow
+from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.changes import WorldRecordKind
 from novel_agent.domain.ids import CommitId, ProjectId, StableId
 from novel_agent.domain.memory import (
@@ -20,21 +21,39 @@ from novel_agent.domain.memory import (
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
+    Stage1QueryIntent,
     WorldRootDocument,
 )
 from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.world import StoryTime, TruthClass
 
 
 @dataclass(frozen=True, slots=True)
 class _RecordSpec:
-    kind: WorldRecordKind
+    kind: str
     record_id: StableId
     predicate: str | None
     valid_start: int | None
     valid_end: int | None
+    worldline: str | None
+    narrative_start: int | None
+    narrative_end: int | None
+    access_scope: str
     truth_class: str | None
     entities: tuple[tuple[StableId, str], ...]
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class GraphPath:
+    """Bounded canonical-relation path with evidence and direction receipts."""
+
+    relation_row_ids: tuple[StableId, ...]
+    relation_ids: tuple[StableId, ...]
+    entity_path: tuple[StableId, ...]
+    directions: tuple[str, ...]
+    edge_semantics: tuple[str, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
 
 
 class R1WorldRepository:
@@ -46,8 +65,9 @@ class R1WorldRepository:
         project_id: ProjectId,
         canonical_commit: CommitId,
         world: WorldRootDocument,
+        plan: PlanRootDocument | None = None,
     ) -> int:
-        specs = self._specs(world)
+        specs = self._specs(world, plan)
         with self._session_factory() as session, session.begin():
             old_ids = tuple(
                 session.scalars(
@@ -70,11 +90,15 @@ class R1WorldRepository:
                         row_id=row_id.root,
                         project_id=project_id.root,
                         source_commit=canonical_commit.root,
-                        record_kind=spec.kind.value,
+                        record_kind=spec.kind,
                         record_id=spec.record_id.root,
                         predicate=spec.predicate,
                         valid_start=spec.valid_start,
                         valid_end=spec.valid_end,
+                        worldline=spec.worldline,
+                        narrative_start=spec.narrative_start,
+                        narrative_end=spec.narrative_end,
+                        access_scope=spec.access_scope,
                         truth_class=spec.truth_class,
                         record_json=spec.payload,
                     )
@@ -90,23 +114,62 @@ class R1WorldRepository:
                     )
         return len(specs)
 
+    def counts(self, source_commit: CommitId) -> tuple[int, int, int]:
+        """Return record, association, and relation-edge receipts for one basis."""
+
+        with self._session_factory() as session:
+            record_count = session.scalar(
+                select(func.count())
+                .select_from(R1RecordRow)
+                .where(R1RecordRow.source_commit == source_commit.root)
+            )
+            association_count = session.scalar(
+                select(func.count())
+                .select_from(R1RecordEntityRow)
+                .join(R1RecordRow, R1RecordEntityRow.row_id == R1RecordRow.row_id)
+                .where(R1RecordRow.source_commit == source_commit.root)
+            )
+            relation_count = session.scalar(
+                select(func.count())
+                .select_from(R1RecordRow)
+                .where(
+                    R1RecordRow.source_commit == source_commit.root,
+                    R1RecordRow.record_kind == WorldRecordKind.RELATION.value,
+                )
+            )
+        return int(record_count or 0), int(association_count or 0), int(relation_count or 0)
+
     def exact(
         self,
         need: Stage1MemoryNeed,
         *,
         temporal: bool,
         limit: int,
+        access_scopes: tuple[str, ...] = ("writer_safe",),
     ) -> tuple[R1RecordView, ...]:
         if limit < 1:
             raise ValueError("R1 limit must be positive")
+        self._validate_access_scopes(access_scopes)
         statement: Select[tuple[R1RecordRow]] = select(R1RecordRow).where(
-            R1RecordRow.source_commit == need.base_commit.root
+            R1RecordRow.source_commit == need.base_commit.root,
+            R1RecordRow.access_scope.in_(access_scopes),
         )
         kinds = self._kinds_for_need(need)
         if kinds:
             statement = statement.where(R1RecordRow.record_kind.in_(kinds))
         if need.predicates:
             statement = statement.where(R1RecordRow.predicate.in_(need.predicates))
+        if need.query_intent in {
+            Stage1QueryIntent.CURRENT_STATE,
+            Stage1QueryIntent.KNOWN_ID,
+            Stage1QueryIntent.MANDATORY_CONSTRAINT,
+        }:
+            statement = statement.where(
+                or_(
+                    R1RecordRow.truth_class.is_(None),
+                    R1RecordRow.truth_class == TruthClass.ACCEPTED_WORLD_FACT.value,
+                )
+            )
         if need.entity_ids:
             statement = statement.where(
                 exists().where(
@@ -118,19 +181,102 @@ class R1WorldRepository:
             )
         if temporal and need.time_scope is not None:
             ordinal = need.time_scope.start_ordinal
+            statement = statement.where(
+                or_(
+                    R1RecordRow.worldline.is_(None),
+                    R1RecordRow.worldline == need.time_scope.worldline,
+                )
+            )
             if ordinal is not None:
                 statement = statement.where(
                     or_(R1RecordRow.valid_start.is_(None), R1RecordRow.valid_start <= ordinal),
                     or_(R1RecordRow.valid_end.is_(None), R1RecordRow.valid_end >= ordinal),
                 )
+        if need.chapter_target is not None:
+            statement = statement.where(
+                or_(
+                    R1RecordRow.narrative_start.is_(None),
+                    R1RecordRow.narrative_start <= need.chapter_target,
+                ),
+                or_(
+                    R1RecordRow.narrative_end.is_(None),
+                    R1RecordRow.narrative_end >= need.chapter_target,
+                ),
+            )
         statement = statement.order_by(
             R1RecordRow.valid_start.desc().nullslast(),
+            R1RecordRow.narrative_start.desc().nullslast(),
             R1RecordRow.record_kind,
             R1RecordRow.record_id,
         ).limit(limit)
         with self._session_factory() as session:
             rows = tuple(session.scalars(statement))
             return self._views(session, rows)
+
+    def resolve_entity_alias(
+        self,
+        source_commit: CommitId,
+        alias: str,
+        *,
+        limit: int = 8,
+    ) -> tuple[StableId, ...]:
+        """Resolve only exact normalized entity labels/aliases in one commit basis."""
+
+        if not alias.strip() or limit < 1:
+            raise ValueError("alias resolution requires a non-empty alias and positive limit")
+        normalized = self._normalize_alias(alias)
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(R1RecordRow)
+                    .where(
+                        R1RecordRow.source_commit == source_commit.root,
+                        R1RecordRow.record_kind == WorldRecordKind.ENTITY.value,
+                    )
+                    .order_by(R1RecordRow.record_id)
+                )
+            )
+        resolved: list[StableId] = []
+        for row in rows:
+            aliases = row.record_json.get("aliases", [])
+            labels = [row.record_json.get("internal_label"), *aliases]
+            if any(
+                isinstance(label, str) and self._normalize_alias(label) == normalized
+                for label in labels
+            ):
+                resolved.append(StableId(row.record_id))
+                if len(resolved) == limit:
+                    break
+        return tuple(resolved)
+
+    def records_for_evidence(
+        self,
+        source_commit: CommitId,
+        evidence_id: StableId,
+        *,
+        limit: int = 100,
+    ) -> tuple[R1RecordView, ...]:
+        """Find canonical records with a direct evidence reverse reference."""
+
+        if limit < 1:
+            raise ValueError("evidence reverse lookup limit must be positive")
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(R1RecordRow)
+                    .where(R1RecordRow.source_commit == source_commit.root)
+                    .order_by(R1RecordRow.record_kind, R1RecordRow.record_id)
+                )
+            )
+            matched = tuple(
+                row
+                for row in rows
+                if any(
+                    isinstance(item, dict) and item.get("evidence_id") == evidence_id.root
+                    for item in row.record_json.get("evidence_refs", [])
+                )
+            )[:limit]
+            return self._views(session, matched)
 
     def typed_graph(
         self,
@@ -139,61 +285,131 @@ class R1WorldRepository:
         *,
         max_depth: int,
         limit: int,
+        allowed_predicates: tuple[str, ...] = (),
+        time_scope: StoryTime | None = None,
+        allowed_edge_semantics: tuple[str, ...] = ("canonical", "evidence"),
+        access_scopes: tuple[str, ...] = ("writer_safe",),
     ) -> tuple[R1RecordView, ...]:
-        if max_depth < 1 or limit < 1:
-            raise ValueError("graph depth and limit must be positive")
-        if not entity_ids:
+        paths = self.typed_graph_paths(
+            source_commit,
+            entity_ids,
+            max_depth=max_depth,
+            limit=limit,
+            allowed_predicates=allowed_predicates,
+            time_scope=time_scope,
+            allowed_edge_semantics=allowed_edge_semantics,
+            access_scopes=access_scopes,
+        )
+        row_ids = tuple(
+            dict.fromkeys(row_id for path in paths for row_id in path.relation_row_ids)
+        )[:limit]
+        if not row_ids:
             return ()
-        subject = aliased(R1RecordEntityRow)
-        object_ = aliased(R1RecordEntityRow)
-        edges = (
-            select(
-                R1RecordRow.row_id.label("row_id"),
-                subject.entity_id.label("src"),
-                object_.entity_id.label("dst"),
-            )
-            .join(subject, and_(subject.row_id == R1RecordRow.row_id, subject.role == "subject"))
-            .join(object_, and_(object_.row_id == R1RecordRow.row_id, object_.role == "object"))
-            .where(
-                R1RecordRow.source_commit == source_commit.root,
-                R1RecordRow.record_kind == WorldRecordKind.RELATION.value,
-            )
-            .subquery()
-        )
-        starts = tuple(entity.root for entity in entity_ids)
-        walk = select(
-            edges.c.row_id,
-            edges.c.src,
-            edges.c.dst,
-            literal(1).label("depth"),
-        ).where(or_(edges.c.src.in_(starts), edges.c.dst.in_(starts)))
-        graph = walk.cte("r1_graph", recursive=True)
-        graph = graph.union_all(
-            select(
-                edges.c.row_id,
-                edges.c.src,
-                edges.c.dst,
-                (graph.c.depth + 1).label("depth"),
-            ).where(
-                graph.c.depth < max_depth,
-                or_(
-                    edges.c.src == graph.c.dst,
-                    edges.c.dst == graph.c.src,
-                    edges.c.src == graph.c.src,
-                    edges.c.dst == graph.c.dst,
-                ),
-            )
-        )
-        row_ids = select(graph.c.row_id).distinct().limit(limit)
         with self._session_factory() as session:
             rows = tuple(
                 session.scalars(
                     select(R1RecordRow)
-                    .where(R1RecordRow.row_id.in_(row_ids))
+                    .where(R1RecordRow.row_id.in_(tuple(item.root for item in row_ids)))
                     .order_by(R1RecordRow.record_id)
                 )
             )
             return self._views(session, rows)
+
+    def typed_graph_paths(
+        self,
+        source_commit: CommitId,
+        entity_ids: tuple[StableId, ...],
+        *,
+        max_depth: int,
+        limit: int,
+        allowed_predicates: tuple[str, ...] = (),
+        time_scope: StoryTime | None = None,
+        allowed_edge_semantics: tuple[str, ...] = ("canonical", "evidence"),
+        access_scopes: tuple[str, ...] = ("writer_safe",),
+    ) -> tuple[GraphPath, ...]:
+        """Traverse accepted relation edges with fixed depth and explicit receipts."""
+
+        if max_depth < 1 or limit < 1:
+            raise ValueError("graph depth and limit must be positive")
+        if not entity_ids:
+            return ()
+        self._validate_access_scopes(access_scopes)
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(R1RecordRow).where(
+                        R1RecordRow.source_commit == source_commit.root,
+                        R1RecordRow.record_kind == WorldRecordKind.RELATION.value,
+                        R1RecordRow.access_scope.in_(access_scopes),
+                    )
+                )
+            )
+            associations = tuple(
+                session.scalars(
+                    select(R1RecordEntityRow).where(
+                        R1RecordEntityRow.row_id.in_(tuple(row.row_id for row in rows))
+                    )
+                )
+            )
+        roles: dict[str, dict[str, str]] = {}
+        for association in associations:
+            roles.setdefault(association.row_id, {})[association.role] = association.entity_id
+        edges: list[tuple[R1RecordRow, str, str]] = []
+        for row in rows:
+            endpoints = roles.get(row.row_id, {})
+            source = endpoints.get("subject")
+            target = endpoints.get("object")
+            if source is None or target is None:
+                continue
+            if row.truth_class != TruthClass.ACCEPTED_WORLD_FACT.value:
+                continue
+            if allowed_predicates and row.predicate not in allowed_predicates:
+                continue
+            if not self._edge_matches_time(row, time_scope):
+                continue
+            edges.append((row, source, target))
+        allowed = set(allowed_edge_semantics)
+        if not allowed or {"inferred", "similarity"} & allowed:
+            raise ValueError("graph traversal only permits explicit canonical/evidence semantics")
+        if "canonical" not in allowed:
+            return ()
+        paths: list[GraphPath] = []
+        frontier: list[tuple[str, tuple[R1RecordRow, ...], tuple[str, ...], tuple[str, ...]]] = [
+            (entity.root, (), (entity.root,), ()) for entity in entity_ids
+        ]
+        while frontier and len(paths) < limit:
+            node, path_rows, path_entities, directions = frontier.pop(0)
+            if len(path_rows) == max_depth:
+                continue
+            for row, source, target in edges:
+                if source == node:
+                    next_node, direction = target, "forward"
+                elif target == node:
+                    next_node, direction = source, "reverse"
+                else:
+                    continue
+                if next_node in path_entities:
+                    continue
+                next_rows = (*path_rows, row)
+                next_entities = (*path_entities, next_node)
+                next_directions = (*directions, direction)
+                evidence = tuple(
+                    item for edge in next_rows for item in self._evidence_refs(edge.record_json)
+                )
+                paths.append(
+                    GraphPath(
+                        relation_row_ids=tuple(StableId(edge.row_id) for edge in next_rows),
+                        relation_ids=tuple(StableId(edge.record_id) for edge in next_rows),
+                        entity_path=tuple(StableId(item) for item in next_entities),
+                        directions=next_directions,
+                        edge_semantics=("canonical",) * len(next_rows),
+                        evidence_refs=evidence,
+                    )
+                )
+                if len(paths) == limit:
+                    break
+                frontier.append((next_node, next_rows, next_entities, next_directions))
+        return tuple(paths)
 
     @staticmethod
     def _views(session: Session, rows: tuple[R1RecordRow, ...]) -> tuple[R1RecordView, ...]:
@@ -218,6 +434,10 @@ class R1WorldRepository:
                 predicate=row.predicate,
                 valid_start=row.valid_start,
                 valid_end=row.valid_end,
+                worldline=row.worldline,
+                narrative_start=row.narrative_start,
+                narrative_end=row.narrative_end,
+                access_scope=row.access_scope,
                 truth_class=row.truth_class,
                 entity_ids=tuple(entities.get(row.row_id, ())),
                 record=row.record_json,
@@ -230,87 +450,185 @@ class R1WorldRepository:
         if need.query_intent.value == "current_state":
             return (WorldRecordKind.STATE.value,)
         if need.query_intent.value == "plan_node":
-            return (WorldRecordKind.OBLIGATION.value,)
+            return (
+                WorldRecordKind.OBLIGATION.value,
+                "plan_node",
+                "chapter_goal",
+            )
         if need.query_intent.value == "mandatory_constraint":
             return (WorldRecordKind.STATE.value, WorldRecordKind.OBLIGATION.value)
         return ()
 
     @staticmethod
-    def _row_id(commit: CommitId, kind: WorldRecordKind, record_id: StableId) -> StableId:
-        digest = hashlib.sha256(
-            f"{commit.root}\0{kind.value}\0{record_id.root}".encode()
-        ).hexdigest()
+    def _row_id(commit: CommitId, kind: str, record_id: StableId) -> StableId:
+        digest = hashlib.sha256(f"{commit.root}\0{kind}\0{record_id.root}".encode()).hexdigest()
         return StableId(f"r1.{digest}")
 
     @staticmethod
-    def _specs(world: WorldRootDocument) -> tuple[_RecordSpec, ...]:
+    def _specs(world: WorldRootDocument, plan: PlanRootDocument | None) -> tuple[_RecordSpec, ...]:
         specs: list[_RecordSpec] = []
         for entity in world.entities:
             specs.append(
                 _RecordSpec(
-                    WorldRecordKind.ENTITY,
-                    entity.entity_id,
-                    None,
-                    None,
-                    None,
-                    None,
-                    ((entity.entity_id, "self"),),
-                    entity.model_dump(mode="json"),
+                    kind=WorldRecordKind.ENTITY.value,
+                    record_id=entity.entity_id,
+                    predicate=None,
+                    valid_start=None,
+                    valid_end=None,
+                    worldline=None,
+                    narrative_start=None,
+                    narrative_end=None,
+                    access_scope="writer_safe",
+                    truth_class=None,
+                    entities=((entity.entity_id, "self"),),
+                    payload=entity.model_dump(mode="json"),
                 )
             )
         for event in world.events:
             specs.append(
                 _RecordSpec(
-                    WorldRecordKind.EVENT,
-                    event.event_id,
-                    event.event_type,
-                    None if event.story_time is None else event.story_time.start_ordinal,
-                    None if event.story_time is None else event.story_time.end_ordinal,
-                    event.truth_class.value,
-                    tuple((entity, "participant") for entity in event.participant_ids),
-                    event.model_dump(mode="json"),
+                    kind=WorldRecordKind.EVENT.value,
+                    record_id=event.event_id,
+                    predicate=event.event_type,
+                    valid_start=None
+                    if event.story_time is None
+                    else event.story_time.start_ordinal,
+                    valid_end=None if event.story_time is None else event.story_time.end_ordinal,
+                    worldline=None if event.story_time is None else event.story_time.worldline,
+                    narrative_start=(
+                        None
+                        if event.narrative_order is None
+                        else event.narrative_order.chapter_index
+                    ),
+                    narrative_end=(
+                        None
+                        if event.narrative_order is None
+                        else event.narrative_order.chapter_index
+                    ),
+                    access_scope="writer_safe",
+                    truth_class=event.truth_class.value,
+                    entities=tuple((entity, "participant") for entity in event.participant_ids),
+                    payload=event.model_dump(mode="json"),
                 )
             )
         for state in world.states:
             specs.append(
                 _RecordSpec(
-                    WorldRecordKind.STATE,
-                    state.state_id,
-                    state.predicate,
-                    state.valid_time.start_ordinal,
-                    state.valid_time.end_ordinal,
-                    state.truth_class.value,
-                    ((state.subject_id, "subject"),),
-                    state.model_dump(mode="json"),
+                    kind=WorldRecordKind.STATE.value,
+                    record_id=state.state_id,
+                    predicate=state.predicate,
+                    valid_start=state.valid_time.start_ordinal,
+                    valid_end=state.valid_time.end_ordinal,
+                    worldline=state.valid_time.worldline,
+                    narrative_start=None,
+                    narrative_end=None,
+                    access_scope="writer_safe",
+                    truth_class=state.truth_class.value,
+                    entities=((state.subject_id, "subject"),),
+                    payload=state.model_dump(mode="json"),
                 )
             )
         for relation in world.relations:
             specs.append(
                 _RecordSpec(
-                    WorldRecordKind.RELATION,
-                    relation.relation_id,
-                    relation.predicate,
-                    relation.valid_time.start_ordinal,
-                    relation.valid_time.end_ordinal,
-                    relation.truth_class.value,
-                    ((relation.subject_id, "subject"), (relation.object_id, "object")),
-                    relation.model_dump(mode="json"),
+                    kind=WorldRecordKind.RELATION.value,
+                    record_id=relation.relation_id,
+                    predicate=relation.predicate,
+                    valid_start=relation.valid_time.start_ordinal,
+                    valid_end=relation.valid_time.end_ordinal,
+                    worldline=relation.valid_time.worldline,
+                    narrative_start=None,
+                    narrative_end=None,
+                    access_scope="writer_safe",
+                    truth_class=relation.truth_class.value,
+                    entities=((relation.subject_id, "subject"), (relation.object_id, "object")),
+                    payload=relation.model_dump(mode="json"),
                 )
             )
         for obligation in world.obligations:
             specs.append(
                 _RecordSpec(
-                    WorldRecordKind.OBLIGATION,
-                    obligation.obligation_id,
-                    obligation.kind.value,
-                    None,
-                    obligation.due_chapter,
-                    None,
-                    tuple((entity, "owner") for entity in obligation.owner_ids),
-                    obligation.model_dump(mode="json"),
+                    kind=WorldRecordKind.OBLIGATION.value,
+                    record_id=obligation.obligation_id,
+                    predicate=obligation.kind.value,
+                    valid_start=None,
+                    valid_end=None,
+                    worldline="main",
+                    narrative_start=None,
+                    narrative_end=obligation.due_chapter,
+                    access_scope="writer_safe",
+                    truth_class=None,
+                    entities=tuple((entity, "owner") for entity in obligation.owner_ids),
+                    payload=obligation.model_dump(mode="json"),
                 )
             )
+        if plan is not None:
+            for node in plan.nodes:
+                specs.append(
+                    _RecordSpec(
+                        kind="plan_node",
+                        record_id=node.plan_node_id,
+                        predicate=node.node_type,
+                        valid_start=None,
+                        valid_end=None,
+                        worldline="main",
+                        narrative_start=None,
+                        narrative_end=None,
+                        access_scope="author_planning",
+                        truth_class=None,
+                        entities=(),
+                        payload=node.model_dump(mode="json"),
+                    )
+                )
+            for goal in plan.chapter_goals:
+                specs.append(
+                    _RecordSpec(
+                        kind="chapter_goal",
+                        record_id=goal.goal_id,
+                        predicate="chapter_goal",
+                        valid_start=None,
+                        valid_end=None,
+                        worldline="main",
+                        narrative_start=goal.chapter_index,
+                        narrative_end=goal.chapter_index,
+                        access_scope="author_planning",
+                        truth_class=None,
+                        entities=(),
+                        payload=goal.model_dump(mode="json"),
+                    )
+                )
         return tuple(specs)
+
+    @staticmethod
+    def _normalize_alias(value: str) -> str:
+        return " ".join(value.casefold().split())
+
+    @staticmethod
+    def _evidence_refs(payload: dict[str, Any]) -> tuple[EvidenceRef, ...]:
+        raw = payload.get("evidence_refs", [])
+        if not isinstance(raw, list):
+            return ()
+        return tuple(EvidenceRef.model_validate(item) for item in raw if isinstance(item, dict))
+
+    @staticmethod
+    def _edge_matches_time(row: R1RecordRow, time_scope: StoryTime | None) -> bool:
+        if time_scope is None:
+            return True
+        if row.worldline is not None and row.worldline != time_scope.worldline:
+            return False
+        ordinal = time_scope.start_ordinal
+        if ordinal is None:
+            return True
+        return (row.valid_start is None or row.valid_start <= ordinal) and (
+            row.valid_end is None or row.valid_end >= ordinal
+        )
+
+    @staticmethod
+    def _validate_access_scopes(access_scopes: tuple[str, ...]) -> None:
+        if not access_scopes or any(not scope for scope in access_scopes):
+            raise ValueError("R1 retrieval requires at least one non-empty access scope")
+        if len(access_scopes) != len(set(access_scopes)):
+            raise ValueError("R1 retrieval access scopes must be unique")
 
 
 class R1RetrievalBackend:
@@ -320,12 +638,15 @@ class R1RetrievalBackend:
         *,
         snapshot_id: StableId,
         graph_depth: int = 2,
+        access_scopes: tuple[str, ...] = ("writer_safe",),
     ) -> None:
         if graph_depth < 1:
             raise ValueError("graph depth must be positive")
+        R1WorldRepository._validate_access_scopes(access_scopes)
         self._repository = repository
         self._snapshot_id = snapshot_id
         self._graph_depth = graph_depth
+        self._access_scopes = access_scopes
 
     def search(
         self, need: Stage1MemoryNeed, channel: RetrievalChannel, limit: int
@@ -336,12 +657,16 @@ class R1RetrievalBackend:
                 need.entity_ids,
                 max_depth=self._graph_depth,
                 limit=limit,
+                allowed_predicates=need.predicates,
+                time_scope=need.time_scope,
+                access_scopes=self._visible_access_scopes(need),
             )
         elif channel in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}:
             records = self._repository.exact(
                 need,
                 temporal=channel is RetrievalChannel.R1_TEMPORAL,
                 limit=limit,
+                access_scopes=self._visible_access_scopes(need),
             )
         else:
             raise ValueError(f"unsupported R1 retrieval channel: {channel.value}")
@@ -364,6 +689,19 @@ class R1RetrievalBackend:
             for rank, record in enumerate(records, start=1)
         )
 
+    def _visible_access_scopes(self, need: Stage1MemoryNeed) -> tuple[str, ...]:
+        required = {
+            "writer_safe": ("writer_safe",),
+            "author_planning": ("writer_safe", "author_planning"),
+            "evaluator": ("writer_safe", "author_planning", "evaluator"),
+        }.get(need.access_scope)
+        if required is None:
+            raise ValueError(f"unsupported retrieval access scope: {need.access_scope}")
+        visible = tuple(scope for scope in required if scope in self._access_scopes)
+        if not visible:
+            raise ValueError("R1 backend cannot satisfy the need access scope")
+        return visible
+
     def _unit(self, record: R1RecordView) -> RetrievalUnit:
         kind = {
             WorldRecordKind.STATE.value: RetrievalUnitKind.STATE_ANCHOR,
@@ -371,6 +709,8 @@ class R1RetrievalBackend:
             WorldRecordKind.RELATION.value: RetrievalUnitKind.RELATION_ANCHOR,
             WorldRecordKind.OBLIGATION.value: RetrievalUnitKind.PLAN_ANCHOR,
             WorldRecordKind.ENTITY.value: RetrievalUnitKind.FACT_ANCHOR,
+            "plan_node": RetrievalUnitKind.PLAN_ANCHOR,
+            "chapter_goal": RetrievalUnitKind.PLAN_ANCHOR,
         }[record.record_kind]
         raw_evidence = record.record.get("evidence_refs", [])
         if not isinstance(raw_evidence, list):
@@ -387,6 +727,17 @@ class R1RetrievalBackend:
             snapshot_id=self._snapshot_id,
             text=json.dumps(record.record, ensure_ascii=False, sort_keys=True),
             entity_ids=record.entity_ids,
+            predicate=record.predicate,
+            worldline=record.worldline or "main",
+            narrative_start=record.narrative_start,
+            narrative_end=record.narrative_end,
+            story_time_start=record.valid_start,
+            story_time_end=record.valid_end,
+            truth_class=(None if record.truth_class is None else TruthClass(record.truth_class)),
+            access_scope=record.access_scope,
+            information_label=(
+                "plan" if record.record_kind in {"plan_node", "chapter_goal"} else "observed"
+            ),
             evidence_refs=evidence,
             mandatory=record.record_kind
             in {

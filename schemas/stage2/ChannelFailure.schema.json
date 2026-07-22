@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "ChannelFailureCode": {
+      "enum": [
+        "backend_unavailable",
+        "coverage_incomplete",
+        "profile_mismatch",
+        "basis_mismatch",
+        "stale",
+        "forbidden",
+        "timeout",
+        "build_failed"
+      ],
+      "title": "ChannelFailureCode",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/RetrievalChannel"
+    },
+    "code": {
+      "$ref": "#/$defs/ChannelFailureCode"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "channel",
+    "code",
+    "reason"
+  ],
+  "title": "ChannelFailure",
+  "type": "object"
+}

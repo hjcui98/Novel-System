@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import PairedPilotCaseResult, Stage2PairedPilotReport
 from novel_agent.services.benchmark_importer import bundle_content_id, world_root_content_id
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
@@ -62,6 +63,13 @@ def test_paired_pilot_rejects_a_case_without_generated_needs() -> None:
 
     with pytest.raises(ValueError, match="has no generated needs"):
         Stage2PairedPilotRunner().run(empty)
+
+
+def test_paired_pilot_real_hybrid_profile_cannot_silently_use_in_memory_backend() -> None:
+    with pytest.raises(RuntimeError, match="InMemoryRetrievalBackend is scripted_smoke only"):
+        Stage2PairedPilotRunner(retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID).run(
+            make_synthetic_bundle()
+        )
 
 
 @pytest.mark.parametrize(

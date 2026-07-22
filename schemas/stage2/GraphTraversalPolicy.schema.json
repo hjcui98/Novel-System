@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "allowed_edge_semantics": {
+      "default": [
+        "canonical",
+        "evidence"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Allowed Edge Semantics",
+      "type": "array"
+    },
+    "max_depth": {
+      "default": 2,
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Max Depth",
+      "type": "integer"
+    }
+  },
+  "title": "GraphTraversalPolicy",
+  "type": "object"
+}

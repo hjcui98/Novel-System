@@ -57,6 +57,7 @@ from novel_agent.domain.stage2 import (
     SourceClass,
     SourceClassification,
     SourceDestination,
+    SufficiencyReport,
     ToolCallContext,
     ToolFailureCode,
     ToolPolicy,
@@ -402,6 +403,14 @@ def test_resolution_contracts_enforce_identity_access_and_sufficiency() -> None:
                 "status": ResolutionStatus.READY,
                 "stop_reason": ControllerStopReason.SUFFICIENT,
                 "context_assembly_spec": assembly,
+                "sufficiency_report": SufficiencyReport(
+                    mandatory_gaps_closed=True,
+                    evidence_strength_satisfied=True,
+                    entity_coverage=1,
+                    temporal_coverage=1,
+                    plan_obligation_coverage=1,
+                    stop_reason=ControllerStopReason.SUFFICIENT,
+                ),
             }
         ).status
         is ResolutionStatus.READY
@@ -688,16 +697,17 @@ def test_tool_binding_faults_remain_typed(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_checked_in_stage2_schemas_match_models() -> None:
-    from novel_agent.domain import stage2
+    from novel_agent.domain import retrieval_routing, stage2
 
     schema_directory = REPOSITORY_ROOT / "schemas" / "stage2"
     model_types = {
         value.__name__: value
-        for value in vars(stage2).values()
+        for module in (stage2, retrieval_routing)
+        for value in vars(module).values()
         if isinstance(value, type)
         and issubclass(value, DomainModel)
         and value is not DomainModel
-        and value.__module__ == stage2.__name__
+        and value.__module__ == module.__name__
     }
     assert {path.stem.removesuffix(".schema") for path in schema_directory.iterdir()} == set(
         model_types

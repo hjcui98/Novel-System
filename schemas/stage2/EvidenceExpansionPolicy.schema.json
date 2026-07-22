@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "max_anchor_expansions": {
+      "default": 10,
+      "minimum": 0,
+      "title": "Max Anchor Expansions",
+      "type": "integer"
+    },
+    "max_full_chapter_reads": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Max Full Chapter Reads",
+      "type": "integer"
+    },
+    "max_scene_expansions": {
+      "default": 2,
+      "minimum": 0,
+      "title": "Max Scene Expansions",
+      "type": "integer"
+    },
+    "required_strength": {
+      "minLength": 1,
+      "title": "Required Strength",
+      "type": "string"
+    }
+  },
+  "required": [
+    "required_strength"
+  ],
+  "title": "EvidenceExpansionPolicy",
+  "type": "object"
+}

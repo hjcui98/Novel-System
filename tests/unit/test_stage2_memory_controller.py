@@ -17,13 +17,19 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import (
     CandidatePool,
+    ChannelHit,
     NeedRisk,
     RequirementLevel,
     ResolutionPath,
+    RetrievalChannel,
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
     Stage1QueryIntent,
+)
+from novel_agent.domain.retrieval_routing import (
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
 )
 from novel_agent.domain.stage2 import (
     AccessScope,
@@ -46,7 +52,8 @@ from novel_agent.runtime.memory_controller import (
     RouteBoundControllerPolicy,
 )
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
-from novel_agent.services.retrieval import InMemoryRetrievalBackend
+from novel_agent.services.retrieval import InMemoryRetrievalBackend, RerankService
+from novel_agent.services.retrieval_routing import DeterministicChannelPlanner
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 
 COMMIT = CommitId("sha256:" + "a" * 64)
@@ -154,6 +161,7 @@ def controller(
     freshness: bool = True,
     policy: Any | None = None,
     checkpointer: InMemorySaver | None = None,
+    reranker: RerankService | None = None,
 ) -> tuple[BoundedMemoryController, InMemorySaver]:
     backend = InMemoryRetrievalBackend(units)
     adapter = RetrievalToolAdapter(backend, (memory_need(),))
@@ -174,6 +182,7 @@ def controller(
             policy or RouteBoundControllerPolicy(),
             lambda _: freshness,
             saver,
+            reranker=reranker,
         ),
         saver,
     )
@@ -321,8 +330,98 @@ def test_controller_trace_builder_ignores_failed_or_malformed_tool_payloads() ->
     )[0]
 
     assert trace.candidates == ()
+
+
+class _ReverseReranker:
+    profile = "locked-reranker-test"
+
+    def score(self, query: str, passages: tuple[str, ...]) -> tuple[float, ...]:
+        return tuple(float(index) for index, _ in enumerate(passages))
+
+
+class _UnavailableReranker:
+    profile = "unavailable-reranker-test"
+
+    def score(self, query: str, passages: tuple[str, ...]) -> tuple[float, ...]:
+        raise RuntimeError("reranker unavailable")
+
+
+def test_agentic_route_plan_applies_one_rerank_after_declared_rrf_group() -> None:
+    semantic_need = memory_need(
+        intent=Stage1QueryIntent.RELATED_EVENT,
+        pools=(CandidatePool.ANCHOR,),
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(semantic_need, capability)
+    first = RetrievalUnit(
+        unit_id=StableId("anchor.first"),
+        unit_kind=RetrievalUnitKind.EVENT_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="first passage",
+    )
+    second = first.model_copy(
+        update={"unit_id": StableId("anchor.second"), "text": "second passage"}
+    )
+    channel_results = {
+        channel: tuple(
+            ChannelHit(
+                unit=item,
+                channel=channel,
+                channel_rank=rank,
+                raw_score=float(3 - rank),
+                candidate_count=2,
+                hit_reason="test",
+            )
+            for rank, item in enumerate((first, second), start=1)
+        )
+        for channel in (
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        )
+    }
+    runtime, _ = controller((), reranker=RerankService(_ReverseReranker()))
+
+    candidates, fusion_applied, rerank_applied, rerank_failure = runtime._route_candidates(
+        semantic_need,
+        plan,
+        channel_results,
+        candidate_limit=2,
+    )
+
+    assert fusion_applied is True
+    assert rerank_applied is True
+    assert rerank_failure is None
+    assert candidates[0].unit.unit_id == second.unit_id
+    assert (
+        sum(
+            hit.channel is RetrievalChannel.RERANK
+            for candidate in candidates
+            for hit in candidate.channel_hits
+        )
+        == 2
+    )
     assert runtime._pool_for_unit("grounded_block") is CandidatePool.GROUNDED
     assert runtime._pool_for_unit("unknown") is CandidatePool.R1
+
+    degraded_runtime, _ = controller((), reranker=RerankService(_UnavailableReranker()))
+    degraded, _, degraded_applied, degraded_failure = degraded_runtime._route_candidates(
+        semantic_need,
+        plan,
+        channel_results,
+        candidate_limit=2,
+    )
+    assert degraded[0].unit.unit_id == first.unit_id
+    assert degraded_applied is False
+    assert degraded_failure == "reranker_degraded:RuntimeError"
 
 
 def test_controller_never_silently_drops_mandatory_context_on_overflow() -> None:

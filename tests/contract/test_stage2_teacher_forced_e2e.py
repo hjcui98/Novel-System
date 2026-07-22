@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from novel_agent.domain.ids import ProjectId, StableId
+from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, PublicCheckpointCase
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
@@ -43,6 +44,10 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["future_isolation_failure_count"] == 0
     assert summary["future_leakage_count"] == 0
     assert summary["semantic_quality_eligible"] is False
+    assert summary["generation_quality_eligible"] is False
+    assert summary["retrieval_backend_profile"] == "scripted_smoke"
+    assert summary["retrieval_quality_eligible"] is False
+    assert summary["retrieval_attestation"]["capability"]["status"] == "test_only"
     assert (output / "project.sqlite3").is_file()
     assert (output / "scenario_run.json").is_file()
     report = json.loads((output / "e2e_paired_report.json").read_text("utf-8"))
@@ -59,6 +64,23 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
             bundle,
             information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
         )
+
+
+def test_real_hybrid_profile_fails_closed_before_it_can_create_a_smoke_run(tmp_path: Path) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    output = tmp_path / "real-hybrid"
+
+    with pytest.raises(TeacherForcedBenchmarkError, match="scripted smoke fallback is disabled"):
+        TeacherForcedBenchmarkE2ERunner(
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID
+        ).run(
+            PILOT,
+            output,
+            bundle,
+            information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        )
+
+    assert not output.exists()
 
 
 def test_public_checkpoint_case_has_no_gold_fields() -> None:

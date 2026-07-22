@@ -6,17 +6,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_agent.domain import stage2
+from novel_agent.domain import retrieval_routing, stage2
 from novel_agent.domain.base import DomainModel
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage2"
+DOMAIN_MODULES = (stage2, retrieval_routing)
 MODELS = tuple(
     model
-    for model in vars(stage2).values()
+    for module in DOMAIN_MODULES
+    for model in vars(module).values()
     if isinstance(model, type)
     and issubclass(model, DomainModel)
     and model is not DomainModel
-    and model.__module__ == stage2.__name__
+    and model.__module__ == module.__name__
 )
 
 

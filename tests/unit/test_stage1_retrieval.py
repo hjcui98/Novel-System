@@ -17,10 +17,12 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
 )
 from novel_agent.services.retrieval import (
+    CandidateQuotaPolicy,
     FusionService,
     InMemoryRetrievalBackend,
     RerankService,
     RetrievalOrchestrator,
+    TypedCandidateSelector,
     _pool_for_channel,
 )
 
@@ -164,6 +166,55 @@ def test_semantic_history_is_anchor_first_with_application_rrf_diagnostics() -> 
         RetrievalChannel.ANCHOR_DENSE,
     }
     assert all(hit.channel_rank >= 1 for hit in trace.candidates[0].channel_hits)
+
+
+def test_fusion_limit_never_drops_a_mandatory_candidate() -> None:
+    optional = unit("anchor.optional", RetrievalUnitKind.EVENT_ANCHOR, "optional")
+    mandatory = unit("anchor.mandatory", RetrievalUnitKind.EVENT_ANCHOR, "mandatory").model_copy(
+        update={"mandatory": True}
+    )
+    hits = tuple(
+        ChannelHit(
+            unit=item,
+            channel=RetrievalChannel.ANCHOR_BM25,
+            channel_rank=rank,
+            raw_score=float(3 - rank),
+            candidate_count=2,
+            hit_reason="test",
+        )
+        for rank, item in enumerate((optional, mandatory), start=1)
+    )
+
+    candidates = FusionService().fuse(
+        {RetrievalChannel.ANCHOR_BM25: hits},
+        limit=1,
+    )
+
+    assert candidates[0].selected is True
+    assert candidates[1].unit.mandatory is True
+    assert candidates[1].selected is True
+    assert candidates[1].rejection_reason is None
+
+    third = unit("anchor.third", RetrievalUnitKind.EVENT_ANCHOR, "third")
+    quota_hits = tuple(
+        ChannelHit(
+            unit=item,
+            channel=RetrievalChannel.ANCHOR_BM25,
+            channel_rank=rank,
+            raw_score=float(4 - rank),
+            candidate_count=3,
+            hit_reason="test",
+        )
+        for rank, item in enumerate((optional, mandatory, third), start=1)
+    )
+    quota_candidates = FusionService(
+        selector=TypedCandidateSelector(
+            CandidateQuotaPolicy(max_per_unit_kind=1, max_per_narrative_chapter=4)
+        )
+    ).fuse({RetrievalChannel.ANCHOR_BM25: quota_hits}, limit=3)
+    assert quota_candidates[1].selected is True
+    assert quota_candidates[2].selected is False
+    assert quota_candidates[2].rejection_reason == "unit_kind_quota"
 
 
 def test_optional_anchor_reranker_runs_after_rrf_and_preserves_diagnostics() -> None:

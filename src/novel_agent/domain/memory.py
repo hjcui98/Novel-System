@@ -10,7 +10,14 @@ from pydantic import Field, JsonValue, model_validator
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.text import EvidenceRef
-from novel_agent.domain.world import Entity, Event, RelationRecord, StateRecord, StoryTime
+from novel_agent.domain.world import (
+    Entity,
+    Event,
+    RelationRecord,
+    StateRecord,
+    StoryTime,
+    TruthClass,
+)
 
 
 class ObligationKind(StrEnum):
@@ -80,6 +87,10 @@ class R1RecordView(DomainModel):
     predicate: str | None = None
     valid_start: int | None = None
     valid_end: int | None = None
+    worldline: str | None = None
+    narrative_start: int | None = None
+    narrative_end: int | None = None
+    access_scope: str = Field(default="writer_safe", min_length=1)
     truth_class: str | None = None
     entity_ids: tuple[StableId, ...] = ()
     record: dict[str, JsonValue]
@@ -146,6 +157,9 @@ class Stage1MemoryNeed(DomainModel):
     entity_ids: tuple[StableId, ...] = ()
     predicates: tuple[str, ...] = ()
     time_scope: StoryTime | None = None
+    access_scope: str = Field(default="writer_safe", min_length=1)
+    allow_plan: bool = False
+    hierarchy_parent_unit_ids: tuple[StableId, ...] = ()
     why_needed: str = Field(min_length=1)
     risk_level: NeedRisk
     requirement: RequirementLevel
@@ -162,6 +176,8 @@ class Stage1MemoryNeed(DomainModel):
             start, end = self.horizon_target
             if start < 1 or end < start:
                 raise ValueError("memory need horizon is invalid")
+        if len(self.hierarchy_parent_unit_ids) != len(set(self.hierarchy_parent_unit_ids)):
+            raise ValueError("memory need hierarchy parents must be unique")
         return self
 
 
@@ -212,11 +228,45 @@ class RetrievalUnit(DomainModel):
     source_commit: CommitId
     snapshot_id: StableId
     source_artifact: ArtifactId | None = None
+    source_refs: tuple[ArtifactId, ...] = ()
+    content_hash: ArtifactId | None = None
     text: str = Field(min_length=1)
     entity_ids: tuple[StableId, ...] = ()
+    predicate: str | None = None
     parent_unit_id: StableId | None = None
+    parent_unit_ids: tuple[StableId, ...] = ()
+    worldline: str = Field(default="main", min_length=1)
+    narrative_start: int | None = Field(default=None, ge=0)
+    narrative_end: int | None = Field(default=None, ge=0)
+    story_time_start: int | None = None
+    story_time_end: int | None = None
+    truth_class: TruthClass | None = None
+    support_status: str | None = None
+    access_scope: str = Field(default="writer_safe", min_length=1)
+    information_label: str = Field(default="observed", min_length=1)
+    derivation_taint: tuple[str, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
     mandatory: bool = False
+
+    @model_validator(mode="after")
+    def validate_projection_metadata(self) -> RetrievalUnit:
+        if (
+            self.narrative_start is not None
+            and self.narrative_end is not None
+            and self.narrative_end < self.narrative_start
+        ):
+            raise ValueError("retrieval unit narrative end precedes narrative start")
+        if (
+            self.story_time_start is not None
+            and self.story_time_end is not None
+            and self.story_time_end < self.story_time_start
+        ):
+            raise ValueError("retrieval unit story time end precedes story time start")
+        if len(self.parent_unit_ids) != len(set(self.parent_unit_ids)):
+            raise ValueError("retrieval unit parent ids must be unique")
+        if len(self.source_refs) != len(set(self.source_refs)):
+            raise ValueError("retrieval unit source refs must be unique")
+        return self
 
 
 class ChannelHit(DomainModel):
@@ -251,6 +301,8 @@ class RetrievalTrace(DomainModel):
     channel_candidate_counts: dict[RetrievalChannel, int]
     candidates: tuple[FusedCandidate, ...]
     fusion_applied: bool
+    rerank_applied: bool = False
+    channel_failures: dict[RetrievalChannel, str] = Field(default_factory=dict)
     fallback_used: bool = False
     fallback_reason: str | None = None
     stop_reason: RetrievalStopReason
@@ -302,6 +354,9 @@ class DerivedSnapshotLite(DomainModel):
     embedding_profile: str = Field(min_length=1)
     fusion_profile: str = Field(min_length=1)
     build_status: DerivedBuildStatus
+    build_profile: str = Field(default="unspecified", min_length=1)
+    retrieval_backend_profile: str = Field(default="unspecified", min_length=1)
+    projection_attestation: dict[str, JsonValue] | None = None
     failure_debt: tuple[str, ...] = ()
     published_at: datetime | None = None
 

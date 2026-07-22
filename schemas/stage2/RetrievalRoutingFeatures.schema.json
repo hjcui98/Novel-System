@@ -1,0 +1,200 @@
+{
+  "$defs": {
+    "InformationDomain": {
+      "enum": [
+        "working",
+        "world_semantic",
+        "plan_intent",
+        "textual_evidence",
+        "reference_knowledge",
+        "procedural",
+        "operational"
+      ],
+      "title": "InformationDomain",
+      "type": "string"
+    },
+    "NeedRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "NeedRisk",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "Stage1QueryIntent": {
+      "enum": [
+        "current_state",
+        "known_id",
+        "plan_node",
+        "mandatory_constraint",
+        "semantic_history",
+        "related_event",
+        "plan_obligation",
+        "global_arc",
+        "chapter_thread",
+        "character_arc",
+        "exact_quote",
+        "rare_phrase",
+        "style_voice",
+        "dialogue_sample",
+        "causal_multi_hop",
+        "relation_chain",
+        "anchor_insufficient"
+      ],
+      "title": "Stage1QueryIntent",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "access_sensitivity": {
+      "minLength": 1,
+      "title": "Access Sensitivity",
+      "type": "string"
+    },
+    "continuous_prose_required": {
+      "default": false,
+      "title": "Continuous Prose Required",
+      "type": "boolean"
+    },
+    "evidence_strength_required": {
+      "default": "canonical_supported",
+      "minLength": 1,
+      "title": "Evidence Strength Required",
+      "type": "string"
+    },
+    "exact_id_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Exact Id Count",
+      "type": "integer"
+    },
+    "hierarchy_scope": {
+      "default": "unspecified",
+      "minLength": 1,
+      "title": "Hierarchy Scope",
+      "type": "string"
+    },
+    "information_domains": {
+      "items": {
+        "$ref": "#/$defs/InformationDomain"
+      },
+      "minItems": 1,
+      "title": "Information Domains",
+      "type": "array"
+    },
+    "latency_budget_ms": {
+      "minimum": 1,
+      "title": "Latency Budget Ms",
+      "type": "integer"
+    },
+    "lexical_specificity": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Lexical Specificity",
+      "type": "number"
+    },
+    "mandatory": {
+      "default": false,
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "predicate_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Predicate Count",
+      "type": "integer"
+    },
+    "query_intent": {
+      "$ref": "#/$defs/Stage1QueryIntent"
+    },
+    "quoted_phrase_length": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Quoted Phrase Length",
+      "type": "integer"
+    },
+    "relation_hops_requested": {
+      "default": 0,
+      "maximum": 3,
+      "minimum": 0,
+      "title": "Relation Hops Requested",
+      "type": "integer"
+    },
+    "resolved_entity_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Resolved Entity Count",
+      "type": "integer"
+    },
+    "risk": {
+      "$ref": "#/$defs/NeedRisk"
+    },
+    "semantic_openness": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Semantic Openness",
+      "type": "number"
+    },
+    "snapshot_capabilities": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "title": "Snapshot Capabilities",
+      "type": "array"
+    },
+    "temporal_complexity": {
+      "default": "none",
+      "minLength": 1,
+      "title": "Temporal Complexity",
+      "type": "string"
+    },
+    "temporal_scope_kind": {
+      "default": "unspecified",
+      "minLength": 1,
+      "title": "Temporal Scope Kind",
+      "type": "string"
+    },
+    "token_budget": {
+      "minimum": 1,
+      "title": "Token Budget",
+      "type": "integer"
+    },
+    "unresolved_alias_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Unresolved Alias Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "query_intent",
+    "information_domains",
+    "risk",
+    "access_sensitivity",
+    "latency_budget_ms",
+    "token_budget"
+  ],
+  "title": "RetrievalRoutingFeatures",
+  "type": "object"
+}

@@ -17,6 +17,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
+from novel_agent.domain.memory import RetrievalChannel
 from novel_agent.domain.runtime import RunEventType
 from novel_agent.domain.stage2 import (
     AccessScope,
@@ -81,6 +82,8 @@ async def handler(tool_context: ToolCallContext, _: object) -> ToolResult:
         snapshot_id=tool_context.snapshot_id,
         payload={"secret": "result payload is not copied into RunEvent"},
         coverage=1,
+        retrieval_channel=RetrievalChannel.ANCHOR_BM25,
+        channel_candidate_count=3,
         audit_ref=StableId(f"audit.{tool_context.tool_call_id.root}"),
     )
 
@@ -114,6 +117,8 @@ def test_tool_binding_persists_replayable_request_and_result_events_without_raw_
     assert isinstance(arguments_hash, str) and arguments_hash.startswith("sha256:")
     assert "need.private" not in events[0].model_dump_json()
     assert completed_payload["coverage"] == 1.0
+    assert completed_payload["retrieval_channel"] == "anchor_bm25"
+    assert completed_payload["channel_candidate_count"] == 3
     assert all(event.tool_policy_hash == HASH.root for event in events)
 
     asyncio.run(binding.invoke(invocation, context(), ToolBudget(4, monotonic() + 10)))

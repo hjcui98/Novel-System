@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from novel_agent.adapters.postgres.models import DerivedSnapshotRow, ProjectionOutboxRow
 from novel_agent.domain.artifacts import RootManifest
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
-from novel_agent.domain.ids import CommitId, ProjectId, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, StableId
 from novel_agent.domain.memory import (
     DerivedBuildStatus,
     DerivedSnapshotLite,
@@ -22,14 +22,28 @@ from novel_agent.domain.memory import (
     FreshnessMode,
     FreshnessRequest,
     FreshnessStatus,
+    RetrievalChannel,
     WorldRootDocument,
+)
+from novel_agent.domain.retrieval_routing import (
+    ChannelCoverage,
+    L2IndexKind,
+    L2IndexManifest,
+    ProjectionAttestation,
+    RetrievalBackendProfile,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.memory_pipeline import AnchorBuilder
 from novel_agent.services.r1 import R1WorldRepository
-from novel_agent.services.search_retrieval import Stage1SearchIndexer
+from novel_agent.services.search_retrieval import (
+    SearchIndexBuildReceipt,
+    Stage1SearchIndexer,
+    Stage2RSearchIndexer,
+)
 
 
 class ProjectionBuilder(Protocol):
@@ -81,11 +95,25 @@ class FullDerivedProjectionBuilder:
         search: Stage1SearchIndexer,
         *,
         fusion_profile: str = "application-rrf-v1",
+        retrieval_backend_profile: RetrievalBackendProfile = RetrievalBackendProfile.SCRIPTED_SMOKE,
+        build_profile: str = "stage2r-hybrid-v0.1",
+        embedding_model: str | None = None,
+        embedding_revision: str | None = None,
+        embedding_runtime_fingerprint: ArtifactId | None = None,
+        reranker_model: str | None = None,
+        reranker_revision: str | None = None,
     ) -> None:
         self._loader = loader
         self._r1 = r1
         self._search = search
         self._fusion_profile = fusion_profile
+        self._retrieval_backend_profile = retrieval_backend_profile
+        self._build_profile = build_profile
+        self._embedding_model = embedding_model
+        self._embedding_revision = embedding_revision
+        self._embedding_runtime_fingerprint = embedding_runtime_fingerprint
+        self._reranker_model = reranker_model
+        self._reranker_revision = reranker_revision
 
     def build(self, project_id: ProjectId, source_commit: CommitId) -> DerivedSnapshotLite:
         source = self._loader.load(source_commit)
@@ -99,10 +127,29 @@ class FullDerivedProjectionBuilder:
             snapshot_id=snapshot_id,
             canonical_commit=source_commit,
         )
-        self._r1.materialize(project_id, source_commit, source.world)
-        anchor_index, grounded_index = self._search.build_and_publish(
-            project_id, source_commit, snapshot_id, units
-        )
+        self._r1.materialize(project_id, source_commit, source.world, source.plan)
+        if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
+            self._require_real_hybrid_indexer()
+            r1_records, r1_associations, graph_edges = self._r1.counts(source_commit)
+            search_receipt = self._search.build_and_publish_receipt(
+                project_id, source_commit, snapshot_id, units
+            )
+            attestation = self._attestation(
+                project_id,
+                source_commit,
+                snapshot_id,
+                r1_records,
+                r1_associations,
+                graph_edges,
+                search_receipt,
+            )
+            anchor_index = search_receipt.anchor_index
+            grounded_index = search_receipt.grounded_index
+        else:
+            anchor_index, grounded_index = self._search.build_and_publish(
+                project_id, source_commit, snapshot_id, units
+            )
+            attestation = None
         digest = hashlib.sha256(
             canonical_json_bytes([unit.model_dump(mode="json") for unit in units])
         ).hexdigest()[:24]
@@ -115,8 +162,154 @@ class FullDerivedProjectionBuilder:
             embedding_profile=self._search.embedding_profile,
             fusion_profile=self._fusion_profile,
             build_status=DerivedBuildStatus.EXACT,
+            build_profile=self._build_profile,
+            retrieval_backend_profile=self._retrieval_backend_profile.value,
+            projection_attestation=(
+                None if attestation is None else attestation.model_dump(mode="json")
+            ),
             published_at=datetime.now(UTC),
         )
+
+    def _attestation(
+        self,
+        project_id: ProjectId,
+        source_commit: CommitId,
+        snapshot_id: StableId,
+        r1_records: int,
+        r1_associations: int,
+        graph_edges: int,
+        search_receipt: SearchIndexBuildReceipt,
+    ) -> ProjectionAttestation:
+        if not (
+            self._embedding_model
+            and self._embedding_revision
+            and self._embedding_runtime_fingerprint is not None
+        ):
+            raise ValueError("real-hybrid projection requires locked embedding runtime attestation")
+        if self._search.embedding_dimension != 1024:
+            raise ValueError("real-hybrid projection requires 1024-dimensional embeddings")
+        if "deterministic" in self._search.embedding_profile:
+            raise ValueError("real-hybrid projection cannot use deterministic test embeddings")
+        anchor_count = search_receipt.anchor_document_count
+        grounded_count = search_receipt.grounded_document_count
+        channels = (
+            RetrievalChannel.R1_EXACT,
+            RetrievalChannel.R1_TEMPORAL,
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+            RetrievalChannel.HIERARCHY,
+            RetrievalChannel.TYPED_GRAPH,
+        )
+        coverage = (
+            ChannelCoverage(
+                channel=RetrievalChannel.R1_EXACT,
+                expected_units=r1_records,
+                ready_units=r1_records,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.R1_TEMPORAL,
+                expected_units=r1_records,
+                ready_units=r1_records,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.ANCHOR_BM25,
+                expected_units=anchor_count,
+                ready_units=anchor_count,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.ANCHOR_DENSE,
+                expected_units=anchor_count,
+                ready_units=anchor_count,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.GROUNDED_BM25,
+                expected_units=grounded_count,
+                ready_units=grounded_count,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.GROUNDED_DENSE,
+                expected_units=grounded_count,
+                ready_units=grounded_count,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.HIERARCHY,
+                expected_units=anchor_count,
+                ready_units=anchor_count,
+            ),
+            ChannelCoverage(
+                channel=RetrievalChannel.TYPED_GRAPH,
+                expected_units=graph_edges,
+                ready_units=graph_edges,
+            ),
+        )
+        mapping_hash = ArtifactId(f"sha256:{search_receipt.mapping_hash}")
+        anchor_alias, grounded_alias = self._search.aliases(project_id)
+        return ProjectionAttestation(
+            attestation_id=StableId(
+                f"attestation.stage2r.{source_commit.root.removeprefix('sha256:')[:24]}"
+            ),
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+            source_commit=source_commit,
+            snapshot_id=snapshot_id,
+            capability=SnapshotCapability(
+                source_commit=source_commit,
+                snapshot_id=snapshot_id,
+                status=SnapshotCapabilityStatus.EXACT,
+                available_channels=channels,
+                coverage_by_channel=coverage,
+                embedding_profile=self._search.embedding_profile,
+                graph_profile="postgresql-r1-versioned-edges-v0.1",
+            ),
+            r1_record_count=r1_records,
+            r1_entity_association_count=r1_associations,
+            graph_node_count=r1_records,
+            graph_edge_count=graph_edges,
+            embedding_cache_hits=search_receipt.embedding_cache.hits,
+            embedding_cache_misses=search_receipt.embedding_cache.misses,
+            indexes=(
+                L2IndexManifest(
+                    index_id=StableId(f"index.stage2r.anchor.{snapshot_id.root[-16:]}"),
+                    index_kind=L2IndexKind.ANCHOR,
+                    source_commit=source_commit,
+                    snapshot_id=snapshot_id,
+                    physical_name=search_receipt.anchor_index,
+                    alias=anchor_alias,
+                    document_count=anchor_count,
+                    mapping_hash=mapping_hash,
+                    analyzer_profile="standard-cjk-exact-v0.1",
+                    embedding_profile=self._search.embedding_input_profile,
+                ),
+                L2IndexManifest(
+                    index_id=StableId(f"index.stage2r.grounded.{snapshot_id.root[-16:]}"),
+                    index_kind=L2IndexKind.GROUNDED,
+                    source_commit=source_commit,
+                    snapshot_id=snapshot_id,
+                    physical_name=search_receipt.grounded_index,
+                    alias=grounded_alias,
+                    document_count=grounded_count,
+                    mapping_hash=mapping_hash,
+                    analyzer_profile="standard-cjk-exact-v0.1",
+                    embedding_profile=self._search.embedding_input_profile,
+                ),
+            ),
+            embedding_model=self._embedding_model,
+            embedding_revision=self._embedding_revision,
+            embedding_dimension=self._search.embedding_dimension,
+            embedding_normalized=True,
+            embedding_runtime_fingerprint=self._embedding_runtime_fingerprint,
+            reranker_model=self._reranker_model,
+            reranker_revision=self._reranker_revision,
+        )
+
+    def _require_real_hybrid_indexer(self) -> None:
+        if not isinstance(self._search, Stage2RSearchIndexer):
+            raise TypeError("real-hybrid projection requires the isolated Stage2RSearchIndexer")
+        if self._search.embedding_dimension != 1024:
+            raise ValueError("real-hybrid projection requires 1024-dimensional embeddings")
+        if "deterministic" in self._search.embedding_profile:
+            raise ValueError("real-hybrid projection cannot use deterministic test embeddings")
 
 
 class ProjectionOutboxRepository:
@@ -247,6 +440,58 @@ class DerivedSnapshotRepository:
             if row is None:
                 return None
             return DerivedSnapshotLite.model_validate_json(json.dumps(row.snapshot_json))
+
+    def get_attestation_for_commit(self, source_commit: CommitId) -> ProjectionAttestation | None:
+        """Load the typed Stage 2R receipt without treating it as a source of truth."""
+
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(DerivedSnapshotRow).where(
+                    DerivedSnapshotRow.source_commit == source_commit.root
+                )
+            )
+            if row is None:
+                return None
+            raw = row.snapshot_json.get("projection_attestation")
+            if raw is None:
+                return None
+            return ProjectionAttestation.model_validate_json(json.dumps(raw))
+
+    def publish_rebuilt(self, project_id: ProjectId, snapshot: DerivedSnapshotLite) -> bool:
+        """Atomically replace a metadata-only snapshot after a verified rebuild.
+
+        The row remains a derived cache entry keyed by the immutable source commit;
+        replacing it never changes a Canonical Root or the commit chain.
+        """
+
+        if snapshot.build_status is not DerivedBuildStatus.EXACT or snapshot.published_at is None:
+            raise ValueError("rebuilt snapshot must be exact and published")
+        payload = snapshot.model_dump(mode="json")
+        with self._session_factory() as session, session.begin():
+            existing = session.scalar(
+                select(DerivedSnapshotRow).where(
+                    DerivedSnapshotRow.source_commit == snapshot.source_commit.root
+                )
+            )
+            if existing is None:
+                session.add(
+                    DerivedSnapshotRow(
+                        snapshot_id=snapshot.snapshot_id.root,
+                        project_id=project_id.root,
+                        source_commit=snapshot.source_commit.root,
+                        build_status=snapshot.build_status.value,
+                        snapshot_json=payload,
+                        published_at=snapshot.published_at,
+                    )
+                )
+                return False
+            if existing.project_id != project_id.root:
+                raise ValueError("rebuilt snapshot project does not match existing source commit")
+            existing.snapshot_id = snapshot.snapshot_id.root
+            existing.build_status = snapshot.build_status.value
+            existing.snapshot_json = payload
+            existing.published_at = snapshot.published_at
+            return True
 
 
 class DerivedProjectionService:

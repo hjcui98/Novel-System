@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
+from novel_agent.adapters.opensearch import OpenSearchIndex
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.adapters.postgres.models import (
     DerivedSnapshotRow,
@@ -18,7 +20,7 @@ from novel_agent.adapters.postgres.models import (
     R1RecordRow,
 )
 from novel_agent.domain.artifacts import ArtifactRef, PlanRootRef, TextRootRef, WorldRootRef
-from novel_agent.domain.ids import CommitId, ProjectId, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, StableId
 from novel_agent.domain.memory import (
     DerivedBuildStatus,
     DerivedSnapshotLite,
@@ -26,6 +28,7 @@ from novel_agent.domain.memory import (
     FreshnessRequest,
     FreshnessStatus,
 )
+from novel_agent.domain.retrieval_routing import ProjectionAttestation, RetrievalBackendProfile
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.benchmark_importer import canonical_json_bytes
 from novel_agent.services.commits import CommitService
@@ -39,7 +42,11 @@ from novel_agent.services.projection import (
     ProjectionSource,
 )
 from novel_agent.services.r1 import R1WorldRepository
-from novel_agent.services.search_retrieval import Stage1SearchIndexer
+from novel_agent.services.search_retrieval import Stage1SearchIndexer, Stage2RSearchIndexer
+from novel_agent.services.stage2_retrieval_backend import (
+    Stage2RetrievalBackendError,
+    build_real_hybrid_backend,
+)
 from tests.factories import make_manifest
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
@@ -129,6 +136,23 @@ def test_projection_failure_is_recorded_and_retried(
     with factory() as session:
         row = session.scalar(select(ProjectionOutboxRow))
         assert row is not None and row.status == "completed" and row.attempt_count == 2
+
+
+def test_rebuilt_snapshot_can_supersede_legacy_derived_metadata(
+    projection_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, commit_id = projection_database
+    repository = DerivedSnapshotRepository(factory)
+    first = _snapshot(commit_id)
+    assert repository.publish_rebuilt(ProjectId("project.test"), first) is False
+    rebuilt = first.model_copy(
+        update={
+            "build_profile": "stage2r-hybrid-v0.1",
+            "retrieval_backend_profile": "real_hybrid",
+        }
+    )
+    assert repository.publish_rebuilt(ProjectId("project.test"), rebuilt) is True
+    assert repository.get_for_commit(commit_id) == rebuilt
 
 
 def test_projection_claim_lease_recovers_abandoned_processing_work(
@@ -416,4 +440,84 @@ def test_full_projection_loads_verified_artifacts_and_materializes_r1_and_indexe
     )
     with pytest.raises(ValueError, match="project mismatch"):
         wrong_builder.build(manifest.project_id, commit_id)
+    engine.dispose()
+
+
+class _RealProjectionEmbedder:
+    dimension = 1024
+    profile = "BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181;normalized"
+
+    def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0,) * self.dimension for _ in texts)
+
+
+class _RealProjectionReranker:
+    profile = "locked-test-reranker"
+
+    def score(self, query: str, passages: tuple[str, ...]) -> tuple[float, ...]:
+        return tuple(float(len(passages) - index) for index, _ in enumerate(passages))
+
+
+def test_real_hybrid_projection_requires_isolated_bulk_index_and_stores_attestation() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    manifest = make_manifest()
+    commit_id = CommitService(factory).initialize_project(manifest)
+    bundle = make_synthetic_bundle()
+    source = ProjectionSource(
+        manifest=manifest,
+        text=next(root for root in bundle.text_roots if len(root.chapters) == 20),
+        plan=bundle.plan_roots[0],
+        world=bundle.world_roots[0],
+    )
+    loader = MagicMock()
+    loader.load.return_value = source
+    index = MagicMock(spec=OpenSearchIndex)
+    search = Stage2RSearchIndexer(cast(OpenSearchIndex, index), _RealProjectionEmbedder())
+    builder = FullDerivedProjectionBuilder(
+        loader,
+        R1WorldRepository(factory),
+        search,
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+        embedding_model="BAAI/bge-m3",
+        embedding_revision="5617a9f61b028005a4858fdac845db406aefb181",
+        embedding_runtime_fingerprint=ArtifactId("sha256:" + "f" * 64),
+        reranker_model="BAAI/bge-reranker-v2-m3",
+        reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    )
+
+    snapshot = builder.build(manifest.project_id, commit_id)
+
+    assert snapshot.retrieval_backend_profile == "real_hybrid"
+    assert snapshot.projection_attestation is not None
+    attestation = ProjectionAttestation.model_validate_json(
+        json.dumps(snapshot.projection_attestation)
+    )
+    assert attestation.quality_eligible is True
+    assert all("stage2r" in item.alias for item in attestation.indexes)
+    assert index.bulk_index.call_count == 2
+    assert index.refresh.call_count == 2
+    backend = build_real_hybrid_backend(
+        r1=R1WorldRepository(factory),
+        search_index=cast(OpenSearchIndex, index),
+        embedder=_RealProjectionEmbedder(),
+        project_id=manifest.project_id,
+        source_commit=commit_id,
+        snapshot_id=snapshot.snapshot_id,
+        attestation=attestation,
+        reranker=_RealProjectionReranker(),
+    )
+    assert "anchor_dense" in {channel.value for channel in backend.allowed_channels}
+    with pytest.raises(Stage2RetrievalBackendError, match="basis"):
+        build_real_hybrid_backend(
+            r1=R1WorldRepository(factory),
+            search_index=cast(OpenSearchIndex, index),
+            embedder=_RealProjectionEmbedder(),
+            project_id=manifest.project_id,
+            source_commit=CommitId("sha256:" + "0" * 64),
+            snapshot_id=snapshot.snapshot_id,
+            attestation=attestation,
+            reranker=_RealProjectionReranker(),
+        )
     engine.dispose()

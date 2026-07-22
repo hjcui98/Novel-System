@@ -673,6 +673,17 @@
     "Stage1MemoryNeed": {
       "additionalProperties": false,
       "properties": {
+        "access_scope": {
+          "default": "writer_safe",
+          "minLength": 1,
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "allow_plan": {
+          "default": false,
+          "title": "Allow Plan",
+          "type": "boolean"
+        },
         "allowed_candidate_pools": {
           "items": {
             "$ref": "#/$defs/CandidatePool"
@@ -711,6 +722,14 @@
             "type": "string"
           },
           "title": "Expected Evidence Types",
+          "type": "array"
+        },
+        "hierarchy_parent_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Hierarchy Parent Unit Ids",
           "type": "array"
         },
         "horizon_target": {
@@ -888,6 +907,103 @@
       "title": "StoryTime",
       "type": "object"
     },
+    "SufficiencyReport": {
+      "additionalProperties": false,
+      "description": "Auditable stopping evidence for a bounded RoutePlan execution.",
+      "properties": {
+        "conflicting_evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Conflicting Evidence",
+          "type": "array"
+        },
+        "entity_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Entity Coverage",
+          "type": "number"
+        },
+        "evidence_strength_satisfied": {
+          "title": "Evidence Strength Satisfied",
+          "type": "boolean"
+        },
+        "freshness_warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Freshness Warnings",
+          "type": "array"
+        },
+        "mandatory_gaps_closed": {
+          "title": "Mandatory Gaps Closed",
+          "type": "boolean"
+        },
+        "new_information_gain_by_round": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "New Information Gain By Round",
+          "type": "array"
+        },
+        "plan_obligation_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Plan Obligation Coverage",
+          "type": "number"
+        },
+        "recommended_fallback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recommended Fallback"
+        },
+        "scope_access_warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Scope Access Warnings",
+          "type": "array"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/ControllerStopReason"
+        },
+        "temporal_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Temporal Coverage",
+          "type": "number"
+        },
+        "unresolved_unknowns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved Unknowns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mandatory_gaps_closed",
+        "evidence_strength_satisfied",
+        "entity_coverage",
+        "temporal_coverage",
+        "plan_obligation_coverage",
+        "stop_reason"
+      ],
+      "title": "SufficiencyReport",
+      "type": "object"
+    },
     "TaskId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "TaskId",
@@ -985,6 +1101,17 @@
     },
     "stop_reason": {
       "$ref": "#/$defs/ControllerStopReason"
+    },
+    "sufficiency_report": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SufficiencyReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "unresolved_gaps": {
       "default": [],

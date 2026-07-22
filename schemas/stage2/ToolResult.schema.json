@@ -1,11 +1,41 @@
 {
   "$defs": {
+    "ChannelFailureCode": {
+      "enum": [
+        "backend_unavailable",
+        "coverage_incomplete",
+        "profile_mismatch",
+        "basis_mismatch",
+        "stale",
+        "forbidden",
+        "timeout",
+        "build_failed"
+      ],
+      "title": "ChannelFailureCode",
+      "type": "string"
+    },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "CommitId",
       "type": "string"
     },
     "JsonValue": {},
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -42,8 +72,45 @@
     "audit_ref": {
       "$ref": "#/$defs/StableId"
     },
+    "backend_latency_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Backend Latency Ms"
+    },
     "basis_commit": {
       "$ref": "#/$defs/CommitId"
+    },
+    "channel_candidate_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Channel Candidate Count"
+    },
+    "channel_failure_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ChannelFailureCode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "coverage": {
       "default": 0,
@@ -63,6 +130,12 @@
       ],
       "default": null
     },
+    "new_information_gain": {
+      "default": 0,
+      "minimum": 0,
+      "title": "New Information Gain",
+      "type": "integer"
+    },
     "partial": {
       "default": false,
       "title": "Partial",
@@ -72,6 +145,31 @@
       "anyOf": [
         {
           "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "query_variant": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query Variant"
+    },
+    "retrieval_channel": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RetrievalChannel"
         },
         {
           "type": "null"

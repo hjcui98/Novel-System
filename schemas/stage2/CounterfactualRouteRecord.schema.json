@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluator-only alternative route used to measure routing regret.",
+  "properties": {
+    "added_channels": {
+      "items": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "minItems": 1,
+      "title": "Added Channels",
+      "type": "array"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "candidate_count": {
+      "minimum": 0,
+      "title": "Candidate Count",
+      "type": "integer"
+    },
+    "evaluator_only": {
+      "default": true,
+      "title": "Evaluator Only",
+      "type": "boolean"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "record_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "route_plan_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "selected_count": {
+      "minimum": 0,
+      "title": "Selected Count",
+      "type": "integer"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "record_id",
+    "route_plan_id",
+    "need_id",
+    "base_commit",
+    "snapshot_id",
+    "added_channels",
+    "candidate_count",
+    "selected_count"
+  ],
+  "title": "CounterfactualRouteRecord",
+  "type": "object"
+}

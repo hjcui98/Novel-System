@@ -60,6 +60,7 @@ class ExactReplayProjectionBuilder(ProjectionBuilder):
             embedding_profile="deterministic-test-embedding-v1",
             fusion_profile="rrf-v1",
             build_status=DerivedBuildStatus.EXACT,
+            retrieval_backend_profile="scripted_smoke",
             published_at=datetime.now(UTC),
         )
 

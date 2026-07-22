@@ -46,6 +46,33 @@ def test_index_get_and_missing_document() -> None:
     assert adapter.get_document("evidence", "missing") is None
 
 
+def test_bulk_index_refreshes_once_and_rejects_item_failures() -> None:
+    client = MagicMock(spec=OpenSearch)
+    client.indices = MagicMock()
+    adapter = OpenSearchIndex(cast(OpenSearch, client))
+    documents = (("doc-1", {"text": "one"}), ("doc-2", {"text": "two"}))
+
+    client.bulk.return_value = {"errors": False}
+    adapter.bulk_index("evidence", documents)
+    assert client.bulk.call_args.kwargs == {
+        "body": [
+            {"index": {"_index": "evidence", "_id": "doc-1"}},
+            {"text": "one"},
+            {"index": {"_index": "evidence", "_id": "doc-2"}},
+            {"text": "two"},
+        ],
+        "refresh": False,
+    }
+    adapter.bulk_index("evidence", ())
+    assert client.bulk.call_count == 1
+    adapter.refresh("evidence")
+    client.indices.refresh.assert_called_once_with(index="evidence")
+
+    client.bulk.return_value = {"errors": True, "items": [{"index": {"error": "bad"}}]}
+    with pytest.raises(RuntimeError, match="bulk indexing failed"):
+        adapter.bulk_index("evidence", documents)
+
+
 def test_get_rejects_non_object_source() -> None:
     client = MagicMock(spec=OpenSearch)
     client.get.return_value = {"_source": "invalid"}
@@ -104,3 +131,30 @@ def test_alias_publication_and_index_deletion_are_idempotent() -> None:
     client.indices.exists.return_value = False
     adapter.delete_index("missing-index")
     client.indices.delete.assert_called_once()
+
+
+def test_bulk_alias_publication_switches_anchor_and_grounded_together() -> None:
+    client = MagicMock(spec=OpenSearch)
+    client.indices = MagicMock()
+    adapter = OpenSearchIndex(cast(OpenSearch, client))
+    client.indices.get_alias.side_effect = (
+        {"old-anchor": {}},
+        {"old-grounded": {}},
+    )
+
+    adapter.publish_aliases(
+        (("next-anchor", "project-stage2r-anchor"), ("next-grounded", "project-stage2r-grounded"))
+    )
+
+    client.indices.update_aliases.assert_called_once_with(
+        body={
+            "actions": [
+                {"remove": {"index": "old-anchor", "alias": "project-stage2r-anchor"}},
+                {"add": {"index": "next-anchor", "alias": "project-stage2r-anchor"}},
+                {"remove": {"index": "old-grounded", "alias": "project-stage2r-grounded"}},
+                {"add": {"index": "next-grounded", "alias": "project-stage2r-grounded"}},
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="unique aliases"):
+        adapter.publish_aliases((("one", "same"), ("two", "same")))
