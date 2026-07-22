@@ -97,7 +97,7 @@ def main() -> int:
         run_id = RunId(f"run.stage2r-backfill.{uuid4().hex}")
         embedder = HttpEmbeddingProvider(
             RetrievalModelRoute(
-                endpoint=embedding_target,
+                endpoint=embedding_target.geturl(),
                 model=embedding_model.model_id,
                 revision=embedding_model.revision,
                 runtime_fingerprint=embedding_model.runtime_fingerprint,
