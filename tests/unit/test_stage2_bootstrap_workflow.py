@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -429,6 +429,10 @@ def test_approval_repository_rejects_stale_colliding_and_nonterminal_decisions(
     )
     assert repository.decide(rejected) == rejected
     assert repository.decide(rejected) == rejected
+    assert (
+        repository.decide(rejected.model_copy(update={"decided_at": NOW + timedelta(seconds=1)}))
+        == rejected
+    )
     with pytest.raises(BootstrapWorkflowError, match="already decided differently"):
         repository.decide(rejected.model_copy(update={"reason": "changed reason"}))
 
@@ -477,6 +481,10 @@ def test_sql_approval_repository_resumes_after_reconstruction(
     )
     assert reconstructed.decide(decision) == decision
     assert reconstructed.decide(decision) == decision
+    assert (
+        reconstructed.decide(decision.model_copy(update={"decided_at": NOW + timedelta(seconds=1)}))
+        == decision
+    )
     with pytest.raises(BootstrapWorkflowError, match="already decided differently"):
         reconstructed.decide(decision.model_copy(update={"reason": "different"}))
     resumed = GenesisCoordinator(CommitService(database[1]), reconstructed, lambda: NOW)

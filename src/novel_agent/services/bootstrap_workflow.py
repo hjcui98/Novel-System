@@ -303,7 +303,7 @@ class InMemoryAuthorApprovalRepository:
         self._validate_decision_basis(request, decision)
         existing = self._decisions.get(decision.approval_request_id)
         if existing is not None:
-            if existing != decision:
+            if not self._same_decision_basis(existing, decision):
                 raise BootstrapWorkflowError("approval request already decided differently")
             return existing
         self._decisions[decision.approval_request_id] = decision
@@ -341,6 +341,15 @@ class InMemoryAuthorApprovalRepository:
             or request.validation_report_id != decision.validation_report_id
         ):
             raise BootstrapWorkflowError("approval decision does not match request basis")
+
+    @staticmethod
+    def _same_decision_basis(
+        left: AuthorApprovalDecision,
+        right: AuthorApprovalDecision,
+    ) -> bool:
+        """Treat a retry timestamp as transport metadata, not a new decision."""
+
+        return left.model_dump(exclude={"decided_at"}) == right.model_dump(exclude={"decided_at"})
 
     def load_request(self, approval_request_id: StableId) -> AuthorApprovalRequest:
         try:
@@ -402,7 +411,7 @@ class SqlAuthorApprovalRepository:
                 persisted = AuthorApprovalDecision.model_validate_json(
                     json.dumps(row.decision_json)
                 )
-                if persisted != decision:
+                if not InMemoryAuthorApprovalRepository._same_decision_basis(persisted, decision):
                     raise BootstrapWorkflowError("approval request already decided differently")
                 return persisted
             row.status = decision.status.value
