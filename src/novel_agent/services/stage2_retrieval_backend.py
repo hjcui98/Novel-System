@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from novel_agent.adapters.opensearch.search_index import OpenSearchIndex
@@ -70,7 +72,7 @@ class RealHybridProjectionGateway:
             if rebuilt.projection_attestation is None:
                 raise Stage2RetrievalBackendError("real-hybrid projection produced no attestation")
             self._snapshots.publish_rebuilt(project_id, rebuilt)
-            attestation = ProjectionAttestation.model_validate(rebuilt.projection_attestation)
+            attestation = _load_persisted_attestation(rebuilt.projection_attestation)
         return build_real_hybrid_backend(
             r1=self._r1,
             search_index=self._search_index,
@@ -141,6 +143,12 @@ def build_real_hybrid_backend(
         allowed_channels=tuple(sorted(routes, key=lambda channel: channel.value)),
         reranker=RerankService(reranker),
     )
+
+
+def _load_persisted_attestation(raw: Mapping[str, object]) -> ProjectionAttestation:
+    """Restore strict domain types from a JSON-compatible snapshot payload."""
+
+    return ProjectionAttestation.model_validate_json(json.dumps(raw))
 
 
 def _validate_attestation(

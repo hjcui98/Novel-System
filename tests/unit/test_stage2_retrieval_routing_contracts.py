@@ -36,6 +36,7 @@ from novel_agent.domain.retrieval_routing import (
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
+from novel_agent.services.stage2_retrieval_backend import _load_persisted_attestation
 
 HASH_A = ArtifactId("sha256:" + "a" * 64)
 COMMIT = CommitId(HASH_A.root)
@@ -195,6 +196,8 @@ def test_projection_attestation_requires_real_vector_evidence_for_exact_real_hyb
         reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
     )
     assert exact.quality_eligible is True
+    restored = _load_persisted_attestation(exact.model_dump(mode="json"))
+    assert restored == exact
     blocked = exact.model_copy(
         update=(
             {
