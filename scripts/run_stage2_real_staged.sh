@@ -9,6 +9,7 @@ MODEL_BASE_URL="${MODEL_BASE_URL:-http://127.0.0.1:8002/v1}"
 MODEL="${MODEL:-qwen36-27b-nvfp4}"
 MODEL_MAX_OUTPUT_TOKENS="${MODEL_MAX_OUTPUT_TOKENS:-8192}"
 STAGE2R_DATABASE_URL="${STAGE2R_DATABASE_URL:?set STAGE2R_DATABASE_URL to the loopback PostgreSQL project database}"
+STAGE2R_EXPERIMENT_ID="${STAGE2R_EXPERIMENT_ID:?set STAGE2R_EXPERIMENT_ID to the isolated experiment namespace}"
 PYTHON="${PYTHON:-${ROOT}/.conda-env/bin/python}"
 RUNNER="${ROOT}/scripts/run_stage2_teacher_forced_e2e.py"
 
@@ -26,6 +27,7 @@ run_stage() {
     --semantic-backend local_openai \
     --retrieval-backend real_hybrid \
     --database-url "${STAGE2R_DATABASE_URL}" \
+    --experiment-id "${STAGE2R_EXPERIMENT_ID}" \
     --model-base-url "${MODEL_BASE_URL}" \
     --model "${MODEL}" \
     --model-max-output-tokens "${MODEL_MAX_OUTPUT_TOKENS}" \

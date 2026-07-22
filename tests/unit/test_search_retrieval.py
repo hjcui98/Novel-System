@@ -23,6 +23,7 @@ from novel_agent.services.search_retrieval import (
     Stage1OpenSearchBackend,
     Stage1SearchIndexer,
     Stage2RIndexRetentionPolicy,
+    Stage2ROpenSearchBackend,
     Stage2RSearchIndexer,
     _safe_name,
 )
@@ -125,6 +126,59 @@ def test_stage2r_indexer_bulk_builds_attested_indexes_with_content_cache() -> No
     assert properties["exact_terms"]["type"] == "keyword"
     assert properties["evidence_ids"]["type"] == "keyword"
     assert len(first.mapping_hash) == 64
+
+
+def test_stage2r_indexer_namespaces_aliases_and_physical_indexes_per_experiment() -> None:
+    run2_adapter = MagicMock(spec=OpenSearchIndex)
+    run3_adapter = MagicMock(spec=OpenSearchIndex)
+    run2 = Stage2RSearchIndexer(
+        cast(OpenSearchIndex, run2_adapter),
+        DeterministicHashEmbedder(dimension=4),
+        index_namespace="run2",
+    )
+    run3 = Stage2RSearchIndexer(
+        cast(OpenSearchIndex, run3_adapter),
+        DeterministicHashEmbedder(dimension=4),
+        index_namespace="run3",
+    )
+
+    run2_receipt = run2.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
+    run3_receipt = run3.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
+
+    assert run2_receipt.anchor_index != run3_receipt.anchor_index
+    assert "run2" in run2_receipt.anchor_index
+    assert "run3" in run3_receipt.anchor_index
+    run2_aliases = run2_adapter.publish_aliases.call_args.args[0]
+    run3_aliases = run3_adapter.publish_aliases.call_args.args[0]
+    assert run2_aliases != run3_aliases
+    assert all("run2" in alias for _, alias in run2_aliases)
+    assert all("run3" in alias for _, alias in run3_aliases)
+
+
+def test_stage2r_backend_queries_attested_physical_index_not_shared_alias() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    adapter.search_with_total.return_value = ((), 0)
+    backend = Stage2ROpenSearchBackend(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        anchor_index_name="project-stage2r-run3-anchor-physical",
+        grounded_index_name="project-stage2r-run3-grounded-physical",
+    )
+
+    backend.search(
+        need(
+            Stage1QueryIntent.ANCHOR_INSUFFICIENT,
+            "旧誓言",
+            (CandidatePool.ANCHOR,),
+        ),
+        RetrievalChannel.ANCHOR_BM25,
+        5,
+    )
+
+    assert adapter.search_with_total.call_args.args[0] == ("project-stage2r-run3-anchor-physical")
 
 
 def test_stage2r_retention_pins_checkpoints_and_accepted_snapshots() -> None:

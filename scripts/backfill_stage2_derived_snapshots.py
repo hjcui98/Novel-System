@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-directory", required=True, type=Path)
     parser.add_argument("--project-id")
     parser.add_argument("--database-url")
+    parser.add_argument("--experiment-id", required=True)
     parser.add_argument(
         "--opensearch-url",
         default=f"http://127.0.0.1:{os.getenv('OPENSEARCH_PORT', '9200')}",
@@ -136,6 +137,7 @@ def main() -> int:
                 OpenSearchIndex(search_client),
                 embedder,
                 embedding_cache=SqlEmbeddingCache(factory),
+                index_namespace=args.experiment_id,
             ),
             retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
             build_profile=args.build_profile,
@@ -169,6 +171,7 @@ def main() -> int:
             "project_id": project_id.root,
             "retrieval_backend_profile": RetrievalBackendProfile.REAL_HYBRID.value,
             "build_profile": args.build_profile,
+            "experiment_id": args.experiment_id,
             "database_url": _safe_database_descriptor(database_url),
             "opensearch_url": search_target.geturl(),
             "completed_at": datetime.now(UTC).isoformat(),

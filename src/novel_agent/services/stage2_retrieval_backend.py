@@ -113,6 +113,7 @@ def build_real_hybrid_backend(
         graph_depth=graph_depth,
         access_scopes=access_scopes,
     )
+    indexes = {item.index_kind: item for item in attestation.indexes}
     search_backend = Stage2ROpenSearchBackend(
         search_index,
         embedder,
@@ -120,6 +121,8 @@ def build_real_hybrid_backend(
         source_commit=source_commit,
         snapshot_id=snapshot_id,
         access_scopes=access_scopes,
+        anchor_index_name=indexes[L2IndexKind.ANCHOR].physical_name,
+        grounded_index_name=indexes[L2IndexKind.GROUNDED].physical_name,
     )
     r1_channels = {
         RetrievalChannel.R1_EXACT,

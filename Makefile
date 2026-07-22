@@ -138,10 +138,12 @@ stage2-teacher-forced-e2e:
 	@test -n "$(OUTPUT)" || { echo "OUTPUT is required" >&2; exit 2; }
 	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
 	@test -n "$(STAGE2R_DATABASE_URL)" || { echo "STAGE2R_DATABASE_URL is required" >&2; exit 2; }
+	@test -n "$(STAGE2R_EXPERIMENT_ID)" || { echo "STAGE2R_EXPERIMENT_ID is required" >&2; exit 2; }
 	@"$(PYTHON)" scripts/run_stage2_teacher_forced_e2e.py \
 		--source "$(SOURCE)" --output-directory "$(OUTPUT)" \
 		--resume-project "$(PROJECT_DIRECTORY)" \
 		--database-url "$(STAGE2R_DATABASE_URL)" \
+		--experiment-id "$(STAGE2R_EXPERIMENT_ID)" \
 		--information-profile "$${PROFILE:-author_plan_conditioned}" \
 		--semantic-backend "$${SEMANTIC_BACKEND:-local_openai}" \
 		--retrieval-backend "$${RETRIEVAL_BACKEND:-real_hybrid}" \
@@ -150,10 +152,12 @@ stage2-teacher-forced-e2e:
 
 stage2r-backfill:
 	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@test -n "$(STAGE2R_EXPERIMENT_ID)" || { echo "STAGE2R_EXPERIMENT_ID is required" >&2; exit 2; }
 	@$(MAKE) infra-health
 	@$(MAKE) models-health
 	@"$(PYTHON)" scripts/backfill_stage2_derived_snapshots.py \
 		--project-directory "$(PROJECT_DIRECTORY)" --retrieval-backend real_hybrid \
+		--experiment-id "$(STAGE2R_EXPERIMENT_ID)" \
 		--build-profile "$${BUILD_PROFILE:-stage2r-hybrid-v0.1}" $${RESUME:+--resume}
 
 stage2r-gate:

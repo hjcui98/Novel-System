@@ -209,7 +209,7 @@ class Stage1SearchIndexer:
         bulk: bool,
     ) -> SearchIndexBuildReceipt:
         self._validate_basis(source_commit, snapshot_id, units)
-        anchor_index, grounded_index = self._physical_names(project_id, snapshot_id)
+        anchor_index, grounded_index = self._physical_names_for(project_id, snapshot_id)
         mapping = self._mapping(self._embedder.dimension)
         self._index.ensure_index(anchor_index, mapping)
         self._index.ensure_index(grounded_index, mapping)
@@ -239,7 +239,7 @@ class Stage1SearchIndexer:
                 self._index.index_document(anchor_index, document_id, document)
             for document_id, document in grounded_documents:
                 self._index.index_document(grounded_index, document_id, document)
-        anchor_alias, grounded_alias = self.aliases(project_id)
+        anchor_alias, grounded_alias = self._aliases_for(project_id)
         if bulk:
             self._index.publish_aliases(
                 ((anchor_index, anchor_alias), (grounded_index, grounded_alias))
@@ -268,6 +268,12 @@ class Stage1SearchIndexer:
         prefix = _safe_name(project_id.root)
         suffix = hashlib.sha256(snapshot_id.root.encode()).hexdigest()[:16]
         return f"{prefix}-anchor-{suffix}", f"{prefix}-grounded-{suffix}"
+
+    def _aliases_for(self, project_id: ProjectId) -> tuple[str, str]:
+        return self.aliases(project_id)
+
+    def _physical_names_for(self, project_id: ProjectId, snapshot_id: StableId) -> tuple[str, str]:
+        return self._physical_names(project_id, snapshot_id)
 
     @staticmethod
     def _mapping(dimension: int) -> dict[str, object]:
@@ -380,6 +386,27 @@ class Stage1SearchIndexer:
 class Stage2RSearchIndexer(Stage1SearchIndexer):
     """Stage 2R naming profile with isolated Anchor/Grounded aliases."""
 
+    def __init__(
+        self,
+        index: OpenSearchIndex,
+        embedder: EmbeddingProvider,
+        *,
+        embedding_cache: EmbeddingCacheRepository | None = None,
+        embedding_input_profile: str = "narrative-bge-m3-v0.1",
+        index_namespace: str = "default",
+    ) -> None:
+        super().__init__(
+            index,
+            embedder,
+            embedding_cache=embedding_cache,
+            embedding_input_profile=embedding_input_profile,
+        )
+        self._index_namespace = _safe_name(index_namespace)
+
+    @property
+    def index_namespace(self) -> str:
+        return self._index_namespace
+
     @staticmethod
     def aliases(project_id: ProjectId) -> tuple[str, str]:
         prefix = _safe_name(project_id.root)
@@ -390,6 +417,27 @@ class Stage2RSearchIndexer(Stage1SearchIndexer):
         prefix = _safe_name(project_id.root)
         suffix = hashlib.sha256(snapshot_id.root.encode()).hexdigest()[:16]
         return f"{prefix}-stage2r-anchor-{suffix}", f"{prefix}-stage2r-grounded-{suffix}"
+
+    def _aliases_for(self, project_id: ProjectId) -> tuple[str, str]:
+        if self._index_namespace == "default":
+            return self.aliases(project_id)
+        prefix = _safe_name(project_id.root)
+        namespace = self._index_namespace
+        return (
+            f"{prefix}-stage2r-{namespace}-anchor",
+            f"{prefix}-stage2r-{namespace}-grounded",
+        )
+
+    def _physical_names_for(self, project_id: ProjectId, snapshot_id: StableId) -> tuple[str, str]:
+        if self._index_namespace == "default":
+            return self._physical_names(project_id, snapshot_id)
+        prefix = _safe_name(project_id.root)
+        namespace = self._index_namespace
+        suffix = hashlib.sha256(snapshot_id.root.encode()).hexdigest()[:16]
+        return (
+            f"{prefix}-stage2r-{namespace}-anchor-{suffix}",
+            f"{prefix}-stage2r-{namespace}-grounded-{suffix}",
+        )
 
 
 class Stage1OpenSearchBackend:
@@ -403,6 +451,8 @@ class Stage1OpenSearchBackend:
         snapshot_id: StableId,
         indexer_type: type[Stage1SearchIndexer] = Stage1SearchIndexer,
         access_scopes: tuple[str, ...] = ("writer_safe",),
+        anchor_index_name: str | None = None,
+        grounded_index_name: str | None = None,
     ) -> None:
         if not access_scopes or any(not scope for scope in access_scopes):
             raise ValueError("OpenSearch retrieval requires at least one non-empty access scope")
@@ -413,7 +463,9 @@ class Stage1OpenSearchBackend:
         self._project_id = project_id
         self._source_commit = source_commit
         self._snapshot_id = snapshot_id
-        self._anchor_alias, self._grounded_alias = indexer_type.aliases(project_id)
+        default_anchor, default_grounded = indexer_type.aliases(project_id)
+        self._anchor_alias = anchor_index_name or default_anchor
+        self._grounded_alias = grounded_index_name or default_grounded
         self._access_scopes = access_scopes
 
     def search(
@@ -619,6 +671,8 @@ class Stage2ROpenSearchBackend(Stage1OpenSearchBackend):
         source_commit: CommitId,
         snapshot_id: StableId,
         access_scopes: tuple[str, ...] = ("writer_safe",),
+        anchor_index_name: str | None = None,
+        grounded_index_name: str | None = None,
     ) -> None:
         super().__init__(
             index,
@@ -628,6 +682,8 @@ class Stage2ROpenSearchBackend(Stage1OpenSearchBackend):
             snapshot_id=snapshot_id,
             indexer_type=Stage2RSearchIndexer,
             access_scopes=access_scopes,
+            anchor_index_name=anchor_index_name,
+            grounded_index_name=grounded_index_name,
         )
 
 

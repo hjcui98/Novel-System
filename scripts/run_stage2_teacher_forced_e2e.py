@@ -6,16 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 from uuid import uuid4
 
 from opensearchpy import OpenSearch
+from sqlalchemy.engine import Engine
 
 try:
     from scripts.native_models import assert_model_service, load_model_lock
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from native_models import assert_model_service, load_model_lock  # type: ignore[no-redef]
+    from native_models import (  # type: ignore[import-not-found,no-redef]
+        assert_model_service,
+        load_model_lock,
+    )
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.model import (
@@ -26,6 +32,7 @@ from novel_agent.adapters.model import (
 )
 from novel_agent.adapters.opensearch import OpenSearchIndex
 from novel_agent.adapters.postgres.database import build_engine, build_session_factory
+from novel_agent.domain.benchmark import BenchmarkBundle
 from novel_agent.domain.ids import ArtifactId, RunId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
@@ -62,6 +69,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--database-url",
         help="required loopback PostgreSQL URL for formal real_hybrid retrieval",
+    )
+    value.add_argument(
+        "--experiment-id",
+        required=True,
+        help="stable experiment namespace for database/filesystem/OpenSearch isolation",
     )
     value.add_argument(
         "--opensearch-url",
@@ -111,6 +123,7 @@ def main() -> int:
     bundle = HumanBenchmarkCompiler().compile(args.source)
     project_directory = (args.resume_project or args.output_directory).resolve()
     retrieval_profile = RetrievalBackendProfile(args.retrieval_backend)
+    _ensure_experiment_manifest(args, bundle, project_directory)
     endpoint = (
         OpenAICompatibleChatEndpoint(
             base_url=args.model_base_url,
@@ -166,7 +179,7 @@ def main() -> int:
 def _real_hybrid_gateway(
     args: argparse.Namespace,
     project_directory: Path,
-) -> tuple[object, OpenSearch, RealHybridProjectionGateway]:
+) -> tuple[Engine, OpenSearch, RealHybridProjectionGateway]:
     """Build the exact commit-scoped gateway used by both paired arms.
 
     This validates all native retrieval dependencies up front.  It does not
@@ -238,6 +251,7 @@ def _real_hybrid_gateway(
             OpenSearchIndex(client),
             embedder,
             embedding_cache=SqlEmbeddingCache(factory),
+            index_namespace=args.experiment_id,
         ),
         retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
         build_profile="stage2r-hybrid-v0.1",
@@ -274,7 +288,7 @@ def _loopback_postgres_url(value: str | None) -> str:
     return value
 
 
-def _loopback_http_url(value: str, label: str):
+def _loopback_http_url(value: str, label: str) -> ParseResult:
     parsed = urlparse(value)
     if (
         parsed.scheme not in {"http", "https"}
@@ -286,6 +300,66 @@ def _loopback_http_url(value: str, label: str):
     ):
         raise ValueError(f"{label} endpoint must be a loopback HTTP(S) URL")
     return parsed
+
+
+def _ensure_experiment_manifest(
+    args: argparse.Namespace,
+    bundle: BenchmarkBundle,
+    project_directory: Path,
+) -> None:
+    project_directory.mkdir(parents=True, exist_ok=True)
+    database_url = (
+        _loopback_postgres_url(args.database_url)
+        if args.retrieval_backend == RetrievalBackendProfile.REAL_HYBRID.value
+        else args.database_url or f"sqlite:///{project_directory / 'project.sqlite3'}"
+    )
+    parsed_database = urlparse(database_url)
+    database_descriptor = (
+        f"{parsed_database.scheme}://{parsed_database.hostname}:{parsed_database.port}"
+        f"{parsed_database.path}"
+        if parsed_database.scheme.startswith("postgresql+")
+        else database_url
+    )
+    code_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    payload = {
+        "schema_version": 1,
+        "experiment_id": args.experiment_id,
+        "code_commit": code_commit,
+        "benchmark_source": str(args.source.resolve()),
+        "benchmark_content_hash": bundle.content_hash.root,
+        "database": database_descriptor,
+        "project_directory": str(project_directory),
+        "retrieval_backend": args.retrieval_backend,
+        "opensearch_url": _loopback_http_url(args.opensearch_url, "OpenSearch").geturl(),
+        "embedding_url": _loopback_http_url(args.embedding_url, "embedding").geturl(),
+        "reranker_url": _loopback_http_url(args.reranker_url, "reranker").geturl(),
+        "model_base_url": args.model_base_url,
+        "model": args.model,
+    }
+    path = project_directory / "experiment_manifest.json"
+    if path.exists():
+        existing = json.loads(path.read_text("utf-8"))
+        if existing != payload:
+            raise ValueError("experiment manifest differs from the requested run configuration")
+        return
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=project_directory,
+        prefix=".experiment-manifest.",
+        delete=False,
+        encoding="utf-8",
+    ) as temporary:
+        json.dump(payload, temporary, ensure_ascii=False, indent=2, sort_keys=True)
+        temporary.write("\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+    os.replace(temporary.name, path)
 
 
 if __name__ == "__main__":
