@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -267,6 +268,7 @@ class TeacherForcedBenchmarkE2ERunner:
         )
         database_path = resolved_project_directory / "project.sqlite3"
         database_url = self._database_url or f"sqlite:///{database_path}"
+        database_descriptor = self._database_descriptor(database_url, database_path)
         engine = build_engine(database_url)
         if self._retrieval_backend_profile is RetrievalBackendProfile.SCRIPTED_SMOKE:
             Base.metadata.create_all(engine)
@@ -296,6 +298,8 @@ class TeacherForcedBenchmarkE2ERunner:
                 bootstrap_bundle = bootstrap_bundle.model_copy(
                     update={"sources": (), "classifications": ()}
                 )
+                if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
+                    self._attestation_for_commit(project_id, genesis_commit)
             else:
                 bootstrap_bundle, ingested = self._load_bootstrap(
                     source_directory,
@@ -339,7 +343,7 @@ class TeacherForcedBenchmarkE2ERunner:
                     "semantic_quality_eligible": (
                         harness.responses is None and retrieval_quality_eligible
                     ),
-                    "project_database": str(database_path),
+                    "project_database": database_descriptor,
                     "project_directory": str(resolved_project_directory),
                 }
             scenario = BenchmarkScenarioCompiler().compile(bundle, information_profile)
@@ -415,6 +419,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 current_world=world,
                 current_plan=plan,
                 profile_root_hash=project_profile.root_hash,
+                real_hybrid_backend_provider=self._real_hybrid_backend_provider,
                 recover_checkpoint_chapter=(resume_chapter if recover_checkpoint else None),
             )
             public_config = PublicBenchmarkConfig(
@@ -436,11 +441,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 real_hybrid_backend_provider=self._real_hybrid_backend_provider,
             )
             evaluator = _E2EEvaluator(bundle, information_profile, freezer, artifacts, self._paired)
-            segment_preamble = (
-                len(json.loads(progress_path.read_text("utf-8")).get("completed_chapters", []))
-                if resume
-                else 0
-            )
+            segment_preamble = self._segment_preamble_count(progress_path) if resume else 0
             if scenario.checkpoint_cases:
                 with _ProgressWriter(progress_path) as progress_writer:
                     transition.progress_writer = progress_writer
@@ -476,7 +477,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 if checkpoints
                 else transition.commit_count > 0
             )
-            latest_attestation = freezer.latest_attestation
+            latest_attestation = freezer.latest_attestation or transition.latest_attestation
             retrieval_quality_eligible = bool(
                 latest_attestation is not None and latest_attestation.quality_eligible
             )
@@ -545,7 +546,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 "quality_blocker": self._quality_blocker(
                     harness.responses is None, retrieval_quality_eligible
                 ),
-                "project_database": str(database_path),
+                "project_database": database_descriptor,
                 "project_directory": str(resolved_project_directory),
             }
             self._write_json(output_directory / "flow_summary.json", summary)
@@ -562,6 +563,18 @@ class TeacherForcedBenchmarkE2ERunner:
                 "real_hybrid requires the Stage 2R commit-scoped FullDerivedProjectionBuilder "
                 "and CompositeRetrievalBackend provider; scripted smoke fallback is disabled"
             )
+
+    @staticmethod
+    def _segment_preamble_count(progress_path: Path) -> int:
+        completed = json.loads(progress_path.read_text("utf-8")).get("completed_chapters", [])
+        return len(completed) + (0 if 0 in completed else 1)
+
+    @staticmethod
+    def _database_descriptor(database_url: str, database_path: Path) -> str:
+        parsed = urlparse(database_url)
+        if parsed.scheme.startswith("postgresql+"):
+            return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}/{parsed.path.lstrip('/')}"
+        return str(database_path)
 
     def _scripted_smoke_attestation(self, source_commit: CommitId) -> ProjectionAttestation:
         snapshot_id = snapshot_id_for_commit(source_commit)
@@ -1303,6 +1316,7 @@ class _TeacherForcedTransition:
         current_world: WorldRootDocument,
         current_plan: PlanRootDocument,
         profile_root_hash: ArtifactId,
+        real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
         recover_checkpoint_chapter: int | None = None,
     ) -> None:
         self.bundle = bundle
@@ -1316,6 +1330,7 @@ class _TeacherForcedTransition:
         self.world = current_world
         self.plan = current_plan
         self.profile_root_hash = profile_root_hash
+        self.real_hybrid_backend_provider = real_hybrid_backend_provider
         self.recover_checkpoint_chapter = recover_checkpoint_chapter
         self.progress_writer: _ProgressWriter | None = None
         self.timeline = SequentialTextRootService()
@@ -1337,6 +1352,7 @@ class _TeacherForcedTransition:
         self.guardian_gate_decisions = 0
         self.validator_calls = 0
         self.last_revealed_chapter = 0
+        self.latest_attestation: ProjectionAttestation | None = None
 
     def apply(self, source: Any, parent_commit: CommitId) -> ScenarioChapterTransition:
         chapter = source.chapter_index
@@ -1446,6 +1462,11 @@ class _TeacherForcedTransition:
         if commit.status is not CommitStatus.ACCEPTED or commit.commit_id is None:
             raise TeacherForcedBenchmarkError(f"chapter {chapter} commit was not accepted")
         self.projections.process_all()
+        if self.real_hybrid_backend_provider is not None:
+            backend_bundle = self.real_hybrid_backend_provider(
+                source_project(self.bundle), commit.commit_id
+            )
+            self.latest_attestation = backend_bundle.attestation
         snapshot = self.snapshots.get_for_commit(commit.commit_id)
         required_snapshot = snapshot_id_for_commit(commit.commit_id)
         freshness = FreshnessGate.evaluate(

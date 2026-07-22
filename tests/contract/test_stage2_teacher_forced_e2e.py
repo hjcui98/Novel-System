@@ -187,6 +187,34 @@ def test_resume_after_committed_prelude_does_not_append_prelude_twice(
     assert progress["completed_chapters"] == [0, 1]
 
 
+def test_resume_after_genesis_counts_genesis_as_the_segment_preamble(
+    tmp_path: Path,
+) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    output = tmp_path / "resume-after-genesis"
+    runner = TeacherForcedBenchmarkE2ERunner(semantic_endpoint=None)
+
+    runner.run(
+        PILOT,
+        output,
+        bundle,
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        stop_after_genesis=True,
+    )
+    summary = runner.run(
+        PILOT,
+        output,
+        bundle,
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        max_chapter=1,
+        resume=True,
+    )
+
+    assert summary["segment_commit_count"] == 1
+    assert summary["segment_preamble_count"] == 1
+    assert summary["total_commit_count"] == 2
+
+
 def test_resume_rebuilds_checkpoint_without_recommitting_accepted_chapter(
     tmp_path: Path,
 ) -> None:
