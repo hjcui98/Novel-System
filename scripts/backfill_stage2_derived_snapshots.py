@@ -110,7 +110,7 @@ def main() -> int:
                 trace_id=f"trace.{run_id.root}",
                 span_id=None,
                 model_role=ModelRole.BATCH_TEST,
-                purpose=ModelCallPurpose.BATCH_TEST,
+                purpose=ModelCallPurpose.EVALUATION,
                 timeout_seconds=300,
             ),
             dimension=embedding_model.dimension or 0,
