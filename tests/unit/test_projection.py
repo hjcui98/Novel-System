@@ -474,7 +474,11 @@ def test_real_hybrid_projection_requires_isolated_bulk_index_and_stores_attestat
     loader = MagicMock()
     loader.load.return_value = source
     index = MagicMock(spec=OpenSearchIndex)
-    search = Stage2RSearchIndexer(cast(OpenSearchIndex, index), _RealProjectionEmbedder())
+    search = Stage2RSearchIndexer(
+        cast(OpenSearchIndex, index),
+        _RealProjectionEmbedder(),
+        index_namespace="run3-test",
+    )
     builder = FullDerivedProjectionBuilder(
         loader,
         R1WorldRepository(factory),
@@ -496,6 +500,7 @@ def test_real_hybrid_projection_requires_isolated_bulk_index_and_stores_attestat
     )
     assert attestation.quality_eligible is True
     assert all("stage2r" in item.alias for item in attestation.indexes)
+    assert all("run3-test" in item.alias for item in attestation.indexes)
     assert index.bulk_index.call_count == 2
     assert index.refresh.call_count == 2
     backend = build_real_hybrid_backend(

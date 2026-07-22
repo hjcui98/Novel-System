@@ -76,6 +76,8 @@ class DeterministicHashEmbedder:
 class SearchIndexBuildReceipt:
     anchor_index: str
     grounded_index: str
+    anchor_alias: str
+    grounded_alias: str
     anchor_document_count: int
     grounded_document_count: int
     mapping_hash: str
@@ -250,6 +252,8 @@ class Stage1SearchIndexer:
         return SearchIndexBuildReceipt(
             anchor_index=anchor_index,
             grounded_index=grounded_index,
+            anchor_alias=anchor_alias,
+            grounded_alias=grounded_alias,
             anchor_document_count=len(anchor_documents),
             grounded_document_count=len(grounded_documents),
             mapping_hash=hashlib.sha256(

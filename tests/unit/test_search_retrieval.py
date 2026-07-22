@@ -146,8 +146,11 @@ def test_stage2r_indexer_namespaces_aliases_and_physical_indexes_per_experiment(
     run3_receipt = run3.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
 
     assert run2_receipt.anchor_index != run3_receipt.anchor_index
+    assert run2_receipt.anchor_alias != run3_receipt.anchor_alias
     assert "run2" in run2_receipt.anchor_index
     assert "run3" in run3_receipt.anchor_index
+    assert "run2" in run2_receipt.anchor_alias
+    assert "run3" in run3_receipt.anchor_alias
     run2_aliases = run2_adapter.publish_aliases.call_args.args[0]
     run3_aliases = run3_adapter.publish_aliases.call_args.args[0]
     assert run2_aliases != run3_aliases

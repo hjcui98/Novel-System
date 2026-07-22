@@ -245,7 +245,6 @@ class FullDerivedProjectionBuilder:
             ),
         )
         mapping_hash = ArtifactId(f"sha256:{search_receipt.mapping_hash}")
-        anchor_alias, grounded_alias = self._search.aliases(project_id)
         return ProjectionAttestation(
             attestation_id=StableId(
                 f"attestation.stage2r.{source_commit.root.removeprefix('sha256:')[:24]}"
@@ -275,7 +274,7 @@ class FullDerivedProjectionBuilder:
                     source_commit=source_commit,
                     snapshot_id=snapshot_id,
                     physical_name=search_receipt.anchor_index,
-                    alias=anchor_alias,
+                    alias=search_receipt.anchor_alias,
                     document_count=anchor_count,
                     mapping_hash=mapping_hash,
                     analyzer_profile="standard-cjk-exact-v0.1",
@@ -287,7 +286,7 @@ class FullDerivedProjectionBuilder:
                     source_commit=source_commit,
                     snapshot_id=snapshot_id,
                     physical_name=search_receipt.grounded_index,
-                    alias=grounded_alias,
+                    alias=search_receipt.grounded_alias,
                     document_count=grounded_count,
                     mapping_hash=mapping_hash,
                     analyzer_profile="standard-cjk-exact-v0.1",
