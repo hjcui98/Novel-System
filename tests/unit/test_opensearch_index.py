@@ -158,3 +158,22 @@ def test_bulk_alias_publication_switches_anchor_and_grounded_together() -> None:
     )
     with pytest.raises(ValueError, match="unique aliases"):
         adapter.publish_aliases((("one", "same"), ("two", "same")))
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    (
+        (),
+        (("", "alias"),),
+        (("index", ""),),
+    ),
+)
+def test_alias_publication_rejects_empty_bindings_or_names(
+    bindings: tuple[tuple[str, str], ...],
+) -> None:
+    client = MagicMock(spec=OpenSearch)
+    client.indices = MagicMock()
+    adapter = OpenSearchIndex(cast(OpenSearch, client))
+
+    with pytest.raises(ValueError, match=r"at least one binding|non-empty"):
+        adapter.publish_aliases(bindings)

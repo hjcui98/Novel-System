@@ -1,0 +1,365 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ChangeOperation": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "operation": {
+          "$ref": "#/$defs/ChangeOperationType"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "payload": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "root_kind",
+        "operation",
+        "target_id",
+        "payload"
+      ],
+      "title": "ChangeOperation",
+      "type": "object"
+    },
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "MemoryWriteCommitProfile": {
+      "enum": [
+        "chapter_reveal_atomic",
+        "changed_roots_only",
+        "require_canonical_commit"
+      ],
+      "title": "MemoryWriteCommitProfile",
+      "type": "string"
+    },
+    "ObservedChangeSet": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChangeOperation"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "change_set_id",
+        "base_commit",
+        "source_artifact"
+      ],
+      "title": "ObservedChangeSet",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RootUpdateIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "builder_policy_ref": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "expected_base_root": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer_receipt": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "update_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "update_kind": {
+          "$ref": "#/$defs/RootUpdateKind"
+        }
+      },
+      "required": [
+        "intent_id",
+        "root_kind",
+        "update_kind",
+        "expected_base_root",
+        "update_artifact",
+        "producer_receipt",
+        "builder_policy_ref"
+      ],
+      "title": "RootUpdateIntent",
+      "type": "object"
+    },
+    "RootUpdateKind": {
+      "enum": [
+        "create",
+        "replace",
+        "noop"
+      ],
+      "title": "RootUpdateKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "commit_profile": {
+      "$ref": "#/$defs/MemoryWriteCommitProfile"
+    },
+    "observed_changes": {
+      "$ref": "#/$defs/ObservedChangeSet"
+    },
+    "root_update_intents": {
+      "items": {
+        "$ref": "#/$defs/RootUpdateIntent"
+      },
+      "title": "Root Update Intents",
+      "type": "array"
+    }
+  },
+  "required": [
+    "observed_changes",
+    "root_update_intents",
+    "commit_profile"
+  ],
+  "title": "MemoryWriteCandidatePayload",
+  "type": "object"
+}

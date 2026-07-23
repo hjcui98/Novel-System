@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from novel_agent.adapters.postgres.database import build_engine
 from novel_agent.adapters.postgres.models import EvaluationEntryRow
-from novel_agent.services.stage2_benchmark_flow import Stage2BenchmarkFlowRunner
-from tests.fixtures.stage1_synthetic import make_synthetic_bundle
+from novel_agent.services.benchmark_importer import bundle_content_id
+from novel_agent.services.stage2_benchmark_flow import (
+    Stage2BenchmarkFlowError,
+    Stage2BenchmarkFlowRunner,
+)
+from tests.fixtures.stage1_synthetic import PLACEHOLDER_HASH, make_synthetic_bundle
 
 
 def test_stage2_benchmark_flow_persists_current_read_pilot_without_overclaiming(
@@ -40,3 +45,35 @@ def test_stage2_benchmark_flow_persists_current_read_pilot_without_overclaiming(
         engine.dispose()
 
     assert Stage2BenchmarkFlowRunner().run(make_synthetic_bundle(), tmp_path) == summary
+
+
+def test_stage2_benchmark_flow_persists_gate_bundle_and_reports_missing_replay(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    without_replay = bundle.model_copy(
+        update={"content_hash": PLACEHOLDER_HASH, "replay_manifests": ()}
+    )
+    without_replay = without_replay.model_copy(
+        update={"content_hash": bundle_content_id(without_replay)}
+    )
+
+    summary = Stage2BenchmarkFlowRunner().run(
+        without_replay,
+        tmp_path,
+        gate_bundle=bundle,
+    )
+
+    assert (tmp_path / "canonical.gate.bundle.json").is_file()
+    assert "gate_bundle" in summary["artifact_refs"]
+    assert "replay_gold_manifest_unavailable" in summary["blockers"]
+
+
+def test_stage2_benchmark_flow_refuses_immutable_evidence_overwrite(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "evidence.json"
+    Stage2BenchmarkFlowRunner._write_immutable(target, b"first")
+
+    with pytest.raises(Stage2BenchmarkFlowError, match="refusing to overwrite"):
+        Stage2BenchmarkFlowRunner._write_immutable(target, b"second")

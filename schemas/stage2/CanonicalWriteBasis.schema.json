@@ -1,0 +1,1194 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ChapterDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scenes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SceneDocument"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index"
+      ],
+      "title": "ChapterDocument",
+      "type": "object"
+    },
+    "ChapterGoal": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "obligation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Obligation Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "chapter_index",
+        "summary"
+      ],
+      "title": "ChapterGoal",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "Entity": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "entity_type": {
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "identity_invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Identity Invariants",
+          "type": "array"
+        },
+        "internal_label": {
+          "minLength": 1,
+          "title": "Internal Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "entity_type",
+        "internal_label"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "effect_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Effect Refs",
+          "type": "array"
+        },
+        "event_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "event_type": {
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "narrative_order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativeOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "participant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Participant Ids",
+          "type": "array"
+        },
+        "story_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "truth_class"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "NarrativeOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativeOrder",
+      "type": "object"
+    },
+    "ObligationKind": {
+      "enum": [
+        "foreshadowing",
+        "promise",
+        "objective",
+        "unresolved_conflict"
+      ],
+      "title": "ObligationKind",
+      "type": "string"
+    },
+    "ObligationStatus": {
+      "enum": [
+        "open",
+        "progressed",
+        "resolved",
+        "abandoned"
+      ],
+      "title": "ObligationStatus",
+      "type": "string"
+    },
+    "PlanNode": {
+      "additionalProperties": false,
+      "properties": {
+        "node_type": {
+          "minLength": 1,
+          "title": "Node Type",
+          "type": "string"
+        },
+        "obligation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Obligation Ids",
+          "type": "array"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plan_node_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_node_id",
+        "node_type",
+        "title",
+        "summary"
+      ],
+      "title": "PlanNode",
+      "type": "object"
+    },
+    "PlanObligation": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "due_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Due Chapter"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObligationKind"
+        },
+        "obligation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "owner_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Owner Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ObligationStatus"
+        }
+      },
+      "required": [
+        "obligation_id",
+        "kind",
+        "description",
+        "status"
+      ],
+      "title": "PlanObligation",
+      "type": "object"
+    },
+    "PlanRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_goals": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChapterGoal"
+          },
+          "title": "Chapter Goals",
+          "type": "array"
+        },
+        "nodes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version"
+      ],
+      "title": "PlanRootDocument",
+      "type": "object"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "PreludeDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "prelude_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/SceneDocument"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "prelude_id",
+        "scenes"
+      ],
+      "title": "PreludeDocument",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ProjectProfileRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "project_profile",
+          "default": "project_profile",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ProjectProfileRootRef",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "ReferenceRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "reference",
+          "default": "reference",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ReferenceRootRef",
+      "type": "object"
+    },
+    "RelationRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "object_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "relation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        }
+      },
+      "required": [
+        "relation_id",
+        "predicate",
+        "subject_id",
+        "object_id",
+        "valid_time",
+        "truth_class"
+      ],
+      "title": "RelationRecord",
+      "type": "object"
+    },
+    "RootManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "parent_commit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CommitId"
+          },
+          "title": "Parent Commit Ids",
+          "type": "array"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/PlanRootRef"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_root": {
+          "$ref": "#/$defs/ProjectProfileRootRef"
+        },
+        "reference_root": {
+          "$ref": "#/$defs/ReferenceRootRef"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "text_root": {
+          "$ref": "#/$defs/TextRootRef"
+        },
+        "world_root": {
+          "$ref": "#/$defs/WorldRootRef"
+        }
+      },
+      "required": [
+        "project_id",
+        "schema_version",
+        "text_root",
+        "plan_root",
+        "world_root",
+        "reference_root",
+        "project_profile_root"
+      ],
+      "title": "RootManifest",
+      "type": "object"
+    },
+    "SceneDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TextBlock"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "scene_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "scene_index": {
+          "minimum": 0,
+          "title": "Scene Index",
+          "type": "integer"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "scene_id",
+        "scene_index"
+      ],
+      "title": "SceneDocument",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "StateRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "state_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "state_id",
+        "subject_id",
+        "predicate",
+        "value",
+        "valid_time",
+        "truth_class"
+      ],
+      "title": "StateRecord",
+      "type": "object"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TextBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "narrative_index": {
+          "minimum": 0,
+          "title": "Narrative Index",
+          "type": "integer"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "chapter_id",
+        "narrative_index",
+        "text"
+      ],
+      "title": "TextBlock",
+      "type": "object"
+    },
+    "TextRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "chapters": {
+          "items": {
+            "$ref": "#/$defs/ChapterDocument"
+          },
+          "title": "Chapters",
+          "type": "array"
+        },
+        "prelude": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreludeDocument"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version",
+        "chapters"
+      ],
+      "title": "TextRootDocument",
+      "type": "object"
+    },
+    "TextRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "TextRootRef",
+      "type": "object"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    },
+    "WorldRootDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "entities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Entity"
+          },
+          "title": "Entities",
+          "type": "array"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanObligation"
+          },
+          "title": "Obligations",
+          "type": "array"
+        },
+        "relations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RelationRecord"
+          },
+          "title": "Relations",
+          "type": "array"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "states": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StateRecord"
+          },
+          "title": "States",
+          "type": "array"
+        }
+      },
+      "required": [
+        "root_hash",
+        "schema_version",
+        "source_commit"
+      ],
+      "title": "WorldRootDocument",
+      "type": "object"
+    },
+    "WorldRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "world",
+          "default": "world",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "WorldRootRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Verified read-only basis supplied to write-side ports.",
+  "properties": {
+    "canonical_plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanRootDocument"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "canonical_root_refs": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RootManifest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "canonical_text": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TextRootDocument"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "canonical_world": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorldRootDocument"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "root_manifest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RootManifest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "project_id",
+    "commit_id"
+  ],
+  "title": "CanonicalWriteBasis",
+  "type": "object"
+}

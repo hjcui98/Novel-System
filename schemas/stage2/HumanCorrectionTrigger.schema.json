@@ -1,0 +1,26 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "correction_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "human_correction",
+      "default": "human_correction",
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "correction_request_id"
+  ],
+  "title": "HumanCorrectionTrigger",
+  "type": "object"
+}

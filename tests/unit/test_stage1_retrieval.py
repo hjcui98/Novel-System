@@ -217,6 +217,15 @@ def test_fusion_limit_never_drops_a_mandatory_candidate() -> None:
     assert quota_candidates[2].rejection_reason == "unit_kind_quota"
 
 
+def test_candidate_quota_and_selector_reject_non_positive_limits() -> None:
+    with pytest.raises(ValueError, match="quota limits must be positive"):
+        CandidateQuotaPolicy(max_per_unit_kind=0)
+    with pytest.raises(ValueError, match="quota limits must be positive"):
+        CandidateQuotaPolicy(max_per_narrative_chapter=0)
+    with pytest.raises(ValueError, match="selection limit must be positive"):
+        TypedCandidateSelector().select((), limit=0)
+
+
 def test_optional_anchor_reranker_runs_after_rrf_and_preserves_diagnostics() -> None:
     base = orchestrator()
     reranked = RetrievalOrchestrator(

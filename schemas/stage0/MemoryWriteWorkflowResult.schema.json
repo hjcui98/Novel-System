@@ -1,0 +1,458 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContinuationDecision": {
+      "enum": [
+        "safe_to_continue",
+        "block_next_chapter",
+        "review_before_checkpoint"
+      ],
+      "title": "ContinuationDecision",
+      "type": "string"
+    },
+    "FreshnessDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_alias_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonical_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "manual_approval_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "r1_basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "required_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/FreshnessStatus"
+        }
+      },
+      "required": [
+        "status",
+        "canonical_commit",
+        "r1_basis_commit",
+        "required_snapshot_id",
+        "reason"
+      ],
+      "title": "FreshnessDecision",
+      "type": "object"
+    },
+    "FreshnessStatus": {
+      "enum": [
+        "ready",
+        "waiting",
+        "degraded",
+        "blocked",
+        "overridden"
+      ],
+      "title": "FreshnessStatus",
+      "type": "string"
+    },
+    "MemoryWriteBudgetUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_revisions": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Candidate Revisions",
+          "type": "integer"
+        },
+        "context_refreshes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Refreshes",
+          "type": "integer"
+        },
+        "curator_proposal_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Proposal Attempts",
+          "type": "integer"
+        },
+        "curator_proposal_rejections": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Proposal Rejections",
+          "type": "integer"
+        },
+        "curator_repairs": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Repairs",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "guardian_reviews": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Guardian Reviews",
+          "type": "integer"
+        },
+        "normalization_passes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Normalization Passes",
+          "type": "integer"
+        },
+        "structured_generation_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Structured Generation Attempts",
+          "type": "integer"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "total_model_calls": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Total Model Calls",
+          "type": "integer"
+        },
+        "transport_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Transport Attempts",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryWriteBudgetUsage",
+      "type": "object"
+    },
+    "MemoryWriteWorkflowPhase": {
+      "enum": [
+        "precommit",
+        "canon_committed",
+        "projection_pending",
+        "complete"
+      ],
+      "title": "MemoryWriteWorkflowPhase",
+      "type": "string"
+    },
+    "MemoryWriteWorkflowStatus": {
+      "enum": [
+        "committed",
+        "noop",
+        "quarantined",
+        "suspended",
+        "human_required",
+        "replan_required",
+        "budget_exhausted",
+        "fatal"
+      ],
+      "title": "MemoryWriteWorkflowStatus",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_candidate_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "blocked_capabilities": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocked Capabilities",
+      "type": "array"
+    },
+    "budget_usage": {
+      "$ref": "#/$defs/MemoryWriteBudgetUsage"
+    },
+    "canonical_commit_accepted": {
+      "title": "Canonical Commit Accepted",
+      "type": "boolean"
+    },
+    "checkpoint_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commit_receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "committed_operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Committed Operation Ids",
+      "type": "array"
+    },
+    "continuation_decision": {
+      "$ref": "#/$defs/ContinuationDecision",
+      "default": "block_next_chapter"
+    },
+    "degraded": {
+      "default": false,
+      "title": "Degraded",
+      "type": "boolean"
+    },
+    "freshness": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FreshnessDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "freshness_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "guardian_receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quarantine_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Quarantine Refs",
+      "type": "array"
+    },
+    "quarantined_operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Quarantined Operation Ids",
+      "type": "array"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "resulting_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "$ref": "#/$defs/MemoryWriteWorkflowStatus"
+    },
+    "terminal_candidate_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "terminal_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Terminal Codes",
+      "type": "array"
+    },
+    "validation_receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workflow_phase": {
+      "$ref": "#/$defs/MemoryWriteWorkflowPhase"
+    },
+    "world_mutation_noop": {
+      "default": false,
+      "title": "World Mutation Noop",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "request_id",
+    "status",
+    "workflow_phase",
+    "canonical_commit_accepted",
+    "base_commit"
+  ],
+  "title": "MemoryWriteWorkflowResult",
+  "type": "object"
+}

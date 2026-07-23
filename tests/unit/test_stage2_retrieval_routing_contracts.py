@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -345,3 +347,232 @@ def test_route_plan_and_counterfactual_records_enforce_runtime_authority_boundar
     assert record.evaluator_only is True
     with pytest.raises(ValidationError, match="evaluator-only"):
         CounterfactualRouteRecord.model_validate(record.model_dump() | {"evaluator_only": False})
+
+
+def _construct(model: Any, **values: Any) -> Any:
+    return model.model_construct(**values)
+
+
+def _reject(model: Any, validator: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        getattr(model, validator)()
+
+
+def test_retrieval_routing_contract_rejects_all_duplicate_and_basis_edges() -> None:
+    hierarchy = _construct(
+        L2IndexManifest,
+        index_kind=L2IndexKind.HIERARCHY,
+        embedding_profile="forbidden",
+    )
+    _reject(hierarchy, "validate_embedding_profile", "cannot claim")
+
+    complete = ChannelCoverage(
+        channel=RetrievalChannel.R1_EXACT,
+        expected_units=1,
+        ready_units=1,
+    )
+    capability_base = _construct(
+        SnapshotCapability,
+        status=SnapshotCapabilityStatus.PARTIAL,
+        available_channels=(RetrievalChannel.R1_EXACT,),
+        degraded_channels=(),
+        coverage_by_channel=(complete,),
+    )
+    for update, message in (
+        (
+            {"available_channels": (RetrievalChannel.R1_EXACT,) * 2},
+            "available channels must be unique",
+        ),
+        (
+            {"degraded_channels": (RetrievalChannel.ANCHOR_BM25,) * 2},
+            "degraded channels must be unique",
+        ),
+        (
+            {"coverage_by_channel": (complete, complete)},
+            "coverage entries must be unique",
+        ),
+    ):
+        _reject(
+            capability_base.model_copy(update=update),
+            "validate_channels",
+            message,
+        )
+
+    manifest = L2IndexManifest(
+        index_id=StableId("index.one"),
+        index_kind=L2IndexKind.ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        physical_name="index-one",
+        alias="alias-one",
+        document_count=1,
+        mapping_hash=HASH_A,
+        analyzer_profile="standard",
+    )
+    attestation = _construct(
+        ProjectionAttestation,
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        capability=capability(),
+        indexes=(),
+        failures=(),
+        r1_record_count=1,
+        embedding_model="BAAI/bge-m3",
+        embedding_revision="locked",
+        embedding_dimension=1024,
+        embedding_normalized=True,
+        embedding_runtime_fingerprint=HASH_A,
+        reranker_model="reranker",
+        reranker_revision="locked",
+    )
+    wrong_capability = capability().model_copy(update={"snapshot_id": StableId("snapshot.other")})
+    _reject(
+        attestation.model_copy(update={"capability": wrong_capability}),
+        "validate_basis_and_profile",
+        "share a basis",
+    )
+    _reject(
+        attestation.model_copy(update={"indexes": (manifest, manifest)}),
+        "validate_basis_and_profile",
+        "unique ids",
+    )
+    wrong_index = manifest.model_copy(update={"snapshot_id": StableId("snapshot.other")})
+    _reject(
+        attestation.model_copy(update={"indexes": (wrong_index,)}),
+        "validate_basis_and_profile",
+        "manifest basis mismatch",
+    )
+    failure = ChannelFailure(
+        channel=RetrievalChannel.ANCHOR_DENSE,
+        code=ChannelFailureCode.TIMEOUT,
+        reason="timeout",
+    )
+    _reject(
+        attestation.model_copy(update={"failures": (failure, failure)}),
+        "validate_basis_and_profile",
+        "failures must have unique",
+    )
+    _reject(
+        attestation.model_copy(
+            update={
+                "retrieval_backend_profile": RetrievalBackendProfile.SCRIPTED_SMOKE,
+            }
+        ),
+        "validate_basis_and_profile",
+        "requires a test-only",
+    )
+    partial = attestation.model_copy(
+        update={
+            "capability": capability_base.model_copy(
+                update={"source_commit": COMMIT, "snapshot_id": SNAPSHOT}
+            )
+        }
+    )
+    assert partial.validate_basis_and_profile() is partial
+
+
+def test_retrieval_route_shapes_reject_duplicate_channels_and_invalid_tiers() -> None:
+    features = _construct(
+        RetrievalRoutingFeatures,
+        information_domains=(
+            InformationDomain.WORLD_SEMANTIC,
+            InformationDomain.WORLD_SEMANTIC,
+        ),
+        snapshot_capabilities=(),
+        quoted_phrase_length=0,
+        query_intent=Stage1QueryIntent.CURRENT_STATE,
+    )
+    _reject(features, "validate_feature_sets", "domains must be unique")
+    duplicate_capability = features.model_copy(
+        update={
+            "information_domains": (InformationDomain.WORLD_SEMANTIC,),
+            "snapshot_capabilities": (RetrievalChannel.R1_EXACT,) * 2,
+        }
+    )
+    _reject(
+        duplicate_capability,
+        "validate_feature_sets",
+        "capabilities must be unique",
+    )
+
+    one_step = step()
+    group = _construct(
+        RouteStepGroup,
+        steps=(one_step, one_step),
+        fusion_profile=None,
+        execution=RouteExecution.PARALLEL,
+    )
+    _reject(group, "validate_group", "channels must be unique")
+    fallback = _construct(
+        ConditionalFallback,
+        steps=(one_step, one_step),
+        fusion_profile=None,
+    )
+    _reject(fallback, "validate_steps", "channels must be unique")
+    single_fusion = fallback.model_copy(update={"steps": (one_step,), "fusion_profile": "rrf"})
+    _reject(single_fusion, "validate_steps", "at least two channels")
+
+    graph = _construct(
+        GraphTraversalPolicy,
+        allowed_edge_semantics=("canonical", "canonical"),
+    )
+    _reject(graph, "validate_semantics", "semantics must be unique")
+    valid_graph = graph.model_copy(update={"allowed_edge_semantics": ("canonical", "evidence")})
+    assert valid_graph.validate_semantics() is valid_graph
+
+    evidence, stop = policy()
+    profile = _construct(
+        RouteProfile,
+        allowed_channels=(RetrievalChannel.R1_EXACT,) * 2,
+        mandatory_steps=(),
+        primary_groups=(),
+        conditional_fallbacks=(),
+        resolution_tier=ResolutionTier.R1,
+    )
+    _reject(profile, "validate_profile", "allowed channels must be unique")
+
+    excluded = type(
+        "Excluded",
+        (),
+        {"channel": RetrievalChannel.ANCHOR_BM25},
+    )()
+    plan = _construct(
+        RoutePlan,
+        domains=(InformationDomain.WORLD_SEMANTIC,) * 2,
+        excluded_channels=(),
+        mandatory_steps=(),
+        primary_groups=(),
+        conditional_fallbacks=(),
+        resolution_tier=ResolutionTier.R1,
+        evidence_policy=evidence,
+        stop_policy=stop,
+    )
+    _reject(plan, "validate_plan", "domains must be unique")
+    duplicate_excluded = plan.model_copy(
+        update={
+            "domains": (InformationDomain.WORLD_SEMANTIC,),
+            "excluded_channels": (excluded, excluded),
+        }
+    )
+    _reject(duplicate_excluded, "validate_plan", "excluded channels must be unique")
+    tier_fallback = duplicate_excluded.model_copy(
+        update={
+            "excluded_channels": (),
+            "conditional_fallbacks": (
+                ConditionalFallback(
+                    fallback_id=StableId("fallback.tier"),
+                    condition="miss",
+                    steps=(one_step,),
+                ),
+            ),
+        }
+    )
+    _reject(tier_fallback, "validate_plan", "only R2")
+
+    counterfactual = _construct(
+        CounterfactualRouteRecord,
+        added_channels=(RetrievalChannel.ANCHOR_DENSE,) * 2,
+        evaluator_only=True,
+    )
+    _reject(counterfactual, "validate_counterfactual", "channels must be unique")

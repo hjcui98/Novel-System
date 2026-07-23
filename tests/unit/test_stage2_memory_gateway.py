@@ -81,6 +81,23 @@ def test_memory_gateway_supports_frozen_deterministic_profile(tmp_path: Path) ->
     assert repository.read_verified(result.frozen_context_artifact)
 
 
+def test_memory_gateway_blocks_leaking_deterministic_selection(tmp_path: Path) -> None:
+    service, _ = gateway(
+        tmp_path,
+        MemoryGatewayMode.DETERMINISTIC,
+        source_artifact=PRIVATE,
+    )
+    item = need()
+
+    with pytest.raises(MemoryGatewayBlockedError, match="selected context"):
+        service.resolve(
+            request(item),
+            text_root(),
+            thread_id="gateway-deterministic-leak",
+            evaluator_only_artifacts=(PRIVATE,),
+        )
+
+
 def test_memory_gateway_falls_back_on_controller_stop_or_future_leakage(tmp_path: Path) -> None:
     item = need()
     stale, _ = gateway(tmp_path, MemoryGatewayMode.BOUNDED_R2, fresh=False)

@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "AccessScope": {
+      "enum": [
+        "writer_safe",
+        "author_planning",
+        "evaluator"
+      ],
+      "title": "AccessScope",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SourceProvenance": {
+      "enum": [
+        "author_input",
+        "revealed_text",
+        "canonical_root",
+        "trusted_derived",
+        "human_correction"
+      ],
+      "title": "SourceProvenance",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "access_scope": {
+      "$ref": "#/$defs/AccessScope"
+    },
+    "boundary_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "issuer": {
+      "$ref": "#/$defs/StableId"
+    },
+    "provenance": {
+      "$ref": "#/$defs/SourceProvenance"
+    },
+    "receipt_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "visible_through": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NarrativePosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "receipt_id",
+    "source_artifact",
+    "boundary_id",
+    "visible_through",
+    "access_scope",
+    "provenance",
+    "issuer",
+    "receipt_hash"
+  ],
+  "title": "SourceVisibilityReceipt",
+  "type": "object"
+}

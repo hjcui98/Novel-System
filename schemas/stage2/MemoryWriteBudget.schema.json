@@ -1,0 +1,128 @@
+{
+  "$defs": {
+    "MemoryTransportBudget": {
+      "additionalProperties": false,
+      "description": "The model transport budget is intentionally separate from repair budget.",
+      "properties": {
+        "backoff_profile": {
+          "default": "exponential-v1",
+          "minLength": 1,
+          "title": "Backoff Profile",
+          "type": "string"
+        },
+        "max_attempts": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 60.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "MemoryTransportBudget",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "max_candidate_revisions": {
+      "default": 3,
+      "minimum": 1,
+      "title": "Max Candidate Revisions",
+      "type": "integer"
+    },
+    "max_context_refreshes": {
+      "default": 1,
+      "minimum": 0,
+      "title": "Max Context Refreshes",
+      "type": "integer"
+    },
+    "max_curator_proposal_attempts": {
+      "default": 3,
+      "minimum": 1,
+      "title": "Max Curator Proposal Attempts",
+      "type": "integer"
+    },
+    "max_curator_proposal_rejections": {
+      "default": 3,
+      "minimum": 0,
+      "title": "Max Curator Proposal Rejections",
+      "type": "integer"
+    },
+    "max_curator_repairs": {
+      "default": 2,
+      "minimum": 0,
+      "title": "Max Curator Repairs",
+      "type": "integer"
+    },
+    "max_guardian_reviews": {
+      "default": 2,
+      "minimum": 0,
+      "title": "Max Guardian Reviews",
+      "type": "integer"
+    },
+    "max_normalization_passes": {
+      "default": 3,
+      "minimum": 0,
+      "title": "Max Normalization Passes",
+      "type": "integer"
+    },
+    "max_total_model_calls": {
+      "default": 4,
+      "minimum": 0,
+      "title": "Max Total Model Calls",
+      "type": "integer"
+    },
+    "model_transport": {
+      "$ref": "#/$defs/MemoryTransportBudget"
+    },
+    "on_budget_exhausted": {
+      "default": "quarantine",
+      "enum": [
+        "quarantine",
+        "stop"
+      ],
+      "title": "On Budget Exhausted",
+      "type": "string"
+    },
+    "on_guardian_reject": {
+      "default": "quarantine",
+      "enum": [
+        "quarantine",
+        "stop"
+      ],
+      "title": "On Guardian Reject",
+      "type": "string"
+    },
+    "same_content_hash_limit": {
+      "default": 2,
+      "minimum": 1,
+      "title": "Same Content Hash Limit",
+      "type": "integer"
+    },
+    "same_finding_signature_limit": {
+      "default": 2,
+      "minimum": 1,
+      "title": "Same Finding Signature Limit",
+      "type": "integer"
+    },
+    "token_budget": {
+      "default": 24000,
+      "minimum": 0,
+      "title": "Token Budget",
+      "type": "integer"
+    },
+    "wall_clock_budget_ms": {
+      "default": 180000,
+      "minimum": 1,
+      "title": "Wall Clock Budget Ms",
+      "type": "integer"
+    }
+  },
+  "title": "MemoryWriteBudget",
+  "type": "object"
+}

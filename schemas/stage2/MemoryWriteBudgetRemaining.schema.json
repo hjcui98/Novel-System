@@ -1,0 +1,75 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "candidate_revisions": {
+      "minimum": 0,
+      "title": "Candidate Revisions",
+      "type": "integer"
+    },
+    "context_refreshes": {
+      "minimum": 0,
+      "title": "Context Refreshes",
+      "type": "integer"
+    },
+    "curator_proposal_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Curator Proposal Attempts",
+      "type": "integer"
+    },
+    "curator_proposal_rejections": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Curator Proposal Rejections",
+      "type": "integer"
+    },
+    "curator_repairs": {
+      "minimum": 0,
+      "title": "Curator Repairs",
+      "type": "integer"
+    },
+    "guardian_reviews": {
+      "minimum": 0,
+      "title": "Guardian Reviews",
+      "type": "integer"
+    },
+    "normalization_passes": {
+      "minimum": 0,
+      "title": "Normalization Passes",
+      "type": "integer"
+    },
+    "structured_generation_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Structured Generation Attempts",
+      "type": "integer"
+    },
+    "token_budget": {
+      "minimum": 0,
+      "title": "Token Budget",
+      "type": "integer"
+    },
+    "total_model_calls": {
+      "minimum": 0,
+      "title": "Total Model Calls",
+      "type": "integer"
+    },
+    "wall_clock_budget_ms": {
+      "minimum": 0,
+      "title": "Wall Clock Budget Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "candidate_revisions",
+    "curator_repairs",
+    "normalization_passes",
+    "guardian_reviews",
+    "context_refreshes",
+    "total_model_calls",
+    "token_budget",
+    "wall_clock_budget_ms"
+  ],
+  "title": "MemoryWriteBudgetRemaining",
+  "type": "object"
+}

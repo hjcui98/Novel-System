@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "RepairAction": {
+      "enum": [
+        "deterministic_repair",
+        "curator_repair",
+        "guardian_review",
+        "quarantine_operation",
+        "retry_after_source_context_refresh",
+        "replan",
+        "human",
+        "stop_budget_exhausted",
+        "stop_fatal"
+      ],
+      "title": "RepairAction",
+      "type": "string"
+    },
+    "RepairScope": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_identity_rebind": {
+          "default": false,
+          "title": "Allow Identity Rebind",
+          "type": "boolean"
+        },
+        "allow_operation_type_change": {
+          "default": false,
+          "title": "Allow Operation Type Change",
+          "type": "boolean"
+        },
+        "allow_successor_creation": {
+          "default": false,
+          "title": "Allow Successor Creation",
+          "type": "boolean"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        }
+      },
+      "title": "RepairScope",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/RepairAction"
+    },
+    "allowed_scope": {
+      "$ref": "#/$defs/RepairScope"
+    },
+    "checkpoint_required": {
+      "default": false,
+      "title": "Checkpoint Required",
+      "type": "boolean"
+    },
+    "directive_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "finding_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Finding Ids",
+      "type": "array"
+    },
+    "operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Operation Ids",
+      "type": "array"
+    },
+    "reason_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "directive_id",
+    "action"
+  ],
+  "title": "RepairDirective",
+  "type": "object"
+}

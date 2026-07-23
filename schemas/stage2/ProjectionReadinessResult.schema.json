@@ -1,0 +1,225 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "FreshnessDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_alias_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "actual_snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonical_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "manual_approval_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "r1_basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "required_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/FreshnessStatus"
+        }
+      },
+      "required": [
+        "status",
+        "canonical_commit",
+        "r1_basis_commit",
+        "required_snapshot_id",
+        "reason"
+      ],
+      "title": "FreshnessDecision",
+      "type": "object"
+    },
+    "FreshnessStatus": {
+      "enum": [
+        "ready",
+        "waiting",
+        "degraded",
+        "blocked",
+        "overridden"
+      ],
+      "title": "FreshnessStatus",
+      "type": "string"
+    },
+    "ProjectionReadinessStatus": {
+      "enum": [
+        "ready",
+        "pending",
+        "failed"
+      ],
+      "title": "ProjectionReadinessStatus",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "effect_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "freshness": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FreshnessDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "freshness_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "resumable": {
+      "default": true,
+      "title": "Resumable",
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/ProjectionReadinessStatus"
+    }
+  },
+  "required": [
+    "effect_id",
+    "status"
+  ],
+  "title": "ProjectionReadinessResult",
+  "type": "object"
+}

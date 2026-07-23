@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from novel_agent.agents.controller import StructuredControllerPolicy
@@ -31,6 +32,8 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.retrieval_routing import (
+    ConditionalFallback,
+    RouteStep,
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
@@ -52,6 +55,7 @@ from novel_agent.domain.stage2 import (
     ToolResultStatus,
 )
 from novel_agent.runtime.memory_controller import (
+    TOOL_BY_CHANNEL,
     BoundedMemoryController,
     ControllerStateView,
     RouteBoundControllerPolicy,
@@ -139,9 +143,12 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
     )
     runner = CapturingRunner()
     spec = SimpleNamespace(
+        agent_id=StableId("agent.controller"),
         agent_type=AgentType.MEMORY_CONTROLLER,
         mode=AgentMode.BOUNDED_R2,
         version=VERSION,
+        content_hash=ArtifactId("sha256:" + "e" * 64),
+        system_prompt=SimpleNamespace(render_fingerprint=ArtifactId("sha256:" + "d" * 64)),
         tool_policy=tool_policy,
     )
 
@@ -169,6 +176,44 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
             "tool_names": ["memory.search_exact", "memory.search_temporal"],
         }
     ]
+    assert policy.contract_ref.contract_id == spec.agent_id
+    assert policy.prompt_fingerprint == spec.system_prompt.render_fingerprint
+    assert policy.tool_policy_hash == tool_policy.content_hash
+    assert len(policy.decision_receipts) == 1
+    assert policy.decision_receipt(StableId("model-call.controller")) is not None
+    assert policy.decision_receipt(StableId("model-call.missing")) is None
+
+    unavailable_spec = SimpleNamespace(**vars(spec))
+    unavailable_spec.tool_policy = tool_policy.model_copy(
+        update={"allowed_tools": ("memory.unknown",)}
+    )
+    unavailable = StructuredControllerPolicy(
+        cast(Any, runner),
+        cast(Any, unavailable_spec),
+        request_factory,
+    )
+    assert (
+        unavailable._available_actions({"request": request(max_tool_calls=4), "tool_calls": ()})
+        == []
+    )
+
+
+def test_structured_controller_rejects_wrong_agent_type_or_mode() -> None:
+    runner = cast(Any, object())
+    factory = cast(Any, lambda *_: None)
+    wrong_type = SimpleNamespace(
+        agent_type=AgentType.PLANNER,
+        mode=AgentMode.BOUNDED_R2,
+    )
+    with pytest.raises(ValueError, match="Memory Controller AgentSpec"):
+        StructuredControllerPolicy(runner, cast(Any, wrong_type), factory)
+
+    wrong_mode = SimpleNamespace(
+        agent_type=AgentType.MEMORY_CONTROLLER,
+        mode=AgentMode.CHAPTER,
+    )
+    with pytest.raises(ValueError, match="BOUNDED_R2"):
+        StructuredControllerPolicy(runner, cast(Any, wrong_mode), factory)
 
 
 def memory_need(
@@ -331,6 +376,124 @@ def test_bounded_controller_distinguishes_budget_and_exhausted_evidence() -> Non
     assert budgeted["resolution"].stop_reason is ControllerStopReason.BUDGET_EXHAUSTED
 
 
+def _empty_result(call_id: str, *, succeeded: bool = False) -> ToolResult:
+    return ToolResult(
+        tool_call_id=StableId(call_id),
+        status=ToolResultStatus.SUCCEEDED if succeeded else ToolResultStatus.FAILED,
+        basis_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        payload={"hits": []} if succeeded else None,
+        failure_code=None if succeeded else ToolFailureCode.TIMEOUT,
+        audit_ref=StableId(f"audit.{call_id}"),
+    )
+
+
+def test_registered_route_policy_covers_budget_missing_plan_and_fallback_exhaustion() -> None:
+    semantic_need = memory_need(
+        intent=Stage1QueryIntent.RELATED_EVENT,
+        pools=(CandidatePool.ANCHOR,),
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(semantic_need, capability)
+    with pytest.raises(ValueError, match="unique memory need ids"):
+        RouteBoundControllerPolicy((plan, plan))
+
+    policy = RouteBoundControllerPolicy((plan,))
+    first = policy.decide({"request": request(need=semantic_need), "tool_calls": ()})
+    assert first.action is ControllerPolicyAction.CALL_TOOL
+    assert policy.tool_policy_hash is None
+    assert policy.decision_receipt(StableId("model-call.none")) is None
+
+    budget_request = request(need=semantic_need, max_rounds=1, max_tool_calls=1)
+    budgeted = policy.decide(
+        {
+            "request": budget_request,
+            "tool_calls": (
+                (
+                    semantic_need.need_id,
+                    cast(str, first.tool_name),
+                    _empty_result("call.budget"),
+                ),
+            ),
+        }
+    )
+    assert budgeted.stop_reason is ControllerStopReason.BUDGET_EXHAUSTED
+
+    wrong_plan = plan.model_copy(update={"need_id": StableId("need.other")})
+    with pytest.raises(ValueError, match="no plan for a mandatory"):
+        RouteBoundControllerPolicy((wrong_plan,)).decide(
+            {"request": request(need=semantic_need), "tool_calls": ()}
+        )
+
+    all_steps = (
+        *plan.mandatory_steps,
+        *(step for group in plan.primary_groups for step in group.steps),
+        *(step for fallback in plan.conditional_fallbacks for step in fallback.steps),
+    )
+    exhausted_calls = tuple(
+        (
+            semantic_need.need_id,
+            TOOL_BY_CHANNEL[step.channel],
+            _empty_result(f"call.{index}"),
+        )
+        for index, step in enumerate(all_steps)
+    )
+    exhausted = policy.decide(
+        {
+            "request": request(need=semantic_need),
+            "tool_calls": exhausted_calls,
+        }
+    )
+    assert exhausted.stop_reason in {
+        ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+        ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+    }
+    optional_need = semantic_need.model_copy(update={"requirement": RequirementLevel.OPTIONAL})
+    optional_plan = plan.model_copy(update={"need_id": optional_need.need_id})
+    optional = RouteBoundControllerPolicy((optional_plan,)).decide(
+        {"request": request(need=optional_need), "tool_calls": ()}
+    )
+    assert optional.stop_reason is ControllerStopReason.SUFFICIENT
+
+    successful_calls = tuple(
+        (
+            need_id,
+            tool_name,
+            result.model_copy(
+                update={
+                    "status": ToolResultStatus.SUCCEEDED,
+                    "failure_code": None,
+                    "payload": {"hits": []},
+                    "coverage": 1.0,
+                }
+            )
+            if index == 0
+            else result,
+        )
+        for index, (need_id, tool_name, result) in enumerate(exhausted_calls)
+    )
+    succeeded = policy.decide(
+        {
+            "request": request(need=semantic_need),
+            "tool_calls": successful_calls,
+        }
+    )
+    assert succeeded.stop_reason is ControllerStopReason.SUFFICIENT
+    assert policy._channels_for_need(semantic_need)
+    with pytest.raises(ValueError, match="unregistered route fallback"):
+        policy._fallback_applies("unknown-condition", False)
+    assert policy._fallback_applies("anchor_evidence_insufficient", False)
+    assert policy._fallback_applies("hierarchy_scope_resolved", True)
+
+
 def test_bounded_controller_rejects_budgets_above_registered_policy() -> None:
     runtime, _ = controller(())
     too_many_calls = request(max_tool_calls=13)
@@ -349,6 +512,45 @@ def test_bounded_controller_rejects_budgets_above_registered_policy() -> None:
         raise AssertionError("round budget above policy was accepted")
 
 
+def test_bounded_controller_rejects_policy_hash_and_duplicate_route_plans() -> None:
+    class WrongHashPolicy(RouteBoundControllerPolicy):
+        @property
+        def tool_policy_hash(self) -> ArtifactId:
+            return ArtifactId("sha256:" + "0" * 64)
+
+    with pytest.raises(ValueError, match="fingerprints differ"):
+        controller((), policy=WrongHashPolicy())
+
+    item = memory_need(intent=Stage1QueryIntent.RELATED_EVENT)
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(RetrievalChannel.ANCHOR_BM25,),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    backend = InMemoryRetrievalBackend(())
+    adapter = RetrievalToolAdapter(backend, (item,))
+    policy = ToolPolicy(
+        policy_id=StableId("policy.duplicate-routes"),
+        version=VERSION,
+        content_hash=ArtifactId("sha256:" + "1" * 64),
+        allowed_tools=("memory.search_anchor_bm25",),
+        max_rounds=3,
+        max_tool_calls=12,
+    )
+    with pytest.raises(ValueError, match="route plans must have unique"):
+        BoundedMemoryController(
+            ToolBinding(policy, adapter.handlers()),
+            policy,
+            ContextCompiler(EvidenceExpander()),
+            RouteBoundControllerPolicy(),
+            lambda _: True,
+            InMemorySaver(),
+            route_plans=(plan, plan),
+        )
+
+
 class ForbiddenPolicy:
     def decide(self, state: ControllerStateView) -> tuple[StableId, str] | ControllerStopReason:
         return StableId("need.1"), "memory.commit"
@@ -357,6 +559,35 @@ class ForbiddenPolicy:
 class FalseSufficientPolicy:
     def decide(self, state: ControllerStateView) -> tuple[StableId, str] | ControllerStopReason:
         return ControllerStopReason.SUFFICIENT
+
+
+class UnknownNeedPolicy:
+    def decide(self, state: ControllerStateView) -> tuple[StableId, str]:
+        return StableId("need.unknown"), "memory.search_exact"
+
+
+class RepeatingPolicy:
+    def decide(self, state: ControllerStateView) -> tuple[StableId, str]:
+        return StableId("need.1"), "memory.search_exact"
+
+
+class ReceiptPolicy:
+    tool_policy_hash = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.STOP,
+            stop_reason=ControllerStopReason.SUFFICIENT,
+            rationale_code="MODEL_STOP",
+        ).model_copy(update={"model_call_id": StableId("model-call.receipted")})
+
+    def decision_receipt(self, model_call_id: StableId) -> Any | None:
+        return SimpleNamespace(receipt_id=StableId(f"receipt.{model_call_id.root}"))
+
+
+class NullReceiptPolicy(ReceiptPolicy):
+    def decision_receipt(self, model_call_id: StableId) -> None:
+        return None
 
 
 def test_controller_blocks_unknown_tools_and_false_sufficient_claims() -> None:
@@ -369,6 +600,27 @@ def test_controller_blocks_unknown_tools_and_false_sufficient_claims() -> None:
         request(), text_root(), thread_id="controller-false-sufficient"
     )
     assert corrected["resolution"].stop_reason is ControllerStopReason.MANDATORY_GAP_UNRESOLVED
+
+    unknown_need, _ = controller((), policy=UnknownNeedPolicy())
+    unknown = unknown_need.resolve(request(), text_root(), thread_id="controller-unknown-need")
+    assert unknown["resolution"].stop_reason is ControllerStopReason.ACCESS_BLOCKED
+
+    repeating, _ = controller((), policy=RepeatingPolicy())
+    repeated = repeating.resolve(request(), text_root(), thread_id="controller-repeated-call")
+    assert repeated["resolution"].stop_reason is ControllerStopReason.NO_ADDITIONAL_EVIDENCE
+
+    receipted, _ = controller((), policy=ReceiptPolicy())
+    receipt_result = receipted.resolve(
+        request(), text_root(), thread_id="controller-decision-receipt"
+    )
+    assert len(receipt_result["decision_receipts"]) == 1
+    null_receipt, _ = controller((), policy=NullReceiptPolicy())
+    assert (
+        null_receipt.resolve(request(), text_root(), thread_id="controller-null-decision-receipt")[
+            "decision_receipts"
+        ]
+        == ()
+    )
 
 
 def test_controller_trace_builder_ignores_failed_or_malformed_tool_payloads() -> None:
@@ -398,6 +650,11 @@ def test_controller_trace_builder_ignores_failed_or_malformed_tool_payloads() ->
     )[0]
 
     assert trace.candidates == ()
+    assert runtime._new_information_gain([], failed) == 0
+    assert runtime._result_unit_ids(failed) == ()
+    assert runtime._result_unit_ids(malformed) == ()
+    malformed_list = malformed.model_copy(update={"payload": {"hits": ["bad", {}]}})
+    assert runtime._result_unit_ids(malformed_list) == ()
 
 
 class _ReverseReranker:
@@ -491,6 +748,112 @@ def test_agentic_route_plan_applies_one_rerank_after_declared_rrf_group() -> Non
     assert degraded_applied is False
     assert degraded_failure == "reranker_degraded:RuntimeError"
 
+    no_reranker, _ = controller(())
+    direct, fused, reranked, failure = no_reranker._route_candidates(
+        semantic_need,
+        plan,
+        channel_results,
+        candidate_limit=2,
+    )
+    assert direct and fused and not reranked and failure is None
+
+    fallback_step = RouteStep(
+        step_id=StableId("route-step.fallback"),
+        channel=RetrievalChannel.GROUNDED_BM25,
+        candidate_pool=CandidatePool.GROUNDED,
+        query_template="fallback",
+    )
+    fallback_plan = plan.model_copy(
+        update={
+            "mandatory_steps": (plan.primary_groups[0].steps[0],),
+            "primary_groups": (),
+            "conditional_fallbacks": (
+                ConditionalFallback(
+                    fallback_id=StableId("fallback.one"),
+                    condition="anchor_evidence_insufficient",
+                    steps=(fallback_step,),
+                ),
+            ),
+        }
+    )
+    primary_tool = TOOL_BY_CHANNEL[fallback_plan.mandatory_steps[0].channel]
+    assert (
+        RouteBoundControllerPolicy._next_registered_tool(
+            fallback_plan,
+            (
+                (
+                    semantic_need.need_id,
+                    primary_tool,
+                    _empty_result("call.primary-empty"),
+                ),
+            ),
+        )
+        == TOOL_BY_CHANNEL[RetrievalChannel.GROUNDED_BM25]
+    )
+    primary_success = _empty_result("call.primary-success", succeeded=True).model_copy(
+        update={"coverage": 1.0}
+    )
+    assert (
+        RouteBoundControllerPolicy._next_registered_tool(
+            fallback_plan,
+            ((semantic_need.need_id, primary_tool, primary_success),),
+        )
+        is None
+    )
+    fallback_tool = TOOL_BY_CHANNEL[RetrievalChannel.GROUNDED_BM25]
+    assert (
+        RouteBoundControllerPolicy._next_registered_tool(
+            fallback_plan,
+            (
+                (
+                    semantic_need.need_id,
+                    primary_tool,
+                    _empty_result("call.primary-failed"),
+                ),
+                (
+                    semantic_need.need_id,
+                    fallback_tool,
+                    _empty_result("call.fallback-failed"),
+                ),
+            ),
+        )
+        is None
+    )
+    fallback_hit = ChannelHit(
+        unit=first,
+        channel=RetrievalChannel.GROUNDED_BM25,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="fallback",
+    )
+    remaining_hit = fallback_hit.model_copy(update={"channel": RetrievalChannel.R1_EXACT})
+    staged, _, _, _ = no_reranker._route_candidates(
+        semantic_need,
+        fallback_plan,
+        {
+            RetrievalChannel.ANCHOR_BM25: channel_results[RetrievalChannel.ANCHOR_BM25],
+            RetrievalChannel.GROUNDED_BM25: (fallback_hit,),
+            RetrievalChannel.R1_EXACT: (remaining_hit,),
+        },
+        candidate_limit=2,
+    )
+    assert staged
+    remaining_only, _, _, _ = no_reranker._route_candidates(
+        semantic_need,
+        fallback_plan,
+        {RetrievalChannel.R1_EXACT: (remaining_hit,)},
+        candidate_limit=2,
+    )
+    assert remaining_only
+    original_remaining_only, _, _, _ = no_reranker._route_candidates(
+        semantic_need,
+        plan,
+        {RetrievalChannel.R1_EXACT: (remaining_hit,)},
+        candidate_limit=2,
+    )
+    assert original_remaining_only
+
 
 def test_controller_never_silently_drops_mandatory_context_on_overflow() -> None:
     unit = RetrievalUnit(
@@ -510,3 +873,54 @@ def test_controller_never_silently_drops_mandatory_context_on_overflow() -> None
     assert result["resolution"].stop_reason is ControllerStopReason.BUDGET_EXHAUSTED
     assert "mandatory context exceeds token budget" in result["resolution"].unresolved_gaps
     assert result["context"].mandatory_constraints == (unit,)
+
+
+def test_controller_rejects_selected_candidate_without_qualifying_evidence() -> None:
+    unit = RetrievalUnit(
+        unit_id=StableId("anchor.empty"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="   ",
+        mandatory=True,
+    )
+    runtime, _ = controller((unit,))
+    hit = ChannelHit(
+        unit=unit,
+        channel=RetrievalChannel.R1_EXACT,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="forced empty-evidence candidate",
+    )
+    result = runtime._finalize(
+        request(),
+        text_root(),
+        cast(
+            Any,
+            {
+                "tool_calls": [
+                    {
+                        "need_id": "need.1",
+                        "tool_name": "memory.search_exact",
+                        "result": ToolResult(
+                            tool_call_id=StableId("call.empty-evidence"),
+                            status=ToolResultStatus.SUCCEEDED,
+                            basis_commit=COMMIT,
+                            snapshot_id=SNAPSHOT,
+                            payload={"hits": [hit.model_dump(mode="json")]},
+                            coverage=1.0,
+                            audit_ref=StableId("audit.empty-evidence"),
+                        ).model_dump(mode="json"),
+                    }
+                ],
+                "policy_decisions": [],
+                "stopped": True,
+                "stop_reason": ControllerStopReason.SUFFICIENT.value,
+            },
+        ),
+    )
+
+    assert result["resolution"].status is ResolutionStatus.PARTIAL
+    assert result["resolution"].stop_reason is ControllerStopReason.NO_ADDITIONAL_EVIDENCE
+    assert "lack qualifying evidence" in result["resolution"].unresolved_gaps[-1]

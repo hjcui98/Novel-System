@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "affected_operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Affected Operation Ids",
+      "type": "array"
+    },
+    "after_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "before_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "finding_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Finding Ids",
+      "type": "array"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "rule_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "rule_id",
+    "before_hash",
+    "after_hash",
+    "reason"
+  ],
+  "title": "NormalizationTransformReceipt",
+  "type": "object"
+}

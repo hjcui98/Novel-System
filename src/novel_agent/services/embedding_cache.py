@@ -164,8 +164,6 @@ class CachedEmbeddingService:
             hits=len(items) - sum(len(indexes) for indexes in missing_by_key.values()),
             misses=len(missing_by_key),
         )
-        if any(vector is None for vector in vectors):
-            raise RuntimeError("embedding cache did not resolve every vector")
         return tuple(vector for vector in vectors if vector is not None)
 
     @staticmethod

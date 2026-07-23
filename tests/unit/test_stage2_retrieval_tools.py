@@ -196,6 +196,14 @@ def test_retrieval_adapter_returns_distinct_query_scope_basis_and_access_failure
         invoke(restricted, "memory.search_exact", {"need_id": "need.1"}).failure_code
         is ToolFailureCode.SCOPE_MISMATCH
     )
+    evaluator_only = RetrievalToolAdapter(
+        Backend(),
+        (need().model_copy(update={"access_scope": "evaluator"}),),
+    )
+    assert (
+        invoke(evaluator_only, "memory.search_exact", {"need_id": "need.1"}).failure_code
+        is ToolFailureCode.ACCESS_DENIED
+    )
 
 
 def test_retrieval_adapter_enforces_per_need_route_channel_allowlist() -> None:

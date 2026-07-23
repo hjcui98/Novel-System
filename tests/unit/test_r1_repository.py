@@ -154,6 +154,11 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
     )
     with pytest.raises(ValueError, match="positive"):
         repository.exact(_need(commit_id, Stage1QueryIntent.KNOWN_ID), temporal=False, limit=0)
+    assert repository.exact(
+        _need(commit_id, Stage1QueryIntent.KNOWN_ID).model_copy(update={"chapter_target": None}),
+        temporal=False,
+        limit=1,
+    )
 
 
 def test_r1_backend_returns_typed_traceable_units(
@@ -183,6 +188,31 @@ def test_r1_backend_returns_typed_traceable_units(
         backend.search(need, RetrievalChannel.ANCHOR_BM25, 5)
     with pytest.raises(ValueError, match="graph depth"):
         R1RetrievalBackend(repository, snapshot_id=StableId("snapshot.r1"), graph_depth=0)
+    with pytest.raises(ValueError, match="non-empty access scope"):
+        R1RetrievalBackend(
+            repository,
+            snapshot_id=StableId("snapshot.r1"),
+            access_scopes=(),
+        )
+    with pytest.raises(ValueError, match="unique"):
+        R1RetrievalBackend(
+            repository,
+            snapshot_id=StableId("snapshot.r1"),
+            access_scopes=("writer_safe", "writer_safe"),
+        )
+    with pytest.raises(ValueError, match="unsupported retrieval access scope"):
+        backend.search(
+            need.model_copy(update={"access_scope": "unknown"}),
+            RetrievalChannel.R1_EXACT,
+            5,
+        )
+    author_only = R1RetrievalBackend(
+        repository,
+        snapshot_id=StableId("snapshot.r1"),
+        access_scopes=("author_planning",),
+    )
+    with pytest.raises(ValueError, match="cannot satisfy"):
+        author_only.search(need, RetrievalChannel.R1_EXACT, 5)
     with factory.begin() as session:
         state_row = session.scalar(select(R1RecordRow).where(R1RecordRow.record_kind == "state"))
         assert state_row is not None
@@ -249,6 +279,14 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
             valid_time=StoryTime(worldline="main", start_ordinal=1),
             truth_class=TruthClass.ACCEPTED_WORLD_FACT,
         ),
+        RelationRecord(
+            relation_id=StableId("relation.synthetic.asserted"),
+            predicate="suspects",
+            subject_id=base.entities[0].entity_id,
+            object_id=guild.entity_id,
+            valid_time=StoryTime(worldline="main", start_ordinal=1),
+            truth_class=TruthClass.ASSERTION,
+        ),
     )
     world = base.model_copy(
         update={"entities": (*base.entities, tower, guild), "relations": relations}
@@ -259,7 +297,9 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
     assert repository.typed_graph(commit_id, (), max_depth=2, limit=10) == ()
     graph = repository.typed_graph(commit_id, (base.entities[0].entity_id,), max_depth=2, limit=10)
     assert {record.record_id for record in graph} == {
-        relation.relation_id for relation in relations
+        relation.relation_id
+        for relation in relations
+        if relation.truth_class is TruthClass.ACCEPTED_WORLD_FACT
     }
     backend = R1RetrievalBackend(repository, snapshot_id=StableId("snapshot.graph"), graph_depth=2)
     hits = backend.search(
@@ -280,7 +320,10 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
         limit=10,
         time_scope=StoryTime(worldline="main", start_ordinal=21),
     )
-    assert any(path.relation_ids == tuple(item.relation_id for item in relations) for path in paths)
+    accepted_relation_ids = tuple(
+        item.relation_id for item in relations if item.truth_class is TruthClass.ACCEPTED_WORLD_FACT
+    )
+    assert any(path.relation_ids == accepted_relation_ids for path in paths)
     assert all(path.edge_semantics == ("canonical",) * len(path.relation_ids) for path in paths)
     assert (
         repository.typed_graph_paths(
@@ -292,6 +335,37 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
         )
         == ()
     )
+    assert (
+        repository.typed_graph_paths(
+            commit_id,
+            (base.entities[0].entity_id,),
+            max_depth=2,
+            limit=10,
+            allowed_edge_semantics=("evidence",),
+        )
+        == ()
+    )
+    assert (
+        repository.typed_graph_paths(
+            commit_id,
+            (base.entities[0].entity_id,),
+            max_depth=2,
+            limit=10,
+            allowed_predicates=("not-present",),
+        )
+        == ()
+    )
+    assert (
+        len(
+            repository.typed_graph_paths(
+                commit_id,
+                (base.entities[0].entity_id,),
+                max_depth=2,
+                limit=1,
+            )
+        )
+        == 1
+    )
     with pytest.raises(ValueError, match="canonical/evidence"):
         repository.typed_graph_paths(
             commit_id,
@@ -302,6 +376,28 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
         )
     with pytest.raises(ValueError, match="positive"):
         repository.typed_graph(commit_id, (base.entities[0].entity_id,), max_depth=0, limit=10)
+    with factory.begin() as session:
+        relation_row = session.scalar(
+            select(R1RecordRow).where(R1RecordRow.record_id == relations[0].relation_id.root)
+        )
+        assert relation_row is not None
+        association = session.scalar(
+            select(R1RecordEntityRow).where(
+                R1RecordEntityRow.row_id == relation_row.row_id,
+                R1RecordEntityRow.role == "object",
+            )
+        )
+        assert association is not None
+        session.delete(association)
+    assert (
+        repository.typed_graph_paths(
+            commit_id,
+            (base.entities[0].entity_id,),
+            max_depth=2,
+            limit=10,
+        )
+        == ()
+    )
 
 
 def test_r1_materializes_plan_nodes_and_exposes_exact_alias_and_evidence_reverse_lookups(
@@ -318,7 +414,14 @@ def test_r1_materializes_plan_nodes_and_exposes_exact_alias_and_evidence_reverse
     assert repository.resolve_entity_alias(commit_id, world.entities[0].internal_label) == (
         world.entities[0].entity_id,
     )
+    assert repository.resolve_entity_alias(
+        commit_id, world.entities[0].internal_label, limit=1
+    ) == (world.entities[0].entity_id,)
     assert repository.resolve_entity_alias(commit_id, "missing") == ()
+    with pytest.raises(ValueError, match="non-empty alias"):
+        repository.resolve_entity_alias(commit_id, " ")
+    with pytest.raises(ValueError, match="must be positive"):
+        repository.records_for_evidence(commit_id, StableId("evidence.any"), limit=0)
     if world.states[0].evidence_refs:
         reverse = repository.records_for_evidence(
             commit_id, world.states[0].evidence_refs[0].evidence_id
@@ -333,3 +436,40 @@ def test_r1_materializes_plan_nodes_and_exposes_exact_alias_and_evidence_reverse
         access_scopes=("writer_safe", "author_planning"),
     )
     assert {item.record_id for item in plan_records} >= {item.plan_node_id for item in plan.nodes}
+
+
+def test_r1_evidence_and_graph_time_helpers_fail_closed(
+    r1_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, commit_id = r1_database
+    world = make_synthetic_bundle().world_roots[0]
+    repository = R1WorldRepository(factory)
+    repository.materialize(ProjectId("project.test"), commit_id, world)
+    assert repository._evidence_refs({"evidence_refs": "invalid"}) == ()
+    with factory.begin() as session:
+        row = session.scalar(select(R1RecordRow).where(R1RecordRow.record_kind == "state"))
+        assert row is not None
+        payload = dict(row.record_json)
+        payload["evidence_refs"] = "invalid"
+        row.record_json = payload
+
+    assert repository.records_for_evidence(commit_id, StableId("evidence.any")) == ()
+    with factory() as session:
+        row = session.scalar(select(R1RecordRow).where(R1RecordRow.record_kind == "state"))
+        assert row is not None
+        row.worldline = "alternate"
+        assert (
+            repository._edge_matches_time(
+                row,
+                StoryTime(worldline="main", start_ordinal=20),
+            )
+            is False
+        )
+        row.worldline = "main"
+        assert (
+            repository._edge_matches_time(
+                row,
+                StoryTime(worldline="main", label="unknown"),
+            )
+            is True
+        )

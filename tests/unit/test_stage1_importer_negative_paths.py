@@ -13,9 +13,11 @@ from novel_agent.services.benchmark_importer import (
     summary_root_content_id,
     text_root_content_id,
 )
+from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
 UNKNOWN_HASH = ArtifactId("sha256:" + "f" * 64)
+PILOT = Path(__file__).parents[2] / "benchmarks/private/ztj_memory_pilot_v0.1"
 
 
 def rehash(bundle: BenchmarkBundle) -> BenchmarkBundle:
@@ -302,4 +304,42 @@ def test_replay_manifest_missing_roots_and_chapters_are_rejected() -> None:
             update={"replay_manifests": (replay.model_copy(update={"chapter_range": (21, 24)}),)}
         ),
         "chapters are incomplete",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("plan_root_hash", UNKNOWN_HASH, "another PlanRoot"),
+        ("goal_id", StableId("goal.missing"), "missing goal"),
+        ("object_hash", UNKNOWN_HASH, "goal hash mismatch"),
+    ),
+)
+def test_plan_gold_evidence_is_bound_to_exact_plan_goal(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    case = bundle.case_manifests[0]
+    gold = case.plan_obligation_gold[0]
+    evidence = gold.plan_evidence_refs[0].model_copy(update={field: value})
+    changed = gold.model_copy(update={"plan_evidence_refs": (evidence,)})
+    changed_case = case.model_copy(update={"plan_obligation_gold": (changed,)})
+    validate_error(
+        bundle.model_copy(
+            update={
+                "case_manifests": (changed_case, *bundle.case_manifests[1:]),
+            }
+        ),
+        message,
+    )
+
+
+def test_plan_gold_evidence_requires_input_plan_root() -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    case = bundle.case_manifests[0].model_copy(update={"input_plan_root": None})
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (case, *bundle.case_manifests[1:])}),
+        "requires an input PlanRoot",
     )

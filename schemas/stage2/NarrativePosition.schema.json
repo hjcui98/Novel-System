@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "description": "A monotonic position used by information-boundary checks.",
+  "properties": {
+    "block_index": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Block Index"
+    },
+    "chapter_index": {
+      "minimum": 0,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "scene_index": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scene Index"
+    }
+  },
+  "required": [
+    "chapter_index"
+  ],
+  "title": "NarrativePosition",
+  "type": "object"
+}

@@ -1,0 +1,327 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CandidateProducerKind": {
+      "enum": [
+        "curator_propose",
+        "trusted_candidate",
+        "empty_delta",
+        "deterministic_normalizer",
+        "curator_repair",
+        "human_patch",
+        "operation_quarantine"
+      ],
+      "title": "CandidateProducerKind",
+      "type": "string"
+    },
+    "CandidateRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "applied_directive_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Applied Directive Ids",
+          "type": "array"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "candidate_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "origin_proposal_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "origin_proposal_attempt_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_candidate_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_kind": {
+          "$ref": "#/$defs/CandidateProducerKind"
+        },
+        "producer_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "proposal_attempt_chain_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Proposal Attempt Chain Refs",
+          "type": "array"
+        },
+        "repair_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepairScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "revision_no": {
+          "minimum": 1,
+          "title": "Revision No",
+          "type": "integer"
+        },
+        "source_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifacts",
+          "type": "array"
+        },
+        "supersedes_candidate_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "candidate_id",
+        "revision_no",
+        "base_commit",
+        "basis_hash",
+        "candidate_artifact",
+        "producer_kind",
+        "content_hash",
+        "created_at"
+      ],
+      "title": "CandidateRevision",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "NormalizationStatus": {
+      "enum": [
+        "unchanged",
+        "transformed",
+        "ambiguous"
+      ],
+      "title": "NormalizationStatus",
+      "type": "string"
+    },
+    "NormalizationTransformReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Affected Operation Ids",
+          "type": "array"
+        },
+        "after_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "before_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "finding_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "rule_id",
+        "before_hash",
+        "after_hash",
+        "reason"
+      ],
+      "title": "NormalizationTransformReceipt",
+      "type": "object"
+    },
+    "RepairScope": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_identity_rebind": {
+          "default": false,
+          "title": "Allow Identity Rebind",
+          "type": "boolean"
+        },
+        "allow_operation_type_change": {
+          "default": false,
+          "title": "Allow Operation Type Change",
+          "type": "boolean"
+        },
+        "allow_successor_creation": {
+          "default": false,
+          "title": "Allow Successor Creation",
+          "type": "boolean"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        }
+      },
+      "title": "RepairScope",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate": {
+      "$ref": "#/$defs/CandidateRevision"
+    },
+    "reason_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "status": {
+      "$ref": "#/$defs/NormalizationStatus"
+    },
+    "transforms": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NormalizationTransformReceipt"
+      },
+      "title": "Transforms",
+      "type": "array"
+    }
+  },
+  "required": [
+    "status",
+    "candidate"
+  ],
+  "title": "NormalizationResult",
+  "type": "object"
+}

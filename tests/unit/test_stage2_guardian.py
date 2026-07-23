@@ -40,6 +40,8 @@ from novel_agent.domain.stage2 import (
 from novel_agent.services.guardian import (
     GuardianGateError,
     GuardianWriteGate,
+    InMemoryPatchApprovalRepository,
+    PatchApprovalCoordinator,
     PatchRiskClassifier,
 )
 
@@ -366,4 +368,143 @@ def test_patch_risk_contract_rejects_contradictory_routing() -> None:
                 "risk_codes": ("RISK",),
                 "requires_guardian": True,
             }
+        )
+
+
+def test_in_memory_patch_approval_repository_is_idempotent_and_fail_closed() -> None:
+    candidate = changes(
+        operation(
+            1,
+            ChangeOperationType.REPLACE,
+            {"record_type": "event", "record": {"event_type": "death"}},
+        )
+    )
+    report = validation(ValidationStatus.NEEDS_REVIEW)
+    risk = PatchRiskClassifier().assess(candidate, report)
+    guardian_decision = guardian(GuardianOutcome.HUMAN_REVIEW)
+    repository = InMemoryPatchApprovalRepository()
+    coordinator = PatchApprovalCoordinator(repository, clock=lambda: NOW)
+    request = coordinator.request(
+        ProjectId("project.guardian"),
+        candidate,
+        risk,
+        guardian_decision,
+    )
+    assert repository.request(request) == request
+    assert repository.load_request(request.approval_request_id) == request
+    assert repository.load_decision(request.approval_request_id) is None
+
+    with pytest.raises(GuardianGateError, match="identity collision"):
+        repository.request(request.model_copy(update={"project_id": ProjectId("project.other")}))
+    with pytest.raises(GuardianGateError, match="unknown"):
+        repository.load_request(StableId("approval.unknown"))
+
+    decision = human_approval(risk, guardian_decision).model_copy(
+        update={"approval_request_id": request.approval_request_id}
+    )
+    assert repository.decide(decision) == decision
+    assert repository.decide(decision) == decision
+    assert repository.load_decision(request.approval_request_id) == decision
+    with pytest.raises(GuardianGateError, match="decided differently"):
+        repository.decide(decision.model_copy(update={"reason": "different"}))
+
+
+def test_patch_approval_coordinator_rejects_unrelated_or_unnecessary_requests() -> None:
+    candidate = changes()
+    report = validation(ValidationStatus.PASSED)
+    low = PatchRiskClassifier().assess(candidate, report)
+    coordinator = PatchApprovalCoordinator(InMemoryPatchApprovalRepository())
+    with pytest.raises(GuardianGateError, match="does not require"):
+        coordinator.request(
+            ProjectId("project.guardian"),
+            candidate,
+            low,
+            guardian(GuardianOutcome.APPROVE),
+        )
+    high = low.model_copy(
+        update={
+            "level": PatchRiskLevel.HIGH,
+            "risk_codes": ("RISK",),
+            "requires_guardian": True,
+        }
+    )
+    foreign = guardian(GuardianOutcome.HUMAN_REVIEW).model_copy(
+        update={"proposal_id": StableId("changes.other")}
+    )
+    with pytest.raises(GuardianGateError, match="do not share"):
+        coordinator.request(ProjectId("project.guardian"), candidate, high, foreign)
+
+    request = PatchApprovalCoordinator(
+        InMemoryPatchApprovalRepository(), clock=lambda: NOW
+    ).request(
+        ProjectId("project.guardian"),
+        candidate,
+        high,
+        guardian(GuardianOutcome.HUMAN_REVIEW),
+    )
+    decision = human_approval(high, guardian(GuardianOutcome.HUMAN_REVIEW)).model_copy(
+        update={
+            "approval_request_id": request.approval_request_id,
+            "project_id": ProjectId("project.other"),
+        }
+    )
+    with pytest.raises(GuardianGateError, match="does not match request basis"):
+        PatchApprovalCoordinator.validate_decision_basis(request, decision)
+
+
+def test_guardian_gate_rejects_invalid_human_override_shapes() -> None:
+    candidate = changes(
+        operation(
+            1,
+            ChangeOperationType.REPLACE,
+            {"record_type": "event", "record": {"event_type": "death"}},
+        )
+    )
+    report = validation(ValidationStatus.NEEDS_REVIEW)
+    risk = PatchRiskClassifier().assess(candidate, report)
+    gate = GuardianWriteGate()
+    guardian_decision = guardian(GuardianOutcome.HUMAN_REVIEW)
+    approval = human_approval(risk, guardian_decision)
+
+    with pytest.raises(GuardianGateError, match="requires its Guardian"):
+        gate.decide(candidate, report, risk, human_approval=approval)
+    with pytest.raises(GuardianGateError, match="cannot override"):
+        gate.decide(
+            candidate,
+            report,
+            risk,
+            guardian=guardian(GuardianOutcome.REJECT),
+            human_approval=approval,
+        )
+    rejected = approval.model_copy(update={"status": AuthorApprovalStatus.REJECTED, "reason": "no"})
+    blocked = gate.decide(
+        candidate,
+        report,
+        risk,
+        guardian=guardian_decision,
+        human_approval=rejected,
+    )
+    assert blocked.outcome is WriteGateOutcome.BLOCK_HUMAN
+
+    low_candidate = changes()
+    low_report = validation(ValidationStatus.PASSED)
+    low_risk = PatchRiskClassifier().assess(low_candidate, low_report)
+    with pytest.raises(GuardianGateError, match="does not require"):
+        gate.decide(
+            low_candidate,
+            low_report,
+            low_risk,
+            guardian=guardian(GuardianOutcome.APPROVE),
+            human_approval=human_approval(
+                low_risk,
+                guardian(GuardianOutcome.APPROVE),
+            ),
+        )
+    with pytest.raises(GuardianGateError, match="does not belong"):
+        gate.decide(
+            candidate,
+            report,
+            risk,
+            guardian=guardian_decision,
+            human_approval=approval.model_copy(update={"change_set_id": StableId("changes.other")}),
         )

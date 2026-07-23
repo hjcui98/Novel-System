@@ -16,7 +16,7 @@
           "items": {
             "$ref": "#/$defs/CuratorEvidenceSelection"
           },
-          "maxItems": 1,
+          "maxItems": 4,
           "minItems": 1,
           "title": "Evidence Refs",
           "type": "array"

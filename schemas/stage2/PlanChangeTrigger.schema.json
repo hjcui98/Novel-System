@@ -1,0 +1,26 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "plan_change",
+      "default": "plan_change",
+      "title": "Kind",
+      "type": "string"
+    },
+    "plan_change_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "plan_change_id"
+  ],
+  "title": "PlanChangeTrigger",
+  "type": "object"
+}

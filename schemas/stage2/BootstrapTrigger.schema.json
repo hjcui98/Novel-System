@@ -1,0 +1,26 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bootstrap_bundle_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "bootstrap",
+      "default": "bootstrap",
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bootstrap_bundle_id"
+  ],
+  "title": "BootstrapTrigger",
+  "type": "object"
+}

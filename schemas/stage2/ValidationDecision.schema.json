@@ -1,0 +1,455 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BlockingScope": {
+      "enum": [
+        "candidate",
+        "operation",
+        "field"
+      ],
+      "title": "BlockingScope",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "FindingRetryability": {
+      "enum": [
+        "repairable",
+        "conditional",
+        "review",
+        "non_repairable"
+      ],
+      "title": "FindingRetryability",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RepairScope": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_identity_rebind": {
+          "default": false,
+          "title": "Allow Identity Rebind",
+          "type": "boolean"
+        },
+        "allow_operation_type_change": {
+          "default": false,
+          "title": "Allow Operation Type Change",
+          "type": "boolean"
+        },
+        "allow_successor_creation": {
+          "default": false,
+          "title": "Allow Successor Creation",
+          "type": "boolean"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        }
+      },
+      "title": "RepairScope",
+      "type": "object"
+    },
+    "RepairStrategy": {
+      "enum": [
+        "successor_state",
+        "correct_target",
+        "create_to_replace",
+        "replace_to_create",
+        "rebind_evidence",
+        "refresh_context",
+        "curator_repair",
+        "guardian_review",
+        "quarantine",
+        "human"
+      ],
+      "title": "RepairStrategy",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "ValidationDisposition": {
+      "enum": [
+        "pass",
+        "repairable",
+        "partial_repairable",
+        "review_required",
+        "non_repairable"
+      ],
+      "title": "ValidationDisposition",
+      "type": "string"
+    },
+    "ValidationFindingCategory": {
+      "enum": [
+        "evidence",
+        "identity",
+        "transition",
+        "operation",
+        "truth",
+        "basis",
+        "schema",
+        "information_boundary",
+        "unknown"
+      ],
+      "title": "ValidationFindingCategory",
+      "type": "string"
+    },
+    "ValidationFindingV2": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_repair_scope": {
+          "$ref": "#/$defs/RepairScope"
+        },
+        "blocking_scope": {
+          "$ref": "#/$defs/BlockingScope"
+        },
+        "canonical_record_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Canonical Record Refs",
+          "type": "array"
+        },
+        "category": {
+          "$ref": "#/$defs/ValidationFindingCategory"
+        },
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "finding_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        },
+        "requires_context_refresh": {
+          "default": false,
+          "title": "Requires Context Refresh",
+          "type": "boolean"
+        },
+        "requires_guardian": {
+          "default": false,
+          "title": "Requires Guardian",
+          "type": "boolean"
+        },
+        "requires_human": {
+          "default": false,
+          "title": "Requires Human",
+          "type": "boolean"
+        },
+        "retryability": {
+          "$ref": "#/$defs/FindingRetryability"
+        },
+        "severity": {
+          "$ref": "#/$defs/ValidationSeverity"
+        },
+        "suggested_strategies": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RepairStrategy"
+          },
+          "title": "Suggested Strategies",
+          "type": "array"
+        }
+      },
+      "required": [
+        "finding_id",
+        "code",
+        "category",
+        "severity",
+        "message",
+        "retryability",
+        "blocking_scope",
+        "allowed_repair_scope"
+      ],
+      "title": "ValidationFindingV2",
+      "type": "object"
+    },
+    "ValidationSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "ValidationSeverity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "candidate_content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "deterministic_profile": {
+      "minLength": 1,
+      "title": "Deterministic Profile",
+      "type": "string"
+    },
+    "disposition": {
+      "$ref": "#/$defs/ValidationDisposition"
+    },
+    "findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationFindingV2"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "materialization_receipt": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "model_profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Profile"
+    },
+    "proposed_roots_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "validated_at": {
+      "format": "date-time",
+      "title": "Validated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "decision_id",
+    "candidate_id",
+    "candidate_content_hash",
+    "materialization_receipt",
+    "proposed_roots_hash",
+    "base_commit",
+    "disposition",
+    "deterministic_profile",
+    "validated_at"
+  ],
+  "title": "ValidationDecision",
+  "type": "object"
+}

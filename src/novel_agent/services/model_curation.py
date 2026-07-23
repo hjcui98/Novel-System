@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.benchmark import TextRootDocument
@@ -20,6 +21,7 @@ from novel_agent.domain.changes import (
 )
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory_write import ProposalConflict, ProposalEvidenceMergeReceipt
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
 from novel_agent.services.artifacts import sha256_id
@@ -33,6 +35,20 @@ class ModelCurationContractError(ValueError):
     pass
 
 
+class CuratorProposalSemanticRejected(ModelCurationContractError):
+    def __init__(
+        self,
+        reason_code: str,
+        conflicts: tuple[ProposalConflict, ...],
+        *,
+        information_boundary: bool = False,
+    ) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.conflicts = conflicts
+        self.information_boundary = information_boundary
+
+
 _RECORD_ID_FIELD = {
     WorldRecordKind.ENTITY: "entity_id",
     WorldRecordKind.EVENT: "event_id",
@@ -42,9 +58,23 @@ _RECORD_ID_FIELD = {
 }
 
 
+TargetResolver = Callable[[WorldRecordKind, StableId, WorldRootDocument], StableId]
+
+
 class ModelCurator:
-    def __init__(self, gateway: ModelGateway) -> None:
+    def __init__(
+        self,
+        gateway: ModelGateway,
+        *,
+        target_resolver: TargetResolver | None = None,
+    ) -> None:
         self._gateway = gateway
+        self._target_resolver = target_resolver or (lambda _kind, target_id, _world: target_id)
+        self.last_evidence_merge_receipts: tuple[ProposalEvidenceMergeReceipt, ...] = ()
+
+    @property
+    def gateway(self) -> ModelGateway:
+        return self._gateway
 
     async def extract(
         self,
@@ -96,69 +126,35 @@ class ModelCurator:
         chapter_blocks = {
             block.block_id: block for scene in chapter.scenes for block in scene.blocks
         }
-        scoped_operations = tuple(
-            operation
+        if any(
+            selection.block_id not in chapter_blocks
             for operation in draft.operations
-            if all(selection.block_id in chapter_blocks for selection in operation.evidence_refs)
-        )
-        if len(scoped_operations) != len(draft.operations):
-            dropped = tuple(
-                operation.target_id.root
-                for operation in draft.operations
-                if operation not in scoped_operations
+            for selection in operation.evidence_refs
+        ):
+            raise CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+                (),
+                information_boundary=True,
             )
-            original_count = len(draft.operations)
-            unresolved = (
-                *draft.unresolved,
-                ("runtime filtered out-of-chapter evidence targets: " + ", ".join(dropped))[:160],
-            )
-            draft = draft.model_copy(
-                update={
-                    "operations": scoped_operations,
-                    "unresolved": unresolved[:4],
-                    "coverage": min(draft.coverage, len(scoped_operations) / original_count),
-                }
-            )
-        valid_span_operations = tuple(
-            operation
+        if any(
+            not (selection.start < selection.end <= len(chapter_blocks[selection.block_id].text))
             for operation in draft.operations
-            if all(
-                selection.start < selection.end <= len(chapter_blocks[selection.block_id].text)
-                for selection in operation.evidence_refs
+            for selection in operation.evidence_refs
+        ):
+            raise CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_INVALID_EVIDENCE",
+                (),
             )
-        )
-        if len(valid_span_operations) != len(draft.operations):
-            dropped = tuple(
-                operation.target_id.root
-                for operation in draft.operations
-                if operation not in valid_span_operations
-            )
-            original_count = len(draft.operations)
-            draft = draft.model_copy(
-                update={
-                    "operations": valid_span_operations,
-                    "unresolved": (
-                        *draft.unresolved,
-                        ("runtime filtered invalid evidence spans: " + ", ".join(dropped))[:160],
-                    )[:4],
-                    "coverage": min(draft.coverage, len(valid_span_operations) / original_count),
-                }
-            )
-        identities = tuple(
-            (operation.record_kind, operation.target_id) for operation in draft.operations
-        )
-        if len(identities) != len(set(identities)):
-            raise ModelCurationContractError("Curator draft targets one record more than once")
+        draft, merge_receipts = self._merge_normalized_collisions(draft, base_commit)
+        self.last_evidence_merge_receipts = merge_receipts
 
         operations: list[ChangeOperation] = []
         for operation in draft.operations:
             bound_evidence = []
             for selection in operation.evidence_refs:
-                block = chapter_blocks.get(selection.block_id)
-                if block is None:
-                    raise ModelCurationContractError(
-                        "Curator evidence block is outside the requested chapter"
-                    )
+                # The scope filter above guarantees every retained selection is
+                # bound to a block in this chapter.
+                block = chapter_blocks[selection.block_id]
                 selected = block.text[selection.start : selection.end]
                 evidence_digest = self._digest(
                     chapter.chapter_id.root.encode(),
@@ -221,8 +217,8 @@ class ModelCurator:
             draft,
         )
 
-    @staticmethod
     def _normalize_operations(
+        self,
         draft: ChapterChangeDraft,
         current_world: WorldRootDocument,
     ) -> ChapterChangeDraft:
@@ -292,7 +288,19 @@ class ModelCurator:
             ):
                 unchanged.append(operation.target_id.root)
                 continue
-            accepted.append(operation.model_copy(update={"operation": normalized_type}))
+            normalized_target = self._target_resolver(
+                operation.record_kind,
+                operation.target_id,
+                current_world,
+            )
+            accepted.append(
+                operation.model_copy(
+                    update={
+                        "operation": normalized_type,
+                        "target_id": normalized_target,
+                    }
+                )
+            )
         unresolved = list(draft.unresolved)
         if dropped:
             detail = "runtime filtered dangling or missing targets: " + ", ".join(dropped)
@@ -312,6 +320,92 @@ class ModelCurator:
                 "unresolved": tuple(unresolved[:4]),
                 "coverage": bounded_coverage,
             }
+        )
+
+    @classmethod
+    def _merge_normalized_collisions(
+        cls,
+        draft: ChapterChangeDraft,
+        base_commit: CommitId,
+    ) -> tuple[ChapterChangeDraft, tuple[ProposalEvidenceMergeReceipt, ...]]:
+        groups: dict[
+            tuple[WorldRecordKind, StableId],
+            list[tuple[int, CuratedOperationDraft]],
+        ] = {}
+        for index, operation in enumerate(draft.operations):
+            groups.setdefault((operation.record_kind, operation.target_id), []).append(
+                (index, operation)
+            )
+
+        merged: list[CuratedOperationDraft] = []
+        receipts: list[ProposalEvidenceMergeReceipt] = []
+        for (record_kind, target_id), indexed in groups.items():
+            if len(indexed) == 1:
+                merged.append(indexed[0][1])
+                continue
+            semantic_payloads = tuple(
+                canonical_json_bytes(operation.model_dump(mode="json", exclude={"evidence_refs"}))
+                for _, operation in indexed
+            )
+            semantic_hashes = tuple(sha256_id(payload) for payload in semantic_payloads)
+            evidence_payloads = tuple(
+                canonical_json_bytes(evidence.model_dump(mode="json"))
+                for _, operation in indexed
+                for evidence in operation.evidence_refs
+            )
+            evidence_hashes = tuple(sha256_id(payload) for payload in evidence_payloads)
+            if len(set(semantic_hashes)) != 1:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
+                    (
+                        ProposalConflict(
+                            record_kind=record_kind,
+                            target_id=target_id,
+                            operation_indexes=tuple(index for index, _ in indexed),
+                            semantic_hashes=tuple(
+                                sorted(set(semantic_hashes), key=lambda item: item.root)
+                            ),
+                            evidence_hashes=tuple(
+                                sorted(set(evidence_hashes), key=lambda item: item.root)
+                            ),
+                        ),
+                    ),
+                )
+            unique_evidence = {
+                canonical_json_bytes(evidence.model_dump(mode="json")): evidence
+                for _, operation in indexed
+                for evidence in operation.evidence_refs
+            }
+            ordered_evidence = tuple(
+                unique_evidence[payload] for payload in sorted(unique_evidence)
+            )
+            merged.append(indexed[0][1].model_copy(update={"evidence_refs": ordered_evidence}))
+            source_hashes = tuple(
+                sha256_id(canonical_json_bytes(operation.model_dump(mode="json")))
+                for _, operation in indexed
+            )
+            digest = cls._digest(
+                base_commit.root.encode(),
+                record_kind.value.encode(),
+                target_id.root.encode(),
+                semantic_hashes[0].root.encode(),
+            )
+            receipts.append(
+                ProposalEvidenceMergeReceipt(
+                    transform_id=StableId(f"proposal-evidence-merge.{digest}"),
+                    base_commit=base_commit,
+                    record_kind=record_kind,
+                    target_id=target_id,
+                    semantic_hash=semantic_hashes[0],
+                    source_operation_hashes=source_hashes,
+                    merged_evidence_hashes=tuple(
+                        sorted(set(evidence_hashes), key=lambda item: item.root)
+                    ),
+                )
+            )
+        return (
+            draft.model_copy(update={"operations": tuple(merged)}),
+            tuple(receipts),
         )
 
     @staticmethod

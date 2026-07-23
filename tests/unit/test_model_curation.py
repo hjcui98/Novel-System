@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.changes import (
@@ -12,6 +13,7 @@ from novel_agent.domain.changes import (
     CuratorEntityRecord,
     CuratorEvidenceSelection,
     CuratorObligationRecord,
+    CuratorRelationRecord,
     CuratorStateRecord,
     CuratorStoryTime,
     WorldRecordKind,
@@ -20,7 +22,11 @@ from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.text import EvidenceSupportStatus
 from novel_agent.domain.world import TruthClass
-from novel_agent.services.model_curation import ModelCurationContractError, ModelCurator
+from novel_agent.services.model_curation import (
+    CuratorProposalSemanticRejected,
+    ModelCurationContractError,
+    ModelCurator,
+)
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
@@ -197,6 +203,37 @@ def test_model_curator_filters_dangling_entity_references() -> None:
     assert "runtime filtered" in reported.unresolved[-1]
 
 
+def test_model_curator_normalizes_replace_for_new_relation_to_create() -> None:
+    bundle = make_synthetic_bundle()
+    future = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    selection = _draft().operations[0].evidence_refs[0]
+    draft = ChapterChangeDraft(
+        chapter_index=23,
+        operations=(
+            CuratedOperationDraft(
+                operation=ChangeOperationType.REPLACE,
+                record_kind=WorldRecordKind.RELATION,
+                target_id=StableId("relation.synthetic.new"),
+                record=CuratorRelationRecord(
+                    subject_id=world.entities[0].entity_id,
+                    predicate="trusts",
+                    object_id=world.entities[0].entity_id,
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=23),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                evidence_refs=(selection,),
+            ),
+        ),
+    )
+
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(draft)[0]).extract(future, 23, world.source_commit, world, _request())
+    )
+
+    assert changes.operations[0].operation is ChangeOperationType.CREATE
+
+
 def test_model_curator_routes_retirement_out_of_chapter_replay() -> None:
     bundle = make_synthetic_bundle()
     future = bundle.text_roots[1]
@@ -233,7 +270,7 @@ def test_model_curator_rejects_chapter_and_duplicate_target_errors() -> None:
     duplicate = _draft().model_copy(
         update={"operations": (_draft().operations[0], _draft().operations[0])}
     )
-    with pytest.raises(ModelCurationContractError, match="more than once"):
+    with pytest.raises(ValidationError, match="more than once"):
         asyncio.run(
             ModelCurator(_gateway(duplicate)[0]).extract(
                 future, 23, world.source_commit, world, _request()
@@ -253,14 +290,15 @@ def test_model_curator_rejects_invalid_evidence_scope_and_binds_basis_and_status
     outside_draft = _draft().model_copy(
         update={"operations": (operation.model_copy(update={"evidence_refs": (outside,)}),)}
     )
-    filtered, _, reported = asyncio.run(
-        ModelCurator(_gateway(outside_draft)[0]).extract_reported(
-            future, 23, world.source_commit, world, _request()
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+    ):
+        asyncio.run(
+            ModelCurator(_gateway(outside_draft)[0]).extract_reported(
+                future, 23, world.source_commit, world, _request()
+            )
         )
-    )
-    assert filtered.operations == ()
-    assert reported.coverage == 0
-    assert "out-of-chapter" in reported.unresolved[-1]
 
     changes, _ = asyncio.run(
         ModelCurator(_gateway(_draft())[0]).extract(
@@ -272,7 +310,7 @@ def test_model_curator_rejects_invalid_evidence_scope_and_binds_basis_and_status
     assert evidence.support_status is EvidenceSupportStatus.CURRENT
 
 
-def test_model_curator_filters_invalid_evidence_coordinates() -> None:
+def test_model_curator_rejects_invalid_evidence_coordinates() -> None:
     bundle = make_synthetic_bundle()
     future = bundle.text_roots[1]
     world = bundle.world_roots[0]
@@ -290,14 +328,15 @@ def test_model_curator_filters_invalid_evidence_coordinates() -> None:
         update={"operations": (operation.model_copy(update={"evidence_refs": (overflow,)}),)}
     )
 
-    changes, _, reported = asyncio.run(
-        ModelCurator(_gateway(draft)[0]).extract_reported(
-            future, 23, world.source_commit, world, _request()
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_INVALID_EVIDENCE",
+    ):
+        asyncio.run(
+            ModelCurator(_gateway(draft)[0]).extract_reported(
+                future, 23, world.source_commit, world, _request()
+            )
         )
-    )
-
-    assert changes.operations == ()
-    assert "invalid evidence spans" in reported.unresolved[-1]
 
     invalid_coordinates = selection.model_copy(
         update={"start": len(block.text) + 20, "end": len(block.text) + 40}
@@ -307,13 +346,15 @@ def test_model_curator_filters_invalid_evidence_coordinates() -> None:
             "operations": (operation.model_copy(update={"evidence_refs": (invalid_coordinates,)}),)
         }
     )
-    rebound, _, invalid_report = asyncio.run(
-        ModelCurator(_gateway(invalid_draft)[0]).extract_reported(
-            future, 23, world.source_commit, world, _request()
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_INVALID_EVIDENCE",
+    ):
+        asyncio.run(
+            ModelCurator(_gateway(invalid_draft)[0]).extract_reported(
+                future, 23, world.source_commit, world, _request()
+            )
         )
-    )
-    assert rebound.operations == ()
-    assert "invalid evidence spans" in invalid_report.unresolved[-1]
 
 
 def test_model_curator_drops_unchanged_existing_state_replacements() -> None:

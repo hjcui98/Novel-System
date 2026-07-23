@@ -1,0 +1,77 @@
+{
+  "fixture_id": "stage2w.run4.c8.pre-candidate-duplicate.v1",
+  "chapter_index": 8,
+  "base_commit": "sha256:f9a472f530355517879bca77b2c41b6eb4b91fff780a604eb6f01e4e04e84eb4",
+  "accepted_parent_chapter": 7,
+  "source_refs": [
+    {
+      "artifact_id": "sha256:138b7829a2e87dcc08f39d67eb8dd20336c3f8681cae3bbf6f2f492f48e84fc1",
+      "source_class": "chapter_text_n",
+      "chapter_index": 8,
+      "visible_through_chapter": 8
+    }
+  ],
+  "call_metadata": {
+    "model_request_id": "run4.c8.curator.proposal-1.schema-1",
+    "model_role": "batch_test_model",
+    "purpose": "batch_test",
+    "provider_call_count": 1,
+    "transport_attempt_count": 1
+  },
+  "raw_draft": {
+    "chapter_index": 8,
+    "operations": [
+      {
+        "operation": "create",
+        "record_kind": "entity",
+        "target_id": "entity.run4.c8.duplicate",
+        "record": {
+          "entity_type": "person",
+          "internal_label": "C8 脱敏人物",
+          "aliases": [],
+          "identity_invariants": []
+        },
+        "evidence_refs": [
+          {
+            "block_id": "block.run4.c8.1",
+            "range_unit": "unicode_codepoint",
+            "start": 0,
+            "end": 4
+          }
+        ]
+      },
+      {
+        "operation": "replace",
+        "record_kind": "entity",
+        "target_id": "entity.run4.c8.duplicate",
+        "record": {
+          "entity_type": "person",
+          "internal_label": "C8 脱敏人物",
+          "aliases": [],
+          "identity_invariants": []
+        },
+        "evidence_refs": [
+          {
+            "block_id": "block.run4.c8.2",
+            "range_unit": "unicode_codepoint",
+            "start": 5,
+            "end": 9
+          }
+        ]
+      }
+    ],
+    "coverage": 1.0,
+    "unresolved": [],
+    "declared_vs_observed_diff": []
+  },
+  "pre_failure_canon": {
+    "current_commit": "sha256:f9a472f530355517879bca77b2c41b6eb4b91fff780a604eb6f01e4e04e84eb4",
+    "completed_chapters": [1, 2, 3, 4, 5, 6, 7],
+    "projection_source_commit": "sha256:f9a472f530355517879bca77b2c41b6eb4b91fff780a604eb6f01e4e04e84eb4"
+  },
+  "post_failure_canon": {
+    "current_commit": "sha256:f9a472f530355517879bca77b2c41b6eb4b91fff780a604eb6f01e4e04e84eb4",
+    "completed_chapters": [1, 2, 3, 4, 5, 6, 7],
+    "projection_source_commit": "sha256:f9a472f530355517879bca77b2c41b6eb4b91fff780a604eb6f01e4e04e84eb4"
+  }
+}

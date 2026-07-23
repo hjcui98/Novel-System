@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allow_identity_rebind": {
+      "default": false,
+      "title": "Allow Identity Rebind",
+      "type": "boolean"
+    },
+    "allow_operation_type_change": {
+      "default": false,
+      "title": "Allow Operation Type Change",
+      "type": "boolean"
+    },
+    "allow_successor_creation": {
+      "default": false,
+      "title": "Allow Successor Creation",
+      "type": "boolean"
+    },
+    "field_paths": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Field Paths",
+      "type": "array"
+    },
+    "operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Operation Ids",
+      "type": "array"
+    }
+  },
+  "title": "RepairScope",
+  "type": "object"
+}

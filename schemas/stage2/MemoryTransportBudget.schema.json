@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "description": "The model transport budget is intentionally separate from repair budget.",
+  "properties": {
+    "backoff_profile": {
+      "default": "exponential-v1",
+      "minLength": 1,
+      "title": "Backoff Profile",
+      "type": "string"
+    },
+    "max_attempts": {
+      "default": 3,
+      "minimum": 1,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "timeout_seconds": {
+      "default": 60.0,
+      "exclusiveMinimum": 0,
+      "title": "Timeout Seconds",
+      "type": "number"
+    }
+  },
+  "title": "MemoryTransportBudget",
+  "type": "object"
+}

@@ -16,6 +16,7 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
 )
 from novel_agent.domain.retrieval_routing import L2IndexKind, L2IndexManifest
+from novel_agent.domain.world import StoryTime
 from novel_agent.services.embedding_cache import InMemoryEmbeddingCache
 from novel_agent.services.search_retrieval import (
     CompositeRetrievalBackend,
@@ -145,6 +146,8 @@ def test_stage2r_indexer_namespaces_aliases_and_physical_indexes_per_experiment(
     run2_receipt = run2.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
     run3_receipt = run3.build_and_publish_receipt(PROJECT, COMMIT, SNAPSHOT, _units())
 
+    assert run2.index_namespace == "run2"
+    assert run3.index_namespace == "run3"
     assert run2_receipt.anchor_index != run3_receipt.anchor_index
     assert run2_receipt.anchor_alias != run3_receipt.anchor_alias
     assert "run2" in run2_receipt.anchor_index
@@ -298,6 +301,40 @@ def test_opensearch_backend_fails_closed_on_invalid_queries_and_hits() -> None:
         backend.search(wrong_basis, RetrievalChannel.ANCHOR_BM25, 5)
     with pytest.raises(ValueError, match="unsupported"):
         backend.search(query_need, RetrievalChannel.R1_EXACT, 5)
+    with pytest.raises(ValueError, match="non-empty access scope"):
+        Stage1OpenSearchBackend(
+            cast(OpenSearchIndex, adapter),
+            DeterministicHashEmbedder(dimension=4),
+            project_id=PROJECT,
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            access_scopes=(),
+        )
+    with pytest.raises(ValueError, match="unique"):
+        Stage1OpenSearchBackend(
+            cast(OpenSearchIndex, adapter),
+            DeterministicHashEmbedder(dimension=4),
+            project_id=PROJECT,
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            access_scopes=("writer_safe", "writer_safe"),
+        )
+    with pytest.raises(ValueError, match="unsupported retrieval access scope"):
+        backend.search(
+            query_need.model_copy(update={"access_scope": "unknown"}),
+            RetrievalChannel.ANCHOR_BM25,
+            5,
+        )
+    author_only = Stage1OpenSearchBackend(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        access_scopes=("author_planning",),
+    )
+    with pytest.raises(ValueError, match="cannot satisfy"):
+        author_only.search(query_need, RetrievalChannel.ANCHOR_BM25, 5)
 
     adapter.search_with_total.return_value = (({"_source": "bad", "_score": 1.0},), 1)
     with pytest.raises(TypeError, match="typed unit"):
@@ -313,6 +350,37 @@ def test_opensearch_backend_fails_closed_on_invalid_queries_and_hits() -> None:
     )
     with pytest.raises(TypeError, match="score"):
         backend.search(query_need, RetrievalChannel.ANCHOR_BM25, 5)
+
+
+@pytest.mark.parametrize(
+    "time_scope",
+    [
+        StoryTime(worldline="main", start_ordinal=20),
+        StoryTime(worldline="main", label="unknown"),
+    ],
+)
+def test_opensearch_filters_optional_time_scope(time_scope: StoryTime) -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = _search_backend(adapter, _units()[0])
+    query_need = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "旧誓言",
+        (CandidatePool.ANCHOR,),
+    ).model_copy(
+        update={
+            "time_scope": time_scope,
+            "chapter_target": None,
+            "horizon_target": None,
+        }
+    )
+
+    backend.search(query_need, RetrievalChannel.ANCHOR_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "worldline" in serialized
+    assert ("story_time_start" in serialized) is (time_scope.start_ordinal is not None)
+    assert "narrative_start" not in serialized
 
 
 def test_opensearch_lexical_query_uses_phrase_matching_and_pre_score_scope_filters() -> None:

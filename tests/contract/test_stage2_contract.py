@@ -9,8 +9,8 @@ from time import monotonic
 import pytest
 from pydantic import ValidationError
 
+import novel_agent.agents.contracts as agent_contracts
 from novel_agent.agents import AgentRegistry, RegistryError
-from novel_agent.agents import contracts as agent_contracts
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import (
@@ -697,12 +697,12 @@ def test_tool_binding_faults_remain_typed(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_checked_in_stage2_schemas_match_models() -> None:
-    from novel_agent.domain import retrieval_routing, stage2
+    from novel_agent.domain import memory_write, retrieval_routing, stage2
 
     schema_directory = REPOSITORY_ROOT / "schemas" / "stage2"
     model_types = {
         value.__name__: value
-        for module in (stage2, retrieval_routing)
+        for module in (stage2, retrieval_routing, memory_write)
         for value in vars(module).values()
         if isinstance(value, type)
         and issubclass(value, DomainModel)

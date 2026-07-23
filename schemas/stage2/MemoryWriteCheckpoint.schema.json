@@ -1,0 +1,903 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "CuratorProposalAttemptStatus": {
+      "enum": [
+        "requested",
+        "running",
+        "accepted",
+        "rejected",
+        "uncertain",
+        "abandoned"
+      ],
+      "title": "CuratorProposalAttemptStatus",
+      "type": "string"
+    },
+    "CuratorWorldProposalInput": {
+      "additionalProperties": false,
+      "properties": {
+        "curator_agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "mode": {
+          "const": "curator_proposal",
+          "default": "curator_proposal",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curator_agent_spec"
+      ],
+      "title": "CuratorWorldProposalInput",
+      "type": "object"
+    },
+    "EffectStatus": {
+      "enum": [
+        "requested",
+        "completed",
+        "uncertain",
+        "compensated"
+      ],
+      "title": "EffectStatus",
+      "type": "string"
+    },
+    "InformationBoundary": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evaluator_sources_forbidden": {
+          "title": "Evaluator Sources Forbidden",
+          "type": "boolean"
+        },
+        "maximum_visible_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "policy_ref": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "reveal_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "boundary_id",
+        "base_commit",
+        "evaluator_sources_forbidden",
+        "policy_ref"
+      ],
+      "title": "InformationBoundary",
+      "type": "object"
+    },
+    "MemoryWriteBudgetUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_revisions": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Candidate Revisions",
+          "type": "integer"
+        },
+        "context_refreshes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Refreshes",
+          "type": "integer"
+        },
+        "curator_proposal_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Proposal Attempts",
+          "type": "integer"
+        },
+        "curator_proposal_rejections": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Proposal Rejections",
+          "type": "integer"
+        },
+        "curator_repairs": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Curator Repairs",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "guardian_reviews": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Guardian Reviews",
+          "type": "integer"
+        },
+        "normalization_passes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Normalization Passes",
+          "type": "integer"
+        },
+        "structured_generation_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Structured Generation Attempts",
+          "type": "integer"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "total_model_calls": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Total Model Calls",
+          "type": "integer"
+        },
+        "transport_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Transport Attempts",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryWriteBudgetUsage",
+      "type": "object"
+    },
+    "MemoryWriteState": {
+      "enum": [
+        "load_basis",
+        "prepare_candidate",
+        "curate",
+        "curate_attempt_prepare",
+        "curate_attempt_execute",
+        "proposal_validate",
+        "proposal_repair_policy",
+        "proposal_retry",
+        "proposal_human_suspend",
+        "proposal_human_resume",
+        "normalize",
+        "materialize",
+        "validate",
+        "repair_policy",
+        "refresh_source_context",
+        "curator_repair",
+        "risk_classify",
+        "guardian",
+        "human_suspend",
+        "human_resume",
+        "precommit",
+        "commit",
+        "project",
+        "freshness_gate",
+        "quarantine",
+        "budget_stop",
+        "complete",
+        "stop"
+      ],
+      "title": "MemoryWriteState",
+      "type": "string"
+    },
+    "MemoryWriteWorkflowPhase": {
+      "enum": [
+        "precommit",
+        "canon_committed",
+        "projection_pending",
+        "complete"
+      ],
+      "title": "MemoryWriteWorkflowPhase",
+      "type": "string"
+    },
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "NoWorldMutationInput": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "none",
+          "default": "none",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "title": "NoWorldMutationInput",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ResumabilityStatus": {
+      "enum": [
+        "resumable",
+        "blocked",
+        "terminal"
+      ],
+      "title": "ResumabilityStatus",
+      "type": "string"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RootUpdateIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "builder_policy_ref": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "expected_base_root": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer_receipt": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "update_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "update_kind": {
+          "$ref": "#/$defs/RootUpdateKind"
+        }
+      },
+      "required": [
+        "intent_id",
+        "root_kind",
+        "update_kind",
+        "expected_base_root",
+        "update_artifact",
+        "producer_receipt",
+        "builder_policy_ref"
+      ],
+      "title": "RootUpdateIntent",
+      "type": "object"
+    },
+    "RootUpdateKind": {
+      "enum": [
+        "create",
+        "replace",
+        "noop"
+      ],
+      "title": "RootUpdateKind",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TrustedWorldCandidateInput": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "mode": {
+          "const": "trusted_candidate",
+          "default": "trusted_candidate",
+          "title": "Mode",
+          "type": "string"
+        },
+        "producer_receipt": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "candidate_artifact",
+        "producer_receipt"
+      ],
+      "title": "TrustedWorldCandidateInput",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_commit_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "approval_request_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget_usage": {
+      "$ref": "#/$defs/MemoryWriteBudgetUsage"
+    },
+    "checkpoint_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "commit_attempt_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EffectStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commit_effect_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commit_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commit_request_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "completed_effect_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Completed Effect Ids",
+      "type": "array"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "current_candidate_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "freshness_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "gate_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "guardian_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "inflight_proposal_attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "inflight_proposal_attempt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "information_boundary": {
+      "$ref": "#/$defs/InformationBoundary"
+    },
+    "last_event_sequence": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Last Event Sequence",
+      "type": "integer"
+    },
+    "last_proposal_output_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "last_proposal_rejection_signature": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lineage_head_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "materialization_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "projection_effect_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "projection_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EffectStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_attempt_no": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Proposal Attempt No",
+      "type": "integer"
+    },
+    "proposal_attempt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Proposal Attempt Refs",
+      "type": "array"
+    },
+    "proposal_attempt_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CuratorProposalAttemptStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_budget_reservation_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_directive_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_feedback_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_human_request_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_rejection_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Proposal Rejection Refs",
+      "type": "array"
+    },
+    "request_artifact_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "request_identity_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "resumability_status": {
+      "$ref": "#/$defs/ResumabilityStatus"
+    },
+    "resume_state": {
+      "$ref": "#/$defs/MemoryWriteState"
+    },
+    "risk_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "root_update_intents": {
+      "items": {
+        "$ref": "#/$defs/RootUpdateIntent"
+      },
+      "title": "Root Update Intents",
+      "type": "array"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "same_proposal_output_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Same Proposal Output Count",
+      "type": "integer"
+    },
+    "same_proposal_rejection_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Same Proposal Rejection Count",
+      "type": "integer"
+    },
+    "source_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "state": {
+      "$ref": "#/$defs/MemoryWriteState"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "terminal_result_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "validation_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workflow_phase": {
+      "$ref": "#/$defs/MemoryWriteWorkflowPhase"
+    },
+    "world_mutation": {
+      "discriminator": {
+        "mapping": {
+          "curator_proposal": "#/$defs/CuratorWorldProposalInput",
+          "none": "#/$defs/NoWorldMutationInput",
+          "trusted_candidate": "#/$defs/TrustedWorldCandidateInput"
+        },
+        "propertyName": "mode"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CuratorWorldProposalInput"
+        },
+        {
+          "$ref": "#/$defs/TrustedWorldCandidateInput"
+        },
+        {
+          "$ref": "#/$defs/NoWorldMutationInput"
+        }
+      ],
+      "title": "World Mutation"
+    }
+  },
+  "required": [
+    "checkpoint_id",
+    "request_identity_hash",
+    "request_artifact_ref",
+    "run_id",
+    "task_id",
+    "project_id",
+    "base_commit",
+    "source_artifacts",
+    "root_update_intents",
+    "world_mutation",
+    "information_boundary",
+    "configuration_fingerprint",
+    "workflow_phase",
+    "state",
+    "resume_state",
+    "resumability_status"
+  ],
+  "title": "MemoryWriteCheckpoint",
+  "type": "object"
+}

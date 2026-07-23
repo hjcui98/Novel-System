@@ -1,10 +1,12 @@
 """Provider-neutral model request, response, usage, and audit contracts."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
@@ -111,3 +113,47 @@ class ModelCallRecord(DomainModel):
 class ModelTextResult(DomainModel):
     text: str
     call_record: ModelCallRecord
+
+
+class ModelCallLedgerStatus(StrEnum):
+    """Durable lifecycle for one unique provider generation request."""
+
+    REQUESTED = "requested"
+    COMPLETED = "completed"
+    VALIDATION_REJECTED = "validation_rejected"
+    TRANSPORT_EXHAUSTED = "transport_exhausted"
+    UNCERTAIN = "uncertain"
+
+
+class ModelCallLedgerEntry(DomainModel):
+    request_id: StableId
+    run_id: RunId
+    task_id: TaskId
+    request_hash: ArtifactId
+    status: ModelCallLedgerStatus
+    raw_response_hash: ArtifactId | None = None
+    call_record: ModelCallRecord | None = None
+    validation_error: str | None = Field(default=None, max_length=4096)
+    transport_error_type: str | None = Field(default=None, min_length=1, max_length=240)
+    requested_at: datetime
+    completed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_evidence(self) -> ModelCallLedgerEntry:
+        if self.status in {
+            ModelCallLedgerStatus.COMPLETED,
+            ModelCallLedgerStatus.VALIDATION_REJECTED,
+        } and (
+            self.raw_response_hash is None or self.call_record is None or self.completed_at is None
+        ):
+            raise ValueError("completed model call requires response hash, call, and completion")
+        if (
+            self.status is ModelCallLedgerStatus.VALIDATION_REJECTED
+            and self.validation_error is None
+        ):
+            raise ValueError("validation-rejected model call requires safe validation detail")
+        if self.status is ModelCallLedgerStatus.TRANSPORT_EXHAUSTED and (
+            self.transport_error_type is None or self.completed_at is None
+        ):
+            raise ValueError("transport exhaustion requires error evidence and completion")
+        return self

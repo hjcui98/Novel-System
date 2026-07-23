@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "evidence_hashes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Evidence Hashes",
+      "type": "array"
+    },
+    "operation_indexes": {
+      "items": {
+        "type": "integer"
+      },
+      "minItems": 2,
+      "title": "Operation Indexes",
+      "type": "array"
+    },
+    "record_kind": {
+      "$ref": "#/$defs/WorldRecordKind"
+    },
+    "semantic_hashes": {
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "minItems": 1,
+      "title": "Semantic Hashes",
+      "type": "array"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "record_kind",
+    "target_id",
+    "operation_indexes",
+    "semantic_hashes"
+  ],
+  "title": "ProposalConflict",
+  "type": "object"
+}

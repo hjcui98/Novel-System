@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ProposalRepairScope": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_complete_replacement": {
+          "default": false,
+          "title": "Allow Complete Replacement",
+          "type": "boolean"
+        },
+        "immutable_operation_semantic_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Immutable Operation Semantic Hashes",
+          "type": "array"
+        },
+        "mutable_operation_indexes": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Mutable Operation Indexes",
+          "type": "array"
+        }
+      },
+      "title": "ProposalRepairScope",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "retry_with_feedback",
+        "deterministic_evidence_merge",
+        "human_review",
+        "quarantine",
+        "budget_stop",
+        "fatal"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "directive_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "feedback_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "previous_output_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "prior_attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reason_codes": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "rejection_signature": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "scope": {
+      "$ref": "#/$defs/ProposalRepairScope"
+    },
+    "workflow_request_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "directive_id",
+    "workflow_request_id",
+    "prior_attempt_id",
+    "action",
+    "reason_codes",
+    "rejection_signature",
+    "scope"
+  ],
+  "title": "CuratorProposalRepairDirective",
+  "type": "object"
+}

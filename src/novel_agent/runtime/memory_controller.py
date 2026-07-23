@@ -561,7 +561,15 @@ class BoundedMemoryController:
         )
         selected = tuple({unit.unit_id: unit for unit in selected}.values())
         decisions = tuple(
-            ControllerPolicyDecision.model_validate(item, strict=False)
+            ControllerPolicyDecision.model_validate(item, strict=False).model_copy(
+                update={
+                    "model_call_id": (
+                        StableId(item["model_call_id"])
+                        if item.get("model_call_id") is not None
+                        else None
+                    )
+                }
+            )
             for item in state.get("policy_decisions", [])
         )
         receipt = self._receipt(request, calls, decisions)

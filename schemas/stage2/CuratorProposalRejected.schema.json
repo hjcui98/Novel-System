@@ -1,0 +1,486 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "CuratorProposalAttemptReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_execution_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "attempt_no": {
+          "minimum": 1,
+          "title": "Attempt No",
+          "type": "integer"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "feedback_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model_call_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Model Call Receipt Refs",
+          "type": "array"
+        },
+        "model_request_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Request Ids",
+          "type": "array"
+        },
+        "normalized_output_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Output Hashes",
+          "type": "array"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "parsed_draft_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "provider_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Provider Call Count",
+          "type": "integer"
+        },
+        "raw_response_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Raw Response Refs",
+          "type": "array"
+        },
+        "rejection_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CuratorProposalAttemptStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "transform_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Transform Receipt Refs",
+          "type": "array"
+        },
+        "transport_attempt_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Transport Attempt Count",
+          "type": "integer"
+        },
+        "workflow_request_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "workflow_request_id",
+        "run_id",
+        "task_id",
+        "attempt_no",
+        "base_commit",
+        "boundary_id",
+        "configuration_fingerprint",
+        "status",
+        "prompt_fingerprint",
+        "started_at"
+      ],
+      "title": "CuratorProposalAttemptReceipt",
+      "type": "object"
+    },
+    "CuratorProposalAttemptStatus": {
+      "enum": [
+        "requested",
+        "running",
+        "accepted",
+        "rejected",
+        "uncertain",
+        "abandoned"
+      ],
+      "title": "CuratorProposalAttemptStatus",
+      "type": "string"
+    },
+    "CuratorProposalRejection": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "conflicts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProposalConflict"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProposalRejectionKind"
+        },
+        "normalized_output_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "raw_draft_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason_code": {
+          "minLength": 1,
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "rejection_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "rejection_signature": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_feedback": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Safe Feedback",
+          "type": "array"
+        },
+        "stage": {
+          "$ref": "#/$defs/ProposalRejectionStage"
+        },
+        "validation_error_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Validation Error Paths",
+          "type": "array"
+        },
+        "workflow_request_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "rejection_id",
+        "attempt_id",
+        "workflow_request_id",
+        "base_commit",
+        "stage",
+        "kind",
+        "reason_code",
+        "retryable",
+        "rejection_signature",
+        "created_at"
+      ],
+      "title": "CuratorProposalRejection",
+      "type": "object"
+    },
+    "ProposalConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Evidence Hashes",
+          "type": "array"
+        },
+        "operation_indexes": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 2,
+          "title": "Operation Indexes",
+          "type": "array"
+        },
+        "record_kind": {
+          "$ref": "#/$defs/WorldRecordKind"
+        },
+        "semantic_hashes": {
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "minItems": 1,
+          "title": "Semantic Hashes",
+          "type": "array"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "record_kind",
+        "target_id",
+        "operation_indexes",
+        "semantic_hashes"
+      ],
+      "title": "ProposalConflict",
+      "type": "object"
+    },
+    "ProposalRejectionKind": {
+      "enum": [
+        "schema_rejected",
+        "chapter_mismatch",
+        "record_kind_mismatch",
+        "duplicate_target",
+        "normalized_target_collision",
+        "invalid_evidence",
+        "scope_violation",
+        "poison_loop"
+      ],
+      "title": "ProposalRejectionKind",
+      "type": "string"
+    },
+    "ProposalRejectionStage": {
+      "enum": [
+        "structured_schema",
+        "trusted_normalization",
+        "semantic_contract",
+        "information_boundary"
+      ],
+      "title": "ProposalRejectionStage",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_receipt": {
+      "$ref": "#/$defs/CuratorProposalAttemptReceipt"
+    },
+    "rejection": {
+      "$ref": "#/$defs/CuratorProposalRejection"
+    },
+    "status": {
+      "const": "rejected",
+      "default": "rejected",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rejection",
+    "attempt_receipt"
+  ],
+  "title": "CuratorProposalRejected",
+  "type": "object"
+}

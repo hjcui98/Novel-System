@@ -1,0 +1,241 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HumanDecisionKind": {
+      "enum": [
+        "approve_exact_candidate",
+        "request_revision",
+        "human_patch",
+        "reject"
+      ],
+      "title": "HumanDecisionKind",
+      "type": "string"
+    },
+    "RepairAction": {
+      "enum": [
+        "deterministic_repair",
+        "curator_repair",
+        "guardian_review",
+        "quarantine_operation",
+        "retry_after_source_context_refresh",
+        "replan",
+        "human",
+        "stop_budget_exhausted",
+        "stop_fatal"
+      ],
+      "title": "RepairAction",
+      "type": "string"
+    },
+    "RepairDirective": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/RepairAction"
+        },
+        "allowed_scope": {
+          "$ref": "#/$defs/RepairScope"
+        },
+        "checkpoint_required": {
+          "default": false,
+          "title": "Checkpoint Required",
+          "type": "boolean"
+        },
+        "directive_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "finding_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        },
+        "reason_codes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "directive_id",
+        "action"
+      ],
+      "title": "RepairDirective",
+      "type": "object"
+    },
+    "RepairScope": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_identity_rebind": {
+          "default": false,
+          "title": "Allow Identity Rebind",
+          "type": "boolean"
+        },
+        "allow_operation_type_change": {
+          "default": false,
+          "title": "Allow Operation Type Change",
+          "type": "boolean"
+        },
+        "allow_successor_creation": {
+          "default": false,
+          "title": "Allow Successor Creation",
+          "type": "boolean"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
+        }
+      },
+      "title": "RepairScope",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "candidate_content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "decided_at": {
+      "format": "date-time",
+      "title": "Decided At",
+      "type": "string"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "directive": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RepairDirective"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "kind": {
+      "$ref": "#/$defs/HumanDecisionKind"
+    },
+    "patch_candidate_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "decision_id",
+    "approval_request_id",
+    "request_id",
+    "candidate_id",
+    "candidate_content_hash",
+    "base_commit",
+    "kind",
+    "decided_at"
+  ],
+  "title": "HumanApprovalDecision",
+  "type": "object"
+}

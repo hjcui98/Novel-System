@@ -1,20 +1,34 @@
 from __future__ import annotations
 
 import json
+from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
 from novel_agent.domain.benchmark import PlanEvidenceRef
-from novel_agent.domain.ids import StableId
-from novel_agent.domain.memory import RetrievalUnit, RetrievalUnitKind
-from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
-from novel_agent.domain.stage2 import PairedPilotCaseResult, Stage2PairedPilotReport
+from novel_agent.domain.ids import CommitId, StableId
+from novel_agent.domain.memory import RetrievalChannel, RetrievalUnit, RetrievalUnitKind
+from novel_agent.domain.retrieval_routing import (
+    RetrievalBackendProfile,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
+)
+from novel_agent.domain.stage2 import (
+    BenchmarkInformationProfile,
+    PairedPilotCaseResult,
+    PublicBenchmarkConfig,
+    PublicCheckpointCase,
+    Stage2PairedPilotReport,
+)
 from novel_agent.services.benchmark_importer import (
     bundle_content_id,
     content_id,
     world_root_content_id,
 )
+from novel_agent.services.retrieval import RetrievalBackend
+from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
 from tests.fixtures.stage1_synthetic import PLACEHOLDER_HASH, make_synthetic_bundle
 
@@ -81,6 +95,144 @@ def test_paired_pilot_real_hybrid_profile_cannot_silently_use_in_memory_backend(
         )
 
 
+def _public_inputs() -> tuple[
+    PublicBenchmarkConfig,
+    PublicCheckpointCase,
+]:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    return (
+        PublicBenchmarkConfig(
+            schema_version=bundle.bundle_schema_version,
+            configuration_fingerprint=content_id({"fixture": "public"}),
+            expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
+        ),
+        PublicCheckpointCase(
+            case_id=case.case_id,
+            project_id=case.project_id,
+            target_range=case.target_range,
+            history_range=case.history_range,
+        ),
+    )
+
+
+def test_paired_pilot_runs_against_explicit_state_roots() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    history = next(root for root in bundle.text_roots if root.root_hash == case.input_text_root)
+    world = next(
+        root for root in bundle.world_roots if root.root_hash == case.input_world_root_verified
+    )
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+
+    result = Stage2PairedPilotRunner().run_state_case(
+        bundle,
+        case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        history=history,
+        world=world,
+        plan=plan,
+        base_commit=world.source_commit,
+    )
+
+    assert result.case_id == case.case_id
+
+
+def test_real_hybrid_state_resolution_requires_exact_injected_capability() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    history = next(root for root in bundle.text_roots if root.root_hash == case.input_text_root)
+    world = next(
+        root for root in bundle.world_roots if root.root_hash == case.input_world_root_verified
+    )
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    config, public_case = _public_inputs()
+    runner = Stage2PairedPilotRunner(retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID)
+    with pytest.raises(RuntimeError, match="injected commit-scoped backend"):
+        runner.resolve_state_case(
+            config,
+            public_case,
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            history=history,
+            world=world,
+            plan=plan,
+            base_commit=world.source_commit,
+        )
+
+    stale = SnapshotCapability(
+        source_commit=CommitId("sha256:" + "9" * 64),
+        snapshot_id=StableId("snapshot.stale"),
+        status=SnapshotCapabilityStatus.STALE,
+    )
+    with pytest.raises(ValueError, match="must be exact"):
+        runner.resolve_state_case(
+            config,
+            public_case,
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            history=history,
+            world=world,
+            plan=plan,
+            base_commit=world.source_commit,
+            retrieval_backend=cast(RetrievalBackend, MagicMock()),
+            snapshot_capability=stale,
+        )
+
+
+def test_state_resolution_rejects_empty_needs_and_routes_exact_capability() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    history = next(root for root in bundle.text_roots if root.root_hash == case.input_text_root)
+    world = next(
+        root for root in bundle.world_roots if root.root_hash == case.input_world_root_verified
+    )
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    config, public_case = _public_inputs()
+    empty_world = world.model_copy(
+        update={"entities": (), "states": (), "events": (), "obligations": ()}
+    )
+    with pytest.raises(ValueError, match="produced no memory needs"):
+        Stage2PairedPilotRunner().resolve_state_case(
+            config,
+            public_case,
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            history=history,
+            world=empty_world,
+            plan=plan,
+            base_commit=world.source_commit,
+        )
+
+    exact = SnapshotCapability(
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.real-exact"),
+        status=SnapshotCapabilityStatus.EXACT,
+    )
+    with pytest.raises(ValueError, match="produced no memory needs"):
+        Stage2PairedPilotRunner(
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID
+        ).resolve_state_case(
+            config,
+            public_case,
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            history=history,
+            world=empty_world,
+            plan=plan,
+            base_commit=world.source_commit,
+            retrieval_backend=cast(RetrievalBackend, MagicMock()),
+            snapshot_capability=exact,
+        )
+
+    generated = Stage1NeedGenerator().generate(world, case)
+    capability = SnapshotCapability(
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.exact"),
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=tuple(RetrievalChannel),
+    )
+    routes = Stage2PairedPilotRunner._route_plans(generated, capability)
+    assert routes
+    assert Stage2PairedPilotRunner._allowed_tools(routes)
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     (
@@ -137,6 +289,7 @@ def test_paired_pilot_evidence_matching_handles_empty_and_span_paths() -> None:
     expected = case.observed_use_gold[0].evidence_refs[0]
     assert Stage2PairedPilotRunner._gold_coverage((), ()) == 1.0
     assert Stage2PairedPilotRunner._evidence_coverage((), ()) == 1.0
+    assert Stage2PairedPilotRunner._evidence_coverage((expected,), (expected,)) == 1.0
     assert Stage2PairedPilotRunner._matches(expected, expected) is True
     distinct_id = expected.model_copy(update={"evidence_id": case.case_id})
     assert Stage2PairedPilotRunner._matches(distinct_id, expected) is True

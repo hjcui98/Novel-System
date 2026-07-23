@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "boundary_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "evaluator_sources_forbidden": {
+      "title": "Evaluator Sources Forbidden",
+      "type": "boolean"
+    },
+    "maximum_visible_position": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NarrativePosition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "policy_ref": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "reveal_position": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NarrativePosition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "boundary_id",
+    "base_commit",
+    "evaluator_sources_forbidden",
+    "policy_ref"
+  ],
+  "title": "InformationBoundary",
+  "type": "object"
+}

@@ -6,6 +6,7 @@ from novel_agent.agents.curator_bootstrap import (
     CuratorBootstrapAgent,
     CuratorBootstrapInvocationError,
 )
+from novel_agent.agents.curator_repair import CuratorRepairAgent, CuratorRepairContractError
 from novel_agent.agents.guardian import GuardianInvocationError, GuardianRiskReviewAgent
 from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
 from novel_agent.agents.registry import (
@@ -29,6 +30,8 @@ __all__ = [
     "AgentRunResult",
     "CuratorBootstrapAgent",
     "CuratorBootstrapInvocationError",
+    "CuratorRepairAgent",
+    "CuratorRepairContractError",
     "CuratorReplayAgent",
     "GuardianInvocationError",
     "GuardianRiskReviewAgent",

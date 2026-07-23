@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -9,16 +10,24 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.model_calls import (
+    ModelCallLedgerEntry,
+    ModelCallLedgerStatus,
     ModelCallPurpose,
+    ModelCallRecord,
     ModelRequest,
     ModelRole,
     ProviderModelResult,
+)
+from novel_agent.services.model_call_ledger import (
+    InMemoryModelCallLedger,
+    ModelCallLedgerCollision,
 )
 from novel_agent.services.model_gateway import (
     ModelCallForbiddenError,
     ModelGateway,
     ModelRoutingError,
     RegisteredModelEndpoint,
+    StructuredGenerationExhausted,
 )
 
 
@@ -66,6 +75,10 @@ def test_fake_model_records_complete_batch_role_audit() -> None:
     assert result.call_record.usage.cost_usd == Decimal("0")
     assert result.call_record.latency_ms >= 0
     assert fake.requests == [request()]
+    ledger = gateway.call_ledger.load(request().request_id)
+    assert ledger is not None
+    assert ledger.status is ModelCallLedgerStatus.COMPLETED
+    assert ledger.call_record == result.call_record
 
 
 @pytest.mark.model_required
@@ -151,6 +164,9 @@ def test_fake_model_failure_and_timeout_are_not_silently_retried() -> None:
     with pytest.raises(RuntimeError, match="provider failed"):
         asyncio.run(gateway.generate_text(request()))
     assert len(failing.requests) == 1
+    failed_entry = gateway.call_ledger.load(request().request_id)
+    assert failed_entry is not None
+    assert failed_entry.status is ModelCallLedgerStatus.TRANSPORT_EXHAUSTED
 
     class SlowFake(FakeModelEndpoint):
         async def generate(self, model_request: ModelRequest) -> ProviderModelResult:
@@ -161,6 +177,9 @@ def test_fake_model_failure_and_timeout_are_not_silently_retried() -> None:
     timeout_gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, slow),))
     with pytest.raises(TimeoutError):
         asyncio.run(timeout_gateway.generate_text(request(timeout=0.001)))
+    timeout_entry = timeout_gateway.call_ledger.load(request().request_id)
+    assert timeout_entry is not None
+    assert timeout_entry.status is ModelCallLedgerStatus.UNCERTAIN
 
 
 def test_structured_output_uses_the_requested_domain_type() -> None:
@@ -222,6 +241,114 @@ def test_structured_output_retry_limit_is_enforced() -> None:
 
     assert len(fake.requests) == 2
     assert len(gateway.structured_validation_attempts) == 2
+    entries = gateway.call_ledger.list_for_prefix(request().request_id.root)
+    assert tuple(item.status for item in entries) == (
+        ModelCallLedgerStatus.VALIDATION_REJECTED,
+        ModelCallLedgerStatus.VALIDATION_REJECTED,
+    )
+
+
+def test_structured_audited_exhaustion_carries_all_durable_entries() -> None:
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    gateway = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint('{"answer":1}')),),
+        structured_max_retries=1,
+    )
+
+    with pytest.raises(StructuredGenerationExhausted) as raised:
+        asyncio.run(gateway.generate_structured_audited(request(), Output))
+
+    assert len(raised.value.entries) == 2
+    assert all(
+        item.status is ModelCallLedgerStatus.VALIDATION_REJECTED for item in raised.value.entries
+    )
+
+
+def test_model_call_ledger_cas_rejects_identity_and_terminal_overwrites() -> None:
+    ledger = InMemoryModelCallLedger()
+    model_request = request()
+    requested = ledger.create_requested(model_request)
+    assert ledger.create_requested(model_request) == requested
+    with pytest.raises(ModelCallLedgerCollision, match="identity collision"):
+        ledger.create_requested(model_request.model_copy(update={"prompt": "changed"}))
+    with pytest.raises(KeyError, match="was not reserved"):
+        ledger.settle(
+            requested.model_copy(update={"request_id": StableId("model.request.missing")})
+        )
+    with pytest.raises(ModelCallLedgerCollision, match="settlement identity"):
+        ledger.settle(requested.model_copy(update={"run_id": RunId("run.other")}))
+
+    gateway = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("ok")),),
+        call_ledger=ledger,
+    )
+    asyncio.run(gateway.generate_text(model_request))
+    completed = ledger.load(model_request.request_id)
+    assert completed is not None
+    with pytest.raises(ModelCallLedgerCollision, match="cannot be overwritten"):
+        ledger.settle(
+            completed.model_copy(
+                update={
+                    "status": ModelCallLedgerStatus.TRANSPORT_EXHAUSTED,
+                    "transport_error_type": "late",
+                }
+            )
+        )
+    assert ledger.list_for_prefix("unrelated") == ()
+
+
+def test_model_call_ledger_entry_rejects_missing_terminal_evidence() -> None:
+    ledger = InMemoryModelCallLedger()
+    requested = ledger.create_requested(request())
+    now = datetime.now(UTC)
+    for updates, message in (
+        (
+            {"status": ModelCallLedgerStatus.COMPLETED},
+            "requires response hash",
+        ),
+        (
+            {
+                "status": ModelCallLedgerStatus.VALIDATION_REJECTED,
+                "raw_response_hash": requested.request_hash,
+                "call_record": _call_record_for_test(),
+                "completed_at": now,
+            },
+            "requires safe validation detail",
+        ),
+        (
+            {"status": ModelCallLedgerStatus.TRANSPORT_EXHAUSTED},
+            "requires error evidence",
+        ),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            ModelCallLedgerEntry.model_validate(requested.model_dump(mode="python") | updates)
+
+
+def _call_record_for_test() -> ModelCallRecord:
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("ok")),))
+    return asyncio.run(gateway.generate_text(request())).call_record
+
+
+def test_structured_validation_fails_closed_when_ledger_loses_completed_call() -> None:
+    class Output(BaseModel):
+        answer: str
+
+    class VanishingLedger(InMemoryModelCallLedger):
+        def load(self, request_id: StableId) -> ModelCallLedgerEntry | None:
+            entry = super().load(request_id)
+            if entry is not None and entry.completed_at is not None:
+                return None
+            return entry
+
+    gateway = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint('{"answer":1}')),),
+        call_ledger=VanishingLedger(),
+    )
+    with pytest.raises(AssertionError, match="missing from ledger"):
+        asyncio.run(gateway.generate_structured(request(), Output))
 
 
 def test_structured_retry_serializes_validator_context_without_raw_input() -> None:

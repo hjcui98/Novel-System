@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ModelCallLedgerStatus": {
+      "description": "Durable lifecycle for one unique provider generation request.",
+      "enum": [
+        "requested",
+        "completed",
+        "validation_rejected",
+        "transport_exhausted",
+        "uncertain"
+      ],
+      "title": "ModelCallLedgerStatus",
+      "type": "string"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "call_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "raw_response_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "status": {
+      "$ref": "#/$defs/ModelCallLedgerStatus"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "transport_error_type": {
+      "anyOf": [
+        {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Transport Error Type"
+    },
+    "validation_error": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Error"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "task_id",
+    "request_hash",
+    "status",
+    "requested_at"
+  ],
+  "title": "ModelCallLedgerEntry",
+  "type": "object"
+}

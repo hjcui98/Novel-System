@@ -1,0 +1,13 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "const": "none",
+      "default": "none",
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "title": "NoWorldMutationInput",
+  "type": "object"
+}

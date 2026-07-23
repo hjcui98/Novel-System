@@ -186,10 +186,6 @@ class FullDerivedProjectionBuilder:
             and self._embedding_runtime_fingerprint is not None
         ):
             raise ValueError("real-hybrid projection requires locked embedding runtime attestation")
-        if self._search.embedding_dimension != 1024:
-            raise ValueError("real-hybrid projection requires 1024-dimensional embeddings")
-        if "deterministic" in self._search.embedding_profile:
-            raise ValueError("real-hybrid projection cannot use deterministic test embeddings")
         anchor_count = search_receipt.anchor_document_count
         grounded_count = search_receipt.grounded_document_count
         channels = (

@@ -19,6 +19,10 @@ class CuratorReplayAgent:
         self._curator = curator
         self._runner = runner
 
+    @property
+    def curator(self) -> ModelCurator:
+        return self._curator
+
     async def run(
         self,
         *,

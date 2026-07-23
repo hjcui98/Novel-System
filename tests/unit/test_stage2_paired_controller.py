@@ -16,13 +16,19 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import (
     CandidatePool,
+    ChannelHit,
     NeedRisk,
     RequirementLevel,
     ResolutionPath,
+    RetrievalChannel,
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
     Stage1QueryIntent,
+)
+from novel_agent.domain.retrieval_routing import (
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
 )
 from novel_agent.domain.stage2 import (
     AccessScope,
@@ -38,7 +44,8 @@ from novel_agent.domain.stage2 import (
 from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
-from novel_agent.services.retrieval import InMemoryRetrievalBackend
+from novel_agent.services.retrieval import InMemoryRetrievalBackend, RerankService
+from novel_agent.services.retrieval_routing import DeterministicChannelPlanner
 
 COMMIT = CommitId("sha256:" + "a" * 64)
 SNAPSHOT = StableId("snapshot.paired")
@@ -236,3 +243,242 @@ def test_paired_comparison_contract_rejects_unfair_or_contradictory_results(
         payload["comparable"] = False
     with pytest.raises(ValidationError, match=message):
         PairedContextComparison.model_validate(payload)
+
+
+def test_paired_runner_rejects_duplicate_routes_and_invalid_comparison_inputs() -> None:
+    item = need()
+    base = runner(item, unit())
+    assert base.comparison_basis_fingerprint == CONFIG
+    semantic = item.model_copy(
+        update={
+            "query_intent": Stage1QueryIntent.RELATED_EVENT,
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(semantic, capability)
+    with pytest.raises(ValueError, match="unique memory need ids"):
+        PairedMemoryControllerRunner(
+            base._backend,
+            base._controller,
+            base._compiler,
+            CONFIG,
+            lambda _: True,
+            (plan, plan),
+        )
+
+    comparison = base.run(
+        request(item),
+        text_root(),
+        thread_id="paired-invalid-compare-inputs",
+    )
+    with pytest.raises(ValueError, match="deterministic input"):
+        base.compare(
+            request(item),
+            comparison.agentic,
+            comparison.agentic,
+        )
+    with pytest.raises(ValueError, match="agentic input"):
+        base.compare(
+            request(item),
+            comparison.deterministic,
+            comparison.deterministic,
+        )
+    with pytest.raises(ValueError, match="comparison basis"):
+        base.compare(
+            request(item),
+            comparison.deterministic.model_copy(update={"comparison_basis_fingerprint": PRIVATE}),
+            comparison.agentic,
+        )
+
+
+class _EmptyBackend:
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        return ()
+
+
+class _HitBackend(_EmptyBackend):
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        return (
+            ChannelHit(
+                unit=unit(),
+                channel=channel,
+                channel_rank=1,
+                raw_score=1.0,
+                candidate_count=1,
+                hit_reason="hit",
+            ),
+        )
+
+
+class _Reranker:
+    profile = "paired-test"
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+
+    def score(self, query: str, passages: tuple[str, ...]) -> tuple[float, ...]:
+        if self.fail:
+            raise RuntimeError("unavailable")
+        return tuple(1.0 for _ in passages)
+
+
+def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels() -> None:
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            )
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    trace = PairedMemoryControllerRunner._retrieve_route_plan(
+        _EmptyBackend(),
+        item,
+        plan,
+        per_channel_limit=2,
+    )
+    assert trace.fallback_used is True
+    assert trace.stop_reason.value == "fallback_exhausted"
+    successful = PairedMemoryControllerRunner._retrieve_route_plan(
+        _HitBackend(),
+        item,
+        plan,
+        per_channel_limit=2,
+        reranker=RerankService(_Reranker()),
+    )
+    assert successful.fallback_used is False
+    assert successful.rerank_applied is True
+    degraded = PairedMemoryControllerRunner._retrieve_route_plan(
+        _HitBackend(),
+        item,
+        plan,
+        per_channel_limit=2,
+        reranker=RerankService(_Reranker(fail=True)),
+    )
+    assert degraded.rerank_applied is False
+    assert degraded.channel_failures[RetrievalChannel.RERANK] == ("reranker_degraded:RuntimeError")
+
+    duplicate_stage = plan.model_copy(
+        update={
+            "mandatory_steps": (plan.primary_groups[0].steps[0],),
+        }
+    )
+    repeated = PairedMemoryControllerRunner._retrieve_route_plan(
+        _EmptyBackend(),
+        item,
+        duplicate_stage,
+        per_channel_limit=2,
+    )
+    assert repeated.allowed_channels.count(RetrievalChannel.ANCHOR_BM25) == 1
+
+    with pytest.raises(ValueError, match="does not belong"):
+        PairedMemoryControllerRunner._retrieve_route_plan(
+            _EmptyBackend(),
+            item,
+            plan.model_copy(update={"need_id": StableId("need.other")}),
+            per_channel_limit=2,
+        )
+    assert PairedMemoryControllerRunner._fallback_applies(
+        "hierarchy_scope_resolved",
+        (
+            PairedMemoryControllerRunner._direct_candidates(
+                {
+                    RetrievalChannel.R1_EXACT: (
+                        ChannelHit(
+                            unit=unit(),
+                            channel=RetrievalChannel.R1_EXACT,
+                            channel_rank=1,
+                            raw_score=1.0,
+                            candidate_count=1,
+                            hit_reason="candidate",
+                        ),
+                    )
+                },
+                limit=1,
+            )[0],
+        ),
+    )
+    with pytest.raises(ValueError, match="unregistered deterministic fallback"):
+        PairedMemoryControllerRunner._fallback_applies("unknown", ())
+
+
+def test_direct_candidate_and_merge_keep_mandatory_units_beyond_limit() -> None:
+    first = unit()
+    second = first.model_copy(
+        update={
+            "unit_id": StableId("anchor.second"),
+            "mandatory": False,
+        }
+    )
+    hits = (
+        ChannelHit(
+            unit=first,
+            channel=RetrievalChannel.R1_EXACT,
+            channel_rank=1,
+            raw_score=1.0,
+            candidate_count=2,
+            hit_reason="first",
+        ),
+        ChannelHit(
+            unit=second,
+            channel=RetrievalChannel.R1_TEMPORAL,
+            channel_rank=2,
+            raw_score=0.5,
+            candidate_count=2,
+            hit_reason="second",
+        ),
+    )
+    candidates = PairedMemoryControllerRunner._direct_candidates(
+        {
+            RetrievalChannel.R1_EXACT: hits,
+            RetrievalChannel.R1_TEMPORAL: hits,
+        },
+        limit=1,
+    )
+    assert len(candidates) == 2
+    assert candidates[1].selected is False
+    merged = PairedMemoryControllerRunner._merge_candidates(
+        (),
+        (
+            candidates[1],
+            candidates[0].model_copy(update={"unit": first.model_copy(update={"mandatory": True})}),
+        ),
+        limit=1,
+    )
+    assert merged[1].selected is True

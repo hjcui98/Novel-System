@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "candidate_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Candidate Ids",
+      "type": "array"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "current_project_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "gate_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "guardian_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "package_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "proposal_attempt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Proposal Attempt Refs",
+      "type": "array"
+    },
+    "proposal_feedback_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "proposal_rejection_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Proposal Rejection Refs",
+      "type": "array"
+    },
+    "quarantined_operation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Quarantined Operation Ids",
+      "type": "array"
+    },
+    "recommended_action": {
+      "minLength": 1,
+      "title": "Recommended Action",
+      "type": "string"
+    },
+    "repair_directive_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Repair Directive Refs",
+      "type": "array"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "terminal_reason": {
+      "minLength": 1,
+      "title": "Terminal Reason",
+      "type": "string"
+    },
+    "validation_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "package_id",
+    "request_id",
+    "base_commit",
+    "candidate_ids",
+    "source_artifacts",
+    "configuration_fingerprint",
+    "terminal_reason",
+    "recommended_action"
+  ],
+  "title": "QuarantinePackage",
+  "type": "object"
+}

@@ -6,11 +6,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_agent.domain import retrieval_routing, stage2
+from novel_agent.domain import memory_write, retrieval_routing, stage2
 from novel_agent.domain.base import DomainModel
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage2"
-DOMAIN_MODULES = (stage2, retrieval_routing)
+DOMAIN_MODULES = (stage2, retrieval_routing, memory_write)
 MODELS = tuple(
     model
     for module in DOMAIN_MODULES

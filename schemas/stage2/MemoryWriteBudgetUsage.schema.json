@@ -1,0 +1,79 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "candidate_revisions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Candidate Revisions",
+      "type": "integer"
+    },
+    "context_refreshes": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Context Refreshes",
+      "type": "integer"
+    },
+    "curator_proposal_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Curator Proposal Attempts",
+      "type": "integer"
+    },
+    "curator_proposal_rejections": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Curator Proposal Rejections",
+      "type": "integer"
+    },
+    "curator_repairs": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Curator Repairs",
+      "type": "integer"
+    },
+    "elapsed_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "guardian_reviews": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Guardian Reviews",
+      "type": "integer"
+    },
+    "normalization_passes": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Normalization Passes",
+      "type": "integer"
+    },
+    "structured_generation_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Structured Generation Attempts",
+      "type": "integer"
+    },
+    "tokens_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Tokens Used",
+      "type": "integer"
+    },
+    "total_model_calls": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Total Model Calls",
+      "type": "integer"
+    },
+    "transport_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Transport Attempts",
+      "type": "integer"
+    }
+  },
+  "title": "MemoryWriteBudgetUsage",
+  "type": "object"
+}

@@ -1,0 +1,194 @@
+{
+  "provenance": {
+    "chapter_index": 18,
+    "source_run": "reports/stage2a/teacher_forced_real/author_plan_conditioned_qwen36_20260722_run5",
+    "source_candidate_artifact": "sha256:d23b3beffca0ed06ea1c2ccc635ec1276fd13b5c6f49218a225559e3294d7668",
+    "source_chapter_artifact": "sha256:914d0dfadb193b91cee85068e66d238fa2b5a970ff15c0e8fc970a805a7bf726",
+    "source_text_root_artifact": "sha256:631a366c0d4f62e7e53054a445b97505fae57bcacf3eaa733d91a4eabdea5742",
+    "source_text_root_path": "reports/stage2a/teacher_forced_real/author_plan_conditioned_qwen36_20260722_run5/objects/sha256/63/631a366c0d4f62e7e53054a445b97505fae57bcacf3eaa733d91a4eabdea5742",
+    "failure_log": "reports/stage2a/teacher_forced_real/author_plan_conditioned_qwen36_stage2r_run3_20260722/background.log",
+    "failure_summary": "chapter 18 write gate stopped: block_validation; risk_codes=('STATE_OVERWRITE',); guardian=none; reasons=('STATE_IDENTITY_MUTATION',)",
+    "fixture_kind": "minimal-characterization-derived-from-preserved-c18-artifacts",
+    "evidence_note": "The original source/candidate hashes remain above; validation_text_root is a minimal non-lyrical re-anchor so this fixture is independently replayable."
+  },
+  "validation_text_root": {
+    "root_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "schema_version": "1.0.0",
+    "prelude": null,
+    "chapters": [
+      {
+        "chapter_id": "chapter.ZTJ-P005.18",
+        "chapter_index": 18,
+        "title": "C18 characterization",
+        "scenes": [
+          {
+            "scene_id": "scene.ZTJ-P005.18.0",
+            "scene_index": 0,
+            "title": null,
+            "blocks": [
+              {
+                "block_id": "block.ZTJ-P005.18.0",
+                "chapter_id": "chapter.ZTJ-P005.18",
+                "scene_id": "scene.ZTJ-P005.18.0",
+                "narrative_index": 0,
+                "text": "confirmed student"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "base_world": {
+    "root_hash": "sha256:f8a60e29da8635ac936a290e0d2fcdab254bd381f9cf3f0e47cb45429f320006",
+    "schema_version": "1.0.0",
+    "source_commit": "sha256:358541bda78b7d58d6df63a1b8fba3755fb939411e31e63ed19a0827aad0d004",
+    "entities": [
+      {
+        "entity_id": "entity.bootstrap.chen-changsheng",
+        "entity_type": "character",
+        "internal_label": "C18 subject",
+        "aliases": [],
+        "identity_invariants": []
+      }
+    ],
+    "events": [],
+    "states": [
+      {
+        "state_id": "state.chen-changsheng-admission",
+        "subject_id": "entity.bootstrap.chen-changsheng",
+        "predicate": "admission_status",
+        "value": "admitted_to_guo_jiao_academy",
+        "truth_class": "assertion",
+        "valid_time": {
+          "worldline": "current",
+          "start_ordinal": 16,
+          "end_ordinal": null,
+          "label": null
+        },
+        "evidence_refs": [
+          {
+            "evidence_id": "evidence.curator.d05e214899c98124818b92fc",
+            "root_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "object_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+            "chapter_id": "chapter.ZTJ-P005.18",
+            "scene_id": "scene.ZTJ-P005.18.0",
+            "span": {
+              "block_id": "block.ZTJ-P005.18.0",
+              "range_unit": "unicode_codepoint",
+              "start": 0,
+              "end": 17
+            },
+            "quote_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+            "support_status": "current_support",
+            "resolved_at_commit": "sha256:358541bda78b7d58d6df63a1b8fba3755fb939411e31e63ed19a0827aad0d004"
+          }
+        ]
+      }
+    ],
+    "relations": [],
+    "obligations": []
+  },
+  "c18_a": {
+    "expected": "deterministic_repair_then_pass",
+    "operation": {
+      "operation_id": "change.c18.identity-successor",
+      "root_kind": "world",
+      "operation": "replace",
+      "target_id": "state.chen-changsheng-admission",
+      "payload": {
+        "record_type": "state",
+        "successor_proof": {
+          "source": "chapter-18-observed-transition"
+        },
+        "record": {
+          "state_id": "state.chen-changsheng-admission",
+          "subject_id": "entity.bootstrap.chen-changsheng",
+          "predicate": "enrollment_status",
+          "value": "confirmed_student",
+          "truth_class": "assertion",
+          "valid_time": {
+            "worldline": "current",
+            "start_ordinal": 18,
+            "end_ordinal": null,
+            "label": null
+          },
+          "evidence_refs": [
+            {
+              "evidence_id": "evidence.curator.d05e214899c98124818b92fc",
+              "root_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "object_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+              "chapter_id": "chapter.ZTJ-P005.18",
+              "scene_id": "scene.ZTJ-P005.18.0",
+              "span": {
+                "block_id": "block.ZTJ-P005.18.0",
+                "range_unit": "unicode_codepoint",
+                "start": 0,
+                "end": 17
+              },
+              "quote_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+              "support_status": "current_support",
+              "resolved_at_commit": "sha256:358541bda78b7d58d6df63a1b8fba3755fb939411e31e63ed19a0827aad0d004"
+            }
+          ]
+        }
+      },
+      "evidence_refs": [
+        {
+          "evidence_id": "evidence.curator.d05e214899c98124818b92fc",
+          "root_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "object_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+          "chapter_id": "chapter.ZTJ-P005.18",
+          "scene_id": "scene.ZTJ-P005.18.0",
+          "span": {
+            "block_id": "block.ZTJ-P005.18.0",
+            "range_unit": "unicode_codepoint",
+            "start": 0,
+            "end": 17
+          },
+          "quote_hash": "sha256:6a4bc5732342047a634fb15239217c59dd39214811e04fc95aa5a4d105793e39",
+          "support_status": "current_support",
+          "resolved_at_commit": "sha256:358541bda78b7d58d6df63a1b8fba3755fb939411e31e63ed19a0827aad0d004"
+        }
+      ]
+    }
+  },
+  "c18_b": {
+    "expected": "curator_repair_in_finding_scope",
+    "operation": {
+      "operation_id": "change.c18.identity-ambiguous",
+      "root_kind": "world",
+      "operation": "replace",
+      "target_id": "state.chen-changsheng-admission",
+      "payload": {
+        "record_type": "state",
+        "record": {
+          "state_id": "state.chen-changsheng-admission",
+          "subject_id": "entity.bootstrap.chen-changsheng",
+          "predicate": "identity",
+          "value": "fate_changer",
+          "truth_class": "assertion",
+          "valid_time": {
+            "worldline": "current",
+            "start_ordinal": 18,
+            "end_ordinal": null,
+            "label": null
+          },
+          "evidence_refs": []
+        }
+      },
+      "evidence_refs": []
+    }
+  },
+  "c18_c": {
+    "expected": "fatal_without_repair",
+    "finding_code": "FUTURE_EVIDENCE",
+    "operation_id": "change.c18.identity-evidence-conflict"
+  },
+  "observed_failure": {
+    "finding_code": "STATE_IDENTITY_MUTATION",
+    "risk_code": "STATE_OVERWRITE",
+    "gate_outcome": "block_validation",
+    "guardian": "none"
+  }
+}

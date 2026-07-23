@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "chapter_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "chapter_index": {
+      "minimum": 0,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "kind": {
+      "const": "chapter_reveal",
+      "default": "chapter_reveal",
+      "title": "Kind",
+      "type": "string"
+    },
+    "reveal_position": {
+      "$ref": "#/$defs/NarrativePosition"
+    }
+  },
+  "required": [
+    "chapter_id",
+    "chapter_index",
+    "reveal_position"
+  ],
+  "title": "ChapterRevealTrigger",
+  "type": "object"
+}

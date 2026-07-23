@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HumanApprovalRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "candidate_content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "guardian": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "risk": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "validation": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "approval_request_id",
+        "request_id",
+        "candidate_id",
+        "candidate_content_hash",
+        "base_commit",
+        "validation",
+        "created_at"
+      ],
+      "title": "HumanApprovalRequest",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_request": {
+      "$ref": "#/$defs/HumanApprovalRequest"
+    },
+    "artifact_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "approval_request",
+    "artifact_ref"
+  ],
+  "title": "HumanApprovalRequestReceipt",
+  "type": "object"
+}

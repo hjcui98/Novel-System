@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -302,6 +304,61 @@ def test_guardian_agent_blocks_invalid_invocation_before_model_call(tmp_path: Pa
             )
         )
     assert endpoint.requests == []
+
+
+def test_guardian_evidence_context_deduplicates_spans_and_rejects_hidden_blocks() -> None:
+    block_id = StableId("block.visible")
+    block = SimpleNamespace(
+        block_id=block_id,
+        chapter_id=StableId("chapter.visible"),
+        text="x" * 2100,
+    )
+    root = SimpleNamespace(
+        chapters=(
+            SimpleNamespace(
+                scenes=(SimpleNamespace(blocks=(block,)),),
+            ),
+        )
+    )
+    evidence = SimpleNamespace(
+        evidence_id=StableId("evidence.visible"),
+        span=SimpleNamespace(block_id=block_id, start=0, end=2100),
+    )
+    no_span = SimpleNamespace(
+        evidence_id=StableId("evidence.no-span"),
+        span=None,
+    )
+    candidate = SimpleNamespace(
+        operations=(SimpleNamespace(evidence_refs=(no_span, evidence, evidence)),)
+    )
+
+    context = GuardianRiskReviewAgent._evidence_context(
+        cast(Any, candidate),
+        cast(Any, root),
+    )
+    assert len(context) == 1
+    assert len(cast(str, context[0]["text"])) == 2000
+    assert context[0]["truncated"] is True
+    assert GuardianRiskReviewAgent._evidence_context(cast(Any, candidate), None) == ()
+
+    hidden = SimpleNamespace(
+        operations=(
+            SimpleNamespace(
+                evidence_refs=(
+                    SimpleNamespace(
+                        evidence_id=StableId("evidence.hidden"),
+                        span=SimpleNamespace(
+                            block_id=StableId("block.hidden"),
+                            start=0,
+                            end=1,
+                        ),
+                    ),
+                )
+            ),
+        )
+    )
+    with pytest.raises(GuardianInvocationError, match="outside the supplied visible"):
+        GuardianRiskReviewAgent._evidence_context(cast(Any, hidden), cast(Any, root))
 
 
 def test_guardian_contracts_reject_revision_and_receipt_contradictions(tmp_path: Path) -> None:

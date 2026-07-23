@@ -29,7 +29,15 @@ from novel_agent.domain.context import (
 )
 from novel_agent.domain.evaluation import BenchmarkRunConfig, EvaluationParameter
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, SchemaVersion, TaskId
+from novel_agent.domain.memory_write import (
+    CandidateRevision,
+    MemoryWriteCommitProfile,
+    MemoryWriteWorkflowRequest,
+    MemoryWriteWorkflowResult,
+    MemoryWriteWorkflowStatus,
+)
 from novel_agent.domain.model_calls import (
+    ModelCallLedgerEntry,
     ModelCallRecord,
     ModelRequest,
     ModelTextResult,
@@ -54,6 +62,7 @@ __all__ = [
     "ArtifactRef",
     "BenchmarkRunConfig",
     "CandidateChangeBundle",
+    "CandidateRevision",
     "ChangeOperation",
     "CommitId",
     "CommitRequest",
@@ -70,6 +79,11 @@ __all__ = [
     "EvidencePack",
     "EvidenceRef",
     "MemoryNeed",
+    "MemoryWriteCommitProfile",
+    "MemoryWriteWorkflowRequest",
+    "MemoryWriteWorkflowResult",
+    "MemoryWriteWorkflowStatus",
+    "ModelCallLedgerEntry",
     "ModelCallRecord",
     "ModelRequest",
     "ModelTextResult",

@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allow_complete_replacement": {
+      "default": false,
+      "title": "Allow Complete Replacement",
+      "type": "boolean"
+    },
+    "immutable_operation_semantic_hashes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Immutable Operation Semantic Hashes",
+      "type": "array"
+    },
+    "mutable_operation_indexes": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Mutable Operation Indexes",
+      "type": "array"
+    }
+  },
+  "title": "ProposalRepairScope",
+  "type": "object"
+}

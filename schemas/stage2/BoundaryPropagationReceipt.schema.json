@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "AccessScope": {
+      "enum": [
+        "writer_safe",
+        "author_planning",
+        "evaluator"
+      ],
+      "title": "AccessScope",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "boundary_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "builder_policy_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "effective_access_scope": {
+      "$ref": "#/$defs/AccessScope"
+    },
+    "effective_visible_through": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NarrativePosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "input_derivation_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Input Derivation Receipt Refs",
+      "type": "array"
+    },
+    "input_source_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Input Source Artifact Refs",
+      "type": "array"
+    },
+    "output_artifact_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "receipt_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_visibility_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Source Visibility Receipt Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "boundary_id",
+    "base_commit",
+    "output_artifact_hash",
+    "builder_policy_hash",
+    "effective_visible_through",
+    "effective_access_scope",
+    "receipt_hash"
+  ],
+  "title": "BoundaryPropagationReceipt",
+  "type": "object"
+}

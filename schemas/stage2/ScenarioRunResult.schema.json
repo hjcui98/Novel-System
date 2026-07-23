@@ -140,6 +140,7 @@
         "replan",
         "bootstrap",
         "replay",
+        "curator_repair",
         "bounded_r2",
         "risk_review"
       ],

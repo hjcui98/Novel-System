@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "curator_agent_spec": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "mode": {
+      "const": "curator_proposal",
+      "default": "curator_proposal",
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "curator_agent_spec"
+  ],
+  "title": "CuratorWorldProposalInput",
+  "type": "object"
+}

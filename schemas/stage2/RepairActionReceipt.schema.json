@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "RepairAction": {
+      "enum": [
+        "deterministic_repair",
+        "curator_repair",
+        "guardian_review",
+        "quarantine_operation",
+        "retry_after_source_context_refresh",
+        "replan",
+        "human",
+        "stop_budget_exhausted",
+        "stop_fatal"
+      ],
+      "title": "RepairAction",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/RepairAction"
+    },
+    "artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "directive_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reason_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "action",
+    "directive_id",
+    "candidate_id"
+  ],
+  "title": "RepairActionReceipt",
+  "type": "object"
+}

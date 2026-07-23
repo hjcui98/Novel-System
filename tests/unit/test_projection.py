@@ -153,6 +153,28 @@ def test_rebuilt_snapshot_can_supersede_legacy_derived_metadata(
     )
     assert repository.publish_rebuilt(ProjectId("project.test"), rebuilt) is True
     assert repository.get_for_commit(commit_id) == rebuilt
+    assert repository.get_attestation_for_commit(commit_id) is None
+
+    with pytest.raises(ValueError, match="exact and published"):
+        repository.publish_rebuilt(
+            ProjectId("project.test"),
+            _snapshot(commit_id, status=DerivedBuildStatus.PARTIAL),
+        )
+    with pytest.raises(ValueError, match="project does not match"):
+        repository.publish_rebuilt(ProjectId("project.other"), rebuilt)
+
+
+def test_missing_projection_attestation_lookup_is_empty(
+    projection_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, _ = projection_database
+
+    assert (
+        DerivedSnapshotRepository(factory).get_attestation_for_commit(
+            CommitId("sha256:" + "8" * 64)
+        )
+        is None
+    )
 
 
 def test_projection_claim_lease_recovers_abandoned_processing_work(
@@ -458,6 +480,47 @@ class _RealProjectionReranker:
         return tuple(float(len(passages) - index) for index, _ in enumerate(passages))
 
 
+class _WrongDimensionEmbedder(_RealProjectionEmbedder):
+    dimension = 8
+    profile = "real-but-wrong-dimension"
+
+
+class _DeterministicProjectionEmbedder(_RealProjectionEmbedder):
+    profile = "deterministic-test-1024d"
+
+
+def test_real_hybrid_projection_rejects_wrong_indexer_and_embedding_profile(
+    projection_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    _, factory, _ = projection_database
+    loader = MagicMock()
+    stage1 = MagicMock(spec=Stage1SearchIndexer)
+    stage1.embedding_dimension = 1024
+    stage1.embedding_profile = "real"
+    builder = FullDerivedProjectionBuilder(
+        loader,
+        R1WorldRepository(factory),
+        cast(Stage1SearchIndexer, stage1),
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+    )
+    with pytest.raises(TypeError, match="isolated Stage2R"):
+        builder._require_real_hybrid_indexer()
+
+    index = cast(OpenSearchIndex, MagicMock(spec=OpenSearchIndex))
+    for embedder, message in [
+        (_WrongDimensionEmbedder(), "1024-dimensional"),
+        (_DeterministicProjectionEmbedder(), "deterministic test"),
+    ]:
+        invalid = FullDerivedProjectionBuilder(
+            loader,
+            R1WorldRepository(factory),
+            Stage2RSearchIndexer(index, embedder),
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+        )
+        with pytest.raises(ValueError, match=message):
+            invalid._require_real_hybrid_indexer()
+
+
 def test_real_hybrid_projection_requires_isolated_bulk_index_and_stores_attestation() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -503,6 +566,21 @@ def test_real_hybrid_projection_requires_isolated_bulk_index_and_stores_attestat
     assert all("run3-test" in item.alias for item in attestation.indexes)
     assert index.bulk_index.call_count == 2
     assert index.refresh.call_count == 2
+    repository = DerivedSnapshotRepository(factory)
+    assert repository.publish_rebuilt(manifest.project_id, snapshot) is False
+    assert repository.get_attestation_for_commit(commit_id) == attestation
+
+    missing_runtime = FullDerivedProjectionBuilder(
+        loader,
+        R1WorldRepository(factory),
+        search,
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+        embedding_model="BAAI/bge-m3",
+        embedding_revision="locked",
+    )
+    with pytest.raises(ValueError, match="locked embedding runtime"):
+        missing_runtime.build(manifest.project_id, commit_id)
+
     backend = build_real_hybrid_backend(
         r1=R1WorldRepository(factory),
         search_index=cast(OpenSearchIndex, index),

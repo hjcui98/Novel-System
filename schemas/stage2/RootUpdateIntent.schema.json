@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RootUpdateKind": {
+      "enum": [
+        "create",
+        "replace",
+        "noop"
+      ],
+      "title": "RootUpdateKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "builder_policy_ref": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "expected_base_root": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "intent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "producer_receipt": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "root_kind": {
+      "$ref": "#/$defs/RootKind"
+    },
+    "update_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "update_kind": {
+      "$ref": "#/$defs/RootUpdateKind"
+    }
+  },
+  "required": [
+    "intent_id",
+    "root_kind",
+    "update_kind",
+    "expected_base_root",
+    "update_artifact",
+    "producer_receipt",
+    "builder_policy_ref"
+  ],
+  "title": "RootUpdateIntent",
+  "type": "object"
+}

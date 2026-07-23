@@ -47,6 +47,7 @@ class AgentMode(StrEnum):
     REPLAN = "replan"
     BOOTSTRAP = "bootstrap"
     REPLAY = "replay"
+    CURATOR_REPAIR = "curator_repair"
     BOUNDED_R2 = "bounded_r2"
     RISK_REVIEW = "risk_review"
 

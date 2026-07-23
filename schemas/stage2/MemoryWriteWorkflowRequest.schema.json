@@ -1,0 +1,1000 @@
+{
+  "$defs": {
+    "AccessScope": {
+      "enum": [
+        "writer_safe",
+        "author_planning",
+        "evaluator"
+      ],
+      "title": "AccessScope",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BootstrapTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "bootstrap_bundle_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "const": "bootstrap",
+          "default": "bootstrap",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bootstrap_bundle_id"
+      ],
+      "title": "BootstrapTrigger",
+      "type": "object"
+    },
+    "ChapterRevealTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "chapter_reveal",
+          "default": "chapter_reveal",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reveal_position": {
+          "$ref": "#/$defs/NarrativePosition"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index",
+        "reveal_position"
+      ],
+      "title": "ChapterRevealTrigger",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "CuratorWorldProposalInput": {
+      "additionalProperties": false,
+      "properties": {
+        "curator_agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "mode": {
+          "const": "curator_proposal",
+          "default": "curator_proposal",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curator_agent_spec"
+      ],
+      "title": "CuratorWorldProposalInput",
+      "type": "object"
+    },
+    "HumanCorrectionTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "correction_request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "const": "human_correction",
+          "default": "human_correction",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "correction_request_id"
+      ],
+      "title": "HumanCorrectionTrigger",
+      "type": "object"
+    },
+    "InformationBoundary": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evaluator_sources_forbidden": {
+          "title": "Evaluator Sources Forbidden",
+          "type": "boolean"
+        },
+        "maximum_visible_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "policy_ref": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "reveal_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "boundary_id",
+        "base_commit",
+        "evaluator_sources_forbidden",
+        "policy_ref"
+      ],
+      "title": "InformationBoundary",
+      "type": "object"
+    },
+    "MaintenanceTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "maintenance",
+          "default": "maintenance",
+          "title": "Kind",
+          "type": "string"
+        },
+        "maintenance_task_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "maintenance_task_id"
+      ],
+      "title": "MaintenanceTrigger",
+      "type": "object"
+    },
+    "MemoryTransportBudget": {
+      "additionalProperties": false,
+      "description": "The model transport budget is intentionally separate from repair budget.",
+      "properties": {
+        "backoff_profile": {
+          "default": "exponential-v1",
+          "minLength": 1,
+          "title": "Backoff Profile",
+          "type": "string"
+        },
+        "max_attempts": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 60.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "MemoryTransportBudget",
+      "type": "object"
+    },
+    "MemoryWriteBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_candidate_revisions": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Candidate Revisions",
+          "type": "integer"
+        },
+        "max_context_refreshes": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Max Context Refreshes",
+          "type": "integer"
+        },
+        "max_curator_proposal_attempts": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Curator Proposal Attempts",
+          "type": "integer"
+        },
+        "max_curator_proposal_rejections": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Max Curator Proposal Rejections",
+          "type": "integer"
+        },
+        "max_curator_repairs": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Curator Repairs",
+          "type": "integer"
+        },
+        "max_guardian_reviews": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Guardian Reviews",
+          "type": "integer"
+        },
+        "max_normalization_passes": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Max Normalization Passes",
+          "type": "integer"
+        },
+        "max_total_model_calls": {
+          "default": 4,
+          "minimum": 0,
+          "title": "Max Total Model Calls",
+          "type": "integer"
+        },
+        "model_transport": {
+          "$ref": "#/$defs/MemoryTransportBudget"
+        },
+        "on_budget_exhausted": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Budget Exhausted",
+          "type": "string"
+        },
+        "on_guardian_reject": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Guardian Reject",
+          "type": "string"
+        },
+        "same_content_hash_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Content Hash Limit",
+          "type": "integer"
+        },
+        "same_finding_signature_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Finding Signature Limit",
+          "type": "integer"
+        },
+        "token_budget": {
+          "default": 24000,
+          "minimum": 0,
+          "title": "Token Budget",
+          "type": "integer"
+        },
+        "wall_clock_budget_ms": {
+          "default": 180000,
+          "minimum": 1,
+          "title": "Wall Clock Budget Ms",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryWriteBudget",
+      "type": "object"
+    },
+    "MemoryWriteCommitProfile": {
+      "enum": [
+        "chapter_reveal_atomic",
+        "changed_roots_only",
+        "require_canonical_commit"
+      ],
+      "title": "MemoryWriteCommitProfile",
+      "type": "string"
+    },
+    "NarrativePosition": {
+      "additionalProperties": false,
+      "description": "A monotonic position used by information-boundary checks.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativePosition",
+      "type": "object"
+    },
+    "NoWorldMutationInput": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "none",
+          "default": "none",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "title": "NoWorldMutationInput",
+      "type": "object"
+    },
+    "PlanChangeTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "plan_change",
+          "default": "plan_change",
+          "title": "Kind",
+          "type": "string"
+        },
+        "plan_change_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "plan_change_id"
+      ],
+      "title": "PlanChangeTrigger",
+      "type": "object"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ProjectProfileRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "project_profile",
+          "default": "project_profile",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ProjectProfileRootRef",
+      "type": "object"
+    },
+    "ReferenceRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "reference",
+          "default": "reference",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ReferenceRootRef",
+      "type": "object"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RootManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "parent_commit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CommitId"
+          },
+          "title": "Parent Commit Ids",
+          "type": "array"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/PlanRootRef"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_root": {
+          "$ref": "#/$defs/ProjectProfileRootRef"
+        },
+        "reference_root": {
+          "$ref": "#/$defs/ReferenceRootRef"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "text_root": {
+          "$ref": "#/$defs/TextRootRef"
+        },
+        "world_root": {
+          "$ref": "#/$defs/WorldRootRef"
+        }
+      },
+      "required": [
+        "project_id",
+        "schema_version",
+        "text_root",
+        "plan_root",
+        "world_root",
+        "reference_root",
+        "project_profile_root"
+      ],
+      "title": "RootManifest",
+      "type": "object"
+    },
+    "RootUpdateIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "builder_policy_ref": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "expected_base_root": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer_receipt": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "update_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "update_kind": {
+          "$ref": "#/$defs/RootUpdateKind"
+        }
+      },
+      "required": [
+        "intent_id",
+        "root_kind",
+        "update_kind",
+        "expected_base_root",
+        "update_artifact",
+        "producer_receipt",
+        "builder_policy_ref"
+      ],
+      "title": "RootUpdateIntent",
+      "type": "object"
+    },
+    "RootUpdateKind": {
+      "enum": [
+        "create",
+        "replace",
+        "noop"
+      ],
+      "title": "RootUpdateKind",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SourceProvenance": {
+      "enum": [
+        "author_input",
+        "revealed_text",
+        "canonical_root",
+        "trusted_derived",
+        "human_correction"
+      ],
+      "title": "SourceProvenance",
+      "type": "string"
+    },
+    "SourceVisibilityReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "access_scope": {
+          "$ref": "#/$defs/AccessScope"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "issuer": {
+          "$ref": "#/$defs/StableId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/SourceProvenance"
+        },
+        "receipt_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "visible_through": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "receipt_id",
+        "source_artifact",
+        "boundary_id",
+        "visible_through",
+        "access_scope",
+        "provenance",
+        "issuer",
+        "receipt_hash"
+      ],
+      "title": "SourceVisibilityReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TextRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "TextRootRef",
+      "type": "object"
+    },
+    "TrustedWorldCandidateInput": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "mode": {
+          "const": "trusted_candidate",
+          "default": "trusted_candidate",
+          "title": "Mode",
+          "type": "string"
+        },
+        "producer_receipt": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "candidate_artifact",
+        "producer_receipt"
+      ],
+      "title": "TrustedWorldCandidateInput",
+      "type": "object"
+    },
+    "WorldRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "world",
+          "default": "world",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "WorldRootRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "access_scope": {
+      "$ref": "#/$defs/AccessScope"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget": {
+      "$ref": "#/$defs/MemoryWriteBudget"
+    },
+    "canonical_root_refs": {
+      "$ref": "#/$defs/RootManifest"
+    },
+    "commit_profile": {
+      "$ref": "#/$defs/MemoryWriteCommitProfile"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/StableId"
+    },
+    "information_boundary": {
+      "$ref": "#/$defs/InformationBoundary"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "prompt_contract_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Prompt Contract Refs",
+      "type": "array"
+    },
+    "repair_policy_ref": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "resume_checkpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "root_update_intents": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RootUpdateIntent"
+      },
+      "title": "Root Update Intents",
+      "type": "array"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "skill_contract_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Skill Contract Refs",
+      "type": "array"
+    },
+    "source_artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "source_provenance": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceProvenance"
+      },
+      "title": "Source Provenance",
+      "type": "array"
+    },
+    "source_visibility_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceVisibilityReceipt"
+      },
+      "title": "Source Visibility Receipts",
+      "type": "array"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "tool_policy_ref": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "trigger": {
+      "discriminator": {
+        "mapping": {
+          "bootstrap": "#/$defs/BootstrapTrigger",
+          "chapter_reveal": "#/$defs/ChapterRevealTrigger",
+          "human_correction": "#/$defs/HumanCorrectionTrigger",
+          "maintenance": "#/$defs/MaintenanceTrigger",
+          "plan_change": "#/$defs/PlanChangeTrigger"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChapterRevealTrigger"
+        },
+        {
+          "$ref": "#/$defs/BootstrapTrigger"
+        },
+        {
+          "$ref": "#/$defs/PlanChangeTrigger"
+        },
+        {
+          "$ref": "#/$defs/MaintenanceTrigger"
+        },
+        {
+          "$ref": "#/$defs/HumanCorrectionTrigger"
+        }
+      ],
+      "title": "Trigger"
+    },
+    "world_mutation": {
+      "discriminator": {
+        "mapping": {
+          "curator_proposal": "#/$defs/CuratorWorldProposalInput",
+          "none": "#/$defs/NoWorldMutationInput",
+          "trusted_candidate": "#/$defs/TrustedWorldCandidateInput"
+        },
+        "propertyName": "mode"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CuratorWorldProposalInput"
+        },
+        {
+          "$ref": "#/$defs/TrustedWorldCandidateInput"
+        },
+        {
+          "$ref": "#/$defs/NoWorldMutationInput"
+        }
+      ],
+      "title": "World Mutation"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "task_id",
+    "project_id",
+    "trigger",
+    "commit_profile",
+    "base_commit",
+    "world_mutation",
+    "canonical_root_refs",
+    "information_boundary",
+    "access_scope",
+    "configuration_fingerprint",
+    "tool_policy_ref",
+    "repair_policy_ref",
+    "idempotency_key"
+  ],
+  "title": "MemoryWriteWorkflowRequest",
+  "type": "object"
+}

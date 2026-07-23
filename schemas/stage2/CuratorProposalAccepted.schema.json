@@ -1,0 +1,509 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ChangeOperation": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "operation": {
+          "$ref": "#/$defs/ChangeOperationType"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "payload": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "root_kind",
+        "operation",
+        "target_id",
+        "payload"
+      ],
+      "title": "ChangeOperation",
+      "type": "object"
+    },
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "CuratorProposalAttemptReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_execution_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "attempt_no": {
+          "minimum": 1,
+          "title": "Attempt No",
+          "type": "integer"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "feedback_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model_call_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Model Call Receipt Refs",
+          "type": "array"
+        },
+        "model_request_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Request Ids",
+          "type": "array"
+        },
+        "normalized_output_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Output Hashes",
+          "type": "array"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "parsed_draft_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "provider_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Provider Call Count",
+          "type": "integer"
+        },
+        "raw_response_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Raw Response Refs",
+          "type": "array"
+        },
+        "rejection_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CuratorProposalAttemptStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "transform_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Transform Receipt Refs",
+          "type": "array"
+        },
+        "transport_attempt_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Transport Attempt Count",
+          "type": "integer"
+        },
+        "workflow_request_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "workflow_request_id",
+        "run_id",
+        "task_id",
+        "attempt_no",
+        "base_commit",
+        "boundary_id",
+        "configuration_fingerprint",
+        "status",
+        "prompt_fingerprint",
+        "started_at"
+      ],
+      "title": "CuratorProposalAttemptReceipt",
+      "type": "object"
+    },
+    "CuratorProposalAttemptStatus": {
+      "enum": [
+        "requested",
+        "running",
+        "accepted",
+        "rejected",
+        "uncertain",
+        "abandoned"
+      ],
+      "title": "CuratorProposalAttemptStatus",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "ObservedChangeSet": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "change_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChangeOperation"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "change_set_id",
+        "base_commit",
+        "source_artifact"
+      ],
+      "title": "ObservedChangeSet",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RootKind": {
+      "enum": [
+        "text",
+        "plan",
+        "world",
+        "reference",
+        "project_profile"
+      ],
+      "title": "RootKind",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_receipt": {
+      "$ref": "#/$defs/CuratorProposalAttemptReceipt"
+    },
+    "observed_changes": {
+      "$ref": "#/$defs/ObservedChangeSet"
+    },
+    "status": {
+      "const": "accepted",
+      "default": "accepted",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "observed_changes",
+    "attempt_receipt"
+  ],
+  "title": "CuratorProposalAccepted",
+  "type": "object"
+}

@@ -12,7 +12,12 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
-from novel_agent.services.memory_pipeline import AnchorBuilder, ContextCompiler, EvidenceExpander
+from novel_agent.services.memory_pipeline import (
+    AnchorBuilder,
+    ContextCompiler,
+    EvidenceExpander,
+    _with_content_metadata,
+)
 from novel_agent.services.retrieval import (
     FusionService,
     InMemoryRetrievalBackend,
@@ -128,6 +133,52 @@ def test_anchor_pipeline_resolves_evidence_from_an_older_append_only_text_root()
         token_budget=1000,
     )
     assert package.raw_evidence_spans
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"span": None}, "does not resolve"),
+        ({"quote_hash": ArtifactId("sha256:" + "f" * 64)}, "quote hash does not match"),
+    ],
+)
+def test_anchor_pipeline_rejects_unbound_or_mismatched_evidence(
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    state = world.states[0]
+    invalid = state.evidence_refs[0].model_copy(update=mutation)
+    invalid_world = world.model_copy(
+        update={"states": (state.model_copy(update={"evidence_refs": (invalid,)}),)}
+    )
+
+    with pytest.raises(ValueError, match=message):
+        AnchorBuilder().build(
+            invalid_world,
+            history,
+            bundle.plan_roots[0],
+            snapshot_id=StableId("snapshot.synthetic.invalid-evidence"),
+        )
+
+
+def test_content_metadata_promotes_legacy_parent_id() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    source = AnchorBuilder().build(
+        bundle.world_roots[0],
+        history,
+        bundle.plan_roots[0],
+        snapshot_id=StableId("snapshot.synthetic.legacy-parent"),
+    )[0]
+    parent = StableId("unit.legacy.parent")
+    legacy = source.model_copy(update={"parent_unit_id": parent, "parent_unit_ids": ()})
+
+    rebound = _with_content_metadata(legacy)
+
+    assert rebound.parent_unit_ids == (parent,)
 
 
 def test_context_compiler_preserves_mandatory_closure_and_expands_l0_evidence() -> None:

@@ -11,17 +11,28 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import yaml
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
+from novel_agent.adapters.memory_write import (
+    CommitServiceMemoryWriteAdapter,
+    InformationBoundaryRegistryAdapter,
+    LegacyGuardianPortAdapter,
+    LegacyRiskClassifierAdapter,
+    LegacyWriteGateAdapter,
+    ProjectionServiceReadinessAdapter,
+    RepositoryCanonicalReadAdapter,
+    TeacherForcedCuratorPort,
+)
 from novel_agent.adapters.model import ScriptedModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_engine, build_session_factory
 from novel_agent.agents import (
     AgentRegistry,
     CuratorBootstrapAgent,
+    CuratorRepairAgent,
     CuratorReplayAgent,
     GuardianRiskReviewAgent,
     PlannerAgent,
@@ -32,8 +43,8 @@ from novel_agent.agents import (
 from novel_agent.domain.artifacts import (
     ArtifactRef,
     PlanRootRef,
+    RootKind,
     TextRootRef,
-    WorldRootRef,
 )
 from novel_agent.domain.benchmark import (
     BenchmarkBundle,
@@ -44,10 +55,7 @@ from novel_agent.domain.benchmark import (
     TextRootDocument,
 )
 from novel_agent.domain.changes import (
-    CandidateChangeBundle,
     ChapterChangeDraft,
-    CommitRequest,
-    CommitStatus,
     ObservedChangeSet,
     ValidationStatus,
 )
@@ -66,6 +74,20 @@ from novel_agent.domain.memory import (
     FreshnessStatus,
     WorldRootDocument,
 )
+from novel_agent.domain.memory_write import (
+    ChapterRevealTrigger,
+    CuratorWorldProposalInput,
+    InformationBoundary,
+    MemoryWriteCommitProfile,
+    MemoryWriteWorkflowRequest,
+    MemoryWriteWorkflowResult,
+    MemoryWriteWorkflowStatus,
+    NarrativePosition,
+    NoWorldMutationInput,
+    RootUpdateIntent,
+    RootUpdateKind,
+    SourceProvenance,
+)
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.retrieval_routing import (
     ProjectionAttestation,
@@ -74,6 +96,7 @@ from novel_agent.domain.retrieval_routing import (
     SnapshotCapabilityStatus,
 )
 from novel_agent.domain.stage2 import (
+    AccessScope,
     AgentExecutionReceipt,
     AgentMode,
     AgentSpec,
@@ -109,7 +132,6 @@ from novel_agent.domain.stage2 import (
     ToolPermission,
     ToolPolicy,
     WorldPatchCandidate,
-    WriteGateOutcome,
 )
 from novel_agent.domain.world import Entity, PlanNode, StateRecord, StoryTime, TruthClass
 from novel_agent.ports.model_endpoint import ModelEndpointPort
@@ -135,10 +157,11 @@ from novel_agent.services.content_addressing import (
     plan_root_content_id,
     world_root_content_id,
 )
-from novel_agent.services.guardian import GuardianWriteGate, PatchRiskClassifier
+from novel_agent.services.information_boundary import InformationBoundaryPort
+from novel_agent.services.memory_write_validation import Stage2ValidationV2Adapter
+from novel_agent.services.memory_write_workflow import LocalMemoryWriteWorkflow
 from novel_agent.services.model_curation import ModelCurator
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
-from novel_agent.services.overlay import WorldOverlay
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -151,7 +174,6 @@ from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
 from novel_agent.services.stage2_retrieval_backend import Stage2RetrievalBackendBundle
 from novel_agent.services.teacher_forced_scenario import TeacherForcedScenarioRunner
 from novel_agent.services.text_timeline import SequentialTextRootService
-from novel_agent.services.validation import Stage1Validator
 from novel_agent.skills import SkillRegistry, SkillTemplate
 
 VERSION = SchemaVersion("1.0.0")
@@ -161,6 +183,15 @@ ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 class TeacherForcedBenchmarkError(RuntimeError):
     pass
+
+
+class TeacherForcedControlledPause(RuntimeError):
+    """Expected workflow terminal that preserves resumable benchmark progress."""
+
+    def __init__(self, chapter: int, result: MemoryWriteWorkflowResult) -> None:
+        super().__init__(f"chapter {chapter} paused with {result.status.value}")
+        self.chapter = chapter
+        self.result = result
 
 
 RealHybridBackendProvider = Callable[[ProjectId, CommitId], Stage2RetrievalBackendBundle]
@@ -298,8 +329,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 bootstrap_bundle = bootstrap_bundle.model_copy(
                     update={"sources": (), "classifications": ()}
                 )
-                if self._retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID:
-                    resume_attestation = self._attestation_for_commit(project_id, genesis_commit)
+                resume_attestation = self._attestation_for_commit(project_id, genesis_commit)
             else:
                 bootstrap_bundle, ingested = self._load_bootstrap(
                     source_directory,
@@ -442,22 +472,61 @@ class TeacherForcedBenchmarkE2ERunner:
             )
             evaluator = _E2EEvaluator(bundle, information_profile, freezer, artifacts, self._paired)
             segment_preamble = self._segment_preamble_count(progress_path) if resume else 0
-            if scenario.checkpoint_cases:
-                with _ProgressWriter(progress_path) as progress_writer:
-                    transition.progress_writer = progress_writer
-                    scenario_result = TeacherForcedScenarioRunner(
-                        transition,
-                        freezer,
-                        evaluator,
-                    ).run(scenario, genesis_commit)
-            else:
-                with _ProgressWriter(progress_path) as progress_writer:
-                    transition.progress_writer = progress_writer
-                    scenario_result = self._run_without_checkpoints(
-                        scenario, genesis_commit, transition
-                    )
-            if harness.responses is not None:
-                harness.responses.assert_empty()
+            try:
+                if scenario.checkpoint_cases:
+                    with _ProgressWriter(progress_path) as progress_writer:
+                        transition.progress_writer = progress_writer
+                        scenario_result = TeacherForcedScenarioRunner(
+                            transition,
+                            freezer,
+                            evaluator,
+                        ).run(scenario, genesis_commit)
+                else:
+                    with _ProgressWriter(progress_path) as progress_writer:
+                        transition.progress_writer = progress_writer
+                        scenario_result = self._run_without_checkpoints(
+                            scenario, genesis_commit, transition
+                        )
+            except TeacherForcedControlledPause as pause:
+                paused = pause.result
+                pause_summary = {
+                    "status": "teacher_forced_controlled_pause",
+                    "bundle_id": bundle.bundle_id.root,
+                    "information_profile": information_profile.value,
+                    "last_revealed_chapter": transition.last_revealed_chapter,
+                    "paused_chapter": pause.chapter,
+                    "run_complete": False,
+                    "segment_commit_count": transition.commit_count,
+                    "memory_write_status_counts": transition.memory_write_status_counts,
+                    "memory_write_proposal_attempts": (transition.memory_write_proposal_attempts),
+                    "memory_write_proposal_rejections": (
+                        transition.memory_write_proposal_rejections
+                    ),
+                    "memory_write_proposal_retry_counts": (
+                        transition.memory_write_proposal_retry_counts
+                    ),
+                    "memory_write_proposal_poison_loops": (
+                        transition.memory_write_proposal_poison_loops
+                    ),
+                    "memory_write_proposal_terminal_status": paused.status.value,
+                    "memory_write_resume_checkpoint": (
+                        None
+                        if paused.checkpoint_ref is None
+                        else paused.checkpoint_ref.model_dump(mode="json")
+                    ),
+                    "project_database": database_descriptor,
+                    "project_directory": str(resolved_project_directory),
+                }
+                self._write_json(
+                    output_directory / "memory_write_pause_trace.json",
+                    {
+                        "chapter": pause.chapter,
+                        "result": paused.model_dump(mode="json"),
+                    },
+                )
+                self._write_json(output_directory / "flow_summary.json", pause_summary)
+                return pause_summary
+            (harness.responses or _ResponseBook()).assert_empty()
             if evaluator.results:
                 paired_report = self._paired_report(
                     bundle,
@@ -516,6 +585,26 @@ class TeacherForcedBenchmarkE2ERunner:
                 "guardian_agent_calls": transition.guardian_calls,
                 "guardian_gate_decisions": transition.guardian_gate_decisions,
                 "validator_calls": transition.validator_calls,
+                "memory_write_status_counts": transition.memory_write_status_counts,
+                "memory_write_candidate_revisions": transition.memory_write_candidate_revisions,
+                "memory_write_repair_calls": transition.memory_write_repair_calls,
+                "memory_write_normalization_passes": transition.memory_write_normalization_passes,
+                "memory_write_guardian_reviews": transition.memory_write_guardian_reviews,
+                "memory_write_context_refreshes": transition.memory_write_context_refreshes,
+                "memory_write_transport_attempts": transition.memory_write_transport_attempts,
+                "memory_write_tokens": transition.memory_write_tokens,
+                "memory_write_proposal_attempts": transition.memory_write_proposal_attempts,
+                "memory_write_proposal_rejections": transition.memory_write_proposal_rejections,
+                "memory_write_proposal_retry_counts": (
+                    transition.memory_write_proposal_retry_counts
+                ),
+                "memory_write_proposal_poison_loops": (
+                    transition.memory_write_proposal_poison_loops
+                ),
+                "memory_write_proposal_terminal_status": (
+                    transition.memory_write_proposal_terminal_status
+                ),
+                "memory_write_resume_checkpoint": transition.memory_write_resume_checkpoint,
                 "paired_results_count": (
                     paired_report.paired_results_count if paired_report else 0
                 ),
@@ -950,6 +1039,7 @@ class TeacherForcedBenchmarkE2ERunner:
             "planner_chapter": ("prompt.planner-chapter", "planner_chapter_v1.md"),
             "curator_bootstrap": ("prompt.curator-bootstrap", "curator_bootstrap_v1.md"),
             "curator_replay": ("prompt.curator-replay", "curator_replay_v1.md"),
+            "curator_repair": ("prompt.curator-repair", "curator_repair_v1.md"),
             "guardian": ("prompt.guardian-risk-review", "guardian_risk_review_v1.md"),
             "controller": (
                 "prompt.memory-controller",
@@ -1074,6 +1164,13 @@ class TeacherForcedBenchmarkE2ERunner:
                 AgentType.MEMORY_CURATOR,
                 AgentMode.REPLAY,
                 "curator_replay",
+                "curator_replay",
+                "chapter-change-draft",
+            ),
+            spec(
+                AgentType.MEMORY_CURATOR,
+                AgentMode.CURATOR_REPAIR,
+                "curator_repair",
                 "curator_replay",
                 "chapter-change-draft",
             ),
@@ -1353,8 +1450,92 @@ class _TeacherForcedTransition:
         self.guardian_calls = 0
         self.guardian_gate_decisions = 0
         self.validator_calls = 0
+        self.memory_write_repair_calls = 0
+        self.memory_write_candidate_revisions = 0
+        self.memory_write_normalization_passes = 0
+        self.memory_write_guardian_reviews = 0
+        self.memory_write_context_refreshes = 0
+        self.memory_write_transport_attempts = 0
+        self.memory_write_tokens = 0
+        self.memory_write_proposal_attempts = 0
+        self.memory_write_proposal_rejections = 0
+        self.memory_write_proposal_retry_counts: dict[str, int] = {}
+        self.memory_write_proposal_poison_loops = 0
+        self.memory_write_proposal_terminal_status: str | None = None
+        self.memory_write_resume_checkpoint: dict[str, Any] | None = None
+        self.memory_write_status_counts: dict[str, int] = {}
         self.last_revealed_chapter = 0
         self.latest_attestation: ProjectionAttestation | None = None
+        self._revealed_text_for_adapter: TextRootDocument | None = None
+        self._active_workflow_chapter: int | None = None
+        self._boundary_port = InformationBoundaryPort(
+            artifact_reader=artifacts,
+            trusted_policy_hashes=(
+                self._workflow_policy_ref().content_hash,
+                self._workflow_configuration_fingerprint(),
+            ),
+        )
+        self._boundary_registry = InformationBoundaryRegistryAdapter(self._boundary_port, artifacts)
+        self._canonical_read = RepositoryCanonicalReadAdapter(commits, artifacts)
+        model_curator = ModelCurator(harness.gateway)
+        self._curator_port = TeacherForcedCuratorPort(
+            CuratorReplayAgent(model_curator, harness.runner),
+            CuratorRepairAgent(model_curator, harness.runner),
+            artifacts,
+            TeacherForcedBenchmarkE2ERunner._request,
+            self._script_workflow_model,
+        )
+        self._guardian_port = LegacyGuardianPortAdapter(
+            GuardianRiskReviewAgent(harness.runner, artifacts),
+            artifacts,
+            TeacherForcedBenchmarkE2ERunner._request,
+            self._script_workflow_model,
+            evidence_root=lambda: self._revealed_text_for_adapter,
+        )
+        self._workflow = LocalMemoryWriteWorkflow(
+            canonical_read=self._canonical_read,
+            curator=self._curator_port,
+            validator=Stage2ValidationV2Adapter(
+                proposed_text_loader=lambda ref: TextRootDocument.model_validate_json(
+                    artifacts.read_verified(ref),
+                    strict=True,
+                )
+            ),
+            risk_classifier=LegacyRiskClassifierAdapter(artifacts),
+            write_gate=LegacyWriteGateAdapter(artifacts),
+            guardian=self._guardian_port,
+            commit=CommitServiceMemoryWriteAdapter(commits, artifacts),
+            information_boundary=self._boundary_port,
+            artifacts=artifacts,
+            projection=ProjectionServiceReadinessAdapter(projections, snapshots, artifacts),
+        )
+
+    def _script_workflow_model(self, request: ModelRequest, mode: AgentMode) -> None:
+        """Lazily register scripted responses only when a port actually calls a model."""
+        if self.harness.responses is None:
+            return
+        if mode in {AgentMode.REPLAY, AgentMode.CURATOR_REPAIR}:
+            TeacherForcedBenchmarkE2ERunner._script(
+                self.harness,
+                request,
+                ChapterChangeDraft(
+                    chapter_index=self._active_workflow_chapter or 0,
+                    coverage=0,
+                    unresolved=(
+                        "scripted contract smoke does not perform semantic chapter extraction",
+                    ),
+                ),
+            )
+        elif mode is AgentMode.RISK_REVIEW:
+            TeacherForcedBenchmarkE2ERunner._script(
+                self.harness,
+                request,
+                GuardianDecisionDraft(
+                    outcome=GuardianOutcome.APPROVE,
+                    risk_codes=(),
+                    reasons=("scripted benchmark Guardian approved validated candidate",),
+                ),
+            )
 
     def apply(self, source: Any, parent_commit: CommitId) -> ScenarioChapterTransition:
         chapter = source.chapter_index
@@ -1364,156 +1545,353 @@ class _TeacherForcedTransition:
             raise TeacherForcedBenchmarkError("transition parent is not current Canon")
         if chapter == self.recover_checkpoint_chapter:
             return self._recover_checkpoint(source, parent_commit, chapter)
+
+        previous_plan_root_hash = self.plan.root_hash
         self.text, _ = self.timeline.append(self.text, source.source_id, self.documents[chapter])
-        curator = (
-            self._prelude_curator_result(source, parent_commit)
-            if chapter == 0
-            else self._run_curator(chapter, parent_commit)
-        )
         case = self.case_by_chapter.get(chapter)
         if case is not None and self.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
             self.plan = self._bind_checkpoint_author_plan(case)
-        proposed_world = WorldOverlay().apply(
-            self.world,
-            curator.observed_changes,
-            canonical_commit=parent_commit,
-        )
-        text_ref = self._store_root(self.text, TextRootRef)
-        plan_ref = self._store_root(self.plan, PlanRootRef)
-        world_ref = self._store_root(proposed_world, WorldRootRef)
+
+        project_id = source_project(self.bundle)
         current = self.commits.load_manifest(parent_commit)
-        candidate = CandidateChangeBundle(
-            bundle_id=StableId(f"bundle.{curator.observed_changes.change_set_id.root}"),
-            project_id=source_project(self.bundle),
-            run_id=RunId("run.teacher-forced.e2e"),
+        text_ref = self._store_root(self.text, TextRootRef)
+
+        plan_changed = False
+        if case is not None and self.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
+            plan_changed = self.plan.root_hash != previous_plan_root_hash
+        plan_ref = self._store_root(self.plan, PlanRootRef) if plan_changed else current.plan_root
+
+        position = NarrativePosition(chapter_index=chapter)
+        boundary = InformationBoundary(
+            boundary_id=StableId(f"boundary.teacher-forced.{chapter}"),
             base_commit=parent_commit,
-            observed_changes=curator.observed_changes,
-            proposed_roots=current.model_copy(
-                update={
-                    "text_root": text_ref,
-                    "plan_root": plan_ref,
-                    "world_root": world_ref,
-                    "parent_commit_ids": (parent_commit,),
-                }
-            ),
-            produced_artifacts=(text_ref, plan_ref, world_ref),
+            reveal_position=position,
+            maximum_visible_position=position,
+            evaluator_sources_forbidden=True,
+            policy_ref=self._workflow_policy_ref(),
         )
-        validation = Stage1Validator().validate(
-            candidate,
-            self.world,
-            proposed_world,
-            self.text,
-            canonical_commit=parent_commit,
+        source_artifact = (
+            self._prelude_curator_result(source, parent_commit).observed_changes.source_artifact
+            if chapter == 0
+            else self.artifacts.put(
+                canonical_json_bytes(self.documents[chapter].model_dump(mode="json")),
+                "application/json",
+                VERSION,
+            )
         )
-        self.validator_calls += 1
-        risk = PatchRiskClassifier().assess(curator.observed_changes, validation)
-        guardian = None
-        if risk.requires_guardian:
-            guardian_request = TeacherForcedBenchmarkE2ERunner._request(
-                f"guardian.{chapter}", AgentMode.RISK_REVIEW
+        source_artifacts = [source_artifact]
+        visibility_receipts = [
+            self._boundary_registry.register_visibility(
+                source=source_artifact,
+                boundary=boundary,
+                position=position,
+                access_scope=AccessScope.WRITER_SAFE,
+                provenance=SourceProvenance.REVEALED_TEXT,
             )
-            TeacherForcedBenchmarkE2ERunner._script(
-                self.harness,
-                guardian_request,
-                GuardianDecisionDraft(
-                    outcome=GuardianOutcome.APPROVE,
-                    risk_codes=risk.risk_codes,
-                    reasons=("scripted benchmark Guardian approved validated candidate",),
-                ),
+        ]
+        text_visibility = visibility_receipts[0]
+        text_producer = self._boundary_registry.register_derivation(
+            output=text_ref,
+            inputs=(source_artifact,),
+            visibility_receipts=(text_visibility,),
+            boundary=boundary,
+            policy=boundary.policy_ref,
+            position=position,
+            access_scope=AccessScope.WRITER_SAFE,
+        )
+        intents = [
+            RootUpdateIntent(
+                intent_id=StableId(f"intent.teacher-forced.text.{chapter}"),
+                root_kind=RootKind.TEXT,
+                update_kind=RootUpdateKind.REPLACE,
+                expected_base_root=current.text_root,
+                update_artifact=text_ref,
+                producer_receipt=text_producer,
+                builder_policy_ref=boundary.policy_ref,
             )
-            guardian, _ = asyncio.run(
-                GuardianRiskReviewAgent(self.harness.runner, self.artifacts).review(
-                    version=VERSION,
-                    changes=curator.observed_changes,
-                    validation=validation,
-                    risk=risk,
-                    request=guardian_request,
-                    evidence_root=self.text,
+        ]
+        if plan_changed:
+            plan_visibility = self._boundary_registry.register_visibility(
+                source=plan_ref,
+                boundary=boundary,
+                position=position,
+                access_scope=AccessScope.AUTHOR_PLANNING,
+                provenance=SourceProvenance.CANONICAL_ROOT,
+            )
+            source_artifacts.append(plan_ref)
+            visibility_receipts.append(plan_visibility)
+            plan_producer = self._boundary_registry.register_derivation(
+                output=plan_ref,
+                inputs=(plan_ref,),
+                visibility_receipts=(plan_visibility,),
+                boundary=boundary,
+                policy=boundary.policy_ref,
+                position=position,
+                access_scope=AccessScope.AUTHOR_PLANNING,
+            )
+            intents.append(
+                RootUpdateIntent(
+                    intent_id=StableId(f"intent.teacher-forced.plan.{chapter}"),
+                    root_kind=RootKind.PLAN,
+                    update_kind=RootUpdateKind.REPLACE,
+                    expected_base_root=current.plan_root,
+                    update_artifact=plan_ref,
+                    producer_receipt=plan_producer,
+                    builder_policy_ref=boundary.policy_ref,
                 )
             )
-            self.guardian_calls += 1
-        gate = GuardianWriteGate().decide(
-            curator.observed_changes,
-            validation,
-            risk,
-            guardian=guardian,
+
+        curator_spec = next(
+            item
+            for item in self.harness.specs
+            if item.agent_type is AgentType.MEMORY_CURATOR and item.mode is AgentMode.REPLAY
         )
-        self.guardian_gate_decisions += 1
-        if gate.outcome is not WriteGateOutcome.ALLOW_COMMIT:
-            guardian_outcome = guardian.outcome.value if guardian is not None else "none"
-            raise TeacherForcedBenchmarkError(
-                f"chapter {chapter} write gate stopped: {gate.outcome.value}; "
-                f"risk_codes={risk.risk_codes!r}; guardian={guardian_outcome}; "
-                f"reasons={gate.reasons!r}"
-            )
-        validation_ref = self.artifacts.put(
-            canonical_json_bytes(validation.model_dump(mode="json")),
-            "application/vnd.novel-agent.validation-report+json",
-            VERSION,
-        )
-        commit = self.commits.commit(
-            CommitRequest(
-                request_id=StableId(f"commit-request.teacher-forced.{chapter}"),
-                project_id=source_project(self.bundle),
-                base_commit=parent_commit,
-                idempotency_key=StableId(f"teacher-forced.chapter.{chapter}"),
-                bundle=candidate,
-                validation_report=validation,
+        world_mutation = (
+            NoWorldMutationInput()
+            if chapter == 0
+            else CuratorWorldProposalInput(
+                curator_agent_spec=ContractRef(
+                    contract_id=curator_spec.agent_id,
+                    version=curator_spec.version,
+                    content_hash=curator_spec.content_hash,
+                )
             )
         )
-        if commit.status is not CommitStatus.ACCEPTED or commit.commit_id is None:
-            raise TeacherForcedBenchmarkError(f"chapter {chapter} commit was not accepted")
-        self.projections.process_all()
-        if self.real_hybrid_backend_provider is not None:
-            backend_bundle = self.real_hybrid_backend_provider(
-                source_project(self.bundle), commit.commit_id
-            )
-            self.latest_attestation = backend_bundle.attestation
-        snapshot = self.snapshots.get_for_commit(commit.commit_id)
-        required_snapshot = snapshot_id_for_commit(commit.commit_id)
-        freshness = FreshnessGate.evaluate(
-            FreshnessRequest(
-                canonical_commit=commit.commit_id,
-                r1_basis_commit=commit.commit_id,
-                required_snapshot_id=required_snapshot,
-                actual_alias_commit=None if snapshot is None else snapshot.source_commit,
-                actual_snapshot=snapshot,
-                mode=FreshnessMode.BLOCK_ON_MISMATCH,
-            )
+        request = MemoryWriteWorkflowRequest(
+            request_id=StableId(f"memory-write.teacher-forced.chapter.{chapter}"),
+            run_id=RunId("run.teacher-forced.e2e"),
+            task_id=TaskId(f"task.teacher-forced.memory-write.{chapter}"),
+            project_id=project_id,
+            trigger=ChapterRevealTrigger(
+                chapter_id=source.source_id,
+                chapter_index=chapter,
+                reveal_position=position,
+            ),
+            commit_profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC,
+            base_commit=parent_commit,
+            source_artifacts=tuple(source_artifacts),
+            root_update_intents=tuple(intents),
+            world_mutation=world_mutation,
+            canonical_root_refs=current,
+            information_boundary=boundary,
+            source_visibility_receipts=tuple(visibility_receipts),
+            access_scope=(AccessScope.AUTHOR_PLANNING if plan_changed else AccessScope.WRITER_SAFE),
+            source_provenance=tuple(
+                (SourceProvenance.REVEALED_TEXT, SourceProvenance.CANONICAL_ROOT)
+                if plan_changed
+                else (SourceProvenance.REVEALED_TEXT,)
+            ),
+            configuration_fingerprint=self._workflow_configuration_fingerprint(),
+            prompt_contract_refs=self.harness.prompt_refs,
+            skill_contract_refs=self.harness.skill_refs,
+            tool_policy_ref=self._tool_policy_ref(curator_spec),
+            repair_policy_ref=boundary.policy_ref,
+            idempotency_key=StableId(f"teacher-forced.chapter.{chapter}"),
         )
-        if freshness.status is not FreshnessStatus.READY:
-            raise TeacherForcedBenchmarkError(f"chapter {chapter} projection is not fresh")
-        self.world = proposed_world
+        self._active_workflow_chapter = chapter
+        self._revealed_text_for_adapter = self.text
+        self._curator_port.set_revealed_text(self.text)
+        before_validations = len(getattr(self._workflow, "_validations", {}))
+        before_guardian_calls = self._guardian_port.calls
+        before_curator_calls = self._curator_port.proposal_calls
+        before_repair_calls = self._curator_port.repair_calls
+        result = asyncio.run(self._workflow.execute(request))
+        self._revealed_text_for_adapter = None
+        self.curator_calls += self._curator_port.proposal_calls - before_curator_calls
+        self.validator_calls += (
+            len(getattr(self._workflow, "_validations", {})) - before_validations
+        )
+        self.guardian_calls += self._guardian_port.calls - before_guardian_calls
+        self.memory_write_repair_calls += self._curator_port.repair_calls - before_repair_calls
+        self._record_memory_write_outcome(chapter, result)
+        resulting_commit = self._require_committed_result(chapter, result)
+        committed_basis = self._canonical_read.load_verified(project_id, resulting_commit)
+        manifest = cast(Any, committed_basis.root_manifest)
+        freshness = cast(Any, result.freshness)
+        projection_snapshot_id = cast(StableId, result.projection_snapshot_id)
+        self._require_complete_canonical_state(
+            chapter,
+            committed_basis,
+            freshness,
+            projection_snapshot_id,
+            manifest,
+        )
+        self.text = cast(TextRootDocument, committed_basis.canonical_text)
+        self.world = cast(WorldRootDocument, committed_basis.canonical_world)
+        self.plan = cast(PlanRootDocument, committed_basis.canonical_plan)
+        self._capture_latest_attestation(project_id, resulting_commit)
         self.commit_count += 1
         self.last_revealed_chapter = max(self.last_revealed_chapter, chapter)
-        if self.progress_writer is not None and commit.commit_id is not None:
-            self.progress_writer.record(commit.commit_id.root, chapter)
+        self._record_progress(resulting_commit, chapter)
         checkpoint = None
         if case is not None:
             self.states[case.case_id] = _FrozenState(
                 text=self.text,
                 world=self.world,
                 plan=self.plan,
-                commit=commit.commit_id,
+                commit=resulting_commit,
             )
             checkpoint = ScenarioCheckpointArtifacts(
-                text_root=text_ref.artifact_id,
-                plan_root=plan_ref.artifact_id,
-                world_root=world_ref.artifact_id,
-                derived_snapshot_id=required_snapshot,
-                anchor_alias=f"anchor-{commit.commit_id.root[-16:]}",
-                grounded_alias=f"grounded-{commit.commit_id.root[-16:]}",
+                text_root=manifest.text_root.artifact_id,
+                plan_root=manifest.plan_root.artifact_id,
+                world_root=manifest.world_root.artifact_id,
+                derived_snapshot_id=projection_snapshot_id,
+                anchor_alias=f"anchor-{resulting_commit.root[-16:]}",
+                grounded_alias=f"grounded-{resulting_commit.root[-16:]}",
                 project_profile=self.profile_root_hash,
             )
+        curator_receipt = (
+            self._prelude_curator_result(source, parent_commit).receipt
+            if chapter == 0
+            else self._curator_port.last_receipt
+        )
+        curator_receipt = self._require_curator_receipt(curator_receipt)
         return ScenarioChapterTransition(
             source_id=source.source_id,
             parent_commit=parent_commit,
-            resulting_commit=commit.commit_id,
-            curator_receipt=curator.receipt,
-            validation_artifact=validation_ref,
-            projection_snapshot_id=required_snapshot,
+            resulting_commit=resulting_commit,
+            curator_receipt=curator_receipt,
+            validation_artifact=result.validation_receipt
+            if result.validation_receipt is not None
+            else self._missing_validation_artifact(chapter),
+            projection_snapshot_id=projection_snapshot_id,
             freshness=freshness,
             checkpoint_artifacts=checkpoint,
+        )
+
+    def _record_memory_write_outcome(
+        self,
+        chapter: int,
+        result: MemoryWriteWorkflowResult,
+    ) -> None:
+        usage = result.budget_usage
+        self.memory_write_candidate_revisions += usage.candidate_revisions
+        self.memory_write_normalization_passes += usage.normalization_passes
+        self.memory_write_guardian_reviews += usage.guardian_reviews
+        self.memory_write_context_refreshes += usage.context_refreshes
+        self.memory_write_transport_attempts += usage.transport_attempts
+        self.memory_write_tokens += usage.tokens_used
+        self.memory_write_proposal_attempts += usage.curator_proposal_attempts
+        self.memory_write_proposal_rejections += usage.curator_proposal_rejections
+        status_key = result.status.value
+        if usage.curator_proposal_rejections:
+            self.memory_write_proposal_retry_counts[status_key] = (
+                self.memory_write_proposal_retry_counts.get(status_key, 0)
+                + max(usage.curator_proposal_attempts - 1, 0)
+            )
+        if "CURATOR_PROPOSAL_POISON_LOOP" in result.terminal_codes:
+            self.memory_write_proposal_poison_loops += 1
+        if result.status is not MemoryWriteWorkflowStatus.COMMITTED:
+            self.memory_write_proposal_terminal_status = result.status.value
+            self.memory_write_resume_checkpoint = (
+                None
+                if result.checkpoint_ref is None
+                else result.checkpoint_ref.model_dump(mode="json")
+            )
+        self.memory_write_status_counts[status_key] = (
+            self.memory_write_status_counts.get(status_key, 0) + 1
+        )
+        self.guardian_gate_decisions += 1
+        if (
+            result.status
+            in {
+                MemoryWriteWorkflowStatus.SUSPENDED,
+                MemoryWriteWorkflowStatus.HUMAN_REQUIRED,
+                MemoryWriteWorkflowStatus.BUDGET_EXHAUSTED,
+                MemoryWriteWorkflowStatus.QUARANTINED,
+                MemoryWriteWorkflowStatus.REPLAN_REQUIRED,
+            }
+            and self.progress_writer is not None
+        ):
+            self.progress_writer.record_pause(chapter, result)
+
+    @staticmethod
+    def _require_committed_result(chapter: int, result: MemoryWriteWorkflowResult) -> CommitId:
+        resulting_commit = result.resulting_commit
+        if result.status is not MemoryWriteWorkflowStatus.COMMITTED or resulting_commit is None:
+            if result.status in {
+                MemoryWriteWorkflowStatus.SUSPENDED,
+                MemoryWriteWorkflowStatus.HUMAN_REQUIRED,
+                MemoryWriteWorkflowStatus.BUDGET_EXHAUSTED,
+                MemoryWriteWorkflowStatus.QUARANTINED,
+                MemoryWriteWorkflowStatus.REPLAN_REQUIRED,
+            }:
+                raise TeacherForcedControlledPause(chapter, result)
+            raise TeacherForcedBenchmarkError(
+                f"chapter {chapter} memory-write workflow stopped: "
+                f"status={result.status.value}; phase={result.workflow_phase.value}; "
+                f"accepted={result.canonical_commit_accepted}; codes={result.terminal_codes!r}"
+            )
+        return resulting_commit
+
+    @staticmethod
+    def _require_complete_canonical_state(
+        chapter: int,
+        committed_basis: Any,
+        freshness: Any,
+        projection_snapshot_id: StableId | None,
+        manifest: Any,
+    ) -> None:
+        if (
+            committed_basis.canonical_text is None
+            or committed_basis.canonical_world is None
+            or committed_basis.canonical_plan is None
+            or freshness is None
+            or projection_snapshot_id is None
+            or manifest is None
+        ):
+            raise TeacherForcedBenchmarkError(
+                f"chapter {chapter} workflow result did not expose complete canonical state"
+            )
+
+    def _capture_latest_attestation(
+        self,
+        project_id: ProjectId,
+        resulting_commit: CommitId,
+    ) -> None:
+        if self.real_hybrid_backend_provider is not None:
+            backend_bundle = self.real_hybrid_backend_provider(project_id, resulting_commit)
+            self.latest_attestation = backend_bundle.attestation
+
+    def _record_progress(self, resulting_commit: CommitId, chapter: int) -> None:
+        if self.progress_writer is not None:
+            self.progress_writer.record(resulting_commit.root, chapter)
+
+    @staticmethod
+    def _require_curator_receipt(curator_receipt: Any) -> AgentExecutionReceipt:
+        if curator_receipt is None:
+            raise TeacherForcedBenchmarkError("memory-write workflow produced no Curator receipt")
+        return cast(AgentExecutionReceipt, curator_receipt)
+
+    def _missing_validation_artifact(self, chapter: int) -> ArtifactRef:
+        raise TeacherForcedBenchmarkError(
+            f"chapter {chapter} workflow result did not expose a validation artifact"
+        )
+
+    def _workflow_configuration_fingerprint(self) -> ArtifactId:
+        return content_id(
+            {
+                "workflow": "stage2w-teacher-forced-v1",
+                "profile": self.profile.value,
+                "specs": [spec.content_hash.root for spec in self.harness.specs],
+                "prompts": [ref.content_hash.root for ref in self.harness.prompt_refs],
+                "skills": [ref.content_hash.root for ref in self.harness.skill_refs],
+            }
+        )
+
+    def _workflow_policy_ref(self) -> ContractRef:
+        return ContractRef(
+            contract_id=StableId("policy.memory-write.teacher-forced"),
+            version=VERSION,
+            content_hash=self._workflow_configuration_fingerprint(),
+        )
+
+    @staticmethod
+    def _tool_policy_ref(spec: AgentSpec) -> ContractRef:
+        return ContractRef(
+            contract_id=spec.tool_policy.policy_id,
+            version=spec.tool_policy.version,
+            content_hash=spec.tool_policy.content_hash,
         )
 
     def _recover_checkpoint(
@@ -1879,7 +2257,25 @@ class _ProgressWriter:
             self.completed_chapters.append(chapter)
         self._write()
 
-    def _write(self) -> None:
+    def record_pause(
+        self,
+        chapter: int,
+        result: MemoryWriteWorkflowResult,
+    ) -> None:
+        self._write(
+            workflow_pause={
+                "chapter": chapter,
+                "status": result.status.value,
+                "checkpoint_ref": (
+                    None
+                    if result.checkpoint_ref is None
+                    else result.checkpoint_ref.model_dump(mode="json")
+                ),
+                "terminal_codes": result.terminal_codes,
+            }
+        )
+
+    def _write(self, *, workflow_pause: dict[str, object] | None = None) -> None:
         payload: dict[str, object] = {
             "last_accepted_commit": self.last_commit,
             "last_accepted_chapter": self.last_chapter,
@@ -1887,6 +2283,8 @@ class _ProgressWriter:
         }
         if self.genesis_commit:
             payload["genesis_commit"] = self.genesis_commit
+        if workflow_pause is not None:
+            payload["workflow_pause"] = workflow_pause
         with tempfile.NamedTemporaryFile(
             mode="w",
             dir=self.path.parent,
