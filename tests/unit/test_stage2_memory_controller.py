@@ -44,6 +44,7 @@ from novel_agent.domain.stage2 import (
     ContextBudget,
     ControllerPolicyAction,
     ControllerPolicyDecision,
+    ControllerPolicyDraft,
     ControllerStopReason,
     MemoryResolutionRequest,
     RequiredSnapshotPolicy,
@@ -68,6 +69,42 @@ from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 COMMIT = CommitId("sha256:" + "a" * 64)
 SNAPSHOT = StableId("snapshot.1")
 VERSION = SchemaVersion("2.0.0")
+
+
+def structured_controller_spec() -> SimpleNamespace:
+    tool_policy = ToolPolicy(
+        policy_id=StableId("policy.structured-controller"),
+        version=VERSION,
+        content_hash=ArtifactId("sha256:" + "f" * 64),
+        allowed_tools=(
+            "memory.search_exact",
+            "memory.search_temporal",
+            "memory.search_anchor_bm25",
+        ),
+        max_rounds=2,
+        max_tool_calls=4,
+    )
+    return SimpleNamespace(
+        agent_id=StableId("agent.controller"),
+        agent_type=AgentType.MEMORY_CONTROLLER,
+        mode=AgentMode.BOUNDED_R2,
+        version=VERSION,
+        content_hash=ArtifactId("sha256:" + "e" * 64),
+        system_prompt=SimpleNamespace(render_fingerprint=ArtifactId("sha256:" + "d" * 64)),
+        tool_policy=tool_policy,
+    )
+
+
+def controller_request_factory(state: ControllerStateView, round_index: int) -> ModelRequest:
+    return ModelRequest(
+        request_id=StableId(f"request.controller.{round_index}"),
+        run_id=state["request"].run_id,
+        task_id=state["request"].task_id,
+        model_role=ModelRole.BATCH_TEST,
+        purpose=ModelCallPurpose.BATCH_TEST,
+        trace_id=f"trace.controller.{round_index}",
+        prompt="replaced",
+    )
 
 
 def test_controller_policy_decision_normalizes_mutually_exclusive_model_fields() -> None:
@@ -119,9 +156,9 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
         async def run(self, *args: Any, **kwargs: Any) -> Any:
             self.payload = json.loads(args[4])
             return SimpleNamespace(
-                output=ControllerPolicyDecision(
-                    action=ControllerPolicyAction.CALL_TOOL,
-                    need_id=StableId("need.1"),
+                output=ControllerPolicyDraft(
+                    action="call_tool",
+                    need_id="need.1",
                     tool_name="memory.search_exact",
                     rationale_code="TRY_EXACT",
                 ),
@@ -129,41 +166,15 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
                 receipt=SimpleNamespace(),
             )
 
-    tool_policy = ToolPolicy(
-        policy_id=StableId("policy.structured-controller"),
-        version=VERSION,
-        content_hash=ArtifactId("sha256:" + "f" * 64),
-        allowed_tools=(
-            "memory.search_exact",
-            "memory.search_temporal",
-            "memory.search_anchor_bm25",
-        ),
-        max_rounds=2,
-        max_tool_calls=4,
-    )
+    spec = structured_controller_spec()
+    tool_policy = spec.tool_policy
     runner = CapturingRunner()
-    spec = SimpleNamespace(
-        agent_id=StableId("agent.controller"),
-        agent_type=AgentType.MEMORY_CONTROLLER,
-        mode=AgentMode.BOUNDED_R2,
-        version=VERSION,
-        content_hash=ArtifactId("sha256:" + "e" * 64),
-        system_prompt=SimpleNamespace(render_fingerprint=ArtifactId("sha256:" + "d" * 64)),
-        tool_policy=tool_policy,
+
+    policy = StructuredControllerPolicy(
+        cast(Any, runner),
+        cast(Any, spec),
+        controller_request_factory,
     )
-
-    def request_factory(state: ControllerStateView, round_index: int) -> ModelRequest:
-        return ModelRequest(
-            request_id=StableId(f"request.controller.{round_index}"),
-            run_id=state["request"].run_id,
-            task_id=state["request"].task_id,
-            model_role=ModelRole.BATCH_TEST,
-            purpose=ModelCallPurpose.BATCH_TEST,
-            trace_id=f"trace.controller.{round_index}",
-            prompt="replaced",
-        )
-
-    policy = StructuredControllerPolicy(cast(Any, runner), cast(Any, spec), request_factory)
     decision = policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
 
     assert decision.tool_name == "memory.search_exact"
@@ -190,12 +201,153 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
     unavailable = StructuredControllerPolicy(
         cast(Any, runner),
         cast(Any, unavailable_spec),
-        request_factory,
+        controller_request_factory,
     )
     assert (
         unavailable._available_actions({"request": request(max_tool_calls=4), "tool_calls": ()})
         == []
     )
+
+
+def test_structured_controller_repairs_missing_call_fields_from_sealed_actions() -> None:
+    class DraftRunner:
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            assert args[5] is ControllerPolicyDraft
+            return SimpleNamespace(
+                output=ControllerPolicyDraft(
+                    action="call_tool",
+                    rationale_code="TRY_ROUTE",
+                    model_call_id="untrusted.call",
+                ),
+                model_call=SimpleNamespace(request_id=StableId("model-call.repaired")),
+                receipt=SimpleNamespace(),
+            )
+
+    policy = StructuredControllerPolicy(
+        cast(Any, DraftRunner()),
+        cast(Any, structured_controller_spec()),
+        controller_request_factory,
+    )
+    decision = policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
+
+    assert decision.action is ControllerPolicyAction.CALL_TOOL
+    assert decision.need_id == StableId("need.1")
+    assert decision.tool_name == "memory.search_exact"
+    assert decision.rationale_code == "BOUND_FIRST_LEGAL_ACTION"
+    assert decision.model_call_id == StableId("model-call.repaired")
+    assert len(policy.decision_repairs) == 1
+    assert policy.decision_repairs[0].reason == "BOUND_FIRST_LEGAL_ACTION"
+    assert policy.decision_repairs[0].request_id == StableId("model-call.repaired")
+
+
+def test_structured_controller_repairs_missing_action_without_legal_route() -> None:
+    decision, repair = StructuredControllerPolicy._bind_draft(
+        ControllerPolicyDraft(),
+        [],
+    )
+    assert repair == "MISSING_OR_UNKNOWN_ACTION"
+    assert decision.action is ControllerPolicyAction.STOP
+    assert decision.stop_reason is ControllerStopReason.MANDATORY_GAP_UNRESOLVED
+    assert decision.rationale_code == "NO_LEGAL_ACTION_AVAILABLE"
+
+
+@pytest.mark.parametrize(
+    ("draft", "expected_action", "expected_reason", "expected_rationale"),
+    (
+        (
+            ControllerPolicyDraft(action="stop"),
+            ControllerPolicyAction.STOP,
+            None,
+            "MODEL_STOP",
+        ),
+        (
+            ControllerPolicyDraft(
+                action="stop",
+                stop_reason="budget_exhausted",
+                rationale_code="MODEL_BUDGET_STOP",
+            ),
+            ControllerPolicyAction.STOP,
+            None,
+            "MODEL_BUDGET_STOP",
+        ),
+        (
+            ControllerPolicyDraft(action="stop", stop_reason="not-a-reason"),
+            ControllerPolicyAction.STOP,
+            None,
+            "MODEL_STOP",
+        ),
+        (
+            ControllerPolicyDraft(
+                action="call_tool",
+                need_id="need.1",
+                tool_name="memory.search_exact",
+            ),
+            ControllerPolicyAction.CALL_TOOL,
+            None,
+            "MODEL_LEGAL_ACTION",
+        ),
+        (
+            ControllerPolicyDraft(
+                action="call_tool",
+                tool_name="memory.search_temporal",
+            ),
+            ControllerPolicyAction.CALL_TOOL,
+            "INFERRED_UNIQUE_LEGAL_ACTION",
+            "BOUND_UNIQUE_LEGAL_ACTION",
+        ),
+    ),
+)
+def test_structured_controller_binds_model_draft_cases(
+    draft: ControllerPolicyDraft,
+    expected_action: ControllerPolicyAction,
+    expected_reason: str | None,
+    expected_rationale: str,
+) -> None:
+    actions: list[dict[str, object]] = [
+        {
+            "need_id": "need.1",
+            "tool_names": ["memory.search_exact", "memory.search_temporal"],
+        }
+    ]
+    decision, repair = StructuredControllerPolicy._bind_draft(draft, actions)
+    assert decision.action is expected_action
+    assert repair == expected_reason
+    assert decision.rationale_code == expected_rationale
+
+
+def test_structured_controller_survives_exhausted_schema_retries() -> None:
+    class InvalidRunner:
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            ControllerPolicyDecision.model_validate(
+                {
+                    "action": "call_tool",
+                    "rationale_code": "MISSING_FIELDS",
+                }
+            )
+            raise AssertionError("invalid decision unexpectedly passed")
+
+    policy = StructuredControllerPolicy(
+        cast(Any, InvalidRunner()),
+        cast(Any, structured_controller_spec()),
+        controller_request_factory,
+    )
+    decision = policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
+    assert decision.action is ControllerPolicyAction.CALL_TOOL
+    assert decision.need_id == StableId("need.1")
+    assert decision.tool_name == "memory.search_exact"
+    assert decision.rationale_code == "SCHEMA_RETRY_EXHAUSTED"
+    assert policy.decision_receipts == ()
+    assert policy.decision_repairs[0].reason == "SCHEMA_RETRY_EXHAUSTED"
+    assert policy.decision_repairs[0].request_id == StableId("request.controller.1")
+
+
+def test_structured_controller_rejects_corrupt_trusted_action_shape() -> None:
+    with pytest.raises(AssertionError, match="invalid shape"):
+        StructuredControllerPolicy._legal_pairs(
+            [{"need_id": 1, "tool_names": ["memory.search_exact"]}]
+        )
+    with pytest.raises(AssertionError, match="tool name"):
+        StructuredControllerPolicy._legal_pairs([{"need_id": "need.1", "tool_names": [1]}])
 
 
 def test_structured_controller_rejects_wrong_agent_type_or_mode() -> None:

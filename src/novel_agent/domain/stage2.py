@@ -841,6 +841,22 @@ class ControllerPolicyAction(StrEnum):
     STOP = "stop"
 
 
+class ControllerPolicyDraft(DomainModel):
+    """Untrusted model proposal normalized by the Controller policy adapter.
+
+    Routing authority remains in ``ControllerPolicyDecision``.  These fields
+    deliberately accept plain strings so a formatting defect cannot bypass the
+    adapter's bounded repair against the sealed ``available_actions`` registry.
+    """
+
+    action: str | None = None
+    need_id: str | None = None
+    tool_name: str | None = None
+    stop_reason: str | None = None
+    rationale_code: str | None = None
+    model_call_id: str | None = None
+
+
 class ControllerPolicyDecision(DomainModel):
     action: ControllerPolicyAction
     need_id: StableId | None = None

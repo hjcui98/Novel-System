@@ -7,3 +7,12 @@ choices. When a mandatory need is unresolved and it still has an available
 action, call one of those tools. Do not stop with `mandatory_gap_unresolved`
 before its registered actions have been attempted. Never invent a need ID or
 tool name outside that list.
+
+For a tool call, copy one exact pair from `available_actions` into these exact
+fields:
+
+`{"action":"call_tool","need_id":"<exact need_id>","tool_name":"<one exact tool_names entry>","stop_reason":null,"rationale_code":"TRY_REGISTERED_ROUTE","model_call_id":null}`
+
+For a stop:
+
+`{"action":"stop","need_id":null,"tool_name":null,"stop_reason":"<allowed stop reason>","rationale_code":"NO_MORE_LEGAL_ACTIONS","model_call_id":null}`
