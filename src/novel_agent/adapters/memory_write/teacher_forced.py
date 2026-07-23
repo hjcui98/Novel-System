@@ -554,7 +554,11 @@ class TeacherForcedCuratorPort:
             output_hash=output_hash,
             conflicts=error.conflicts if isinstance(error, CuratorProposalSemanticRejected) else (),
             validation_error_paths=paths,
-            safe_feedback=(detail,),
+            safe_feedback=(
+                error.safe_feedback
+                if isinstance(error, CuratorProposalSemanticRejected) and error.safe_feedback
+                else (detail,)
+            ),
             raw_draft_ref=raw_refs[-1] if raw_refs else None,
             created_at=datetime.now(UTC),
         )

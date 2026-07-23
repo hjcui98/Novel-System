@@ -330,12 +330,18 @@ def test_model_curator_rejects_invalid_evidence_coordinates() -> None:
     with pytest.raises(
         CuratorProposalSemanticRejected,
         match="CURATOR_PROPOSAL_INVALID_EVIDENCE",
-    ):
+    ) as overflow_rejection:
         asyncio.run(
             ModelCurator(_gateway(draft)[0]).extract_reported(
                 future, 23, world.source_commit, world, _request()
             )
         )
+    assert overflow_rejection.value.safe_feedback == (
+        (
+            f"{selection.block_id.root}: require 0 <= start < end <= {len(block.text)}; "
+            f"received start={selection.start}, end={overflow.end}"
+        ),
+    )
 
     invalid_coordinates = selection.model_copy(
         update={"start": len(block.text) + 20, "end": len(block.text) + 40}
@@ -348,12 +354,13 @@ def test_model_curator_rejects_invalid_evidence_coordinates() -> None:
     with pytest.raises(
         CuratorProposalSemanticRejected,
         match="CURATOR_PROPOSAL_INVALID_EVIDENCE",
-    ):
+    ) as coordinate_rejection:
         asyncio.run(
             ModelCurator(_gateway(invalid_draft)[0]).extract_reported(
                 future, 23, world.source_commit, world, _request()
             )
         )
+    assert "received start=" in coordinate_rejection.value.safe_feedback[0]
 
 
 def test_model_curator_drops_unchanged_existing_state_replacements() -> None:

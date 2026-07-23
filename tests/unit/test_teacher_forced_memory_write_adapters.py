@@ -722,6 +722,9 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
             CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_INVALID_EVIDENCE",
                 (),
+                safe_feedback=(
+                    "block.1: require 0 <= start < end <= 10; received start=20, end=30",
+                ),
             ),
             ProposalRejectionStage.SEMANTIC_CONTRACT,
             ProposalRejectionKind.INVALID_EVIDENCE,
@@ -782,6 +785,8 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         assert outcome.rejection.retryable is retryable
         assert len(outcome.attempt_receipt.raw_response_refs) == 1
         assert len(outcome.attempt_receipt.model_call_receipt_refs) == 1
+        if kind is ProposalRejectionKind.INVALID_EVIDENCE and retryable:
+            assert "require 0 <= start < end" in outcome.rejection.safe_feedback[0]
 
 
 def test_typed_proposal_attempt_wraps_transport_and_preserves_safe_feedback() -> None:

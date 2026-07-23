@@ -42,11 +42,13 @@ class CuratorProposalSemanticRejected(ModelCurationContractError):
         conflicts: tuple[ProposalConflict, ...],
         *,
         information_boundary: bool = False,
+        safe_feedback: tuple[str, ...] = (),
     ) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
         self.conflicts = conflicts
         self.information_boundary = information_boundary
+        self.safe_feedback = safe_feedback
 
 
 _RECORD_ID_FIELD = {
@@ -136,14 +138,28 @@ class ModelCurator:
                 (),
                 information_boundary=True,
             )
-        if any(
-            not (selection.start < selection.end <= len(chapter_blocks[selection.block_id].text))
+        invalid_selections = tuple(
+            (
+                selection.block_id,
+                selection.start,
+                selection.end,
+                len(chapter_blocks[selection.block_id].text),
+            )
             for operation in draft.operations
             for selection in operation.evidence_refs
-        ):
+            if not (selection.start < selection.end <= len(chapter_blocks[selection.block_id].text))
+        )
+        if invalid_selections:
             raise CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_INVALID_EVIDENCE",
                 (),
+                safe_feedback=tuple(
+                    (
+                        f"{block_id.root}: require 0 <= start < end <= {block_length}; "
+                        f"received start={start}, end={end}"
+                    )[:240]
+                    for block_id, start, end, block_length in invalid_selections[:4]
+                ),
             )
         draft, merge_receipts = self._merge_normalized_collisions(draft, base_commit)
         self.last_evidence_merge_receipts = merge_receipts

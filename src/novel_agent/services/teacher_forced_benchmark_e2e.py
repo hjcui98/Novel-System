@@ -78,6 +78,7 @@ from novel_agent.domain.memory_write import (
     ChapterRevealTrigger,
     CuratorWorldProposalInput,
     InformationBoundary,
+    MemoryWriteBudget,
     MemoryWriteCommitProfile,
     MemoryWriteWorkflowRequest,
     MemoryWriteWorkflowResult,
@@ -1682,6 +1683,11 @@ class _TeacherForcedTransition:
                 else (SourceProvenance.REVEALED_TEXT,)
             ),
             configuration_fingerprint=self._workflow_configuration_fingerprint(),
+            budget=MemoryWriteBudget(
+                max_total_model_calls=6,
+                token_budget=128_000,
+                wall_clock_budget_ms=600_000,
+            ),
             prompt_contract_refs=self.harness.prompt_refs,
             skill_contract_refs=self.harness.skill_refs,
             tool_policy_ref=self._tool_policy_ref(curator_spec),
