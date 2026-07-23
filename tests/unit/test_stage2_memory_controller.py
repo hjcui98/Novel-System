@@ -545,6 +545,20 @@ def test_registered_route_policy_covers_budget_missing_plan_and_fallback_exhaust
         intent=Stage1QueryIntent.RELATED_EVENT,
         pools=(CandidatePool.ANCHOR,),
     )
+    unregistered_budget = RouteBoundControllerPolicy().decide(
+        {
+            "request": request(need=semantic_need, max_rounds=1, max_tool_calls=1),
+            "tool_calls": (
+                (
+                    semantic_need.need_id,
+                    "memory.search_anchor_bm25",
+                    _empty_result("call.unregistered-budget"),
+                ),
+            ),
+        }
+    )
+    assert unregistered_budget.stop_reason is ControllerStopReason.BUDGET_EXHAUSTED
+
     capability = SnapshotCapability(
         source_commit=COMMIT,
         snapshot_id=SNAPSHOT,
@@ -662,6 +676,33 @@ def test_bounded_controller_rejects_budgets_above_registered_policy() -> None:
         assert "round budget" in str(error)
     else:
         raise AssertionError("round budget above policy was accepted")
+
+
+def test_trusted_controller_graph_enforces_call_budget_before_policy_reentry() -> None:
+    class BudgetIgnoringPolicy(RouteBoundControllerPolicy):
+        decision_count = 0
+
+        def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+            self.decision_count += 1
+            return ControllerPolicyDecision(
+                action=ControllerPolicyAction.CALL_TOOL,
+                need_id=state["request"].initial_memory_needs[0].need_id,
+                tool_name="memory.search_exact",
+                rationale_code="IGNORE_DECLARED_BUDGET",
+            )
+
+    policy = BudgetIgnoringPolicy()
+    runtime, _ = controller((), policy=policy)
+    result = runtime.resolve(
+        request(max_rounds=1, max_tool_calls=1),
+        text_root(),
+        thread_id="trusted-call-budget",
+    )
+
+    assert policy.decision_count == 1
+    assert len(result["tool_results"]) == 1
+    assert result["resolution"].stop_reason is ControllerStopReason.BUDGET_EXHAUSTED
+    assert len(result["resolution"].receipt.tool_call_ids) == 1
 
 
 def test_bounded_controller_rejects_policy_hash_and_duplicate_route_plans() -> None:

@@ -389,6 +389,20 @@ class BoundedMemoryController:
     def _decide(self, state: ControllerGraphState) -> ControllerGraphState:
         request = self._request_from_state(state)
         calls = self._parse_calls(state.get("tool_calls", []))
+        if len(calls) >= self._trusted_call_limit(request):
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                rationale_code="TRUSTED_GRAPH_CALL_BUDGET_EXHAUSTED",
+            )
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "stopped": True,
+                "stop_reason": ControllerStopReason.BUDGET_EXHAUSTED.value,
+            }
         raw_decision = self._policy.decide({"request": request, "tool_calls": calls})
         if isinstance(raw_decision, ControllerPolicyDecision):
             decision = raw_decision
@@ -447,6 +461,17 @@ class BoundedMemoryController:
             "pending_tool": tool_name,
             "stopped": False,
         }
+
+    def _trusted_call_limit(self, request: MemoryResolutionRequest) -> int:
+        round_limit = min(
+            request.retrieval_budget.max_rounds,
+            self._tool_policy.max_rounds,
+        ) * max(1, len(request.initial_memory_needs))
+        return min(
+            request.retrieval_budget.max_tool_calls,
+            self._tool_policy.max_tool_calls,
+            round_limit,
+        )
 
     @staticmethod
     def _route_after_decision(state: ControllerGraphState) -> Literal["execute", "finish"]:
