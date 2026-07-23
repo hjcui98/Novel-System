@@ -32,17 +32,25 @@ class CuratorReplayAgent:
         base_commit: CommitId,
         current_world: WorldRootDocument,
         request: ModelRequest,
+        proposal_feedback: str | None = None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
+        task_payload = (
+            f"chapter_index={chapter_index}\n"
+            f"base_commit={base_commit.root}\n"
+            "Output ChapterChangeDraft only; the trusted service binds evidence and IDs."
+        )
+        if proposal_feedback is not None:
+            task_payload += (
+                '\n<PROPOSAL_REPAIR_FEEDBACK trusted="true">\n'
+                + proposal_feedback
+                + "\n</PROPOSAL_REPAIR_FEEDBACK>"
+            )
         prepared = self._runner.prepare(
             AgentType.MEMORY_CURATOR,
             AgentMode.REPLAY,
             version.root,
             request,
-            (
-                f"chapter_index={chapter_index}\n"
-                f"base_commit={base_commit.root}\n"
-                "Output ChapterChangeDraft only; the trusted service binds evidence and IDs."
-            ),
+            task_payload,
             source_hashes=(text_root.root_hash,),
             base_commit=base_commit,
         )

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from pydantic import ValidationError
 
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.changes import (
@@ -252,7 +251,7 @@ def test_model_curator_routes_retirement_out_of_chapter_replay() -> None:
     assert operation.target_id.root in reported.unresolved[-1]
 
 
-def test_model_curator_rejects_chapter_and_duplicate_target_errors() -> None:
+def test_model_curator_rejects_chapter_error_and_merges_equivalent_duplicate_target() -> None:
     bundle = make_synthetic_bundle()
     future = bundle.text_roots[1]
     world = bundle.world_roots[0]
@@ -270,12 +269,12 @@ def test_model_curator_rejects_chapter_and_duplicate_target_errors() -> None:
     duplicate = _draft().model_copy(
         update={"operations": (_draft().operations[0], _draft().operations[0])}
     )
-    with pytest.raises(ValidationError, match="more than once"):
-        asyncio.run(
-            ModelCurator(_gateway(duplicate)[0]).extract(
-                future, 23, world.source_commit, world, _request()
-            )
+    changes, _ = asyncio.run(
+        ModelCurator(_gateway(duplicate)[0]).extract(
+            future, 23, world.source_commit, world, _request()
         )
+    )
+    assert len(changes.operations) == 1
 
 
 def test_model_curator_rejects_invalid_evidence_scope_and_binds_basis_and_status() -> None:

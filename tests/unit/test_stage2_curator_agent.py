@@ -165,6 +165,30 @@ def test_curator_replay_agent_layers_contract_and_preserves_report_and_receipt()
     assert "重申旧誓言" not in sent.prompt
 
 
+def test_curator_replay_agent_renders_trusted_proposal_feedback_into_effective_prompt() -> None:
+    bundle = make_synthetic_bundle()
+    text_root = bundle.text_roots[1]
+    world = bundle.world_roots[0]
+    agent, endpoint = harness(_draft())
+    feedback = '{"reason_code":"CURATOR_PROPOSAL_DUPLICATE_TARGET"}'
+
+    asyncio.run(
+        agent.run(
+            version=VERSION,
+            text_root=text_root,
+            chapter_index=23,
+            base_commit=world.source_commit,
+            current_world=world,
+            request=request(),
+            proposal_feedback=feedback,
+        )
+    )
+
+    sent = endpoint.requests[0]
+    assert '<PROPOSAL_REPAIR_FEEDBACK trusted="true">' in sent.prompt
+    assert feedback in sent.prompt
+
+
 @pytest.mark.parametrize(
     ("receipt_update", "message"),
     (

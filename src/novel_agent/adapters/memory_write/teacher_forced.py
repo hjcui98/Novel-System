@@ -358,18 +358,11 @@ class TeacherForcedCuratorPort:
             f"curator.replay.{chapter_index}.proposal-{request.attempt_no}",
             AgentMode.REPLAY,
         ).model_copy(update={"request_id": request.model_request_id})
-        if request.feedback_artifact_ref is not None:
-            feedback = self._artifacts.read_verified(request.feedback_artifact_ref).decode("utf-8")
-            model_request = model_request.model_copy(
-                update={
-                    "prompt": (
-                        model_request.prompt
-                        + '\n\n<PROPOSAL_REPAIR_FEEDBACK trusted="true">\n'
-                        + feedback
-                        + "\n</PROPOSAL_REPAIR_FEEDBACK>"
-                    )
-                }
-            )
+        feedback = (
+            None
+            if request.feedback_artifact_ref is None
+            else self._artifacts.read_verified(request.feedback_artifact_ref).decode("utf-8")
+        )
         if self._script is not None:
             self._script(model_request, AgentMode.REPLAY)
         manifest = _basis_manifest(basis)
@@ -383,6 +376,7 @@ class TeacherForcedCuratorPort:
                 base_commit=basis.commit_id,
                 current_world=world,
                 request=model_request,
+                proposal_feedback=feedback,
             )
         except (ValidationError, ModelCurationContractError) as error:
             self.proposal_calls += 1
@@ -493,18 +487,9 @@ class TeacherForcedCuratorPort:
                 for item in error.errors(include_url=False, include_input=False)
             )
             detail = "Curator Draft failed the structured domain contract"
-            message = str(error)
-            kind = (
-                ProposalRejectionKind.DUPLICATE_TARGET
-                if "targets one record more than once" in message
-                else ProposalRejectionKind.SCHEMA_REJECTED
-            )
+            kind = ProposalRejectionKind.SCHEMA_REJECTED
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
-            reason_code = (
-                "CURATOR_PROPOSAL_DUPLICATE_TARGET"
-                if kind is ProposalRejectionKind.DUPLICATE_TARGET
-                else "CURATOR_PROPOSAL_SCHEMA_REJECTED"
-            )
+            reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"
             retryable = True
         elif isinstance(error, CuratorProposalSemanticRejected):
             paths = ()

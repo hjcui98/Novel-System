@@ -673,38 +673,27 @@ def test_typed_proposal_reraises_non_model_failure_without_ledger_evidence() -> 
 
 
 def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> None:
-    duplicate_payload = {
+    invalid_schema_payload = {
         "chapter_index": 1,
         "operations": [
             {
                 "operation": "create",
                 "record_kind": "entity",
-                "target_id": "entity.duplicate",
+                "target_id": "entity.invalid",
                 "record": {
-                    "entity_type": "person",
-                    "internal_label": "duplicate",
-                    "aliases": [],
-                    "identity_invariants": [],
+                    "subject_id": "entity.invalid",
+                    "predicate": "has_state",
+                    "value": "invalid",
+                    "valid_time": {"worldline": "current", "start_ordinal": 1},
+                    "truth_class": "assertion",
                 },
                 "evidence_refs": [{"block_id": "block.1", "start": 0, "end": 1}],
             },
-            {
-                "operation": "create",
-                "record_kind": "entity",
-                "target_id": "entity.duplicate",
-                "record": {
-                    "entity_type": "person",
-                    "internal_label": "duplicate",
-                    "aliases": [],
-                    "identity_invariants": [],
-                },
-                "evidence_refs": [{"block_id": "block.2", "start": 0, "end": 1}],
-            },
         ],
     }
-    with pytest.raises(ValidationError) as duplicate:
-        ChapterChangeDraft.model_validate_json(canonical_json_bytes(duplicate_payload))
-    duplicate_error = duplicate.value
+    with pytest.raises(ValidationError) as invalid_schema:
+        ChapterChangeDraft.model_validate_json(canonical_json_bytes(invalid_schema_payload))
+    schema_error = invalid_schema.value
 
     conflict = ProposalConflict(
         record_kind=WorldRecordKind.ENTITY,
@@ -714,9 +703,9 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
     )
     cases = (
         (
-            duplicate_error,
+            schema_error,
             ProposalRejectionStage.STRUCTURED_SCHEMA,
-            ProposalRejectionKind.DUPLICATE_TARGET,
+            ProposalRejectionKind.SCHEMA_REJECTED,
             True,
         ),
         (
@@ -811,14 +800,17 @@ def test_typed_proposal_attempt_wraps_transport_and_preserves_safe_feedback() ->
 
     class Replay:
         curator = SimpleNamespace(gateway=gateway)
+        feedback: str | None = None
 
         async def run(self, **kwargs: object) -> None:
+            self.feedback = cast(str | None, kwargs["proposal_feedback"])
             await gateway.generate_text(cast(ModelRequest, kwargs["request"]))
             raise RuntimeError("transport disconnected")
 
     scripts: list[ModelRequest] = []
+    replay = Replay()
     port = TeacherForcedCuratorPort(
-        cast(Any, Replay()),
+        cast(Any, replay),
         cast(Any, object()),
         cast(Any, artifacts),
         cast(Any, lambda *_: model_request),
@@ -834,7 +826,8 @@ def test_typed_proposal_attempt_wraps_transport_and_preserves_safe_feedback() ->
         asyncio.run(port.propose_attempt(attempt))
 
     assert raised.value.model_request_ids == (model_request.request_id,)
-    assert "PROPOSAL_REPAIR_FEEDBACK" in scripts[0].prompt
+    assert "replace duplicate target" in cast(str, replay.feedback)
+    assert "PROPOSAL_REPAIR_FEEDBACK" not in scripts[0].prompt
     assert port.proposal_calls == 1
 
 

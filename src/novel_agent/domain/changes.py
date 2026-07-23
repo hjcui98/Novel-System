@@ -140,15 +140,6 @@ class ChapterChangeDraft(DomainModel):
     unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
 
-    @model_validator(mode="after")
-    def validate_unique_targets(self) -> ChapterChangeDraft:
-        identities = tuple(
-            (operation.record_kind, operation.target_id) for operation in self.operations
-        )
-        if len(identities) != len(set(identities)):
-            raise ValueError("Curator draft targets one record more than once")
-        return self
-
 
 class StateTransitionEdge(DomainModel):
     from_value: JsonValue

@@ -322,7 +322,7 @@ class _ProposalHuman:
         return self.decision
 
 
-def test_raw_draft_duplicate_identity_is_rejected_before_curator_service() -> None:
+def test_raw_equivalent_duplicate_identity_reaches_trusted_merge() -> None:
     payload = {
         "chapter_index": 1,
         "operations": (
@@ -331,8 +331,11 @@ def test_raw_draft_duplicate_identity_is_rejected_before_curator_service() -> No
         ),
     }
 
-    with pytest.raises(ValidationError, match="targets one record more than once"):
-        ChapterChangeDraft.model_validate_json(canonical_json_bytes(payload))
+    draft = ChapterChangeDraft.model_validate_json(canonical_json_bytes(payload))
+    merged, receipts = ModelCurator._merge_normalized_collisions(draft, BASE)
+
+    assert len(merged.operations) == 1
+    assert len(receipts) == 1
 
 
 def test_run4_c8_characterization_is_offline_future_safe_and_replayable() -> None:
@@ -349,8 +352,9 @@ def test_run4_c8_characterization_is_offline_future_safe_and_replayable() -> Non
     )
     assert all(item["chapter_index"] == 8 for item in fixture["source_refs"])
     assert fixture["pre_failure_canon"] == fixture["post_failure_canon"]
-    with pytest.raises(ValidationError, match="targets one record more than once"):
-        ChapterChangeDraft.model_validate_json(canonical_json_bytes(fixture["raw_draft"]))
+    draft = ChapterChangeDraft.model_validate_json(canonical_json_bytes(fixture["raw_draft"]))
+    identities = tuple((item.record_kind, item.target_id) for item in draft.operations)
+    assert len(identities) > len(set(identities))
 
 
 def test_normalized_collision_merges_only_evidence_equivalent_payloads() -> None:
