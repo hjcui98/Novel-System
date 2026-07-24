@@ -3,7 +3,8 @@
     "ControllerPolicyAction": {
       "enum": [
         "call_tool",
-        "stop"
+        "stop",
+        "execute_plan"
       ],
       "title": "ControllerPolicyAction",
       "type": "string"
@@ -55,11 +56,27 @@
       ],
       "default": null
     },
+    "pending_action_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Pending Action Ids",
+      "type": "array"
+    },
     "rationale_code": {
       "maxLength": 64,
       "minLength": 1,
       "title": "Rationale Code",
       "type": "string"
+    },
+    "selected_action_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Action Ids",
+      "type": "array"
     },
     "stop_reason": {
       "anyOf": [

@@ -46,7 +46,7 @@ def test_stage2_paired_evaluation_builds_independent_ledger_entries() -> None:
         "deterministic_plan_obligation_coverage": 1.0,
         "agentic_plan_obligation_coverage": 1.0,
         "deterministic_retrieval_calls": 4.0,
-        "agentic_retrieval_calls": 4.0,
+        "agentic_retrieval_calls": 1.0,
         "future_leakage_count": 0.0,
         "safety_regression": 0.0,
         "comparable": 1.0,

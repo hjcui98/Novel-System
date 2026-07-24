@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "EvidenceSupportDisposition": {
+      "enum": [
+        "supports",
+        "partial",
+        "contradicts",
+        "unrelated"
+      ],
+      "title": "EvidenceSupportDisposition",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "disposition": {
+      "$ref": "#/$defs/EvidenceSupportDisposition"
+    },
+    "operation_index": {
+      "minimum": 0,
+      "title": "Operation Index",
+      "type": "integer"
+    },
+    "reason_code": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Reason Code",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_index",
+    "candidate_id",
+    "disposition",
+    "reason_code"
+  ],
+  "title": "EvidenceSupportDecision",
+  "type": "object"
+}

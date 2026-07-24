@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from pydantic import ValidationError
@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from novel_agent.agents.runner import AgentRunResult, StructuredAgentRunner
 from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.retrieval_routing import RoutePlan
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -21,10 +22,12 @@ from novel_agent.domain.stage2 import (
     ControllerPolicyDecision,
     ControllerPolicyDraft,
     ControllerStopReason,
+    RegisteredControllerAction,
+    ToolPolicy,
 )
 from novel_agent.runtime.memory_controller import ControllerStateView
 from novel_agent.services.content_addressing import canonical_json_bytes
-from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, POOL_BY_CHANNEL
+from novel_agent.services.controller_legal_actions import LegalActionProvider
 
 ControllerRequestFactory = Callable[[ControllerStateView, int], ModelRequest]
 
@@ -47,6 +50,12 @@ class StructuredControllerPolicy:
         runner: StructuredAgentRunner,
         spec: AgentSpec,
         request_factory: ControllerRequestFactory,
+        *,
+        route_plans: tuple[RoutePlan, ...] = (),
+        legal_actions: LegalActionProvider | None = None,
+        max_decision_model_calls: int = 2,
+        max_agentic_actions: int = 8,
+        compact_prompt: bool = True,
     ) -> None:
         if spec.agent_type is not AgentType.MEMORY_CONTROLLER:
             raise ValueError("structured Controller policy requires a Memory Controller AgentSpec")
@@ -57,6 +66,13 @@ class StructuredControllerPolicy:
         self._request_factory = request_factory
         self._receipts: dict[StableId, AgentExecutionReceipt] = {}
         self._repairs: list[ControllerDecisionRepair] = []
+        self._legal_actions = legal_actions or LegalActionProvider(
+            tool_policy=spec.tool_policy,
+            route_plans=route_plans,
+        )
+        self.max_decision_model_calls = max_decision_model_calls
+        self._max_agentic_actions = max_agentic_actions
+        self._compact_prompt = compact_prompt
 
     @property
     def contract_ref(self) -> ContractRef:
@@ -75,6 +91,10 @@ class StructuredControllerPolicy:
         return self._spec.tool_policy.content_hash
 
     @property
+    def tool_policy(self) -> ToolPolicy:
+        return self._spec.tool_policy
+
+    @property
     def decision_receipts(self) -> tuple[AgentExecutionReceipt, ...]:
         return tuple(self._receipts.values())
 
@@ -89,8 +109,54 @@ class StructuredControllerPolicy:
         round_index = len(state["tool_calls"]) + 1
         request = self._request_factory(state, round_index)
         available_actions = self._available_actions(state)
-        payload = canonical_json_bytes(
-            {
+        registered = self._legal_actions.available_actions(
+            state["request"],
+            state["tool_calls"],
+        )
+        action_by_id = {item.action_id.root: item for item in registered}
+        payload_obj: dict[str, object]
+        if self._compact_prompt:
+            payload_obj = {
+                "task_contract": {
+                    "request_id": state["request"].request_id.root,
+                    "base_commit": state["request"].base_commit.root,
+                    "snapshot_id": state["request"].snapshot_id.root,
+                    "narrative_chapter": state["request"].narrative_chapter,
+                },
+                "need_summaries": [
+                    {
+                        "id": need.need_id.root,
+                        "intent": need.query_intent.value,
+                        "requirement": need.requirement.value,
+                        "resolved": any(
+                            need_id == need.need_id
+                            and result.status.value == "succeeded"
+                            and result.coverage > 0
+                            for need_id, _, result in state["tool_calls"]
+                        ),
+                    }
+                    for need in state["request"].initial_memory_needs
+                ],
+                "available_actions": available_actions,
+                "registered_action_ids": [item.action_id.root for item in registered],
+                "prior_action_outcomes": [
+                    {
+                        "need_id": need_id.root,
+                        "tool_name": tool_name,
+                        "success": result.status.value == "succeeded",
+                        "candidate_count": result.channel_candidate_count or 0,
+                        "gain": result.new_information_gain,
+                        "failure_code": (
+                            result.failure_code.value if result.failure_code is not None else None
+                        ),
+                    }
+                    for need_id, tool_name, result in state["tool_calls"]
+                ],
+                "round_index": round_index,
+                "max_agentic_actions": self._max_agentic_actions,
+            }
+        else:
+            payload_obj = {
                 "resolution_request": state["request"].model_dump(mode="json"),
                 "available_actions": available_actions,
                 "prior_tool_results": [
@@ -103,7 +169,7 @@ class StructuredControllerPolicy:
                 ],
                 "round_index": round_index,
             }
-        ).decode("utf-8")
+        payload = canonical_json_bytes(payload_obj).decode("utf-8")
 
         async def execute() -> AgentRunResult[ControllerPolicyDraft]:
             return await self._runner.run(
@@ -129,7 +195,11 @@ class StructuredControllerPolicy:
             self._record_repair(request.request_id, "SCHEMA_RETRY_EXHAUSTED", decision)
             return decision
         self._receipts[result.model_call.request_id] = result.receipt
-        decision, repair_reason = self._bind_draft(result.output, available_actions)
+        decision, repair_reason = self._bind_draft(
+            result.output,
+            available_actions,
+            action_by_id=action_by_id,
+        )
         decision = decision.model_copy(update={"model_call_id": result.model_call.request_id})
         if repair_reason is not None:
             self._record_repair(result.model_call.request_id, repair_reason, decision)
@@ -140,8 +210,36 @@ class StructuredControllerPolicy:
         cls,
         draft: ControllerPolicyDraft,
         available_actions: list[dict[str, object]],
+        *,
+        action_by_id: Mapping[str, RegisteredControllerAction] | None = None,
     ) -> tuple[ControllerPolicyDecision, str | None]:
         legal_pairs = cls._legal_pairs(available_actions)
+        registry = action_by_id or {}
+
+        # Batch plan: only opaque registered action IDs.
+        if draft.selected_action_ids:
+            pending: list[StableId] = []
+            for raw_id in draft.selected_action_ids:
+                item = registry.get(raw_id)
+                if item is None:
+                    continue
+                pending.append(item.action_id)
+                if len(pending) >= 8:
+                    break
+            if pending:
+                return (
+                    ControllerPolicyDecision(
+                        action=ControllerPolicyAction.EXECUTE_PLAN,
+                        selected_action_ids=tuple(pending),
+                        pending_action_ids=tuple(pending),
+                        rationale_code=cls._safe_rationale(
+                            draft.rationale_code,
+                            "MODEL_BATCH_PLAN",
+                        ),
+                    ),
+                    None,
+                )
+
         if draft.action == ControllerPolicyAction.STOP.value:
             if draft.stop_reason is None:
                 stop_reason = ControllerStopReason.MANDATORY_GAP_UNRESOLVED
@@ -273,29 +371,10 @@ class StructuredControllerPolicy:
     def _available_actions(self, state: ControllerStateView) -> list[dict[str, object]]:
         """Expose the exact structured decisions the model may legally choose.
 
-        The model does not receive provider-native tools; it emits one policy
-        decision that the trusted graph executes.  Without this registry it has
-        no way to discover the sealed tool names and tends to stop immediately.
+        Uses LegalActionProvider so prompt actions match ToolAdapter scope.
         """
 
-        called = {(need_id, tool_name) for need_id, tool_name, _ in state["tool_calls"]}
-        actions: list[dict[str, object]] = []
-        for need in state["request"].initial_memory_needs:
-            tools = [
-                tool_name
-                for tool_name in self._spec.tool_policy.allowed_tools
-                for channel in (CHANNEL_BY_TOOL.get(tool_name),)
-                if channel is not None
-                and POOL_BY_CHANNEL[channel] in need.allowed_candidate_pools
-                and (need.need_id, tool_name) not in called
-            ]
-            if tools:
-                actions.append(
-                    {
-                        "need_id": need.need_id.root,
-                        "query_intent": need.query_intent.value,
-                        "requirement": need.requirement.value,
-                        "tool_names": tools,
-                    }
-                )
-        return actions
+        return self._legal_actions.available_action_summaries(
+            state["request"],
+            state["tool_calls"],
+        )

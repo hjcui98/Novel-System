@@ -138,6 +138,17 @@
     "comparison_basis_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
     },
+    "delta_metrics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PairedPilotArmMetrics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "deterministic_metrics": {
       "$ref": "#/$defs/PairedPilotArmMetrics"
     },

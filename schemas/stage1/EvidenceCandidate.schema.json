@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Trusted evidence span candidate; model may only copy candidate_id.",
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "chapter_index": {
+      "minimum": 1,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "end": {
+      "minimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "scene_index": {
+      "minimum": 0,
+      "title": "Scene Index",
+      "type": "integer"
+    },
+    "start": {
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "block_id",
+    "chapter_index",
+    "scene_index",
+    "text",
+    "start",
+    "end",
+    "content_hash"
+  ],
+  "title": "EvidenceCandidate",
+  "type": "object"
+}

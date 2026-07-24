@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "ControllerActionPhase": {
+      "enum": [
+        "mandatory",
+        "primary",
+        "fallback"
+      ],
+      "title": "ControllerActionPhase",
+      "type": "string"
+    },
+    "RetrievalChannel": {
+      "enum": [
+        "r0",
+        "r1_exact",
+        "r1_temporal",
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+        "hierarchy",
+        "typed_graph",
+        "rerank"
+      ],
+      "title": "RetrievalChannel",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One RoutePlan-legal controller action shared by prompt and adapter.",
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "fallback_condition": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Condition"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "phase": {
+      "$ref": "#/$defs/ControllerActionPhase"
+    },
+    "query_intent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Query Intent",
+      "type": "string"
+    },
+    "requirement": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Requirement",
+      "type": "string"
+    },
+    "retrieval_channel": {
+      "$ref": "#/$defs/RetrievalChannel"
+    },
+    "route_step_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tool_name": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Tool Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id",
+    "need_id",
+    "tool_name",
+    "retrieval_channel",
+    "requirement",
+    "phase",
+    "query_intent"
+  ],
+  "title": "RegisteredControllerAction",
+  "type": "object"
+}

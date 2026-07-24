@@ -7,12 +7,14 @@ import pytest
 from novel_agent.domain.benchmark import GoldItem, GoldKind, PreludeDocument
 from novel_agent.domain.changes import (
     CuratedOperationDraft,
+    CuratedOperationDraftV2,
     CuratorEntityRecord,
     CuratorEventRecord,
     CuratorStoryTime,
+    EvidenceCandidate,
     WorldRecordKind,
 )
-from novel_agent.domain.ids import StableId
+from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory import RetrievalUnit, Stage1MemoryNeed
 
 
@@ -110,6 +112,34 @@ def test_curator_story_time_and_typed_record_are_consistent() -> None:
         }
     )
     assert valid_operation.validate_record_kind() is valid_operation
+
+
+def test_evidence_candidate_rejects_start_not_less_than_end() -> None:
+    candidate = _construct(
+        EvidenceCandidate,
+        candidate_id=StableId("evidence-candidate.bad"),
+        block_id=StableId("block.1"),
+        chapter_index=1,
+        scene_index=0,
+        text="evidence text",
+        start=5,
+        end=5,
+        content_hash=ArtifactId("sha256:" + "e" * 64),
+    )
+    _reject(candidate, "validate_span", "start < end")
+
+
+def test_curated_operation_draft_v2_rejects_mismatched_record_kind() -> None:
+    operation = _construct(
+        CuratedOperationDraftV2,
+        record_kind=WorldRecordKind.EVENT,
+        record=_construct(
+            CuratorEntityRecord,
+            entity_type="person",
+            internal_label="hero",
+        ),
+    )
+    _reject(operation, "validate_record_kind", "does not match")
 
 
 def test_memory_need_and_retrieval_unit_reject_duplicate_lineage() -> None:

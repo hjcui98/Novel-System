@@ -1369,3 +1369,65 @@ def test_real_pre_candidate_crash_points_resume_in_new_workflow_and_commit_once(
     assert len({item.attempt_id for item in attempts.list_for_workflow(request.request_id)}) == len(
         attempts.list_for_workflow(request.request_id)
     )
+
+
+def test_support_rejection_preserves_operation_indexes_and_json_pointers() -> None:
+    """Field-level rejection metadata must flow into ProposalRepairScope."""
+    from novel_agent.domain.ids import ArtifactId, CommitId, StableId
+    from novel_agent.domain.memory_write import (
+        CuratorProposalRejection,
+        MemoryWriteBudget,
+        MemoryWriteBudgetRemaining,
+        ProposalRejectionKind,
+        ProposalRejectionStage,
+    )
+    from novel_agent.services.pre_candidate_repair import (
+        BoundedPreCandidateRepairPolicy,
+        proposal_rejection_signature,
+    )
+
+    rejection = CuratorProposalRejection(
+        rejection_id=StableId("rejection.fields"),
+        attempt_id=StableId("attempt.fields"),
+        workflow_request_id=StableId("workflow.fields"),
+        base_commit=CommitId("sha256:" + "0" * 64),
+        stage=ProposalRejectionStage.SEMANTIC_CONTRACT,
+        kind=ProposalRejectionKind.INVALID_EVIDENCE,
+        reason_code="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+        retryable=True,
+        rejection_signature=proposal_rejection_signature(
+            {"reason": "unsupported", "stage": "semantic_contract"}
+        ),
+        output_hash=ArtifactId("sha256:" + "1" * 64),
+        operation_indexes=(2, 5),
+        json_pointers=("/operations/2/evidence_refs/0", "/operations/5/evidence_refs/1"),
+        violation_rule="candidate_text_must_support_record",
+        safe_feedback=("Replace evidence candidate for operation 2 and 5.",),
+        created_at=datetime.now(UTC),
+    )
+    policy = BoundedPreCandidateRepairPolicy()
+    directive = policy.decide(
+        rejection=rejection,
+        attempt_count=1,
+        rejection_count=1,
+        same_output_count=0,
+        same_rejection_count=0,
+        budget=MemoryWriteBudget(),
+        remaining=MemoryWriteBudgetRemaining(
+            candidate_revisions=2,
+            curator_repairs=1,
+            normalization_passes=3,
+            guardian_reviews=2,
+            context_refreshes=1,
+            total_model_calls=2,
+            token_budget=24000,
+            wall_clock_budget_ms=180000,
+        ),
+    )
+    scope = directive.scope
+    assert scope.mutable_operation_indexes == (2, 5)
+    assert scope.json_pointers == (
+        "/operations/2/evidence_refs/0",
+        "/operations/5/evidence_refs/1",
+    )
+    assert scope.violation_rule == "candidate_text_must_support_record"

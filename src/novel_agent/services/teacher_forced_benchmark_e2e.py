@@ -24,6 +24,7 @@ from novel_agent.adapters.memory_write import (
     LegacyRiskClassifierAdapter,
     LegacyWriteGateAdapter,
     ProjectionServiceReadinessAdapter,
+    RefusingCommitPort,
     RepositoryCanonicalReadAdapter,
     TeacherForcedCuratorPort,
 )
@@ -93,6 +94,7 @@ from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, Model
 from novel_agent.domain.retrieval_routing import (
     ProjectionAttestation,
     RetrievalBackendProfile,
+    RoutePlan,
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
@@ -110,6 +112,7 @@ from novel_agent.domain.stage2 import (
     CuratorBootstrapDraft,
     CuratorReplayResult,
     EvaluatorDisposition,
+    EvidenceSupportGateMode,
     ExecutionStatus,
     GuardianDecisionDraft,
     GuardianOutcome,
@@ -123,6 +126,7 @@ from novel_agent.domain.stage2 import (
     ProposedItem,
     PublicBenchmarkConfig,
     PublicCheckpointCase,
+    QualityRepairFeatureFlags,
     ReferenceAsset,
     ReferenceRootDocument,
     ScenarioChapterTransition,
@@ -251,16 +255,21 @@ class TeacherForcedBenchmarkE2ERunner:
         retrieval_backend_profile: RetrievalBackendProfile = RetrievalBackendProfile.SCRIPTED_SMOKE,
         real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
         database_url: str | None = None,
+        quality_repair_flags: QualityRepairFeatureFlags | None = None,
+        memory_write_dry_run: bool = False,
     ) -> None:
-        self._paired = Stage2PairedPilotRunner(
-            token_budget=token_budget,
-            max_candidates=max_candidates,
-            retrieval_backend_profile=retrieval_backend_profile,
-        )
         self._semantic_endpoint = semantic_endpoint
         self._retrieval_backend_profile = retrieval_backend_profile
         self._real_hybrid_backend_provider = real_hybrid_backend_provider
         self._database_url = database_url
+        self._quality_repair_flags = quality_repair_flags or QualityRepairFeatureFlags()
+        self._memory_write_dry_run = memory_write_dry_run
+        self._paired = Stage2PairedPilotRunner(
+            token_budget=token_budget,
+            max_candidates=max_candidates,
+            retrieval_backend_profile=retrieval_backend_profile,
+            controller_mode=self._quality_repair_flags.controller_mode,
+        )
 
     def run(
         self,
@@ -306,7 +315,10 @@ class TeacherForcedBenchmarkE2ERunner:
         session_factory = build_session_factory(engine)
         try:
             project_id = source_project(bundle)
-            harness = self._agent_harness(self._semantic_endpoint)
+            harness = self._agent_harness(
+                self._semantic_endpoint,
+                quality_repair_flags=self._quality_repair_flags,
+            )
             resume_attestation: ProjectionAttestation | None = None
             if resume:
                 commits = CommitService(session_factory)
@@ -439,6 +451,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 information_profile=information_profile,
                 artifacts=artifacts,
                 commits=CommitService(session_factory),
+                project_id=project_id,
                 projections=DerivedProjectionService(
                     ProjectionOutboxRepository(session_factory),
                     ExactReplayProjectionBuilder(),
@@ -452,6 +465,8 @@ class TeacherForcedBenchmarkE2ERunner:
                 profile_root_hash=project_profile.root_hash,
                 real_hybrid_backend_provider=self._real_hybrid_backend_provider,
                 recover_checkpoint_chapter=(resume_chapter if recover_checkpoint else None),
+                quality_repair_flags=self._quality_repair_flags,
+                memory_write_dry_run=self._memory_write_dry_run,
             )
             public_config = PublicBenchmarkConfig(
                 schema_version=bundle.bundle_schema_version,
@@ -637,6 +652,9 @@ class TeacherForcedBenchmarkE2ERunner:
                 "curator_semantic_extraction_enabled": harness.responses is None,
                 "quality_blocker": self._quality_blocker(
                     harness.responses is None, retrieval_quality_eligible
+                ),
+                "quality_repair_flags": transition.quality_repair_flags.model_dump(
+                    mode="json"
                 ),
                 "project_database": database_descriptor,
                 "project_directory": str(resolved_project_directory),
@@ -1027,7 +1045,11 @@ class TeacherForcedBenchmarkE2ERunner:
             harness.responses.add(request.request_id, model)
 
     @staticmethod
-    def _agent_harness(endpoint: ModelEndpointPort | None = None) -> _AgentHarness:
+    def _agent_harness(
+        endpoint: ModelEndpointPort | None = None,
+        *,
+        quality_repair_flags: QualityRepairFeatureFlags | None = None,
+    ) -> _AgentHarness:
         package_root = Path(__file__).parents[1]
         prompt_directory = package_root / "prompts"
         skill_directory = package_root / "skills"
@@ -1251,6 +1273,7 @@ class TeacherForcedBenchmarkE2ERunner:
 
         def controller_policy_factory(
             sealed_tool_policy: ToolPolicy,
+            route_plans: tuple[RoutePlan, ...] = (),
         ) -> Any:
             from novel_agent.agents.controller import StructuredControllerPolicy
 
@@ -1279,7 +1302,22 @@ class TeacherForcedBenchmarkE2ERunner:
                     timeout_seconds=600,
                 )
 
-            policy = StructuredControllerPolicy(controller_runner, sealed_spec, request_factory)
+            policy = StructuredControllerPolicy(
+                controller_runner,
+                sealed_spec,
+                request_factory,
+                route_plans=route_plans,
+                max_decision_model_calls=(
+                    quality_repair_flags.max_controller_decision_model_calls
+                    if quality_repair_flags is not None
+                    else 2
+                ),
+                max_agentic_actions=(
+                    quality_repair_flags.max_agentic_actions
+                    if quality_repair_flags is not None
+                    else 8
+                ),
+            )
             if policy.tool_policy_hash != sealed_tool_policy.content_hash:
                 raise TeacherForcedBenchmarkError(
                     "StructuredControllerPolicy tool_policy_hash mismatch after construction"
@@ -1409,6 +1447,7 @@ class _TeacherForcedTransition:
         information_profile: BenchmarkInformationProfile,
         artifacts: ArtifactRepository,
         commits: CommitService,
+        project_id: ProjectId,
         projections: DerivedProjectionService,
         snapshots: DerivedSnapshotRepository,
         harness: _AgentHarness,
@@ -1418,11 +1457,14 @@ class _TeacherForcedTransition:
         profile_root_hash: ArtifactId,
         real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
         recover_checkpoint_chapter: int | None = None,
+        quality_repair_flags: QualityRepairFeatureFlags | None = None,
+        memory_write_dry_run: bool = False,
     ) -> None:
         self.bundle = bundle
         self.profile = information_profile
         self.artifacts = artifacts
         self.commits = commits
+        self._project_id = project_id
         self.projections = projections
         self.snapshots = snapshots
         self.harness = harness
@@ -1432,6 +1474,8 @@ class _TeacherForcedTransition:
         self.profile_root_hash = profile_root_hash
         self.real_hybrid_backend_provider = real_hybrid_backend_provider
         self.recover_checkpoint_chapter = recover_checkpoint_chapter
+        self.quality_repair_flags = quality_repair_flags or QualityRepairFeatureFlags()
+        self.memory_write_dry_run = memory_write_dry_run
         self.progress_writer: _ProgressWriter | None = None
         self.timeline = SequentialTextRootService()
         self.case_by_chapter = {case.history_range[1]: case for case in bundle.case_manifests}
@@ -1478,10 +1522,24 @@ class _TeacherForcedTransition:
         )
         self._boundary_registry = InformationBoundaryRegistryAdapter(self._boundary_port, artifacts)
         self._canonical_read = RepositoryCanonicalReadAdapter(commits, artifacts)
-        model_curator = ModelCurator(harness.gateway)
+        model_curator = ModelCurator(
+            harness.gateway,
+            enforce_support_gate=(
+                self.quality_repair_flags.evidence_support_gate
+                == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+            ),
+        )
         self._curator_port = TeacherForcedCuratorPort(
-            CuratorReplayAgent(model_curator, harness.runner),
-            CuratorRepairAgent(model_curator, harness.runner),
+            CuratorReplayAgent(
+                model_curator,
+                harness.runner,
+                evidence_contract=self.quality_repair_flags.curator_evidence_contract,
+            ),
+            CuratorRepairAgent(
+                model_curator,
+                harness.runner,
+                evidence_contract=self.quality_repair_flags.curator_evidence_contract,
+            ),
             artifacts,
             TeacherForcedBenchmarkE2ERunner._request,
             self._script_workflow_model,
@@ -1505,7 +1563,11 @@ class _TeacherForcedTransition:
             risk_classifier=LegacyRiskClassifierAdapter(artifacts),
             write_gate=LegacyWriteGateAdapter(artifacts),
             guardian=self._guardian_port,
-            commit=CommitServiceMemoryWriteAdapter(commits, artifacts),
+            commit=(
+                RefusingCommitPort(canonical_commit=commits.current_commit(self._project_id))
+                if self.memory_write_dry_run
+                else CommitServiceMemoryWriteAdapter(commits, artifacts)
+            ),
             information_boundary=self._boundary_port,
             artifacts=artifacts,
             projection=ProjectionServiceReadinessAdapter(projections, snapshots, artifacts),
@@ -1882,6 +1944,7 @@ class _TeacherForcedTransition:
                 "specs": [spec.content_hash.root for spec in self.harness.specs],
                 "prompts": [ref.content_hash.root for ref in self.harness.prompt_refs],
                 "skills": [ref.content_hash.root for ref in self.harness.skill_refs],
+                "quality_repair_flags": self.quality_repair_flags.model_dump(mode="json"),
             }
         )
 

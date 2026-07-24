@@ -274,6 +274,14 @@
           "title": "Created At",
           "type": "string"
         },
+        "json_pointers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Json Pointers",
+          "type": "array"
+        },
         "kind": {
           "$ref": "#/$defs/ProposalRejectionKind"
         },
@@ -287,6 +295,14 @@
             }
           ],
           "default": null
+        },
+        "operation_indexes": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Operation Indexes",
+          "type": "array"
         },
         "output_hash": {
           "anyOf": [
@@ -343,6 +359,18 @@
           },
           "title": "Validation Error Paths",
           "type": "array"
+        },
+        "violation_rule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Violation Rule"
         },
         "workflow_request_id": {
           "$ref": "#/$defs/StableId"

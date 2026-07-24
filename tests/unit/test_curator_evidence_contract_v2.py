@@ -1,0 +1,749 @@
+"""WP4/WP5: candidate-id binding and support enforcement."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, cast
+
+import pytest
+
+from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
+from novel_agent.domain.changes import (
+    ChangeOperationType,
+    ChapterChangeDraftV2,
+    CuratedOperationDraftV2,
+    CuratorEntityRecord,
+    CuratorStateRecord,
+    CuratorStoryTime,
+    EvidenceRepairAction,
+    EvidenceRepairDraft,
+    EvidenceSupportDisposition,
+    WorldRecordKind,
+)
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
+from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.text import TextBlock
+from novel_agent.domain.world import TruthClass
+from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
+from novel_agent.services.model_curation import (
+    CuratorProposalSemanticRejected,
+    ModelCurationContractError,
+    ModelCurator,
+)
+
+
+class _FakeGateway:
+    def __init__(self, draft: ChapterChangeDraftV2) -> None:
+        self._draft = draft
+
+    async def generate_structured(self, request, model_type):
+        assert model_type is ChapterChangeDraftV2
+        assert "EVIDENCE_CANDIDATES" in request.prompt
+        call = type(
+            "Call",
+            (),
+            {
+                "request_id": StableId("model.1"),
+                "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
+            },
+        )()
+        return self._draft, call
+
+
+def _root_with(text: str) -> TextRootDocument:
+    block = TextBlock(
+        block_id=StableId("block.c21"),
+        chapter_id=StableId("chapter.21"),
+        scene_id=StableId("scene.21"),
+        narrative_index=0,
+        text=text,
+    )
+    scene = SceneDocument(
+        scene_id=StableId("scene.21"),
+        scene_index=0,
+        blocks=(block,),
+    )
+    chapter = ChapterDocument(
+        chapter_id=StableId("chapter.21"),
+        chapter_index=21,
+        scenes=(scene,),
+    )
+    return TextRootDocument(
+        root_hash=ArtifactId("sha256:" + "f" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        chapters=(chapter,),
+    )
+
+
+def _request(request_id: str) -> ModelRequest:
+    return ModelRequest(
+        request_id=StableId(request_id),
+        run_id=RunId("run.v2"),
+        task_id=TaskId("task.v2"),
+        model_role=ModelRole.BATCH_TEST,
+        purpose=ModelCallPurpose.BATCH_TEST,
+        trace_id="trace-v2",
+        prompt="unused",
+    )
+
+
+def _world() -> WorldRootDocument:
+    return WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "1" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=CommitId("sha256:" + "2" * 64),
+    )
+
+
+def test_v2_binds_candidate_and_rejects_unrelated() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    good = next(item for item in candidates if "confidence" in item.text)
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(good.candidate_id,),
+            ),
+        ),
+    )
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
+    changes, _call, out = asyncio.run(
+        curator.extract_reported_v2(
+            root, 21, CommitId("sha256:" + "3" * 64), _world(), _request("req.v2"),
+        )
+    )
+    assert out.chapter_index == 21
+    assert changes.operations
+    assert changes.operations[0].evidence_refs[0].span is not None
+    assert changes.operations[0].evidence_refs[0].span.start == good.start
+
+    from novel_agent.domain.changes import EvidenceCandidate
+    from novel_agent.services.artifacts import sha256_id
+
+    weak_text = "shuang-er appears at the door and starts mocking."
+    weak = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.weak"),
+        block_id=StableId("block.c21"),
+        chapter_index=21,
+        scene_index=0,
+        text=weak_text,
+        start=0,
+        end=len(weak_text),
+        content_hash=sha256_id(weak_text.encode("utf-8")),
+    )
+    # Inject weak candidate into generator catalog path via monkeypatched generate.
+    gen_all = EvidenceCandidateGenerator()
+    original_generate = gen_all.generate
+
+    def _generate_with_weak(text_root, chapter_index):
+        base = original_generate(text_root, chapter_index)
+        return (*base, weak)
+
+    gen_all.generate = _generate_with_weak  # type: ignore[method-assign]
+    unrelated = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(weak.candidate_id,),
+            ),
+        ),
+    )
+    bad_curator = ModelCurator(
+        _FakeGateway(unrelated), evidence_generator=gen_all, enforce_support_gate=True
+    )
+    try:
+        asyncio.run(
+            bad_curator.extract_reported_v2(
+                root, 21, CommitId("sha256:" + "3" * 64), _world(), _request("req.v2.bad"),
+            )
+        )
+        raise AssertionError("expected unresolved-evidence rejection")
+    except CuratorProposalSemanticRejected as exc:
+        assert "UNRESOLVED" in exc.reason_code
+        assert exc.operation_indexes == (0,)
+        assert exc.violation_rule == "partial_evidence_unresolved_no_verifier"
+
+
+def test_replay_agent_uses_candidate_v2() -> None:
+    """CuratorReplayAgent must default to the CANDIDATE_ID_V2 evidence contract."""
+    from novel_agent.agents.curator import CuratorReplayAgent
+    from novel_agent.domain.stage2 import CuratorEvidenceContract
+    from novel_agent.services.model_curation import ModelCurator
+
+    agent = CuratorReplayAgent(
+        cast(Any, ModelCurator(cast(Any, None))),
+        cast(Any, None),
+    )
+    assert agent.evidence_contract is CuratorEvidenceContract.CANDIDATE_ID_V2
+
+    legacy = CuratorReplayAgent(
+        cast(Any, ModelCurator(cast(Any, None))),
+        cast(Any, None),
+        evidence_contract=CuratorEvidenceContract.LEGACY_OFFSET_V1,
+    )
+    assert legacy.evidence_contract is CuratorEvidenceContract.LEGACY_OFFSET_V1
+
+
+class _RepairGateway:
+    """Fake gateway for evidence_repair_v2 returning EvidenceRepairDraft lists."""
+
+    def __init__(self, drafts: list[EvidenceRepairDraft]) -> None:
+        self._drafts = drafts
+        self.requests: list[ModelRequest] = []
+
+    async def generate_structured(
+        self, request: ModelRequest, model_type: object
+    ) -> tuple[list[EvidenceRepairDraft], object]:
+        self.requests.append(request)
+        call = type(
+            "Call",
+            (),
+            {
+                "request_id": StableId("model.repair"),
+                "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
+            },
+        )()
+        return list(self._drafts), call
+
+
+_COMMIT = CommitId("sha256:" + "3" * 64)
+
+
+def _v2_state_draft(candidate_id: StableId, chapter_index: int = 21) -> ChapterChangeDraftV2:
+    return ChapterChangeDraftV2(
+        chapter_index=chapter_index,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate_id,),
+            ),
+        ),
+    )
+
+
+def _v2_parent_changes(
+    root: TextRootDocument,
+    gen: EvidenceCandidateGenerator,
+    candidate_id: StableId,
+    request_id: str = "req.parent",
+) -> Any:
+    draft = _v2_state_draft(candidate_id)
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request(request_id))
+    )
+    return changes
+
+
+def test_v2_rejects_draft_with_mismatched_chapter_index() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    draft = _v2_state_draft(good.candidate_id, chapter_index=99)
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(ModelCurationContractError, match="draft chapter"):
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.chapter-mismatch")
+            )
+        )
+
+
+def test_v2_rejects_unknown_evidence_candidate_id() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(StableId("evidence-candidate.missing"),),
+            ),
+        ),
+    )
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.unknown-candidate")
+            )
+        )
+    assert exc.value.violation_rule == "candidate_id_must_belong_to_chapter"
+    assert exc.value.information_boundary is True
+    assert exc.value.safe_feedback == ("evidence-candidate.missing: unknown evidence candidate",)
+    assert exc.value.json_pointers == ("/operations/0/evidence_candidate_ids/0",)
+
+
+def test_v2_skips_support_gate_enforcement_when_disabled() -> None:
+    text = (
+        "chen holds extreme_confidence and cultivation-attitude firmly! "
+        "The weather is sunny and calm today!"
+    )
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    unrelated = next(
+        item for item in candidates if "confidence" not in item.text and "attitude" not in item.text
+    )
+    draft = _v2_state_draft(unrelated.candidate_id)
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.gate-disabled"))
+    )
+    # Unrelated evidence is bound despite not supporting the record.
+    assert changes.operations
+    assert changes.operations[0].evidence_refs[0].span is not None
+    assert curator.last_support_decisions
+    assert curator.last_partial_support_decisions == ()
+
+
+def test_v2_entity_record_omits_evidence_refs_from_record_payload() -> None:
+    text = "chen the character arrives with cultivation-attitude."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "chen" in item.text)
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.ENTITY,
+                target_id=StableId("entity.chen"),
+                record=CuratorEntityRecord(
+                    entity_type="character",
+                    internal_label="chen",
+                ),
+                evidence_candidate_ids=(good.candidate_id,),
+            ),
+        ),
+    )
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.entity"))
+    )
+    payload = changes.operations[0].payload
+    assert isinstance(payload, dict) and isinstance(payload["record"], dict)
+    assert "evidence_refs" not in payload["record"]
+
+
+def test_evidence_repair_v2_replaces_evidence_with_new_candidate_ids() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    other = next(item for item in candidates if item.candidate_id != good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(other.candidate_id,),
+        action=EvidenceRepairAction.REPLACE_EVIDENCE,
+    )
+    gateway = _RepairGateway([repair])
+    curator = ModelCurator(gateway, evidence_generator=gen, enforce_support_gate=True)
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(
+            root, 21, _COMMIT, parent_changes, _request("req.repair.replace")
+        )
+    )
+
+    assert drafts == (repair,)
+    assert len(changes.operations) == 1
+    new_evidence = changes.operations[0].evidence_refs[0]
+    assert new_evidence.span is not None
+    assert new_evidence.span.start == other.start
+    assert new_evidence.span.end == other.end
+    assert changes.change_set_id.root.startswith("changes.model.repair.")
+    # Operation identity and payload are preserved; only evidence_refs change.
+    assert changes.operations[0].operation_id == parent_changes.operations[0].operation_id
+    assert changes.operations[0].target_id == parent_changes.operations[0].target_id
+    assert changes.operations[0].operation == parent_changes.operations[0].operation
+    assert changes.operations[0].payload == parent_changes.operations[0].payload
+    assert "EVIDENCE_REPAIR_INPUT" in gateway.requests[0].prompt
+    assert curator.last_evidence_candidates
+
+
+def test_evidence_repair_v2_drops_operation_on_drop_action() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(),
+        action=EvidenceRepairAction.DROP_OPERATION,
+    )
+    curator = ModelCurator(
+        _RepairGateway([repair]), evidence_generator=gen, enforce_support_gate=True
+    )
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(root, 21, _COMMIT, parent_changes, _request("req.repair.drop"))
+    )
+
+    assert drafts == (repair,)
+    assert changes.operations == ()
+
+
+def test_evidence_repair_v2_keeps_operation_on_mark_unresolved() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(),
+        action=EvidenceRepairAction.MARK_UNRESOLVED,
+    )
+    curator = ModelCurator(
+        _RepairGateway([repair]), evidence_generator=gen, enforce_support_gate=True
+    )
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(
+            root, 21, _COMMIT, parent_changes, _request("req.repair.unresolved")
+        )
+    )
+
+    assert drafts == (repair,)
+    assert changes.operations == parent_changes.operations
+
+
+def test_evidence_repair_v2_passes_through_operations_without_repair_draft() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    curator = ModelCurator(_RepairGateway([]), evidence_generator=gen, enforce_support_gate=True)
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(root, 21, _COMMIT, parent_changes, _request("req.repair.noop"))
+    )
+
+    assert drafts == ()
+    assert changes.operations == parent_changes.operations
+
+
+def test_evidence_repair_v2_rejects_unknown_replacement_candidate() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(StableId("evidence-candidate.missing"),),
+        action=EvidenceRepairAction.REPLACE_EVIDENCE,
+    )
+    curator = ModelCurator(
+        _RepairGateway([repair]), evidence_generator=gen, enforce_support_gate=True
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY"
+    ) as exc:
+        asyncio.run(
+            curator.evidence_repair_v2(
+                root, 21, _COMMIT, parent_changes, _request("req.repair.unknown")
+            )
+        )
+    assert exc.value.violation_rule == "candidate_id_must_belong_to_chapter"
+    assert exc.value.information_boundary is True
+    assert exc.value.json_pointers == ("/operations/0/evidence_candidate_ids/0",)
+
+
+def test_evidence_repair_v2_filters_parent_ops_by_repair_operation_indexes() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(good.candidate_id,),
+        action=EvidenceRepairAction.REPLACE_EVIDENCE,
+    )
+    gateway = _RepairGateway([repair])
+    curator = ModelCurator(gateway, evidence_generator=gen, enforce_support_gate=True)
+    asyncio.run(
+        curator.evidence_repair_v2(
+            root,
+            21,
+            _COMMIT,
+            parent_changes,
+            _request("req.repair.scoped"),
+            repair_operation_indexes=(0,),
+        )
+    )
+
+    sent = gateway.requests[0].prompt
+    assert "REPAIR_OPERATIONS=" in sent
+    assert parent_changes.operations[0].target_id.root in sent
+
+
+# -- Evidence Support Gate: disposition-aware enforcement (P0 repair) --
+
+
+def test_v2_rejects_contradicts_evidence_without_verifier() -> None:
+    """A CONTRADICTS candidate (negation near primary token) is hard-rejected."""
+    text = "chen does not have cultivation-attitude anymore."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    bad = candidates[0]
+    draft = _v2_state_draft(bad.candidate_id)
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.contradicts")
+            )
+        )
+    assert exc.value.violation_rule == "candidate_text_contradicts_or_unrelated"
+    assert exc.value.operation_indexes == (0,)
+
+
+def test_v2_partial_evidence_passes_when_verifier_supports() -> None:
+    """A PARTIAL candidate is admitted when the semantic verifier returns SUPPORTS."""
+    text = "the weather is sunny and calm today."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    weak = candidates[0]
+    draft = _v2_state_draft(weak.candidate_id)
+
+    verifier_calls: list[tuple[object, object]] = []
+
+    def verifier(record, candidate) -> tuple[EvidenceSupportDisposition, str]:
+        verifier_calls.append((record, candidate))
+        return (EvidenceSupportDisposition.SUPPORTS, "VERIFIER_OK")
+
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        semantic_verifier=verifier,
+    )
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.verifier-ok"))
+    )
+    assert changes.operations
+    assert verifier_calls
+    assert curator.last_partial_support_decisions
+
+
+def test_v2_partial_evidence_rejected_when_verifier_contradicts() -> None:
+    """A PARTIAL candidate is rejected when the verifier downgrades it."""
+    text = "the weather is sunny and calm today."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    weak = candidates[0]
+    draft = _v2_state_draft(weak.candidate_id)
+
+    def verifier(record, candidate) -> tuple[EvidenceSupportDisposition, str]:
+        return (EvidenceSupportDisposition.CONTRADICTS, "VERIFIER_CONTRADICTS")
+
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        semantic_verifier=verifier,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.verifier-no")
+            )
+        )
+    assert exc.value.violation_rule == "semantic_verifier_rejected_partial"
+    assert exc.value.operation_indexes == (0,)
+
+
+def test_v2_partial_evidence_fails_closed_without_verifier() -> None:
+    """A PARTIAL candidate with no verifier fails closed (UNRESOLVED)."""
+    text = "the weather is sunny and calm today."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    weak = candidates[0]
+    draft = _v2_state_draft(weak.candidate_id)
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.no-verifier")
+            )
+        )
+    assert exc.value.violation_rule == "partial_evidence_unresolved_no_verifier"
+    assert exc.value.operation_indexes == (0,)
+
+
+def test_v2_partial_evidence_fails_closed_when_verifier_raises() -> None:
+    """A verifier that raises is treated as unresolved and fails closed."""
+    text = "the weather is sunny and calm today."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    weak = candidates[0]
+    draft = _v2_state_draft(weak.candidate_id)
+
+    def verifier(record, candidate) -> tuple[EvidenceSupportDisposition, str]:
+        raise RuntimeError("verifier crashed")
+
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        semantic_verifier=verifier,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.verifier-crash")
+            )
+        )
+    assert exc.value.violation_rule == "partial_evidence_unresolved_no_verifier"
+
+
+# -- Production wiring (P0 repair) --
+
+
+def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partial() -> None:
+    """The E2E runner wires ModelCurator with enforce_support_gate derived from
+    QualityRepairFeatureFlags defaults; with no semantic_verifier injected (smoke),
+    PARTIAL must fail closed and CONTRADICTS must be hard-rejected.
+    """
+    from novel_agent.domain.stage2 import (
+        EvidenceSupportGateMode,
+        QualityRepairFeatureFlags,
+    )
+
+    flags = QualityRepairFeatureFlags()
+    assert flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+    enforce = (
+        flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+    )
+    assert enforce is True
+
+    # PARTIAL fails closed (no verifier wired in production smoke).
+    text = "the weather is sunny and calm today."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    weak = candidates[0]
+    draft = _v2_state_draft(weak.candidate_id)
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=enforce,
+    )
+    assert curator._semantic_verifier is None
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED"
+    ):
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.prod-partial")
+            )
+        )
+
+    # CONTRADICTS is hard-rejected.
+    bad_text = "chen does not have cultivation-attitude anymore."
+    bad_root = _root_with(bad_text)
+    bad_candidates = gen.generate(bad_root, 21)
+    assert bad_candidates
+    bad_draft = _v2_state_draft(bad_candidates[0].candidate_id)
+    bad_curator = ModelCurator(
+        _FakeGateway(bad_draft),
+        evidence_generator=gen,
+        enforce_support_gate=enforce,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
+    ):
+        asyncio.run(
+            bad_curator.extract_reported_v2(
+                bad_root, 21, _COMMIT, _world(), _request("req.v2.prod-contradicts")
+            )
+        )

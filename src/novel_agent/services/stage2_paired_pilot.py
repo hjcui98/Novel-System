@@ -39,6 +39,8 @@ from novel_agent.domain.stage2 import (
     AccessScope,
     BenchmarkInformationProfile,
     ContextBudget,
+    ControllerArm,
+    ControllerMode,
     MemoryResolutionRequest,
     PairedContextArmResult,
     PairedContextComparison,
@@ -83,6 +85,7 @@ class Stage2PairedPilotRunner:
         token_budget: int = 4000,
         max_candidates: int = 20,
         retrieval_backend_profile: RetrievalBackendProfile = RetrievalBackendProfile.SCRIPTED_SMOKE,
+        controller_mode: ControllerMode = ControllerMode.DETERMINISTIC,
     ) -> None:
         if token_budget < 1:
             raise ValueError("paired Pilot token budget must be positive")
@@ -91,6 +94,7 @@ class Stage2PairedPilotRunner:
         self._token_budget = token_budget
         self._max_candidates = max_candidates
         self._retrieval_backend_profile = retrieval_backend_profile
+        self._controller_mode = controller_mode
 
     @property
     def retrieval_backend_profile(self) -> RetrievalBackendProfile:
@@ -108,6 +112,7 @@ class Stage2PairedPilotRunner:
             report_id=StableId(f"stage2-paired-pilot.v0-2.{bundle.bundle_id.root}"),
             bundle_hash=bundle.content_hash,
             configuration_fingerprint=fingerprint,
+            controller_mode=self._controller_mode,
             cases=cases,
             paired_results_count=len(cases),
             comparable_results_count=sum(item.comparable for item in cases),
@@ -119,6 +124,13 @@ class Stage2PairedPilotRunner:
             safety_regression_count=sum(item.safety_regression for item in cases),
             accuracy_gain_count=sum(item.accuracy_gain for item in cases),
             tool_call_reduction_count=sum(item.tool_call_reduction for item in cases),
+            delta_gain_count=sum(
+                1
+                for item in cases
+                if item.delta_metrics is not None
+                and item.delta_metrics.gold_evidence_recall
+                > item.deterministic_metrics.gold_evidence_recall
+            ),
             held_out_complex_gain_proven=False,
         )
 
@@ -226,6 +238,19 @@ class Stage2PairedPilotRunner:
         )
         deterministic = self._metrics(case, comparison.deterministic)
         agentic = self._metrics(case, comparison.agentic)
+        delta_metrics: PairedPilotArmMetrics | None = None
+        arm_c_safety_regression = False
+        if self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA:
+            _arm_c_result, delta_metrics = self._build_arm_c(
+                case, comparison.deterministic, comparison.agentic
+            )
+            # Arm C safety regression compares the production candidate (C)
+            # against the deterministic floor (A), not B against A.
+            arm_c_safety_regression = (
+                delta_metrics.future_leakage_count > deterministic.future_leakage_count
+                or delta_metrics.mandatory_constraint_coverage
+                < deterministic.mandatory_constraint_coverage
+            )
         return PairedPilotCaseResult(
             case_id=case.case_id,
             information_profile=profile,
@@ -237,12 +262,17 @@ class Stage2PairedPilotRunner:
             blockers=comparison.blockers,
             deterministic_metrics=deterministic,
             agentic_metrics=agentic,
+            delta_metrics=delta_metrics,
             accuracy_gain=(agentic.gold_evidence_recall > deterministic.gold_evidence_recall),
             tool_call_reduction=(agentic.retrieval_call_count < deterministic.retrieval_call_count),
             safety_regression=(
-                agentic.future_leakage_count > deterministic.future_leakage_count
-                or agentic.mandatory_constraint_coverage
-                < deterministic.mandatory_constraint_coverage
+                arm_c_safety_regression
+                if self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+                else (
+                    agentic.future_leakage_count > deterministic.future_leakage_count
+                    or agentic.mandatory_constraint_coverage
+                    < deterministic.mandatory_constraint_coverage
+                )
             ),
         )
 
@@ -346,7 +376,7 @@ class Stage2PairedPilotRunner:
             )
         )
         controller_policy = (
-            controller_policy_factory(tool_policy)
+            controller_policy_factory(tool_policy, route_plans)
             if controller_policy_factory is not None
             else RouteBoundControllerPolicy(route_plans)
         )
@@ -430,6 +460,73 @@ class Stage2PairedPilotRunner:
         planner = DeterministicChannelPlanner()
         return tuple(planner.plan(need, capability) for need in needs)
 
+    @classmethod
+    def _build_arm_c(
+        cls,
+        case: BenchmarkCaseManifest,
+        deterministic: PairedContextArmResult,
+        agentic: PairedContextArmResult,
+    ) -> tuple[PairedContextArmResult, PairedPilotArmMetrics]:
+        """Build real Arm C = selected(A) union accepted_delta(B) and compute its metrics.
+
+        Arm C is the production candidate: the deterministic floor (A) plus the
+        Agentic delta (B's selected units that A missed), restricted to delta
+        that does not introduce future leakage.  Because ``future_leakage_count``
+        is an arm-level signal that cannot be attributed to a single candidate,
+        the entire delta is conservatively rejected whenever B leaked.
+        """
+        deterministic_selected_ids = set(deterministic.selected_unit_ids)
+        agentic_selected_candidates = tuple(
+            candidate
+            for trace in agentic.context.retrieval_traces
+            for candidate in trace.candidates
+            if candidate.selected
+        )
+        # delta(B) = B's selected candidates whose unit_id is not already in A.
+        delta_candidates = tuple(
+            candidate
+            for candidate in agentic_selected_candidates
+            if candidate.unit.unit_id not in deterministic_selected_ids
+        )
+        # accepted_delta(B): drop the whole delta when B leaked, since arm-level
+        # leakage cannot be localized to individual candidates.
+        accepted_delta = delta_candidates if agentic.future_leakage_count == 0 else ()
+        merged_traces = deterministic.context.retrieval_traces
+        if accepted_delta:
+            extra_trace = deterministic.context.retrieval_traces[0].model_copy(
+                update={
+                    "need_id": StableId("need.arm-c.delta"),
+                    "candidates": accepted_delta,
+                }
+            )
+            merged_traces = (*deterministic.context.retrieval_traces, extra_trace)
+        merged_selected_ids = tuple(
+            dict.fromkeys(
+                (
+                    *deterministic.selected_unit_ids,
+                    *(candidate.unit.unit_id for candidate in accepted_delta),
+                )
+            )
+        )
+        arm_c_context = deterministic.context.model_copy(
+            update={
+                "context_id": StableId("context.arm-c"),
+                "retrieval_traces": merged_traces,
+            }
+        )
+        arm_c_result = PairedContextArmResult(
+            arm=ControllerArm.DETERMINISTIC,
+            context=arm_c_context,
+            selected_unit_ids=merged_selected_ids,
+            retrieval_call_count=(
+                deterministic.retrieval_call_count + agentic.retrieval_call_count
+            ),
+            stop_reason=deterministic.stop_reason,
+            comparison_basis_fingerprint=deterministic.comparison_basis_fingerprint,
+            future_leakage_count=deterministic.future_leakage_count,
+        )
+        return arm_c_result, cls._metrics(case, arm_c_result)
+
     def _scripted_smoke_backend(
         self,
         world: WorldRootDocument,
@@ -493,6 +590,7 @@ class Stage2PairedPilotRunner:
                 "bundle_hash": bundle_hash.root,
                 "backend": "in-memory-oracle",
                 "controller_policy": "route-bound-v0.1",
+                "controller_mode": self._controller_mode.value,
                 "max_rounds": 2,
                 "max_calls_formula": "2*need_count",
                 "max_candidates": self._max_candidates,

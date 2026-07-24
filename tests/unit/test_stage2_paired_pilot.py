@@ -8,8 +8,19 @@ import pytest
 from pydantic import ValidationError
 
 from novel_agent.domain.benchmark import PlanEvidenceRef
-from novel_agent.domain.ids import CommitId, StableId
-from novel_agent.domain.memory import RetrievalChannel, RetrievalUnit, RetrievalUnitKind
+from novel_agent.domain.ids import ArtifactId, CommitId, StableId
+from novel_agent.domain.memory import (
+    ChannelHit,
+    ContextBudgetReport,
+    FusedCandidate,
+    RetrievalChannel,
+    RetrievalStopReason,
+    RetrievalTrace,
+    RetrievalUnit,
+    RetrievalUnitKind,
+    Stage1ContextPackage,
+    Stage1QueryIntent,
+)
 from novel_agent.domain.retrieval_routing import (
     RetrievalBackendProfile,
     SnapshotCapability,
@@ -17,11 +28,16 @@ from novel_agent.domain.retrieval_routing import (
 )
 from novel_agent.domain.stage2 import (
     BenchmarkInformationProfile,
+    ControllerArm,
+    ControllerMode,
+    ControllerStopReason,
+    PairedContextArmResult,
     PairedPilotCaseResult,
     PublicBenchmarkConfig,
     PublicCheckpointCase,
     Stage2PairedPilotReport,
 )
+from novel_agent.domain.text import EvidenceRef
 from novel_agent.services.benchmark_importer import (
     bundle_content_id,
     content_id,
@@ -45,7 +61,7 @@ def test_paired_pilot_runs_both_arms_on_one_audited_basis() -> None:
     assert report.future_leakage_count == 0
     assert report.safety_regression_count == 0
     assert report.accuracy_gain_count == 0
-    assert report.tool_call_reduction_count == 1
+    assert report.tool_call_reduction_count == 2
     assert report.held_out_complex_gain_proven is False
     result = report.cases[0]
     assert result.checkpoint_chapter == 20
@@ -355,3 +371,250 @@ def test_paired_pilot_matches_content_addressed_r1_plan_records_only_by_exact_go
         update={"text": json.dumps(goal.model_dump(mode="json") | {"summary": "wrong"})}
     )
     assert Stage2PairedPilotRunner._matches_plan(wrong, expected) is False
+
+
+_ARM_C_COMMIT = CommitId("sha256:" + "b" * 64)
+_ARM_C_SNAPSHOT = StableId("snapshot.arm-c")
+_ARM_C_CONFIG = ArtifactId("sha256:" + "d" * 64)
+
+
+def _arm_c_candidate(
+    unit_id: StableId,
+    *,
+    evidence_refs: tuple[EvidenceRef, ...] = (),
+) -> FusedCandidate:
+    unit = RetrievalUnit(
+        unit_id=unit_id,
+        unit_kind=RetrievalUnitKind.EVENT_ANCHOR,
+        source_commit=_ARM_C_COMMIT,
+        snapshot_id=_ARM_C_SNAPSHOT,
+        text=f"candidate {unit_id.root}",
+        evidence_refs=evidence_refs,
+    )
+    hit = ChannelHit(
+        unit=unit,
+        channel=RetrievalChannel.ANCHOR_BM25,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="arm-c fixture",
+    )
+    return FusedCandidate(unit=unit, fused_rank=1, rrf_score=1.0, channel_hits=(hit,))
+
+
+def _arm_c_result(
+    candidates: tuple[FusedCandidate, ...],
+    *,
+    arm: ControllerArm,
+    future_leakage_count: int = 0,
+    retrieval_call_count: int = 1,
+) -> PairedContextArmResult:
+    selected = tuple(candidate for candidate in candidates if candidate.selected)
+    trace = RetrievalTrace(
+        need_id=StableId("need.arm-c"),
+        intent=Stage1QueryIntent.RELATED_EVENT,
+        allowed_channels=(RetrievalChannel.ANCHOR_BM25,),
+        channel_candidate_counts={RetrievalChannel.ANCHOR_BM25: len(selected)},
+        candidates=candidates,
+        fusion_applied=True,
+        stop_reason=RetrievalStopReason.EXACT_SATISFIED,
+    )
+    context = Stage1ContextPackage(
+        context_id=StableId("context.arm-c"),
+        base_commit=_ARM_C_COMMIT,
+        snapshot_id=_ARM_C_SNAPSHOT,
+        task_contract="arm-c fixture contract",
+        retrieval_traces=(trace,),
+        budget_report=ContextBudgetReport(
+            token_budget=1000,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    return PairedContextArmResult(
+        arm=arm,
+        context=context,
+        selected_unit_ids=tuple(
+            dict.fromkeys(candidate.unit.unit_id for candidate in selected)
+        ),
+        retrieval_call_count=retrieval_call_count,
+        stop_reason=ControllerStopReason.SUFFICIENT,
+        comparison_basis_fingerprint=_ARM_C_CONFIG,
+        future_leakage_count=future_leakage_count,
+    )
+
+
+def test_arm_c_unions_selected_units_from_a_and_accepted_delta_b() -> None:
+    case = make_synthetic_bundle().case_manifests[0]
+    deterministic = _arm_c_result(
+        (
+            _arm_c_candidate(StableId("unit.a.one")),
+            _arm_c_candidate(StableId("unit.a.two")),
+        ),
+        arm=ControllerArm.DETERMINISTIC,
+    )
+    agentic = _arm_c_result(
+        (
+            # Already in A: must not contribute to the delta.
+            _arm_c_candidate(StableId("unit.a.two")),
+            # Genuine delta: selected by B, missed by A.
+            _arm_c_candidate(StableId("unit.b.three")),
+        ),
+        arm=ControllerArm.BOUNDED_R2,
+    )
+
+    arm_c, delta = Stage2PairedPilotRunner._build_arm_c(case, deterministic, agentic)
+
+    assert delta.selected_unit_count == 3
+    assert set(arm_c.selected_unit_ids) == {
+        StableId("unit.a.one"),
+        StableId("unit.a.two"),
+        StableId("unit.b.three"),
+    }
+
+
+def test_arm_c_rejects_delta_when_agentic_has_leakage() -> None:
+    case = make_synthetic_bundle().case_manifests[0]
+    deterministic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.a.one")),),
+        arm=ControllerArm.DETERMINISTIC,
+    )
+    agentic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.b.delta")),),
+        arm=ControllerArm.BOUNDED_R2,
+        future_leakage_count=1,
+    )
+
+    det_metrics = Stage2PairedPilotRunner._metrics(case, deterministic)
+    _arm_c, delta = Stage2PairedPilotRunner._build_arm_c(case, deterministic, agentic)
+
+    # B leaked -> accepted_delta is empty -> Arm C collapses onto Arm A.
+    assert delta.selected_unit_count == det_metrics.selected_unit_count
+    assert delta.gold_evidence_recall == det_metrics.gold_evidence_recall
+    assert delta.mandatory_constraint_coverage == det_metrics.mandatory_constraint_coverage
+    assert delta.future_leakage_count == det_metrics.future_leakage_count
+
+
+def test_arm_c_gold_recall_reflects_union() -> None:
+    case = make_synthetic_bundle().case_manifests[0]
+    promise_evidence = case.observed_use_gold[0].evidence_refs[0]
+    injury_evidence = case.operational_constraint_gold[0].evidence_refs[0]
+    deterministic = _arm_c_result(
+        (
+            _arm_c_candidate(
+                StableId("unit.a.injury"), evidence_refs=(injury_evidence,)
+            ),
+        ),
+        arm=ControllerArm.DETERMINISTIC,
+    )
+    agentic = _arm_c_result(
+        (
+            _arm_c_candidate(
+                StableId("unit.b.promise"), evidence_refs=(promise_evidence,)
+            ),
+        ),
+        arm=ControllerArm.BOUNDED_R2,
+    )
+
+    det_metrics = Stage2PairedPilotRunner._metrics(case, deterministic)
+    agentic_metrics = Stage2PairedPilotRunner._metrics(case, agentic)
+    _arm_c, delta = Stage2PairedPilotRunner._build_arm_c(case, deterministic, agentic)
+
+    # A and B cover disjoint evidence; the union in C recovers all gold.
+    assert det_metrics.gold_evidence_recall < agentic_metrics.gold_evidence_recall
+    assert delta.gold_evidence_recall == 1.0
+    assert delta.gold_evidence_recall > agentic_metrics.gold_evidence_recall
+
+
+def test_arm_c_safety_regression_compares_c_vs_a() -> None:
+    case_result = _report().cases[0]
+    payload = case_result.model_dump()
+    # Arm C with strictly worse mandatory coverage than Arm A must flag a
+    # regression against the deterministic floor.
+    regressed = case_result.deterministic_metrics.model_copy(
+        update={
+            "mandatory_constraint_coverage": max(
+                0.0, case_result.deterministic_metrics.mandatory_constraint_coverage - 0.1
+            )
+        }
+    )
+    payload["delta_metrics"] = regressed.model_dump()
+    payload["safety_regression"] = True
+    validated = PairedPilotCaseResult.model_validate(payload)
+    assert validated.safety_regression is True
+
+    # The same regressed Arm C must reject safety_regression=False.
+    payload["safety_regression"] = False
+    with pytest.raises(ValidationError, match="safety regression"):
+        PairedPilotCaseResult.model_validate(payload)
+
+
+def test_paired_pilot_delta_mode_builds_real_arm_c() -> None:
+    report = Stage2PairedPilotRunner(
+        controller_mode=ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+    ).run(make_synthetic_bundle())
+    result = report.cases[0]
+
+    assert result.delta_metrics is not None
+    # Arm C is a superset of Arm A, so it cannot regress against the floor.
+    assert result.safety_regression is False
+    assert (
+        result.delta_metrics.mandatory_constraint_coverage
+        >= result.deterministic_metrics.mandatory_constraint_coverage
+    )
+    assert (
+        result.delta_metrics.gold_evidence_recall
+        >= result.deterministic_metrics.gold_evidence_recall
+    )
+    assert result.delta_metrics.future_leakage_count == 0
+
+
+def test_arm_c_call_count_one_call_many_candidates_not_inflated() -> None:
+    """One B call returning multiple accepted delta candidates must not inflate
+    Arm C's retrieval_call_count to A + candidate_count.
+    """
+    case = make_synthetic_bundle().case_manifests[0]
+    deterministic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.a.one")),),
+        arm=ControllerArm.DETERMINISTIC,
+        retrieval_call_count=3,
+    )
+    agentic = _arm_c_result(
+        (
+            _arm_c_candidate(StableId("unit.b.two")),
+            _arm_c_candidate(StableId("unit.b.three")),
+            _arm_c_candidate(StableId("unit.b.four")),
+        ),
+        arm=ControllerArm.BOUNDED_R2,
+        retrieval_call_count=1,
+    )
+
+    arm_c, delta = Stage2PairedPilotRunner._build_arm_c(case, deterministic, agentic)
+
+    # 3 (A) + 1 (B) = 4, not 3 + 3 candidates = 6.
+    assert arm_c.retrieval_call_count == 4
+    assert delta.retrieval_call_count == 4
+
+
+def test_arm_c_call_count_many_calls_one_candidate_not_deflated() -> None:
+    """Multiple B calls producing one accepted delta candidate must not deflate
+    Arm C's retrieval_call_count to A + 1.
+    """
+    case = make_synthetic_bundle().case_manifests[0]
+    deterministic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.a.one")),),
+        arm=ControllerArm.DETERMINISTIC,
+        retrieval_call_count=2,
+    )
+    agentic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.b.two")),),
+        arm=ControllerArm.BOUNDED_R2,
+        retrieval_call_count=5,
+    )
+
+    arm_c, delta = Stage2PairedPilotRunner._build_arm_c(case, deterministic, agentic)
+
+    # 2 (A) + 5 (B) = 7, not 2 + 1 candidate = 3.
+    assert arm_c.retrieval_call_count == 7
+    assert delta.retrieval_call_count == 7

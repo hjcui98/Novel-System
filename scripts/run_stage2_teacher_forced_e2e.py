@@ -36,7 +36,7 @@ from novel_agent.domain.benchmark import BenchmarkBundle
 from novel_agent.domain.ids import ArtifactId, RunId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
-from novel_agent.domain.stage2 import BenchmarkInformationProfile
+from novel_agent.domain.stage2 import BenchmarkInformationProfile, QualityRepairFeatureFlags
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.embedding_cache import SqlEmbeddingCache
@@ -115,6 +115,24 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--stop-after-genesis", action="store_true")
     value.add_argument("--max-chapter", type=int, default=None)
     value.add_argument("--resume", action="store_true")
+    value.add_argument(
+        "--quality-repair-config",
+        type=Path,
+        default=None,
+        help=(
+            "JSON file with QualityRepairFeatureFlags (controller_mode, "
+            "curator_evidence_contract, evidence_support_gate, "
+            "max_controller_decision_model_calls, max_agentic_actions)"
+        ),
+    )
+    value.add_argument(
+        "--memory-write-dry-run",
+        action="store_true",
+        help=(
+            "Pre-commit dry-run: generate Candidate but never call CommitPort "
+            "(candidate commit count = 0)"
+        ),
+    )
     return value
 
 
@@ -123,7 +141,8 @@ def main() -> int:
     bundle = HumanBenchmarkCompiler().compile(args.source)
     project_directory = (args.resume_project or args.output_directory).resolve()
     retrieval_profile = RetrievalBackendProfile(args.retrieval_backend)
-    _ensure_experiment_manifest(args, bundle, project_directory)
+    quality_repair_flags = _load_quality_repair_flags(args)
+    _ensure_experiment_manifest(args, bundle, project_directory, quality_repair_flags)
     endpoint = (
         OpenAICompatibleChatEndpoint(
             base_url=args.model_base_url,
@@ -153,6 +172,8 @@ def main() -> int:
             retrieval_backend_profile=retrieval_profile,
             real_hybrid_backend_provider=real_hybrid_provider,
             database_url=args.database_url,
+            quality_repair_flags=quality_repair_flags,
+            memory_write_dry_run=bool(args.memory_write_dry_run),
         ).run(
             args.source,
             args.output_directory,
@@ -302,10 +323,18 @@ def _loopback_http_url(value: str, label: str) -> ParseResult:
     return parsed
 
 
+def _load_quality_repair_flags(args: argparse.Namespace) -> QualityRepairFeatureFlags:
+    if args.quality_repair_config is None:
+        return QualityRepairFeatureFlags()
+    payload = json.loads(args.quality_repair_config.read_text("utf-8"))
+    return QualityRepairFeatureFlags.model_validate(payload)
+
+
 def _ensure_experiment_manifest(
     args: argparse.Namespace,
     bundle: BenchmarkBundle,
     project_directory: Path,
+    quality_repair_flags: QualityRepairFeatureFlags,
 ) -> None:
     project_directory.mkdir(parents=True, exist_ok=True)
     database_url = (
@@ -341,6 +370,8 @@ def _ensure_experiment_manifest(
         "reranker_url": _loopback_http_url(args.reranker_url, "reranker").geturl(),
         "model_base_url": args.model_base_url,
         "model": args.model,
+        "quality_repair_flags": quality_repair_flags.model_dump(mode="json"),
+        "memory_write_dry_run": args.memory_write_dry_run,
     }
     path = project_directory / "experiment_manifest.json"
     if path.exists():

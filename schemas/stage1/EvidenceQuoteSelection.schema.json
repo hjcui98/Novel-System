@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Exact-quote fallback when pre-split candidates cannot cover a span.",
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "exact_quote": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Exact Quote",
+      "type": "string"
+    },
+    "left_context": {
+      "anyOf": [
+        {
+          "maxLength": 80,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Left Context"
+    },
+    "occurrence": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Occurrence"
+    },
+    "right_context": {
+      "anyOf": [
+        {
+          "maxLength": 80,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Right Context"
+    }
+  },
+  "required": [
+    "block_id",
+    "exact_quote"
+  ],
+  "title": "EvidenceQuoteSelection",
+  "type": "object"
+}

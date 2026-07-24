@@ -1,0 +1,31 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Model-visible subset of a trusted evidence candidate.",
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "block_id",
+    "text"
+  ],
+  "title": "EvidenceCandidateView",
+  "type": "object"
+}

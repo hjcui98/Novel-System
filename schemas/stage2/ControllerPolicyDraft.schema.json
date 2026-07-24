@@ -50,6 +50,22 @@
       "default": null,
       "title": "Rationale Code"
     },
+    "selected_action_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Selected Action Ids",
+      "type": "array"
+    },
+    "stop_after_action_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Stop After Action Ids",
+      "type": "array"
+    },
     "stop_reason": {
       "anyOf": [
         {

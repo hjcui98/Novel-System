@@ -7,6 +7,7 @@ from novel_agent.adapters.memory_write.teacher_forced import (
     LegacyRiskClassifierAdapter,
     LegacyWriteGateAdapter,
     ProjectionServiceReadinessAdapter,
+    RefusingCommitPort,
     RepositoryCanonicalReadAdapter,
     TeacherForcedCuratorPort,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "LegacyRiskClassifierAdapter",
     "LegacyWriteGateAdapter",
     "ProjectionServiceReadinessAdapter",
+    "RefusingCommitPort",
     "RepositoryCanonicalReadAdapter",
     "TeacherForcedCuratorPort",
 ]

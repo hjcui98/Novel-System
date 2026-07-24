@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "ControllerMode": {
+      "description": "Production vs diagnostic controller execution modes (WP0).",
+      "enum": [
+        "deterministic",
+        "standalone_agentic_diagnostic",
+        "deterministic_plus_agentic_delta"
+      ],
+      "title": "ControllerMode",
+      "type": "string"
+    },
+    "CuratorEvidenceContract": {
+      "description": "Evidence selection contract version for Curator proposals (WP0/WP4).",
+      "enum": [
+        "legacy_offset_v1",
+        "candidate_id_v2"
+      ],
+      "title": "CuratorEvidenceContract",
+      "type": "string"
+    },
+    "EvidenceSupportGateMode": {
+      "description": "Semantic support gate enforcement mode (WP0/WP5).",
+      "enum": [
+        "disabled",
+        "audit_only",
+        "enforce_pre_candidate"
+      ],
+      "title": "EvidenceSupportGateMode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Explicit feature flags for controller/curator quality repair.",
+  "properties": {
+    "controller_mode": {
+      "$ref": "#/$defs/ControllerMode",
+      "default": "deterministic"
+    },
+    "curator_evidence_contract": {
+      "$ref": "#/$defs/CuratorEvidenceContract",
+      "default": "candidate_id_v2"
+    },
+    "evidence_support_gate": {
+      "$ref": "#/$defs/EvidenceSupportGateMode",
+      "default": "enforce_pre_candidate"
+    },
+    "max_agentic_actions": {
+      "default": 8,
+      "maximum": 32,
+      "minimum": 0,
+      "title": "Max Agentic Actions",
+      "type": "integer"
+    },
+    "max_controller_decision_model_calls": {
+      "default": 2,
+      "maximum": 8,
+      "minimum": 0,
+      "title": "Max Controller Decision Model Calls",
+      "type": "integer"
+    }
+  },
+  "title": "QualityRepairFeatureFlags",
+  "type": "object"
+}

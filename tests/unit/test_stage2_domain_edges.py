@@ -209,6 +209,66 @@ def test_controller_policy_normalizes_non_mapping_and_rejects_invalid_shapes() -
     _expect_value_error(stop, "validate_action", "requires only a stop reason")
 
 
+def test_call_tool_decision_rejects_batch_plan_action_ids() -> None:
+    call_with_selected = _construct(
+        ControllerPolicyDecision,
+        action=ControllerPolicyAction.CALL_TOOL,
+        need_id=StableId("need.x"),
+        tool_name="memory.search_exact",
+        stop_reason=None,
+        selected_action_ids=(StableId("action.1"),),
+        rationale_code="reason",
+    )
+    _expect_value_error(
+        call_with_selected,
+        "validate_action",
+        "call_tool decision cannot carry batch plan action ids",
+    )
+
+    call_with_pending = _construct(
+        ControllerPolicyDecision,
+        action=ControllerPolicyAction.CALL_TOOL,
+        need_id=StableId("need.x"),
+        tool_name="memory.search_exact",
+        stop_reason=None,
+        pending_action_ids=(StableId("action.2"),),
+        rationale_code="reason",
+    )
+    _expect_value_error(
+        call_with_pending,
+        "validate_action",
+        "call_tool decision cannot carry batch plan action ids",
+    )
+
+
+def test_execute_plan_decision_requires_pending_action_ids_only() -> None:
+    execute_without_pending = _construct(
+        ControllerPolicyDecision,
+        action=ControllerPolicyAction.EXECUTE_PLAN,
+        need_id=None,
+        tool_name=None,
+        stop_reason=None,
+        pending_action_ids=(),
+        rationale_code="reason",
+    )
+    _expect_value_error(
+        execute_without_pending, "validate_action", "execute_plan requires pending action ids only"
+    )
+
+    execute_with_need = _construct(
+        ControllerPolicyDecision,
+        action=ControllerPolicyAction.EXECUTE_PLAN,
+        need_id=StableId("need.unexpected"),
+        tool_name=None,
+        stop_reason=None,
+        pending_action_ids=(StableId("action.1"),),
+        rationale_code="reason",
+    )
+    _expect_value_error(
+        execute_with_need, "validate_action", "execute_plan requires pending action ids only"
+    )
+
+
 def test_ready_context_resolution_requires_sufficiency_report() -> None:
     result = _construct(
         ContextResolutionResult,

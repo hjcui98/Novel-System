@@ -19,6 +19,8 @@ from novel_agent.domain.changes import (
     ChangeOperation,
     ChangeOperationType,
     ChapterChangeDraft,
+    EvidenceRepairAction,
+    EvidenceRepairDraft,
     ObservedChangeSet,
 )
 from novel_agent.domain.ids import ArtifactId, StableId
@@ -30,7 +32,7 @@ from novel_agent.domain.memory_write import (
     RepairScope,
 )
 from novel_agent.domain.model_calls import ModelRequest
-from novel_agent.domain.stage2 import AgentMode, AgentType
+from novel_agent.domain.stage2 import AgentMode, AgentType, CuratorEvidenceContract
 from novel_agent.ports.memory_write import CuratorRepairRequest, CuratorRepairResult
 from novel_agent.services.model_curation import ModelCurationContractError
 from tests.contract.test_stage2_contract import agent_receipt
@@ -346,7 +348,11 @@ def test_successful_facade_binds_artifacts_and_directive() -> None:
             return repaired, SimpleNamespace(), SimpleNamespace(unresolved=())
 
     result = asyncio.run(
-        CuratorRepairAgent(cast(Any, Curator()), cast(Any, Runner())).run(
+        CuratorRepairAgent(
+            cast(Any, Curator()),
+            cast(Any, Runner()),
+            evidence_contract=CuratorEvidenceContract.LEGACY_OFFSET_V1,
+        ).run(
             version=SCHEMA_VERSION,
             text_root=TEXT,
             chapter_index=23,
@@ -405,7 +411,11 @@ def test_facade_maps_model_contract_failures_to_retryable_rejection(
 
     with pytest.raises(CuratorRepairContractError) as caught:
         asyncio.run(
-            CuratorRepairAgent(cast(Any, Curator()), cast(Any, Runner())).run(
+            CuratorRepairAgent(
+                cast(Any, Curator()),
+                cast(Any, Runner()),
+                evidence_contract=CuratorEvidenceContract.LEGACY_OFFSET_V1,
+            ).run(
                 version=SCHEMA_VERSION,
                 text_root=TEXT,
                 chapter_index=23,
@@ -421,3 +431,211 @@ def test_facade_maps_model_contract_failures_to_retryable_rejection(
         )
 
     assert caught.value.reason_code == reason_code
+
+
+def test_evidence_contract_property_returns_configured_contract() -> None:
+    agent = CuratorRepairAgent(
+        cast(Any, None), cast(Any, None), evidence_contract=CuratorEvidenceContract.CANDIDATE_ID_V2
+    )
+    assert agent.evidence_contract is CuratorEvidenceContract.CANDIDATE_ID_V2
+    legacy = CuratorRepairAgent(
+        cast(Any, None), cast(Any, None), evidence_contract=CuratorEvidenceContract.LEGACY_OFFSET_V1
+    )
+    assert legacy.evidence_contract is CuratorEvidenceContract.LEGACY_OFFSET_V1
+
+
+def test_v2_facade_runs_evidence_only_repair_and_binds_artifacts() -> None:
+    parent = _parent()
+    parent_changes = _changes(_operation())
+    directive = _directive()
+    repaired = _changes(_operation("operation.repaired", "obligation.synthetic.north-tower"))
+    repair_draft = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(),
+        action=EvidenceRepairAction.MARK_UNRESOLVED,
+    )
+
+    class Runner:
+        def prepare(self, *_: object, **__: object) -> Any:
+            return SimpleNamespace(
+                request=SimpleNamespace(),
+                rendered_prompt="rendered",
+            )
+
+        def receipt(self, *_: object, **__: object) -> Any:
+            return agent_receipt().model_copy(
+                update={
+                    "agent_type": AgentType.MEMORY_CURATOR,
+                    "agent_mode": AgentMode.CURATOR_REPAIR,
+                }
+            )
+
+    class Curator:
+        async def evidence_repair_v2(self, *_: object, **__: object) -> tuple[Any, ...]:
+            return repaired, SimpleNamespace(), (repair_draft,)
+
+    result = asyncio.run(
+        CuratorRepairAgent(
+            cast(Any, Curator()),
+            cast(Any, Runner()),
+            evidence_contract=CuratorEvidenceContract.CANDIDATE_ID_V2,
+        ).run(
+            version=SCHEMA_VERSION,
+            text_root=TEXT,
+            chapter_index=23,
+            base_commit=WORLD.source_commit,
+            current_world=WORLD,
+            parent_candidate=parent,
+            parent_changes=parent_changes,
+            validation=None,
+            directive=directive,
+            request=_request(parent),
+            model_request=cast(ModelRequest, SimpleNamespace()),
+        )
+    )
+
+    assert isinstance(result, CuratorRepairResult)
+    assert result.observed_changes == repaired
+    assert result.applied_directive_ids == (directive.directive_id,)
+    assert result.candidate_artifact is not None
+    assert result.producer_receipt is not None
+
+
+def test_v2_facade_scopes_repair_to_directed_operation_ids() -> None:
+    parent = _parent()
+    parent_operation = _operation()
+    parent_changes = _changes(parent_operation)
+    directive = _directive(operation_ids=(parent_operation.operation_id,))
+    repaired = _changes(_operation("operation.repaired", parent_operation.target_id.root))
+
+    class Runner:
+        def prepare(self, *_: object, **__: object) -> Any:
+            return SimpleNamespace(
+                request=SimpleNamespace(),
+                rendered_prompt="rendered",
+            )
+
+        def receipt(self, *_: object, **__: object) -> Any:
+            return agent_receipt().model_copy(
+                update={
+                    "agent_type": AgentType.MEMORY_CURATOR,
+                    "agent_mode": AgentMode.CURATOR_REPAIR,
+                }
+            )
+
+    captured: dict[str, Any] = {}
+
+    class Curator:
+        async def evidence_repair_v2(self, *_args: object, **kwargs: object) -> tuple[Any, ...]:
+            captured["repair_operation_indexes"] = kwargs.get("repair_operation_indexes")
+            captured["contract_prompt"] = kwargs.get("contract_prompt")
+            return repaired, SimpleNamespace(), ()
+
+    result = asyncio.run(
+        CuratorRepairAgent(
+            cast(Any, Curator()),
+            cast(Any, Runner()),
+            evidence_contract=CuratorEvidenceContract.CANDIDATE_ID_V2,
+        ).run(
+            version=SCHEMA_VERSION,
+            text_root=TEXT,
+            chapter_index=23,
+            base_commit=WORLD.source_commit,
+            current_world=WORLD,
+            parent_candidate=parent,
+            parent_changes=parent_changes,
+            validation=None,
+            directive=directive,
+            request=_request(parent),
+            model_request=cast(ModelRequest, SimpleNamespace()),
+        )
+    )
+
+    assert isinstance(result, CuratorRepairResult)
+    assert captured["repair_operation_indexes"] == (0,)
+    assert captured["contract_prompt"] == "rendered"
+
+
+def test_v2_facade_maps_domain_rejection_to_retryable_rejection() -> None:
+    parent = _parent()
+    parent_changes = _changes(_operation())
+    directive = _directive()
+
+    class Runner:
+        def prepare(self, *_: object, **__: object) -> Any:
+            return SimpleNamespace(
+                request=SimpleNamespace(),
+                rendered_prompt="rendered",
+            )
+
+    class Curator:
+        async def evidence_repair_v2(self, *_: object, **__: object) -> tuple[Any, ...]:
+            raise ModelCurationContractError("unknown evidence candidate")
+
+    with pytest.raises(CuratorRepairContractError) as caught:
+        asyncio.run(
+            CuratorRepairAgent(
+                cast(Any, Curator()),
+                cast(Any, Runner()),
+                evidence_contract=CuratorEvidenceContract.CANDIDATE_ID_V2,
+            ).run(
+                version=SCHEMA_VERSION,
+                text_root=TEXT,
+                chapter_index=23,
+                base_commit=WORLD.source_commit,
+                current_world=WORLD,
+                parent_candidate=parent,
+                parent_changes=parent_changes,
+                validation=None,
+                directive=directive,
+                request=_request(parent),
+                model_request=cast(ModelRequest, SimpleNamespace()),
+            )
+        )
+
+    assert caught.value.reason_code == "CURATOR_REPAIR_DOMAIN_REJECTED"
+
+
+def test_validate_evidence_only_rejects_base_commit_change() -> None:
+    parent = _parent()
+    parent_changes = _changes(_operation())
+    changed = parent_changes.model_copy(
+        update={"base_commit": type(WORLD.source_commit)("sha256:" + "9" * 64)}
+    )
+    with pytest.raises(CuratorRepairContractError, match="base commit"):
+        CuratorRepairAgent._validate_evidence_only(changed, parent_changes, parent, _directive())
+
+
+def test_validate_evidence_only_rejects_new_target() -> None:
+    parent = _parent()
+    parent_changes = _changes(_operation())
+    new_target = _changes(_operation("operation.new", "obligation.synthetic.other"))
+    with pytest.raises(CuratorRepairContractError, match="new target"):
+        CuratorRepairAgent._validate_evidence_only(new_target, parent_changes, parent, _directive())
+
+
+def test_validate_evidence_only_rejects_changed_record_content() -> None:
+    parent = _parent()
+    parent_operation = _operation()
+    parent_changes = _changes(parent_operation)
+    parent_payload = cast(dict[str, Any], parent_operation.payload)
+    parent_record = cast(dict[str, Any], parent_payload["record"])
+    changed_operation = parent_operation.model_copy(
+        update={
+            "operation_id": StableId("operation.changed-record"),
+            "payload": {
+                **parent_payload,
+                "record": {**parent_record, "description": "unauthorized rewrite"},
+            },
+        }
+    )
+    with pytest.raises(CuratorRepairContractError, match="immutable record"):
+        CuratorRepairAgent._validate_evidence_only(
+            _changes(changed_operation), parent_changes, parent, _directive()
+        )
+
+
+def test_validate_evidence_only_accepts_unchanged_payload() -> None:
+    parent = _parent()
+    parent_changes = _changes(_operation())
+    CuratorRepairAgent._validate_evidence_only(parent_changes, parent_changes, parent, _directive())

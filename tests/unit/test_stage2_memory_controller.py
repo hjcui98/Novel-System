@@ -42,11 +42,14 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
     ContextBudget,
+    ContractRef,
+    ControllerActionPhase,
     ControllerPolicyAction,
     ControllerPolicyDecision,
     ControllerPolicyDraft,
     ControllerStopReason,
     MemoryResolutionRequest,
+    RegisteredControllerAction,
     RequiredSnapshotPolicy,
     ResolutionStatus,
     RetrievalBudget,
@@ -58,6 +61,7 @@ from novel_agent.domain.stage2 import (
 from novel_agent.runtime.memory_controller import (
     TOOL_BY_CHANNEL,
     BoundedMemoryController,
+    ControllerGraphState,
     ControllerStateView,
     RouteBoundControllerPolicy,
 )
@@ -65,6 +69,7 @@ from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpand
 from novel_agent.services.retrieval import InMemoryRetrievalBackend, RerankService
 from novel_agent.services.retrieval_routing import DeterministicChannelPlanner
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
+from novel_agent.tools.contracts import ControllerBudgetState
 
 COMMIT = CommitId("sha256:" + "a" * 64)
 SNAPSHOT = StableId("snapshot.1")
@@ -1117,3 +1122,532 @@ def test_controller_rejects_selected_candidate_without_qualifying_evidence() -> 
     assert result["resolution"].status is ResolutionStatus.PARTIAL
     assert result["resolution"].stop_reason is ControllerStopReason.NO_ADDITIONAL_EVIDENCE
     assert "lack qualifying evidence" in result["resolution"].unresolved_gaps[-1]
+
+
+class _BatchPlanPolicy:
+    """Returns EXECUTE_PLAN on the first decide call, STOP afterwards."""
+
+    def __init__(self, action_ids: tuple[str, ...]) -> None:
+        self._action_ids = action_ids
+        self.decide_calls = 0
+
+    @property
+    def contract_ref(self) -> ContractRef:
+        return RouteBoundControllerPolicy().contract_ref
+
+    @property
+    def prompt_fingerprint(self) -> ArtifactId:
+        return RouteBoundControllerPolicy().prompt_fingerprint
+
+    @property
+    def tool_policy_hash(self) -> ArtifactId | None:
+        return None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        self.decide_calls += 1
+        if self.decide_calls == 1:
+            return ControllerPolicyDecision(
+                action=ControllerPolicyAction.EXECUTE_PLAN,
+                rationale_code="BATCH_PLAN",
+                pending_action_ids=tuple(StableId(a) for a in self._action_ids),
+            )
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.STOP,
+            stop_reason=ControllerStopReason.SUFFICIENT,
+            rationale_code="BATCH_PLAN_DRAINED",
+        )
+
+
+def _batch_unit(unit_id: str, text: str = "hero injury state") -> RetrievalUnit:
+    return RetrievalUnit(
+        unit_id=StableId(unit_id),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text=text,
+        mandatory=True,
+    )
+
+
+def test_batch_plan_executes_first_action_without_key_error() -> None:
+    """EXECUTE_PLAN must bind pending_need_id/pending_tool so execute_tool has no KeyError."""
+    action_ids = (
+        "action.need.1.memory.search_exact",
+        "action.need.1.memory.search_temporal",
+    )
+    policy = _BatchPlanPolicy(action_ids)
+    runtime, _ = controller((_batch_unit("anchor.exact"),), policy=policy)
+    result = runtime.resolve(request(), text_root(), thread_id="batch-plan-key-error")
+
+    assert result["resolution"].status is ResolutionStatus.READY
+    # Both actions must have been executed (no KeyError on pending_need_id/pending_tool).
+    assert len(result["tool_results"]) == 2
+    snapshot = runtime.graph.get_state(
+        {"configurable": {"thread_id": "batch-plan-key-error"}}
+    )
+    tool_names = [call["tool_name"] for call in snapshot.values["tool_calls"]]
+    assert "memory.search_exact" in tool_names
+    assert "memory.search_temporal" in tool_names
+
+
+def test_batch_plan_drains_without_extra_model_call() -> None:
+    """The drain branch must not call policy.decide for queued actions."""
+    action_ids = (
+        "action.need.1.memory.search_exact",
+        "action.need.1.memory.search_temporal",
+    )
+    policy = _BatchPlanPolicy(action_ids)
+    runtime, _ = controller((_batch_unit("anchor.drain"),), policy=policy)
+    runtime.resolve(request(), text_root(), thread_id="batch-plan-drain")
+
+    # decide is called once for EXECUTE_PLAN and once for the final STOP.
+    # The second action is drained from pending_action_ids without a policy call.
+    assert policy.decide_calls == 2
+
+
+def test_batch_plan_rechecks_legality_between_actions() -> None:
+    """If a queued action was already called, the drain branch must stop."""
+    action_ids = (
+        "action.need.1.memory.search_exact",
+        "action.need.1.memory.search_exact",
+    )
+    policy = _BatchPlanPolicy(action_ids)
+    runtime, _ = controller((_batch_unit("anchor.legal"),), policy=policy)
+    result = runtime.resolve(request(), text_root(), thread_id="batch-plan-legal")
+
+    # Only the first action should have been executed; the second is the same
+    # action_id and is no longer legal after the first call.
+    assert len(result["tool_results"]) == 1
+    snapshot = runtime.graph.get_state(
+        {"configurable": {"thread_id": "batch-plan-legal"}}
+    )
+    decisions = snapshot.values["policy_decisions"]
+    rationale_codes = [item["rationale_code"] for item in decisions]
+    assert "BATCH_PLAN_ACTION" in rationale_codes
+    assert "BATCH_ACTION_NO_LONGER_LEGAL" in rationale_codes
+    tool_names = [call["tool_name"] for call in snapshot.values["tool_calls"]]
+    assert tool_names == ["memory.search_exact"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage for RouteBoundControllerPolicy._need_is_accessible and _decide_registered_route_plans
+# ---------------------------------------------------------------------------
+
+
+def test_route_bound_need_is_accessible_returns_false_for_scope_mismatch() -> None:
+    need = memory_need()
+    assert not RouteBoundControllerPolicy._need_is_accessible(
+        need, "author_planning", allow_future_plan=True
+    )
+
+
+def test_route_bound_policy_skips_inaccessible_mandatory_need() -> None:
+    inaccessible_need = memory_need().model_copy(
+        update={"access_scope": "author_planning"}
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(RetrievalChannel.R1_EXACT,),
+    )
+    plan = DeterministicChannelPlanner().plan(inaccessible_need, capability)
+    policy = RouteBoundControllerPolicy((plan,))
+    decision = policy.decide(
+        {"request": request(need=inaccessible_need), "tool_calls": ()}
+    )
+    assert decision.stop_reason is ControllerStopReason.SUFFICIENT
+
+
+# ---------------------------------------------------------------------------
+# Coverage for BoundedMemoryController._decide edge branches
+# ---------------------------------------------------------------------------
+
+
+def _graph_state(
+    req: MemoryResolutionRequest,
+    *,
+    tool_calls: list[dict[str, Any]] | None = None,
+    pending_action_ids: list[str] | None = None,
+) -> ControllerGraphState:
+    return cast(
+        ControllerGraphState,
+        {
+            "request": req.model_dump(mode="json"),
+            "tool_calls": tool_calls or [],
+            "policy_decisions": [],
+            "pending_action_ids": pending_action_ids or [],
+            "stopped": False,
+            "decision_model_calls": 0,
+        },
+    )
+
+
+def test_decide_returns_terminal_failure_stop_reason() -> None:
+    runtime, _ = controller(())
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4
+    )
+    budget.mark_terminal(ControllerStopReason.ACCESS_BLOCKED.value)
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.ACCESS_BLOCKED.value
+    assert result["terminal_failure"] == ControllerStopReason.ACCESS_BLOCKED.value
+
+
+def test_decide_stops_when_trusted_call_budget_exhausted() -> None:
+    runtime, _ = controller(())
+    req = request(max_rounds=3, max_tool_calls=12)
+    # budget with higher max_tool_calls so can_invoke_tool stays True,
+    # but trusted_call_limit (= round_limit = 3) is reached.
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=12
+    )
+    runtime._budgets[req.request_id.root] = budget
+    calls = [
+        {
+            "need_id": "need.1",
+            "tool_name": "memory.search_exact",
+            "result": _empty_result("c.1").model_dump(mode="json"),
+        },
+        {
+            "need_id": "need.1",
+            "tool_name": "memory.search_temporal",
+            "result": _empty_result("c.2").model_dump(mode="json"),
+        },
+        {
+            "need_id": "need.1",
+            "tool_name": "memory.search_exact",
+            "result": _empty_result("c.3").model_dump(mode="json"),
+        },
+    ]
+    result = runtime._decide(_graph_state(req, tool_calls=calls))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.BUDGET_EXHAUSTED.value
+
+
+class _ModelStopPolicy:
+    max_decision_model_calls = 2
+    tool_policy_hash: ArtifactId | None = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.STOP,
+            stop_reason=ControllerStopReason.SUFFICIENT,
+            rationale_code="MODEL_STOP",
+        )
+
+
+def test_decide_stops_when_decision_model_budget_exhausted() -> None:
+    policy = _ModelStopPolicy()
+    runtime, _ = controller((), policy=policy)
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4, max_decision_model_calls=1
+    )
+    budget.record_decision_call()
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.BUDGET_EXHAUSTED.value
+
+
+def test_decide_records_model_call_and_stops() -> None:
+    policy = _ModelStopPolicy()
+    runtime, _ = controller((), policy=policy)
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4, max_decision_model_calls=2
+    )
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert budget.decision_model_calls_used == 1
+
+
+class _DeadlineExhaustingPolicy:
+    max_decision_model_calls = 2
+    tool_policy_hash: ArtifactId | None = None
+
+    def __init__(self) -> None:
+        self.budget: ControllerBudgetState | None = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        if self.budget is not None:
+            self.budget.deadline_monotonic = 0.0
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.STOP,
+            stop_reason=ControllerStopReason.SUFFICIENT,
+            rationale_code="MODEL_STOP",
+        )
+
+
+def test_decide_stops_on_deadline_after_model_decision() -> None:
+    policy = _DeadlineExhaustingPolicy()
+    runtime, _ = controller((), policy=policy)
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4, max_decision_model_calls=2
+    )
+    policy.budget = budget
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.BUDGET_EXHAUSTED.value
+
+
+class _EmptyExecutePlanPolicy:
+    tool_policy_hash: ArtifactId | None = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        return ControllerPolicyDecision.model_construct(
+            action=ControllerPolicyAction.EXECUTE_PLAN,
+            rationale_code="EMPTY_BATCH",
+            pending_action_ids=(),
+        )
+
+
+def test_decide_stops_on_empty_batch_plan() -> None:
+    runtime, _ = controller((), policy=_EmptyExecutePlanPolicy())
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4
+    )
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value
+
+
+class _StaleExecutePlanPolicy:
+    tool_policy_hash: ArtifactId | None = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.EXECUTE_PLAN,
+            rationale_code="STALE_BATCH",
+            pending_action_ids=(StableId("action.need.1.memory.nonexistent"),),
+        )
+
+
+def test_decide_stops_when_batch_first_action_not_legal() -> None:
+    runtime, _ = controller((), policy=_StaleExecutePlanPolicy())
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4
+    )
+    runtime._budgets[req.request_id.root] = budget
+    result = runtime._decide(_graph_state(req))
+    assert result["stopped"] is True
+    assert result["stop_reason"] == ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value
+
+
+class _IllegalPoolCallPolicy:
+    tool_policy_hash: ArtifactId | None = None
+
+    def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
+        return ControllerPolicyDecision(
+            action=ControllerPolicyAction.CALL_TOOL,
+            need_id=StableId("need.1"),
+            tool_name="memory.search_anchor_bm25",
+            rationale_code="ILLEGAL_POOL",
+        )
+
+
+def test_decide_blocks_call_when_need_tool_pair_not_in_legal_actions() -> None:
+    need = memory_need()
+    backend = InMemoryRetrievalBackend(())
+    adapter = RetrievalToolAdapter(backend, (need,))
+    tool_policy = ToolPolicy(
+        policy_id=StableId("policy.illegal-pool"),
+        version=VERSION,
+        content_hash=ArtifactId("sha256:" + "c" * 64),
+        allowed_tools=("memory.search_exact", "memory.search_anchor_bm25"),
+        max_rounds=3,
+        max_tool_calls=12,
+    )
+    runtime = BoundedMemoryController(
+        ToolBinding(tool_policy, adapter.handlers()),
+        tool_policy,
+        ContextCompiler(EvidenceExpander()),
+        _IllegalPoolCallPolicy(),
+        lambda _: True,
+        InMemorySaver(),
+    )
+    result = runtime.resolve(request(need=need), text_root(), thread_id="illegal-pool")
+    assert result["resolution"].stop_reason is ControllerStopReason.ACCESS_BLOCKED
+
+
+def test_execute_tool_returns_budget_exceeded_when_budget_exhausted() -> None:
+    runtime, _ = controller(())
+    req = request()
+    budget = ControllerBudgetState.from_policy(
+        runtime._tool_policy, max_tool_calls=4
+    )
+    budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+    runtime._budgets[req.request_id.root] = budget
+    state = cast(
+        ControllerGraphState,
+        {
+            "request": req.model_dump(mode="json"),
+            "tool_calls": [],
+            "policy_decisions": [],
+            "pending_need_id": "need.1",
+            "pending_tool": "memory.search_exact",
+            "stopped": False,
+            "decision_model_calls": 0,
+        },
+    )
+    result = runtime._execute_tool(state)
+    assert result["tool_calls"][0]["result"]["status"] == "failed"
+    assert result["tool_calls"][0]["result"]["failure_code"] == "TOOL_BUDGET_EXCEEDED"
+
+
+# ---------------------------------------------------------------------------
+# Coverage for StructuredControllerPolicy (controller.py)
+# ---------------------------------------------------------------------------
+
+
+def test_structured_controller_exposes_tool_policy() -> None:
+    spec = structured_controller_spec()
+    policy = StructuredControllerPolicy(
+        cast(Any, object()),
+        cast(Any, spec),
+        controller_request_factory,
+    )
+    assert policy.tool_policy == spec.tool_policy
+
+
+class _CompactPromptCapturingRunner:
+    payload: dict[str, Any] | None = None
+
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
+        self.payload = json.loads(args[4])
+        return SimpleNamespace(
+            output=ControllerPolicyDraft(
+                action="stop",
+                stop_reason="sufficient",
+                rationale_code="MODEL_STOP",
+            ),
+            model_call=SimpleNamespace(request_id=StableId("model-call.full")),
+            receipt=SimpleNamespace(),
+        )
+
+
+def test_structured_controller_non_compact_prompt_includes_full_request() -> None:
+    runner = _CompactPromptCapturingRunner()
+    spec = structured_controller_spec()
+    policy = StructuredControllerPolicy(
+        cast(Any, runner),
+        cast(Any, spec),
+        controller_request_factory,
+        compact_prompt=False,
+    )
+    policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
+    assert runner.payload is not None
+    assert "resolution_request" in runner.payload
+    assert "available_actions" in runner.payload
+    assert "prior_tool_results" in runner.payload
+
+
+def test_bind_draft_returns_execute_plan_for_selected_action_ids() -> None:
+    action = RegisteredControllerAction(
+        action_id=StableId("action.need.1.memory.search_exact"),
+        need_id=StableId("need.1"),
+        route_step_id=None,
+        tool_name="memory.search_exact",
+        retrieval_channel=RetrievalChannel.R1_EXACT,
+        requirement="mandatory",
+        phase=ControllerActionPhase.PRIMARY,
+        fallback_condition=None,
+        query_intent="current_state",
+    )
+    draft = ControllerPolicyDraft(
+        selected_action_ids=("action.need.1.memory.search_exact",),
+        rationale_code="MODEL_BATCH",
+    )
+    decision, repair = StructuredControllerPolicy._bind_draft(
+        draft,
+        [],
+        action_by_id={"action.need.1.memory.search_exact": action},
+    )
+    assert decision.action is ControllerPolicyAction.EXECUTE_PLAN
+    assert decision.pending_action_ids == (StableId("action.need.1.memory.search_exact"),)
+    assert repair is None
+
+
+def test_bind_draft_skips_unknown_action_ids_in_batch_plan() -> None:
+    action = RegisteredControllerAction(
+        action_id=StableId("action.need.1.memory.search_exact"),
+        need_id=StableId("need.1"),
+        route_step_id=None,
+        tool_name="memory.search_exact",
+        retrieval_channel=RetrievalChannel.R1_EXACT,
+        requirement="mandatory",
+        phase=ControllerActionPhase.PRIMARY,
+        fallback_condition=None,
+        query_intent="current_state",
+    )
+    draft = ControllerPolicyDraft(
+        selected_action_ids=(
+            "action.need.1.memory.nonexistent",
+            "action.need.1.memory.search_exact",
+        ),
+        rationale_code="MODEL_BATCH",
+    )
+    decision, _repair = StructuredControllerPolicy._bind_draft(
+        draft,
+        [],
+        action_by_id={"action.need.1.memory.search_exact": action},
+    )
+    assert decision.action is ControllerPolicyAction.EXECUTE_PLAN
+    assert decision.pending_action_ids == (StableId("action.need.1.memory.search_exact"),)
+
+
+def test_bind_draft_caps_batch_plan_at_eight_action_ids() -> None:
+    """Line 228: pending list caps at 8 action IDs."""
+    action_by_id: dict[str, RegisteredControllerAction] = {}
+    selected_ids: list[str] = []
+    for i in range(10):
+        aid = f"action.need.{i}.memory.search_exact"
+        action_by_id[aid] = RegisteredControllerAction(
+            action_id=StableId(aid),
+            need_id=StableId(f"need.{i}"),
+            route_step_id=None,
+            tool_name="memory.search_exact",
+            retrieval_channel=RetrievalChannel.R1_EXACT,
+            requirement="mandatory",
+            phase=ControllerActionPhase.PRIMARY,
+            fallback_condition=None,
+            query_intent="current_state",
+        )
+        selected_ids.append(aid)
+    draft = ControllerPolicyDraft(
+        selected_action_ids=tuple(selected_ids),
+        rationale_code="MODEL_BATCH",
+    )
+    decision, _repair = StructuredControllerPolicy._bind_draft(
+        draft,
+        [],
+        action_by_id=action_by_id,
+    )
+    assert decision.action is ControllerPolicyAction.EXECUTE_PLAN
+    assert len(decision.pending_action_ids) == 8
+
+
+def test_bind_draft_falls_through_when_all_action_ids_unknown() -> None:
+    """Branch 229->243: all selected_action_ids unknown -> pending empty -> fall through."""
+    draft = ControllerPolicyDraft(
+        selected_action_ids=("action.nonexistent.1", "action.nonexistent.2"),
+        action=ControllerPolicyAction.STOP.value,
+        stop_reason="sufficient",
+        rationale_code="MODEL_STOP",
+    )
+    decision, _repair = StructuredControllerPolicy._bind_draft(
+        draft,
+        [],
+        action_by_id={},
+    )
+    assert decision.action is ControllerPolicyAction.STOP

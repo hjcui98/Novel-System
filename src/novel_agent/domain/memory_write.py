@@ -570,6 +570,9 @@ class CuratorProposalRejection(DomainModel):
     conflicts: tuple[ProposalConflict, ...] = ()
     validation_error_paths: tuple[str, ...] = ()
     safe_feedback: tuple[str, ...] = ()
+    operation_indexes: tuple[int, ...] = ()
+    json_pointers: tuple[str, ...] = ()
+    violation_rule: str | None = None
     raw_draft_ref: ArtifactRef | None = None
     normalized_output_ref: ArtifactRef | None = None
     created_at: datetime
@@ -696,6 +699,8 @@ class ProposalRepairScope(DomainModel):
     mutable_operation_indexes: tuple[int, ...] = ()
     immutable_operation_semantic_hashes: tuple[ArtifactId, ...] = ()
     allow_complete_replacement: bool = False
+    json_pointers: tuple[str, ...] = ()
+    violation_rule: str | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> ProposalRepairScope:

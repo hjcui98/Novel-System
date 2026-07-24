@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "EvidenceRepairAction": {
+      "enum": [
+        "replace_evidence",
+        "drop_operation",
+        "mark_unresolved"
+      ],
+      "title": "EvidenceRepairAction",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Field-level evidence-only repair; record payload is immutable.",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/EvidenceRepairAction"
+    },
+    "operation_index": {
+      "minimum": 0,
+      "title": "Operation Index",
+      "type": "integer"
+    },
+    "replacement_candidate_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Replacement Candidate Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "operation_index",
+    "action"
+  ],
+  "title": "EvidenceRepairDraft",
+  "type": "object"
+}

@@ -13,6 +13,16 @@
       "title": "BenchmarkInformationProfile",
       "type": "string"
     },
+    "ControllerMode": {
+      "description": "Production vs diagnostic controller execution modes (WP0).",
+      "enum": [
+        "deterministic",
+        "standalone_agentic_diagnostic",
+        "deterministic_plus_agentic_delta"
+      ],
+      "title": "ControllerMode",
+      "type": "string"
+    },
     "ControllerStopReason": {
       "enum": [
         "sufficient",
@@ -133,6 +143,17 @@
         "comparison_basis_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "delta_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairedPilotArmMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "deterministic_metrics": {
           "$ref": "#/$defs/PairedPilotArmMetrics"
         },
@@ -201,6 +222,16 @@
     },
     "configuration_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
+    },
+    "controller_mode": {
+      "$ref": "#/$defs/ControllerMode",
+      "default": "deterministic"
+    },
+    "delta_gain_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Delta Gain Count",
+      "type": "integer"
     },
     "future_leakage_count": {
       "minimum": 0,

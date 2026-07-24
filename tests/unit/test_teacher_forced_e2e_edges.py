@@ -511,6 +511,7 @@ def test_transition_constructor_handles_text_root_without_prelude(tmp_path: Path
         information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
         artifacts=ArtifactRepository(FilesystemObjectStore(tmp_path / "transition-objects")),
         commits=MagicMock(),
+        project_id=ProjectId("project.test"),
         projections=MagicMock(),
         snapshots=MagicMock(),
         harness=TeacherForcedBenchmarkE2ERunner._agent_harness(),

@@ -839,6 +839,71 @@ class SufficiencyReport(DomainModel):
 class ControllerPolicyAction(StrEnum):
     CALL_TOOL = "call_tool"
     STOP = "stop"
+    EXECUTE_PLAN = "execute_plan"
+
+
+class ControllerMode(StrEnum):
+    """Production vs diagnostic controller execution modes (WP0)."""
+
+    DETERMINISTIC = "deterministic"
+    STANDALONE_AGENTIC_DIAGNOSTIC = "standalone_agentic_diagnostic"
+    DETERMINISTIC_PLUS_AGENTIC_DELTA = "deterministic_plus_agentic_delta"
+
+
+class CuratorEvidenceContract(StrEnum):
+    """Evidence selection contract version for Curator proposals (WP0/WP4)."""
+
+    LEGACY_OFFSET_V1 = "legacy_offset_v1"
+    CANDIDATE_ID_V2 = "candidate_id_v2"
+
+
+class EvidenceSupportGateMode(StrEnum):
+    """Semantic support gate enforcement mode (WP0/WP5)."""
+
+    DISABLED = "disabled"
+    AUDIT_ONLY = "audit_only"
+    ENFORCE_PRE_CANDIDATE = "enforce_pre_candidate"
+
+
+class QualityRepairFeatureFlags(DomainModel):
+    """Explicit feature flags for controller/curator quality repair."""
+
+    controller_mode: ControllerMode = ControllerMode.DETERMINISTIC
+    curator_evidence_contract: CuratorEvidenceContract = CuratorEvidenceContract.CANDIDATE_ID_V2
+    evidence_support_gate: EvidenceSupportGateMode = (
+        EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+    )
+    max_controller_decision_model_calls: int = Field(default=2, ge=0, le=8)
+    max_agentic_actions: int = Field(default=8, ge=0, le=32)
+
+
+class ControllerActionPhase(StrEnum):
+    MANDATORY = "mandatory"
+    PRIMARY = "primary"
+    FALLBACK = "fallback"
+
+
+class RegisteredControllerAction(DomainModel):
+    """One RoutePlan-legal controller action shared by prompt and adapter."""
+
+    action_id: StableId
+    need_id: StableId
+    route_step_id: StableId | None = None
+    tool_name: str = Field(min_length=1, max_length=64)
+    retrieval_channel: RetrievalChannel
+    requirement: str = Field(min_length=1, max_length=32)
+    phase: ControllerActionPhase
+    fallback_condition: str | None = None
+    query_intent: str = Field(min_length=1, max_length=64)
+
+
+class ControllerRetrievalPlanDraft(DomainModel):
+    """Untrusted batch Agentic plan: opaque action IDs only (WP3)."""
+
+    selected_action_ids: tuple[str, ...] = ()
+    stop_after_action_ids: tuple[str, ...] = ()
+    rationale_code: str | None = None
+    stop_reason: str | None = None
 
 
 class ControllerPolicyDraft(DomainModel):
@@ -855,6 +920,8 @@ class ControllerPolicyDraft(DomainModel):
     stop_reason: str | None = None
     rationale_code: str | None = None
     model_call_id: str | None = None
+    selected_action_ids: tuple[str, ...] = ()
+    stop_after_action_ids: tuple[str, ...] = ()
 
 
 class ControllerPolicyDecision(DomainModel):
@@ -864,6 +931,8 @@ class ControllerPolicyDecision(DomainModel):
     stop_reason: ControllerStopReason | None = None
     rationale_code: str = Field(min_length=1, max_length=64)
     model_call_id: StableId | None = None
+    selected_action_ids: tuple[StableId, ...] = ()
+    pending_action_ids: tuple[StableId, ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -879,10 +948,18 @@ class ControllerPolicyDecision(DomainModel):
         if action == ControllerPolicyAction.STOP.value:
             normalized["need_id"] = None
             normalized["tool_name"] = None
+            normalized["selected_action_ids"] = ()
+            normalized["pending_action_ids"] = ()
             if normalized.get("stop_reason") is None:
                 normalized["stop_reason"] = ControllerStopReason.MANDATORY_GAP_UNRESOLVED.value
         elif action == ControllerPolicyAction.CALL_TOOL.value:
             normalized["stop_reason"] = None
+            normalized["selected_action_ids"] = ()
+            normalized["pending_action_ids"] = ()
+        elif action == ControllerPolicyAction.EXECUTE_PLAN.value:
+            normalized["stop_reason"] = None
+            normalized["need_id"] = None
+            normalized["tool_name"] = None
         return normalized
 
     @model_validator(mode="after")
@@ -890,6 +967,16 @@ class ControllerPolicyDecision(DomainModel):
         if self.action is ControllerPolicyAction.CALL_TOOL:
             if self.need_id is None or self.tool_name is None or self.stop_reason is not None:
                 raise ValueError("call_tool decision requires need/tool and no stop reason")
+            if self.selected_action_ids or self.pending_action_ids:
+                raise ValueError("call_tool decision cannot carry batch plan action ids")
+        elif self.action is ControllerPolicyAction.EXECUTE_PLAN:
+            if (
+                self.need_id is not None
+                or self.tool_name is not None
+                or self.stop_reason is not None
+                or not self.pending_action_ids
+            ):
+                raise ValueError("execute_plan requires pending action ids only")
         elif self.need_id is not None or self.tool_name is not None or self.stop_reason is None:
             raise ValueError("stop decision requires only a stop reason")
         return self
@@ -1005,6 +1092,7 @@ class PairedPilotCaseResult(DomainModel):
     blockers: tuple[str, ...] = ()
     deterministic_metrics: PairedPilotArmMetrics
     agentic_metrics: PairedPilotArmMetrics
+    delta_metrics: PairedPilotArmMetrics | None = None
     accuracy_gain: bool
     tool_call_reduction: bool
     safety_regression: bool
@@ -1025,12 +1113,23 @@ class PairedPilotCaseResult(DomainModel):
             self.agentic_metrics.retrieval_call_count
             < self.deterministic_metrics.retrieval_call_count
         )
-        expected_regression = (
-            self.agentic_metrics.future_leakage_count
-            > self.deterministic_metrics.future_leakage_count
-            or self.agentic_metrics.mandatory_constraint_coverage
-            < self.deterministic_metrics.mandatory_constraint_coverage
-        )
+        # In delta mode the production candidate is Arm C; its safety regression
+        # is measured against the deterministic floor (A).  Otherwise the
+        # standalone Agentic arm (B) is compared against A.
+        if self.delta_metrics is not None:
+            expected_regression = (
+                self.delta_metrics.future_leakage_count
+                > self.deterministic_metrics.future_leakage_count
+                or self.delta_metrics.mandatory_constraint_coverage
+                < self.deterministic_metrics.mandatory_constraint_coverage
+            )
+        else:
+            expected_regression = (
+                self.agentic_metrics.future_leakage_count
+                > self.deterministic_metrics.future_leakage_count
+                or self.agentic_metrics.mandatory_constraint_coverage
+                < self.deterministic_metrics.mandatory_constraint_coverage
+            )
         if self.accuracy_gain != expected_gain:
             raise ValueError("paired Pilot accuracy gain flag is inconsistent")
         if self.tool_call_reduction != expected_reduction:
@@ -1044,6 +1143,7 @@ class Stage2PairedPilotReport(DomainModel):
     report_id: StableId
     bundle_hash: ArtifactId
     configuration_fingerprint: ArtifactId
+    controller_mode: ControllerMode = ControllerMode.DETERMINISTIC
     cases: tuple[PairedPilotCaseResult, ...]
     paired_results_count: int = Field(ge=0)
     comparable_results_count: int = Field(ge=0)
@@ -1051,6 +1151,7 @@ class Stage2PairedPilotReport(DomainModel):
     safety_regression_count: int = Field(ge=0)
     accuracy_gain_count: int = Field(ge=0)
     tool_call_reduction_count: int = Field(ge=0)
+    delta_gain_count: int = Field(default=0, ge=0)
     held_out_complex_gain_proven: bool = False
 
     @model_validator(mode="after")

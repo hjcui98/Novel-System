@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 from typing import Protocol
 
 from pydantic import JsonValue
 
 from novel_agent.domain.stage2 import (
+    ControllerStopReason,
     ToolCallContext,
     ToolFailureCode,
     ToolPolicy,
@@ -19,6 +20,16 @@ from novel_agent.domain.stage2 import (
 )
 
 ToolHandler = Callable[[ToolCallContext, JsonValue], Awaitable[ToolResult]]
+
+TERMINAL_TOOL_FAILURE_CODES: frozenset[ToolFailureCode] = frozenset(
+    {
+        ToolFailureCode.BUDGET_EXCEEDED,
+        ToolFailureCode.BASE_COMMIT_MISMATCH,
+        ToolFailureCode.SNAPSHOT_STALE,
+        ToolFailureCode.ACCESS_DENIED,
+        ToolFailureCode.SCOPE_MISMATCH,
+    }
+)
 
 
 class ToolAuditSink(Protocol):
@@ -60,6 +71,112 @@ class ToolBudget:
             max_calls=policy.max_tool_calls,
             deadline=monotonic() + policy.wall_clock_budget_ms / 1000,
         )
+
+    def remaining_ms(self) -> float:
+        return max(0.0, (self.deadline - monotonic()) * 1000)
+
+    def exhausted(self) -> bool:
+        return self.calls_used >= self.max_calls or monotonic() >= self.deadline
+
+
+@dataclass
+class ControllerBudgetState:
+    """Unified controller budget covering model decisions and tool calls (WP1)."""
+
+    deadline_monotonic: float
+    max_decision_model_calls: int
+    max_tool_calls: int
+    decision_model_calls_used: int = 0
+    tool_calls_used: int = 0
+    tool_success_count: int = 0
+    tool_failure_count: int = 0
+    backend_search_count: int = 0
+    terminal_failure: str | None = None
+    tool_budget: ToolBudget = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.tool_budget = ToolBudget(
+            max_calls=self.max_tool_calls,
+            deadline=self.deadline_monotonic,
+            calls_used=self.tool_calls_used,
+        )
+
+    @classmethod
+    def from_policy(
+        cls,
+        policy: ToolPolicy,
+        *,
+        max_tool_calls: int | None = None,
+        max_decision_model_calls: int = 2,
+        wall_clock_budget_ms: int | None = None,
+    ) -> ControllerBudgetState:
+        wall_ms = (
+            policy.wall_clock_budget_ms if wall_clock_budget_ms is None else wall_clock_budget_ms
+        )
+        return cls(
+            deadline_monotonic=monotonic() + wall_ms / 1000,
+            max_decision_model_calls=max_decision_model_calls,
+            max_tool_calls=policy.max_tool_calls if max_tool_calls is None else max_tool_calls,
+        )
+
+    def remaining_wall_clock_ms(self) -> float:
+        return max(0.0, (self.deadline_monotonic - monotonic()) * 1000)
+
+    def wall_clock_exhausted(self) -> bool:
+        return monotonic() >= self.deadline_monotonic
+
+    def can_decide(self) -> bool:
+        return (
+            self.terminal_failure is None
+            and not self.wall_clock_exhausted()
+            and self.decision_model_calls_used < self.max_decision_model_calls
+        )
+
+    def can_invoke_tool(self) -> bool:
+        return (
+            self.terminal_failure is None
+            and not self.wall_clock_exhausted()
+            and self.tool_calls_used < self.max_tool_calls
+        )
+
+    def record_decision_call(self) -> None:
+        self.decision_model_calls_used += 1
+
+    def mark_terminal(self, failure: str) -> None:
+        self.terminal_failure = failure
+
+    def sync_tool_budget(self) -> ToolBudget:
+        self.tool_budget.max_calls = self.max_tool_calls
+        self.tool_budget.deadline = self.deadline_monotonic
+        self.tool_budget.calls_used = self.tool_calls_used
+        return self.tool_budget
+
+    def note_tool_result(self, result: ToolResult, *, backend_executed: bool) -> None:
+        self.tool_calls_used = self.tool_budget.calls_used
+        if result.status is ToolResultStatus.SUCCEEDED:
+            self.tool_success_count += 1
+            if backend_executed:
+                self.backend_search_count += 1
+            return
+        self.tool_failure_count += 1
+        code = result.failure_code
+        if code is ToolFailureCode.BUDGET_EXCEEDED or code is ToolFailureCode.TIMEOUT:
+            self.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+        elif code in {
+            ToolFailureCode.BASE_COMMIT_MISMATCH,
+            ToolFailureCode.SNAPSHOT_STALE,
+        }:
+            self.mark_terminal(ControllerStopReason.FRESHNESS_BLOCKED.value)
+        elif code in {ToolFailureCode.ACCESS_DENIED, ToolFailureCode.SCOPE_MISMATCH}:
+            self.mark_terminal(ControllerStopReason.ACCESS_BLOCKED.value)
+
+    def stop_reason_for_terminal(self) -> ControllerStopReason:
+        if self.terminal_failure is None:
+            return ControllerStopReason.BUDGET_EXHAUSTED
+        try:
+            return ControllerStopReason(self.terminal_failure)
+        except ValueError:
+            return ControllerStopReason.BUDGET_EXHAUSTED
 
 
 class ToolBinding:

@@ -191,6 +191,29 @@ class CommitServiceMemoryWriteAdapter:
         )
 
 
+class RefusingCommitPort:
+    """Dry-run commit port: rejects every commit request without side effects."""
+
+    def __init__(self, *, canonical_commit: CommitId) -> None:
+        self._canonical_commit = canonical_commit
+        self.calls = 0
+        self.accepted_count = 0
+
+    @property
+    def current(self) -> CommitId:
+        return self._canonical_commit
+
+    def resolve_or_replay_exact(
+        self, request: DurableMemoryWriteCommitRequest,
+    ) -> MemoryWriteCommitResult:
+        self.calls += 1
+        return MemoryWriteCommitResult(
+            request_id=request.request_id,
+            status=MemoryWriteCommitStatus.REJECTED,
+            reason="dry_run_refuses_all_commits",
+        )
+
+
 class ProjectionServiceReadinessAdapter:
     """Expose projection outbox processing and FreshnessGate as a v2 port."""
 
@@ -491,16 +514,26 @@ class TeacherForcedCuratorPort:
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
             reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"
             retryable = True
+            operation_indexes: tuple[int, ...] = ()
+            json_pointers = paths
+            violation_rule: str | None = "schema_validation"
         elif isinstance(error, CuratorProposalSemanticRejected):
-            paths = ()
+            paths = error.json_pointers
             reason_code = error.reason_code
+            operation_indexes = error.operation_indexes
+            violation_rule = error.violation_rule
             if error.information_boundary:
                 detail = "Proposal evidence exceeds the frozen information boundary"
                 kind = ProposalRejectionKind.INVALID_EVIDENCE
                 stage = ProposalRejectionStage.INFORMATION_BOUNDARY
                 retryable = False
-            elif reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE":
-                detail = "Proposal evidence span is invalid"
+            elif reason_code in {
+                "CURATOR_PROPOSAL_INVALID_EVIDENCE",
+                "CURATOR_PROPOSAL_EVIDENCE_UNRELATED",
+                "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                "CURATOR_PROPOSAL_EVIDENCE_NEEDS_VERIFICATION",
+            }:
+                detail = "Proposal evidence is invalid or unsupported"
                 kind = ProposalRejectionKind.INVALID_EVIDENCE
                 stage = ProposalRejectionStage.SEMANTIC_CONTRACT
                 retryable = True
@@ -509,6 +542,7 @@ class TeacherForcedCuratorPort:
                 kind = ProposalRejectionKind.NORMALIZED_TARGET_COLLISION
                 stage = ProposalRejectionStage.TRUSTED_NORMALIZATION
                 retryable = True
+            json_pointers = paths
         else:
             paths = ()
             detail = "Curator Draft failed trusted semantic validation"
@@ -524,6 +558,9 @@ class TeacherForcedCuratorPort:
                 else "CURATOR_PROPOSAL_SEMANTIC_REJECTED"
             )
             retryable = True
+            operation_indexes = ()
+            json_pointers = paths
+            violation_rule = None
         output_hash = next(
             (
                 entry.raw_response_hash
@@ -532,14 +569,23 @@ class TeacherForcedCuratorPort:
             ),
             None,
         )
-        signature = sha256_id(
-            canonical_json_bytes(
-                {
-                    "reason_code": reason_code,
-                    "paths": paths,
-                    "output_hash": output_hash.root if output_hash is not None else None,
-                }
-            )
+        from novel_agent.services.proposal_finding_signature import (
+            extract_block_or_candidate_ids,
+            proposal_finding_signature,
+        )
+
+        feedback_lines = (
+            error.safe_feedback
+            if isinstance(error, CuratorProposalSemanticRejected) and error.safe_feedback
+            else ()
+        )
+        # Finding signature must ignore output_hash so identical defects collapse.
+        signature = proposal_finding_signature(
+            reason_code=reason_code,
+            rejection_stage=stage,
+            json_pointers=json_pointers,
+            violation_rule=violation_rule or reason_code,
+            block_or_candidate_ids=extract_block_or_candidate_ids(feedback_lines),
         )
         rejection = CuratorProposalRejection(
             rejection_id=StableId(f"proposal-rejection.{request.attempt_id.root}"),
@@ -559,6 +605,9 @@ class TeacherForcedCuratorPort:
                 if isinstance(error, CuratorProposalSemanticRejected) and error.safe_feedback
                 else (detail,)
             ),
+            operation_indexes=operation_indexes,
+            json_pointers=json_pointers,
+            violation_rule=violation_rule,
             raw_draft_ref=raw_refs[-1] if raw_refs else None,
             created_at=datetime.now(UTC),
         )

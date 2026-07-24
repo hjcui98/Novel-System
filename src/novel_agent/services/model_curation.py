@@ -11,11 +11,18 @@ from novel_agent.domain.changes import (
     ChangeOperation,
     ChangeOperationType,
     ChapterChangeDraft,
+    ChapterChangeDraftV2,
     CuratedOperationDraft,
     CuratorEventRecord,
     CuratorObligationRecord,
     CuratorRelationRecord,
     CuratorStateRecord,
+    CuratorTypedRecord,
+    EvidenceCandidate,
+    EvidenceRepairAction,
+    EvidenceRepairDraft,
+    EvidenceSupportDecision,
+    EvidenceSupportDisposition,
     ObservedChangeSet,
     WorldRecordKind,
 )
@@ -28,6 +35,8 @@ from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import validate_evidence_ref
 from novel_agent.services.content_addressing import canonical_json_bytes, quote_hash
 from novel_agent.services.curation import Stage1Curator
+from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
+from novel_agent.services.evidence_support import EvidenceSupportGate
 from novel_agent.services.model_gateway import ModelGateway
 
 
@@ -43,12 +52,18 @@ class CuratorProposalSemanticRejected(ModelCurationContractError):
         *,
         information_boundary: bool = False,
         safe_feedback: tuple[str, ...] = (),
+        operation_indexes: tuple[int, ...] = (),
+        json_pointers: tuple[str, ...] = (),
+        violation_rule: str | None = None,
     ) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
         self.conflicts = conflicts
         self.information_boundary = information_boundary
         self.safe_feedback = safe_feedback
+        self.operation_indexes = operation_indexes
+        self.json_pointers = json_pointers
+        self.violation_rule = violation_rule
 
 
 _RECORD_ID_FIELD = {
@@ -62,6 +77,11 @@ _RECORD_ID_FIELD = {
 
 TargetResolver = Callable[[WorldRecordKind, StableId, WorldRootDocument], StableId]
 
+SemanticVerifier = Callable[
+    [CuratorTypedRecord, EvidenceCandidate],
+    "tuple[EvidenceSupportDisposition, str] | None",
+]
+
 
 class ModelCurator:
     def __init__(
@@ -69,10 +89,21 @@ class ModelCurator:
         gateway: ModelGateway,
         *,
         target_resolver: TargetResolver | None = None,
+        evidence_generator: EvidenceCandidateGenerator | None = None,
+        support_gate: EvidenceSupportGate | None = None,
+        enforce_support_gate: bool = True,
+        semantic_verifier: SemanticVerifier | None = None,
     ) -> None:
         self._gateway = gateway
         self._target_resolver = target_resolver or (lambda _kind, target_id, _world: target_id)
+        self._evidence_generator = evidence_generator or EvidenceCandidateGenerator()
+        self._support_gate = support_gate or EvidenceSupportGate()
+        self._enforce_support_gate = enforce_support_gate
+        self._semantic_verifier = semantic_verifier
         self.last_evidence_merge_receipts: tuple[ProposalEvidenceMergeReceipt, ...] = ()
+        self.last_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
+        self.last_partial_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
+        self.last_evidence_candidates: tuple[EvidenceCandidate, ...] = ()
 
     @property
     def gateway(self) -> ModelGateway:
@@ -150,6 +181,30 @@ class ModelCurator:
             if not (selection.start < selection.end <= len(chapter_blocks[selection.block_id].text))
         )
         if invalid_selections:
+            pointers = tuple(
+                f"/operations/{op_index}/evidence_refs/{ev_index}"
+                for op_index, operation in enumerate(draft.operations)
+                for ev_index, selection in enumerate(operation.evidence_refs)
+                if not (
+                    selection.start
+                    < selection.end
+                    <= len(chapter_blocks[selection.block_id].text)
+                )
+            )
+            op_indexes = tuple(
+                sorted(
+                    {
+                        op_index
+                        for op_index, operation in enumerate(draft.operations)
+                        for selection in operation.evidence_refs
+                        if not (
+                            selection.start
+                            < selection.end
+                            <= len(chapter_blocks[selection.block_id].text)
+                        )
+                    }
+                )
+            )
             raise CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_INVALID_EVIDENCE",
                 (),
@@ -160,6 +215,9 @@ class ModelCurator:
                     )[:240]
                     for block_id, start, end, block_length in invalid_selections[:4]
                 ),
+                operation_indexes=op_indexes,
+                json_pointers=pointers[:8],
+                violation_rule="evidence_span_in_block_bounds",
             )
         draft, merge_receipts = self._merge_normalized_collisions(draft, base_commit)
         self.last_evidence_merge_receipts = merge_receipts
@@ -231,6 +289,401 @@ class ModelCurator:
             ),
             call,
             draft,
+        )
+
+    async def extract_reported_v2(
+        self,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        current_world: WorldRootDocument,
+        request: ModelRequest,
+        *,
+        contract_prompt: str | None = None,
+    ) -> tuple[ObservedChangeSet, ModelCallRecord, ChapterChangeDraftV2]:
+        """Candidate-id evidence contract: model never emits character offsets."""
+
+        chapter = Stage1Curator._chapter(text_root, chapter_index)
+        candidates = self._evidence_generator.generate(text_root, chapter_index)
+        self.last_evidence_candidates = candidates
+        catalog = self._evidence_generator.index_by_id(candidates)
+        views = self._evidence_generator.model_views(candidates)
+        contract = f"{contract_prompt}\n\n" if contract_prompt else ""
+        safe_request = request.model_copy(
+            update={
+                "prompt": (
+                    contract
+                    + "Extract ChapterChangeDraftV2 JSON from this revealed chapter only. "
+                    "Cite only registered evidence_candidate_ids; do not emit start/end offsets. "
+                    "preserve assertion/rumor/dream truth classes and do not infer future events.\n"
+                    '<CURATOR_INPUT trusted="false">\n'
+                    f"BASE_COMMIT={base_commit.root}\n"
+                    f"WORLD={current_world.model_dump_json()}\n"
+                    f"CHAPTER={chapter.model_dump_json()}\n"
+                    "EVIDENCE_CANDIDATES="
+                    f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
+                    "</CURATOR_INPUT>"
+                )
+            }
+        )
+        draft, call = await self._gateway.generate_structured(safe_request, ChapterChangeDraftV2)
+        if draft.chapter_index != chapter_index:
+            raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
+        unknown = tuple(
+            candidate_id
+            for operation in draft.operations
+            for candidate_id in operation.evidence_candidate_ids
+            if candidate_id not in catalog
+        )
+        if unknown:
+            feedback = tuple(
+                f"{item.root}: unknown evidence candidate" for item in unknown[:4]
+            )
+            raise CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+                (),
+                information_boundary=True,
+                safe_feedback=feedback,
+                json_pointers=tuple(
+                    f"/operations/{op_i}/evidence_candidate_ids/{ev_i}"
+                    for op_i, operation in enumerate(draft.operations)
+                    for ev_i, candidate_id in enumerate(operation.evidence_candidate_ids)
+                    if candidate_id not in catalog
+                ),
+                violation_rule="candidate_id_must_belong_to_chapter",
+            )
+        support_decisions = self._support_gate.evaluate_draft(draft.operations, catalog)
+        self.last_support_decisions = support_decisions
+        if self._enforce_support_gate:
+            # Collect hard rejections (CONTRADICTS/UNRELATED) and PARTIAL items
+            # that need a narrow semantic verifier.
+            rejected = tuple(
+                item
+                for item in support_decisions
+                if item.disposition
+                in {
+                    EvidenceSupportDisposition.CONTRADICTS,
+                    EvidenceSupportDisposition.UNRELATED,
+                }
+            )
+            if rejected:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                    (),
+                    safe_feedback=tuple(
+                        (
+                            f"{item.candidate_id.root}: {item.disposition.value} "
+                            f"({item.reason_code}) at operation {item.operation_index}"
+                        )[:240]
+                        for item in rejected[:4]
+                    ),
+                    operation_indexes=tuple(
+                        sorted({item.operation_index for item in rejected})
+                    ),
+                    json_pointers=tuple(
+                        f"/operations/{item.operation_index}/evidence_candidate_ids/0"
+                        for item in rejected[:8]
+                    ),
+                    violation_rule="candidate_text_contradicts_or_unrelated",
+                )
+            # PARTIAL must be resolved by the narrow semantic verifier; without a
+            # verifier the gate fails closed and the candidate cannot proceed.
+            partial_decisions = tuple(
+                item
+                for item in support_decisions
+                if item.disposition is EvidenceSupportDisposition.PARTIAL
+            )
+            unresolved_partials: list[EvidenceSupportDecision] = []
+            for item in partial_decisions:
+                operation = draft.operations[item.operation_index]
+                candidate = catalog[item.candidate_id]
+                verified: tuple[EvidenceSupportDisposition, str] | None = None
+                if self._semantic_verifier is not None:
+                    try:
+                        verified = self._semantic_verifier(operation.record, candidate)
+                    except Exception:
+                        verified = None
+                if verified is None:
+                    unresolved_partials.append(item)
+                    continue
+                v_disposition, v_reason = verified
+                if v_disposition is not EvidenceSupportDisposition.SUPPORTS:
+                    # Verifier downgraded to CONTRADICTS/UNRELATED/PARTIAL.
+                    raise CuratorProposalSemanticRejected(
+                        "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                        (),
+                        safe_feedback=(
+                            (
+                                f"{item.candidate_id.root}: verifier="
+                                f"{v_disposition.value} ({v_reason}) "
+                                f"at operation {item.operation_index}"
+                            )[:240],
+                        ),
+                        operation_indexes=(item.operation_index,),
+                        json_pointers=(
+                            f"/operations/{item.operation_index}/evidence_candidate_ids/0",
+                        ),
+                        violation_rule="semantic_verifier_rejected_partial",
+                    )
+            if unresolved_partials:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
+                    (),
+                    safe_feedback=tuple(
+                        (
+                            f"{item.candidate_id.root}: {item.reason_code} unresolved "
+                            f"(no verifier) at operation {item.operation_index}"
+                        )[:240]
+                        for item in unresolved_partials[:4]
+                    ),
+                    operation_indexes=tuple(
+                        sorted({item.operation_index for item in unresolved_partials})
+                    ),
+                    json_pointers=tuple(
+                        f"/operations/{item.operation_index}/evidence_candidate_ids/0"
+                        for item in unresolved_partials[:8]
+                    ),
+                    violation_rule="partial_evidence_unresolved_no_verifier",
+                )
+            self.last_partial_support_decisions = tuple(partial_decisions)
+
+        chapter_blocks = {
+            block.block_id: block for scene in chapter.scenes for block in scene.blocks
+        }
+        operations: list[ChangeOperation] = []
+        for operation in draft.operations:
+            bound_evidence = []
+            for candidate_id in operation.evidence_candidate_ids:
+                candidate = catalog[candidate_id]
+                block = chapter_blocks[candidate.block_id]
+                selected = block.text[candidate.start : candidate.end]
+                evidence_digest = self._digest(
+                    chapter.chapter_id.root.encode(),
+                    candidate.block_id.root.encode(),
+                    str(candidate.start).encode(),
+                    str(candidate.end).encode(),
+                )
+                canonical_evidence = EvidenceRef(
+                    evidence_id=StableId(f"evidence.curator.{evidence_digest}"),
+                    root_hash=text_root.root_hash,
+                    object_hash=sha256_id(block.text.encode("utf-8")),
+                    chapter_id=block.chapter_id,
+                    scene_id=block.scene_id,
+                    span=TextSpanRef(
+                        block_id=candidate.block_id,
+                        start=candidate.start,
+                        end=candidate.end,
+                    ),
+                    quote_hash=quote_hash(selected),
+                    resolved_at_commit=base_commit,
+                    support_status=EvidenceSupportStatus.CURRENT,
+                )
+                validate_evidence_ref(canonical_evidence, text_root)
+                bound_evidence.append(canonical_evidence)
+            evidence_refs = tuple(bound_evidence)
+            record = operation.record.model_dump(mode="json")
+            record[_RECORD_ID_FIELD[operation.record_kind]] = operation.target_id.root
+            if operation.record_kind is not WorldRecordKind.ENTITY:
+                record["evidence_refs"] = [
+                    evidence.model_dump(mode="json") for evidence in evidence_refs
+                ]
+            digest = self._digest(
+                canonical_json_bytes(
+                    {
+                        "operation": operation.operation.value,
+                        "record_kind": operation.record_kind.value,
+                        "target_id": operation.target_id.root,
+                        "record": record,
+                        "evidence": [item.model_dump(mode="json") for item in evidence_refs],
+                    }
+                )
+            )
+            operations.append(
+                ChangeOperation(
+                    operation_id=StableId(f"change.model.{digest}"),
+                    root_kind=RootKind.WORLD,
+                    operation=operation.operation,
+                    target_id=operation.target_id,
+                    payload={
+                        "record_type": operation.record_kind.value,
+                        "record": record,
+                    },
+                    evidence_refs=evidence_refs,
+                )
+            )
+        source_bytes = canonical_json_bytes(chapter.model_dump(mode="json"))
+        return (
+            ObservedChangeSet(
+                change_set_id=StableId(
+                    "changes.model."
+                    f"{self._digest(base_commit.root.encode(), chapter.chapter_id.root.encode())}"
+                ),
+                base_commit=base_commit,
+                source_artifact=ArtifactRef(
+                    artifact_id=sha256_id(source_bytes),
+                    media_type="application/vnd.novel-agent.chapter+json",
+                    byte_length=len(source_bytes),
+                    schema_version=SchemaVersion("0.1.0"),
+                ),
+                operations=tuple(operations),
+            ),
+            call,
+            draft,
+        )
+
+    async def evidence_repair_v2(
+        self,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        parent_changes: ObservedChangeSet,
+        request: ModelRequest,
+        *,
+        contract_prompt: str | None = None,
+        repair_operation_indexes: tuple[int, ...] = (),
+    ) -> tuple[ObservedChangeSet, ModelCallRecord, tuple[EvidenceRepairDraft, ...]]:
+        """Evidence-only repair: model picks replacement candidate IDs, never rewrites record."""
+
+        chapter = Stage1Curator._chapter(text_root, chapter_index)
+        candidates = self._evidence_generator.generate(text_root, chapter_index)
+        self.last_evidence_candidates = candidates
+        catalog = self._evidence_generator.index_by_id(candidates)
+        views = self._evidence_generator.model_views(candidates)
+        chapter_blocks = {
+            block.block_id: block for scene in chapter.scenes for block in scene.blocks
+        }
+        target_indexes = set(repair_operation_indexes) or set(
+            range(len(parent_changes.operations))
+        )
+        parent_ops = [
+            {
+                "operation_index": index,
+                "operation_type": operation.operation.value,
+                "target_id": operation.target_id.root,
+                "payload": operation.payload,
+                "current_evidence_refs": [
+                    {
+                        "block_id": evidence.span.block_id.root if evidence.span else None,
+                        "start": evidence.span.start if evidence.span else None,
+                        "end": evidence.span.end if evidence.span else None,
+                    }
+                    for evidence in operation.evidence_refs
+                ],
+            }
+            for index, operation in enumerate(parent_changes.operations)
+            if index in target_indexes
+        ]
+        contract = f"{contract_prompt}\n\n" if contract_prompt else ""
+        safe_request = request.model_copy(
+            update={
+                "prompt": (
+                    contract
+                    + "Output a JSON array of EvidenceRepairDraft objects. "
+                    "Each draft must specify operation_index, replacement_candidate_ids, "
+                    "and action. Only choose from the supplied evidence_candidate_ids. "
+                    "Do NOT rewrite target_id, record_kind, record payload, or operation type. "
+                    "Use action=replace_evidence to swap candidates, "
+                    "action=drop_operation to remove the operation, "
+                    "or action=mark_unresolved if no candidate supports the record.\n"
+                    '<EVIDENCE_REPAIR_INPUT trusted="false">\n'
+                    f"BASE_COMMIT={base_commit.root}\n"
+                    f"REPAIR_OPERATIONS={canonical_json_bytes(parent_ops).decode()}\n"
+                    "EVIDENCE_CANDIDATES="
+                    f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
+                    "</EVIDENCE_REPAIR_INPUT>"
+                )
+            }
+        )
+        raw_drafts, call = await self._gateway.generate_structured(
+            safe_request,
+            list[EvidenceRepairDraft],  # type: ignore[type-var]
+        )
+        drafts = tuple(raw_drafts)
+        # Apply evidence-only repairs to parent operations.
+        repair_by_index: dict[int, EvidenceRepairDraft] = {
+            draft.operation_index: draft for draft in drafts
+        }
+        new_operations: list[ChangeOperation] = []
+        for index, operation in enumerate(parent_changes.operations):
+            repair = repair_by_index.get(index)
+            if repair is None:
+                new_operations.append(operation)
+                continue
+            if repair.action is EvidenceRepairAction.DROP_OPERATION:
+                continue
+            if repair.action is EvidenceRepairAction.MARK_UNRESOLVED:
+                new_operations.append(operation)
+                continue
+            # replace_evidence: bind new candidate IDs
+            unknown = tuple(
+                candidate_id
+                for candidate_id in repair.replacement_candidate_ids
+                if candidate_id not in catalog
+            )
+            if unknown:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+                    (),
+                    information_boundary=True,
+                    safe_feedback=tuple(
+                        f"{item.root}: unknown evidence candidate" for item in unknown[:4]
+                    ),
+                    json_pointers=tuple(
+                        f"/operations/{index}/evidence_candidate_ids/{ev_i}"
+                        for ev_i, item in enumerate(unknown)
+                    ),
+                    violation_rule="candidate_id_must_belong_to_chapter",
+                )
+            bound_evidence = []
+            for candidate_id in repair.replacement_candidate_ids:
+                candidate = catalog[candidate_id]
+                block = chapter_blocks[candidate.block_id]
+                selected = block.text[candidate.start : candidate.end]
+                evidence_digest = self._digest(
+                    chapter.chapter_id.root.encode(),
+                    candidate.block_id.root.encode(),
+                    str(candidate.start).encode(),
+                    str(candidate.end).encode(),
+                )
+                canonical_evidence = EvidenceRef(
+                    evidence_id=StableId(f"evidence.curator.{evidence_digest}"),
+                    root_hash=text_root.root_hash,
+                    object_hash=sha256_id(block.text.encode("utf-8")),
+                    chapter_id=block.chapter_id,
+                    scene_id=block.scene_id,
+                    span=TextSpanRef(
+                        block_id=candidate.block_id,
+                        start=candidate.start,
+                        end=candidate.end,
+                    ),
+                    quote_hash=quote_hash(selected),
+                    resolved_at_commit=base_commit,
+                    support_status=EvidenceSupportStatus.CURRENT,
+                )
+                validate_evidence_ref(canonical_evidence, text_root)
+                bound_evidence.append(canonical_evidence)
+            # Preserve operation_id, operation type, target_id, payload; only swap evidence.
+            new_operations.append(
+                operation.model_copy(update={"evidence_refs": tuple(bound_evidence)})
+            )
+        source_bytes = canonical_json_bytes(chapter.model_dump(mode="json"))
+        return (
+            ObservedChangeSet(
+                change_set_id=StableId(
+                    "changes.model.repair."
+                    f"{self._digest(base_commit.root.encode(), chapter.chapter_id.root.encode())}"
+                ),
+                base_commit=base_commit,
+                source_artifact=ArtifactRef(
+                    artifact_id=sha256_id(source_bytes),
+                    media_type="application/vnd.novel-agent.chapter+json",
+                    byte_length=len(source_bytes),
+                    schema_version=SchemaVersion("0.1.0"),
+                ),
+                operations=tuple(new_operations),
+            ),
+            call,
+            drafts,
         )
 
     def _normalize_operations(

@@ -16,7 +16,11 @@ from novel_agent.domain.memory_write import (
     ValidationDecision,
 )
 from novel_agent.domain.model_calls import ModelRequest
-from novel_agent.domain.stage2 import AgentMode, AgentType
+from novel_agent.domain.stage2 import (
+    AgentMode,
+    AgentType,
+    CuratorEvidenceContract,
+)
 from novel_agent.ports.memory_write import (
     CuratorRepairRejectedError,
     CuratorRepairRequest,
@@ -37,14 +41,26 @@ class CuratorRepairContractError(CuratorRepairRejectedError):
 class CuratorRepairAgent:
     """Run a bounded repair while keeping candidate materialization trusted.
 
-    The model is only allowed to suggest a new observed change set.  Evidence
-    binding, candidate lineage, normalization, validation, and commit authority
-    remain in the workflow and its trusted services.
+    Under the v2 evidence contract the repair is evidence-only: the model
+    picks replacement candidate IDs and cannot rewrite the record payload.
+    Under the legacy v1 contract the repair regenerates the full draft but
+    is still scope-checked against the parent operations.
     """
 
-    def __init__(self, curator: ModelCurator, runner: StructuredAgentRunner) -> None:
+    def __init__(
+        self,
+        curator: ModelCurator,
+        runner: StructuredAgentRunner,
+        *,
+        evidence_contract: CuratorEvidenceContract = CuratorEvidenceContract.CANDIDATE_ID_V2,
+    ) -> None:
         self._curator = curator
         self._runner = runner
+        self._evidence_contract = evidence_contract
+
+    @property
+    def evidence_contract(self) -> CuratorEvidenceContract:
+        return self._evidence_contract
 
     async def run(
         self,
@@ -62,6 +78,135 @@ class CuratorRepairAgent:
         model_request: ModelRequest,
     ) -> CuratorRepairResult:
         self._validate_parent(request, parent_candidate, directive, base_commit)
+        if self._evidence_contract is CuratorEvidenceContract.CANDIDATE_ID_V2:
+            return await self._run_v2(
+                version=version,
+                text_root=text_root,
+                chapter_index=chapter_index,
+                base_commit=base_commit,
+                parent_candidate=parent_candidate,
+                parent_changes=parent_changes,
+                directive=directive,
+                request=request,
+                model_request=model_request,
+            )
+        return await self._run_v1(
+            version=version,
+            text_root=text_root,
+            chapter_index=chapter_index,
+            base_commit=base_commit,
+            current_world=current_world,
+            parent_candidate=parent_candidate,
+            parent_changes=parent_changes,
+            validation=validation,
+            directive=directive,
+            request=request,
+            model_request=model_request,
+        )
+
+    async def _run_v2(
+        self,
+        *,
+        version: SchemaVersion,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        parent_candidate: CandidateRevision,
+        parent_changes: ObservedChangeSet,
+        directive: RepairDirective,
+        request: CuratorRepairRequest,
+        model_request: ModelRequest,
+    ) -> CuratorRepairResult:
+        scope = directive.allowed_scope
+        if scope.operation_ids:
+            wanted = set(scope.operation_ids)
+            repair_indexes = tuple(
+                index
+                for index, operation in enumerate(parent_changes.operations)
+                if operation.operation_id in wanted
+            )
+        else:
+            repair_indexes = ()
+        prepared = self._runner.prepare(
+            AgentType.MEMORY_CURATOR,
+            AgentMode.CURATOR_REPAIR,
+            version.root,
+            model_request,
+            (
+                "Evidence-only repair: output EvidenceRepairDraft items. "
+                "Choose replacement evidence_candidate_ids only; "
+                "do NOT rewrite target_id, record_kind, record payload, or operation type.\n"
+                f"PARENT_CANDIDATE={parent_candidate.model_dump_json()}\n"
+                f"REPAIR_DIRECTIVE={directive.model_dump_json()}\n"
+                f"REPAIR_OPERATION_INDEXES={repair_indexes}\n"
+            ),
+            source_hashes=(text_root.root_hash,),
+            base_commit=base_commit,
+        )
+        try:
+            changes, call, drafts = await self._curator.evidence_repair_v2(
+                text_root,
+                chapter_index,
+                base_commit,
+                parent_changes,
+                prepared.request,
+                contract_prompt=prepared.rendered_prompt,
+                repair_operation_indexes=repair_indexes,
+            )
+        except ModelCurationContractError as error:
+            raise CuratorRepairContractError(
+                str(error),
+                reason_code="CURATOR_REPAIR_DOMAIN_REJECTED",
+            ) from error
+        self._validate_evidence_only(changes, parent_changes, parent_candidate, directive)
+        output_bytes = canonical_json_bytes(changes.model_dump(mode="json"))
+        output_artifact = ArtifactRef(
+            artifact_id=sha256_id(output_bytes),
+            media_type="application/vnd.novel-agent.curator-repair-observed-changes+json",
+            byte_length=len(output_bytes),
+            schema_version=version,
+        )
+        unresolved = tuple(
+            f"evidence_repair:{draft.operation_index}:{draft.action.value}"
+            for draft in drafts
+            if draft.action.value != "replace_evidence"
+        )
+        receipt = self._runner.receipt(
+            prepared,
+            call,
+            output_artifacts=(output_artifact,),
+            unresolved=unresolved,
+        )
+        receipt_bytes = canonical_json_bytes(receipt.model_dump(mode="json"))
+        producer_receipt = ArtifactRef(
+            artifact_id=sha256_id(receipt_bytes),
+            media_type="application/vnd.novel-agent.curator-repair-receipt+json",
+            byte_length=len(receipt_bytes),
+            schema_version=version,
+        )
+        return CuratorRepairResult(
+            observed_changes=changes,
+            agent_receipt=receipt,
+            producer_receipt=producer_receipt,
+            candidate_artifact=output_artifact,
+            applied_directive_ids=(directive.directive_id,),
+        )
+
+    async def _run_v1(
+        self,
+        *,
+        version: SchemaVersion,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        current_world: WorldRootDocument,
+        parent_candidate: CandidateRevision,
+        parent_changes: ObservedChangeSet,
+        validation: ValidationDecision | None,
+        directive: RepairDirective,
+        request: CuratorRepairRequest,
+        model_request: ModelRequest,
+    ) -> CuratorRepairResult:
         constraints = self._prompt_constraints(parent_changes, directive)
         prepared = self._runner.prepare(
             AgentType.MEMORY_CURATOR,
@@ -176,6 +321,31 @@ class CuratorRepairAgent:
             raise CuratorRepairContractError("repair request base commit is not canonical")
         if directive.action.value != "curator_repair":
             raise CuratorRepairContractError("repair Agent requires a curator-repair directive")
+
+    @staticmethod
+    def _validate_evidence_only(
+        changes: ObservedChangeSet,
+        parent_changes: ObservedChangeSet,
+        parent: CandidateRevision,
+        directive: RepairDirective,
+    ) -> None:
+        """V2 repair must preserve record payloads; only evidence_refs may change."""
+        if changes.base_commit != parent.base_commit:
+            raise CuratorRepairContractError("repair changed the candidate base commit")
+        parent_payloads = {
+            operation.target_id: CuratorRepairAgent._payload_without_evidence(operation.payload)
+            for operation in parent_changes.operations
+        }
+        for operation in changes.operations:
+            original = parent_payloads.get(operation.target_id)
+            if original is None:
+                raise CuratorRepairContractError(
+                    "evidence-only repair introduced a new target"
+                )
+            if original != CuratorRepairAgent._payload_without_evidence(operation.payload):
+                raise CuratorRepairContractError(
+                    "evidence-only repair changed immutable record content"
+                )
 
     @staticmethod
     def _validate_scope(

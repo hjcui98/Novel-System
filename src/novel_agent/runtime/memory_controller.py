@@ -43,15 +43,17 @@ from novel_agent.domain.stage2 import (
     SelectionDecision,
     SufficiencyReport,
     ToolCallContext,
+    ToolFailureCode,
     ToolPolicy,
     ToolResult,
     ToolResultStatus,
 )
 from novel_agent.prompts.registry import content_hash
 from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.controller_legal_actions import LegalActionProvider
 from novel_agent.services.memory_pipeline import ContextCompiler
 from novel_agent.services.retrieval import ROUTES, FusionService, RerankService
-from novel_agent.tools.contracts import ToolBinding, ToolBudget, ToolInvocation
+from novel_agent.tools.contracts import ControllerBudgetState, ToolBinding, ToolInvocation
 from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, PLAN_INTENTS, POOL_BY_CHANNEL
 
 TOOL_BY_CHANNEL = {channel: name for name, channel in CHANNEL_BY_TOOL.items()}
@@ -63,8 +65,11 @@ class ControllerGraphState(TypedDict, total=False):
     policy_decisions: list[dict[str, Any]]
     pending_tool: str
     pending_need_id: str
+    pending_action_ids: list[str]
     stopped: bool
     stop_reason: str
+    decision_model_calls: int
+    terminal_failure: str | None
 
 
 class ControllerStateView(TypedDict):
@@ -124,13 +129,20 @@ class RouteBoundControllerPolicy:
             if result.status is ToolResultStatus.SUCCEEDED and result.coverage > 0
         }
         called = {(need_id, tool_name) for need_id, tool_name, _ in calls}
+        access_scope = request.access_scope.value
+        allow_future_plan = request.allow_future_plan
         mandatory_missing = tuple(
             need
             for need in request.initial_memory_needs
-            if need.requirement is RequirementLevel.MANDATORY and need.need_id not in successful
+            if need.requirement is RequirementLevel.MANDATORY
+            and need.need_id not in successful
+            and self._need_is_accessible(need, access_scope, allow_future_plan)
         )
         optional_missing = tuple(
-            need for need in request.initial_memory_needs if need.need_id not in successful
+            need
+            for need in request.initial_memory_needs
+            if need.need_id not in successful
+            and self._need_is_accessible(need, access_scope, allow_future_plan)
         )
         if not mandatory_missing:
             return ControllerPolicyDecision(
@@ -186,8 +198,12 @@ class RouteBoundControllerPolicy:
             )
         unresolved = False
         fallback_exhausted_without_gain = False
+        access_scope = request.access_scope.value
+        allow_future_plan = request.allow_future_plan
         for need in request.initial_memory_needs:
             if need.requirement is not RequirementLevel.MANDATORY:
+                continue
+            if not self._need_is_accessible(need, access_scope, allow_future_plan):
                 continue
             plan = self._route_plans.get(need.need_id)
             if plan is None:
@@ -295,6 +311,21 @@ class RouteBoundControllerPolicy:
             )
         )
 
+    @staticmethod
+    def _need_is_accessible(
+        need: Stage1MemoryNeed,
+        access_scope: str,
+        allow_future_plan: bool,
+    ) -> bool:
+        """Mirror RetrievalToolAdapter access checks so policy skips denied needs."""
+
+        if need.access_scope != access_scope:
+            return False
+        return not (
+            (need.query_intent in PLAN_INTENTS or need.allow_plan)
+            and not allow_future_plan
+        )
+
     def decision_receipt(self, model_call_id: StableId) -> AgentExecutionReceipt | None:
         return None
 
@@ -342,7 +373,14 @@ class BoundedMemoryController:
         if len(self._route_plans) != len(route_plans):
             raise ValueError("bounded controller route plans must have unique memory need ids")
         self._freshness_check = freshness_check
-        self._budgets: dict[str, ToolBudget] = {}
+        self._budgets: dict[str, ControllerBudgetState] = {}
+        self._legal_actions = LegalActionProvider(
+            tool_policy=tool_policy,
+            route_plans=route_plans,
+        )
+        self._max_decision_model_calls = int(
+            getattr(policy, "max_decision_model_calls", 2) or 2
+        )
         builder = StateGraph(ControllerGraphState)
         builder.add_node("decide", self._decide)
         builder.add_node("execute_tool", self._execute_tool)
@@ -370,12 +408,24 @@ class BoundedMemoryController:
             return self._finalize_without_tools(
                 request, text_root, ControllerStopReason.FRESHNESS_BLOCKED
             )
-        self._budgets[request.request_id.root] = ToolBudget.from_policy(self._tool_policy)
+        self._legal_actions.assert_consistency(request, ())
+        max_tools = self._trusted_call_limit(request)
+        self._budgets[request.request_id.root] = ControllerBudgetState.from_policy(
+            self._tool_policy,
+            max_tool_calls=max_tools,
+            max_decision_model_calls=self._max_decision_model_calls,
+            wall_clock_budget_ms=min(
+                self._tool_policy.wall_clock_budget_ms,
+                request.retrieval_budget.wall_clock_budget_ms,
+            ),
+        )
         initial = ControllerGraphState(
             request=request.model_dump(mode="json"),
             tool_calls=[],
             policy_decisions=[],
+            pending_action_ids=[],
             stopped=False,
+            decision_model_calls=0,
         )
         try:
             state = cast(
@@ -389,6 +439,44 @@ class BoundedMemoryController:
     def _decide(self, state: ControllerGraphState) -> ControllerGraphState:
         request = self._request_from_state(state)
         calls = self._parse_calls(state.get("tool_calls", []))
+        budget = self._budgets[request.request_id.root]
+        pending_action_ids = list(state.get("pending_action_ids") or [])
+
+        if budget.terminal_failure is not None:
+            stop_reason = budget.stop_reason_for_terminal()
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=stop_reason,
+                rationale_code="TERMINAL_TOOL_FAILURE",
+            )
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "stopped": True,
+                "stop_reason": stop_reason.value,
+                "terminal_failure": budget.terminal_failure,
+                "pending_action_ids": [],
+            }
+
+        if budget.wall_clock_exhausted() or not budget.can_invoke_tool():
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                rationale_code="TRUSTED_GRAPH_WALL_CLOCK_OR_TOOL_BUDGET_EXHAUSTED",
+            )
+            budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "stopped": True,
+                "stop_reason": ControllerStopReason.BUDGET_EXHAUSTED.value,
+                "pending_action_ids": [],
+            }
+
         if len(calls) >= self._trusted_call_limit(request):
             decision = ControllerPolicyDecision(
                 action=ControllerPolicyAction.STOP,
@@ -402,7 +490,72 @@ class BoundedMemoryController:
                 ],
                 "stopped": True,
                 "stop_reason": ControllerStopReason.BUDGET_EXHAUSTED.value,
+                "pending_action_ids": [],
             }
+
+        # Drain batch plan actions without another model call.
+        if pending_action_ids:
+            action_id = StableId(pending_action_ids[0])
+            legal = {
+                item.action_id: item
+                for item in self._legal_actions.available_actions(request, calls)
+            }
+            registered = legal.get(action_id)
+            if registered is None:
+                decision = ControllerPolicyDecision(
+                    action=ControllerPolicyAction.STOP,
+                    stop_reason=ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+                    rationale_code="BATCH_ACTION_NO_LONGER_LEGAL",
+                )
+                return {
+                    "policy_decisions": [
+                        *state.get("policy_decisions", []),
+                        decision.model_dump(mode="json"),
+                    ],
+                    "stopped": True,
+                    "stop_reason": ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value,
+                    "pending_action_ids": [],
+                }
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.CALL_TOOL,
+                need_id=registered.need_id,
+                tool_name=registered.tool_name,
+                rationale_code="BATCH_PLAN_ACTION",
+            )
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "pending_need_id": registered.need_id.root,
+                "pending_tool": registered.tool_name,
+                "pending_action_ids": pending_action_ids[1:],
+                "stopped": False,
+            }
+
+        uses_model = hasattr(self._policy, "decision_receipts") or hasattr(
+            self._policy, "max_decision_model_calls"
+        )
+        if uses_model and not budget.can_decide():
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                rationale_code="DECISION_MODEL_BUDGET_EXHAUSTED",
+            )
+            budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "stopped": True,
+                "stop_reason": ControllerStopReason.BUDGET_EXHAUSTED.value,
+                "pending_action_ids": [],
+            }
+
+        if uses_model:
+            budget.record_decision_call()
+
         raw_decision = self._policy.decide({"request": request, "tool_calls": calls})
         if isinstance(raw_decision, ControllerPolicyDecision):
             decision = raw_decision
@@ -420,6 +573,26 @@ class BoundedMemoryController:
                 tool_name=tool_name,
                 rationale_code="LEGACY_POLICY_TOOL_CALL",
             )
+
+        # Model latency may exhaust wall clock before tool execution.
+        if budget.wall_clock_exhausted():
+            budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+            decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.STOP,
+                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                rationale_code="DEADLINE_AFTER_MODEL_DECISION",
+            )
+            return {
+                "policy_decisions": [
+                    *state.get("policy_decisions", []),
+                    decision.model_dump(mode="json"),
+                ],
+                "stopped": True,
+                "stop_reason": ControllerStopReason.BUDGET_EXHAUSTED.value,
+                "decision_model_calls": budget.decision_model_calls_used,
+                "pending_action_ids": [],
+            }
+
         decisions = [
             *state.get("policy_decisions", []),
             decision.model_dump(mode="json"),
@@ -430,6 +603,58 @@ class BoundedMemoryController:
                 "policy_decisions": decisions,
                 "stopped": True,
                 "stop_reason": stop_reason.value,
+                "decision_model_calls": budget.decision_model_calls_used,
+                "pending_action_ids": [],
+            }
+        if decision.action is ControllerPolicyAction.EXECUTE_PLAN:
+            queued = [item.root for item in decision.pending_action_ids]
+            if not queued:
+                stop = ControllerPolicyDecision(
+                    action=ControllerPolicyAction.STOP,
+                    stop_reason=ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+                    rationale_code="EMPTY_BATCH_PLAN",
+                )
+                return {
+                    "policy_decisions": [*decisions, stop.model_dump(mode="json")],
+                    "stopped": True,
+                    "stop_reason": ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value,
+                    "decision_model_calls": budget.decision_model_calls_used,
+                    "pending_action_ids": [],
+                }
+            # Bind the first action immediately so execute_tool has pending_need_id
+            # and pending_tool.  Remaining actions drain via the pending_action_ids
+            # branch at the top of _decide without another model call.
+            legal = {
+                item.action_id: item
+                for item in self._legal_actions.available_actions(request, calls)
+            }
+            first_registered = legal.get(StableId(queued[0]))
+            if first_registered is None:
+                stop = ControllerPolicyDecision(
+                    action=ControllerPolicyAction.STOP,
+                    stop_reason=ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+                    rationale_code="BATCH_FIRST_ACTION_NO_LONGER_LEGAL",
+                )
+                return {
+                    "policy_decisions": [*decisions, stop.model_dump(mode="json")],
+                    "stopped": True,
+                    "stop_reason": ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value,
+                    "decision_model_calls": budget.decision_model_calls_used,
+                    "pending_action_ids": [],
+                }
+            batch_decision = ControllerPolicyDecision(
+                action=ControllerPolicyAction.CALL_TOOL,
+                need_id=first_registered.need_id,
+                tool_name=first_registered.tool_name,
+                rationale_code="BATCH_PLAN_ACTION",
+            )
+            return {
+                "policy_decisions": [*decisions, batch_decision.model_dump(mode="json")],
+                "pending_need_id": first_registered.need_id.root,
+                "pending_tool": first_registered.tool_name,
+                "pending_action_ids": queued[1:],
+                "stopped": False,
+                "decision_model_calls": budget.decision_model_calls_used,
             }
         need_id = cast(StableId, decision.need_id)
         tool_name = cast(str, decision.tool_name)
@@ -439,12 +664,14 @@ class BoundedMemoryController:
                 "policy_decisions": decisions,
                 "stopped": True,
                 "stop_reason": ControllerStopReason.ACCESS_BLOCKED.value,
+                "decision_model_calls": budget.decision_model_calls_used,
             }
         if tool_name not in self._tool_policy.allowed_tools or tool_name not in CHANNEL_BY_TOOL:
             return {
                 "policy_decisions": decisions,
                 "stopped": True,
                 "stop_reason": ControllerStopReason.ACCESS_BLOCKED.value,
+                "decision_model_calls": budget.decision_model_calls_used,
             }
         if any(
             called_need_id == need_id and called_tool == tool_name
@@ -454,12 +681,26 @@ class BoundedMemoryController:
                 "policy_decisions": decisions,
                 "stopped": True,
                 "stop_reason": ControllerStopReason.NO_ADDITIONAL_EVIDENCE.value,
+                "decision_model_calls": budget.decision_model_calls_used,
+            }
+        legal_pairs = {
+            (item.need_id, item.tool_name)
+            for item in self._legal_actions.available_actions(request, calls)
+        }
+        if (need_id, tool_name) not in legal_pairs:
+            return {
+                "policy_decisions": decisions,
+                "stopped": True,
+                "stop_reason": ControllerStopReason.ACCESS_BLOCKED.value,
+                "decision_model_calls": budget.decision_model_calls_used,
             }
         return {
             "policy_decisions": decisions,
             "pending_need_id": need_id.root,
             "pending_tool": tool_name,
+            "pending_action_ids": [],
             "stopped": False,
+            "decision_model_calls": budget.decision_model_calls_used,
         }
 
     def _trusted_call_limit(self, request: MemoryResolutionRequest) -> int:
@@ -481,6 +722,29 @@ class BoundedMemoryController:
         request = self._request_from_state(state)
         calls = state.get("tool_calls", [])
         call_index = len(calls) + 1
+        controller_budget = self._budgets[request.request_id.root]
+        if controller_budget.wall_clock_exhausted() or not controller_budget.can_invoke_tool():
+            controller_budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
+            failed = ToolResult(
+                tool_call_id=StableId(f"tool-call.{request.request_id.root}.{call_index}"),
+                status=ToolResultStatus.FAILED,
+                basis_commit=request.base_commit,
+                snapshot_id=request.snapshot_id,
+                failure_code=ToolFailureCode.BUDGET_EXCEEDED,
+                audit_ref=StableId(f"tool-call.{request.request_id.root}.{call_index}"),
+            )
+            return {
+                "tool_calls": [
+                    *calls,
+                    {
+                        "need_id": state["pending_need_id"],
+                        "tool_name": state["pending_tool"],
+                        "result": failed.model_dump(mode="json"),
+                    },
+                ],
+                "terminal_failure": controller_budget.terminal_failure,
+            }
+        remaining_ms = max(1, int(controller_budget.remaining_wall_clock_ms()))
         context = ToolCallContext(
             tool_call_id=StableId(f"tool-call.{request.request_id.root}.{call_index}"),
             run_id=request.run_id,
@@ -494,9 +758,9 @@ class BoundedMemoryController:
             narrative_chapter=request.narrative_chapter,
             access_scope=request.access_scope,
             plan_permission=request.allow_future_plan,
-            timeout_ms=min(self._tool_policy.wall_clock_budget_ms, 30_000),
+            timeout_ms=min(self._tool_policy.wall_clock_budget_ms, remaining_ms, 30_000),
         )
-        budget = self._budgets[request.request_id.root]
+        budget = controller_budget.sync_tool_budget()
 
         async def invoke() -> ToolResult:
             return await self._binding.invoke(
@@ -514,6 +778,8 @@ class BoundedMemoryController:
         result = asyncio.run(invoke())
         gain = self._new_information_gain(calls, result)
         result = result.model_copy(update={"new_information_gain": gain})
+        backend_executed = result.status is ToolResultStatus.SUCCEEDED
+        controller_budget.note_tool_result(result, backend_executed=backend_executed)
         return {
             "tool_calls": [
                 *calls,
@@ -522,7 +788,8 @@ class BoundedMemoryController:
                     "tool_name": state["pending_tool"],
                     "result": result.model_dump(mode="json"),
                 },
-            ]
+            ],
+            "terminal_failure": controller_budget.terminal_failure,
         }
 
     @staticmethod

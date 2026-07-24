@@ -10,7 +10,14 @@ from pydantic import Field, JsonValue, StringConstraints, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind, RootManifest
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+)
 from novel_agent.domain.text import EvidenceRef, TextSpanRef
 from novel_agent.domain.world import NarrativeOrder, TruthClass
 
@@ -139,6 +146,104 @@ class ChapterChangeDraft(DomainModel):
     coverage: float = Field(default=1.0, ge=0, le=1)
     unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+
+
+class EvidenceCandidate(DomainModel):
+    """Trusted evidence span candidate; model may only copy candidate_id."""
+
+    candidate_id: StableId
+    block_id: StableId
+    chapter_index: int = Field(ge=1)
+    scene_index: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    content_hash: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_span(self) -> EvidenceCandidate:
+        if not (self.start < self.end):
+            raise ValueError("evidence candidate requires start < end")
+        return self
+
+
+class EvidenceCandidateView(DomainModel):
+    """Model-visible subset of a trusted evidence candidate."""
+
+    candidate_id: StableId
+    block_id: StableId
+    text: str = Field(min_length=1)
+
+
+class EvidenceQuoteSelection(DomainModel):
+    """Exact-quote fallback when pre-split candidates cannot cover a span."""
+
+    block_id: StableId
+    exact_quote: str = Field(min_length=1, max_length=240)
+    left_context: str | None = Field(default=None, max_length=80)
+    right_context: str | None = Field(default=None, max_length=80)
+    occurrence: int | None = Field(default=None, ge=0)
+
+
+class CuratedOperationDraftV2(DomainModel):
+    """Curator operation draft that references opaque evidence candidate IDs."""
+
+    operation: ChangeOperationType
+    record_kind: WorldRecordKind
+    target_id: StableId
+    record: CuratorTypedRecord
+    evidence_candidate_ids: tuple[StableId, ...] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_record_kind(self) -> CuratedOperationDraftV2:
+        expected = {
+            WorldRecordKind.ENTITY: CuratorEntityRecord,
+            WorldRecordKind.EVENT: CuratorEventRecord,
+            WorldRecordKind.STATE: CuratorStateRecord,
+            WorldRecordKind.RELATION: CuratorRelationRecord,
+            WorldRecordKind.OBLIGATION: CuratorObligationRecord,
+        }[self.record_kind]
+        if not isinstance(self.record, expected):
+            raise ValueError("Curator record_kind does not match typed record")
+        return self
+
+
+class ChapterChangeDraftV2(DomainModel):
+    """V2 Curator draft: no model-emitted character offsets."""
+
+    chapter_index: int = Field(ge=1)
+    operations: tuple[CuratedOperationDraftV2, ...] = Field(default=(), max_length=4)
+    coverage: float = Field(default=1.0, ge=0, le=1)
+    unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+    declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+
+
+class EvidenceSupportDisposition(StrEnum):
+    SUPPORTS = "supports"
+    PARTIAL = "partial"
+    CONTRADICTS = "contradicts"
+    UNRELATED = "unrelated"
+
+
+class EvidenceSupportDecision(DomainModel):
+    operation_index: int = Field(ge=0)
+    candidate_id: StableId
+    disposition: EvidenceSupportDisposition
+    reason_code: str = Field(min_length=1, max_length=64)
+
+
+class EvidenceRepairAction(StrEnum):
+    REPLACE_EVIDENCE = "replace_evidence"
+    DROP_OPERATION = "drop_operation"
+    MARK_UNRESOLVED = "mark_unresolved"
+
+
+class EvidenceRepairDraft(DomainModel):
+    """Field-level evidence-only repair; record payload is immutable."""
+
+    operation_index: int = Field(ge=0)
+    replacement_candidate_ids: tuple[StableId, ...] = ()
+    action: EvidenceRepairAction
 
 
 class StateTransitionEdge(DomainModel):

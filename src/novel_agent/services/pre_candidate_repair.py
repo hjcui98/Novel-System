@@ -221,7 +221,12 @@ class BoundedPreCandidateRepairPolicy:
             action = "human_review"
         mutable = tuple(
             sorted(
-                {index for conflict in rejection.conflicts for index in conflict.operation_indexes}
+                {
+                    index
+                    for conflict in rejection.conflicts
+                    for index in conflict.operation_indexes
+                }
+                | set(rejection.operation_indexes)
             )
         )
         return CuratorProposalRepairDirective(
@@ -236,7 +241,9 @@ class BoundedPreCandidateRepairPolicy:
             previous_output_hash=rejection.output_hash,
             scope=ProposalRepairScope(
                 mutable_operation_indexes=mutable,
-                allow_complete_replacement=not bool(rejection.conflicts),
+                allow_complete_replacement=not bool(mutable),
+                json_pointers=rejection.json_pointers,
+                violation_rule=rejection.violation_rule,
             ),
         )
 

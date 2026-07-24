@@ -74,3 +74,41 @@ def test_configuration_identity_collision_is_rejected(field: str, values: object
     }
     with pytest.raises(ValueError, match="conflicting content"):
         Stage2ConfigurationBuilder().build(**kwargs)
+
+
+def test_quality_flags_change_configuration_fingerprint() -> None:
+    """QualityRepairFeatureFlags must be part of the workflow configuration fingerprint."""
+    from types import SimpleNamespace
+
+    from novel_agent.domain.stage2 import (
+        BenchmarkInformationProfile,
+        EvidenceSupportGateMode,
+        QualityRepairFeatureFlags,
+    )
+    from novel_agent.services.teacher_forced_benchmark_e2e import (
+        _TeacherForcedTransition,
+    )
+
+    spec = SimpleNamespace(content_hash=ArtifactId("sha256:" + "a" * 64))
+    ref = SimpleNamespace(content_hash=ArtifactId("sha256:" + "b" * 64))
+    harness = SimpleNamespace(specs=(spec,), prompt_refs=(ref,), skill_refs=())
+
+    def _transition(
+        flags: QualityRepairFeatureFlags,
+    ) -> _TeacherForcedTransition:
+        instance = _TeacherForcedTransition.__new__(_TeacherForcedTransition)
+        instance.profile = BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+        instance.harness = harness
+        instance.quality_repair_flags = flags
+        return instance
+
+    default_flags = QualityRepairFeatureFlags()
+    modified_flags = QualityRepairFeatureFlags(
+        evidence_support_gate=EvidenceSupportGateMode.DISABLED,
+    )
+    fingerprint_default = _transition(default_flags)._workflow_configuration_fingerprint()
+    fingerprint_modified = _transition(modified_flags)._workflow_configuration_fingerprint()
+
+    assert fingerprint_default != fingerprint_modified
+    # Same flags must produce the same fingerprint (deterministic).
+    assert _transition(default_flags)._workflow_configuration_fingerprint() == fingerprint_default

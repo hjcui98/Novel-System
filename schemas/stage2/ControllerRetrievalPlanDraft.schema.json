@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "description": "Untrusted batch Agentic plan: opaque action IDs only (WP3).",
+  "properties": {
+    "rationale_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rationale Code"
+    },
+    "selected_action_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Selected Action Ids",
+      "type": "array"
+    },
+    "stop_after_action_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Stop After Action Ids",
+      "type": "array"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Reason"
+    }
+  },
+  "title": "ControllerRetrievalPlanDraft",
+  "type": "object"
+}
