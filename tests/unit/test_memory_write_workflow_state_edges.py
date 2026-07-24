@@ -345,6 +345,38 @@ def test_commit_missing_rejected_conflicted_and_uncertain_paths() -> None:
         assert result.status is expected
 
 
+def test_dry_run_commit_refusal_becomes_typed_precommit_pause() -> None:
+    workflow, data = _workflow_and_data()
+    data.commit_request = _commit_request()
+    data.commit_effect_id = data.commit_request.commit_effect_id
+    data.checkpoint_ref = _artifact("d")
+    data.state = MemoryWriteState.COMMIT
+    commit_result = MemoryWriteCommitResult(
+        request_id=data.request.request_id,
+        status=MemoryWriteCommitStatus.DRY_RUN_REFUSED,
+        reason="dry_run_refuses_all_commits",
+    )
+    workflow._commit_port = type(
+        "DryRunCommit",
+        (),
+        {"resolve_or_replay_exact": lambda self, request: commit_result},
+    )()
+
+    result = workflow._commit(data)
+
+    assert result is not None
+    assert result.status is MemoryWriteWorkflowStatus.SUSPENDED
+    assert result.workflow_phase.value == "precommit"
+    assert result.canonical_commit_accepted is False
+    assert result.resulting_commit is None
+    assert result.accepted_candidate_id == data.candidate.candidate_id
+    assert result.continuation_decision.value == "block_next_chapter"
+    assert result.terminal_codes == (
+        "DRY_RUN_COMMIT_REFUSED",
+        "dry_run_refuses_all_commits",
+    )
+
+
 def test_projection_and_freshness_non_resumable_failures_preserve_commit() -> None:
     workflow, data = _workflow_and_data()
     data.commit_result = MemoryWriteCommitResult(

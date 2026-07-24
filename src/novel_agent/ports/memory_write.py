@@ -157,6 +157,7 @@ class MemoryWriteCommitStatus(StrEnum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     CONFLICTED = "conflicted"
+    DRY_RUN_REFUSED = "dry_run_refused"
 
 
 class MemoryWriteCommitResult(DomainModel):

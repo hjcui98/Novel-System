@@ -9,8 +9,8 @@ from novel_agent.domain.ids import CommitId, StableId
 from novel_agent.ports.memory_write import MemoryWriteCommitStatus
 
 
-def test_dry_run_never_calls_commit_port() -> None:
-    """A dry-run RefusingCommitPort must never accept a canonical commit."""
+def test_dry_run_commit_port_returns_typed_refusal_without_accepting() -> None:
+    """A dry-run RefusingCommitPort returns a typed, side-effect-free refusal."""
     canonical = CommitId("sha256:" + "c" * 64)
     port = RefusingCommitPort(canonical_commit=canonical)
 
@@ -18,7 +18,7 @@ def test_dry_run_never_calls_commit_port() -> None:
 
     # The port must refuse even if called.
     result = port.resolve_or_replay_exact(request)
-    assert result.status == MemoryWriteCommitStatus.REJECTED.value
+    assert result.status == MemoryWriteCommitStatus.DRY_RUN_REFUSED.value
     assert port.calls == 1
     assert port.accepted_count == 0
 
@@ -27,7 +27,7 @@ def test_dry_run_never_calls_commit_port() -> None:
 
     # Calling again still refuses.
     result2 = port.resolve_or_replay_exact(request)
-    assert result2.status == MemoryWriteCommitStatus.REJECTED.value
+    assert result2.status == MemoryWriteCommitStatus.DRY_RUN_REFUSED.value
     assert port.calls == 2
     assert port.accepted_count == 0
     assert port.current == canonical

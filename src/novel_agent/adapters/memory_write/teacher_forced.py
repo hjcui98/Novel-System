@@ -209,7 +209,7 @@ class RefusingCommitPort:
         self.calls += 1
         return MemoryWriteCommitResult(
             request_id=request.request_id,
-            status=MemoryWriteCommitStatus.REJECTED,
+            status=MemoryWriteCommitStatus.DRY_RUN_REFUSED,
             reason="dry_run_refuses_all_commits",
         )
 

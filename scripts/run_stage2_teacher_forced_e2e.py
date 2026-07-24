@@ -129,8 +129,8 @@ def parser() -> argparse.ArgumentParser:
         "--memory-write-dry-run",
         action="store_true",
         help=(
-            "Pre-commit dry-run: generate Candidate but never call CommitPort "
-            "(candidate commit count = 0)"
+            "Pre-commit dry-run: generate and validate Candidate, then stop at a "
+            "refusing commit port without accepting a Canonical commit"
         ),
     )
     return value
@@ -326,8 +326,9 @@ def _loopback_http_url(value: str, label: str) -> ParseResult:
 def _load_quality_repair_flags(args: argparse.Namespace) -> QualityRepairFeatureFlags:
     if args.quality_repair_config is None:
         return QualityRepairFeatureFlags()
-    payload = json.loads(args.quality_repair_config.read_text("utf-8"))
-    return QualityRepairFeatureFlags.model_validate(payload)
+    return QualityRepairFeatureFlags.model_validate_json(
+        args.quality_repair_config.read_text("utf-8")
+    )
 
 
 def _ensure_experiment_manifest(

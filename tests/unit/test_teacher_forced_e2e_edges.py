@@ -349,6 +349,12 @@ def test_transition_commit_result_guards_and_optional_sinks() -> None:
     )
     with pytest.raises(TeacherForcedControlledPause):
         _TeacherForcedTransition._require_committed_result(8, controlled)
+    dry_run = MagicMock(
+        status=MemoryWriteWorkflowStatus.SUSPENDED,
+        resulting_commit=None,
+    )
+    with pytest.raises(TeacherForcedControlledPause):
+        _TeacherForcedTransition._require_committed_result(21, dry_run)
     with pytest.raises(TeacherForcedBenchmarkError, match="complete canonical state"):
         _TeacherForcedTransition._require_complete_canonical_state(
             1,

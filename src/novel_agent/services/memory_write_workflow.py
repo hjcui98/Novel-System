@@ -2051,6 +2051,12 @@ class LocalMemoryWriteWorkflow:
                 checkpoint_required=True,
             )
             return self._replan(data, ("COMMIT_CONFLICTED",))
+        if result.status == MemoryWriteCommitStatus.DRY_RUN_REFUSED:
+            return self._suspended(
+                data,
+                "DRY_RUN_COMMIT_REFUSED",
+                result.reason or "dry-run commit port refused the commit",
+            )
         if result.status != MemoryWriteCommitStatus.ACCEPTED or result.commit_id is None:
             return self._fatal(data, result.reason or "COMMIT_REJECTED")
         self._event(data, RunEventType.COMMIT_ACCEPTED)
