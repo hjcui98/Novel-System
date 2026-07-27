@@ -306,6 +306,9 @@ def _loopback_postgres_url(value: str | None) -> str:
         or parsed.port is None
     ):
         raise ValueError("real_hybrid database must use a loopback PostgreSQL URL")
+    database_name = parsed.path.removeprefix("/")
+    if not database_name or len(database_name.encode("utf-8")) > 63:
+        raise ValueError("PostgreSQL database name must contain at most 63 UTF-8 bytes")
     return value
 
 

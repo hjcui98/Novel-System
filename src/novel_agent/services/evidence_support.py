@@ -85,6 +85,22 @@ class EvidenceSupportGate:
         record: CuratorTypedRecord,
         text: str,
     ) -> tuple[EvidenceSupportDisposition, str]:
+        if isinstance(record, CuratorStateRecord):
+            scalar = EvidenceSupportGate._scalar_text(record.value).casefold()
+            if (
+                "半个时辰" in text
+                and scalar
+                in {
+                    "half_hour",
+                    "half-hour",
+                    "30_minutes",
+                    "thirty_minutes",
+                }
+            ):
+                return (
+                    EvidenceSupportDisposition.CONTRADICTS,
+                    "EXPLICIT_TRADITIONAL_TIME_UNIT_MISMATCH",
+                )
         tokens = EvidenceSupportGate._record_tokens(record)
         if not tokens:
             return EvidenceSupportDisposition.SUPPORTS, "NO_LEXICAL_ANCHOR_GRANTED_PASS"

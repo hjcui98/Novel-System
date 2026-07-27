@@ -640,6 +640,67 @@ def test_typed_proposal_requires_documents_and_preserves_typed_validation_failur
     assert rejected.rejection.kind is ProposalRejectionKind.SCOPE_VIOLATION
 
 
+def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.semantic"))
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=FakeModelEndpoint("valid"),
+            ),
+        )
+    )
+
+    class Replay:
+        curator = SimpleNamespace(
+            gateway=gateway,
+            last_prompt_fingerprint=ArtifactId("sha256:" + "8" * 64),
+        )
+
+        async def run(self, **kwargs: object) -> None:
+            parent = cast(ModelRequest, kwargs["request"])
+            verifier = parent.model_copy(
+                update={
+                    "request_id": StableId(
+                        f"{parent.request_id.root}.semantic-verifier"
+                    )
+                }
+            )
+            await gateway.generate_text(parent)
+            await gateway.generate_text(verifier)
+            raise CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                (),
+                safe_feedback=("semantic verifier rejected evidence",),
+            )
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(
+            _proposal_attempt_request(artifacts, model_request.request_id)
+        )
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.attempt_receipt.provider_call_count == 2
+    assert len(outcome.attempt_receipt.model_call_receipt_refs) == 2
+    assert outcome.attempt_receipt.model_request_ids == (
+        model_request.request_id,
+        StableId(f"{model_request.request_id.root}.semantic-verifier"),
+    )
+    assert outcome.attempt_receipt.prompt_fingerprint == ArtifactId(
+        "sha256:" + "8" * 64
+    )
+
+
 def test_typed_proposal_reraises_non_model_failure_without_ledger_evidence() -> None:
     artifacts = InMemoryArtifactRepository()
     model_request = _proposal_model_request(StableId("model.proposal.no-ledger"))
@@ -732,6 +793,16 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         ),
         (
             CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
+                (),
+                safe_feedback=("candidate evidence requires semantic verification",),
+            ),
+            ProposalRejectionStage.SEMANTIC_CONTRACT,
+            ProposalRejectionKind.INVALID_EVIDENCE,
+            True,
+        ),
+        (
+            CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
                 (),
                 safe_feedback=("trusted no-op verifier is unavailable",),
@@ -801,7 +872,7 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         assert outcome.rejection.retryable is retryable
         assert len(outcome.attempt_receipt.raw_response_refs) == 1
         assert len(outcome.attempt_receipt.model_call_receipt_refs) == 1
-        if kind is ProposalRejectionKind.INVALID_EVIDENCE and retryable:
+        if outcome.rejection.reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE":
             assert "require 0 <= start < end" in outcome.rejection.safe_feedback[0]
 
 

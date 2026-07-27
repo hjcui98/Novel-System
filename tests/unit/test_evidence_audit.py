@@ -292,6 +292,36 @@ def test_audit_detects_identity_or_hash_failure() -> None:
     assert findings[0].recommended_action == "stop_c21_p0"
 
 
+def test_audit_resolves_evidence_against_historical_text_root() -> None:
+    old_root, old_block = _text_root(
+        "chen shows extreme_confidence cultivation-attitude clearly."
+    )
+    evidence = _evidence_ref(old_root, old_block)
+    current_root = old_root.model_copy(
+        update={"root_hash": ArtifactId("sha256:" + "e" * 64)}
+    )
+    state = StateRecord(
+        state_id=StableId("state.historical"),
+        subject_id=StableId("entity.chen"),
+        predicate="cultivation-attitude",
+        value="extreme_confidence",
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ASSERTION,
+        evidence_refs=(evidence,),
+    )
+    world = _world_with(states=(state,))
+
+    without_history = EvidenceRefAuditor().audit_world(world, current_root)
+    with_history = EvidenceRefAuditor().audit_world(
+        world,
+        current_root,
+        historical_text_roots={old_root.root_hash: old_root},
+    )
+
+    assert without_history[0].hard_validation == "identity_or_hash_failure"
+    assert with_history[0].hard_validation == "pass"
+
+
 def test_audit_no_tokens_returns_partial() -> None:
     """Lines 194-195: summary with no tokens -> PARTIAL/PREDICATE_VALUE_LOW_SUPPORT."""
     text = "x" * 100

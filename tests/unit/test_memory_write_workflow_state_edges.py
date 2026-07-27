@@ -1149,6 +1149,22 @@ def test_quarantine_budget_and_budget_stop_quarantine_paths() -> None:
     assert data.quarantine_refs
 
 
+def test_quarantine_package_id_is_bounded_for_max_length_candidate_id() -> None:
+    workflow, data = _workflow_and_data()
+    assert data.candidate is not None
+    data.candidate = data.candidate.model_copy(
+        update={"candidate_id": StableId("candidate." + "x" * 118)}
+    )
+
+    result = workflow._quarantine_candidate(data)
+
+    assert result is not None
+    assert result.status is MemoryWriteWorkflowStatus.QUARANTINED
+    package = workflow._quarantine.packages[-1]
+    assert package.package_id.root.startswith("quarantine.candidate.")
+    assert len(package.package_id.root) <= 128
+
+
 def test_guardian_conversion_and_human_decision_specific_binding_errors() -> None:
     workflow, data = _workflow_and_data()
     assert data.guardian is None

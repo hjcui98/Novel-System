@@ -266,14 +266,31 @@ def test_successor_conversion_ends_old_state_and_creates_stable_child() -> None:
 def test_evidence_order_is_canonicalized_without_changing_spans() -> None:
     world = make_synthetic_bundle().world_roots[0]
     record = world.obligations[0].model_dump(mode="json")
-    evidence = record["evidence_refs"][0]
+    evidence = world.obligations[0].evidence_refs[0]
+    evidence_z = evidence.model_copy(update={"evidence_id": StableId("evidence.z")})
+    evidence_a = evidence.model_copy(update={"evidence_id": StableId("evidence.a")})
     record["evidence_refs"] = [
-        {**evidence, "evidence_id": "evidence.z"},
-        {**evidence, "evidence_id": "evidence.a"},
+        evidence_z.model_dump(mode="json"),
+        evidence_a.model_dump(mode="json"),
     ]
-    result = _normalize(_payload(_operation(record=record)))
+    operation = _operation(record=record).model_copy(
+        update={"evidence_refs": (evidence_z, evidence_a)}
+    )
+    writer = InMemoryArtifactRepository()
+    result = _normalize(_payload(operation), writer=writer)
     assert result.status is NormalizationStatus.TRANSFORMED
     assert result.transforms[0].rule_id == StableId("normalize.evidence-order-v1")
+    normalized = writer.read_model(
+        result.candidate.candidate_artifact,
+        MemoryWriteCandidatePayload,
+    )
+    normalized_operation = normalized.observed_changes.operations[0]
+    expected = ["evidence.a", "evidence.z"]
+    assert [item.evidence_id.root for item in normalized_operation.evidence_refs] == expected
+    assert [
+        item["evidence_id"]
+        for item in normalized_operation.payload["record"]["evidence_refs"]
+    ] == expected
 
 
 def test_duplicate_operations_merge_but_conflicting_writes_remain() -> None:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.changes import EvidenceSupportDisposition
+from novel_agent.domain.ids import ArtifactId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.services.benchmark_importer import validate_evidence_ref
@@ -42,7 +43,11 @@ class EvidenceRefAuditor:
         self,
         world: WorldRootDocument,
         text_root: TextRootDocument,
+        *,
+        historical_text_roots: Mapping[ArtifactId, TextRootDocument] | None = None,
     ) -> tuple[EvidenceAuditFinding, ...]:
+        roots_by_hash = dict(historical_text_roots or {})
+        roots_by_hash.setdefault(text_root.root_hash, text_root)
         findings: list[EvidenceAuditFinding] = []
         for kind, records in (
             ("state", world.states),
@@ -58,7 +63,8 @@ class EvidenceRefAuditor:
                     findings.append(
                         self._audit_one(
                             record_kind=kind, record_id=record_id, summary=summary,
-                            evidence=evidence, text_root=text_root,
+                            evidence=evidence,
+                            text_root=roots_by_hash.get(evidence.root_hash),
                         )
                     )
         return tuple(findings)
@@ -120,7 +126,7 @@ class EvidenceRefAuditor:
 
     def _audit_one(
         self, *, record_kind: str, record_id: str, summary: str,
-        evidence: EvidenceRef, text_root: TextRootDocument,
+        evidence: EvidenceRef, text_root: TextRootDocument | None,
     ) -> EvidenceAuditFinding:
         risk_tags: list[str] = []
         hard = "pass"
@@ -128,12 +134,15 @@ class EvidenceRefAuditor:
         block_id = evidence.span.block_id.root if evidence.span is not None else None
         start = evidence.span.start if evidence.span is not None else None
         end = evidence.span.end if evidence.span is not None else None
+        resolved_text_root = text_root
         try:
-            validate_evidence_ref(evidence, text_root)
+            if resolved_text_root is None:
+                raise LookupError("historical TextRoot is unavailable")
+            validate_evidence_ref(evidence, resolved_text_root)
             if evidence.span is not None:  # pragma: no branch
                 block = next(
                     block
-                    for chapter in text_root.chapters
+                    for chapter in resolved_text_root.chapters
                     for scene in chapter.scenes
                     for block in scene.blocks
                     if block.block_id == evidence.span.block_id
@@ -152,11 +161,16 @@ class EvidenceRefAuditor:
             hard = "identity_or_hash_failure"
 
         disposition = None
-        if hard == "pass" and selected_hash is not None and evidence.span is not None:
+        if (
+            hard == "pass"
+            and selected_hash is not None
+            and evidence.span is not None
+            and resolved_text_root is not None
+        ):
             tokens = [part for part in summary.replace("=", " ").split() if len(part) >= 2][:4]
             block = next(
                 block
-                for chapter in text_root.chapters
+                for chapter in resolved_text_root.chapters
                 for scene in chapter.scenes
                 for block in scene.blocks
                 if block.block_id == evidence.span.block_id

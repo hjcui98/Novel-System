@@ -96,6 +96,32 @@ def test_chinese_plan_evidence_flags_not_rejects() -> None:
     assert "NEEDS_VERIFIER" in decisions[0].reason_code
 
 
+def test_explicit_traditional_time_unit_mismatch_is_contradiction() -> None:
+    candidate = _candidate("他只用了半个时辰的时间便读完。")
+    operation = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.STATE,
+        target_id=StableId("state.reading-time"),
+        record=CuratorStateRecord(
+            subject_id=StableId("entity.chen"),
+            predicate="has_reading_time",
+            value="half_hour",
+            valid_time=CuratorStoryTime(worldline="main"),
+            truth_class=TruthClass.ASSERTION,
+        ),
+        evidence_candidate_ids=(candidate.candidate_id,),
+    )
+
+    decision = EvidenceSupportGate().evaluate_operation(
+        operation_index=0,
+        operation=operation,
+        candidates=(candidate,),
+    )[0]
+
+    assert decision.disposition is EvidenceSupportDisposition.CONTRADICTS
+    assert decision.reason_code == "EXPLICIT_TRADITIONAL_TIME_UNIT_MISMATCH"
+
+
 def test_all_lexical_support_empty_decisions_returns_false() -> None:
     gate = EvidenceSupportGate()
     assert not gate.all_lexical_support(())

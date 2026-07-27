@@ -1551,7 +1551,10 @@ class LocalMemoryWriteWorkflow:
         directive_ref: ArtifactRef,
     ) -> MemoryWriteWorkflowResult:
         package = QuarantinePackage(
-            package_id=StableId(f"quarantine.proposal.{data.request.request_id.root}"),
+            package_id=_bounded_workflow_id(
+                "quarantine.proposal",
+                data.request.request_id.root,
+            ),
             request_id=data.request.request_id,
             base_commit=data.request.base_commit,
             candidate_ids=(),
@@ -2321,8 +2324,10 @@ class LocalMemoryWriteWorkflow:
             return self._fatal(data, "QUARANTINE_WITHOUT_CANDIDATE")
         operation_ids = () if data.directive is None else data.directive.operation_ids
         package = QuarantinePackage(
-            package_id=StableId(
-                f"quarantine.{data.request.request_id.root}.{candidate.candidate_id.root}"
+            package_id=_bounded_workflow_id(
+                "quarantine.candidate",
+                data.request.request_id.root,
+                candidate.candidate_id.root,
             ),
             request_id=data.request.request_id,
             base_commit=data.request.base_commit,
@@ -2916,6 +2921,13 @@ def _request_basis_hash(request: MemoryWriteWorkflowRequest) -> ArtifactId:
     payload = request.model_dump(mode="json")
     payload.pop("resume_checkpoint", None)
     return sha256_id(canonical_json_bytes(payload))
+
+
+def _bounded_workflow_id(namespace: str, *identity_parts: str) -> StableId:
+    """Keep compound workflow identities deterministic and within StableId limits."""
+
+    digest = sha256_id(canonical_json_bytes(identity_parts)).root.removeprefix("sha256:")
+    return StableId(f"{namespace}.{digest}")
 
 
 def _model_ref(value: Any, data: _WorkflowData, label: str) -> ArtifactRef:

@@ -31,7 +31,7 @@ from novel_agent.adapters.postgres.database import (
     build_session_factory,
 )
 from novel_agent.domain.benchmark import TextRootDocument
-from novel_agent.domain.ids import ProjectId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -75,8 +75,18 @@ def main() -> int:
         text = TextRootDocument.model_validate_json(
             basis.canonical_text.model_dump_json(),
         )
+        historical_text_roots = _load_historical_text_roots(
+            commits,
+            artifacts,
+            project_id,
+            current,
+        )
         auditor = EvidenceRefAuditor()
-        findings = auditor.audit_world(world, text)
+        findings = auditor.audit_world(
+            world,
+            text,
+            historical_text_roots=historical_text_roots,
+        )
         report_dir = auditor.write_report(
             findings,
             args.output_directory,
@@ -92,6 +102,37 @@ def main() -> int:
         return 0
     finally:
         engine.dispose()
+
+
+def _load_historical_text_roots(
+    commits: CommitService,
+    artifacts: ArtifactRepository,
+    project_id: ProjectId,
+    current_commit: CommitId,
+) -> dict[ArtifactId, TextRootDocument]:
+    """Load the linear Canon commit ancestry needed by historical EvidenceRefs."""
+
+    roots: dict[ArtifactId, TextRootDocument] = {}
+    seen: set[CommitId] = set()
+    cursor: CommitId | None = current_commit
+    while cursor is not None:
+        if cursor in seen:
+            raise ValueError("canonical commit ancestry contains a cycle")
+        seen.add(cursor)
+        manifest = commits.load_manifest(cursor)
+        if manifest.project_id != project_id:
+            raise ValueError("canonical commit ancestry crosses project boundary")
+        text = TextRootDocument.model_validate_json(
+            artifacts.read_verified(manifest.text_root),
+            strict=True,
+        )
+        existing = roots.setdefault(text.root_hash, text)
+        if existing != text:
+            raise ValueError("one TextRoot hash resolves to different content")
+        if len(manifest.parent_commit_ids) > 1:
+            raise ValueError("Evidence audit requires a linear Canon commit ancestry")
+        cursor = manifest.parent_commit_ids[0] if manifest.parent_commit_ids else None
+    return roots
 
 
 if __name__ == "__main__":

@@ -37,10 +37,12 @@ from novel_agent.services.teacher_forced_benchmark_e2e import (
     TeacherForcedBenchmarkE2ERunner,
     TeacherForcedBenchmarkError,
     TeacherForcedControlledPause,
+    TeacherForcedTerminalFailure,
     _E2EContextFreezer,
     _E2EEvaluator,
     _FrozenState,
     _ProgressWriter,
+    _quality_repair_memory_write_budget,
     _ResponseBook,
     _TeacherForcedTransition,
     source_project,
@@ -53,6 +55,22 @@ from tests.unit.test_teacher_forced_scenario_edges import TransitionPort
 
 ROOT = Path(__file__).parents[2]
 PILOT = ROOT / "benchmarks/private/ztj_memory_pilot_v0.1"
+
+
+def test_quality_repair_memory_write_budget_is_bounded_to_two_model_calls() -> None:
+    budget = _quality_repair_memory_write_budget()
+
+    assert budget.max_curator_proposal_attempts == 1
+    assert budget.max_curator_proposal_rejections == 1
+    assert budget.max_total_model_calls == 2
+    assert budget.token_budget == 32_000
+    assert budget.wall_clock_budget_ms == 180_000
+
+
+def test_teacher_forced_model_request_leaves_time_for_narrow_verifier() -> None:
+    request = TeacherForcedBenchmarkE2ERunner._request("curator", AgentMode.REPLAY)
+
+    assert request.timeout_seconds == 120
 
 
 def test_response_book_rejects_missing_and_unused_scripted_responses() -> None:
@@ -442,6 +460,53 @@ def test_runner_persists_controlled_pause_summary_and_trace(
     assert summary["memory_write_resume_checkpoint"] is not None
     trace = json.loads((output / "memory_write_pause_trace.json").read_text("utf-8"))
     assert trace["chapter"] == 8
+
+
+def test_runner_persists_terminal_failure_summary_before_reraising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    terminal = MemoryWriteWorkflowResult(
+        request_id=StableId("request.terminal.failure"),
+        status=MemoryWriteWorkflowStatus.FATAL,
+        workflow_phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+        canonical_commit_accepted=False,
+        base_commit=GENESIS,
+        checkpoint_ref=_artifact("6"),
+        budget_usage=MemoryWriteBudgetUsage(
+            curator_proposal_attempts=1,
+            curator_proposal_rejections=1,
+        ),
+        terminal_codes=("CURATOR_PROPOSAL_INFORMATION_BOUNDARY",),
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise TeacherForcedTerminalFailure(21, terminal)
+
+    monkeypatch.setattr(TeacherForcedScenarioRunner, "run", fail)
+    output = tmp_path / "terminal-failure"
+    with pytest.raises(
+        TeacherForcedTerminalFailure,
+        match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+    ):
+        TeacherForcedBenchmarkE2ERunner().run(
+            PILOT,
+            output,
+            bundle,
+            information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        )
+
+    summary = json.loads((output / "flow_summary.json").read_text("utf-8"))
+    assert summary["status"] == "teacher_forced_terminal_failure"
+    assert summary["failed_chapter"] == 21
+    assert summary["memory_write_proposal_terminal_status"] == "fatal"
+    assert summary["terminal_codes"] == ["CURATOR_PROPOSAL_INFORMATION_BOUNDARY"]
+    trace = json.loads(
+        (output / "memory_write_failure_trace.json").read_text("utf-8")
+    )
+    assert trace["chapter"] == 21
+    assert trace["result"]["canonical_commit_accepted"] is False
 
 
 def test_transition_records_proposal_metrics_for_pause_and_nonpause() -> None:

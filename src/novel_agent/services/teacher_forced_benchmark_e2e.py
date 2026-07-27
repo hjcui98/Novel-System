@@ -186,6 +186,18 @@ ZERO_HASH = ArtifactId("sha256:" + "0" * 64)
 ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 
+def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
+    """Bound an isolated chapter to one extraction plus one narrow verifier."""
+
+    return MemoryWriteBudget(
+        max_curator_proposal_attempts=1,
+        max_curator_proposal_rejections=1,
+        max_total_model_calls=2,
+        token_budget=32_000,
+        wall_clock_budget_ms=180_000,
+    )
+
+
 class TeacherForcedBenchmarkError(RuntimeError):
     pass
 
@@ -195,6 +207,20 @@ class TeacherForcedControlledPause(RuntimeError):
 
     def __init__(self, chapter: int, result: MemoryWriteWorkflowResult) -> None:
         super().__init__(f"chapter {chapter} paused with {result.status.value}")
+        self.chapter = chapter
+        self.result = result
+
+
+class TeacherForcedTerminalFailure(TeacherForcedBenchmarkError):
+    """Non-resumable typed workflow failure with a persistable result."""
+
+    def __init__(self, chapter: int, result: MemoryWriteWorkflowResult) -> None:
+        super().__init__(
+            f"chapter {chapter} memory-write workflow stopped: "
+            f"status={result.status.value}; phase={result.workflow_phase.value}; "
+            f"accepted={result.canonical_commit_accepted}; "
+            f"codes={result.terminal_codes!r}"
+        )
         self.chapter = chapter
         self.result = result
 
@@ -542,6 +568,48 @@ class TeacherForcedBenchmarkE2ERunner:
                 )
                 self._write_json(output_directory / "flow_summary.json", pause_summary)
                 return pause_summary
+            except TeacherForcedTerminalFailure as failure:
+                terminal = failure.result
+                failure_summary = {
+                    "status": "teacher_forced_terminal_failure",
+                    "bundle_id": bundle.bundle_id.root,
+                    "information_profile": information_profile.value,
+                    "last_revealed_chapter": transition.last_revealed_chapter,
+                    "failed_chapter": failure.chapter,
+                    "run_complete": False,
+                    "segment_commit_count": transition.commit_count,
+                    "memory_write_status_counts": transition.memory_write_status_counts,
+                    "memory_write_proposal_attempts": (
+                        transition.memory_write_proposal_attempts
+                    ),
+                    "memory_write_proposal_rejections": (
+                        transition.memory_write_proposal_rejections
+                    ),
+                    "memory_write_proposal_retry_counts": (
+                        transition.memory_write_proposal_retry_counts
+                    ),
+                    "memory_write_proposal_poison_loops": (
+                        transition.memory_write_proposal_poison_loops
+                    ),
+                    "memory_write_proposal_terminal_status": terminal.status.value,
+                    "memory_write_resume_checkpoint": (
+                        None
+                        if terminal.checkpoint_ref is None
+                        else terminal.checkpoint_ref.model_dump(mode="json")
+                    ),
+                    "terminal_codes": terminal.terminal_codes,
+                    "project_database": database_descriptor,
+                    "project_directory": str(resolved_project_directory),
+                }
+                self._write_json(
+                    output_directory / "memory_write_failure_trace.json",
+                    {
+                        "chapter": failure.chapter,
+                        "result": terminal.model_dump(mode="json"),
+                    },
+                )
+                self._write_json(output_directory / "flow_summary.json", failure_summary)
+                raise
             (harness.responses or _ResponseBook()).assert_empty()
             if evaluator.results:
                 paired_report = self._paired_report(
@@ -1036,7 +1104,7 @@ class TeacherForcedBenchmarkE2ERunner:
             purpose=ModelCallPurpose.BATCH_TEST,
             trace_id=f"trace-teacher-forced-{mode.value}-{suffix}",
             prompt="replaced by StructuredAgentRunner",
-            timeout_seconds=600,
+            timeout_seconds=120,
         )
 
     @staticmethod
@@ -1529,6 +1597,11 @@ class _TeacherForcedTransition:
                 and self.quality_repair_flags.evidence_support_gate
                 == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
             ),
+            enable_model_semantic_verifier=(
+                harness.responses is None
+                and self.quality_repair_flags.evidence_support_gate
+                == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+            ),
         )
         self._curator_port = TeacherForcedCuratorPort(
             CuratorReplayAgent(
@@ -1746,11 +1819,7 @@ class _TeacherForcedTransition:
                 else (SourceProvenance.REVEALED_TEXT,)
             ),
             configuration_fingerprint=self._workflow_configuration_fingerprint(),
-            budget=MemoryWriteBudget(
-                max_total_model_calls=6,
-                token_budget=128_000,
-                wall_clock_budget_ms=600_000,
-            ),
+            budget=_quality_repair_memory_write_budget(),
             prompt_contract_refs=self.harness.prompt_refs,
             skill_contract_refs=self.harness.skill_refs,
             tool_policy_ref=self._tool_policy_ref(curator_spec),
@@ -1886,11 +1955,7 @@ class _TeacherForcedTransition:
                 MemoryWriteWorkflowStatus.REPLAN_REQUIRED,
             }:
                 raise TeacherForcedControlledPause(chapter, result)
-            raise TeacherForcedBenchmarkError(
-                f"chapter {chapter} memory-write workflow stopped: "
-                f"status={result.status.value}; phase={result.workflow_phase.value}; "
-                f"accepted={result.canonical_commit_accepted}; codes={result.terminal_codes!r}"
-            )
+            raise TeacherForcedTerminalFailure(chapter, result)
         return resulting_commit
 
     @staticmethod

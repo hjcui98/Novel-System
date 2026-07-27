@@ -218,20 +218,35 @@ class MutationNormalizer:
             canonical_evidence = sorted(
                 evidence_items, key=lambda item: str(item.get("evidence_id", ""))
             )
-            if canonical_evidence != evidence_items:
+            canonical_operation_evidence = tuple(
+                sorted(
+                    operation.evidence_refs,
+                    key=lambda item: item.evidence_id.root,
+                )
+            )
+            if (
+                canonical_evidence != evidence_items
+                or canonical_operation_evidence != operation.evidence_refs
+            ):
                 new_record: dict[str, Any] = dict(evidence)
                 new_record["evidence_refs"] = canonical_evidence
                 new_payload = dict(payload)
                 new_payload["record"] = new_record
+                normalized = operation.model_copy(
+                    update={
+                        "payload": new_payload,
+                        "evidence_refs": canonical_operation_evidence,
+                    }
+                )
                 transforms.append(
                     self._receipt(
                         operation,
                         "normalize.evidence-order-v1",
                         "EvidenceRef order normalized without changing spans",
-                        after=operation.model_copy(update={"payload": new_payload}),
+                        after=normalized,
                     )
                 )
-                return [operation.model_copy(update={"payload": new_payload})], transforms
+                return [normalized], transforms
         return [operation], transforms
 
     def _successor_operations(

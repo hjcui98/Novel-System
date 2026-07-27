@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from typing import Literal
+
+from pydantic import Field
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
+from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.changes import (
     ChangeOperation,
@@ -13,6 +17,7 @@ from novel_agent.domain.changes import (
     ChapterChangeDraft,
     ChapterChangeDraftV2,
     CuratedOperationDraft,
+    CuratedOperationDraftV2,
     CuratorEventRecord,
     CuratorObligationRecord,
     CuratorRelationRecord,
@@ -26,7 +31,7 @@ from novel_agent.domain.changes import (
     ObservedChangeSet,
     WorldRecordKind,
 )
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.memory_write import ProposalConflict, ProposalEvidenceMergeReceipt
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
@@ -88,6 +93,33 @@ NoOpVerifier = Callable[
 ]
 
 
+class EvidenceSemanticVerificationItem(DomainModel):
+    operation_index: int
+    candidate_ids: tuple[StableId, ...] = Field(min_length=1, max_length=4)
+    disposition: EvidenceSupportDisposition
+    reason_code: str
+
+
+class EvidenceSemanticVerificationDraft(DomainModel):
+    decisions: tuple[EvidenceSemanticVerificationItem, ...]
+
+
+class ProposalOperationFilterReceipt(DomainModel):
+    transform_id: StableId
+    base_commit: CommitId
+    operation_index: int
+    record_kind: WorldRecordKind
+    proposed_target_id: StableId
+    existing_target_id: StableId | None = None
+    reason: Literal[
+        "existing_semantic_duplicate",
+        "evidence_support_rejected",
+    ]
+    source_operation_hash: ArtifactId
+    support_disposition: EvidenceSupportDisposition | None = None
+    support_reason_code: str | None = None
+
+
 class ModelCurator:
     def __init__(
         self,
@@ -99,6 +131,7 @@ class ModelCurator:
         enforce_support_gate: bool = True,
         semantic_verifier: SemanticVerifier | None = None,
         no_op_verifier: NoOpVerifier | None = None,
+        enable_model_semantic_verifier: bool = False,
     ) -> None:
         self._gateway = gateway
         self._target_resolver = target_resolver or (lambda _kind, target_id, _world: target_id)
@@ -107,11 +140,16 @@ class ModelCurator:
         self._enforce_support_gate = enforce_support_gate
         self._semantic_verifier = semantic_verifier
         self._no_op_verifier = no_op_verifier
+        self._enable_model_semantic_verifier = enable_model_semantic_verifier
         self.last_evidence_merge_receipts: tuple[ProposalEvidenceMergeReceipt, ...] = ()
         self.last_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
         self.last_partial_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
         self.last_evidence_candidates: tuple[EvidenceCandidate, ...] = ()
         self.last_no_op_verification: tuple[bool, str] | None = None
+        self.last_prompt_fingerprint: ArtifactId | None = None
+        self.last_operation_filter_receipts: tuple[
+            ProposalOperationFilterReceipt, ...
+        ] = ()
 
     @property
     def gateway(self) -> ModelGateway:
@@ -154,12 +192,14 @@ class ModelCurator:
                     "preserve assertion/rumor/dream truth classes and do not infer future events.\n"
                     '<CURATOR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
-                    f"WORLD={current_world.model_dump_json()}\n"
+                    "WORLD="
+                    f"{canonical_json_bytes(self._world_model_view(current_world)).decode()}\n"
                     f"CHAPTER={chapter.model_dump_json()}\n"
                     "</CURATOR_INPUT>"
                 )
             }
         )
+        self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         draft, call = await self._gateway.generate_structured(safe_request, ChapterChangeDraft)
         if draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
@@ -327,21 +367,56 @@ class ModelCurator:
                     "and declared_vs_observed_diff must be empty, and the draft must include "
                     "no_durable_delta_reason plus supporting no_op_evidence_candidate_ids. "
                     "Cite only registered evidence_candidate_ids; do not emit start/end offsets. "
-                    "preserve assertion/rumor/dream truth classes and do not infer future events.\n"
+                    "Preserve assertion/rumor/dream truth classes and do not infer future events. "
+                    "Emit only durable world-state deltas: exclude one-scene encounters, "
+                    "atmosphere, immediate perceptions, temporary emotions, plans, estimates, "
+                    "and unresolved possibilities. Every predicate and value must describe "
+                    "exactly what its cited evidence states; do not convert general rules, "
+                    "hypotheticals, maxima, or other characters' achievements into a fact about "
+                    "the subject.\n"
                     '<CURATOR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
-                    f"WORLD={current_world.model_dump_json()}\n"
+                    "WORLD="
+                    f"{canonical_json_bytes(self._world_model_view(current_world)).decode()}\n"
                     f"CHAPTER={chapter.model_dump_json()}\n"
                     "EVIDENCE_CANDIDATES="
                     f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
-                    "</CURATOR_INPUT>"
+                    "</CURATOR_INPUT>\n"
+                    '<CURATOR_OUTPUT_CONTRACT trusted="true">\n'
+                    "Return at most four durable operations. Exclude transient encounters, "
+                    "temporary feelings, estimates, plans, and unresolved possibilities. "
+                    "Prefer one or two precise operations over filling the maximum. "
+                    "Use only facts directly stated by each cited evidence candidate. "
+                    "A composite method or process MUST cite the detail-bearing sentences "
+                    "for every encoded step, usually with two to four candidate IDs; a "
+                    "summary sentence such as 'this is the method' is not sufficient by "
+                    "itself. Preserve source units exactly unless an explicit conversion is "
+                    "certain: for example, half_shichen is not half_hour. Preserve epistemic "
+                    "qualifiers: evidence saying believes, estimates, claims, or may must be "
+                    "encoded as a belief/estimate/claim, never as an objective state. "
+                    "Before emitting a composite value, verify that every semantic component "
+                    "(including each underscore-separated component) has explicit support in "
+                    "at least one selected evidence candidate. "
+                    "Every evidence_candidate_id MUST be copied verbatim from the current "
+                    "EVIDENCE_CANDIDATES catalog; never invent, reconstruct, hash, or reuse an "
+                    "ID from another chapter. Do not restate facts already present in WORLD. "
+                    "When operations is non-empty, no_durable_delta_reason MUST be null and "
+                    "no_op_evidence_candidate_ids MUST be an empty array. Those two no-op "
+                    "proof fields may be populated only when operations is empty.\n"
+                    "</CURATOR_OUTPUT_CONTRACT>"
                 )
             }
         )
+        self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         draft, call = await self._gateway.generate_structured(safe_request, ChapterChangeDraftV2)
         self.last_no_op_verification = None
         if draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
+        draft = self._filter_existing_semantic_duplicates(
+            draft,
+            current_world,
+            base_commit,
+        )
         unknown = tuple(
             candidate_id
             for candidate_id in (
@@ -446,7 +521,7 @@ class ModelCurator:
         if self._enforce_support_gate:
             # Collect hard rejections (CONTRADICTS/UNRELATED) and PARTIAL items
             # that need a narrow semantic verifier.
-            rejected = tuple(
+            hard_rejected = tuple(
                 item
                 for item in support_decisions
                 if item.disposition
@@ -455,26 +530,6 @@ class ModelCurator:
                     EvidenceSupportDisposition.UNRELATED,
                 }
             )
-            if rejected:
-                raise CuratorProposalSemanticRejected(
-                    "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
-                    (),
-                    safe_feedback=tuple(
-                        (
-                            f"{item.candidate_id.root}: {item.disposition.value} "
-                            f"({item.reason_code}) at operation {item.operation_index}"
-                        )[:240]
-                        for item in rejected[:4]
-                    ),
-                    operation_indexes=tuple(
-                        sorted({item.operation_index for item in rejected})
-                    ),
-                    json_pointers=tuple(
-                        f"/operations/{item.operation_index}/evidence_candidate_ids/0"
-                        for item in rejected[:8]
-                    ),
-                    violation_rule="candidate_text_contradicts_or_unrelated",
-                )
             # PARTIAL must be resolved by the narrow semantic verifier; without a
             # verifier the gate fails closed and the candidate cannot proceed.
             partial_decisions = tuple(
@@ -482,7 +537,33 @@ class ModelCurator:
                 for item in support_decisions
                 if item.disposition is EvidenceSupportDisposition.PARTIAL
             )
+            model_verifications: dict[
+                int,
+                tuple[EvidenceSupportDisposition, str],
+            ] = {}
+            if (
+                partial_decisions
+                and self._semantic_verifier is None
+                and self._enable_model_semantic_verifier
+            ):
+                try:
+                    model_verifications = await self._verify_partial_batch(
+                        partial_decisions,
+                        draft,
+                        catalog,
+                        request,
+                    )
+                except Exception:
+                    model_verifications = {}
             unresolved_partials: list[EvidenceSupportDecision] = []
+            verifier_rejected: list[
+                tuple[
+                    EvidenceSupportDecision,
+                    EvidenceSupportDisposition,
+                    str,
+                ]
+            ] = []
+            model_operations_seen: set[int] = set()
             for item in partial_decisions:
                 operation = draft.operations[item.operation_index]
                 candidate = catalog[item.candidate_id]
@@ -492,28 +573,17 @@ class ModelCurator:
                         verified = self._semantic_verifier(operation.record, candidate)
                     except Exception:
                         verified = None
+                elif self._enable_model_semantic_verifier:
+                    if item.operation_index in model_operations_seen:
+                        continue
+                    model_operations_seen.add(item.operation_index)
+                    verified = model_verifications.get(item.operation_index)
                 if verified is None:
                     unresolved_partials.append(item)
                     continue
                 v_disposition, v_reason = verified
                 if v_disposition is not EvidenceSupportDisposition.SUPPORTS:
-                    # Verifier downgraded to CONTRADICTS/UNRELATED/PARTIAL.
-                    raise CuratorProposalSemanticRejected(
-                        "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
-                        (),
-                        safe_feedback=(
-                            (
-                                f"{item.candidate_id.root}: verifier="
-                                f"{v_disposition.value} ({v_reason}) "
-                                f"at operation {item.operation_index}"
-                            )[:240],
-                        ),
-                        operation_indexes=(item.operation_index,),
-                        json_pointers=(
-                            f"/operations/{item.operation_index}/evidence_candidate_ids/0",
-                        ),
-                        violation_rule="semantic_verifier_rejected_partial",
-                    )
+                    verifier_rejected.append((item, v_disposition, v_reason))
             if unresolved_partials:
                 raise CuratorProposalSemanticRejected(
                     "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
@@ -535,6 +605,68 @@ class ModelCurator:
                     violation_rule="partial_evidence_unresolved_no_verifier",
                 )
             self.last_partial_support_decisions = tuple(partial_decisions)
+            rejected_indexes = {
+                *(item.operation_index for item in hard_rejected),
+                *(item.operation_index for item, _, _ in verifier_rejected),
+            }
+            if rejected_indexes:
+                if len(rejected_indexes) == len(draft.operations):
+                    if verifier_rejected:
+                        item, disposition, reason = verifier_rejected[0]
+                        raise CuratorProposalSemanticRejected(
+                            "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                            (),
+                            safe_feedback=(
+                                (
+                                    f"{item.candidate_id.root}: verifier="
+                                    f"{disposition.value} ({reason}) "
+                                    f"at operation {item.operation_index}"
+                                )[:240],
+                            ),
+                            operation_indexes=tuple(sorted(rejected_indexes)),
+                            json_pointers=tuple(
+                                f"/operations/{index}/evidence_candidate_ids/0"
+                                for index in sorted(rejected_indexes)
+                            ),
+                            violation_rule="semantic_verifier_rejected_partial",
+                        )
+                    raise CuratorProposalSemanticRejected(
+                        "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                        (),
+                        safe_feedback=tuple(
+                            (
+                                f"{item.candidate_id.root}: "
+                                f"{item.disposition.value} "
+                                f"({item.reason_code}) at operation "
+                                f"{item.operation_index}"
+                            )[:240]
+                            for item in hard_rejected[:4]
+                        ),
+                        operation_indexes=tuple(sorted(rejected_indexes)),
+                        json_pointers=tuple(
+                            f"/operations/{index}/evidence_candidate_ids/0"
+                            for index in sorted(rejected_indexes)
+                        ),
+                        violation_rule="candidate_text_contradicts_or_unrelated",
+                    )
+                rejected_details = {
+                    item.operation_index: (
+                        item.disposition,
+                        item.reason_code,
+                    )
+                    for item in hard_rejected
+                }
+                rejected_details.update(
+                    {
+                        item.operation_index: (disposition, reason)
+                        for item, disposition, reason in verifier_rejected
+                    }
+                )
+                draft = self._filter_unsupported_operations(
+                    draft,
+                    rejected_details,
+                    base_commit,
+                )
 
         chapter_blocks = {
             block.block_id: block for scene in chapter.scenes for block in scene.blocks
@@ -620,6 +752,247 @@ class ModelCurator:
             draft,
         )
 
+    @staticmethod
+    def _world_model_view(current_world: WorldRootDocument) -> dict[str, object]:
+        """Return the accepted semantic state without historical evidence identifiers."""
+
+        view = current_world.model_dump(
+            mode="json",
+            exclude={"root_hash", "schema_version", "source_commit"},
+        )
+        for collection in ("events", "states", "relations", "obligations"):
+            for record in view[collection]:
+                record.pop("evidence_refs", None)
+        return view
+
+    def _filter_existing_semantic_duplicates(
+        self,
+        draft: ChapterChangeDraftV2,
+        current_world: WorldRootDocument,
+        base_commit: CommitId,
+    ) -> ChapterChangeDraftV2:
+        """Drop model restatements that are already exact accepted World semantics."""
+
+        current_records = {
+            WorldRecordKind.ENTITY: tuple(
+                (item.entity_id, item) for item in current_world.entities
+            ),
+            WorldRecordKind.EVENT: tuple(
+                (item.event_id, item) for item in current_world.events
+            ),
+            WorldRecordKind.STATE: tuple(
+                (item.state_id, item) for item in current_world.states
+            ),
+            WorldRecordKind.RELATION: tuple(
+                (item.relation_id, item) for item in current_world.relations
+            ),
+            WorldRecordKind.OBLIGATION: tuple(
+                (item.obligation_id, item) for item in current_world.obligations
+            ),
+        }
+        id_fields = {
+            WorldRecordKind.ENTITY: "entity_id",
+            WorldRecordKind.EVENT: "event_id",
+            WorldRecordKind.STATE: "state_id",
+            WorldRecordKind.RELATION: "relation_id",
+            WorldRecordKind.OBLIGATION: "obligation_id",
+        }
+        semantic_index: dict[
+            tuple[WorldRecordKind, bytes],
+            StableId,
+        ] = {}
+        current_ids: dict[WorldRecordKind, set[StableId]] = {}
+        for kind, records in current_records.items():
+            current_ids[kind] = {record_id for record_id, _ in records}
+            for record_id, record in records:
+                excluded_fields = {id_fields[kind], "evidence_refs"}
+                if kind is WorldRecordKind.STATE:
+                    excluded_fields.add("valid_time")
+                semantic_index[
+                    (
+                        kind,
+                        canonical_json_bytes(
+                            record.model_dump(
+                                mode="json",
+                                exclude=excluded_fields,
+                            )
+                        ),
+                    )
+                ] = record_id
+
+        accepted: list[CuratedOperationDraftV2] = []
+        receipts: list[ProposalOperationFilterReceipt] = []
+        for index, operation in enumerate(draft.operations):
+            excluded_fields = (
+                {"valid_time"}
+                if operation.record_kind is WorldRecordKind.STATE
+                else set()
+            )
+            semantic_payload = canonical_json_bytes(
+                operation.record.model_dump(
+                    mode="json",
+                    exclude=excluded_fields,
+                )
+            )
+            existing_target = semantic_index.get(
+                (operation.record_kind, semantic_payload)
+            )
+            if existing_target is not None:
+                source_hash = sha256_id(
+                    canonical_json_bytes(operation.model_dump(mode="json"))
+                )
+                digest = self._digest(
+                    base_commit.root.encode(),
+                    str(index).encode(),
+                    source_hash.root.encode(),
+                    existing_target.root.encode(),
+                )
+                receipts.append(
+                    ProposalOperationFilterReceipt(
+                        transform_id=StableId(
+                            f"proposal-operation-filter.{digest}"
+                        ),
+                        base_commit=base_commit,
+                        operation_index=index,
+                        record_kind=operation.record_kind,
+                        proposed_target_id=operation.target_id,
+                        existing_target_id=existing_target,
+                        reason="existing_semantic_duplicate",
+                        source_operation_hash=source_hash,
+                    )
+                )
+                continue
+            normalized_type = operation.operation
+            target_exists = operation.target_id in current_ids[operation.record_kind]
+            if normalized_type is ChangeOperationType.CREATE and target_exists:
+                normalized_type = ChangeOperationType.REPLACE
+            elif normalized_type is ChangeOperationType.REPLACE and not target_exists:
+                normalized_type = ChangeOperationType.CREATE
+            accepted.append(
+                operation.model_copy(update={"operation": normalized_type})
+            )
+        self.last_operation_filter_receipts = tuple(receipts)
+        return draft.model_copy(update={"operations": tuple(accepted)})
+
+    def _filter_unsupported_operations(
+        self,
+        draft: ChapterChangeDraftV2,
+        rejected: dict[int, tuple[EvidenceSupportDisposition, str]],
+        base_commit: CommitId,
+    ) -> ChapterChangeDraftV2:
+        accepted: list[CuratedOperationDraftV2] = []
+        receipts = list(self.last_operation_filter_receipts)
+        for index, operation in enumerate(draft.operations):
+            detail = rejected.get(index)
+            if detail is None:
+                accepted.append(operation)
+                continue
+            disposition, reason_code = detail
+            source_hash = sha256_id(
+                canonical_json_bytes(operation.model_dump(mode="json"))
+            )
+            digest = self._digest(
+                base_commit.root.encode(),
+                str(index).encode(),
+                source_hash.root.encode(),
+                disposition.value.encode(),
+            )
+            receipts.append(
+                ProposalOperationFilterReceipt(
+                    transform_id=StableId(
+                        f"proposal-operation-filter.{digest}"
+                    ),
+                    base_commit=base_commit,
+                    operation_index=index,
+                    record_kind=operation.record_kind,
+                    proposed_target_id=operation.target_id,
+                    reason="evidence_support_rejected",
+                    source_operation_hash=source_hash,
+                    support_disposition=disposition,
+                    support_reason_code=reason_code[:240],
+                )
+            )
+        self.last_operation_filter_receipts = tuple(receipts)
+        return draft.model_copy(update={"operations": tuple(accepted)})
+
+    async def _verify_partial_batch(
+        self,
+        partial_decisions: tuple[EvidenceSupportDecision, ...],
+        draft: ChapterChangeDraftV2,
+        catalog: dict[StableId, EvidenceCandidate],
+        request: ModelRequest,
+    ) -> dict[int, tuple[EvidenceSupportDisposition, str]]:
+        """Resolve PARTIAL operations by evaluating each operation's evidence jointly."""
+
+        operation_indexes = tuple(
+            dict.fromkeys(item.operation_index for item in partial_decisions)
+        )
+        items: list[dict[str, object]] = []
+        expected: dict[int, tuple[StableId, ...]] = {}
+        for operation_index in operation_indexes:
+            operation = draft.operations[operation_index]
+            candidate_ids = operation.evidence_candidate_ids
+            expected[operation_index] = candidate_ids
+            items.append(
+                {
+                    "operation_index": operation_index,
+                    "candidate_ids": tuple(item.root for item in candidate_ids),
+                    "record": operation.record.model_dump(mode="json"),
+                    "evidence": tuple(
+                        {
+                            "candidate_id": candidate_id.root,
+                            "text": catalog[candidate_id].text,
+                        }
+                        for candidate_id in candidate_ids
+                    ),
+                }
+            )
+        suffix = ".semantic-verifier"
+        verifier_request = request.model_copy(
+            update={
+                "request_id": StableId(
+                    request.request_id.root[: 128 - len(suffix)] + suffix
+                ),
+                "timeout_seconds": min(request.timeout_seconds, 55.0),
+                "prompt": (
+                    "Verify whether each typed World record is directly supported by its "
+                    "complete evidence set. Evaluate all excerpts for one operation "
+                    "collectively; do not require every individual excerpt to support the "
+                    "whole composite record. Interpret English predicate/value labels and "
+                    "Chinese evidence semantically; lexical language mismatch is not a failure. "
+                    "Require exact units and quantities; traditional Chinese 时辰 equals two "
+                    "hours, so 半个时辰 is one hour and never half_hour. Preserve epistemic "
+                    "scope: 相信/认为/估计/believes/estimates supports only a record that "
+                    "explicitly encodes belief, self-assessment, or estimate, not an objective "
+                    "fact. A summary sentence does not support unstated method details. "
+                    "Reject transient reading progress, elapsed reading time, and one-scene "
+                    "actions as unrelated even when textually true; accepted records must be "
+                    "durable World state. Return exactly one decision for every operation, "
+                    "copying its complete ordered candidate_ids unchanged. Use supports only for "
+                    "direct support, contradicts for explicit conflict, unrelated for no "
+                    "material support, and partial only when the excerpt is genuinely "
+                    "insufficient. Do not infer future facts.\n"
+                    '<EVIDENCE_VERIFICATION_INPUT trusted="false">\n'
+                    f"{canonical_json_bytes(items).decode('utf-8')}\n"
+                    "</EVIDENCE_VERIFICATION_INPUT>"
+                ),
+            }
+        )
+        result, _call = await self._gateway.generate_structured(
+            verifier_request,
+            EvidenceSemanticVerificationDraft,
+        )
+        resolved: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
+        for item in result.decisions:
+            if item.operation_index in resolved:
+                return {}
+            if expected.get(item.operation_index) != item.candidate_ids:
+                return {}
+            resolved[item.operation_index] = (item.disposition, item.reason_code)
+        if set(resolved) != set(expected):
+            return {}
+        return resolved
+
     async def evidence_repair_v2(
         self,
         text_root: TextRootDocument,
@@ -683,6 +1056,7 @@ class ModelCurator:
                 )
             }
         )
+        self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         raw_drafts, call = await self._gateway.generate_structured(
             safe_request,
             list[EvidenceRepairDraft],  # type: ignore[type-var]

@@ -438,10 +438,24 @@ class TeacherForcedCuratorPort:
         transform_refs = tuple(
             self._artifacts.put(
                 canonical_json_bytes(transform.model_dump(mode="json")),
-                "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
+                media_type,
                 manifest.schema_version,
             )
-            for transform in self._replay.curator.last_evidence_merge_receipts
+            for transforms, media_type in (
+                (
+                    self._replay.curator.last_evidence_merge_receipts,
+                    "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
+                ),
+                (
+                    getattr(
+                        self._replay.curator,
+                        "last_operation_filter_receipts",
+                        (),
+                    ),
+                    "application/vnd.novel-agent.proposal-operation-filter-receipt+json",
+                ),
+            )
+            for transform in transforms
         )
         receipt = CuratorProposalAttemptReceipt(
             attempt_id=request.attempt_id,
@@ -455,7 +469,10 @@ class TeacherForcedCuratorPort:
             status=CuratorProposalAttemptStatus.ACCEPTED,
             model_request_ids=tuple(entry.request_id for entry in entries),
             model_call_receipt_refs=call_refs,
-            prompt_fingerprint=sha256_id(model_request.prompt.encode("utf-8")),
+            prompt_fingerprint=(
+                getattr(self._replay.curator, "last_prompt_fingerprint", None)
+                or sha256_id(model_request.prompt.encode("utf-8"))
+            ),
             feedback_artifact_ref=request.feedback_artifact_ref,
             raw_response_refs=raw_refs,
             parsed_draft_ref=raw_refs[-1] if raw_refs else None,
@@ -532,6 +549,7 @@ class TeacherForcedCuratorPort:
                 "CURATOR_PROPOSAL_EVIDENCE_UNRELATED",
                 "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
                 "CURATOR_PROPOSAL_EVIDENCE_NEEDS_VERIFICATION",
+                "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
             }:
                 detail = "Proposal evidence is invalid or unsupported"
                 kind = ProposalRejectionKind.INVALID_EVIDENCE
@@ -633,7 +651,10 @@ class TeacherForcedCuratorPort:
             status=CuratorProposalAttemptStatus.REJECTED,
             model_request_ids=tuple(entry.request_id for entry in entries),
             model_call_receipt_refs=call_refs,
-            prompt_fingerprint=sha256_id(model_request.prompt.encode("utf-8")),
+            prompt_fingerprint=(
+                getattr(self._replay.curator, "last_prompt_fingerprint", None)
+                or sha256_id(model_request.prompt.encode("utf-8"))
+            ),
             feedback_artifact_ref=request.feedback_artifact_ref,
             raw_response_refs=raw_refs,
             output_hashes=tuple(

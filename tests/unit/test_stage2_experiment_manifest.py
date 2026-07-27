@@ -8,6 +8,7 @@ import pytest
 from scripts.run_stage2_teacher_forced_e2e import (
     _ensure_experiment_manifest,
     _load_quality_repair_flags,
+    _loopback_postgres_url,
 )
 
 from novel_agent.domain.stage2 import (
@@ -75,3 +76,19 @@ def test_quality_repair_config_parses_json_enum_values_in_strict_mode(
     assert flags.controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
     assert flags.curator_evidence_contract is CuratorEvidenceContract.CANDIDATE_ID_V2
     assert flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+
+
+def test_postgres_database_name_rejects_server_side_truncation() -> None:
+    valid = "a" * 63
+    assert _loopback_postgres_url(
+        f"postgresql+psycopg://127.0.0.1:5432/{valid}"
+    ).endswith(valid)
+
+    with pytest.raises(ValueError, match="at most 63 UTF-8 bytes"):
+        _loopback_postgres_url(
+            f"postgresql+psycopg://127.0.0.1:5432/{'a' * 64}"
+        )
+    with pytest.raises(ValueError, match="at most 63 UTF-8 bytes"):
+        _loopback_postgres_url(
+            f"postgresql+psycopg://127.0.0.1:5432/{'界' * 22}"
+        )

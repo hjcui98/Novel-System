@@ -85,5 +85,5 @@ class InMemoryModelCallLedger:
             entry
             for request_id, entry in sorted(self._entries.items(), key=lambda item: item[0].root)
             if request_id.root == request_id_prefix
-            or request_id.root.startswith(f"{request_id_prefix}.schema-retry")
+            or request_id.root.startswith(f"{request_id_prefix}.")
         )

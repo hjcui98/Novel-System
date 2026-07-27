@@ -300,6 +300,28 @@ def test_model_call_ledger_cas_rejects_identity_and_terminal_overwrites() -> Non
     assert ledger.list_for_prefix("unrelated") == ()
 
 
+def test_model_call_ledger_prefix_includes_all_scoped_child_calls() -> None:
+    ledger = InMemoryModelCallLedger()
+    parent = request()
+    verifier = parent.model_copy(
+        update={"request_id": StableId(f"{parent.request_id.root}.semantic-verifier")}
+    )
+    collision = parent.model_copy(
+        update={"request_id": StableId(f"{parent.request_id.root}0")}
+    )
+    ledger.create_requested(parent)
+    ledger.create_requested(verifier)
+    ledger.create_requested(collision)
+
+    assert tuple(
+        item.request_id.root
+        for item in ledger.list_for_prefix(parent.request_id.root)
+    ) == (
+        parent.request_id.root,
+        verifier.request_id.root,
+    )
+
+
 def test_model_call_ledger_entry_rejects_missing_terminal_evidence() -> None:
     ledger = InMemoryModelCallLedger()
     requested = ledger.create_requested(request())

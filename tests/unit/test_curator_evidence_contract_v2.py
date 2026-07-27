@@ -32,10 +32,12 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.text import TextBlock
-from novel_agent.domain.world import TruthClass
+from novel_agent.domain.world import Entity, StateRecord, StoryTime, TruthClass
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
+    EvidenceSemanticVerificationDraft,
+    EvidenceSemanticVerificationItem,
     ModelCurationContractError,
     ModelCurator,
 )
@@ -44,8 +46,10 @@ from novel_agent.services.model_curation import (
 class _FakeGateway:
     def __init__(self, draft: ChapterChangeDraftV2) -> None:
         self._draft = draft
+        self.requests: list[ModelRequest] = []
 
     async def generate_structured(self, request, model_type):
+        self.requests.append(request)
         assert model_type is ChapterChangeDraftV2
         assert "EVIDENCE_CANDIDATES" in request.prompt
         call = type(
@@ -57,6 +61,35 @@ class _FakeGateway:
             },
         )()
         return self._draft, call
+
+
+class _ModelVerifierGateway:
+    def __init__(
+        self,
+        draft: ChapterChangeDraftV2,
+        verification: EvidenceSemanticVerificationDraft | Exception,
+    ) -> None:
+        self._draft = draft
+        self._verification = verification
+        self.requests: list[ModelRequest] = []
+
+    async def generate_structured(self, request, model_type):
+        self.requests.append(request)
+        call = type(
+            "Call",
+            (),
+            {
+                "request_id": request.request_id,
+                "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
+            },
+        )()
+        if model_type is ChapterChangeDraftV2:
+            return self._draft, call
+        assert model_type is EvidenceSemanticVerificationDraft
+        assert "EVIDENCE_VERIFICATION_INPUT" in request.prompt
+        if isinstance(self._verification, Exception):
+            raise self._verification
+        return self._verification, call
 
 
 def _root_with(text: str) -> TextRootDocument:
@@ -938,6 +971,387 @@ def test_v2_partial_evidence_fails_closed_when_verifier_raises() -> None:
             )
         )
     assert exc.value.violation_rule == "partial_evidence_unresolved_no_verifier"
+
+
+def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
+    text = "陈长生已经开始阅读道藏并正式开始学习修行"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    draft = _v2_state_draft(candidate.candidate_id)
+    verification = EvidenceSemanticVerificationDraft(
+        decisions=(
+            EvidenceSemanticVerificationItem(
+                operation_index=0,
+                candidate_ids=(candidate.candidate_id,),
+                disposition=EvidenceSupportDisposition.SUPPORTS,
+                reason_code="DIRECT_SEMANTIC_SUPPORT",
+            ),
+        )
+    )
+    gateway = _ModelVerifierGateway(draft, verification)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(
+            root, 21, _COMMIT, _world(), _request("req.v2.model-verifier")
+        )
+    )
+
+    assert changes.operations
+    assert len(gateway.requests) == 2
+    assert gateway.requests[1].request_id.root.endswith(".semantic-verifier")
+    assert gateway.requests[1].timeout_seconds == 30
+    assert "半个时辰 is one hour and never half_hour" in gateway.requests[1].prompt
+    assert "supports only a record that explicitly encodes belief" in (
+        gateway.requests[1].prompt
+    )
+    assert "Evaluate all excerpts for one operation collectively" in (
+        gateway.requests[1].prompt
+    )
+    assert "accepted records must be durable World state" in gateway.requests[1].prompt
+    assert "Emit only durable world-state deltas" in gateway.requests[0].prompt
+    assert "one-scene encounters" in gateway.requests[0].prompt
+    assert "general rules, hypotheticals, maxima" in gateway.requests[0].prompt
+    prompt = gateway.requests[0].prompt
+    assert prompt.index("</CURATOR_INPUT>") < prompt.index("<CURATOR_OUTPUT_CONTRACT")
+    assert "MUST be copied verbatim" in prompt
+    assert "Do not restate facts already present in WORLD" in prompt
+    assert "composite method or process MUST cite" in prompt
+    assert "half_shichen is not half_hour" in prompt
+    assert "encoded as a belief/estimate/claim" in prompt
+    assert "every semantic component" in prompt
+    assert "no_durable_delta_reason MUST be null" in prompt
+    assert "no_op_evidence_candidate_ids MUST be an empty array" in prompt
+    assert curator.last_prompt_fingerprint is not None
+
+
+def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> None:
+    root = _root_with("陈长生先反复阅读道藏。随后摘录要点整理笔记。")
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert len(candidates) >= 2
+    candidate_ids = (candidates[0].candidate_id, candidates[1].candidate_id)
+    base = _v2_state_draft(candidate_ids[0])
+    draft = base.model_copy(
+        update={
+            "operations": (
+                base.operations[0].model_copy(
+                    update={"evidence_candidate_ids": candidate_ids}
+                ),
+            )
+        }
+    )
+    verification = EvidenceSemanticVerificationDraft(
+        decisions=(
+            EvidenceSemanticVerificationItem(
+                operation_index=0,
+                candidate_ids=candidate_ids,
+                disposition=EvidenceSupportDisposition.SUPPORTS,
+                reason_code="COMBINED_EVIDENCE_SUPPORT",
+            ),
+        )
+    )
+    gateway = _ModelVerifierGateway(draft, verification)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(
+            root, 21, _COMMIT, _world(), _request("req.v2.combined-verifier")
+        )
+    )
+
+    assert changes.operations
+    assert len(gateway.requests) == 2
+    verifier_prompt = gateway.requests[1].prompt
+    assert all(candidate_id.root in verifier_prompt for candidate_id in candidate_ids)
+    assert '"evidence":[' in verifier_prompt
+
+
+def test_v2_model_semantic_verifier_drops_only_rejected_operations() -> None:
+    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert len(candidates) >= 2
+    supported = candidates[0]
+    rejected = candidates[-1]
+    first = _v2_state_draft(supported.candidate_id).operations[0]
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            first,
+            first.model_copy(
+                update={
+                    "target_id": StableId("state.unsupported"),
+                    "record": CuratorStateRecord(
+                        subject_id=StableId("entity.chen"),
+                        predicate="has_unrelated_fact",
+                        value="not_in_evidence",
+                        valid_time=CuratorStoryTime(worldline="current"),
+                        truth_class=TruthClass.ASSERTION,
+                    ),
+                    "evidence_candidate_ids": (rejected.candidate_id,),
+                }
+            ),
+        ),
+    )
+    verification = EvidenceSemanticVerificationDraft(
+        decisions=(
+            EvidenceSemanticVerificationItem(
+                operation_index=0,
+                candidate_ids=(supported.candidate_id,),
+                disposition=EvidenceSupportDisposition.SUPPORTS,
+                reason_code="DIRECT_SUPPORT",
+            ),
+            EvidenceSemanticVerificationItem(
+                operation_index=1,
+                candidate_ids=(rejected.candidate_id,),
+                disposition=EvidenceSupportDisposition.UNRELATED,
+                reason_code="NO_MATERIAL_SUPPORT",
+            ),
+        )
+    )
+    gateway = _ModelVerifierGateway(draft, verification)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.model-verifier-partial-accept"),
+        )
+    )
+
+    assert len(changes.operations) == 1
+    assert len(filtered.operations) == 1
+    assert filtered.operations[0].target_id == first.target_id
+    assert len(gateway.requests) == 2
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.reason == "evidence_support_rejected"
+    assert receipt.support_disposition is EvidenceSupportDisposition.UNRELATED
+    assert receipt.support_reason_code == "NO_MATERIAL_SUPPORT"
+
+
+def test_v2_compact_world_omits_historical_evidence_identifiers() -> None:
+    world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "1" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=_COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.chen"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
+        states=(
+            StateRecord(
+                state_id=StableId("state.existing"),
+                subject_id=StableId("entity.chen"),
+                predicate="has_status",
+                value="existing",
+                valid_time=StoryTime(worldline="current", start_ordinal=20),
+                truth_class=TruthClass.ASSERTION,
+            ),
+        ),
+    )
+
+    view = ModelCurator._world_model_view(world)
+
+    assert "root_hash" not in view
+    assert "source_commit" not in view
+    assert "schema_version" not in view
+    assert "evidence_refs" not in view["states"][0]
+
+
+def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = next(
+        item for item in gen.generate(root, 21) if "confidence" in item.text
+    )
+    existing_record = CuratorStateRecord(
+        subject_id=StableId("entity.chen"),
+        predicate="has_cultivation_status",
+        value="commenced_study",
+        valid_time=CuratorStoryTime(worldline="current", start_ordinal=20),
+        truth_class=TruthClass.ASSERTION,
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.duplicate-under-new-id"),
+                record=existing_record,
+                evidence_candidate_ids=(
+                    StableId("evidence-candidate.from-old-chapter"),
+                ),
+            ),
+            _v2_state_draft(candidate.candidate_id).operations[0],
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.REPLACE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.replace-missing"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="has_new_fact",
+                    value="new_value",
+                    valid_time=CuratorStoryTime(
+                        worldline="current",
+                        start_ordinal=21,
+                    ),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+        ),
+    )
+    world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "1" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=_COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.chen"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
+        states=(
+            StateRecord(
+                state_id=StableId("state.cultivation-start"),
+                subject_id=existing_record.subject_id,
+                predicate=existing_record.predicate,
+                value=existing_record.value,
+                valid_time=StoryTime.model_validate(
+                    existing_record.valid_time.model_dump()
+                ),
+                truth_class=existing_record.truth_class,
+            ),
+        ),
+    )
+    gateway = _FakeGateway(draft)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=False,
+    )
+
+    changes, _call, normalized = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            world,
+            _request("req.v2.filter-existing"),
+        )
+    )
+
+    assert len(changes.operations) == 2
+    assert len(normalized.operations) == 2
+    assert normalized.operations[0].target_id == StableId("state.attitude")
+    assert normalized.operations[1].target_id == StableId("state.replace-missing")
+    assert normalized.operations[1].operation is ChangeOperationType.CREATE
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.proposed_target_id == StableId("state.duplicate-under-new-id")
+    assert receipt.existing_target_id == StableId("state.cultivation-start")
+    assert receipt.reason == "existing_semantic_duplicate"
+
+
+@pytest.mark.parametrize(
+    "verification",
+    [
+        EvidenceSemanticVerificationDraft(decisions=()),
+        EvidenceSemanticVerificationDraft(
+            decisions=(
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(StableId("evidence-candidate.wrong"),),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="WRONG_ID",
+                ),
+            )
+        ),
+        EvidenceSemanticVerificationDraft(
+            decisions=(
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(StableId("evidence-candidate.duplicate"),),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="WRONG_ID",
+                ),
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(StableId("evidence-candidate.duplicate"),),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="DUPLICATE",
+                ),
+            )
+        ),
+        RuntimeError("model verifier unavailable"),
+    ],
+)
+def test_v2_model_semantic_verifier_fails_closed_on_incomplete_batch(
+    verification: EvidenceSemanticVerificationDraft | Exception,
+) -> None:
+    root = _root_with("中文证据需要语义核验。")
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    if isinstance(verification, EvidenceSemanticVerificationDraft) and len(
+        verification.decisions
+    ) == 2:
+        verification = verification.model_copy(
+            update={
+                "decisions": tuple(
+                    item.model_copy(
+                        update={"candidate_ids": (candidate.candidate_id,)}
+                    )
+                    for item in verification.decisions
+                )
+            }
+        )
+    gateway = _ModelVerifierGateway(
+        _v2_state_draft(candidate.candidate_id),
+        verification,
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
+    ):
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.bad-model-verifier")
+            )
+        )
 
 
 # -- Production wiring (P0 repair) --
