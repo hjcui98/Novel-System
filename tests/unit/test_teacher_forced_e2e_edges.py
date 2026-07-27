@@ -27,6 +27,7 @@ from novel_agent.domain.retrieval_routing import (
 from novel_agent.domain.stage2 import (
     AgentMode,
     BenchmarkInformationProfile,
+    ControllerMode,
     SourceClass,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -299,6 +300,23 @@ def test_paired_report_requires_results_on_one_comparison_basis() -> None:
             BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
             (case, other),
         )
+
+
+def test_paired_report_preserves_delta_controller_mode() -> None:
+    bundle = make_synthetic_bundle()
+    case = Stage2PairedPilotRunner(
+        controller_mode=ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+    ).run(bundle).cases[0]
+
+    report = TeacherForcedBenchmarkE2ERunner._paired_report(
+        bundle,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        (case,),
+        controller_mode=ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA,
+    )
+
+    assert report.controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+    assert report.cases[0].delta_metrics is not None
 
 
 def test_checkpointless_wrapper_rejects_noncontinuable_freshness() -> None:

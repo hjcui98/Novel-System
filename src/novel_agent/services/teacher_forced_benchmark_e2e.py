@@ -109,6 +109,7 @@ from novel_agent.domain.stage2 import (
     BenchmarkInformationProfile,
     BootstrapStrategy,
     ContractRef,
+    ControllerMode,
     CuratorBootstrapDraft,
     CuratorReplayResult,
     EvaluatorDisposition,
@@ -616,6 +617,7 @@ class TeacherForcedBenchmarkE2ERunner:
                     bundle,
                     information_profile,
                     evaluator.results,
+                    controller_mode=self._quality_repair_flags.controller_mode,
                 )
                 self._write_model(output_directory / "e2e_paired_report.json", paired_report)
             else:
@@ -1409,6 +1411,8 @@ class TeacherForcedBenchmarkE2ERunner:
         bundle: BenchmarkBundle,
         profile: BenchmarkInformationProfile,
         results: tuple[PairedPilotCaseResult, ...],
+        *,
+        controller_mode: ControllerMode = ControllerMode.DETERMINISTIC,
     ) -> Stage2PairedPilotReport:
         if not results:
             raise TeacherForcedBenchmarkError("teacher-forced run produced no paired results")
@@ -1420,6 +1424,7 @@ class TeacherForcedBenchmarkE2ERunner:
             report_id=StableId(f"stage2-e2e.{bundle.bundle_id.root}.{profile.value}"),
             bundle_hash=bundle.content_hash,
             configuration_fingerprint=fingerprint,
+            controller_mode=controller_mode,
             cases=results,
             paired_results_count=len(results),
             comparable_results_count=sum(item.comparable for item in results),
@@ -1431,6 +1436,13 @@ class TeacherForcedBenchmarkE2ERunner:
             safety_regression_count=sum(item.safety_regression for item in results),
             accuracy_gain_count=sum(item.accuracy_gain for item in results),
             tool_call_reduction_count=sum(item.tool_call_reduction for item in results),
+            delta_gain_count=sum(
+                1
+                for item in results
+                if item.delta_metrics is not None
+                and item.delta_metrics.gold_evidence_recall
+                > item.deterministic_metrics.gold_evidence_recall
+            ),
             held_out_complex_gain_proven=False,
         )
 

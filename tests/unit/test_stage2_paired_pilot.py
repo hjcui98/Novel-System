@@ -32,6 +32,7 @@ from novel_agent.domain.stage2 import (
     ControllerMode,
     ControllerStopReason,
     PairedContextArmResult,
+    PairedContextComparison,
     PairedPilotCaseResult,
     PublicBenchmarkConfig,
     PublicCheckpointCase,
@@ -568,6 +569,41 @@ def test_paired_pilot_delta_mode_builds_real_arm_c() -> None:
         >= result.deterministic_metrics.gold_evidence_recall
     )
     assert result.delta_metrics.future_leakage_count == 0
+
+
+def test_score_comparison_builds_arm_c_in_delta_mode() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    deterministic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.a.one")),),
+        arm=ControllerArm.DETERMINISTIC,
+    )
+    agentic = _arm_c_result(
+        (_arm_c_candidate(StableId("unit.b.delta")),),
+        arm=ControllerArm.BOUNDED_R2,
+    )
+    comparison = PairedContextComparison(
+        pair_id=StableId("pair.arm-c-score"),
+        request_id=StableId("request.arm-c-score"),
+        deterministic=deterministic,
+        agentic=agentic,
+        comparable=True,
+    )
+
+    result = Stage2PairedPilotRunner(
+        controller_mode=ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+    ).score_comparison(
+        case,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        comparison,
+    )
+
+    assert result.delta_metrics is not None
+    assert (
+        result.delta_metrics.mandatory_constraint_coverage
+        >= result.deterministic_metrics.mandatory_constraint_coverage
+    )
+    assert result.safety_regression is False
 
 
 def test_arm_c_call_count_one_call_many_candidates_not_inflated() -> None:

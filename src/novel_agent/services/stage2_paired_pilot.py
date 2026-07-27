@@ -552,17 +552,29 @@ class Stage2PairedPilotRunner:
             )
         )
 
-    @classmethod
     def score_comparison(
-        cls,
+        self,
         case: BenchmarkCaseManifest,
         profile: BenchmarkInformationProfile,
         comparison: PairedContextComparison,
     ) -> PairedPilotCaseResult:
         """Evaluator-only conversion of a frozen comparison into private-Gold metrics."""
 
-        deterministic = cls._metrics(case, comparison.deterministic)
-        agentic = cls._metrics(case, comparison.agentic)
+        deterministic = self._metrics(case, comparison.deterministic)
+        agentic = self._metrics(case, comparison.agentic)
+        delta_metrics: PairedPilotArmMetrics | None = None
+        arm_c_safety_regression = False
+        if self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA:
+            _arm_c_result, delta_metrics = self._build_arm_c(
+                case,
+                comparison.deterministic,
+                comparison.agentic,
+            )
+            arm_c_safety_regression = (
+                delta_metrics.future_leakage_count > deterministic.future_leakage_count
+                or delta_metrics.mandatory_constraint_coverage
+                < deterministic.mandatory_constraint_coverage
+            )
         return PairedPilotCaseResult(
             case_id=case.case_id,
             information_profile=profile,
@@ -574,12 +586,17 @@ class Stage2PairedPilotRunner:
             blockers=comparison.blockers,
             deterministic_metrics=deterministic,
             agentic_metrics=agentic,
+            delta_metrics=delta_metrics,
             accuracy_gain=(agentic.gold_evidence_recall > deterministic.gold_evidence_recall),
             tool_call_reduction=(agentic.retrieval_call_count < deterministic.retrieval_call_count),
             safety_regression=(
-                agentic.future_leakage_count > deterministic.future_leakage_count
-                or agentic.mandatory_constraint_coverage
-                < deterministic.mandatory_constraint_coverage
+                arm_c_safety_regression
+                if self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+                else (
+                    agentic.future_leakage_count > deterministic.future_leakage_count
+                    or agentic.mandatory_constraint_coverage
+                    < deterministic.mandatory_constraint_coverage
+                )
             ),
         )
 
