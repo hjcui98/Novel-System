@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
 from novel_agent.domain.changes import (
@@ -259,6 +260,260 @@ def _v2_state_draft(candidate_id: StableId, chapter_index: int = 21) -> ChapterC
                 evidence_candidate_ids=(candidate_id,),
             ),
         ),
+    )
+
+
+def _v2_no_op_draft(candidate_id: StableId) -> ChapterChangeDraftV2:
+    return ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(),
+        coverage=1.0,
+        unresolved=(),
+        declared_vs_observed_diff=(),
+        no_durable_delta_reason="chapter only repeats accepted durable facts",
+        no_op_evidence_candidate_ids=(candidate_id,),
+    )
+
+
+def test_v2_requires_operations_key() -> None:
+    with pytest.raises(ValidationError, match="operations"):
+        ChapterChangeDraftV2.model_validate({"chapter_index": 21})
+    assert "operations" in ChapterChangeDraftV2.model_json_schema()["required"]
+
+
+@pytest.mark.parametrize(
+    "update",
+    (
+        {"no_durable_delta_reason": "not applicable with operations"},
+        {"no_op_evidence_candidate_ids": (StableId("evidence-candidate.noop"),)},
+    ),
+)
+def test_v2_rejects_no_op_proof_when_operations_exist(
+    update: dict[str, object],
+) -> None:
+    draft = _v2_state_draft(StableId("evidence-candidate.support"))
+    with pytest.raises(ValidationError, match="non-empty Curator draft"):
+        ChapterChangeDraftV2.model_validate(
+            {
+                **draft.model_dump(),
+                **update,
+            }
+        )
+
+
+def test_v2_explicit_no_op_fails_closed_without_trusted_verifier() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    curator = ModelCurator(
+        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.noop.no-verifier"),
+            )
+        )
+    assert exc.value.violation_rule == "empty_delta_requires_trusted_verification"
+    assert exc.value.operation_indexes == ()
+    assert exc.value.json_pointers == (
+        "/operations",
+        "/no_durable_delta_reason",
+        "/no_op_evidence_candidate_ids",
+    )
+    assert exc.value.safe_feedback == ("trusted no-op verifier is unavailable",)
+    assert curator.last_no_op_verification is None
+
+
+@pytest.mark.parametrize(
+    ("update", "feedback"),
+    (
+        ({"coverage": 0.85}, "coverage must equal 1"),
+        ({"unresolved": ("durable candidate omitted",)}, "unresolved must be empty"),
+        (
+            {"declared_vs_observed_diff": ("durable state differs",)},
+            "declared_vs_observed_diff must be empty",
+        ),
+        ({"no_durable_delta_reason": None}, "no_durable_delta_reason is required"),
+        (
+            {"no_op_evidence_candidate_ids": ()},
+            "no_op_evidence_candidate_ids are required",
+        ),
+    ),
+)
+def test_v2_incomplete_empty_draft_fails_closed_at_support_gate(
+    update: dict[str, object],
+    feedback: str,
+) -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    draft = _v2_no_op_draft(candidate.candidate_id).model_copy(update=update)
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.noop.incomplete"),
+            )
+        )
+    assert feedback in exc.value.safe_feedback[0]
+    assert exc.value.violation_rule == "empty_delta_requires_complete_proof"
+    assert exc.value.json_pointers == (
+        "/operations",
+        "/coverage",
+        "/unresolved",
+        "/declared_vs_observed_diff",
+        "/no_durable_delta_reason",
+        "/no_op_evidence_candidate_ids",
+    )
+
+
+def test_v2_explicit_no_op_passes_when_trusted_verifier_accepts() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    verifier_calls: list[tuple[str, tuple[object, ...], object]] = []
+
+    def verifier(reason, selected, world) -> tuple[bool, str]:
+        verifier_calls.append((reason, selected, world))
+        return (True, "NO_DURABLE_DELTA_CONFIRMED")
+
+    curator = ModelCurator(
+        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        no_op_verifier=verifier,
+    )
+    changes, _call, draft = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.noop.verified"),
+        )
+    )
+    assert changes.operations == ()
+    assert draft.no_durable_delta_reason is not None
+    assert verifier_calls
+    assert verifier_calls[0][1][0] == candidate
+    assert curator.last_no_op_verification == (True, "NO_DURABLE_DELTA_CONFIRMED")
+
+
+@pytest.mark.parametrize("verifier_mode", ("reject", "raise"))
+def test_v2_explicit_no_op_rejects_failed_verification(verifier_mode: str) -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+
+    def verifier(reason, selected, world) -> tuple[bool, str]:
+        if verifier_mode == "raise":
+            raise RuntimeError("verifier unavailable")
+        return (False, "NEW_DURABLE_FACT_PRESENT")
+
+    curator = ModelCurator(
+        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        no_op_verifier=verifier,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request(f"req.v2.noop.{verifier_mode}"),
+            )
+        )
+    if verifier_mode == "raise":
+        assert exc.value.safe_feedback == ("trusted no-op verifier is unavailable",)
+        assert curator.last_no_op_verification is None
+    else:
+        assert "NEW_DURABLE_FACT_PRESENT" in exc.value.safe_feedback[0]
+        assert curator.last_no_op_verification == (
+            False,
+            "NEW_DURABLE_FACT_PRESENT",
+        )
+
+
+def test_v2_explicit_no_op_can_pass_when_support_gate_disabled() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    curator = ModelCurator(
+        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        evidence_generator=gen,
+        enforce_support_gate=False,
+    )
+    changes, _call, _draft = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.noop.gate-disabled"),
+        )
+    )
+    assert changes.operations == ()
+    assert curator.last_no_op_verification is None
+
+
+def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    draft = _v2_no_op_draft(StableId("evidence-candidate.missing"))
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.noop.unknown-candidate"),
+            )
+        )
+    assert exc.value.json_pointers == ("/no_op_evidence_candidate_ids/0",)
+    assert exc.value.safe_feedback == (
+        "evidence-candidate.missing: unknown evidence candidate",
     )
 
 

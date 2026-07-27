@@ -90,6 +90,7 @@
         "record_kind_mismatch",
         "duplicate_target",
         "normalized_target_collision",
+        "incomplete_delta",
         "invalid_evidence",
         "scope_violation",
         "poison_loop"

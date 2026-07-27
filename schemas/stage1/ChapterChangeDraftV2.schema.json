@@ -465,8 +465,30 @@
       "title": "Declared Vs Observed Diff",
       "type": "array"
     },
-    "operations": {
+    "no_durable_delta_reason": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "No Durable Delta Reason"
+    },
+    "no_op_evidence_candidate_ids": {
       "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 4,
+      "title": "No Op Evidence Candidate Ids",
+      "type": "array"
+    },
+    "operations": {
       "items": {
         "$ref": "#/$defs/CuratedOperationDraftV2"
       },
@@ -487,7 +509,8 @@
     }
   },
   "required": [
-    "chapter_index"
+    "chapter_index",
+    "operations"
   ],
   "title": "ChapterChangeDraftV2",
   "type": "object"

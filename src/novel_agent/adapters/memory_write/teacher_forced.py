@@ -537,6 +537,11 @@ class TeacherForcedCuratorPort:
                 kind = ProposalRejectionKind.INVALID_EVIDENCE
                 stage = ProposalRejectionStage.SEMANTIC_CONTRACT
                 retryable = True
+            elif reason_code == "CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED":
+                detail = "Empty proposal lacks verified no-durable-delta proof"
+                kind = ProposalRejectionKind.INCOMPLETE_DELTA
+                stage = ProposalRejectionStage.SEMANTIC_CONTRACT
+                retryable = True
             else:
                 detail = "Normalized targets collide with different semantic payloads"
                 kind = ProposalRejectionKind.NORMALIZED_TARGET_COLLISION

@@ -732,6 +732,22 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         ),
         (
             CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+                (),
+                safe_feedback=("trusted no-op verifier is unavailable",),
+                json_pointers=(
+                    "/operations",
+                    "/no_durable_delta_reason",
+                    "/no_op_evidence_candidate_ids",
+                ),
+                violation_rule="empty_delta_requires_trusted_verification",
+            ),
+            ProposalRejectionStage.SEMANTIC_CONTRACT,
+            ProposalRejectionKind.INCOMPLETE_DELTA,
+            True,
+        ),
+        (
+            CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
                 (conflict,),
             ),

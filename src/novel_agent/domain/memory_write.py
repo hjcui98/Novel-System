@@ -537,6 +537,7 @@ class ProposalRejectionKind(StrEnum):
     RECORD_KIND_MISMATCH = "record_kind_mismatch"
     DUPLICATE_TARGET = "duplicate_target"
     NORMALIZED_TARGET_COLLISION = "normalized_target_collision"
+    INCOMPLETE_DELTA = "incomplete_delta"
     INVALID_EVIDENCE = "invalid_evidence"
     SCOPE_VIOLATION = "scope_violation"
     POISON_LOOP = "poison_loop"

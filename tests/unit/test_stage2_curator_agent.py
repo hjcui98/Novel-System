@@ -294,6 +294,8 @@ def test_curator_replay_agent_v2_renders_trusted_proposal_feedback() -> None:
     assert '<PROPOSAL_REPAIR_FEEDBACK trusted="true">' in sent.prompt
     assert feedback in sent.prompt
     assert "ChapterChangeDraftV2" in sent.prompt or "evidence_candidate_ids" in sent.prompt
+    assert "Always emit the operations key" in sent.prompt
+    assert "no_durable_delta_reason" in sent.prompt
 
 
 def test_curator_replay_agent_v2_without_proposal_feedback() -> None:

@@ -212,10 +212,23 @@ class ChapterChangeDraftV2(DomainModel):
     """V2 Curator draft: no model-emitted character offsets."""
 
     chapter_index: int = Field(ge=1)
-    operations: tuple[CuratedOperationDraftV2, ...] = Field(default=(), max_length=4)
+    operations: tuple[CuratedOperationDraftV2, ...] = Field(max_length=4)
     coverage: float = Field(default=1.0, ge=0, le=1)
     unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+    no_durable_delta_reason: CuratorShortText | None = None
+    no_op_evidence_candidate_ids: tuple[StableId, ...] = Field(
+        default=(),
+        max_length=4,
+    )
+
+    @model_validator(mode="after")
+    def validate_explicit_no_op(self) -> ChapterChangeDraftV2:
+        if self.operations and (
+            self.no_durable_delta_reason is not None or self.no_op_evidence_candidate_ids
+        ):
+            raise ValueError("non-empty Curator draft cannot include no-op proof")
+        return self
 
 
 class EvidenceSupportDisposition(StrEnum):

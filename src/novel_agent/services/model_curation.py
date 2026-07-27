@@ -82,6 +82,11 @@ SemanticVerifier = Callable[
     "tuple[EvidenceSupportDisposition, str] | None",
 ]
 
+NoOpVerifier = Callable[
+    [str, tuple[EvidenceCandidate, ...], WorldRootDocument],
+    "tuple[bool, str] | None",
+]
+
 
 class ModelCurator:
     def __init__(
@@ -93,6 +98,7 @@ class ModelCurator:
         support_gate: EvidenceSupportGate | None = None,
         enforce_support_gate: bool = True,
         semantic_verifier: SemanticVerifier | None = None,
+        no_op_verifier: NoOpVerifier | None = None,
     ) -> None:
         self._gateway = gateway
         self._target_resolver = target_resolver or (lambda _kind, target_id, _world: target_id)
@@ -100,10 +106,12 @@ class ModelCurator:
         self._support_gate = support_gate or EvidenceSupportGate()
         self._enforce_support_gate = enforce_support_gate
         self._semantic_verifier = semantic_verifier
+        self._no_op_verifier = no_op_verifier
         self.last_evidence_merge_receipts: tuple[ProposalEvidenceMergeReceipt, ...] = ()
         self.last_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
         self.last_partial_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
         self.last_evidence_candidates: tuple[EvidenceCandidate, ...] = ()
+        self.last_no_op_verification: tuple[bool, str] | None = None
 
     @property
     def gateway(self) -> ModelGateway:
@@ -314,6 +322,10 @@ class ModelCurator:
                 "prompt": (
                     contract
                     + "Extract ChapterChangeDraftV2 JSON from this revealed chapter only. "
+                    "The operations key is required. An empty operations array is valid only "
+                    "for a complete no-durable-delta result: coverage must equal 1, unresolved "
+                    "and declared_vs_observed_diff must be empty, and the draft must include "
+                    "no_durable_delta_reason plus supporting no_op_evidence_candidate_ids. "
                     "Cite only registered evidence_candidate_ids; do not emit start/end offsets. "
                     "preserve assertion/rumor/dream truth classes and do not infer future events.\n"
                     '<CURATOR_INPUT trusted="false">\n'
@@ -327,12 +339,19 @@ class ModelCurator:
             }
         )
         draft, call = await self._gateway.generate_structured(safe_request, ChapterChangeDraftV2)
+        self.last_no_op_verification = None
         if draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
         unknown = tuple(
             candidate_id
-            for operation in draft.operations
-            for candidate_id in operation.evidence_candidate_ids
+            for candidate_id in (
+                *(
+                    candidate_id
+                    for operation in draft.operations
+                    for candidate_id in operation.evidence_candidate_ids
+                ),
+                *draft.no_op_evidence_candidate_ids,
+            )
             if candidate_id not in catalog
         )
         if unknown:
@@ -349,9 +368,79 @@ class ModelCurator:
                     for op_i, operation in enumerate(draft.operations)
                     for ev_i, candidate_id in enumerate(operation.evidence_candidate_ids)
                     if candidate_id not in catalog
+                )
+                + tuple(
+                    f"/no_op_evidence_candidate_ids/{ev_i}"
+                    for ev_i, candidate_id in enumerate(
+                        draft.no_op_evidence_candidate_ids
+                    )
+                    if candidate_id not in catalog
                 ),
                 violation_rule="candidate_id_must_belong_to_chapter",
             )
+        if not draft.operations and self._enforce_support_gate:
+            proof_errors = []
+            if draft.coverage != 1.0:
+                proof_errors.append("coverage must equal 1")
+            if draft.unresolved:
+                proof_errors.append("unresolved must be empty")
+            if draft.declared_vs_observed_diff:
+                proof_errors.append("declared_vs_observed_diff must be empty")
+            if draft.no_durable_delta_reason is None:
+                proof_errors.append("no_durable_delta_reason is required")
+            if not draft.no_op_evidence_candidate_ids:
+                proof_errors.append("no_op_evidence_candidate_ids are required")
+            if proof_errors:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+                    (),
+                    safe_feedback=(
+                        ("incomplete empty-delta proof: " + "; ".join(proof_errors))[
+                            :240
+                        ],
+                    ),
+                    json_pointers=(
+                        "/operations",
+                        "/coverage",
+                        "/unresolved",
+                        "/declared_vs_observed_diff",
+                        "/no_durable_delta_reason",
+                        "/no_op_evidence_candidate_ids",
+                    ),
+                    violation_rule="empty_delta_requires_complete_proof",
+                )
+            selected_candidates = tuple(
+                catalog[candidate_id]
+                for candidate_id in draft.no_op_evidence_candidate_ids
+            )
+            verification: tuple[bool, str] | None = None
+            if self._no_op_verifier is not None:
+                try:
+                    verification = self._no_op_verifier(
+                        draft.no_durable_delta_reason or "",
+                        selected_candidates,
+                        current_world,
+                    )
+                except Exception:
+                    verification = None
+            self.last_no_op_verification = verification
+            if verification is None or not verification[0]:
+                detail = (
+                    "trusted no-op verifier is unavailable"
+                    if verification is None
+                    else f"trusted no-op verifier rejected proof: {verification[1]}"
+                )
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+                    (),
+                    safe_feedback=(detail[:240],),
+                    json_pointers=(
+                        "/operations",
+                        "/no_durable_delta_reason",
+                        "/no_op_evidence_candidate_ids",
+                    ),
+                    violation_rule="empty_delta_requires_trusted_verification",
+                )
         support_decisions = self._support_gate.evaluate_draft(draft.operations, catalog)
         self.last_support_decisions = support_decisions
         if self._enforce_support_gate:

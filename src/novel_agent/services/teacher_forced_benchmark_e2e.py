@@ -1525,7 +1525,8 @@ class _TeacherForcedTransition:
         model_curator = ModelCurator(
             harness.gateway,
             enforce_support_gate=(
-                self.quality_repair_flags.evidence_support_gate
+                harness.responses is None
+                and self.quality_repair_flags.evidence_support_gate
                 == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
             ),
         )
@@ -2069,7 +2070,7 @@ class _TeacherForcedTransition:
         )
         result, _ = asyncio.run(
             CuratorReplayAgent(
-                ModelCurator(self.harness.gateway),
+                ModelCurator(self.harness.gateway, enforce_support_gate=False),
                 self.harness.runner,
             ).run(
                 version=VERSION,

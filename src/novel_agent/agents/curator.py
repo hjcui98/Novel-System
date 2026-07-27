@@ -148,6 +148,9 @@ class CuratorReplayAgent:
             f"chapter_index={chapter_index}\n"
             f"base_commit={base_commit.root}\n"
             "Output ChapterChangeDraftV2 only; cite registered evidence_candidate_ids. "
+            "Always emit the operations key. An empty array requires a complete explicit "
+            "no-durable-delta proof using no_durable_delta_reason and "
+            "no_op_evidence_candidate_ids; incomplete empty output is rejected. "
             "The trusted service binds all offsets, hashes and EvidenceRef values."
         )
         if proposal_feedback is not None:
