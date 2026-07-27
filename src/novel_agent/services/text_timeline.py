@@ -75,3 +75,44 @@ class SequentialTextRootService:
             document_hash=document_hash,
         )
         return resulting, receipt
+
+    def backfill_missing_prelude(
+        self,
+        current: TextRootDocument,
+        source_id: StableId,
+        prelude: PreludeDocument,
+    ) -> tuple[TextRootDocument, TextRootAdvanceReceipt]:
+        """Repair an omitted historical prelude without rewriting later chapters."""
+
+        if current.prelude is not None:
+            raise TextTimelineError("Prelude backfill requires a missing prelude")
+        if not current.chapters:
+            raise TextTimelineError("Prelude backfill requires an existing chapter history")
+        provisional = current.model_copy(
+            update={
+                "root_hash": ArtifactId("sha256:" + "0" * 64),
+                "prelude": prelude,
+            }
+        )
+        resulting = provisional.model_copy(update={"root_hash": text_root_content_id(provisional)})
+        document_hash = content_id(prelude.model_dump(mode="json"))
+        receipt_hash = content_id(
+            {
+                "operation": "backfill_missing_prelude",
+                "source_id": source_id.root,
+                "narrative_index": 0,
+                "previous_text_root": current.root_hash.root,
+                "resulting_text_root": resulting.root_hash.root,
+                "document_hash": document_hash.root,
+            }
+        )
+        return resulting, TextRootAdvanceReceipt(
+            receipt_id=StableId(
+                f"text-root-backfill.{receipt_hash.root.removeprefix('sha256:')[:24]}"
+            ),
+            source_id=source_id,
+            narrative_index=0,
+            previous_text_root=current.root_hash,
+            resulting_text_root=resulting.root_hash,
+            document_hash=document_hash,
+        )
