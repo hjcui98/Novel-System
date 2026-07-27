@@ -186,6 +186,7 @@ class Stage2PairedPilotRunner:
             max_rounds=2,
             max_tool_calls=max_calls,
             max_query_rewrites_per_need=0,
+            wall_clock_budget_ms=120_000,
             token_budget=self._token_budget,
         )
         runner = PairedMemoryControllerRunner.from_shared_backend(
@@ -226,6 +227,7 @@ class Stage2PairedPilotRunner:
                 max_tool_calls=max_calls,
                 max_query_rewrites_per_need=0,
                 max_candidates=self._max_candidates,
+                wall_clock_budget_ms=120_000,
                 token_budget=self._token_budget,
             ),
             context_budget=ContextBudget(token_budget=self._token_budget),
@@ -372,6 +374,7 @@ class Stage2PairedPilotRunner:
                 max_rounds=2,
                 max_tool_calls=max_calls,
                 max_query_rewrites_per_need=0,
+                wall_clock_budget_ms=120_000,
                 token_budget=self._token_budget,
             )
         )
@@ -420,6 +423,7 @@ class Stage2PairedPilotRunner:
                 max_tool_calls=max_calls,
                 max_query_rewrites_per_need=0,
                 max_candidates=self._max_candidates,
+                wall_clock_budget_ms=120_000,
                 token_budget=self._token_budget,
             ),
             context_budget=ContextBudget(token_budget=self._token_budget),

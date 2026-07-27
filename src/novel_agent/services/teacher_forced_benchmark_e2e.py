@@ -1369,7 +1369,7 @@ class TeacherForcedBenchmarkE2ERunner:
                     purpose=ModelCallPurpose.BATCH_TEST,
                     trace_id=(f"trace-controller-{req.request_id.root}-r{round_index}"),
                     prompt="replaced by StructuredAgentRunner",
-                    timeout_seconds=600,
+                    timeout_seconds=60,
                 )
 
             policy = StructuredControllerPolicy(

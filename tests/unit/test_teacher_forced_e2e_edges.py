@@ -199,6 +199,7 @@ def test_semantic_harness_builds_structured_controller_policy() -> None:
     )
     generated = policy._request_factory({"request": state_request}, 2)
     assert generated.request_id.root.endswith(".r2")
+    assert generated.timeout_seconds == 60
     TeacherForcedBenchmarkE2ERunner._script(
         harness,
         TeacherForcedBenchmarkE2ERunner._request("semantic", AgentMode.REPLAY),
