@@ -58,6 +58,14 @@ ROOT = Path(__file__).parents[2]
 PILOT = ROOT / "benchmarks/private/ztj_memory_pilot_v0.1"
 
 
+def test_controller_prompt_prefers_registered_batch_plan() -> None:
+    prompt = (ROOT / "src/novel_agent/prompts/memory_controller_v1.md").read_text()
+
+    assert '"action":"execute_plan"' in prompt
+    assert "`selected_action_ids`" in prompt
+    assert "up to `max_agentic_actions`" in prompt
+
+
 def test_quality_repair_memory_write_budget_is_bounded_to_two_model_calls() -> None:
     budget = _quality_repair_memory_write_budget()
 
