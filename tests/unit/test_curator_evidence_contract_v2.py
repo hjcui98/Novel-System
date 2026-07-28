@@ -1459,6 +1459,79 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
     assert receipt.reason == "existing_semantic_duplicate"
 
 
+def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = next(
+        item for item in gen.generate(root, 21) if "confidence" in item.text
+    )
+    first = _v2_state_draft(candidate.candidate_id).operations[0]
+    mismatched = CuratedOperationDraftV2(
+        operation=ChangeOperationType.REPLACE,
+        record_kind=WorldRecordKind.STATE,
+        target_id=StableId("state.reading-method"),
+        record=CuratorStateRecord(
+            subject_id=StableId("entity.chen"),
+            predicate="has_method",
+            value="comparative_study",
+            valid_time=CuratorStoryTime(worldline="current", start_ordinal=21),
+            truth_class=TruthClass.ASSERTION,
+        ),
+        evidence_candidate_ids=(candidate.candidate_id,),
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(first, mismatched),
+    )
+    world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "1" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=_COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.chen"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
+        states=(
+            StateRecord(
+                state_id=StableId("state.reading-method"),
+                subject_id=StableId("entity.chen"),
+                predicate="uses_reading_method",
+                value="recitation",
+                valid_time=StoryTime(worldline="current", start_ordinal=20),
+                truth_class=TruthClass.ASSERTION,
+            ),
+        ),
+    )
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=False,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            world,
+            _request("req.v2.target-identity-mismatch"),
+        )
+    )
+
+    assert len(changes.operations) == 1
+    assert len(filtered.operations) == 1
+    assert filtered.operations[0].target_id == first.target_id
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.proposed_target_id == mismatched.target_id
+    assert receipt.existing_target_id == mismatched.target_id
+    assert receipt.reason == "target_identity_mismatch"
+
+
 def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
     text = "chen repeats an already accepted durable fact."
     root = _root_with(text)

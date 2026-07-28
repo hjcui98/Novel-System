@@ -36,6 +36,7 @@ from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.memory_write import ProposalConflict, ProposalEvidenceMergeReceipt
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
+from novel_agent.domain.world import StateRecord
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import validate_evidence_ref
 from novel_agent.services.content_addressing import canonical_json_bytes, quote_hash
@@ -114,6 +115,7 @@ class ProposalOperationFilterReceipt(DomainModel):
     reason: Literal[
         "existing_semantic_duplicate",
         "evidence_support_rejected",
+        "target_identity_mismatch",
     ]
     source_operation_hash: ArtifactId
     support_disposition: EvidenceSupportDisposition | None = None
@@ -823,8 +825,10 @@ class ModelCurator:
             StableId,
         ] = {}
         current_ids: dict[WorldRecordKind, set[StableId]] = {}
+        current_by_id: dict[WorldRecordKind, dict[StableId, object]] = {}
         for kind, records in current_records.items():
             current_ids[kind] = {record_id for record_id, _ in records}
+            current_by_id[kind] = dict(records)
             for record_id, record in records:
                 excluded_fields = {id_fields[kind], "evidence_refs"}
                 if kind is WorldRecordKind.STATE:
@@ -879,6 +883,46 @@ class ModelCurator:
                         proposed_target_id=operation.target_id,
                         existing_target_id=existing_target,
                         reason="existing_semantic_duplicate",
+                        source_operation_hash=source_hash,
+                    )
+                )
+                continue
+            target_record = current_by_id[operation.record_kind].get(
+                operation.target_id
+            )
+            if (
+                operation.record_kind is WorldRecordKind.STATE
+                and target_record is not None
+            ):
+                proposed_state = cast(CuratorStateRecord, operation.record)
+                existing_state = cast(StateRecord, target_record)
+                identity_mismatch = (
+                    proposed_state.subject_id != existing_state.subject_id
+                    or proposed_state.predicate != existing_state.predicate
+                )
+            else:
+                identity_mismatch = False
+            if identity_mismatch:
+                source_hash = sha256_id(
+                    canonical_json_bytes(operation.model_dump(mode="json"))
+                )
+                digest = self._digest(
+                    base_commit.root.encode(),
+                    str(index).encode(),
+                    source_hash.root.encode(),
+                    operation.target_id.root.encode(),
+                )
+                receipts.append(
+                    ProposalOperationFilterReceipt(
+                        transform_id=StableId(
+                            f"proposal-operation-filter.{digest}"
+                        ),
+                        base_commit=base_commit,
+                        operation_index=index,
+                        record_kind=operation.record_kind,
+                        proposed_target_id=operation.target_id,
+                        existing_target_id=operation.target_id,
+                        reason="target_identity_mismatch",
                         source_operation_hash=source_hash,
                     )
                 )
