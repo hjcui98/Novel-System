@@ -188,14 +188,14 @@ ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 
 def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
-    """Bound an isolated chapter to one proposal repair and narrow verification."""
+    """Allow a third proposal only while typed finding signatures keep changing."""
 
     return MemoryWriteBudget(
-        max_curator_proposal_attempts=2,
-        max_curator_proposal_rejections=2,
-        max_total_model_calls=4,
-        token_budget=64_000,
-        wall_clock_budget_ms=360_000,
+        max_curator_proposal_attempts=3,
+        max_curator_proposal_rejections=3,
+        max_total_model_calls=6,
+        token_budget=96_000,
+        wall_clock_budget_ms=540_000,
     )
 
 
