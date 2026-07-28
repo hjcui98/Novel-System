@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, cast
 
-from pydantic import Field
+from pydantic import Field, create_model
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.base import DomainModel
@@ -1022,9 +1022,10 @@ class ModelCurator:
                 ),
             }
         )
+        verification_type = self._semantic_verification_batch_type(len(expected))
         result, _call = await self._gateway.generate_structured(
             verifier_request,
-            EvidenceSemanticVerificationDraft,
+            verification_type,
         )
         resolved: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
         for item in result.decisions:
@@ -1034,6 +1035,24 @@ class ModelCurator:
                 return {}
             resolved[item.operation_index] = (item.disposition, item.reason_code)
         return resolved
+
+    @staticmethod
+    def _semantic_verification_batch_type(
+        decision_count: int,
+    ) -> type[EvidenceSemanticVerificationDraft]:
+        if not 1 <= decision_count <= 4:
+            raise ValueError("semantic verification batch must contain one to four decisions")
+        return cast(
+            type[EvidenceSemanticVerificationDraft],
+            create_model(
+                f"EvidenceSemanticVerificationBatch{decision_count}",
+                __base__=EvidenceSemanticVerificationDraft,
+                decisions=(
+                    tuple[EvidenceSemanticVerificationItem, ...],
+                    Field(min_length=decision_count, max_length=decision_count),
+                ),
+            ),
+        )
 
     async def evidence_repair_v2(
         self,

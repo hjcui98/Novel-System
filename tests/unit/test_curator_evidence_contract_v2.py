@@ -85,7 +85,7 @@ class _ModelVerifierGateway:
         )()
         if model_type is ChapterChangeDraftV2:
             return self._draft, call
-        assert model_type is EvidenceSemanticVerificationDraft
+        assert issubclass(model_type, EvidenceSemanticVerificationDraft)
         assert "EVIDENCE_VERIFICATION_INPUT" in request.prompt
         if isinstance(self._verification, Exception):
             raise self._verification
@@ -1041,6 +1041,19 @@ def test_v2_model_semantic_verifier_schema_bounds_generation() -> None:
     item_schema = schema["$defs"]["EvidenceSemanticVerificationItem"]
     assert item_schema["properties"]["reason_code"]["minLength"] == 1
     assert item_schema["properties"]["reason_code"]["maxLength"] == 160
+    batch_schema = ModelCurator._semantic_verification_batch_type(
+        2
+    ).model_json_schema()
+    assert batch_schema["properties"]["decisions"]["minItems"] == 2
+    assert batch_schema["properties"]["decisions"]["maxItems"] == 2
+
+
+@pytest.mark.parametrize("decision_count", (0, 5))
+def test_v2_model_semantic_verifier_rejects_invalid_batch_size(
+    decision_count: int,
+) -> None:
+    with pytest.raises(ValueError, match="one to four decisions"):
+        ModelCurator._semantic_verification_batch_type(decision_count)
 
 
 def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> None:
