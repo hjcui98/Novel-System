@@ -134,6 +134,13 @@ def _world() -> WorldRootDocument:
         root_hash=ArtifactId("sha256:" + "1" * 64),
         schema_version=SchemaVersion("0.1.0"),
         source_commit=CommitId("sha256:" + "2" * 64),
+        entities=(
+            Entity(
+                entity_id=StableId("entity.chen"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
     )
 
 
@@ -1530,6 +1537,61 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
     assert receipt.proposed_target_id == mismatched.target_id
     assert receipt.existing_target_id == mismatched.target_id
     assert receipt.reason == "target_identity_mismatch"
+
+
+def test_v2_filters_dangling_entity_reference_to_audited_no_op() -> None:
+    text = "xu-shi-ji now appreciates chen changsheng."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.xu-shi-ji-attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.xu-shi-ji"),
+                    predicate="has_attitude_towards",
+                    value="appreciation_for_chen_changsheng",
+                    valid_time=CuratorStoryTime(
+                        worldline="current",
+                        start_ordinal=21,
+                    ),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+        ),
+    )
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.dangling-entity"),
+        )
+    )
+
+    assert changes.operations == ()
+    assert filtered.operations == ()
+    assert curator.last_no_op_verification == (
+        True,
+        "ALL_OPERATIONS_STRUCTURALLY_REJECTED",
+    )
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.reason == "dangling_entity_reference"
+    assert receipt.proposed_target_id == StableId("state.xu-shi-ji-attitude")
+    assert receipt.missing_entity_ids == (StableId("entity.xu-shi-ji"),)
 
 
 def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:

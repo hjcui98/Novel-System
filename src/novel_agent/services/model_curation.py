@@ -113,11 +113,13 @@ class ProposalOperationFilterReceipt(DomainModel):
     proposed_target_id: StableId
     existing_target_id: StableId | None = None
     reason: Literal[
+        "dangling_entity_reference",
         "existing_semantic_duplicate",
         "evidence_support_rejected",
         "target_identity_mismatch",
     ]
     source_operation_hash: ArtifactId
+    missing_entity_ids: tuple[StableId, ...] = ()
     support_disposition: EvidenceSupportDisposition | None = None
     support_reason_code: str | None = None
 
@@ -420,20 +422,29 @@ class ModelCurator:
             current_world,
             base_commit,
         )
-        duplicate_no_op = (
+        structural_no_op = (
             proposed_operation_count > 0
             and not draft.operations
             and len(self.last_operation_filter_receipts) == proposed_operation_count
             and all(
-                receipt.reason == "existing_semantic_duplicate"
+                receipt.reason
+                in {
+                    "dangling_entity_reference",
+                    "existing_semantic_duplicate",
+                    "target_identity_mismatch",
+                }
                 for receipt in self.last_operation_filter_receipts
             )
         )
-        if duplicate_no_op:
+        duplicate_no_op = structural_no_op and all(
+            receipt.reason == "existing_semantic_duplicate"
+            for receipt in self.last_operation_filter_receipts
+        )
+        if structural_no_op:
             # A deterministic comparison against Canonical World is a stronger
-            # no-op proof than the model's stale completeness fields. Keep the
-            # filter receipts as the auditable proof and do not carry candidate
-            # IDs from operations that cannot mutate Canonical World.
+            # safety proof than the model's stale completeness fields. Keep the
+            # filter receipts as the auditable proof and do not carry evidence
+            # IDs from operations that cannot safely mutate Canonical World.
             draft = draft.model_copy(
                 update={
                     "coverage": 1.0,
@@ -441,13 +452,19 @@ class ModelCurator:
                     "declared_vs_observed_diff": (),
                     "no_durable_delta_reason": (
                         "all proposed operations already exist in Canonical World"
+                        if duplicate_no_op
+                        else "all proposed operations were structurally rejected"
                     ),
                     "no_op_evidence_candidate_ids": (),
                 }
             )
             self.last_no_op_verification = (
                 True,
-                "ALL_OPERATIONS_ALREADY_CANONICAL",
+                (
+                    "ALL_OPERATIONS_ALREADY_CANONICAL"
+                    if duplicate_no_op
+                    else "ALL_OPERATIONS_STRUCTURALLY_REJECTED"
+                ),
             )
         unknown = tuple(
             candidate_id
@@ -485,7 +502,7 @@ class ModelCurator:
                 ),
                 violation_rule="candidate_id_must_belong_to_chapter",
             )
-        if not draft.operations and self._enforce_support_gate and not duplicate_no_op:
+        if not draft.operations and self._enforce_support_gate and not structural_no_op:
             proof_errors = []
             if draft.coverage != 1.0:
                 proof_errors.append("coverage must equal 1")
@@ -847,7 +864,53 @@ class ModelCurator:
 
         accepted: list[CuratedOperationDraftV2] = []
         receipts: list[ProposalOperationFilterReceipt] = []
+        created_entities = {
+            operation.target_id
+            for operation in draft.operations
+            if operation.record_kind is WorldRecordKind.ENTITY
+            and operation.operation is ChangeOperationType.CREATE
+        }
+        known_entities = current_ids[WorldRecordKind.ENTITY] | created_entities
         for index, operation in enumerate(draft.operations):
+            record = operation.record
+            referenced_entities = {
+                *getattr(record, "participant_ids", ()),
+                *getattr(record, "owner_ids", ()),
+                *(
+                    item
+                    for item in (
+                        getattr(record, "subject_id", None),
+                        getattr(record, "object_id", None),
+                    )
+                    if item is not None
+                ),
+            }
+            missing_entities = tuple(sorted(referenced_entities - known_entities))
+            if missing_entities:
+                source_hash = sha256_id(
+                    canonical_json_bytes(operation.model_dump(mode="json"))
+                )
+                digest = self._digest(
+                    base_commit.root.encode(),
+                    str(index).encode(),
+                    source_hash.root.encode(),
+                    *(item.root.encode() for item in missing_entities),
+                )
+                receipts.append(
+                    ProposalOperationFilterReceipt(
+                        transform_id=StableId(
+                            f"proposal-operation-filter.{digest}"
+                        ),
+                        base_commit=base_commit,
+                        operation_index=index,
+                        record_kind=operation.record_kind,
+                        proposed_target_id=operation.target_id,
+                        reason="dangling_entity_reference",
+                        source_operation_hash=source_hash,
+                        missing_entity_ids=missing_entities,
+                    )
+                )
+                continue
             excluded_fields = (
                 {"valid_time"}
                 if operation.record_kind is WorldRecordKind.STATE
