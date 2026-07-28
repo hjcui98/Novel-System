@@ -540,7 +540,7 @@ def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
     )
     with pytest.raises(
         CuratorProposalSemanticRejected,
-        match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+        match="CURATOR_PROPOSAL_INVALID_EVIDENCE",
     ) as exc:
         asyncio.run(
             curator.extract_reported_v2(
@@ -553,7 +553,8 @@ def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
         )
     assert exc.value.json_pointers == ("/no_op_evidence_candidate_ids/0",)
     assert exc.value.safe_feedback == (
-        "evidence-candidate.missing: unknown evidence candidate",
+        "evidence-candidate.missing: unknown evidence candidate; replace it with a "
+        "candidate_id copied verbatim from this chapter's EVIDENCE_CANDIDATES catalog",
     )
 
 
@@ -611,7 +612,7 @@ def test_v2_rejects_unknown_evidence_candidate_id() -> None:
     )
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     with pytest.raises(
-        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INFORMATION_BOUNDARY"
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
     ) as exc:
         asyncio.run(
             curator.extract_reported_v2(
@@ -619,8 +620,12 @@ def test_v2_rejects_unknown_evidence_candidate_id() -> None:
             )
         )
     assert exc.value.violation_rule == "candidate_id_must_belong_to_chapter"
-    assert exc.value.information_boundary is True
-    assert exc.value.safe_feedback == ("evidence-candidate.missing: unknown evidence candidate",)
+    assert exc.value.information_boundary is False
+    assert exc.value.operation_indexes == (0,)
+    assert exc.value.safe_feedback == (
+        "evidence-candidate.missing: unknown evidence candidate; replace it with a "
+        "candidate_id copied verbatim from this chapter's EVIDENCE_CANDIDATES catalog",
+    )
     assert exc.value.json_pointers == ("/operations/0/evidence_candidate_ids/0",)
 
 

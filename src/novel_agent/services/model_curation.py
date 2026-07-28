@@ -464,13 +464,28 @@ class ModelCurator:
         )
         if unknown:
             feedback = tuple(
-                f"{item.root}: unknown evidence candidate" for item in unknown[:4]
+                (
+                    f"{item.root}: unknown evidence candidate; replace it with a candidate_id "
+                    "copied verbatim from this chapter's EVIDENCE_CANDIDATES catalog"
+                )[:240]
+                for item in unknown[:4]
             )
             raise CuratorProposalSemanticRejected(
-                "CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
+                "CURATOR_PROPOSAL_INVALID_EVIDENCE",
                 (),
-                information_boundary=True,
                 safe_feedback=feedback,
+                operation_indexes=tuple(
+                    sorted(
+                        {
+                            op_i
+                            for op_i, operation in enumerate(draft.operations)
+                            if any(
+                                candidate_id not in catalog
+                                for candidate_id in operation.evidence_candidate_ids
+                            )
+                        }
+                    )
+                ),
                 json_pointers=tuple(
                     f"/operations/{op_i}/evidence_candidate_ids/{ev_i}"
                     for op_i, operation in enumerate(draft.operations)
