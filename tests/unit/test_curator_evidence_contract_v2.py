@@ -997,16 +997,19 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
         enable_model_semantic_verifier=True,
     )
 
+    request = _request("req.v2.model-verifier").model_copy(
+        update={"timeout_seconds": 120}
+    )
     changes, _call, _out = asyncio.run(
         curator.extract_reported_v2(
-            root, 21, _COMMIT, _world(), _request("req.v2.model-verifier")
+            root, 21, _COMMIT, _world(), request
         )
     )
 
     assert changes.operations
     assert len(gateway.requests) == 2
     assert gateway.requests[1].request_id.root.endswith(".semantic-verifier")
-    assert gateway.requests[1].timeout_seconds == 30
+    assert gateway.requests[1].timeout_seconds == 90
     assert "半个时辰 is one hour and never half_hour" in gateway.requests[1].prompt
     assert "supports only a record that explicitly encodes belief" in (
         gateway.requests[1].prompt

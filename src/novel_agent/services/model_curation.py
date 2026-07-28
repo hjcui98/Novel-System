@@ -983,7 +983,7 @@ class ModelCurator:
                 "request_id": StableId(
                     request.request_id.root[: 128 - len(suffix)] + suffix
                 ),
-                "timeout_seconds": min(request.timeout_seconds, 55.0),
+                "timeout_seconds": min(request.timeout_seconds, 90.0),
                 "prompt": (
                     "Verify whether each typed World record is directly supported by its "
                     "complete evidence set. Evaluate all excerpts for one operation "
