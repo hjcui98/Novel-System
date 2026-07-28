@@ -621,68 +621,28 @@ class ModelCurator:
                 *(item.operation_index for item in unresolved_partials),
             }
             if rejected_indexes:
-                if len(rejected_indexes) == len(draft.operations):
-                    if (
-                        unresolved_partials
-                        and not verifier_rejected
-                        and not hard_rejected
-                    ):
-                        raise CuratorProposalSemanticRejected(
-                            "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
-                            (),
-                            safe_feedback=tuple(
-                                (
-                                    f"{item.candidate_id.root}: "
-                                    f"{item.reason_code} unresolved "
-                                    f"(no verifier) at operation "
-                                    f"{item.operation_index}"
-                                )[:240]
-                                for item in unresolved_partials[:4]
-                            ),
-                            operation_indexes=tuple(sorted(rejected_indexes)),
-                            json_pointers=tuple(
-                                f"/operations/{index}/evidence_candidate_ids/0"
-                                for index in sorted(rejected_indexes)
-                            ),
-                            violation_rule="partial_evidence_unresolved_no_verifier",
-                        )
-                    if verifier_rejected:
-                        item, disposition, reason = verifier_rejected[0]
-                        raise CuratorProposalSemanticRejected(
-                            "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
-                            (),
-                            safe_feedback=(
-                                (
-                                    f"{item.candidate_id.root}: verifier="
-                                    f"{disposition.value} ({reason}) "
-                                    f"at operation {item.operation_index}"
-                                )[:240],
-                            ),
-                            operation_indexes=tuple(sorted(rejected_indexes)),
-                            json_pointers=tuple(
-                                f"/operations/{index}/evidence_candidate_ids/0"
-                                for index in sorted(rejected_indexes)
-                            ),
-                            violation_rule="semantic_verifier_rejected_partial",
-                        )
+                if (
+                    len(rejected_indexes) == len(draft.operations)
+                    and unresolved_partials
+                ):
                     raise CuratorProposalSemanticRejected(
-                        "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                        "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
                         (),
                         safe_feedback=tuple(
                             (
                                 f"{item.candidate_id.root}: "
-                                f"{item.disposition.value} "
-                                f"({item.reason_code}) at operation "
+                                f"{item.reason_code} unresolved "
+                                f"(no verifier) at operation "
                                 f"{item.operation_index}"
                             )[:240]
-                            for item in hard_rejected[:4]
+                            for item in unresolved_partials[:4]
                         ),
                         operation_indexes=tuple(sorted(rejected_indexes)),
                         json_pointers=tuple(
                             f"/operations/{index}/evidence_candidate_ids/0"
                             for index in sorted(rejected_indexes)
                         ),
-                        violation_rule="candidate_text_contradicts_or_unrelated",
+                        violation_rule="partial_evidence_unresolved_no_verifier",
                     )
                 rejected_details = {
                     item.operation_index: (
@@ -711,6 +671,23 @@ class ModelCurator:
                     rejected_details,
                     base_commit,
                 )
+                if not draft.operations:
+                    draft = draft.model_copy(
+                        update={
+                            "coverage": 1.0,
+                            "unresolved": (),
+                            "declared_vs_observed_diff": (),
+                            "no_durable_delta_reason": (
+                                "all proposed operations were rejected by the "
+                                "evidence support gate"
+                            ),
+                            "no_op_evidence_candidate_ids": (),
+                        }
+                    )
+                    self.last_no_op_verification = (
+                        True,
+                        "ALL_OPERATIONS_REJECTED_BY_SUPPORT_GATE",
+                    )
 
         chapter_blocks = {
             block.block_id: block for scene in chapter.scenes for block in scene.blocks

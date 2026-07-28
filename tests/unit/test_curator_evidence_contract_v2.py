@@ -838,8 +838,8 @@ def test_evidence_repair_v2_filters_parent_ops_by_repair_operation_indexes() -> 
 # -- Evidence Support Gate: disposition-aware enforcement (P0 repair) --
 
 
-def test_v2_rejects_contradicts_evidence_without_verifier() -> None:
-    """A CONTRADICTS candidate (negation near primary token) is hard-rejected."""
+def test_v2_filters_contradicts_evidence_to_audited_no_op() -> None:
+    """A CONTRADICTS operation is filtered without mutating Canonical World."""
     text = "chen does not have cultivation-attitude anymore."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
@@ -848,16 +848,22 @@ def test_v2_rejects_contradicts_evidence_without_verifier() -> None:
     bad = candidates[0]
     draft = _v2_state_draft(bad.candidate_id)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
-    with pytest.raises(
-        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
-    ) as exc:
-        asyncio.run(
-            curator.extract_reported_v2(
-                root, 21, _COMMIT, _world(), _request("req.v2.contradicts")
-            )
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root, 21, _COMMIT, _world(), _request("req.v2.contradicts")
         )
-    assert exc.value.violation_rule == "candidate_text_contradicts_or_unrelated"
-    assert exc.value.operation_indexes == (0,)
+    )
+    assert changes.operations == ()
+    assert filtered.operations == ()
+    assert curator.last_no_op_verification == (
+        True,
+        "ALL_OPERATIONS_REJECTED_BY_SUPPORT_GATE",
+    )
+    assert len(curator.last_operation_filter_receipts) == 1
+    assert (
+        curator.last_operation_filter_receipts[0].support_disposition
+        is EvidenceSupportDisposition.CONTRADICTS
+    )
 
 
 def test_v2_partial_evidence_passes_when_verifier_supports() -> None:
@@ -890,8 +896,8 @@ def test_v2_partial_evidence_passes_when_verifier_supports() -> None:
     assert curator.last_partial_support_decisions
 
 
-def test_v2_partial_evidence_rejected_when_verifier_contradicts() -> None:
-    """A PARTIAL candidate is rejected when the verifier downgrades it."""
+def test_v2_partial_evidence_verifier_rejection_becomes_audited_no_op() -> None:
+    """A verifier-rejected operation is filtered without Canonical mutation."""
     text = "the weather is sunny and calm today."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
@@ -909,16 +915,21 @@ def test_v2_partial_evidence_rejected_when_verifier_contradicts() -> None:
         enforce_support_gate=True,
         semantic_verifier=verifier,
     )
-    with pytest.raises(
-        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
-    ) as exc:
-        asyncio.run(
-            curator.extract_reported_v2(
-                root, 21, _COMMIT, _world(), _request("req.v2.verifier-no")
-            )
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root, 21, _COMMIT, _world(), _request("req.v2.verifier-no")
         )
-    assert exc.value.violation_rule == "semantic_verifier_rejected_partial"
-    assert exc.value.operation_indexes == (0,)
+    )
+    assert changes.operations == ()
+    assert filtered.operations == ()
+    assert curator.last_no_op_verification == (
+        True,
+        "ALL_OPERATIONS_REJECTED_BY_SUPPORT_GATE",
+    )
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.support_disposition is EvidenceSupportDisposition.CONTRADICTS
+    assert receipt.support_reason_code == "VERIFIER_CONTRADICTS"
 
 
 def test_v2_partial_evidence_fails_closed_without_verifier() -> None:
@@ -1577,7 +1588,7 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
             )
         )
 
-    # CONTRADICTS is hard-rejected.
+    # CONTRADICTS is hard-filtered and cannot mutate Canonical World.
     bad_text = "chen does not have cultivation-attitude anymore."
     bad_root = _root_with(bad_text)
     bad_candidates = gen.generate(bad_root, 21)
@@ -1588,11 +1599,13 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
         evidence_generator=gen,
         enforce_support_gate=enforce,
     )
-    with pytest.raises(
-        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED"
-    ):
-        asyncio.run(
-            bad_curator.extract_reported_v2(
-                bad_root, 21, _COMMIT, _world(), _request("req.v2.prod-contradicts")
-            )
+    bad_changes, _call, _filtered = asyncio.run(
+        bad_curator.extract_reported_v2(
+            bad_root, 21, _COMMIT, _world(), _request("req.v2.prod-contradicts")
         )
+    )
+    assert bad_changes.operations == ()
+    assert bad_curator.last_no_op_verification == (
+        True,
+        "ALL_OPERATIONS_REJECTED_BY_SUPPORT_GATE",
+    )
