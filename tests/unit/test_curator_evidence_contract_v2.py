@@ -1034,6 +1034,15 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     assert curator.last_prompt_fingerprint is not None
 
 
+def test_v2_model_semantic_verifier_schema_bounds_generation() -> None:
+    schema = EvidenceSemanticVerificationDraft.model_json_schema()
+
+    assert schema["properties"]["decisions"]["maxItems"] == 4
+    item_schema = schema["$defs"]["EvidenceSemanticVerificationItem"]
+    assert item_schema["properties"]["reason_code"]["minLength"] == 1
+    assert item_schema["properties"]["reason_code"]["maxLength"] == 160
+
+
 def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> None:
     root = _root_with("陈长生先反复阅读道藏。随后摘录要点整理笔记。")
     gen = EvidenceCandidateGenerator()

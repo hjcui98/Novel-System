@@ -97,11 +97,11 @@ class EvidenceSemanticVerificationItem(DomainModel):
     operation_index: int
     candidate_ids: tuple[StableId, ...] = Field(min_length=1, max_length=4)
     disposition: EvidenceSupportDisposition
-    reason_code: str
+    reason_code: str = Field(min_length=1, max_length=160)
 
 
 class EvidenceSemanticVerificationDraft(DomainModel):
-    decisions: tuple[EvidenceSemanticVerificationItem, ...]
+    decisions: tuple[EvidenceSemanticVerificationItem, ...] = Field(max_length=4)
 
 
 class ProposalOperationFilterReceipt(DomainModel):
