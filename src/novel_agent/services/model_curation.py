@@ -844,6 +844,13 @@ class ModelCurator:
         known_sample = ", ".join(
             item.root for item in sorted(known_entities, key=lambda item: item.root)[:16]
         )
+        missing_ids = tuple(
+            sorted(
+                {entity_id for _, _, entity_id in violations},
+                key=lambda item: item.root,
+            )
+        )
+        missing_summary = ", ".join(item.root for item in missing_ids)
         raise CuratorProposalSemanticRejected(
             "CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",
             (),
@@ -856,6 +863,11 @@ class ModelCurator:
                     )[:240]
                     for _, pointer, entity_id in violations[:4]
                 ),
+                (
+                    f"REQUIRED_REPAIR: missing IDs {missing_summary}. Add evidence-supported "
+                    "entity CREATE operations and reduce other operations, or remove every "
+                    "dependent operation. Listing IDs in unresolved does not repair references."
+                )[:240],
                 (
                     "Known WORLD entity_ids"
                     + (f": {known_sample}" if known_sample else ": none")

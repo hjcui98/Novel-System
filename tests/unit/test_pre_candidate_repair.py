@@ -1431,3 +1431,52 @@ def test_support_rejection_preserves_operation_indexes_and_json_pointers() -> No
         "/operations/5/evidence_refs/1",
     )
     assert scope.violation_rule == "candidate_text_must_support_record"
+
+
+def test_dangling_entity_rejection_allows_complete_draft_replacement() -> None:
+    rejection = CuratorProposalRejection(
+        rejection_id=StableId("rejection.dangling-entity"),
+        attempt_id=StableId("attempt.dangling-entity"),
+        workflow_request_id=StableId("workflow.dangling-entity"),
+        base_commit=BASE,
+        stage=ProposalRejectionStage.SEMANTIC_CONTRACT,
+        kind=ProposalRejectionKind.DANGLING_ENTITY_REFERENCE,
+        reason_code="CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",
+        retryable=True,
+        rejection_signature=proposal_rejection_signature(
+            {"reason": "dangling-entity", "stage": "semantic_contract"}
+        ),
+        operation_indexes=(0, 1, 2, 3),
+        json_pointers=(
+            "/operations/0/record/subject_id",
+            "/operations/1/record/subject_id",
+            "/operations/2/record/subject_id",
+            "/operations/3/record/subject_id",
+        ),
+        violation_rule="referenced_entity_must_exist_or_be_created_in_same_proposal",
+        safe_feedback=("Create the missing entity or remove its dependent operations.",),
+        created_at=datetime.now(UTC),
+    )
+
+    directive = BoundedPreCandidateRepairPolicy().decide(
+        rejection=rejection,
+        attempt_count=1,
+        rejection_count=1,
+        same_output_count=0,
+        same_rejection_count=0,
+        budget=MemoryWriteBudget(),
+        remaining=MemoryWriteBudgetRemaining(
+            candidate_revisions=2,
+            curator_repairs=1,
+            normalization_passes=3,
+            guardian_reviews=2,
+            context_refreshes=1,
+            total_model_calls=2,
+            token_budget=24_000,
+            wall_clock_budget_ms=180_000,
+        ),
+    )
+
+    assert directive.action == "retry_with_feedback"
+    assert directive.scope.mutable_operation_indexes == ()
+    assert directive.scope.allow_complete_replacement is True

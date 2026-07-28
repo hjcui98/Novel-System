@@ -14,6 +14,7 @@ from novel_agent.domain.memory_write import (
     CuratorProposalRepairDirective,
     MemoryWriteBudget,
     MemoryWriteBudgetRemaining,
+    ProposalRejectionKind,
     ProposalRejectionStage,
     ProposalRepairScope,
 )
@@ -219,14 +220,21 @@ class BoundedPreCandidateRepairPolicy:
             action = "retry_with_feedback"
         else:
             action = "human_review"
-        mutable = tuple(
-            sorted(
-                {
-                    index
-                    for conflict in rejection.conflicts
-                    for index in conflict.operation_indexes
-                }
-                | set(rejection.operation_indexes)
+        replace_complete_draft = (
+            rejection.kind is ProposalRejectionKind.DANGLING_ENTITY_REFERENCE
+        )
+        mutable = (
+            ()
+            if replace_complete_draft
+            else tuple(
+                sorted(
+                    {
+                        index
+                        for conflict in rejection.conflicts
+                        for index in conflict.operation_indexes
+                    }
+                    | set(rejection.operation_indexes)
+                )
             )
         )
         return CuratorProposalRepairDirective(
@@ -241,7 +249,7 @@ class BoundedPreCandidateRepairPolicy:
             previous_output_hash=rejection.output_hash,
             scope=ProposalRepairScope(
                 mutable_operation_indexes=mutable,
-                allow_complete_replacement=not bool(mutable),
+                allow_complete_replacement=replace_complete_draft or not bool(mutable),
                 json_pointers=rejection.json_pointers,
                 violation_rule=rejection.violation_rule,
             ),

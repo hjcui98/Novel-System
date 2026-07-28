@@ -1594,7 +1594,9 @@ def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> Non
         "referenced_entity_must_exist_or_be_created_in_same_proposal"
     )
     assert "entity.xu-shi-ji" in error.safe_feedback[0]
-    assert error.safe_feedback[1] == "Known WORLD entity_ids: entity.chen"
+    assert error.safe_feedback[1].startswith("REQUIRED_REPAIR:")
+    assert "Listing IDs in unresolved does not repair references" in error.safe_feedback[1]
+    assert error.safe_feedback[2] == "Known WORLD entity_ids: entity.chen"
 
 
 def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:

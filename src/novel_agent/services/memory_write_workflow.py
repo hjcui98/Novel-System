@@ -1105,6 +1105,7 @@ class LocalMemoryWriteWorkflow:
                 ),
                 "safe_feedback": rejection.safe_feedback,
                 "mutable_operation_indexes": directive.scope.mutable_operation_indexes,
+                "allow_complete_replacement": directive.scope.allow_complete_replacement,
                 "immutable_operation_semantic_hashes": tuple(
                     item.root for item in directive.scope.immutable_operation_semantic_hashes
                 ),
