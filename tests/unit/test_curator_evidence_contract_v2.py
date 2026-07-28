@@ -1162,6 +1162,74 @@ def test_v2_model_semantic_verifier_drops_only_rejected_operations() -> None:
     assert receipt.support_reason_code == "NO_MATERIAL_SUPPORT"
 
 
+def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
+    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert len(candidates) >= 2
+    supported = candidates[0]
+    unresolved = candidates[-1]
+    first = _v2_state_draft(supported.candidate_id).operations[0]
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            first,
+            first.model_copy(
+                update={
+                    "target_id": StableId("state.unresolved"),
+                    "record": CuratorStateRecord(
+                        subject_id=StableId("entity.chen"),
+                        predicate="has_unresolved_fact",
+                        value="not_in_evidence",
+                        valid_time=CuratorStoryTime(worldline="current"),
+                        truth_class=TruthClass.ASSERTION,
+                    ),
+                    "evidence_candidate_ids": (unresolved.candidate_id,),
+                }
+            ),
+        ),
+    )
+    gateway = _ModelVerifierGateway(
+        draft,
+        EvidenceSemanticVerificationDraft(
+            decisions=(
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(supported.candidate_id,),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="DIRECT_SUPPORT",
+                ),
+            )
+        ),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.model-verifier-missing-decision"),
+        )
+    )
+
+    assert len(changes.operations) == 1
+    assert len(filtered.operations) == 1
+    assert filtered.operations[0].target_id == first.target_id
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.proposed_target_id == StableId("state.unresolved")
+    assert receipt.support_disposition is EvidenceSupportDisposition.PARTIAL
+    assert receipt.support_reason_code is not None
+    assert receipt.support_reason_code.endswith("_UNRESOLVED")
+
+
 def test_v2_compact_world_omits_historical_evidence_identifiers() -> None:
     world = WorldRootDocument(
         root_hash=ArtifactId("sha256:" + "1" * 64),

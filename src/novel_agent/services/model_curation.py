@@ -614,33 +614,38 @@ class ModelCurator:
                 v_disposition, v_reason = verified
                 if v_disposition is not EvidenceSupportDisposition.SUPPORTS:
                     verifier_rejected.append((item, v_disposition, v_reason))
-            if unresolved_partials:
-                raise CuratorProposalSemanticRejected(
-                    "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
-                    (),
-                    safe_feedback=tuple(
-                        (
-                            f"{item.candidate_id.root}: {item.reason_code} unresolved "
-                            f"(no verifier) at operation {item.operation_index}"
-                        )[:240]
-                        for item in unresolved_partials[:4]
-                    ),
-                    operation_indexes=tuple(
-                        sorted({item.operation_index for item in unresolved_partials})
-                    ),
-                    json_pointers=tuple(
-                        f"/operations/{item.operation_index}/evidence_candidate_ids/0"
-                        for item in unresolved_partials[:8]
-                    ),
-                    violation_rule="partial_evidence_unresolved_no_verifier",
-                )
             self.last_partial_support_decisions = tuple(partial_decisions)
             rejected_indexes = {
                 *(item.operation_index for item in hard_rejected),
                 *(item.operation_index for item, _, _ in verifier_rejected),
+                *(item.operation_index for item in unresolved_partials),
             }
             if rejected_indexes:
                 if len(rejected_indexes) == len(draft.operations):
+                    if (
+                        unresolved_partials
+                        and not verifier_rejected
+                        and not hard_rejected
+                    ):
+                        raise CuratorProposalSemanticRejected(
+                            "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
+                            (),
+                            safe_feedback=tuple(
+                                (
+                                    f"{item.candidate_id.root}: "
+                                    f"{item.reason_code} unresolved "
+                                    f"(no verifier) at operation "
+                                    f"{item.operation_index}"
+                                )[:240]
+                                for item in unresolved_partials[:4]
+                            ),
+                            operation_indexes=tuple(sorted(rejected_indexes)),
+                            json_pointers=tuple(
+                                f"/operations/{index}/evidence_candidate_ids/0"
+                                for index in sorted(rejected_indexes)
+                            ),
+                            violation_rule="partial_evidence_unresolved_no_verifier",
+                        )
                     if verifier_rejected:
                         item, disposition, reason = verifier_rejected[0]
                         raise CuratorProposalSemanticRejected(
@@ -690,6 +695,15 @@ class ModelCurator:
                     {
                         item.operation_index: (disposition, reason)
                         for item, disposition, reason in verifier_rejected
+                    }
+                )
+                rejected_details.update(
+                    {
+                        item.operation_index: (
+                            EvidenceSupportDisposition.PARTIAL,
+                            f"{item.reason_code}_UNRESOLVED",
+                        )
+                        for item in unresolved_partials
                     }
                 )
                 draft = self._filter_unsupported_operations(
@@ -1019,8 +1033,6 @@ class ModelCurator:
             if expected.get(item.operation_index) != item.candidate_ids:
                 return {}
             resolved[item.operation_index] = (item.disposition, item.reason_code)
-        if set(resolved) != set(expected):
-            return {}
         return resolved
 
     async def evidence_repair_v2(
