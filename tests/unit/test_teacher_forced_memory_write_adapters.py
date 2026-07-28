@@ -701,6 +701,65 @@ def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
     )
 
 
+def test_typed_proposal_receipt_preserves_failed_verifier_ledger_entry() -> None:
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.failed-verifier"))
+    endpoint = FakeModelEndpoint("valid")
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=endpoint,
+            ),
+        )
+    )
+    asyncio.run(gateway.generate_text(model_request))
+    endpoint.error = RuntimeError("verifier transport failed")
+    verifier_request = model_request.model_copy(
+        update={
+            "request_id": StableId(
+                f"{model_request.request_id.root}.semantic-verifier"
+            )
+        }
+    )
+    with pytest.raises(RuntimeError, match="verifier transport failed"):
+        asyncio.run(gateway.generate_text(verifier_request))
+    replay = SimpleNamespace(curator=SimpleNamespace(gateway=gateway))
+    port = TeacherForcedCuratorPort(
+        cast(Any, replay),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+
+    outcome = port._proposal_rejected(
+        _proposal_attempt_request(artifacts, model_request.request_id),
+        model_request,
+        CuratorProposalSemanticRejected(
+            "CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED",
+            (),
+            safe_feedback=("semantic verifier unavailable",),
+        ),
+        datetime.now(UTC),
+        _manifest().schema_version,
+    )
+
+    assert outcome.attempt_receipt.model_request_ids == (
+        model_request.request_id,
+        verifier_request.request_id,
+    )
+    assert len(outcome.attempt_receipt.model_call_receipt_refs) == 2
+    assert outcome.attempt_receipt.model_call_receipt_refs[0].media_type == (
+        "application/vnd.novel-agent.model-call-record+json"
+    )
+    assert outcome.attempt_receipt.model_call_receipt_refs[1].media_type == (
+        "application/vnd.novel-agent.model-call-ledger-entry+json"
+    )
+    assert outcome.attempt_receipt.provider_call_count == 2
+
+
 def test_typed_proposal_reraises_non_model_failure_without_ledger_evidence() -> None:
     artifacts = InMemoryArtifactRepository()
     model_request = _proposal_model_request(StableId("model.proposal.no-ledger"))

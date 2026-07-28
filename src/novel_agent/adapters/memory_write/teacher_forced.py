@@ -50,7 +50,7 @@ from novel_agent.domain.memory_write import (
     ValidationDecision,
     ValidationDisposition,
 )
-from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.model_calls import ModelCallLedgerEntry, ModelRequest
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentExecutionReceipt,
@@ -425,9 +425,8 @@ class TeacherForcedCuratorPort:
         self.last_receipt = result.receipt
         entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
         call_refs = tuple(
-            self._persist_model_call(entry.call_record, manifest.schema_version)
+            self._persist_model_call_entry(entry, manifest.schema_version)
             for entry in entries
-            if entry.call_record is not None
         )
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries),
@@ -514,9 +513,7 @@ class TeacherForcedCuratorPort:
         gateway = self._replay.curator.gateway
         entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
         call_refs = tuple(
-            self._persist_model_call(entry.call_record, version)
-            for entry in entries
-            if entry.call_record is not None
+            self._persist_model_call_entry(entry, version) for entry in entries
         )
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries), version
@@ -698,6 +695,19 @@ class TeacherForcedCuratorPort:
         return self._artifacts.put(
             canonical_json_bytes(call.model_dump(mode="json")),
             "application/vnd.novel-agent.model-call-record+json",
+            version,
+        )
+
+    def _persist_model_call_entry(
+        self,
+        entry: ModelCallLedgerEntry,
+        version: SchemaVersion,
+    ) -> ArtifactRef:
+        if entry.call_record is not None:
+            return self._persist_model_call(entry.call_record, version)
+        return self._artifacts.put(
+            canonical_json_bytes(entry.model_dump(mode="json")),
+            "application/vnd.novel-agent.model-call-ledger-entry+json",
             version,
         )
 
