@@ -237,6 +237,67 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
         assert exc.violation_rule == "partial_evidence_unresolved_no_verifier"
 
 
+def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    generator = EvidenceCandidateGenerator()
+    candidate = next(
+        item for item in generator.generate(root, 21) if "confidence" in item.text
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude.repaired"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+        ),
+    )
+    gateway = _FakeGateway(draft)
+    curator = ModelCurator(
+        gateway,
+        evidence_generator=generator,
+        enforce_support_gate=False,
+    )
+    feedback = (
+        '{"reason_code":"CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",'
+        '"json_pointers":["/operations/1/record/subject_id"],'
+        '"violation_rule":"referenced_entity_must_exist_or_be_created_in_same_proposal",'
+        '"invalid_ids":["entity.guojiao-academy"]}'
+    )
+
+    asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.repair-tail"),
+            contract_prompt="SYSTEM CONTRACT",
+            repair_feedback=feedback,
+        )
+    )
+
+    prompt = gateway.requests[0].prompt
+    assert prompt.endswith("</MANDATORY_PROPOSAL_REPAIR_CONTRACT>")
+    assert prompt.rfind("<MANDATORY_PROPOSAL_REPAIR_CONTRACT") > prompt.rfind(
+        "</CURATOR_OUTPUT_CONTRACT>"
+    )
+    assert "Return a complete replacement Draft, not a patch" in prompt
+    assert "Before responding, self-check the complete replacement Draft" in prompt
+    assert "/operations/1/record/subject_id" in prompt
+    assert "entity.guojiao-academy" in prompt
+
+
 def test_replay_agent_uses_candidate_v2() -> None:
     """CuratorReplayAgent must default to the CANDIDATE_ID_V2 evidence contract."""
     from novel_agent.agents.curator import CuratorReplayAgent

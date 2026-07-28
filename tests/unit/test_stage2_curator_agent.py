@@ -266,7 +266,7 @@ def test_curator_replay_result_rejects_mismatched_receipt(
 
 
 def test_curator_replay_agent_v2_renders_trusted_proposal_feedback() -> None:
-    """V2 contract path must inject proposal_feedback into the task prompt."""
+    """V2 feedback must be a trusted mandatory contract at the prompt tail."""
 
     bundle = make_synthetic_bundle()
     text_root = bundle.text_roots[1]
@@ -291,7 +291,8 @@ def test_curator_replay_agent_v2_renders_trusted_proposal_feedback() -> None:
     )
 
     sent = endpoint.requests[0]
-    assert '<PROPOSAL_REPAIR_FEEDBACK trusted="true">' in sent.prompt
+    assert '<MANDATORY_PROPOSAL_REPAIR_CONTRACT trusted="true">' in sent.prompt
+    assert sent.prompt.endswith("</MANDATORY_PROPOSAL_REPAIR_CONTRACT>")
     assert feedback in sent.prompt
     assert "ChapterChangeDraftV2" in sent.prompt or "evidence_candidate_ids" in sent.prompt
     assert "Always emit the operations key" in sent.prompt
@@ -323,5 +324,6 @@ def test_curator_replay_agent_v2_without_proposal_feedback() -> None:
 
     sent = endpoint.requests[0]
     assert '<PROPOSAL_REPAIR_FEEDBACK' not in sent.prompt
+    assert '<MANDATORY_PROPOSAL_REPAIR_CONTRACT' not in sent.prompt
     assert result.receipt.agent_type is AgentType.MEMORY_CURATOR
     assert call.request_id == request().request_id

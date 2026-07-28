@@ -350,6 +350,7 @@ class ModelCurator:
         request: ModelRequest,
         *,
         contract_prompt: str | None = None,
+        repair_feedback: str | None = None,
     ) -> tuple[ObservedChangeSet, ModelCallRecord, ChapterChangeDraftV2]:
         """Candidate-id evidence contract: model never emits character offsets."""
 
@@ -359,6 +360,24 @@ class ModelCurator:
         catalog = self._evidence_generator.index_by_id(candidates)
         views = self._evidence_generator.model_views(candidates)
         contract = f"{contract_prompt}\n\n" if contract_prompt else ""
+        repair_contract = (
+            "\n"
+            '<MANDATORY_PROPOSAL_REPAIR_CONTRACT trusted="true">\n'
+            "The previous Draft was rejected. Return a complete replacement Draft, "
+            "not a patch or explanation. Treat every json_pointer and violation_rule "
+            "in FEEDBACK as a mandatory correction. Never repeat an ID identified as "
+            "invalid. Every entity reference must already exist in WORLD or be created "
+            "by an earlier operation in this replacement Draft. Every "
+            "evidence_candidate_id must be copied verbatim from the current "
+            "EVIDENCE_CANDIDATES catalog. Moving an invalid reference into unresolved "
+            "is not a repair. Before responding, self-check the complete replacement "
+            "Draft against WORLD, EVIDENCE_CANDIDATES, the output schema, and every "
+            "feedback item. Emit only the corrected complete Draft JSON.\n"
+            f"FEEDBACK={repair_feedback}\n"
+            "</MANDATORY_PROPOSAL_REPAIR_CONTRACT>"
+            if repair_feedback is not None
+            else ""
+        )
         safe_request = request.model_copy(
             update={
                 "prompt": (
@@ -406,6 +425,7 @@ class ModelCurator:
                     "no_op_evidence_candidate_ids MUST be an empty array. Those two no-op "
                     "proof fields may be populated only when operations is empty.\n"
                     "</CURATOR_OUTPUT_CONTRACT>"
+                    + repair_contract
                 )
             }
         )

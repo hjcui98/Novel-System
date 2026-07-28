@@ -74,7 +74,8 @@ def test_quality_repair_memory_write_budget_allows_progressive_feedback_retries(
     assert budget.max_total_model_calls == 6
     assert budget.token_budget == 96_000
     assert budget.wall_clock_budget_ms == 540_000
-    assert budget.same_finding_signature_limit == 2
+    assert budget.same_content_hash_limit == 3
+    assert budget.same_finding_signature_limit == 3
 
 
 def test_teacher_forced_model_request_leaves_time_for_narrow_verifier() -> None:

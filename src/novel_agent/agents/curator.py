@@ -153,12 +153,6 @@ class CuratorReplayAgent:
             "no_op_evidence_candidate_ids; incomplete empty output is rejected. "
             "The trusted service binds all offsets, hashes and EvidenceRef values."
         )
-        if proposal_feedback is not None:
-            task_payload += (
-                '\n<PROPOSAL_REPAIR_FEEDBACK trusted="true">\n'
-                + proposal_feedback
-                + "\n</PROPOSAL_REPAIR_FEEDBACK>"
-            )
         prepared = self._runner.prepare(
             AgentType.MEMORY_CURATOR,
             AgentMode.REPLAY,
@@ -175,6 +169,7 @@ class CuratorReplayAgent:
             current_world,
             prepared.request,
             contract_prompt=prepared.rendered_prompt,
+            repair_feedback=proposal_feedback,
         )
         output_bytes = canonical_json_bytes(changes.model_dump(mode="json"))
         output_artifact = ArtifactRef(

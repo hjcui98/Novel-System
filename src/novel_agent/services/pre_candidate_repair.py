@@ -204,6 +204,11 @@ class BoundedPreCandidateRepairPolicy:
                 "fatal",
             ] = "fatal"
         elif (
+            same_output_count >= budget.same_content_hash_limit
+            or same_rejection_count >= budget.same_finding_signature_limit
+        ):
+            action = "quarantine"
+        elif (
             attempt_count >= budget.max_curator_proposal_attempts
             or rejection_count >= budget.max_curator_proposal_rejections
             or remaining.total_model_calls < 1
@@ -211,11 +216,6 @@ class BoundedPreCandidateRepairPolicy:
             or remaining.wall_clock_budget_ms < 1
         ):
             action = "budget_stop"
-        elif (
-            same_output_count >= budget.same_content_hash_limit
-            or same_rejection_count >= budget.same_finding_signature_limit
-        ):
-            action = "quarantine"
         elif rejection.retryable:
             action = "retry_with_feedback"
         else:

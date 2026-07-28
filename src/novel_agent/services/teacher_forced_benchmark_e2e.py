@@ -188,11 +188,13 @@ ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 
 def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
-    """Allow a third proposal only while typed finding signatures keep changing."""
+    """Allow three observations of one typed finding before quarantine."""
 
     return MemoryWriteBudget(
         max_curator_proposal_attempts=3,
         max_curator_proposal_rejections=3,
+        same_content_hash_limit=3,
+        same_finding_signature_limit=3,
         max_total_model_calls=6,
         token_budget=96_000,
         wall_clock_budget_ms=540_000,

@@ -694,6 +694,50 @@ def test_pre_candidate_policy_covers_human_boundary_and_signature_routes() -> No
         remaining=remaining,
     )
     assert boundary.action == "fatal"
+    progressive_budget = request.budget.model_copy(
+        update={
+            "max_curator_proposal_attempts": 3,
+            "max_curator_proposal_rejections": 3,
+            "same_content_hash_limit": 3,
+            "same_finding_signature_limit": 3,
+        }
+    )
+    second_same_finding = policy.decide(
+        rejection=outcome.rejection,
+        attempt_count=2,
+        rejection_count=2,
+        same_output_count=2,
+        same_rejection_count=2,
+        budget=progressive_budget,
+        remaining=remaining,
+    )
+    assert second_same_finding.action == "retry_with_feedback"
+    third_same_finding = policy.decide(
+        rejection=outcome.rejection,
+        attempt_count=3,
+        rejection_count=3,
+        same_output_count=3,
+        same_rejection_count=3,
+        budget=progressive_budget,
+        remaining=remaining.model_copy(
+            update={
+                "total_model_calls": 0,
+                "token_budget": 0,
+                "wall_clock_budget_ms": 0,
+            }
+        ),
+    )
+    assert third_same_finding.action == "quarantine"
+    third_changed_finding = policy.decide(
+        rejection=outcome.rejection,
+        attempt_count=3,
+        rejection_count=3,
+        same_output_count=1,
+        same_rejection_count=1,
+        budget=progressive_budget,
+        remaining=remaining,
+    )
+    assert third_changed_finding.action == "budget_stop"
     assert proposal_rejection_signature({"reason": "same"}) == proposal_rejection_signature(
         {"reason": "same"}
     )
