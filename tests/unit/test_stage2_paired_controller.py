@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import ValidationError
@@ -177,6 +179,22 @@ def test_paired_runner_enforces_budget_and_freshness_without_hidden_backend_call
     assert stale.agentic.retrieval_call_count == 0
     assert stale.deterministic.stop_reason is ControllerStopReason.FRESHNESS_BLOCKED
     assert stale.agentic.stop_reason is ControllerStopReason.FRESHNESS_BLOCKED
+
+
+def test_paired_runner_fails_closed_to_deterministic_context_on_agentic_timeout() -> None:
+    item = need()
+    paired = runner(item, unit())
+    paired._controller.resolve = MagicMock(side_effect=TimeoutError)  # type: ignore[method-assign]
+
+    result = paired.run(request(item), text_root(), thread_id="paired-timeout")
+
+    assert result.comparable is False
+    assert result.blockers == ("agentic_controller_timeout",)
+    assert result.agentic.arm is ControllerArm.BOUNDED_R2
+    assert result.agentic.context == result.deterministic.context
+    assert result.agentic.selected_unit_ids == result.deterministic.selected_unit_ids
+    assert result.agentic.retrieval_call_count == 12
+    assert result.agentic.stop_reason is ControllerStopReason.TOOL_FAILURE
 
 
 def test_paired_runner_applies_plan_permission_to_deterministic_and_agentic_arms() -> None:

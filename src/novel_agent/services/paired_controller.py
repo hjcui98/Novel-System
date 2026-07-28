@@ -158,12 +158,32 @@ class PairedMemoryControllerRunner:
             text_root,
             evaluator_only_artifacts=evaluator_only_artifacts,
         )
-        agentic = self.run_agentic(
-            request,
-            text_root,
-            thread_id=thread_id,
-            evaluator_only_artifacts=evaluator_only_artifacts,
-        )
+        try:
+            agentic = self.run_agentic(
+                request,
+                text_root,
+                thread_id=thread_id,
+                evaluator_only_artifacts=evaluator_only_artifacts,
+            )
+        except TimeoutError:
+            # The paired B arm is experimental and must not abort an accepted
+            # deterministic checkpoint.  Reuse A as the conservative B result
+            # so Arm C cannot acquire unverified evidence, and make the failed
+            # comparison explicit for evaluation.
+            agentic = deterministic.model_copy(
+                update={
+                    "arm": ControllerArm.BOUNDED_R2,
+                    "retrieval_call_count": request.retrieval_budget.max_tool_calls,
+                    "stop_reason": ControllerStopReason.TOOL_FAILURE,
+                }
+            )
+            comparison = self.compare(request, deterministic, agentic)
+            return comparison.model_copy(
+                update={
+                    "comparable": False,
+                    "blockers": ("agentic_controller_timeout",),
+                }
+            )
         return self.compare(request, deterministic, agentic)
 
     def run_agentic(
