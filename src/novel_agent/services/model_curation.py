@@ -1005,11 +1005,18 @@ class ModelCurator:
             verification_type,
         )
         resolved: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
+        invalid_indexes: set[int] = set()
         for item in result.decisions:
+            if item.operation_index in invalid_indexes:
+                continue
             if item.operation_index in resolved:
-                return {}
+                invalid_indexes.add(item.operation_index)
+                resolved.pop(item.operation_index, None)
+                continue
             if expected.get(item.operation_index) != item.candidate_ids:
-                return {}
+                invalid_indexes.add(item.operation_index)
+                resolved.pop(item.operation_index, None)
+                continue
             resolved[item.operation_index] = (item.disposition, item.reason_code)
         return resolved
 

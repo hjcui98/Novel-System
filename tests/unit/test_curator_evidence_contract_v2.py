@@ -1254,6 +1254,81 @@ def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
     assert receipt.support_reason_code.endswith("_UNRESOLVED")
 
 
+def test_v2_model_semantic_verifier_isolates_candidate_id_mismatch() -> None:
+    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert len(candidates) >= 2
+    mismatched = candidates[0]
+    supported = candidates[-1]
+    first = _v2_state_draft(mismatched.candidate_id).operations[0]
+    second = first.model_copy(
+        update={
+            "target_id": StableId("state.supported"),
+            "record": CuratorStateRecord(
+                subject_id=StableId("entity.chen"),
+                predicate="has_supported_fact",
+                value="supported_value",
+                valid_time=CuratorStoryTime(worldline="current"),
+                truth_class=TruthClass.ASSERTION,
+            ),
+            "evidence_candidate_ids": (supported.candidate_id,),
+        }
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(first, second),
+    )
+    gateway = _ModelVerifierGateway(
+        draft,
+        EvidenceSemanticVerificationDraft(
+            decisions=(
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(
+                        mismatched.candidate_id,
+                        supported.candidate_id,
+                    ),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="USED_UNSELECTED_EVIDENCE",
+                ),
+                EvidenceSemanticVerificationItem(
+                    operation_index=1,
+                    candidate_ids=(supported.candidate_id,),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="DIRECT_SUPPORT",
+                ),
+            )
+        ),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.model-verifier-candidate-mismatch"),
+        )
+    )
+
+    assert len(changes.operations) == 1
+    assert len(filtered.operations) == 1
+    assert filtered.operations[0].target_id == second.target_id
+    assert len(curator.last_operation_filter_receipts) == 1
+    receipt = curator.last_operation_filter_receipts[0]
+    assert receipt.proposed_target_id == first.target_id
+    assert receipt.support_disposition is EvidenceSupportDisposition.PARTIAL
+    assert receipt.support_reason_code is not None
+    assert receipt.support_reason_code.endswith("_UNRESOLVED")
+
+
 def test_v2_compact_world_omits_historical_evidence_identifiers() -> None:
     world = WorldRootDocument(
         root_hash=ArtifactId("sha256:" + "1" * 64),
@@ -1499,6 +1574,12 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
                     disposition=EvidenceSupportDisposition.SUPPORTS,
                     reason_code="DUPLICATE",
                 ),
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(StableId("evidence-candidate.duplicate"),),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="DUPLICATE_AGAIN",
+                ),
             )
         ),
         RuntimeError("model verifier unavailable"),
@@ -1512,7 +1593,7 @@ def test_v2_model_semantic_verifier_fails_closed_on_incomplete_batch(
     candidate = gen.generate(root, 21)[0]
     if isinstance(verification, EvidenceSemanticVerificationDraft) and len(
         verification.decisions
-    ) == 2:
+    ) >= 2:
         verification = verification.model_copy(
             update={
                 "decisions": tuple(
