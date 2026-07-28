@@ -412,11 +412,41 @@ class ModelCurator:
         self.last_no_op_verification = None
         if draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
+        proposed_operation_count = len(draft.operations)
         draft = self._filter_existing_semantic_duplicates(
             draft,
             current_world,
             base_commit,
         )
+        duplicate_no_op = (
+            proposed_operation_count > 0
+            and not draft.operations
+            and len(self.last_operation_filter_receipts) == proposed_operation_count
+            and all(
+                receipt.reason == "existing_semantic_duplicate"
+                for receipt in self.last_operation_filter_receipts
+            )
+        )
+        if duplicate_no_op:
+            # A deterministic comparison against Canonical World is a stronger
+            # no-op proof than the model's stale completeness fields. Keep the
+            # filter receipts as the auditable proof and do not carry candidate
+            # IDs from operations that cannot mutate Canonical World.
+            draft = draft.model_copy(
+                update={
+                    "coverage": 1.0,
+                    "unresolved": (),
+                    "declared_vs_observed_diff": (),
+                    "no_durable_delta_reason": (
+                        "all proposed operations already exist in Canonical World"
+                    ),
+                    "no_op_evidence_candidate_ids": (),
+                }
+            )
+            self.last_no_op_verification = (
+                True,
+                "ALL_OPERATIONS_ALREADY_CANONICAL",
+            )
         unknown = tuple(
             candidate_id
             for candidate_id in (
@@ -453,7 +483,7 @@ class ModelCurator:
                 ),
                 violation_rule="candidate_id_must_belong_to_chapter",
             )
-        if not draft.operations and self._enforce_support_gate:
+        if not draft.operations and self._enforce_support_gate and not duplicate_no_op:
             proof_errors = []
             if draft.coverage != 1.0:
                 proof_errors.append("coverage must equal 1")

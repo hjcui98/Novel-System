@@ -1280,6 +1280,93 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
     assert receipt.reason == "existing_semantic_duplicate"
 
 
+def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    existing_record = CuratorStateRecord(
+        subject_id=StableId("entity.chen"),
+        predicate="has_cultivation_status",
+        value="commenced_study",
+        valid_time=CuratorStoryTime(worldline="current", start_ordinal=22),
+        truth_class=TruthClass.ASSERTION,
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.duplicate-under-new-id"),
+                record=existing_record,
+                evidence_candidate_ids=(
+                    StableId("evidence-candidate.from-old-chapter"),
+                ),
+            ),
+        ),
+        coverage=0.8,
+        unresolved=("state.unresolved",),
+    )
+    world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "1" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=_COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.chen"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
+        states=(
+            StateRecord(
+                state_id=StableId("state.cultivation-start"),
+                subject_id=existing_record.subject_id,
+                predicate=existing_record.predicate,
+                value=existing_record.value,
+                valid_time=StoryTime.model_validate(
+                    existing_record.valid_time.model_dump()
+                ),
+                truth_class=existing_record.truth_class,
+            ),
+        ),
+    )
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+    )
+
+    changes, _call, normalized = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            world,
+            _request("req.v2.all-duplicates"),
+        )
+    )
+
+    assert changes.operations == ()
+    assert normalized.operations == ()
+    assert normalized.coverage == 1.0
+    assert normalized.unresolved == ()
+    assert normalized.declared_vs_observed_diff == ()
+    assert normalized.no_durable_delta_reason == (
+        "all proposed operations already exist in Canonical World"
+    )
+    assert normalized.no_op_evidence_candidate_ids == ()
+    assert curator.last_no_op_verification == (
+        True,
+        "ALL_OPERATIONS_ALREADY_CANONICAL",
+    )
+    assert len(curator.last_operation_filter_receipts) == 1
+    assert (
+        curator.last_operation_filter_receipts[0].reason
+        == "existing_semantic_duplicate"
+    )
+
+
 @pytest.mark.parametrize(
     "verification",
     [
