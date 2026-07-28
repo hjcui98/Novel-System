@@ -535,6 +535,7 @@ class ProposalRejectionKind(StrEnum):
     SCHEMA_REJECTED = "schema_rejected"
     CHAPTER_MISMATCH = "chapter_mismatch"
     RECORD_KIND_MISMATCH = "record_kind_mismatch"
+    DANGLING_ENTITY_REFERENCE = "dangling_entity_reference"
     DUPLICATE_TARGET = "duplicate_target"
     NORMALIZED_TARGET_COLLISION = "normalized_target_collision"
     INCOMPLETE_DELTA = "incomplete_delta"

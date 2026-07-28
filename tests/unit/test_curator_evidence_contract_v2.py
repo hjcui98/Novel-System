@@ -1539,7 +1539,7 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
     assert receipt.reason == "target_identity_mismatch"
 
 
-def test_v2_filters_dangling_entity_reference_to_audited_no_op() -> None:
+def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> None:
     text = "xu-shi-ji now appreciates chen changsheng."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
@@ -1571,27 +1571,86 @@ def test_v2_filters_dangling_entity_reference_to_audited_no_op() -> None:
         enforce_support_gate=True,
     )
 
-    changes, _call, filtered = asyncio.run(
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",
+    ) as caught:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.dangling-entity"),
+            )
+        )
+
+    error = caught.value
+    assert error.operation_indexes == (0,)
+    assert error.json_pointers == (
+        "/operations/0/record/subject_id",
+    )
+    assert error.violation_rule == (
+        "referenced_entity_must_exist_or_be_created_in_same_proposal"
+    )
+    assert "entity.xu-shi-ji" in error.safe_feedback[0]
+    assert error.safe_feedback[1] == "Known WORLD entity_ids: entity.chen"
+
+
+def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
+    text = "xu-shi-ji now appreciates chen changsheng."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.ENTITY,
+                target_id=StableId("entity.xu-shi-ji"),
+                record=CuratorEntityRecord(
+                    entity_type="character",
+                    internal_label="徐世绩",
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.xu-shi-ji-attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.xu-shi-ji"),
+                    predicate="has_attitude_towards",
+                    value="appreciation_for_chen_changsheng",
+                    valid_time=CuratorStoryTime(
+                        worldline="current",
+                        start_ordinal=21,
+                    ),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+        ),
+    )
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=False,
+    )
+
+    changes, _call, accepted = asyncio.run(
         curator.extract_reported_v2(
             root,
             21,
             _COMMIT,
             _world(),
-            _request("req.v2.dangling-entity"),
+            _request("req.v2.create-then-reference"),
         )
     )
 
-    assert changes.operations == ()
-    assert filtered.operations == ()
-    assert curator.last_no_op_verification == (
-        True,
-        "ALL_OPERATIONS_STRUCTURALLY_REJECTED",
-    )
-    assert len(curator.last_operation_filter_receipts) == 1
-    receipt = curator.last_operation_filter_receipts[0]
-    assert receipt.reason == "dangling_entity_reference"
-    assert receipt.proposed_target_id == StableId("state.xu-shi-ji-attitude")
-    assert receipt.missing_entity_ids == (StableId("entity.xu-shi-ji"),)
+    assert len(changes.operations) == 2
+    assert accepted.operations == draft.operations
 
 
 def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:

@@ -557,6 +557,11 @@ class TeacherForcedCuratorPort:
                 kind = ProposalRejectionKind.INCOMPLETE_DELTA
                 stage = ProposalRejectionStage.SEMANTIC_CONTRACT
                 retryable = True
+            elif reason_code == "CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE":
+                detail = "Proposal references an entity absent from Canonical World"
+                kind = ProposalRejectionKind.DANGLING_ENTITY_REFERENCE
+                stage = ProposalRejectionStage.SEMANTIC_CONTRACT
+                retryable = True
             else:
                 detail = "Normalized targets collide with different semantic payloads"
                 kind = ProposalRejectionKind.NORMALIZED_TARGET_COLLISION

@@ -66,14 +66,14 @@ def test_controller_prompt_prefers_registered_batch_plan() -> None:
     assert "up to `max_agentic_actions`" in prompt
 
 
-def test_quality_repair_memory_write_budget_is_bounded_to_two_model_calls() -> None:
+def test_quality_repair_memory_write_budget_allows_one_feedback_retry() -> None:
     budget = _quality_repair_memory_write_budget()
 
-    assert budget.max_curator_proposal_attempts == 1
-    assert budget.max_curator_proposal_rejections == 1
-    assert budget.max_total_model_calls == 2
-    assert budget.token_budget == 32_000
-    assert budget.wall_clock_budget_ms == 180_000
+    assert budget.max_curator_proposal_attempts == 2
+    assert budget.max_curator_proposal_rejections == 2
+    assert budget.max_total_model_calls == 4
+    assert budget.token_budget == 64_000
+    assert budget.wall_clock_budget_ms == 360_000
 
 
 def test_teacher_forced_model_request_leaves_time_for_narrow_verifier() -> None:

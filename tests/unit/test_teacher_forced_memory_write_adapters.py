@@ -878,6 +878,23 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         ),
         (
             CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",
+                (),
+                safe_feedback=(
+                    "/operations/0/record/subject_id: unknown entity_id entity.missing",
+                ),
+                operation_indexes=(0,),
+                json_pointers=("/operations/0/record/subject_id",),
+                violation_rule=(
+                    "referenced_entity_must_exist_or_be_created_in_same_proposal"
+                ),
+            ),
+            ProposalRejectionStage.SEMANTIC_CONTRACT,
+            ProposalRejectionKind.DANGLING_ENTITY_REFERENCE,
+            True,
+        ),
+        (
+            CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
                 (conflict,),
             ),

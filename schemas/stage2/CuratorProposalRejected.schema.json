@@ -439,6 +439,7 @@
         "schema_rejected",
         "chapter_mismatch",
         "record_kind_mismatch",
+        "dangling_entity_reference",
         "duplicate_target",
         "normalized_target_collision",
         "incomplete_delta",
