@@ -1,5 +1,8 @@
 # Stage 1 验收记录
 
+文档生命周期：`HISTORICAL_ACCEPTANCE_SNAPSHOT`
+
+当前进度来源：`docs/project_status.md`
 日期：2026-07-21
 
 结论：**Stage 1 通用工程闭环通过；正式质量门禁未通过，Stage 2 仍保持阻断。**

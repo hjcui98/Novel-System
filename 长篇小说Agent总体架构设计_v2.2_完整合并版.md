@@ -8,6 +8,8 @@
 
 **适用范围**：长篇小说创作 Agent 的权威资产、结构化世界模型、规划、正文、参考资料、方法与 Skill、检索与上下文、记忆写回、质量与安全验收、任务调度、版本提交、自主运行、维护和受控演化。  
 **文档层级**：总体逻辑架构与高层执行契约；不冻结具体数据库、模型、索引引擎、Agent 框架、Prompt、阈值、并发参数和部署方案。
+**项目阶段命名**：以 `docs/adr/0005-stage-numbering-and-document-lifecycle.md` 为准；本文中的 `Phase` 仅表示概念落地分层，不等同于项目 `Stage` 编号。
+**当前进度**：见 `docs/project_status.md`。
 
 ---
 
@@ -5205,5 +5207,351 @@ Commit Service 原子提交实际变化的五 Root
     各执行 Agent 发现 Gap；Runtime / Retrieval Service 执行 R0/R1；
     Memory Controller 裁决 R2；Curator 提议写回；Guardian 批准；Maintenance 维护结构健康
 ```
+
+## U13. Writer 导向的记忆、修复与评测原则
+
+本节补充长期记忆系统的产品目标、Agentic 能力晋升、自主修复、证据支持和
+Benchmark 治理原则。它们是跨阶段设计约束，不依赖某个模型、某次事故、固定候选数量或具体
+实验窗口。
+
+### U13.1 Writer Context 是记忆系统的正式产品
+
+记忆系统的首要目标不是维护更多数据库记录，也不是单独提高某个离线 Recall，而是：
+
+> 在执行当前创作任务前，从长期记忆中找回正确、必要、可追溯的历史信息，并形成可直接交给
+> Writer 使用的 ContextPackage。
+
+正式 Writer Context 至少应按任务需要表达：
+
+```text
+Mandatory Constraints
+Current World State
+Relationship and Emotion
+Relevant Historical Events
+Truth and Knowledge Boundaries
+Active Plan Obligations
+Evidence Ledger
+Unresolved Gaps
+```
+
+数据库、Anchor、检索索引、Controller Trace 和聚合指标都是支撑该产品的内部结构，不能替代
+Writer 实际收到的上下文。任何声称记忆模块有效的评测，都必须保存并展示最终 Writer Context；
+Recall、Coverage、调用次数、Token 和延迟只能作为附加指标。
+
+### U13.2 检索需求必须由当前创作任务和计划推导
+
+长期记忆检索必须从当前创作任务出发，结合目标章节或场景计划、当前涉及的人物与关系、场景
+条件、未解决义务和伏笔，推导本次需要回忆什么：
+
+```text
+Current Writing Task
+    + Target Plan
+    + Current Characters / Relations / Scene
+    + Open Obligations / Foreshadowing
+    → Memory Needs
+    → Near- and Long-range Retrieval
+    → Evidence Expansion
+    → Writer Context
+```
+
+系统不得把“遍历全部 World State”“读取全部历史”“按章号或关键词机械命中”当作默认的充分
+检索策略，也不得通过堆砌无关信息换取表面 Recall。精确状态读取可以走 R0/R1；语义历史、多跳
+关系、冲突、未知和证据充分性问题可以进入 R2，但所有路径都必须服务同一个 Task Contract。
+
+### U13.3 上下文质量不能由固定条目数定义
+
+固定的上下文条目数不是语义正确性约束。系统不得因为达到任意条目上限而静默删除必要记忆，
+也不得把“条目较少”本身解释为质量较高。
+
+上下文控制应采用：
+
+- 必要性、当前有效性和任务相关性排序；
+- 同义、重复、过期和被替代状态的合并；
+- 结论层与 Evidence Ledger 分离；
+- 面向 Writer 的压缩表达和按需证据展开；
+- 独立的 Token、工具调用、延迟和展开预算；
+- 对重复率、无关率、Token、展开成本和未解决缺口的显式报告。
+
+当必要信息在当前资源预算下仍无法安全容纳时，系统必须返回结构化的预算不足或未解决状态，
+而不是伪造“充分”、静默截断，或让上下文无限超出声明预算。
+
+### U13.4 Benchmark 的公开输入和私有答案必须物理隔离
+
+被测系统在 Context Freeze 前只能访问本 case 明确公开的：
+
+- 截止点以前的历史正文和 Canonical State；
+- 当前可见的局部大纲、目标计划和 Task Contract；
+- 允许的作者初始化输入；
+- 与截止 Commit 精确绑定的 Derived Snapshot。
+
+只有 Evaluator 可以在 Context Freeze 后访问：
+
+- 目标章节或后续正文；
+- Observed Use Gold；
+- Operational Constraint Gold；
+- Plan Obligation Gold；
+- 禁止提前泄漏的未来事实和私有评分材料。
+
+未来正文和 Gold 必须在存储、索引、缓存、Prompt、Tool Scope 和运行上下文中物理隔离，不能只
+依赖提示词要求模型“不读取”。Evaluator 揭示不得产生 Canonical 写入，也不得改变已冻结的
+ContextPackage。
+
+Benchmark 的正式结果应包含：
+
+```text
+Frozen Writer Context for every evaluated arm
+Per-Gold expected vs. retrieved comparison
+HIT / PARTIAL / MISS / CONTRADICTS / UNTRACEABLE
+Matched Context Items and EvidenceRefs
+Mandatory and weighted scores
+Future leakage and contradiction details
+Cost, budget, stop reason and failure receipts
+```
+
+字符串逐字相同不是唯一正确性标准；等义表达可以通过有证据约束的语义复核获得信用。但缺少
+历史证据的合理猜测不得因此获得正式得分。
+
+### U13.5 初始化事实、作者意图和设计假设必须分层
+
+作者初始化输入可以来自真实作者，也可以在实验中由完成稿逆向模拟。逆向材料必须明确记录
+provenance 和 experiment role。
+
+信息进入 Canon 时遵守：
+
+```text
+World fact already true at story open
+    → eligible WorldRoot candidate
+
+Future plot, character design intent, target effect
+    → PlanRoot / Intent only
+
+Uncertain idea or reconstruction
+    → Hypothesis
+
+Committed chapter with supporting text evidence
+    → eligible observed World change
+```
+
+作者知道未来准备写什么，不等于故事世界中该事件已经发生。计划只能在对应情节实际提交并取得
+正文证据后，按受控写回流程晋升为已发生事实。
+
+### U13.6 Agentic Controller 的安全性和决策质量必须分别证明
+
+有界调用、合法动作注册表、权限隔离、Typed Failure 和事务保护只能证明 Agentic Controller
+不会无界失控或污染 Canon，不能证明其检索决策质量。
+
+在 Agentic 路径成为默认 Memory Gateway 前，必须通过预先声明、同 Basis、同预算的真实
+Benchmark 证明：
+
+- 找回更多必要信息或以更低成本获得同等有效 Writer Context；
+- 不降低 deterministic 基线的 Mandatory Coverage；
+- 不增加未来泄漏、矛盾或不可追溯结论；
+- 结果在多个代表性长距和复杂查询窗口上稳定；
+- 最终改善体现在 Writer Context，而不只是内部工具轨迹或代理指标。
+
+证明不足或结果不可比较时，deterministic 路径继续作为安全默认。
+
+### U13.7 A/B/C 实验必须构造真实输出
+
+三臂评测统一定义为：
+
+```text
+Arm A = deterministic baseline
+Arm B = independent bounded Agentic result
+Arm C = Arm A ∪ accepted safe delta from Arm B
+```
+
+Arm C 必须在 Retrieval Unit 层构造真实集合，按稳定身份去重，并对 Agentic 增量重新执行范围、
+证据、未来泄漏和安全检查。若 Arm B 存在未来泄漏或无法确定增量来源，Runtime 可以保守拒绝
+全部或相关增量。
+
+禁止通过对 A/B 聚合指标取最大值、求和或其他数值拼接伪造 Arm C。每个 Arm 都必须：
+
+- 保存实际 Writer Context；
+- 独立计算 Gold 和安全指标；
+- 记录真实工具调用、模型调用、Token、延迟和 Stop Reason；
+- 将 Arm C 的 Safety Regression 与 Arm A 比较。
+
+候选数量不等于工具调用次数；实验同时执行 A/B 所付出的成本，与未来生产 Arm C 的精确增量
+成本也必须分开报告。
+
+### U13.8 自主修复必须让模型修正自己的候选输出
+
+确定性验证、Typed Rejection、隔离和预算终止负责保护系统，但它们本身不是自主修复。可恢复的
+模型输出错误应进入有界自修复循环：
+
+```text
+Model Proposal
+    → Deterministic / Semantic Validation
+    → Typed Field-level Findings
+    → Near-output Repair Directive
+    → Model Revises Its Proposal
+    → Full Revalidation
+```
+
+Repair Directive 至少应包含：
+
+- 错误字段和错误值；
+- 合法值域、候选身份或可引用范围；
+- 必须重新检查的关联字段；
+- 原始局部输出和最小必要上下文；
+- 允许局部修复还是允许完整替换 Draft；
+- 禁止原样重复同一非法 proposal；
+- 提交前必须完成的引用和一致性自检。
+
+系统不能把 Unicode offset、内容哈希、稳定 ID、合法动作集合等可确定计算继续交给模型猜测。
+Trusted Service 应提供 Evidence Candidate、合法动作或其他确定性材料；模型负责语义选择和修正。
+
+### U13.9 修复反馈必须短、近、明确且可执行
+
+修复上下文应尽量靠近待修输出，不重新发送与当前 finding 无关的完整历史。反馈应围绕一个稳定
+finding signature 组织，明确说明：
+
+```text
+what is wrong
+where it is wrong
+what values are legal
+what must change
+what may be preserved
+what must be revalidated
+```
+
+Poison-loop 判断应识别“输出文本不同但缺陷相同”的重复失败，不应被随机 output hash 绕过。
+重复尝试次数、模型调用、Token 和时间必须有界；达到阈值后进入 Typed Pause、Quarantine 或
+Human Required，而不是无限消耗资源。
+
+### U13.10 Typed Budget Exhaustion 是安全暂停，不是成功
+
+`budget_exhausted`、`timeout` 或等价 Typed Failure 表示当前有界执行未能完成。此时系统必须：
+
+- 停止后续 Candidate、Guardian 和 Commit；
+- 保持最后接受的 Canon Commit 不变；
+- 不留下半提交、未授权 Root mutation 或污染投影；
+- 保存 proposal attempts、findings、预算使用和恢复 checkpoint；
+- 允许后续从明确父 Commit 和运行位置恢复。
+
+报告不得把安全终止解释为语义修复成功、检索充分或质量 Gate 通过。
+
+### U13.11 Evidence 的可解析性和支持性必须分别验证
+
+EvidenceRef 能解析到合法 Root、Block 和 Span，只证明引用结构有效，不证明引用支持 proposal。
+Evidence Support 至少区分：
+
+```text
+SUPPORTS
+PARTIAL
+CONTRADICTS
+UNRELATED
+```
+
+`CONTRADICTS` 和 `UNRELATED` 必须拒绝。`PARTIAL` 必须进入受约束的语义复核；没有可用 verifier、
+verifier 异常或复核仍不充分时应 fail closed。高风险结论不能因为引用格式合法而提交。
+
+### U13.12 安全提交保持完整事务边界
+
+无论 Controller、Curator、Verifier 或模型端点如何失败，都必须保持：
+
+- Proposal 未修复完成，不产生 Candidate；
+- Candidate 未通过完整 Validation，不进入 Guardian/Commit；
+- Guardian 未批准的高风险变化不能 Commit；
+- Base Commit、Snapshot、Read Set 或 Artifact Basis 不匹配时终止；
+- Resume 必须以最后接受 Commit 为父节点；
+- 分段运行和后台运行必须保持 checkpoint chain、幂等身份和投影一致性；
+- Canon Commit 与 Projection 重试继续分离。
+
+安全机制负责保护 Canon；它不能替代模型对可恢复语义错误的真正修复。
+
+### U13.13 可恢复错误与终端错误必须分层
+
+局部工具、候选或 proposal 错误，在不破坏全局 Basis 和安全边界时，应允许 Runtime 换合法动作、
+换 Tool、重写查询或要求模型修订。例如：
+
+```text
+single-tool ACCESS_DENIED
+need-level SCOPE_MISMATCH
+unknown candidate id
+dangling EvidenceRef
+dangling entity reference
+field-level schema or support rejection
+```
+
+以下错误通常影响整个执行 Basis 或资源上限，应终止当前尝试并产生 Typed Failure：
+
+```text
+BUDGET_EXCEEDED
+TIMEOUT
+BASE_COMMIT_MISMATCH
+SNAPSHOT_STALE
+```
+
+局部可恢复错误不得被错误提升为整个 Controller 的 terminal failure；终端错误也不得通过局部
+重试掩盖。
+
+### U13.14 测试必须验证设计目标，而不只是代码路径
+
+工程质量门禁继续覆盖单元、合同、静态类型、Lint、Schema、迁移和覆盖率。但“所有现有测试
+通过”只证明当前测试定义被满足，不能自动证明测试定义覆盖了真实产品目标。
+
+记忆与 Benchmark 验收还必须验证：
+
+- 真实 Task Contract 是否进入 Need Generation 和 Controller；
+- Writer Context 是否被正式保存和展示；
+- 每条 Gold 是否具有可审阅的预期—检索对照；
+- Mandatory、Weight、Evidence 和未来泄漏是否按协议评分；
+- Agentic 增量和 Arm C 是否来自真实集合；
+- 声明的 Token、工具调用和时间预算是否真实生效；
+- 所有预声明 checkpoint 是否形成统一、同配置的正式报告；
+- 代表性长距、关系、状态和知情边界案例能否召回必要历史。
+
+测试和评测资产必须能够区分“流程可运行”“安全不污染”“检索有证据”“Writer Context 有用”
+四种不同结论。
+
+### U13.15 长任务必须可分段、可恢复、可审计
+
+长篇回放和模型实验可以按章节或 checkpoint 分段并在后台运行，不要求调用方持续阻塞监视。
+每段必须保存：
+
+- 起始父 Commit 和最后接受 Commit；
+- Progress Manifest；
+- 完整运行日志和结构化事件；
+- Pause/Failure Trace；
+- 模型、Prompt、Skill、ToolPolicy 和配置 Fingerprint；
+- Token、调用、耗时和重试统计；
+- 下一段恢复所需的明确 checkpoint。
+
+分段执行不得改变实验的信息边界、污染不可变 checkpoint，或用不同配置结果组成未声明的同质
+比较。
+
+### U13.16 结果必须足以判断模块是否真正有效
+
+正式运行和 Benchmark 报告应允许开发者或评审者追踪：
+
+```text
+Task / Plan
+    → Generated Memory Needs
+    → Controller Decisions
+    → Tool Calls and Candidates
+    → Selected Retrieval Units
+    → Writer Context
+    → Per-Gold Evaluation
+    → Safety / Cost / Failure Result
+```
+
+报告至少应回答：
+
+- 每个模块收到什么、输出什么；
+- 为什么选择某个检索动作和候选；
+- 哪些候选最终进入 Writer Context；
+- 每条 Gold 命中、部分命中、遗漏或矛盾在哪里；
+- 使用了哪些 EvidenceRef，支持性如何；
+- 是否出现未来泄漏；
+- A/B/C 的真实输出差异是什么；
+- Token、调用数、延迟和停止原因是什么；
+- Writer 最终实际拿到什么上下文。
+
+最终判断标准不是“系统是否报错”或“数据库是否保持安全”，而是：
+
+> 记忆架构是否在保持 Canon 安全的同时，真正帮助 Writer 找回正确、必要、当前有效且可追溯的
+> 长程信息。
 
 本版至此形成完整的高层总体架构。具体数据库、模型、技术框架、Skill 文件结构、评分公式、阈值、资源调度参数和实验方案继续留给后续专项设计。

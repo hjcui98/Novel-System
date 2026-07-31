@@ -1,5 +1,7 @@
 # 锁定检索模型运行基线
 
+文档生命周期：`ACCEPTED_RUNTIME_BASELINE`
+
 日期：2026-07-21
 
 本基线只服务于 Stage 1 正式 Benchmark 的 embedding/reranker 路径，不属于开发模型端点，

@@ -1,9 +1,13 @@
-# Stage 2：Memory Kernel Agent Harness 开发设计
+# Stage 2A：Memory Kernel Agent Harness 开发设计
 
-- 状态：proposed
+- 文档生命周期：`HISTORICAL_EXECUTION_BASELINE`
+- 实施状态：development complete / C95 gate conditional pass
 - 日期：2026-07-21
+- 状态更新：2026-07-31
 - 适用范围：真实数据接入、记忆初始化、Agentic Read 验证和连续写回验证
 - 前置基线：Stage 0 工程门禁通过；Stage 1 通用工程闭环通过、正式质量门禁待真实数据
+- 当前状态来源：`docs/project_status.md`
+- 后续阶段：Stage 3 Writer Core and Generation Quality
 
 ## 0. 文档定位
 
@@ -98,7 +102,7 @@ Planner 可以在作者允许时进一步提出世界设计、情节和结构候
 
 ### 1.3 对既有阶段边界的有限调整
 
-正式执行规划原先把复杂 R2 Memory Controller 放在 Stage 3。本文建议只把一个**有界、只读、可回放的 Memory Controller Baseline** 前移到 Stage 2 Agent Harness，用于验证 Agent 是否能正确使用 Stage 1 Kernel。
+正式执行规划把复杂 R2 Memory Controller 放在 Stage 4。本文只把一个**有界、只读、可回放的 Memory Controller Baseline** 前移到 Stage 2A Agent Harness，用于验证 Agent 是否能正确使用 Stage 1 Kernel。
 
 前移内容：
 

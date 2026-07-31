@@ -1,5 +1,7 @@
 # Novel Agent 当前进度、架构与技术实施汇报
 
+> 文档生命周期：`HISTORICAL`
+> 已被 `docs/project_status.md` 取代为当前进度来源
 > 汇报日期：2026-07-27
 > 当前代码基线：`7c9c1258317a632bf747e0f4cb5550324deab598`
 > 当前分支：`main`

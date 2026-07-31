@@ -1,8 +1,10 @@
 # Stage 2R / Stage 2W Controller 与 Curator 质量修复执行文档
 
-> 状态：待评审冻结
+> 文档生命周期：`HISTORICAL_EXECUTION_BASELINE`
+> 实施状态：核心 P0 修复已完成；当前质量状态见 `docs/project_status.md`
 > 文档版本：0.1
 > 日期：2026-07-24
+> 状态更新：2026-07-31
 > 适用代码基线：`8ca7e1c27b3f3e6e74a316b07d732512410efa08`
 > 适用运行基线：C20 checkpoint 已接受、C21 precommit controlled pause
 > 关联文档：

@@ -1,12 +1,18 @@
 # 长篇小说 Agent 正式开发执行规划
 
-**版本**：v0.1  
-**状态**：正式开发初始基线 / Evolving Execution Plan  
-**日期**：2026-07-20  
+**版本**：v0.2（兼容路径仍保留 `_v0.1` 文件名）
+
+**状态**：正式开发当前基线 / Evolving Execution Plan
+
+**初始日期**：2026-07-20
+
+**最近更新**：2026-07-31
 **上位架构**：《长篇小说 Agent 资产、世界模型、控制平面、运行与自演化总体架构设计》v2.2  
 **配套技术设计**：《长篇小说 Agent 技术实施与选型设计》v0.1  
 **首个研究核心**：Narrative Memory & State Kernel / Real-Novel Replay Kernel  
 **本轮执行确认**：Query Intent 路由的 Anchor-first、Anchor/Grounded 双候选池、Stage 1 应用层 RRF、Stage 1B 最小 Derived 传播闭环、Linux 用户态原生开发路径
+**阶段编号依据**：`docs/adr/0005-stage-numbering-and-document-lifecycle.md`
+**当前进度依据**：`docs/project_status.md`
 
 ---
 
@@ -19,7 +25,8 @@
 
 Stage 1 工程闭环完成后，可先进入 Stage 2A 的 Planner/Memory Agent Harness 与真实 Scenario
 构建，用它完成项目初始化、连续状态重建和正式读写质量取证；只有 Memory Kernel 正式门禁通过，
-才进入 Stage 2B Writer/Editor、完整生成闭环、复杂风险路径、长期自主运行和 Skill 演化。这样可以
+才进入 Stage 3 Writer/Editor 与最小生成闭环。复杂风险路径、长期自主运行和 Skill 演化分别保留
+在后续 Stage 4～7。这样可以
 保证后续质量问题能够被定位到明确模块，而不是在完整系统中相互混杂。
 
 本执行规划对原技术实施文档的阶段顺序做一项关键调整：
@@ -34,7 +41,7 @@ Stage 0 工程骨架
     → Stage 1A 真实小说只读回放与 Hybrid Retrieval Benchmark
     → Stage 1B 真实章节写回与连续 Commit Replay
     → Stage 2A Memory Agent Harness 与连续 Scenario 重建
-    → Stage 2B 最小 Writer 生成 A/B
+    → Stage 3 最小 Writer 生成 A/B
 ```
 
 即：**基础 Hybrid Retrieval、Narrative Hierarchy 和 Context Compiler 的实验前移；完整 Planner—Writer—Editor 闭环后移。**
@@ -119,7 +126,7 @@ Stage 0 和 Stage 1 不实现：
 5. **模型能力与架构能力分离**：消融实验保持同一模型、Prompt 骨架、token 预算和采样设置，只替换记忆/检索/上下文方案。
 6. **可回退**：每个 proposed / experimental 机制必须有替代方案、失败判据和回退路径。
 7. **不提前微服务化**：采用模块化单体；同进程 Service 直接调用，只有真实跨进程需求出现后才引入 MCP 或独立服务。
-8. **先固定路由，后引入 Agentic Retrieval**：Stage 1 使用可枚举、可测试的确定性 Retrieval Orchestrator；只有 Stage 3 才引入 R2 Memory Controller 的开放式多轮检索。
+8. **先固定路由，后引入 Agentic Retrieval**：Stage 1 使用可枚举、可测试的确定性 Retrieval Orchestrator；只有 Stage 4 才引入 R2 Memory Controller 的开放式多轮检索。
 9. **Benchmark 内容与执行系统解耦**：Runner、Manifest、Importer、Gold Loader 和 Evaluator 先用最小合成 fixture 完成契约测试；真实 Benchmark 到位后无需修改领域和检索接口即可运行。
 
 ---
@@ -153,13 +160,13 @@ Stage 0 和 Stage 1 不实现：
 | **Stage 1A** | 验证“写前能否找到需要的信息” | Benchmark 接入协议、L1、Query Intent Router、Anchor/Grounded 双候选池、应用层 RRF、Context Compiler、Retrieval Benchmark | 路由可诊断；关键状态与证据可测；优于简单基线；无未来泄漏 |
 | **Stage 1B** | 验证“读完一章后能否正确更新自己” | Curator、ObservedChangeSet、Overlay、Validation、Atomic Commit、Derived Snapshot Lite、Outbox、Freshness Gate、连续 Replay | 变化抽取达到门禁；连续回放无静默 Canon 或旧索引污染 |
 | **Stage 2A** | 用真实项目状态验证记忆 Agent Harness | 完整 Planner 六种 Mode、Curator Bootstrap/Replay、Scenario Builder、受限 Memory Controller、Tool/Prompt/Skill 合同 | 五个 cutoff 可连续重建；无未来泄漏；读写侧失败可分解 |
-| **Stage 2B** | 验证记忆内核对生成质量的实际贡献 | Writer、Editor、上下文 A/B 生成、Declared/Observed 对账 | 同模型条件下，一致性和计划遵循显著优于基线 |
-| **Stage 3** | 引入复杂检索和高风险路径 | R2 Controller、Reactive MemoryNeed、ContextDelta、Guardian、Epistemic | 高风险场景收益覆盖新增成本与复杂度 |
-| **Stage 4** | 完整章节与卷级创作闭环 | 动态规划、候选、修复、计划偏离、质量状态 | 多章生成稳定、门禁可解释、错误可恢复 |
-| **Stage 5** | 长期自主运行 | 跨卷调度、维护、分支/Retcon、延迟评价、Durable Runtime | 数百章级运行可恢复、可审计、无失控循环 |
-| **Stage 6** | 受控自演化与生产扩展 | Experience、Skill 优化、生产部署与容量设计 | held-out gate 证明演化稳定且不损害回归集 |
+| **Stage 3** | 验证记忆内核对生成质量的实际贡献 | Writer、Editor、上下文 A/B 生成、Declared/Observed 对账 | 同模型条件下，一致性和计划遵循显著优于基线 |
+| **Stage 4** | 引入复杂检索和高风险路径 | R2 Controller、Reactive MemoryNeed、ContextDelta、Guardian、Epistemic | 高风险场景收益覆盖新增成本与复杂度 |
+| **Stage 5** | 完整章节与卷级创作闭环 | 动态规划、候选、修复、计划偏离、质量状态 | 多章生成稳定、门禁可解释、错误可恢复 |
+| **Stage 6** | 长期自主运行 | 跨卷调度、维护、分支/Retcon、延迟评价、Durable Runtime | 数百章级运行可恢复、可审计、无失控循环 |
+| **Stage 7** | 受控自演化与生产扩展 | Experience、Skill 优化、生产部署与容量设计 | held-out gate 证明演化稳定且不损害回归集 |
 
-Stage 2B 及以后是初步站位，允许根据 Stage 1/2A 的实证结果重新拆分。Stage 0、Stage 1 和用于
+Stage 3 及以后是初步站位，允许根据 Stage 1/2A 的实证结果重新拆分。Stage 0、Stage 1 和用于
 完成真实记忆评测的 Stage 2A 是当前实施范围；Writer/Editor 仍受 Memory Kernel 正式门禁约束。
 
 ---
@@ -577,7 +584,7 @@ ObservedChangeSet / Validation / Atomic Commit
 
 Stage 1 不以生成原创正文为目标，而以隔离并验证记忆内核为目标。
 
-Stage 1 的检索编排由确定性的 `Retrieval Orchestrator` 承担。它根据注册 Query Intent 和 QueryContract 选择 R0、R1、Anchor、Grounded、Hierarchy 等固定路径，执行应用层 RRF、Evidence Expansion 和有界 fallback；它不是 Memory Controller Agent，不执行开放式 LLM Tool Loop。复杂 R2 Agentic Retrieval 继续后置到 Stage 3。
+Stage 1 的检索编排由确定性的 `Retrieval Orchestrator` 承担。它根据注册 Query Intent 和 QueryContract 选择 R0、R1、Anchor、Grounded、Hierarchy 等固定路径，执行应用层 RRF、Evidence Expansion 和有界 fallback；它不是 Memory Controller Agent，不执行开放式 LLM Tool Loop。复杂 R2 Agentic Retrieval 继续后置到 Stage 4。
 
 ## 5.2 首轮标准实验场景
 
@@ -1281,7 +1288,7 @@ Project/Commit，再物化 R1，不绕过关系约束。原生 integration 也�
 本检查点只表示工程门禁通过，不改变 5.14 的正式退出条件。真实 DEV-110 与 DEV-113 仍等待
 用户提供有授权的 BenchmarkBundle；在真实 20→3 和至少 50 章 Gold replay 完成前，Stage 1
 状态为“formal gate pending”，Stage 2A 只允许推进 Agent Harness、Scenario Builder 和真实门禁
-取证，Stage 2B～6 继续按第 9 节保持阻断。详细证据见
+取证，Stage 3～7 继续按第 9 节保持阻断。详细证据见
 `docs/stage1_acceptance.md`，工程基线决策见
 `docs/adr/0001-stage1-memory-kernel-baseline.md`，逐工作包剩余缺口见
 `docs/stage1_gap_audit.md`。确定性 hash embedding、词法 reranker、规则 Curator 和合成模型响应
@@ -1367,7 +1374,7 @@ BGE-M3 向量索引和 Typed Graph。因此五个 checkpoint 的零召回不能�
 模型和检索后端真实；`semantic_quality_eligible` 不得只由生成模型配置决定。P001 未证明 Gold
 Evidence 能从 Canonical 经 L1/L2、路由、候选、展开进入最终 Selection 前，不重跑完整 C20～C95。
 
-## 6.2 Stage 2B：最小生成闭环
+## 6.2 Stage 3：Writer Core 与最小生成闭环
 
 Memory Kernel 正式冻结后加入：
 
@@ -1394,9 +1401,9 @@ Stage 1 Kernel ContextPackage
 - 是否减少修复轮次；
 - 是否在相同 token 成本下提升质量。
 
-Stage 2B 仍不实现复杂 R2、长期自主调度和 Skill 演化。
+Stage 3 仍不实现复杂 R2、长期自主调度和 Skill 演化。
 
-## 6.3 Stage 3：Agentic Retrieval 与高风险路径
+## 6.3 Stage 4：Agentic Retrieval 与高风险路径
 
 只有基础检索出现规则路由无法解决的系统性缺口时，加入：
 
@@ -1412,7 +1419,7 @@ STRICT Profile
 
 Neo4j 是否引入由多跳质量和 PostgreSQL recursive CTE 性能 Benchmark 决定。
 
-## 6.4 Stage 4：完整章节与卷级闭环
+## 6.4 Stage 5：完整章节与卷级闭环
 
 逐步加入：
 
@@ -1424,7 +1431,7 @@ Neo4j 是否引入由多跳质量和 PostgreSQL recursive CTE 性能 Benchmark �
 - ArcTrajectory、Storyline 和长期质量状态；
 - FAST / STANDARD / STRICT 风险自适应执行。
 
-## 6.5 Stage 5：长期自主运行
+## 6.5 Stage 6：长期自主运行
 
 重点从单章质量转向数百章运行可靠性：
 
@@ -1437,7 +1444,7 @@ Neo4j 是否引入由多跳质量和 PostgreSQL recursive CTE 性能 Benchmark �
 - 多模型调度；
 - 达到跨天/跨机器恢复需求后再评估 Temporal。
 
-## 6.6 Stage 6：受控 Experience / Skill 演化与生产扩展
+## 6.6 Stage 7：受控 Experience / Skill 演化与生产扩展
 
 加入：
 
@@ -1578,28 +1585,39 @@ EPIC-01  Real-Novel Replay Pilot
 
 # 9. 当前正式实施基线
 
-当前立即执行的范围为：
+截至 2026-07-31，当前范围更新为：
 
 ```text
-NOW
-    Stage 0 全部
-    Linux 用户态原生基础设施 Harness、安全守卫与 native 集成测试改造
-    Stage 1 BenchmarkBundle 协议、Importer、合成 smoke fixture 与最小 20→3 Runner
+COMPLETE
+    Stage 0 PASS
+    Stage 1A/1B engineering closure
+    Stage 2A development
+    Stage 2R real hybrid retrieval
+    Stage 2W memory write, repair, recovery, and C95 continuous replay
 
-NEXT，需 Stage 0 Gate
-    Stage 1A Read Side
-    Stage 1B Write Side
-    接入用户后续提供的真实 BenchmarkBundle
+CONDITIONAL PASS
+    Stage 2A Memory Gate
+    deterministic real-hybrid Memory Gateway frozen
+    Agentic Controller not promoted
 
-BLOCKED，需 Stage 1 Gate
-    Writer / Planner / Editor 完整实现
-    R2 Agentic Retrieval
-    Guardian 和复杂 Epistemic
-    Long-horizon Autonomous Operation
-    Skill / Experience Evolution
+ACTIVE
+    Stage 2M WP8 diagnostic quality program
+    Stage 3 Writer Core preparation and isolated engineering
+
+BLOCKED
+    Stage 3 Writer Semantic / Production Gate
+    Stage 4 advanced Agentic default promotion and risk paths
+    Stage 5 full chapter/volume loop
+    Stage 6 long-horizon autonomous operation
+    Stage 7 Skill/Experience evolution and production expansion
 ```
 
-该顺序的根本目的不是降低最终系统的野心，而是保证每一层能力都能被单独验证、单独替换和单独优化。只要 Stage 0 的接口稳定、Stage 1 的 Memory Kernel 成立，后续规划、写作、审校、维护和演化才能建立在可信状态之上。
+Stage 3 preparation is permitted because the Stage 2A deterministic gateway and Canon safety
+boundary are frozen. Stage 3 semantic promotion is not permitted merely because the isolated
+Writer code exists. It requires migration to `WriterContextPackage`, current-main engineering
+gates, and an independently evaluated real Writer experiment.
+
+当前详细状态、Stage 2M 指标和下一步允许动作统一见 `docs/project_status.md`。
 
 ---
 

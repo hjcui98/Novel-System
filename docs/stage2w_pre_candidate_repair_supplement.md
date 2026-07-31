@@ -1,8 +1,10 @@
 # Stage 2W Pre-Candidate Repair 补充设计与执行文档
 
-> 状态：待评审冻结
+> 文档生命周期：`HISTORICAL_EXECUTION_BASELINE`
+> 实施状态：已落地并进入回归；保留用于修复语义审计
 > 适用阶段：Stage 2W 增量优化（以下简称 Stage 2W-P）
 > 日期：2026-07-23
+> 状态更新：2026-07-31
 > 关联主文档：`docs/stage2_memory_write_workflow_execution.md`
 
 ---

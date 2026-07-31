@@ -5,6 +5,8 @@
 **日期**：2026-07-20  
 **配套文档**：《长篇小说 Agent 资产、世界模型、控制平面、运行与自演化总体架构设计》v2.2  
 **文档层级**：总体架构之下的技术实现、工程边界与候选选型；不替代总体架构中的权威语义与 Core Invariant。
+**项目阶段命名**：以 `docs/adr/0005-stage-numbering-and-document-lifecycle.md` 为准；本文第 22 节的 `Phase` 为技术能力分层，不作为项目 `Stage` 编号。
+**当前进度**：见 `docs/project_status.md`。
 
 ---
 

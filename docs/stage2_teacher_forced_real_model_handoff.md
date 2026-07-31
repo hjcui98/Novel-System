@@ -1,6 +1,10 @@
 # Stage 2 Teacher-Forced Benchmark 真实模型测试实施交接
 
+文档生命周期：`HISTORICAL_RUNBOOK`
 更新时间：2026-07-21  
+状态更新：2026-07-31；主流程已经完成 C95，本文件只用于重放与审计
+
+当前状态来源：`docs/project_status.md`
 实施对象：接手本仓库的编码 Agent  
 唯一生成模型：本机 `qwen36-27b-nvfp4`，API `http://127.0.0.1:8002/v1`
 

@@ -2,7 +2,13 @@
 
 日期：2026-07-23
 
-状态：`frozen execution baseline / ready for WP0-WP1 implementation`
+文档生命周期：`HISTORICAL_EXECUTION_BASELINE`
+
+实施状态：`COMPLETE / retained for maintenance and regression`
+
+状态更新：2026-07-31
+
+当前状态来源：`docs/project_status.md`
 
 阶段代号：`Stage 2W`，其中 `W` 表示 Write Workflow Realization
 

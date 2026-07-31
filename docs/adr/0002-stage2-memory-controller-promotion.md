@@ -1,12 +1,16 @@
 # ADR-0002: Defer bounded Memory Controller promotion
 
-- Status: accepted for the current Stage 2A evidence window
+- Status: superseded by ADR-0003
 - Date: 2026-07-21
 - Decision owners: application architecture and independent evaluation
 - Related design: `docs/stage2_memory_agents_development.md`
 - Gate evidence: `reports/stage2a/current_gate_evidence.json`
 - Gate report: `reports/stage2a/current_gate_report.json`
 - Paired Pilot: `reports/stage2a/ztj_paired_pilot.json`
+
+ADR-0003 supersedes this evidence-window decision after the current configuration completed the
+real C1–C95 replay and the deterministic five-checkpoint gate entered the independent Evaluation
+Ledger. This document remains the historical explanation for not promoting `BOUNDED_R2`.
 
 ## Context
 

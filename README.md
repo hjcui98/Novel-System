@@ -2,6 +2,19 @@
 
 Long-form fiction agent runtime developed from the contracts in the repository design documents.
 
+## Documentation and current stage
+
+Start with:
+
+- `docs/README.md` for the authoritative document map and lifecycle;
+- `docs/project_status.md` for current progress, blockers, and permitted transitions;
+- `docs/adr/0005-stage-numbering-and-document-lifecycle.md` for canonical stage names.
+
+The current project stage is Stage 2A development-complete with a conditional Memory Gate. Stage 2M
+continues Writer Context benchmark diagnostics, while Stage 3 Writer Core preparation is active.
+“Stage 2B” is a retired name retained only in historical branch, worktree, report, or schema
+identifiers.
+
 ## Stage 0 bootstrap
 
 The standard fresh-clone path is:
