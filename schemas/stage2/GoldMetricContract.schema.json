@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "GoldType": {
+      "enum": [
+        "CURRENT_STATE",
+        "RELATIONSHIP_EMOTION",
+        "CAUSAL_HISTORY",
+        "KNOWLEDGE_BOUNDARY",
+        "PLAN_OBLIGATION",
+        "LONG_RANGE_CALLBACK",
+        "OBJECT_CONTINUITY"
+      ],
+      "title": "GoldType",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluator-only immutable Gold fields required to recompute Gate M4.",
+  "properties": {
+    "accepted_evidence_contract_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "accepted_evidence_contract_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "applicable_profiles": {
+      "items": {
+        "$ref": "#/$defs/BenchmarkInformationProfile"
+      },
+      "title": "Applicable Profiles",
+      "type": "array"
+    },
+    "contract_version": {
+      "minLength": 1,
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "gold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gold_kind": {
+      "enum": [
+        "observed_use",
+        "operational_constraint",
+        "plan_obligation"
+      ],
+      "title": "Gold Kind",
+      "type": "string"
+    },
+    "gold_type": {
+      "$ref": "#/$defs/GoldType"
+    },
+    "mandatory": {
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "weight": {
+      "exclusiveMinimum": 0,
+      "title": "Weight",
+      "type": "number"
+    }
+  },
+  "required": [
+    "contract_version",
+    "gold_id",
+    "gold_type",
+    "gold_kind",
+    "weight",
+    "mandatory",
+    "applicable_profiles",
+    "accepted_evidence_contract_ref",
+    "accepted_evidence_contract_hash"
+  ],
+  "title": "GoldMetricContract",
+  "type": "object"
+}

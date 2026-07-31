@@ -663,11 +663,7 @@ def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
         async def run(self, **kwargs: object) -> None:
             parent = cast(ModelRequest, kwargs["request"])
             verifier = parent.model_copy(
-                update={
-                    "request_id": StableId(
-                        f"{parent.request_id.root}.semantic-verifier"
-                    )
-                }
+                update={"request_id": StableId(f"{parent.request_id.root}.semantic-verifier")}
             )
             await gateway.generate_text(parent)
             await gateway.generate_text(verifier)
@@ -684,9 +680,7 @@ def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
         cast(Any, lambda *_: model_request),
     )
     outcome = asyncio.run(
-        port.propose_attempt(
-            _proposal_attempt_request(artifacts, model_request.request_id)
-        )
+        port.propose_attempt(_proposal_attempt_request(artifacts, model_request.request_id))
     )
 
     assert isinstance(outcome, CuratorProposalRejected)
@@ -696,9 +690,7 @@ def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
         model_request.request_id,
         StableId(f"{model_request.request_id.root}.semantic-verifier"),
     )
-    assert outcome.attempt_receipt.prompt_fingerprint == ArtifactId(
-        "sha256:" + "8" * 64
-    )
+    assert outcome.attempt_receipt.prompt_fingerprint == ArtifactId("sha256:" + "8" * 64)
 
 
 def test_typed_proposal_receipt_preserves_failed_verifier_ledger_entry() -> None:
@@ -718,11 +710,7 @@ def test_typed_proposal_receipt_preserves_failed_verifier_ledger_entry() -> None
     asyncio.run(gateway.generate_text(model_request))
     endpoint.error = RuntimeError("verifier transport failed")
     verifier_request = model_request.model_copy(
-        update={
-            "request_id": StableId(
-                f"{model_request.request_id.root}.semantic-verifier"
-            )
-        }
+        update={"request_id": StableId(f"{model_request.request_id.root}.semantic-verifier")}
     )
     with pytest.raises(RuntimeError, match="verifier transport failed"):
         asyncio.run(gateway.generate_text(verifier_request))
@@ -885,9 +873,7 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
                 ),
                 operation_indexes=(0,),
                 json_pointers=("/operations/0/record/subject_id",),
-                violation_rule=(
-                    "referenced_entity_must_exist_or_be_created_in_same_proposal"
-                ),
+                violation_rule=("referenced_entity_must_exist_or_be_created_in_same_proposal"),
             ),
             ProposalRejectionStage.SEMANTIC_CONTRACT,
             ProposalRejectionKind.DANGLING_ENTITY_REFERENCE,

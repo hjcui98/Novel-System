@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypedDict
 
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory import (
     ChannelHit,
     FusedCandidate,
+    NeedExecutionStatus,
+    NeedRisk,
     RequirementLevel,
     RetrievalChannel,
     RetrievalStopReason,
@@ -40,6 +43,15 @@ from novel_agent.services.retrieval import (
 )
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 from novel_agent.tools.retrieval import PLAN_INTENTS
+
+DETERMINISTIC_ROUTE_SCHEDULER_VERSION = "deterministic_max_min.v2"
+
+
+class _TraceDiagnostics(TypedDict):
+    need_execution_status: NeedExecutionStatus
+    calls_allocated: int
+    required_need_facet_ids: tuple[StableId, ...]
+    irreducible_need_facet_ids: tuple[StableId, ...]
 
 
 class _BudgetedBackend:
@@ -175,6 +187,8 @@ class PairedMemoryControllerRunner:
                     "arm": ControllerArm.BOUNDED_R2,
                     "retrieval_call_count": request.retrieval_budget.max_tool_calls,
                     "stop_reason": ControllerStopReason.TOOL_FAILURE,
+                    "quality_eligible": False,
+                    "failure_category": "AGENTIC_TIMEOUT",
                 }
             )
             comparison = self.compare(request, deterministic, agentic)
@@ -206,6 +220,10 @@ class PairedMemoryControllerRunner:
             context=agentic_context,
             selected_unit_ids=self._selected_ids(agentic_context),
             retrieval_call_count=len(agentic_run["tool_results"]),
+            calls_allocated_by_need={
+                trace.need_id.root: trace.calls_allocated
+                for trace in agentic_context.retrieval_traces
+            },
             stop_reason=agentic_run["resolution"].stop_reason,
             comparison_basis_fingerprint=self._basis_fingerprint,
             future_leakage_count=agentic_leaks,
@@ -231,6 +249,10 @@ class PairedMemoryControllerRunner:
             blockers.append("deterministic arm contains evaluator-only artifacts")
         if agentic.future_leakage_count:
             blockers.append("agentic arm contains evaluator-only artifacts")
+        if not deterministic.quality_eligible:
+            blockers.append("deterministic_arm_quality_ineligible")
+        if not agentic.quality_eligible:
+            blockers.append("agentic_controller_timeout")
         return PairedContextComparison(
             pair_id=StableId(f"pair.{request.request_id.root}"),
             request_id=request.request_id,
@@ -248,30 +270,23 @@ class PairedMemoryControllerRunner:
         evaluator_only_artifacts: tuple[ArtifactId, ...] = (),
     ) -> PairedContextArmResult:
         budgeted = _BudgetedBackend(self._backend, request.retrieval_budget.max_tool_calls)
-        traces: list[tuple[Stage1MemoryNeed, RetrievalTrace]] = []
         fresh = self._freshness_check(request)
-        for need in request.initial_memory_needs:
-            if not fresh or (need.query_intent in PLAN_INTENTS and not request.allow_future_plan):
-                trace = self._empty_trace(need)
-            else:
-                plan = self._route_plans.get(need.need_id)
-                trace = (
-                    self._retrieve_route_plan(
-                        budgeted,
-                        need,
-                        plan,
-                        per_channel_limit=request.retrieval_budget.max_candidates,
-                        reranker=self._reranker,
-                    )
-                    if plan is not None
-                    else RetrievalOrchestrator(
-                        budgeted,
-                        FusionService(),
-                        per_channel_limit=request.retrieval_budget.max_candidates,
-                        fused_limit=request.retrieval_budget.max_candidates,
-                    ).retrieve(need)
-                )
-            traces.append((need, trace))
+        traces = (
+            self._retrieve_fair_registered_routes(
+                budgeted,
+                request.initial_memory_needs,
+                allow_future_plan=request.allow_future_plan,
+                per_channel_limit=request.retrieval_budget.max_candidates,
+            )
+            if fresh and self._route_plans
+            else self._retrieve_legacy_routes(
+                budgeted,
+                request.initial_memory_needs,
+                fresh=fresh,
+                allow_future_plan=request.allow_future_plan,
+                per_channel_limit=request.retrieval_budget.max_candidates,
+            )
+        )
         context = self._compiler.compile(
             tuple(traces),
             text_root,
@@ -299,6 +314,9 @@ class PairedMemoryControllerRunner:
             context=context,
             selected_unit_ids=self._selected_ids(context),
             retrieval_call_count=budgeted.call_count,
+            calls_allocated_by_need={
+                trace.need_id.root: trace.calls_allocated for _, trace in traces
+            },
             stop_reason=stop_reason,
             comparison_basis_fingerprint=self._basis_fingerprint,
             future_leakage_count=0,
@@ -311,6 +329,173 @@ class PairedMemoryControllerRunner:
                 )
             }
         )
+
+    def _retrieve_legacy_routes(
+        self,
+        backend: _BudgetedBackend,
+        needs: tuple[Stage1MemoryNeed, ...],
+        *,
+        fresh: bool,
+        allow_future_plan: bool,
+        per_channel_limit: int,
+    ) -> list[tuple[Stage1MemoryNeed, RetrievalTrace]]:
+        traces: list[tuple[Stage1MemoryNeed, RetrievalTrace]] = []
+        for need in needs:
+            if not fresh:
+                trace = self._empty_trace(
+                    need,
+                    status=NeedExecutionStatus.NOT_EXECUTED_FRESHNESS_BLOCKED,
+                )
+            elif need.query_intent in PLAN_INTENTS and not allow_future_plan:
+                trace = self._empty_trace(
+                    need,
+                    status=NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED,
+                )
+            elif backend.call_count >= backend._max_calls:
+                backend.exhausted = True
+                trace = self._empty_trace(
+                    need,
+                    status=NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED,
+                )
+            else:
+                before = backend.call_count
+                trace = RetrievalOrchestrator(
+                    backend,
+                    FusionService(),
+                    per_channel_limit=per_channel_limit,
+                    fused_limit=per_channel_limit,
+                ).retrieve(need)
+                allocated = backend.call_count - before
+                trace = trace.model_copy(
+                    update=self._trace_diagnostics(
+                        need,
+                        allocated=allocated,
+                        has_candidates=bool(trace.candidates),
+                    )
+                )
+            traces.append((need, trace))
+        return traces
+
+    def _retrieve_fair_registered_routes(
+        self,
+        backend: _BudgetedBackend,
+        needs: tuple[Stage1MemoryNeed, ...],
+        *,
+        allow_future_plan: bool,
+        per_channel_limit: int,
+    ) -> list[tuple[Stage1MemoryNeed, RetrievalTrace]]:
+        """Execute registered route calls with deterministic max-min fairness."""
+
+        plans: dict[StableId, RoutePlan] = {}
+        results: dict[StableId, dict[RetrievalChannel, tuple[ChannelHit, ...]]] = {}
+        call_counts = {need.need_id: 0 for need in needs}
+        blocked: dict[StableId, NeedExecutionStatus] = {}
+        index_by_need = {need.need_id: index for index, need in enumerate(needs)}
+        need_by_id = {need.need_id: need for need in needs}
+        for need in needs:
+            if need.query_intent in PLAN_INTENTS and not allow_future_plan:
+                blocked[need.need_id] = NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED
+                continue
+            plan = self._route_plans.get(need.need_id)
+            if plan is None:
+                raise ValueError("registered-route run has no RoutePlan for an actual Need")
+            if plan.base_commit != need.base_commit:
+                raise ValueError("registered RoutePlan basis differs from its Need")
+            plans[need.need_id] = plan
+            results[need.need_id] = {}
+
+        def next_channel(need: Stage1MemoryNeed) -> RetrievalChannel | None:
+            plan = plans[need.need_id]
+            need_results = results[need.need_id]
+            primary = tuple(
+                dict.fromkeys(
+                    step.channel
+                    for step in (
+                        *plan.mandatory_steps,
+                        *(step for group in plan.primary_groups for step in group.steps),
+                    )
+                )
+            )
+            for channel in primary:
+                if channel not in need_results:
+                    return channel
+            partial = self._assemble_route_trace(
+                need,
+                plan,
+                need_results,
+                per_channel_limit=per_channel_limit,
+                reranker=None,
+            )
+            for fallback in plan.conditional_fallbacks:
+                if not self._fallback_applies(
+                    fallback.condition,
+                    partial.candidates,
+                    need=need,
+                ):
+                    continue
+                for step in fallback.steps:
+                    if step.channel not in need_results:
+                        return step.channel
+            return None
+
+        while backend.call_count < backend._max_calls:
+            pending = tuple(
+                (need, channel)
+                for need_id, need in need_by_id.items()
+                if need_id in plans
+                for channel in (next_channel(need),)
+                if channel is not None
+            )
+            if not pending:
+                break
+            risk_order = {NeedRisk.HIGH: 0, NeedRisk.MEDIUM: 1, NeedRisk.LOW: 2}
+            need, channel = min(
+                pending,
+                key=lambda item: (
+                    call_counts[item[0].need_id],
+                    0 if item[0].requirement is RequirementLevel.MANDATORY else 1,
+                    risk_order[item[0].risk_level],
+                    -len(
+                        item[0].completion_spec.required_need_facet_ids
+                        if item[0].completion_spec is not None
+                        else ()
+                    ),
+                    -item[0].priority,
+                    index_by_need[item[0].need_id],
+                ),
+            )
+            results[need.need_id][channel] = backend.search(
+                need,
+                channel,
+                per_channel_limit,
+            )
+            call_counts[need.need_id] += 1
+
+        still_pending = any(
+            next_channel(need) is not None
+            for need_id, need in need_by_id.items()
+            if need_id in plans
+        )
+        backend.exhausted = backend.call_count >= backend._max_calls and still_pending
+        traces: list[tuple[Stage1MemoryNeed, RetrievalTrace]] = []
+        for need in needs:
+            if need.need_id in blocked:
+                trace = self._empty_trace(need, status=blocked[need.need_id])
+            elif not call_counts[need.need_id] and backend.exhausted:
+                trace = self._empty_trace(
+                    need,
+                    status=NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED,
+                )
+            else:
+                trace = self._assemble_route_trace(
+                    need,
+                    plans[need.need_id],
+                    results[need.need_id],
+                    per_channel_limit=per_channel_limit,
+                    reranker=self._reranker,
+                )
+            traces.append((need, trace))
+        return traces
 
     @staticmethod
     def _retrieve_route_plan(
@@ -338,7 +523,12 @@ class PairedMemoryControllerRunner:
         candidates: tuple[FusedCandidate, ...] = ()
         called: list[RetrievalChannel] = []
 
-        def execute(channels: tuple[RetrievalChannel, ...], *, use_rrf: bool) -> None:
+        def execute(
+            channels: tuple[RetrievalChannel, ...],
+            *,
+            use_rrf: bool,
+            reserve_incoming: bool = False,
+        ) -> None:
             nonlocal candidates
             group_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
             for channel in channels:
@@ -358,7 +548,10 @@ class PairedMemoryControllerRunner:
                 )
             )
             candidates = PairedMemoryControllerRunner._merge_candidates(
-                candidates, group_candidates, limit=per_channel_limit
+                candidates,
+                group_candidates,
+                limit=per_channel_limit,
+                reserve_incoming=reserve_incoming,
             )
 
         execute(tuple(step.channel for step in plan.mandatory_steps), use_rrf=False)
@@ -371,12 +564,20 @@ class PairedMemoryControllerRunner:
         fallback_used = False
         fallback_reason: str | None = None
         for fallback in plan.conditional_fallbacks:
-            if not PairedMemoryControllerRunner._fallback_applies(fallback.condition, candidates):
+            if not PairedMemoryControllerRunner._fallback_applies(
+                fallback.condition,
+                candidates,
+                need=need,
+            ):
                 continue
             fallback_used = True
             fallback_reason = fallback.condition
             steps = tuple(step.channel for step in fallback.steps)
-            execute(steps, use_rrf=fallback.fusion_profile is not None)
+            execute(
+                steps,
+                use_rrf=fallback.fusion_profile is not None,
+                reserve_incoming=True,
+            )
 
         fusion_applied = any(group.fusion_profile is not None for group in plan.primary_groups) or (
             fallback_used
@@ -415,7 +616,150 @@ class PairedMemoryControllerRunner:
                 if fallback_used
                 else RetrievalStopReason.CANDIDATES_EXHAUSTED
             ),
+            **PairedMemoryControllerRunner._trace_diagnostics(
+                need,
+                allocated=len(called),
+                has_candidates=bool(candidates),
+            ),
         )
+
+    @staticmethod
+    def _assemble_route_trace(
+        need: Stage1MemoryNeed,
+        plan: RoutePlan,
+        results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+        *,
+        per_channel_limit: int,
+        reranker: RerankService | None,
+    ) -> RetrievalTrace:
+        """Build one trace from calls already allocated by the fair scheduler."""
+
+        candidates: tuple[FusedCandidate, ...] = ()
+        fusion_applied = False
+        consumed: set[RetrievalChannel] = set()
+
+        def merge_stage(
+            stage_results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+            *,
+            use_rrf: bool,
+            reserve_incoming: bool = False,
+        ) -> None:
+            nonlocal candidates, fusion_applied
+            if not stage_results:
+                return
+            incoming = (
+                FusionService().fuse(stage_results, limit=per_channel_limit)
+                if use_rrf and len(stage_results) > 1
+                else PairedMemoryControllerRunner._direct_candidates(
+                    stage_results,
+                    limit=per_channel_limit,
+                )
+            )
+            fusion_applied = fusion_applied or (use_rrf and len(stage_results) > 1)
+            candidates = PairedMemoryControllerRunner._merge_candidates(
+                candidates,
+                incoming,
+                limit=per_channel_limit,
+                reserve_incoming=reserve_incoming,
+            )
+            consumed.update(stage_results)
+
+        merge_stage(
+            {
+                step.channel: results[step.channel]
+                for step in plan.mandatory_steps
+                if step.channel in results
+            },
+            use_rrf=False,
+        )
+        for group in plan.primary_groups:
+            merge_stage(
+                {
+                    step.channel: results[step.channel]
+                    for step in group.steps
+                    if step.channel in results
+                },
+                use_rrf=group.fusion_profile is not None,
+            )
+        fallback_used = False
+        fallback_reason: str | None = None
+        for fallback in plan.conditional_fallbacks:
+            fallback_results = {
+                step.channel: results[step.channel]
+                for step in fallback.steps
+                if step.channel in results
+            }
+            if fallback_results:
+                fallback_used = True
+                fallback_reason = fallback.condition
+                merge_stage(
+                    fallback_results,
+                    use_rrf=fallback.fusion_profile is not None,
+                    reserve_incoming=True,
+                )
+        remaining = {channel: hits for channel, hits in results.items() if channel not in consumed}
+        merge_stage(remaining, use_rrf=False)
+
+        rerank_applied = False
+        rerank_failure: str | None = None
+        if fusion_applied and reranker is not None:
+            try:
+                candidates = reranker.rerank(need, candidates, limit=per_channel_limit)
+                rerank_applied = True
+            except Exception as error:
+                rerank_failure = f"reranker_degraded:{type(error).__name__}"
+        selected = tuple(candidate for candidate in candidates if candidate.selected)
+        return RetrievalTrace(
+            need_id=need.need_id,
+            intent=need.query_intent,
+            allowed_channels=tuple(results),
+            channel_candidate_counts={
+                channel: hits[0].candidate_count if hits else 0 for channel, hits in results.items()
+            },
+            candidates=candidates,
+            fusion_applied=fusion_applied,
+            rerank_applied=rerank_applied,
+            channel_failures=(
+                {RetrievalChannel.RERANK: rerank_failure} if rerank_failure is not None else {}
+            ),
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+            stop_reason=(
+                RetrievalStopReason.EXACT_SATISFIED
+                if selected and not fallback_used
+                else RetrievalStopReason.BUDGET_SATISFIED
+                if selected
+                else RetrievalStopReason.FALLBACK_EXHAUSTED
+                if fallback_used
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            ),
+            **PairedMemoryControllerRunner._trace_diagnostics(
+                need,
+                allocated=len(results),
+                has_candidates=bool(candidates),
+            ),
+        )
+
+    @staticmethod
+    def _trace_diagnostics(
+        need: Stage1MemoryNeed,
+        *,
+        allocated: int,
+        has_candidates: bool,
+    ) -> _TraceDiagnostics:
+        spec = need.completion_spec
+        return {
+            "need_execution_status": (
+                NeedExecutionStatus.EXECUTED_WITH_CANDIDATES
+                if has_candidates
+                else NeedExecutionStatus.EXECUTED_EMPTY
+            ),
+            "calls_allocated": allocated,
+            "required_need_facet_ids": (spec.required_need_facet_ids if spec is not None else ()),
+            "irreducible_need_facet_ids": (
+                spec.irreducible_need_facet_ids if spec is not None else ()
+            ),
+        }
 
     @staticmethod
     def _direct_candidates(
@@ -451,11 +795,24 @@ class PairedMemoryControllerRunner:
         incoming: tuple[FusedCandidate, ...],
         *,
         limit: int,
+        reserve_incoming: bool = False,
     ) -> tuple[FusedCandidate, ...]:
         """Keep route-stage order without making a second cross-channel fusion pass."""
 
+        ordered = (*existing, *incoming)
+        if reserve_incoming and existing and incoming:
+            # A full Anchor page must not make a legal Grounded fallback a no-op.
+            # Interleaving reserves half of the bounded candidate page for the
+            # evidence expansion while retaining the best Anchor conclusions.
+            interleaved: list[FusedCandidate] = []
+            for index in range(max(len(existing), len(incoming))):
+                if index < len(existing):
+                    interleaved.append(existing[index])
+                if index < len(incoming):
+                    interleaved.append(incoming[index])
+            ordered = tuple(interleaved)
         unique: dict[StableId, FusedCandidate] = {}
-        for candidate in (*existing, *incoming):
+        for candidate in ordered:
             unique.setdefault(candidate.unit.unit_id, candidate)
         return tuple(
             candidate.model_copy(
@@ -474,16 +831,55 @@ class PairedMemoryControllerRunner:
     def _fallback_applies(
         condition: str,
         candidates: tuple[FusedCandidate, ...],
+        *,
+        need: Stage1MemoryNeed | None = None,
     ) -> bool:
         has_candidates = any(candidate.selected for candidate in candidates)
-        if condition in {"anchor_evidence_insufficient", "plan_anchor_insufficient"}:
+        if condition == "anchor_evidence_insufficient":
+            if not has_candidates:
+                return True
+            if need is None:
+                return False
+            evidenced_text = " ".join(
+                candidate.unit.text.casefold()
+                for candidate in candidates
+                if candidate.selected and candidate.unit.evidence_refs
+            )
+            terms = PairedMemoryControllerRunner._semantic_query_terms(need.query_text)
+            if not terms:
+                return False
+            matched = sum(term in evidenced_text for term in terms)
+            # Broad history/callback Needs require evidence expansion unless
+            # Anchor conclusions cover at least half of their semantic hints.
+            return matched / len(terms) < 0.5
+        if condition == "plan_anchor_insufficient":
             return not has_candidates
         if condition == "hierarchy_scope_resolved":
             return has_candidates
         raise ValueError(f"unregistered deterministic fallback condition: {condition}")
 
     @staticmethod
-    def _empty_trace(need: Stage1MemoryNeed) -> RetrievalTrace:
+    def _semantic_query_terms(value: str) -> tuple[str, ...]:
+        spaced = tuple(
+            token
+            for token in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", value.casefold())
+            if len(token) >= 2
+        )
+        terms: list[str] = []
+        for token in spaced:
+            if re.fullmatch(r"[\u4e00-\u9fff]+", token) and len(token) > 2:
+                terms.extend(token[index : index + 2] for index in range(len(token) - 1))
+            else:
+                terms.append(token)
+        return tuple(dict.fromkeys(terms))
+
+    @staticmethod
+    def _empty_trace(
+        need: Stage1MemoryNeed,
+        *,
+        status: NeedExecutionStatus = NeedExecutionStatus.EXECUTED_EMPTY,
+    ) -> RetrievalTrace:
+        spec = need.completion_spec
         return RetrievalTrace(
             need_id=need.need_id,
             intent=need.query_intent,
@@ -492,6 +888,12 @@ class PairedMemoryControllerRunner:
             candidates=(),
             fusion_applied=False,
             stop_reason=RetrievalStopReason.CANDIDATES_EXHAUSTED,
+            need_execution_status=status,
+            calls_allocated=0,
+            required_need_facet_ids=(spec.required_need_facet_ids if spec is not None else ()),
+            irreducible_need_facet_ids=(
+                spec.irreducible_need_facet_ids if spec is not None else ()
+            ),
         )
 
     @staticmethod

@@ -1,0 +1,325 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "EvidenceStageCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_reference_count": {
+          "minimum": 0,
+          "title": "Accepted Reference Count",
+          "type": "integer"
+        },
+        "complete_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Complete Alternative Ids",
+          "type": "array"
+        },
+        "matched_reference_count": {
+          "minimum": 0,
+          "title": "Matched Reference Count",
+          "type": "integer"
+        },
+        "partial_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Partial Alternative Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "accepted_reference_count",
+        "matched_reference_count"
+      ],
+      "title": "EvidenceStageCoverage",
+      "type": "object"
+    },
+    "EvidenceStageFailure": {
+      "enum": [
+        "COMPLETE",
+        "F-ASSEMBLY",
+        "F-RANK",
+        "F-NEED_ROUTE_RETRIEVE"
+      ],
+      "title": "EvidenceStageFailure",
+      "type": "string"
+    },
+    "GoldMatchStatus": {
+      "enum": [
+        "HIT",
+        "PARTIAL",
+        "MISS",
+        "CONTRADICTS",
+        "UNTRACEABLE"
+      ],
+      "title": "GoldMatchStatus",
+      "type": "string"
+    },
+    "PerGoldComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "explanation": {
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gold_metric_descriptor_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "gold_metric_descriptor_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "matched_context_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Matched Context Item Ids",
+          "type": "array"
+        },
+        "matched_evidence_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Matched Evidence Ledger Ids",
+          "type": "array"
+        },
+        "missing_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Components",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/GoldMatchStatus"
+        },
+        "supported_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Components",
+          "type": "array"
+        },
+        "verifier_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "weight": {
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gold_id",
+        "status",
+        "weight",
+        "mandatory",
+        "gold_metric_descriptor_ref",
+        "gold_metric_descriptor_hash",
+        "explanation"
+      ],
+      "title": "PerGoldComparison",
+      "type": "object"
+    },
+    "PerGoldStageLossDiagnostic": {
+      "additionalProperties": false,
+      "description": "Evaluator-only accepted-evidence coverage across the frozen retrieval stages.",
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "primary_failure": {
+          "$ref": "#/$defs/EvidenceStageFailure"
+        },
+        "rank_selected": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "stage1_selected": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "writer_ledger": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        }
+      },
+      "required": [
+        "gold_id",
+        "candidate",
+        "rank_selected",
+        "stage1_selected",
+        "writer_ledger",
+        "primary_failure"
+      ],
+      "title": "PerGoldStageLossDiagnostic",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "comparisons": {
+      "items": {
+        "$ref": "#/$defs/PerGoldComparison"
+      },
+      "title": "Comparisons",
+      "type": "array"
+    },
+    "contradiction_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Contradiction Rate",
+      "type": "number"
+    },
+    "evaluator_manifest_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluator_manifest_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "evaluator_manifest_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "evaluator_version": {
+      "minLength": 1,
+      "title": "Evaluator Version",
+      "type": "string"
+    },
+    "freeze_receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gate_metric_formula_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "gate_metric_formula_version": {
+      "minLength": 1,
+      "title": "Gate Metric Formula Version",
+      "type": "string"
+    },
+    "mandatory_hit_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Mandatory Hit Rate",
+      "type": "number"
+    },
+    "profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": "1.0.0"
+    },
+    "stage_loss_diagnostics": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PerGoldStageLossDiagnostic"
+      },
+      "title": "Stage Loss Diagnostics",
+      "type": "array"
+    },
+    "untraceable_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Untraceable Rate",
+      "type": "number"
+    },
+    "weighted_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Weighted Coverage",
+      "type": "number"
+    }
+  },
+  "required": [
+    "evaluator_version",
+    "profile",
+    "comparisons",
+    "weighted_coverage",
+    "mandatory_hit_rate",
+    "contradiction_rate",
+    "untraceable_rate",
+    "freeze_receipt_id",
+    "evaluator_manifest_id",
+    "evaluator_manifest_ref",
+    "evaluator_manifest_hash",
+    "gate_metric_formula_version",
+    "gate_metric_formula_hash"
+  ],
+  "title": "MemoryBenchmarkEvaluationReport",
+  "type": "object"
+}

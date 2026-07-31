@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "information_profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "output_contract_version": {
+      "minLength": 1,
+      "title": "Output Contract Version",
+      "type": "string"
+    },
+    "target_chapter_end": {
+      "minimum": 1,
+      "title": "Target Chapter End",
+      "type": "integer"
+    },
+    "target_chapter_start": {
+      "minimum": 1,
+      "title": "Target Chapter Start",
+      "type": "integer"
+    },
+    "task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "task_kind": {
+      "const": "memory_context_for_target_range",
+      "default": "memory_context_for_target_range",
+      "title": "Task Kind",
+      "type": "string"
+    },
+    "task_template_version": {
+      "minLength": 1,
+      "title": "Task Template Version",
+      "type": "string"
+    },
+    "task_text": {
+      "minLength": 1,
+      "title": "Task Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "task_text",
+    "checkpoint_chapter",
+    "target_chapter_start",
+    "target_chapter_end",
+    "information_profile",
+    "task_template_version",
+    "output_contract_version"
+  ],
+  "title": "BenchmarkTaskContract",
+  "type": "object"
+}

@@ -369,6 +369,7 @@ def test_dry_run_commit_refusal_becomes_typed_precommit_pause() -> None:
     assert result.workflow_phase.value == "precommit"
     assert result.canonical_commit_accepted is False
     assert result.resulting_commit is None
+    assert data.candidate is not None
     assert result.accepted_candidate_id == data.candidate.candidate_id
     assert result.continuation_decision.value == "block_next_chapter"
     assert result.terminal_codes == (

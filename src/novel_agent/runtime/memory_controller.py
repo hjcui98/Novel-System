@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypedDict, cast
@@ -16,11 +17,15 @@ from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
     FusedCandidate,
+    NeedExecutionStatus,
+    NeedFacetKind,
+    NeedRisk,
     RequirementLevel,
     RetrievalChannel,
     RetrievalStopReason,
     RetrievalTrace,
     RetrievalUnit,
+    RetrievalUnitKind,
     Stage1ContextPackage,
     Stage1MemoryNeed,
 )
@@ -200,24 +205,25 @@ class RouteBoundControllerPolicy:
         fallback_exhausted_without_gain = False
         access_scope = request.access_scope.value
         allow_future_plan = request.allow_future_plan
-        for need in request.initial_memory_needs:
-            if need.requirement is not RequirementLevel.MANDATORY:
-                continue
-            if not self._need_is_accessible(need, access_scope, allow_future_plan):
-                continue
+        actual_priority_needs = tuple(
+            need
+            for need in request.initial_memory_needs
+            if (need.requirement is RequirementLevel.MANDATORY or need.risk_level is NeedRisk.HIGH)
+            and self._need_is_accessible(need, access_scope, allow_future_plan)
+        )
+        next_actions: list[tuple[Stage1MemoryNeed, str, int]] = []
+        for need in actual_priority_needs:
             plan = self._route_plans.get(need.need_id)
             if plan is None:
-                raise ValueError("route-bound controller has no plan for a mandatory memory need")
-            need_calls = tuple(item for item in calls if item[0] == need.need_id)
-            next_tool = self._next_registered_tool(plan, need_calls)
-            if next_tool is not None:
-                return ControllerPolicyDecision(
-                    action=ControllerPolicyAction.CALL_TOOL,
-                    need_id=need.need_id,
-                    tool_name=next_tool,
-                    rationale_code="NEXT_REGISTERED_ROUTE_STEP",
+                raise ValueError(
+                    "route-bound controller has no plan for a mandatory/high-risk priority "
+                    "memory need"
                 )
-            if not any(
+            need_calls = tuple(item for item in calls if item[0] == need.need_id)
+            next_tool = self._next_registered_tool(plan, need_calls, need=need)
+            if next_tool is not None:
+                next_actions.append((need, next_tool, len(need_calls)))
+            elif need.requirement is RequirementLevel.MANDATORY and not any(
                 result.status is ToolResultStatus.SUCCEEDED and result.coverage > 0
                 for _, _, result in need_calls
             ):
@@ -234,6 +240,27 @@ class RouteBoundControllerPolicy:
                     bool(fallback_results)
                     and all(result.new_information_gain == 0 for result in fallback_results)
                 )
+        if next_actions:
+            # Deficit round-robin: no priority Need receives its N+1 call while
+            # another actual priority Need has received fewer calls.  Stable
+            # public risk/priority/Need ID fields break ties deterministically.
+            risk_order = {NeedRisk.HIGH: 0, NeedRisk.MEDIUM: 1, NeedRisk.LOW: 2}
+            need, next_tool, _ = min(
+                next_actions,
+                key=lambda item: (
+                    item[2],
+                    0 if item[0].requirement is RequirementLevel.MANDATORY else 1,
+                    risk_order[item[0].risk_level],
+                    -item[0].priority,
+                    item[0].need_id.root,
+                ),
+            )
+            return ControllerPolicyDecision(
+                action=ControllerPolicyAction.CALL_TOOL,
+                need_id=need.need_id,
+                tool_name=next_tool,
+                rationale_code="MAX_MIN_REGISTERED_ROUTE_STEP",
+            )
         if unresolved:
             return ControllerPolicyDecision(
                 action=ControllerPolicyAction.STOP,
@@ -258,6 +285,8 @@ class RouteBoundControllerPolicy:
     def _next_registered_tool(
         plan: RoutePlan,
         calls: tuple[tuple[StableId, str, ToolResult], ...],
+        *,
+        need: Stage1MemoryNeed | None = None,
     ) -> str | None:
         called_tools = {tool_name for _, tool_name, _ in calls}
         primary_steps = (
@@ -276,9 +305,14 @@ class RouteBoundControllerPolicy:
             for _, tool_name, result in calls
             for channel in primary_channels
         )
+        primary_sufficient = (
+            RouteBoundControllerPolicy._public_primary_sufficient(need, calls)
+            if need is not None and primary_succeeded
+            else primary_succeeded
+        )
         for fallback in plan.conditional_fallbacks:
             if not RouteBoundControllerPolicy._fallback_applies(
-                fallback.condition, primary_succeeded
+                fallback.condition, primary_sufficient
             ):
                 continue
             for step in fallback.steps:
@@ -286,6 +320,107 @@ class RouteBoundControllerPolicy:
                 if tool_name not in called_tools:
                     return tool_name
         return None
+
+    @staticmethod
+    def _public_primary_sufficient(
+        need: Stage1MemoryNeed,
+        calls: tuple[tuple[StableId, str, ToolResult], ...],
+    ) -> bool:
+        """Conservative public-facet signal used only to decide legal fallback."""
+
+        units: list[RetrievalUnit] = []
+        for _need_id, _tool_name, result in calls:
+            if result.status is not ToolResultStatus.SUCCEEDED or not isinstance(
+                result.payload,
+                dict,
+            ):
+                continue
+            raw_hits = result.payload.get("hits")
+            if not isinstance(raw_hits, list):
+                continue
+            for raw_hit in raw_hits:
+                try:
+                    units.append(ChannelHit.model_validate_json(json.dumps(raw_hit)).unit)
+                except (TypeError, ValueError):
+                    continue
+        if not units:
+            return False
+        if need.completion_spec is None:
+            return True
+        text = " ".join(item.text.casefold() for item in units)
+        limitation_terms = ("cannot", "unable", "limit", "cost", "限制", "无法", "不能", "代价")
+        unresolved_terms = (
+            "unresolved",
+            "pending",
+            "remain",
+            "promise",
+            "oath",
+            "尚",
+            "未",
+            "仍",
+            "等待",
+            "承诺",
+            "誓",
+            "义务",
+            "必须",
+            "需要",
+        )
+        historical_kinds = {
+            RetrievalUnitKind.EVENT_ANCHOR,
+            RetrievalUnitKind.SCENE_ANCHOR,
+            RetrievalUnitKind.CHAPTER_ANCHOR,
+            RetrievalUnitKind.GROUNDED_BLOCK,
+            RetrievalUnitKind.GROUNDED_SPAN,
+        }
+        plan_kinds = {
+            RetrievalUnitKind.PLAN_ANCHOR,
+            RetrievalUnitKind.ARC_ANCHOR,
+        }
+        covered: set[StableId] = set()
+        for facet in need.need_facets:
+            matches = (
+                (
+                    facet.facet_kind
+                    in {
+                        NeedFacetKind.CURRENT_STATE,
+                        NeedFacetKind.RELATION_STATE,
+                        NeedFacetKind.CAPABILITY_STATUS,
+                        NeedFacetKind.KNOWLEDGE_BOUNDARY,
+                    }
+                    and any(unit.unit_kind not in historical_kinds | plan_kinds for unit in units)
+                )
+                or (
+                    facet.facet_kind is NeedFacetKind.LIMITATION
+                    and any(term in text for term in limitation_terms)
+                )
+                or (
+                    facet.facet_kind in {NeedFacetKind.CAUSAL_HISTORY, NeedFacetKind.SETUP}
+                    and any(unit.unit_kind in historical_kinds for unit in units)
+                )
+                or (
+                    facet.facet_kind in {NeedFacetKind.UNRESOLVED_STATUS, NeedFacetKind.COMMITMENT}
+                    and any(term in text for term in unresolved_terms)
+                )
+                or (
+                    facet.facet_kind is NeedFacetKind.PLAN_NODE
+                    and any(unit.unit_kind in plan_kinds for unit in units)
+                )
+            )
+            if matches:
+                covered.add(facet.need_facet_id)
+        if not set(need.completion_spec.required_need_facet_ids).issubset(covered):
+            return False
+        terms = tuple(
+            dict.fromkeys(
+                token
+                for token in re.findall(
+                    r"[a-z0-9_]+|[\u4e00-\u9fff]{2}",
+                    need.query_text.casefold(),
+                )
+                if len(token) >= 2
+            )
+        )
+        return not terms or sum(term in text for term in terms) / len(terms) >= 0.25
 
     @staticmethod
     def _fallback_applies(condition: str, primary_succeeded: bool) -> bool:
@@ -322,8 +457,7 @@ class RouteBoundControllerPolicy:
         if need.access_scope != access_scope:
             return False
         return not (
-            (need.query_intent in PLAN_INTENTS or need.allow_plan)
-            and not allow_future_plan
+            (need.query_intent in PLAN_INTENTS or need.allow_plan) and not allow_future_plan
         )
 
     def decision_receipt(self, model_call_id: StableId) -> AgentExecutionReceipt | None:
@@ -378,9 +512,7 @@ class BoundedMemoryController:
             tool_policy=tool_policy,
             route_plans=route_plans,
         )
-        self._max_decision_model_calls = int(
-            getattr(policy, "max_decision_model_calls", 2) or 2
-        )
+        self._max_decision_model_calls = int(getattr(policy, "max_decision_model_calls", 2) or 2)
         builder = StateGraph(ControllerGraphState)
         builder.add_node("decide", self._decide)
         builder.add_node("execute_tool", self._execute_tool)
@@ -1128,6 +1260,24 @@ class BoundedMemoryController:
                         if candidates
                         else RetrievalStopReason.CANDIDATES_EXHAUSTED
                     ),
+                    need_execution_status=(
+                        NeedExecutionStatus.EXECUTED_WITH_CANDIDATES
+                        if candidates
+                        else NeedExecutionStatus.EXECUTED_EMPTY
+                        if need_calls
+                        else NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+                    ),
+                    calls_allocated=len(need_calls),
+                    required_need_facet_ids=(
+                        need.completion_spec.required_need_facet_ids
+                        if need.completion_spec is not None
+                        else ()
+                    ),
+                    irreducible_need_facet_ids=(
+                        need.completion_spec.irreducible_need_facet_ids
+                        if need.completion_spec is not None
+                        else ()
+                    ),
                 )
             )
         return tuple(traces)
@@ -1261,6 +1411,18 @@ class BoundedMemoryController:
                 {
                     "retrieval_budget": request.retrieval_budget.model_dump(mode="json"),
                     "context_budget": request.context_budget.model_dump(mode="json"),
+                    "need_completion_contracts": [
+                        {
+                            "need_id": need.need_id.root,
+                            "facets": [facet.model_dump(mode="json") for facet in need.need_facets],
+                            "completion_spec": (
+                                None
+                                if need.completion_spec is None
+                                else need.completion_spec.model_dump(mode="json")
+                            ),
+                        }
+                        for need in request.initial_memory_needs
+                    ],
                     "tool_policy": self._tool_policy.model_dump(mode="json"),
                     "controller_policy": self._policy_contract_ref.model_dump(mode="json"),
                 }

@@ -113,9 +113,7 @@ def test_evidence_auditor_writes_all_report_files(tmp_path: Path) -> None:
     findings = auditor.audit_world(world, text_root)
 
     assert len(findings) == 1
-    report_dir = auditor.write_report(
-        findings, tmp_path, audit_id="audit-c1-c20-smoke"
-    )
+    report_dir = auditor.write_report(findings, tmp_path, audit_id="audit-c1-c20-smoke")
 
     assert report_dir == tmp_path / "audit-c1-c20-smoke"
     summary = json.loads((report_dir / "summary.json").read_text("utf-8"))
@@ -293,13 +291,9 @@ def test_audit_detects_identity_or_hash_failure() -> None:
 
 
 def test_audit_resolves_evidence_against_historical_text_root() -> None:
-    old_root, old_block = _text_root(
-        "chen shows extreme_confidence cultivation-attitude clearly."
-    )
+    old_root, old_block = _text_root("chen shows extreme_confidence cultivation-attitude clearly.")
     evidence = _evidence_ref(old_root, old_block)
-    current_root = old_root.model_copy(
-        update={"root_hash": ArtifactId("sha256:" + "e" * 64)}
-    )
+    current_root = old_root.model_copy(update={"root_hash": ArtifactId("sha256:" + "e" * 64)})
     state = StateRecord(
         state_id=StableId("state.historical"),
         subject_id=StableId("entity.chen"),

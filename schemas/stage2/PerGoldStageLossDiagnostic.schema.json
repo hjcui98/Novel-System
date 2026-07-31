@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "EvidenceStageCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_reference_count": {
+          "minimum": 0,
+          "title": "Accepted Reference Count",
+          "type": "integer"
+        },
+        "complete_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Complete Alternative Ids",
+          "type": "array"
+        },
+        "matched_reference_count": {
+          "minimum": 0,
+          "title": "Matched Reference Count",
+          "type": "integer"
+        },
+        "partial_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Partial Alternative Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "accepted_reference_count",
+        "matched_reference_count"
+      ],
+      "title": "EvidenceStageCoverage",
+      "type": "object"
+    },
+    "EvidenceStageFailure": {
+      "enum": [
+        "COMPLETE",
+        "F-ASSEMBLY",
+        "F-RANK",
+        "F-NEED_ROUTE_RETRIEVE"
+      ],
+      "title": "EvidenceStageFailure",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluator-only accepted-evidence coverage across the frozen retrieval stages.",
+  "properties": {
+    "candidate": {
+      "$ref": "#/$defs/EvidenceStageCoverage"
+    },
+    "gold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "primary_failure": {
+      "$ref": "#/$defs/EvidenceStageFailure"
+    },
+    "rank_selected": {
+      "$ref": "#/$defs/EvidenceStageCoverage"
+    },
+    "stage1_selected": {
+      "$ref": "#/$defs/EvidenceStageCoverage"
+    },
+    "writer_ledger": {
+      "$ref": "#/$defs/EvidenceStageCoverage"
+    }
+  },
+  "required": [
+    "gold_id",
+    "candidate",
+    "rank_selected",
+    "stage1_selected",
+    "writer_ledger",
+    "primary_failure"
+  ],
+  "title": "PerGoldStageLossDiagnostic",
+  "type": "object"
+}

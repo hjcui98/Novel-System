@@ -41,9 +41,7 @@ from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.overlay import WorldOverlay
 from novel_agent.services.text_timeline import SequentialTextRootService
 
-_MERIDIAN_EVIDENCE = (
-    "陈长生的病是因为先天体虚，身体里的九段经脉不能相连"  # noqa: RUF001
-)
+_MERIDIAN_EVIDENCE = "陈长生的病是因为先天体虚，身体里的九段经脉不能相连"  # noqa: RUF001
 _MERIDIAN_STATE_ID = StableId("state.chen-changsheng-meridian-condition")
 _CHEN_CHANGSHENG_ID = StableId("entity.bootstrap.chen-changsheng")
 

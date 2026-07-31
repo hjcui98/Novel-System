@@ -62,7 +62,9 @@ class EvidenceRefAuditor:
                 for evidence in evidence_refs:
                     findings.append(
                         self._audit_one(
-                            record_kind=kind, record_id=record_id, summary=summary,
+                            record_kind=kind,
+                            record_id=record_id,
+                            summary=summary,
                             evidence=evidence,
                             text_root=roots_by_hash.get(evidence.root_hash),
                         )
@@ -84,7 +86,8 @@ class EvidenceRefAuditor:
             "finding_count": len(findings),
             "hard_failures": sum(1 for item in findings if item.hard_validation != "pass"),
             "unrelated": sum(
-                1 for item in findings
+                1
+                for item in findings
                 if item.semantic_disposition == EvidenceSupportDisposition.UNRELATED.value
             ),
             "high_severity": sum(1 for item in findings if item.severity == "high"),
@@ -102,9 +105,11 @@ class EvidenceRefAuditor:
             encoding="utf-8",
         )
         queue = [
-            item for item in serialized
+            item
+            for item in serialized
             if item["severity"] in {"high", "medium"}
-            or item.get("semantic_disposition") in {
+            or item.get("semantic_disposition")
+            in {
                 EvidenceSupportDisposition.UNRELATED.value,
                 EvidenceSupportDisposition.CONTRADICTS.value,
                 EvidenceSupportDisposition.PARTIAL.value,
@@ -125,8 +130,13 @@ class EvidenceRefAuditor:
         return target
 
     def _audit_one(
-        self, *, record_kind: str, record_id: str, summary: str,
-        evidence: EvidenceRef, text_root: TextRootDocument | None,
+        self,
+        *,
+        record_kind: str,
+        record_id: str,
+        summary: str,
+        evidence: EvidenceRef,
+        text_root: TextRootDocument | None,
     ) -> EvidenceAuditFinding:
         risk_tags: list[str] = []
         hard = "pass"
@@ -190,14 +200,10 @@ class EvidenceRefAuditor:
                 disposition = EvidenceSupportDisposition.SUPPORTS.value
 
         severity = "low"
-        if (
-            hard != "pass"
-            or disposition
-            in {
-                EvidenceSupportDisposition.UNRELATED.value,
-                EvidenceSupportDisposition.CONTRADICTS.value,
-            }
-        ):
+        if hard != "pass" or disposition in {
+            EvidenceSupportDisposition.UNRELATED.value,
+            EvidenceSupportDisposition.CONTRADICTS.value,
+        }:
             severity = "high"
         elif (
             "UNUSUALLY_WIDE_SPAN" in risk_tags

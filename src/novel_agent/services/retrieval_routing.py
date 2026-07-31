@@ -34,8 +34,8 @@ from novel_agent.domain.retrieval_routing import (
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.retrieval import FusionService, RetrievalBackend
 
-ROUTE_POLICY_VERSION = SchemaVersion("2.0.0")
-ROUTE_PROFILE_VERSION = SchemaVersion("2.0.0")
+ROUTE_POLICY_VERSION = SchemaVersion("2.1.0")
+ROUTE_PROFILE_VERSION = SchemaVersion("2.1.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +101,10 @@ class TierRouter:
         if need.query_intent is Stage1QueryIntent.KNOWN_ID:
             return exact and bool(need.entity_ids)
         if need.query_intent is Stage1QueryIntent.CURRENT_STATE:
-            return exact and temporal and bool(need.entity_ids and need.predicates)
+            # An exact canonical entity id is sufficient to retrieve its bounded
+            # current-state record set. Requiring a predicate made task-derived
+            # entity frontier needs fall through to an empty R2 registration.
+            return exact and temporal and bool(need.entity_ids)
         if need.query_intent is Stage1QueryIntent.MANDATORY_CONSTRAINT:
             return exact and temporal and bool(need.entity_ids or need.predicates)
         if need.query_intent is Stage1QueryIntent.PLAN_NODE:
@@ -517,10 +520,21 @@ def _r2_registration(
             None,
         )
     if intent in {Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP}:
-        step = _step(intent, RetrievalChannel.TYPED_GRAPH, CandidatePool.GRAPH)
+        group = _parallel_group(
+            intent,
+            (
+                RetrievalChannel.TYPED_GRAPH,
+                RetrievalChannel.ANCHOR_BM25,
+                RetrievalChannel.ANCHOR_DENSE,
+            ),
+        )
         return (
-            (RetrievalChannel.TYPED_GRAPH,),
-            (_serial_group(intent, (step,)),),
+            (
+                RetrievalChannel.TYPED_GRAPH,
+                RetrievalChannel.ANCHOR_BM25,
+                RetrievalChannel.ANCHOR_DENSE,
+            ),
+            (group,),
             (),
             GraphTraversalPolicy(),
         )

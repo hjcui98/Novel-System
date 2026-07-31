@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ClaimReductionLevel": {
+      "enum": [
+        "full",
+        "narrow"
+      ],
+      "title": "ClaimReductionLevel",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "claim_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "claim_text": {
+      "minLength": 1,
+      "title": "Claim Text",
+      "type": "string"
+    },
+    "claim_text_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "claim_variant_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "covered_need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Covered Need Facet Ids",
+      "type": "array"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "reduction_level": {
+      "$ref": "#/$defs/ClaimReductionLevel"
+    },
+    "support_group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "support_receipt_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "token_cost": {
+      "minimum": 1,
+      "title": "Token Cost",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "claim_variant_id",
+    "claim_id",
+    "support_group_id",
+    "claim_text",
+    "claim_text_hash",
+    "covered_need_facet_ids",
+    "support_receipt_ref",
+    "token_cost",
+    "reduction_level",
+    "producer",
+    "producer_version"
+  ],
+  "title": "ClaimVariant",
+  "type": "object"
+}

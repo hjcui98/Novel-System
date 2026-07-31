@@ -1,18 +1,39 @@
 {
   "$defs": {
-    "AccessScope": {
-      "enum": [
-        "writer_safe",
-        "author_planning",
-        "evaluator"
-      ],
-      "title": "AccessScope",
-      "type": "string"
-    },
     "ArtifactId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "ArtifactId",
       "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
     },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -115,6 +136,11 @@
       "title": "RangeUnit",
       "type": "string"
     },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -152,32 +178,90 @@
   },
   "additionalProperties": false,
   "properties": {
-    "access_scope": {
-      "$ref": "#/$defs/AccessScope"
-    },
-    "basis_commit": {
-      "$ref": "#/$defs/CommitId"
+    "claim_excerpt": {
+      "minLength": 1,
+      "title": "Claim Excerpt",
+      "type": "string"
     },
     "evidence_refs": {
+      "default": [],
       "items": {
         "$ref": "#/$defs/EvidenceRef"
       },
       "title": "Evidence Refs",
       "type": "array"
     },
-    "snapshot_id": {
+    "information_scope": {
+      "minLength": 1,
+      "title": "Information Scope",
+      "type": "string"
+    },
+    "ledger_id": {
       "$ref": "#/$defs/StableId"
     },
-    "unit_id": {
-      "$ref": "#/$defs/StableId"
+    "need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "need_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "plan_node_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Plan Node Ids",
+      "type": "array"
+    },
+    "retrieval_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieval Unit Ids",
+      "type": "array"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "support_group_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "support_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [
-    "unit_id",
-    "evidence_refs",
-    "basis_commit",
-    "snapshot_id",
-    "access_scope"
+    "ledger_id",
+    "claim_excerpt",
+    "source_commit",
+    "information_scope"
   ],
   "title": "EvidenceLedgerEntry",
   "type": "object"

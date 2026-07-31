@@ -1,0 +1,567 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceResolutionStatus": {
+      "enum": [
+        "resolved",
+        "unresolved",
+        "basis_mismatch",
+        "cutoff_violation"
+      ],
+      "title": "EvidenceResolutionStatus",
+      "type": "string"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SemanticSupportStatus": {
+      "enum": [
+        "verified",
+        "unverified",
+        "contradicted"
+      ],
+      "title": "SemanticSupportStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "basis_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "claim_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "claim_text_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "counter_evidence_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "Counter Evidence Refs",
+      "type": "array"
+    },
+    "cutoff_attestation_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "evidence_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "evidence_resolution_status": {
+      "$ref": "#/$defs/EvidenceResolutionStatus"
+    },
+    "information_scope": {
+      "minLength": 1,
+      "title": "Information Scope",
+      "type": "string"
+    },
+    "model_call_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "plan_node_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Plan Node Ids",
+      "type": "array"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_input_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "producer_input_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "producer_output_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "producer_output_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "retrieval_unit_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieval Unit Ids",
+      "type": "array"
+    },
+    "semantic_support_status": {
+      "$ref": "#/$defs/SemanticSupportStatus"
+    },
+    "support_group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "verification_model_call_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verifier_input_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verifier_input_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verifier_output_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verifier_output_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "receipt_id",
+    "support_group_id",
+    "claim_id",
+    "claim_text_hash",
+    "need_ids",
+    "need_facet_ids",
+    "retrieval_unit_ids",
+    "evidence_resolution_status",
+    "semantic_support_status",
+    "basis_commit_id",
+    "basis_snapshot_id",
+    "cutoff_attestation_ref",
+    "information_scope",
+    "producer",
+    "producer_version"
+  ],
+  "title": "ClaimSupportReceipt",
+  "type": "object"
+}

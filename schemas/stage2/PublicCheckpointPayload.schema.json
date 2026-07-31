@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
+      "type": "object"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "history_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "History Range",
+      "type": "array"
+    },
+    "plan_root_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanRootRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "public_input_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "target_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Target Range",
+      "type": "array"
+    },
+    "task_contract": {
+      "$ref": "#/$defs/BenchmarkTaskContract"
+    }
+  },
+  "required": [
+    "case_id",
+    "project_id",
+    "target_range",
+    "history_range",
+    "task_contract",
+    "public_input_hash"
+  ],
+  "title": "PublicCheckpointPayload",
+  "type": "object"
+}

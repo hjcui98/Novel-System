@@ -5,6 +5,14 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "CommitId",
@@ -83,6 +91,44 @@
       "title": "EvidenceRef",
       "type": "object"
     },
+    "EvidenceSet": {
+      "additionalProperties": false,
+      "description": "One accepted, conjunctive evidence alternative for a Gold item.",
+      "properties": {
+        "component_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Component Ids",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "plan_node_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Node Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "evidence_set_id"
+      ],
+      "title": "EvidenceSet",
+      "type": "object"
+    },
     "EvidenceSupportStatus": {
       "enum": [
         "current_support",
@@ -101,6 +147,19 @@
         "plan_obligation"
       ],
       "title": "GoldKind",
+      "type": "string"
+    },
+    "GoldType": {
+      "enum": [
+        "CURRENT_STATE",
+        "RELATIONSHIP_EMOTION",
+        "CAUSAL_HISTORY",
+        "KNOWLEDGE_BOUNDARY",
+        "PLAN_OBLIGATION",
+        "LONG_RANGE_CALLBACK",
+        "OBJECT_CONTINUITY"
+      ],
+      "title": "GoldType",
       "type": "string"
     },
     "PlanEvidenceRef": {
@@ -178,6 +237,25 @@
   },
   "additionalProperties": false,
   "properties": {
+    "accepted_evidence_sets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceSet"
+      },
+      "title": "Accepted Evidence Sets",
+      "type": "array"
+    },
+    "applicable_profiles": {
+      "default": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "items": {
+        "$ref": "#/$defs/BenchmarkInformationProfile"
+      },
+      "title": "Applicable Profiles",
+      "type": "array"
+    },
     "description": {
       "minLength": 1,
       "title": "Description",
@@ -191,6 +269,19 @@
       "title": "Evidence Refs",
       "type": "array"
     },
+    "fact": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fact"
+    },
     "future_evidence_refs": {
       "items": {
         "$ref": "#/$defs/EvidenceRef"
@@ -201,6 +292,17 @@
     },
     "gold_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "gold_type": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoldType"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "kind": {
       "$ref": "#/$defs/GoldKind"
@@ -225,6 +327,25 @@
       "minItems": 1,
       "title": "Target Chapters",
       "type": "array"
+    },
+    "target_components": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Target Components",
+      "type": "array"
+    },
+    "weight": {
+      "default": 1.0,
+      "exclusiveMinimum": 0,
+      "title": "Weight",
+      "type": "number"
+    },
+    "why_needed": {
+      "default": "required by the benchmark annotation",
+      "title": "Why Needed",
+      "type": "string"
     }
   },
   "required": [

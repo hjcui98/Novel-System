@@ -26,6 +26,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.world import StoryTime, TruthClass
+from novel_agent.services.canonical_alias_registry import CanonicalAliasRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,14 +722,28 @@ class R1RetrievalBackend:
             for item in raw_evidence
             if isinstance(item, dict)
         )
+        raw_value = record.record.get("value")
+        canonical_value = (
+            CanonicalAliasRegistry().resolve(record.predicate, raw_value)
+            if kind is RetrievalUnitKind.STATE_ANCHOR
+            and record.predicate is not None
+            and isinstance(raw_value, str)
+            else None
+        )
         return RetrievalUnit(
             unit_id=StableId(f"unit.{record.row_id.root}"),
             unit_kind=kind,
             source_commit=record.source_commit,
             snapshot_id=self._snapshot_id,
-            text=json.dumps(record.record, ensure_ascii=False, sort_keys=True),
+            text=self._record_text(record),
             entity_ids=record.entity_ids,
             predicate=record.predicate,
+            canonical_value_id=(
+                None if canonical_value is None else canonical_value.canonical_value_id
+            ),
+            canonicalizer_version=(
+                None if canonical_value is None else canonical_value.canonicalizer_version
+            ),
             worldline=record.worldline or "main",
             narrative_start=record.narrative_start,
             narrative_end=record.narrative_end,
@@ -740,9 +755,45 @@ class R1RetrievalBackend:
                 "plan" if record.record_kind in {"plan_node", "chapter_goal"} else "observed"
             ),
             evidence_refs=evidence,
-            mandatory=record.record_kind
-            in {
-                WorldRecordKind.STATE.value,
-                WorldRecordKind.OBLIGATION.value,
-            },
+            mandatory=record.record_kind == WorldRecordKind.OBLIGATION.value,
+        )
+
+    @staticmethod
+    def _record_text(record: R1RecordView) -> str:
+        payload = record.record
+        if record.record_kind == WorldRecordKind.STATE.value:
+            subject = str(payload.get("subject_id", "unknown-subject"))
+            predicate = str(payload.get("predicate", record.predicate or "state"))
+            value = json.dumps(payload.get("value"), ensure_ascii=False, sort_keys=True)
+            return f"{subject} {predicate} {value}"
+        if record.record_kind == WorldRecordKind.RELATION.value:
+            return " ".join(
+                (
+                    str(payload.get("subject_id", "unknown-subject")),
+                    str(payload.get("predicate", record.predicate or "relation")),
+                    str(payload.get("object_id", "unknown-object")),
+                )
+            )
+        if record.record_kind == WorldRecordKind.EVENT.value:
+            participants = payload.get("participant_ids", ())
+            prefix = (
+                " ".join(str(value) for value in participants)
+                if isinstance(participants, list)
+                else ""
+            )
+            return " ".join(
+                value
+                for value in (
+                    prefix,
+                    str(payload.get("event_type", record.predicate or "event")),
+                )
+                if value
+            )
+        if record.record_kind == WorldRecordKind.OBLIGATION.value:
+            return str(payload.get("description", record.record_id.root))
+        return str(
+            payload.get(
+                "summary",
+                payload.get("internal_label", payload.get("title", record.record_id.root)),
+            )
         )

@@ -209,6 +209,7 @@ def test_context_compiler_preserves_mandatory_closure_and_expands_l0_evidence() 
         (CandidatePool.ANCHOR, CandidatePool.GROUNDED),
         mandatory=False,
     )
+    promise = promise.model_copy(update={"access_scope": "author_planning", "allow_plan": True})
     traces = ((injury, orchestrator.retrieve(injury)), (promise, orchestrator.retrieve(promise)))
 
     package = ContextCompiler(EvidenceExpander()).compile(

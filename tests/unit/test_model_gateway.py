@@ -306,16 +306,13 @@ def test_model_call_ledger_prefix_includes_all_scoped_child_calls() -> None:
     verifier = parent.model_copy(
         update={"request_id": StableId(f"{parent.request_id.root}.semantic-verifier")}
     )
-    collision = parent.model_copy(
-        update={"request_id": StableId(f"{parent.request_id.root}0")}
-    )
+    collision = parent.model_copy(update={"request_id": StableId(f"{parent.request_id.root}0")})
     ledger.create_requested(parent)
     ledger.create_requested(verifier)
     ledger.create_requested(collision)
 
     assert tuple(
-        item.request_id.root
-        for item in ledger.list_for_prefix(parent.request_id.root)
+        item.request_id.root for item in ledger.list_for_prefix(parent.request_id.root)
     ) == (
         parent.request_id.root,
         verifier.request_id.root,

@@ -1,5 +1,7 @@
 """WP4/WP5: candidate-id binding and support enforcement."""
 
+# mypy: disable-error-code="no-untyped-def,arg-type,index"
+
 from __future__ import annotations
 
 import asyncio
@@ -36,10 +38,12 @@ from novel_agent.domain.world import Entity, StateRecord, StoryTime, TruthClass
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
+    EvidenceSemanticDecisionDraft,
     EvidenceSemanticVerificationDraft,
     EvidenceSemanticVerificationItem,
     ModelCurationContractError,
     ModelCurator,
+    NoOpSemanticVerificationDraft,
 )
 
 
@@ -52,6 +56,8 @@ class _FakeGateway:
         self.requests.append(request)
         assert model_type is ChapterChangeDraftV2
         assert "EVIDENCE_CANDIDATES" in request.prompt
+        assert "keep no_durable_delta_reason under 80 characters" in request.prompt
+        assert "Never emit an empty no_op_evidence_candidate_ids" in request.prompt
         call = type(
             "Call",
             (),
@@ -85,8 +91,37 @@ class _ModelVerifierGateway:
         )()
         if model_type is ChapterChangeDraftV2:
             return self._draft, call
-        assert issubclass(model_type, EvidenceSemanticVerificationDraft)
+        assert issubclass(model_type, EvidenceSemanticDecisionDraft)
         assert "EVIDENCE_VERIFICATION_INPUT" in request.prompt
+        if isinstance(self._verification, Exception):
+            raise self._verification
+        return self._verification, call
+
+
+class _NoOpVerifierGateway:
+    def __init__(
+        self,
+        draft: ChapterChangeDraftV2,
+        verification: NoOpSemanticVerificationDraft | Exception,
+    ) -> None:
+        self._draft = draft
+        self._verification = verification
+        self.requests: list[ModelRequest] = []
+
+    async def generate_structured(self, request, model_type):
+        self.requests.append(request)
+        call = type(
+            "Call",
+            (),
+            {
+                "request_id": request.request_id,
+                "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
+            },
+        )()
+        if model_type is ChapterChangeDraftV2:
+            return self._draft, call
+        assert model_type is NoOpSemanticVerificationDraft
+        assert "NO_OP_VERIFICATION_INPUT" in request.prompt
         if isinstance(self._verification, Exception):
             raise self._verification
         return self._verification, call
@@ -172,7 +207,11 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
     changes, _call, out = asyncio.run(
         curator.extract_reported_v2(
-            root, 21, CommitId("sha256:" + "3" * 64), _world(), _request("req.v2"),
+            root,
+            21,
+            CommitId("sha256:" + "3" * 64),
+            _world(),
+            _request("req.v2"),
         )
     )
     assert out.chapter_index == 21
@@ -227,7 +266,11 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
     try:
         asyncio.run(
             bad_curator.extract_reported_v2(
-                root, 21, CommitId("sha256:" + "3" * 64), _world(), _request("req.v2.bad"),
+                root,
+                21,
+                CommitId("sha256:" + "3" * 64),
+                _world(),
+                _request("req.v2.bad"),
             )
         )
         raise AssertionError("expected unresolved-evidence rejection")
@@ -241,9 +284,7 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
     root = _root_with(text)
     generator = EvidenceCandidateGenerator()
-    candidate = next(
-        item for item in generator.generate(root, 21) if "confidence" in item.text
-    )
+    candidate = next(item for item in generator.generate(root, 21) if "confidence" in item.text)
     draft = ChapterChangeDraftV2(
         chapter_index=21,
         operations=(
@@ -522,6 +563,112 @@ def test_v2_explicit_no_op_passes_when_trusted_verifier_accepts() -> None:
     assert verifier_calls
     assert verifier_calls[0][1][0] == candidate
     assert curator.last_no_op_verification == (True, "NO_DURABLE_DELTA_CONFIRMED")
+
+
+def test_v2_explicit_no_op_can_use_narrow_model_verifier() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    draft = _v2_no_op_draft(candidate.candidate_id)
+    gateway = _NoOpVerifierGateway(
+        draft,
+        NoOpSemanticVerificationDraft(
+            selected_candidate_ids=(candidate.candidate_id,),
+            verified_no_durable_delta=True,
+            reason_code="ONLY_ACCEPTED_FACT_REPEATED",
+        ),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, _draft = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.noop.model-verified"),
+        )
+    )
+
+    assert changes.operations == ()
+    assert len(gateway.requests) == 2
+    assert curator.last_no_op_verification == (True, "ONLY_ACCEPTED_FACT_REPEATED")
+
+
+def test_v2_no_op_model_verifier_fails_closed_on_candidate_binding_mismatch() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    gateway = _NoOpVerifierGateway(
+        _v2_no_op_draft(candidate.candidate_id),
+        NoOpSemanticVerificationDraft(
+            selected_candidate_ids=(StableId("evidence-candidate.wrong"),),
+            verified_no_durable_delta=True,
+            reason_code="BINDING_MISMATCH",
+        ),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+    ):
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.noop.model-binding-mismatch"),
+            )
+        )
+
+    assert curator.last_no_op_verification is None
+
+
+def test_v2_no_op_model_verifier_fails_closed_when_gateway_raises() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    gateway = _NoOpVerifierGateway(
+        _v2_no_op_draft(candidate.candidate_id),
+        RuntimeError("verifier unavailable"),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
+    ):
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.noop.model-error"),
+            )
+        )
+
+    assert curator.last_no_op_verification is None
 
 
 @pytest.mark.parametrize("verifier_mode", ("reject", "raise"))
@@ -922,9 +1069,7 @@ def test_v2_filters_contradicts_evidence_to_audited_no_op() -> None:
     draft = _v2_state_draft(bad.candidate_id)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     changes, _call, filtered = asyncio.run(
-        curator.extract_reported_v2(
-            root, 21, _COMMIT, _world(), _request("req.v2.contradicts")
-        )
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.contradicts"))
     )
     assert changes.operations == ()
     assert filtered.operations == ()
@@ -989,9 +1134,7 @@ def test_v2_partial_evidence_verifier_rejection_becomes_audited_no_op() -> None:
         semantic_verifier=verifier,
     )
     changes, _call, filtered = asyncio.run(
-        curator.extract_reported_v2(
-            root, 21, _COMMIT, _world(), _request("req.v2.verifier-no")
-        )
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.verifier-no"))
     )
     assert changes.operations == ()
     assert filtered.operations == ()
@@ -1019,9 +1162,7 @@ def test_v2_partial_evidence_fails_closed_without_verifier() -> None:
         CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED"
     ) as exc:
         asyncio.run(
-            curator.extract_reported_v2(
-                root, 21, _COMMIT, _world(), _request("req.v2.no-verifier")
-            )
+            curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.no-verifier"))
         )
     assert exc.value.violation_rule == "partial_evidence_unresolved_no_verifier"
     assert exc.value.operation_indexes == (0,)
@@ -1081,26 +1222,18 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
         enable_model_semantic_verifier=True,
     )
 
-    request = _request("req.v2.model-verifier").model_copy(
-        update={"timeout_seconds": 120}
-    )
+    request = _request("req.v2.model-verifier").model_copy(update={"timeout_seconds": 120})
     changes, _call, _out = asyncio.run(
-        curator.extract_reported_v2(
-            root, 21, _COMMIT, _world(), request
-        )
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), request)
     )
 
     assert changes.operations
     assert len(gateway.requests) == 2
     assert gateway.requests[1].request_id.root.endswith(".semantic-verifier")
-    assert gateway.requests[1].timeout_seconds == 90
+    assert gateway.requests[1].timeout_seconds == 120
     assert "半个时辰 is one hour and never half_hour" in gateway.requests[1].prompt
-    assert "supports only a record that explicitly encodes belief" in (
-        gateway.requests[1].prompt
-    )
-    assert "Evaluate all excerpts for one operation collectively" in (
-        gateway.requests[1].prompt
-    )
+    assert "supports only a record that explicitly encodes belief" in (gateway.requests[1].prompt)
+    assert "Evaluate all excerpts for one operation collectively" in (gateway.requests[1].prompt)
     assert "accepted records must be durable World state" in gateway.requests[1].prompt
     assert "Emit only durable world-state deltas" in gateway.requests[0].prompt
     assert "one-scene encounters" in gateway.requests[0].prompt
@@ -1125,9 +1258,7 @@ def test_v2_model_semantic_verifier_schema_bounds_generation() -> None:
     item_schema = schema["$defs"]["EvidenceSemanticVerificationItem"]
     assert item_schema["properties"]["reason_code"]["minLength"] == 1
     assert item_schema["properties"]["reason_code"]["maxLength"] == 160
-    batch_schema = ModelCurator._semantic_verification_batch_type(
-        2
-    ).model_json_schema()
+    batch_schema = ModelCurator._semantic_verification_batch_type(2).model_json_schema()
     assert batch_schema["properties"]["decisions"]["minItems"] == 2
     assert batch_schema["properties"]["decisions"]["maxItems"] == 2
 
@@ -1150,9 +1281,7 @@ def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> N
     draft = base.model_copy(
         update={
             "operations": (
-                base.operations[0].model_copy(
-                    update={"evidence_candidate_ids": candidate_ids}
-                ),
+                base.operations[0].model_copy(update={"evidence_candidate_ids": candidate_ids}),
             )
         }
     )
@@ -1327,7 +1456,7 @@ def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
     assert receipt.support_reason_code.endswith("_UNRESOLVED")
 
 
-def test_v2_model_semantic_verifier_isolates_candidate_id_mismatch() -> None:
+def test_v2_model_semantic_verifier_binds_decisions_by_operation_index() -> None:
     root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
@@ -1391,15 +1520,56 @@ def test_v2_model_semantic_verifier_isolates_candidate_id_mismatch() -> None:
         )
     )
 
+    assert len(changes.operations) == 2
+    assert len(filtered.operations) == 2
+    assert {item.target_id for item in filtered.operations} == {
+        first.target_id,
+        second.target_id,
+    }
+    assert not curator.last_operation_filter_receipts
+
+
+def test_v2_model_semantic_verifier_ignores_unknown_echoed_candidate_id() -> None:
+    root = _root_with("陈长生的读书方法十分特殊。")
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    draft = _v2_state_draft(candidate.candidate_id)
+    gateway = _ModelVerifierGateway(
+        draft,
+        EvidenceSemanticVerificationDraft(
+            decisions=(
+                EvidenceSemanticVerificationItem(
+                    operation_index=0,
+                    candidate_ids=(
+                        candidate.candidate_id,
+                        StableId("decision_type_schema_description"),
+                    ),
+                    disposition=EvidenceSupportDisposition.SUPPORTS,
+                    reason_code="DIRECT_SUPPORT",
+                ),
+            )
+        ),
+    )
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    changes, _call, filtered = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.model-verifier-unknown-echo"),
+        )
+    )
+
     assert len(changes.operations) == 1
     assert len(filtered.operations) == 1
-    assert filtered.operations[0].target_id == second.target_id
-    assert len(curator.last_operation_filter_receipts) == 1
-    receipt = curator.last_operation_filter_receipts[0]
-    assert receipt.proposed_target_id == first.target_id
-    assert receipt.support_disposition is EvidenceSupportDisposition.PARTIAL
-    assert receipt.support_reason_code is not None
-    assert receipt.support_reason_code.endswith("_UNRESOLVED")
+    assert not curator.last_operation_filter_receipts
 
 
 def test_v2_compact_world_omits_historical_evidence_identifiers() -> None:
@@ -1438,9 +1608,7 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
     text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
-    candidate = next(
-        item for item in gen.generate(root, 21) if "confidence" in item.text
-    )
+    candidate = next(item for item in gen.generate(root, 21) if "confidence" in item.text)
     existing_record = CuratorStateRecord(
         subject_id=StableId("entity.chen"),
         predicate="has_cultivation_status",
@@ -1456,9 +1624,7 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.duplicate-under-new-id"),
                 record=existing_record,
-                evidence_candidate_ids=(
-                    StableId("evidence-candidate.from-old-chapter"),
-                ),
+                evidence_candidate_ids=(StableId("evidence-candidate.from-old-chapter"),),
             ),
             _v2_state_draft(candidate.candidate_id).operations[0],
             CuratedOperationDraftV2(
@@ -1496,9 +1662,7 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
                 subject_id=existing_record.subject_id,
                 predicate=existing_record.predicate,
                 value=existing_record.value,
-                valid_time=StoryTime.model_validate(
-                    existing_record.valid_time.model_dump()
-                ),
+                valid_time=StoryTime.model_validate(existing_record.valid_time.model_dump()),
                 truth_class=existing_record.truth_class,
             ),
         ),
@@ -1536,9 +1700,7 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
     text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
-    candidate = next(
-        item for item in gen.generate(root, 21) if "confidence" in item.text
-    )
+    candidate = next(item for item in gen.generate(root, 21) if "confidence" in item.text)
     first = _v2_state_draft(candidate.candidate_id).operations[0]
     mismatched = CuratedOperationDraftV2(
         operation=ChangeOperationType.REPLACE,
@@ -1653,16 +1815,99 @@ def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> Non
 
     error = caught.value
     assert error.operation_indexes == (0,)
-    assert error.json_pointers == (
-        "/operations/0/record/subject_id",
-    )
-    assert error.violation_rule == (
-        "referenced_entity_must_exist_or_be_created_in_same_proposal"
-    )
+    assert error.json_pointers == ("/operations/0/record/subject_id",)
+    assert error.violation_rule == ("referenced_entity_must_exist_or_be_created_in_same_proposal")
     assert "entity.xu-shi-ji" in error.safe_feedback[0]
     assert error.safe_feedback[1].startswith("REQUIRED_REPAIR:")
     assert "Listing IDs in unresolved does not repair references" in error.safe_feedback[1]
     assert error.safe_feedback[2] == "Known WORLD entity_ids: entity.chen"
+
+
+def test_v2_normalizes_unique_short_entity_reference_to_canon_id() -> None:
+    text = "chen now has a durable preference."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    canon_id = StableId("entity.bootstrap.chen")
+    world = _world().model_copy(
+        update={"entities": (_world().entities[0].model_copy(update={"entity_id": canon_id}),)}
+    )
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.chen.preference"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="preference",
+                    value="durable",
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(candidate.candidate_id,),
+            ),
+        ),
+    )
+
+    changes, _call, normalized = asyncio.run(
+        ModelCurator(
+            _FakeGateway(draft),
+            evidence_generator=gen,
+            enforce_support_gate=False,
+        ).extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            world,
+            _request("req.v2.unique-entity-alias"),
+        )
+    )
+
+    assert isinstance(normalized.operations[0].record, CuratorStateRecord)
+    assert normalized.operations[0].record.subject_id == canon_id
+    payload = changes.operations[0].payload
+    assert isinstance(payload, dict)
+    record = payload["record"]
+    assert isinstance(record, dict)
+    assert record["subject_id"] == canon_id.root
+
+
+def test_v2_does_not_guess_ambiguous_short_entity_reference() -> None:
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.chen.preference"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="preference",
+                    value="durable",
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(StableId("evidence-candidate.placeholder"),),
+            ),
+        ),
+    )
+    world = _world().model_copy(
+        update={
+            "entities": (
+                _world()
+                .entities[0]
+                .model_copy(update={"entity_id": StableId("entity.alpha.chen")}),
+                _world().entities[0].model_copy(update={"entity_id": StableId("entity.beta.chen")}),
+            )
+        }
+    )
+
+    normalized = ModelCurator._normalize_entity_reference_aliases(draft, world)
+
+    assert isinstance(normalized.operations[0].record, CuratorStateRecord)
+    assert normalized.operations[0].record.subject_id == StableId("entity.chen")
 
 
 def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
@@ -1721,6 +1966,77 @@ def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
     assert accepted.operations == draft.operations
 
 
+def test_v2_rejects_reference_when_support_gate_drops_entity_create() -> None:
+    text = "xu-shi-ji now appreciates chen changsheng."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
+    entity = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.ENTITY,
+        target_id=StableId("entity.xu-shi-ji"),
+        record=CuratorEntityRecord(
+            entity_type="character",
+            internal_label="徐世绩",
+        ),
+        evidence_candidate_ids=(candidate.candidate_id,),
+    )
+    state = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.STATE,
+        target_id=StableId("state.xu-shi-ji-attitude"),
+        record=CuratorStateRecord(
+            subject_id=StableId("entity.xu-shi-ji"),
+            predicate="has_attitude_towards",
+            value="appreciation_for_chen_changsheng",
+            valid_time=CuratorStoryTime(worldline="current", start_ordinal=21),
+            truth_class=TruthClass.ASSERTION,
+        ),
+        evidence_candidate_ids=(candidate.candidate_id,),
+    )
+    draft = ChapterChangeDraftV2(chapter_index=21, operations=(entity, state))
+    verification = EvidenceSemanticVerificationDraft(
+        decisions=(
+            EvidenceSemanticVerificationItem(
+                operation_index=0,
+                candidate_ids=(candidate.candidate_id,),
+                disposition=EvidenceSupportDisposition.UNRELATED,
+                reason_code="ENTITY_NAME_NOT_SUPPORTED",
+            ),
+            EvidenceSemanticVerificationItem(
+                operation_index=1,
+                candidate_ids=(candidate.candidate_id,),
+                disposition=EvidenceSupportDisposition.SUPPORTS,
+                reason_code="DIRECT_SUPPORT",
+            ),
+        )
+    )
+    curator = ModelCurator(
+        cast(Any, _ModelVerifierGateway(draft, verification)),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE",
+    ) as caught:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.post-filter-dangling-entity"),
+            )
+        )
+
+    assert caught.value.operation_indexes == (0,)
+    assert caught.value.json_pointers == ("/operations/0/record/subject_id",)
+    assert curator.last_operation_filter_receipts[0].reason == "evidence_support_rejected"
+
+
 def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
     text = "chen repeats an already accepted durable fact."
     root = _root_with(text)
@@ -1740,9 +2056,7 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.duplicate-under-new-id"),
                 record=existing_record,
-                evidence_candidate_ids=(
-                    StableId("evidence-candidate.from-old-chapter"),
-                ),
+                evidence_candidate_ids=(StableId("evidence-candidate.from-old-chapter"),),
             ),
         ),
         coverage=0.8,
@@ -1765,9 +2079,7 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
                 subject_id=existing_record.subject_id,
                 predicate=existing_record.predicate,
                 value=existing_record.value,
-                valid_time=StoryTime.model_validate(
-                    existing_record.valid_time.model_dump()
-                ),
+                valid_time=StoryTime.model_validate(existing_record.valid_time.model_dump()),
                 truth_class=existing_record.truth_class,
             ),
         ),
@@ -1802,10 +2114,7 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
         "ALL_OPERATIONS_ALREADY_CANONICAL",
     )
     assert len(curator.last_operation_filter_receipts) == 1
-    assert (
-        curator.last_operation_filter_receipts[0].reason
-        == "existing_semantic_duplicate"
-    )
+    assert curator.last_operation_filter_receipts[0].reason == "existing_semantic_duplicate"
 
 
 @pytest.mark.parametrize(
@@ -1815,10 +2124,10 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
         EvidenceSemanticVerificationDraft(
             decisions=(
                 EvidenceSemanticVerificationItem(
-                    operation_index=0,
+                    operation_index=99,
                     candidate_ids=(StableId("evidence-candidate.wrong"),),
                     disposition=EvidenceSupportDisposition.SUPPORTS,
-                    reason_code="WRONG_ID",
+                    reason_code="WRONG_OPERATION_INDEX",
                 ),
             )
         ),
@@ -1853,15 +2162,14 @@ def test_v2_model_semantic_verifier_fails_closed_on_incomplete_batch(
     root = _root_with("中文证据需要语义核验。")
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
-    if isinstance(verification, EvidenceSemanticVerificationDraft) and len(
-        verification.decisions
-    ) >= 2:
+    if (
+        isinstance(verification, EvidenceSemanticVerificationDraft)
+        and len(verification.decisions) >= 2
+    ):
         verification = verification.model_copy(
             update={
                 "decisions": tuple(
-                    item.model_copy(
-                        update={"candidate_ids": (candidate.candidate_id,)}
-                    )
+                    item.model_copy(update={"candidate_ids": (candidate.candidate_id,)})
                     for item in verification.decisions
                 )
             }
@@ -1903,9 +2211,7 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
 
     flags = QualityRepairFeatureFlags()
     assert flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
-    enforce = (
-        flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
-    )
+    enforce = flags.evidence_support_gate is EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
     assert enforce is True
 
     # PARTIAL fails closed (no verifier wired in production smoke).

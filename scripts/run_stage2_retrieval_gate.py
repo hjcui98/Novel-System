@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 from opensearchpy import OpenSearch
 from sqlalchemy import select
@@ -15,7 +14,13 @@ from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.opensearch import OpenSearchIndex
 from novel_agent.adapters.postgres.database import build_engine, build_session_factory
 from novel_agent.adapters.postgres.models import CommitRow, ProjectRow
+from novel_agent.domain.gates import (
+    Stage2RetrievalCheckpointEvidence,
+    Stage2RetrievalGateR1Counts,
+    Stage2RetrievalGateReport,
+)
 from novel_agent.domain.ids import CommitId, ProjectId
+from novel_agent.domain.retrieval_routing import L2IndexKind, RetrievalBackendProfile
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.projection import (
@@ -68,14 +73,14 @@ def main() -> int:
             _gate_entry(checkpoint, commit, snapshots, r1, search)
             for checkpoint, commit in selected.items()
         )
-        passed = bool(entries) and all(entry["passed"] is True for entry in entries)
-        report = {
-            "status": "passed" if passed else "failed",
-            "project_id": project_id.root,
-            "retrieval_backend_profile": "real_hybrid",
-            "checkpoints": entries,
-        }
-        payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        passed = bool(entries) and all(entry.passed for entry in entries)
+        report = Stage2RetrievalGateReport(
+            status="passed" if passed else "failed",
+            project_id=project_id,
+            retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+            checkpoints=entries,
+        )
+        payload = report.model_dump_json(indent=2) + "\n"
         if args.output is None:
             print(payload, end="")
         else:
@@ -94,7 +99,7 @@ def _gate_entry(
     snapshots: DerivedSnapshotRepository,
     r1: R1WorldRepository,
     search: OpenSearchIndex,
-) -> dict[str, object]:
+) -> Stage2RetrievalCheckpointEvidence:
     failures: list[str] = []
     snapshot = snapshots.get_for_commit(source_commit)
     attestation = snapshots.get_attestation_for_commit(source_commit)
@@ -107,7 +112,8 @@ def _gate_entry(
     elif not attestation.quality_eligible:
         failures.append("projection_attestation_not_quality_eligible")
     r1_counts = r1.counts(source_commit)
-    index_totals: dict[str, int] = {}
+    index_totals: dict[L2IndexKind, int] = {}
+    index_targets: dict[L2IndexKind, str] = {}
     if attestation is not None:
         if r1_counts[0] != attestation.r1_record_count:
             failures.append("r1_record_count_mismatch")
@@ -116,28 +122,38 @@ def _gate_entry(
         if r1_counts[2] != attestation.graph_edge_count:
             failures.append("graph_edge_count_mismatch")
         for index in attestation.indexes:
+            # An alias is intentionally advanced as newer snapshots publish.  A
+            # historical checkpoint gate must query the immutable physical index
+            # recorded by that checkpoint's attestation, matching runtime
+            # retrieval and retention semantics.
+            index_targets[index.index_kind] = index.physical_name
             try:
-                _, total = search.search_with_total(index.alias, {"match_all": {}}, size=1)
-                index_totals[index.index_kind.value] = total
+                _, total = search.search_with_total(
+                    index.physical_name,
+                    {"match_all": {}},
+                    size=1,
+                )
+                index_totals[index.index_kind] = total
                 if total != index.document_count:
                     failures.append(f"{index.index_kind.value}_index_count_mismatch")
             except Exception as error:
                 failures.append(
                     f"{index.index_kind.value}_sample_query_failed:{type(error).__name__}"
                 )
-    return {
-        "checkpoint": checkpoint,
-        "source_commit": source_commit.root,
-        "snapshot_id": None if snapshot is None else snapshot.snapshot_id.root,
-        "r1_counts": {
-            "records": r1_counts[0],
-            "entity_associations": r1_counts[1],
-            "relation_edges": r1_counts[2],
-        },
-        "index_totals": index_totals,
-        "failures": failures,
-        "passed": not failures,
-    }
+    return Stage2RetrievalCheckpointEvidence(
+        checkpoint=checkpoint,
+        source_commit=source_commit,
+        snapshot_id=None if snapshot is None else snapshot.snapshot_id,
+        r1_counts=Stage2RetrievalGateR1Counts(
+            records=r1_counts[0],
+            entity_associations=r1_counts[1],
+            relation_edges=r1_counts[2],
+        ),
+        index_targets=index_targets,
+        index_totals=index_totals,
+        failures=tuple(failures),
+        passed=not failures,
+    )
 
 
 def _checkpoint_commits(
@@ -192,7 +208,7 @@ def _checkpoints(raw: str) -> tuple[int, ...]:
     return values
 
 
-def _loopback_url(value: str):
+def _loopback_url(value: str) -> ParseResult:
     parsed = urlparse(value)
     if (
         parsed.scheme not in {"http", "https"}

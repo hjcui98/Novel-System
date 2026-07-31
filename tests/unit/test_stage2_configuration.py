@@ -98,7 +98,7 @@ def test_quality_flags_change_configuration_fingerprint() -> None:
     ) -> _TeacherForcedTransition:
         instance = _TeacherForcedTransition.__new__(_TeacherForcedTransition)
         instance.profile = BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
-        instance.harness = harness
+        instance.harness = harness  # type: ignore[assignment]
         instance.quality_repair_flags = flags
         return instance
 

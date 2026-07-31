@@ -47,6 +47,180 @@
       "title": "ContextBudget",
       "type": "object"
     },
+    "ExpectedClaimScope": {
+      "enum": [
+        "current",
+        "historical",
+        "knowledge",
+        "planned"
+      ],
+      "title": "ExpectedClaimScope",
+      "type": "string"
+    },
+    "FacetEvidenceRequirement": {
+      "enum": [
+        "traceable_cutoff_source",
+        "cutoff_current_source",
+        "plan_provenance",
+        "distinct_historical_source"
+      ],
+      "title": "FacetEvidenceRequirement",
+      "type": "string"
+    },
+    "NeedCompletionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_requirement_by_facet": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FacetEvidenceRequirement"
+          },
+          "title": "Evidence Requirement By Facet",
+          "type": "object"
+        },
+        "gap_policy": {
+          "$ref": "#/$defs/NeedGapPolicy"
+        },
+        "irreducible_need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Irreducible Need Facet Ids",
+          "type": "array"
+        },
+        "min_distinct_chapters": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Distinct Chapters",
+          "type": "integer"
+        },
+        "min_distinct_evidence_sources": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Distinct Evidence Sources",
+          "type": "integer"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "require_causal_history": {
+          "default": false,
+          "title": "Require Causal History",
+          "type": "boolean"
+        },
+        "require_current_claim": {
+          "default": false,
+          "title": "Require Current Claim",
+          "type": "boolean"
+        },
+        "required_need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Required Need Facet Ids",
+          "type": "array"
+        },
+        "uncertainty_policy": {
+          "$ref": "#/$defs/NeedUncertaintyPolicy"
+        }
+      },
+      "required": [
+        "need_id",
+        "required_need_facet_ids",
+        "irreducible_need_facet_ids",
+        "evidence_requirement_by_facet",
+        "uncertainty_policy",
+        "gap_policy",
+        "producer",
+        "producer_version"
+      ],
+      "title": "NeedCompletionSpec",
+      "type": "object"
+    },
+    "NeedFacet": {
+      "additionalProperties": false,
+      "properties": {
+        "derivation_refs": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Derivation Refs",
+          "type": "array"
+        },
+        "expected_claim_scope": {
+          "$ref": "#/$defs/ExpectedClaimScope"
+        },
+        "facet_kind": {
+          "$ref": "#/$defs/NeedFacetKind"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "need_facet_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "need_facet_id",
+        "need_id",
+        "facet_kind",
+        "expected_claim_scope",
+        "derivation_refs",
+        "producer",
+        "producer_version",
+        "information_scope"
+      ],
+      "title": "NeedFacet",
+      "type": "object"
+    },
+    "NeedFacetKind": {
+      "enum": [
+        "current_state",
+        "relation_state",
+        "capability_status",
+        "limitation",
+        "knowledge_boundary",
+        "causal_history",
+        "setup",
+        "unresolved_status",
+        "commitment",
+        "plan_node"
+      ],
+      "title": "NeedFacetKind",
+      "type": "string"
+    },
+    "NeedGapPolicy": {
+      "enum": [
+        "emit_typed_gap",
+        "fail_mandatory"
+      ],
+      "title": "NeedGapPolicy",
+      "type": "string"
+    },
     "NeedRisk": {
       "enum": [
         "low",
@@ -54,6 +228,14 @@
         "high"
       ],
       "title": "NeedRisk",
+      "type": "string"
+    },
+    "NeedUncertaintyPolicy": {
+      "enum": [
+        "allow_gap_only",
+        "reject_unverified_claim"
+      ],
+      "title": "NeedUncertaintyPolicy",
       "type": "string"
     },
     "ProjectId": {
@@ -192,6 +374,30 @@
           "default": null,
           "title": "Chapter Target"
         },
+        "completion_criteria": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Criteria"
+        },
+        "completion_spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NeedCompletionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "entity_ids": {
           "default": [],
           "items": {
@@ -206,6 +412,25 @@
             "type": "string"
           },
           "title": "Expected Evidence Types",
+          "type": "array"
+        },
+        "expected_section": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriterContextSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "focus_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Focus Ids",
           "type": "array"
         },
         "hierarchy_parent_unit_ids": {
@@ -238,6 +463,14 @@
           "default": null,
           "title": "Horizon Target"
         },
+        "need_facets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NeedFacet"
+          },
+          "title": "Need Facets",
+          "type": "array"
+        },
         "need_id": {
           "$ref": "#/$defs/StableId"
         },
@@ -256,6 +489,34 @@
         },
         "preferred_resolution_path": {
           "$ref": "#/$defs/ResolutionPath"
+        },
+        "priority": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purpose"
+        },
+        "query_hints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Query Hints",
+          "type": "array"
         },
         "query_intent": {
           "$ref": "#/$defs/Stage1QueryIntent"
@@ -394,6 +655,19 @@
     "TaskId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "TaskId",
+      "type": "string"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
       "type": "string"
     }
   },

@@ -288,8 +288,7 @@ def test_evidence_order_is_canonicalized_without_changing_spans() -> None:
     expected = ["evidence.a", "evidence.z"]
     assert [item.evidence_id.root for item in normalized_operation.evidence_refs] == expected
     assert [
-        item["evidence_id"]
-        for item in normalized_operation.payload["record"]["evidence_refs"]
+        item["evidence_id"] for item in normalized_operation.payload["record"]["evidence_refs"]
     ] == expected
 
 

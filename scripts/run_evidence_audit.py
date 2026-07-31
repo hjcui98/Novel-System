@@ -58,17 +58,13 @@ def main() -> int:
     try:
         session_factory = build_session_factory(engine)
         commits = CommitService(session_factory)
-        artifacts = ArtifactRepository(
-            FilesystemObjectStore(args.project_directory / "objects")
-        )
+        artifacts = ArtifactRepository(FilesystemObjectStore(args.project_directory / "objects"))
         canonical_read = RepositoryCanonicalReadAdapter(commits, artifacts)
         project_id = ProjectId(args.project_id)
         current = commits.current_commit(project_id)
         basis = canonical_read.load_verified(project_id, current)
         if basis.canonical_world is None or basis.canonical_text is None:
-            raise ValueError(
-                "canonical World or Text is missing from the current commit"
-            )
+            raise ValueError("canonical World or Text is missing from the current commit")
         world = WorldRootDocument.model_validate_json(
             basis.canonical_world.model_dump_json(),
         )

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import ParseResult, urlparse
 from uuid import uuid4
@@ -33,25 +35,53 @@ from novel_agent.adapters.model import (
 from novel_agent.adapters.opensearch import OpenSearchIndex
 from novel_agent.adapters.postgres.database import build_engine, build_session_factory
 from novel_agent.domain.benchmark import BenchmarkBundle
-from novel_agent.domain.ids import ArtifactId, RunId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, QualityRepairFeatureFlags
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.claim_support import (
+    ControllerSupportSelector,
+    TrustedClaimSupportProducer,
+)
 from novel_agent.services.commits import CommitService
 from novel_agent.services.embedding_cache import SqlEmbeddingCache
+from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
+from novel_agent.services.memory_benchmark_contract import TASK_TEMPLATE_VERSION
+from novel_agent.services.memory_benchmark_evaluation import MemoryBenchmarkEvaluator
+from novel_agent.services.memory_benchmark_metric_contracts import (
+    GATE_METRIC_FORMULA_HASH,
+    GATE_METRIC_FORMULA_VERSION,
+)
 from novel_agent.services.projection import (
     ArtifactProjectionSourceLoader,
     DerivedSnapshotRepository,
     FullDerivedProjectionBuilder,
 )
 from novel_agent.services.r1 import R1WorldRepository
+from novel_agent.services.retrieval_unit_normalizer import RetrievalUnitNormalizer
 from novel_agent.services.search_retrieval import Stage2RSearchIndexer
+from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
 from novel_agent.services.stage2_retrieval_backend import RealHybridProjectionGateway
+from novel_agent.services.task_conditioned_need_generation import (
+    TaskPlanConditionedNeedGenerator,
+)
+from novel_agent.services.task_focus import TaskFocusExtractor
 from novel_agent.services.teacher_forced_benchmark_e2e import (
     TeacherForcedBenchmarkE2ERunner,
 )
+from novel_agent.services.writer_context_assembler import WriterContextAssembler
+
+
+def _bounded_int(label: str, *, minimum: int, maximum: int) -> Callable[[str], int]:
+    def parse(raw: str) -> int:
+        value = int(raw)
+        if not minimum <= value <= maximum:
+            raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
+        return value
+
+    return parse
 
 
 def parser() -> argparse.ArgumentParser:
@@ -65,6 +95,15 @@ def parser() -> argparse.ArgumentParser:
             "existing Canonical project directory whose objects, commit chain, "
             "and snapshots are reused"
         ),
+    )
+    value.add_argument(
+        "--resume-commit",
+        help="explicit historical Canonical commit for checkpoint-only evaluation",
+    )
+    value.add_argument(
+        "--resume-chapter",
+        type=_bounded_int("resume chapter", minimum=0, maximum=95),
+        help="chapter represented by --resume-commit",
     )
     value.add_argument(
         "--database-url",
@@ -96,7 +135,18 @@ def parser() -> argparse.ArgumentParser:
         default=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
     )
     value.add_argument("--token-budget", type=int, default=4000)
-    value.add_argument("--max-candidates", type=int, default=20)
+    value.add_argument(
+        "--max-candidates",
+        type=_bounded_int("max candidates", minimum=1, maximum=100),
+        default=20,
+    )
+    value.add_argument("--max-tool-calls", type=int, default=48)
+    value.add_argument(
+        "--arms",
+        choices=("A", "ABC"),
+        default="ABC",
+        help="A runs the deterministic gate only; ABC enables the paired experiment",
+    )
     value.add_argument(
         "--semantic-backend",
         choices=("local_openai", "scripted"),
@@ -138,11 +188,27 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    if (args.resume_commit is None) != (args.resume_chapter is None):
+        raise ValueError("--resume-commit and --resume-chapter must be supplied together")
+    if args.resume_commit is not None and args.resume_project is None:
+        raise ValueError("explicit historical resume requires --resume-project")
     bundle = HumanBenchmarkCompiler().compile(args.source)
     project_directory = (args.resume_project or args.output_directory).resolve()
+    output_directory = args.output_directory.resolve()
     retrieval_profile = RetrievalBackendProfile(args.retrieval_backend)
+    repository_root = Path(__file__).parents[1]
+    require_clean_source = retrieval_profile is RetrievalBackendProfile.REAL_HYBRID
+    if require_clean_source:
+        _assert_formal_source_clean(repository_root)
     quality_repair_flags = _load_quality_repair_flags(args)
-    _ensure_experiment_manifest(args, bundle, project_directory, quality_repair_flags)
+    _ensure_experiment_manifest(
+        args,
+        bundle,
+        output_directory,
+        quality_repair_flags,
+        project_directory=project_directory,
+        require_clean_source=require_clean_source,
+    )
     endpoint = (
         OpenAICompatibleChatEndpoint(
             base_url=args.model_base_url,
@@ -168,6 +234,8 @@ def main() -> int:
         summary = TeacherForcedBenchmarkE2ERunner(
             token_budget=args.token_budget,
             max_candidates=args.max_candidates,
+            max_tool_calls=args.max_tool_calls,
+            benchmark_arms=(("A",) if args.arms == "A" else ("A", "B", "C")),
             semantic_endpoint=endpoint,
             retrieval_backend_profile=retrieval_profile,
             real_hybrid_backend_provider=real_hybrid_provider,
@@ -183,6 +251,10 @@ def main() -> int:
             max_chapter=args.max_chapter,
             resume=args.resume or args.resume_project is not None,
             project_directory=project_directory,
+            resume_commit=(
+                CommitId(args.resume_commit) if args.resume_commit is not None else None
+            ),
+            resume_chapter_override=args.resume_chapter,
         )
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 0
@@ -212,8 +284,7 @@ def _real_hybrid_gateway(
     search_target = _loopback_http_url(args.opensearch_url, "OpenSearch")
     embedding_target = _loopback_http_url(args.embedding_url, "embedding")
     reranker_target = _loopback_http_url(args.reranker_url, "reranker")
-    if not (project_directory / "objects").is_dir():
-        raise ValueError(f"missing project artifact directory: {project_directory / 'objects'}")
+    _prepare_project_artifact_directory(args, project_directory)
     model_lock = load_model_lock()
     embedding_model = model_lock.models["embedding"]
     reranker_model = model_lock.models["reranker"]
@@ -296,6 +367,20 @@ def _real_hybrid_gateway(
     )
 
 
+def _prepare_project_artifact_directory(
+    args: argparse.Namespace,
+    project_directory: Path,
+) -> None:
+    objects = project_directory / "objects"
+    if objects.is_dir():
+        return
+    if objects.exists():
+        raise ValueError(f"project artifact path is not a directory: {objects}")
+    if args.resume_project is not None or (project_directory / "progress_manifest.json").exists():
+        raise ValueError(f"missing project artifact directory: {objects}")
+    objects.mkdir(parents=True)
+
+
 def _loopback_postgres_url(value: str | None) -> str:
     if value is None:
         raise ValueError("real_hybrid requires a PostgreSQL database URL")
@@ -337,14 +422,18 @@ def _load_quality_repair_flags(args: argparse.Namespace) -> QualityRepairFeature
 def _ensure_experiment_manifest(
     args: argparse.Namespace,
     bundle: BenchmarkBundle,
-    project_directory: Path,
+    manifest_directory: Path,
     quality_repair_flags: QualityRepairFeatureFlags,
+    *,
+    project_directory: Path | None = None,
+    require_clean_source: bool = False,
 ) -> None:
-    project_directory.mkdir(parents=True, exist_ok=True)
+    manifest_directory.mkdir(parents=True, exist_ok=True)
+    resolved_project_directory = (project_directory or manifest_directory).resolve()
     database_url = (
         _loopback_postgres_url(args.database_url)
         if args.retrieval_backend == RetrievalBackendProfile.REAL_HYBRID.value
-        else args.database_url or f"sqlite:///{project_directory / 'project.sqlite3'}"
+        else args.database_url or f"sqlite:///{resolved_project_directory / 'project.sqlite3'}"
     )
     parsed_database = urlparse(database_url)
     database_descriptor = (
@@ -353,31 +442,82 @@ def _ensure_experiment_manifest(
         if parsed_database.scheme.startswith("postgresql+")
         else database_url
     )
+    repository_root = Path(__file__).parents[1]
     code_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=Path(__file__).parents[1],
+        cwd=repository_root,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
+    code_status = _source_status(repository_root)
+    if require_clean_source and code_status.strip():
+        raise ValueError(
+            "formal Stage 2M run requires a clean executable source tree; "
+            "commit or otherwise remove changes under src/, scripts/, schemas/, Makefile, "
+            "and pyproject.toml before starting"
+        )
+    arms = getattr(args, "arms", "ABC")
+    benchmark_runner = Stage2PairedPilotRunner(
+        token_budget=getattr(args, "token_budget", 4000),
+        max_candidates=getattr(args, "max_candidates", 20),
+        max_tool_calls=getattr(args, "max_tool_calls", 48),
+        arms=("A",) if arms == "A" else ("A", "B", "C"),
+        retrieval_backend_profile=RetrievalBackendProfile(args.retrieval_backend),
+        controller_mode=quality_repair_flags.controller_mode,
+    )
+    run_config_hash = benchmark_runner.public_configuration_fingerprint(
+        bundle.bundle_schema_version.root
+    )
     payload = {
-        "schema_version": 1,
+        "schema_version": 3,
         "experiment_id": args.experiment_id,
         "code_commit": code_commit,
+        "code_source_fingerprint": _code_source_fingerprint(repository_root).root,
+        "code_source_dirty": bool(code_status.strip()),
         "benchmark_source": str(args.source.resolve()),
         "benchmark_content_hash": bundle.content_hash.root,
         "database": database_descriptor,
-        "project_directory": str(project_directory),
+        "project_directory": str(resolved_project_directory),
         "retrieval_backend": args.retrieval_backend,
         "opensearch_url": _loopback_http_url(args.opensearch_url, "OpenSearch").geturl(),
         "embedding_url": _loopback_http_url(args.embedding_url, "embedding").geturl(),
         "reranker_url": _loopback_http_url(args.reranker_url, "reranker").geturl(),
         "model_base_url": args.model_base_url,
         "model": args.model,
+        "information_profile": getattr(
+            args,
+            "information_profile",
+            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
+        ),
+        "memory_benchmark_contract_version": "memory_benchmark.v0.2",
+        "public_task_template_version": TASK_TEMPLATE_VERSION,
+        "task_focus_version": TaskFocusExtractor.version,
+        "need_generation_profile": TaskPlanConditionedNeedGenerator.version,
+        "claim_support_producer_version": TrustedClaimSupportProducer.version,
+        "support_selection_policy_version": ControllerSupportSelector.version,
+        "retrieval_unit_normalizer_version": RetrievalUnitNormalizer.version,
+        "writer_context_profile": WriterContextAssembler.contract_version,
+        "writer_context_assembler_version": WriterContextAssembler.version,
+        "gold_evidence_matcher_version": GoldEvidenceMatcher.version,
+        "evaluator_version": MemoryBenchmarkEvaluator.version,
+        "gate_metric_formula_version": GATE_METRIC_FORMULA_VERSION,
+        "gate_metric_formula_hash": GATE_METRIC_FORMULA_HASH.root,
+        "code_version": Stage2PairedPilotRunner.version,
+        "run_config_hash": run_config_hash.root,
+        "benchmark_contract_hash": bundle.content_hash.root,
+        "matcher_version": GoldEvidenceMatcher.version,
+        "writer_token_budget": getattr(args, "token_budget", 4000),
+        "evidence_ledger_token_budget": 12_000,
+        "max_candidates": getattr(args, "max_candidates", 20),
+        "max_tool_calls": getattr(args, "max_tool_calls", 48),
+        "arms": getattr(args, "arms", "ABC"),
         "quality_repair_flags": quality_repair_flags.model_dump(mode="json"),
         "memory_write_dry_run": args.memory_write_dry_run,
+        "resume_commit": getattr(args, "resume_commit", None),
+        "resume_chapter": getattr(args, "resume_chapter", None),
     }
-    path = project_directory / "experiment_manifest.json"
+    path = manifest_directory / "experiment_manifest.json"
     if path.exists():
         existing = json.loads(path.read_text("utf-8"))
         if existing != payload:
@@ -385,7 +525,7 @@ def _ensure_experiment_manifest(
         return
     with tempfile.NamedTemporaryFile(
         mode="w",
-        dir=project_directory,
+        dir=manifest_directory,
         prefix=".experiment-manifest.",
         delete=False,
         encoding="utf-8",
@@ -395,6 +535,57 @@ def _ensure_experiment_manifest(
         temporary.flush()
         os.fsync(temporary.fileno())
     os.replace(temporary.name, path)
+
+
+def _source_status(repository_root: Path) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "src",
+            "scripts",
+            "schemas",
+            "Makefile",
+            "pyproject.toml",
+        ],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _assert_formal_source_clean(repository_root: Path) -> None:
+    if _source_status(repository_root).strip():
+        raise ValueError(
+            "formal Stage 2M run requires a clean executable source tree; "
+            "commit or otherwise remove changes under src/, scripts/, schemas/, Makefile, "
+            "and pyproject.toml before starting"
+        )
+
+
+def _code_source_fingerprint(repository_root: Path) -> ArtifactId:
+    """Bind formal runs to the exact executable source, including uncommitted files."""
+
+    digest = hashlib.sha256()
+    roots = (
+        repository_root / "src",
+        repository_root / "scripts",
+        repository_root / "schemas",
+    )
+    files = [
+        path
+        for root in roots
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and not path.name.endswith(".pyc")
+    ]
+    files.extend((repository_root / "Makefile", repository_root / "pyproject.toml"))
+    for path in sorted(files):
+        relative = path.relative_to(repository_root).as_posix().encode("utf-8")
+        digest.update(relative + b"\0" + hashlib.sha256(path.read_bytes()).digest() + b"\n")
+    return ArtifactId(f"sha256:{digest.hexdigest()}")
 
 
 if __name__ == "__main__":

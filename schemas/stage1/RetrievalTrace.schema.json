@@ -5,6 +5,36 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "ChannelHit": {
       "additionalProperties": false,
       "properties": {
@@ -185,6 +215,18 @@
       "title": "FusedCandidate",
       "type": "object"
     },
+    "NeedExecutionStatus": {
+      "description": "Whether a legal Need actually received retrieval budget.",
+      "enum": [
+        "executed_with_candidates",
+        "executed_empty",
+        "not_executed_budget_exhausted",
+        "not_executed_freshness_blocked",
+        "not_executed_scope_blocked"
+      ],
+      "title": "NeedExecutionStatus",
+      "type": "string"
+    },
     "QuoteHash": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "QuoteHash",
@@ -231,6 +273,41 @@
           "minLength": 1,
           "title": "Access Scope",
           "type": "string"
+        },
+        "canonical_alias_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonical_value_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonicalizer_version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonicalizer Version"
         },
         "content_hash": {
           "anyOf": [
@@ -451,6 +528,11 @@
       "title": "RetrievalUnitKind",
       "type": "string"
     },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -541,6 +623,12 @@
       "title": "Anchors Expanded",
       "type": "integer"
     },
+    "calls_allocated": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Calls Allocated",
+      "type": "integer"
+    },
     "candidates": {
       "items": {
         "$ref": "#/$defs/FusedCandidate"
@@ -567,6 +655,14 @@
       },
       "title": "Channel Failures",
       "type": "object"
+    },
+    "closed_need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Closed Need Facet Ids",
+      "type": "array"
     },
     "fallback_reason": {
       "anyOf": [
@@ -598,14 +694,34 @@
     "intent": {
       "$ref": "#/$defs/Stage1QueryIntent"
     },
+    "irreducible_need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Irreducible Need Facet Ids",
+      "type": "array"
+    },
     "l0_tokens": {
       "default": 0,
       "minimum": 0,
       "title": "L0 Tokens",
       "type": "integer"
     },
+    "need_execution_status": {
+      "$ref": "#/$defs/NeedExecutionStatus",
+      "default": "executed_empty"
+    },
     "need_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "required_need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Required Need Facet Ids",
+      "type": "array"
     },
     "rerank_applied": {
       "default": false,

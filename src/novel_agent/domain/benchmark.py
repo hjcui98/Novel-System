@@ -10,8 +10,15 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.changes import ChangeOperationType, WorldRecordKind
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, SchemaVersion, StableId
 from novel_agent.domain.memory import PlanObligation, WorldRootDocument
+from novel_agent.domain.memory_benchmark import (
+    BenchmarkInformationProfile,
+    BenchmarkTaskContract,
+    EvidenceSet,
+    GoldType,
+)
 from novel_agent.domain.model_calls import RetrievalInferenceCallRecord
-from novel_agent.domain.text import EvidenceRef, TextBlock
+from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.text import TextBlock as TextBlock
 from novel_agent.domain.world import Entity, Event, PlanNode, RelationRecord, StateRecord
 
 
@@ -181,6 +188,16 @@ class GoldItem(DomainModel):
     # Private target-text evidence proving the Gold was used or constrained output.
     future_evidence_refs: tuple[EvidenceRef, ...] = Field(min_length=1)
     mandatory: bool = False
+    gold_type: GoldType | None = None
+    fact: str | None = Field(default=None, min_length=1)
+    why_needed: str = "required by the benchmark annotation"
+    weight: float = Field(default=1.0, gt=0)
+    applicable_profiles: tuple[BenchmarkInformationProfile, ...] = (
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    accepted_evidence_sets: tuple[EvidenceSet, ...] = ()
+    target_components: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_evidence_kind(self) -> GoldItem:
@@ -191,6 +208,8 @@ class GoldItem(DomainModel):
             raise ValueError("observed and operational Gold require historical evidence")
         if self.kind is not GoldKind.PLAN_OBLIGATION and self.plan_evidence_refs:
             raise ValueError("only plan obligation Gold may carry plan evidence")
+        if len(self.applicable_profiles) != len(set(self.applicable_profiles)):
+            raise ValueError("Gold applicable profiles must be unique")
         return self
 
 
@@ -209,6 +228,7 @@ class BenchmarkCaseManifest(DomainModel):
     project_id: ProjectId
     history_range: tuple[int, int]
     target_range: tuple[int, int]
+    task_contract: BenchmarkTaskContract | None = None
     input_text_root: ArtifactId
     input_summary_root: ArtifactId | None = None
     future_text_root_private: ArtifactId
@@ -251,6 +271,27 @@ class BenchmarkCaseManifest(DomainModel):
                 for chapter in item.target_chapters
             ):
                 raise ValueError("gold target chapter falls outside target range")
+        return self
+
+
+class EvaluatorCase(DomainModel):
+    """Private half of a Stage 2M case, loaded only after a valid freeze."""
+
+    case_id: StableId
+    public_case_hash: ArtifactId
+    gold_items: tuple[GoldItem, ...]
+    forbidden_future_facts: tuple[str, ...] = ()
+    future_text_root_private: ArtifactId
+    reconstructed_target_plan_root: ArtifactId | None = None
+    preparation_refs: tuple[ArtifactId, ...] = ()
+    evaluator_manifest_hash: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_gold(self) -> EvaluatorCase:
+        if not self.gold_items:
+            raise ValueError("evaluator case requires at least one Gold item")
+        if len({item.gold_id for item in self.gold_items}) != len(self.gold_items):
+            raise ValueError("evaluator case Gold ids must be unique")
         return self
 
 

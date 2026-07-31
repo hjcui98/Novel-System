@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attestation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "basis_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "information_scope": {
+      "minLength": 1,
+      "title": "Information Scope",
+      "type": "string"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "retrieval_unit_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieval Unit Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "attestation_id",
+    "basis_commit_id",
+    "basis_snapshot_id",
+    "checkpoint_chapter",
+    "information_scope",
+    "retrieval_unit_ids",
+    "producer",
+    "producer_version"
+  ],
+  "title": "CutoffAttestation",
+  "type": "object"
+}

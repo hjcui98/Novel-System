@@ -572,7 +572,11 @@ class Stage1OpenSearchBackend:
                     }
                 }
             )
-        if need.entity_ids:
+        # Grounded blocks are raw text projections and deliberately do not carry
+        # curator-owned entity associations. Applying a structured entity filter
+        # here makes every legitimate evidence fallback empty; lexical/vector
+        # relevance still scopes the raw-text search.
+        if need.entity_ids and not kinds.issubset(GROUNDED_KINDS):
             filters.append({"terms": {"entity_ids": [item.root for item in need.entity_ids]}})
         if need.time_scope is not None:
             filters.append({"term": {"worldline": need.time_scope.worldline}})
@@ -584,13 +588,10 @@ class Stage1OpenSearchBackend:
                         self._range_or_unspecified("story_time_end", "gte", ordinal),
                     )
                 )
-        narrative_end = (
-            need.chapter_target
-            if need.chapter_target is not None
-            else None
-            if need.horizon_target is None
-            else need.horizon_target[1]
-        )
+        # ``horizon_target`` is the future writing range, not a point that
+        # historical evidence must overlap. Commit scope already enforces the
+        # cutoff. Only an explicit chapter_target requests a chapter-local query.
+        narrative_end = need.chapter_target
         if narrative_end is not None:
             filters.extend(
                 (

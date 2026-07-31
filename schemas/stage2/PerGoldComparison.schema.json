@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "GoldMatchStatus": {
+      "enum": [
+        "HIT",
+        "PARTIAL",
+        "MISS",
+        "CONTRADICTS",
+        "UNTRACEABLE"
+      ],
+      "title": "GoldMatchStatus",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "explanation": {
+      "minLength": 1,
+      "title": "Explanation",
+      "type": "string"
+    },
+    "gold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gold_metric_descriptor_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "gold_metric_descriptor_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "mandatory": {
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "matched_context_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Matched Context Item Ids",
+      "type": "array"
+    },
+    "matched_evidence_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Matched Evidence Ledger Ids",
+      "type": "array"
+    },
+    "missing_components": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Components",
+      "type": "array"
+    },
+    "status": {
+      "$ref": "#/$defs/GoldMatchStatus"
+    },
+    "supported_components": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Components",
+      "type": "array"
+    },
+    "verifier_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "weight": {
+      "exclusiveMinimum": 0,
+      "title": "Weight",
+      "type": "number"
+    }
+  },
+  "required": [
+    "gold_id",
+    "status",
+    "weight",
+    "mandatory",
+    "gold_metric_descriptor_ref",
+    "gold_metric_descriptor_hash",
+    "explanation"
+  ],
+  "title": "PerGoldComparison",
+  "type": "object"
+}

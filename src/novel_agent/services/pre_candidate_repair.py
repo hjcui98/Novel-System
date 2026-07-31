@@ -220,9 +220,7 @@ class BoundedPreCandidateRepairPolicy:
             action = "retry_with_feedback"
         else:
             action = "human_review"
-        replace_complete_draft = (
-            rejection.kind is ProposalRejectionKind.DANGLING_ENTITY_REFERENCE
-        )
+        replace_complete_draft = rejection.kind is ProposalRejectionKind.DANGLING_ENTITY_REFERENCE
         mutable = (
             ()
             if replace_complete_draft

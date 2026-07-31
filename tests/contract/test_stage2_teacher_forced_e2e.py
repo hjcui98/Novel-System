@@ -8,8 +8,8 @@ import pytest
 from novel_agent.domain.ids import ProjectId, StableId
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, PublicCheckpointCase
-from novel_agent.services.content_addressing import content_id
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
+from novel_agent.services.memory_benchmark_contract import build_public_checkpoint_case
 from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
 from novel_agent.services.teacher_forced_benchmark_e2e import (
@@ -41,7 +41,10 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["curator_replay_agent_calls"] == 95
     assert summary["checkpoint_chapters"] == [20, 40, 60, 80, 95]
     assert summary["paired_results_count"] == 5
-    assert summary["comparable_results_count"] == 5
+    # Scripted smoke does not carry trusted semantic support receipts for the
+    # plan-conditioned mandatory facets.  It must now fail closed rather than
+    # treating candidate presence as Writer-ready.
+    assert summary["comparable_results_count"] == 0
     assert summary["future_isolation_failure_count"] == 0
     assert summary["future_leakage_count"] == 0
     assert summary["planner_agent_calls"] == 1
@@ -53,18 +56,26 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert (output / "project.sqlite3").is_file()
     assert (output / "scenario_run.json").is_file()
     scenario = json.loads((output / "scenario_run.json").read_text("utf-8"))
-    plan_by_hash = {plan.root_hash: plan for plan in bundle.plan_roots}
-    expected_checkpoint_plans: dict[str, str] = {}
-    for case in bundle.case_manifests:
-        assert case.input_plan_root is not None
-        expected_checkpoint_plans[case.case_id.root] = content_id(
-            plan_by_hash[case.input_plan_root].model_dump(mode="json")
-        ).root
-    assert {
-        checkpoint["case_id"]: checkpoint["plan_root"] for checkpoint in scenario["checkpoints"]
-    } == expected_checkpoint_plans
+    checkpoint_plan_roots = {checkpoint["plan_root"] for checkpoint in scenario["checkpoints"]}
+    assert len(checkpoint_plan_roots) == 1
+    assert checkpoint_plan_roots.isdisjoint(
+        {
+            case.input_plan_root.root
+            for case in bundle.case_manifests
+            if case.input_plan_root is not None
+        }
+    )
+    plan_hash = next(iter(checkpoint_plan_roots)).removeprefix("sha256:")
+    plan_payload = json.loads(
+        (output / "objects" / "sha256" / plan_hash[:2] / plan_hash).read_text("utf-8")
+    )
+    assert "plan.bootstrap.rough-story-outline.range.81-100" in {
+        node["plan_node_id"] for node in plan_payload["nodes"]
+    }
     report = json.loads((output / "e2e_paired_report.json").read_text("utf-8"))
     assert len(report["cases"]) == 5
+    assert sum(case["comparable"] for case in report["cases"]) == 0
+    assert all(case["blockers"] for case in report["cases"] if not case["comparable"])
     assert all(
         case["comparison_basis_fingerprint"] == report["configuration_fingerprint"]
         for case in report["cases"]
@@ -97,11 +108,12 @@ def test_real_hybrid_profile_fails_closed_before_it_can_create_a_smoke_run(tmp_p
 
 
 def test_public_checkpoint_case_has_no_gold_fields() -> None:
-    public = PublicCheckpointCase(
+    public = build_public_checkpoint_case(
         case_id=StableId("test"),
         project_id=ProjectId("test"),
-        target_range=(20, 25),
+        target_range=(21, 25),
         history_range=(1, 20),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
     )
     assert not hasattr(public, "observed_use_gold")
     assert not hasattr(public, "operational_constraint_gold")
@@ -137,11 +149,12 @@ def test_plan_needs_uses_only_public_case_fields() -> None:
     )
     runner_plan_needs = Stage2PairedPilotRunner._plan_needs
 
-    public = PublicCheckpointCase(
+    public = build_public_checkpoint_case(
         case_id=case.case_id,
         project_id=case.project_id,
         target_range=case.target_range,
         history_range=case.history_range,
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
     )
     needs_from_public = runner_plan_needs(public, plan, world.source_commit, ())
 

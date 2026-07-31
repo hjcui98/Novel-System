@@ -15,9 +15,11 @@ from novel_agent.domain.ids import ArtifactId, CommitId
 from novel_agent.domain.memory import HorizonNeedSet, Stage1MemoryNeed, WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.writer_context import BenchmarkTaskContract
 from novel_agent.services.benchmark_importer import validate_evidence_ref
 from novel_agent.services.content_addressing import world_root_content_id
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.task_focus import FocusSet, TaskFocusType
 
 
 class ModelMemoryContractError(ValueError):
@@ -104,6 +106,48 @@ class ModelMemoryNeedGenerator:
             self._validate_need(need, world, case, request)
         return generated, call
 
+    async def generate_for_public_task(
+        self,
+        *,
+        task: BenchmarkTaskContract,
+        focus_set: FocusSet,
+        world: WorldRootDocument,
+        plan: PlanRootDocument | None,
+        request: ModelRequest,
+    ) -> tuple[HorizonNeedSet, ModelCallRecord]:
+        """Optional Stage 2M model arm over a bounded, public canonical view."""
+
+        if task.task_id.root != request.task_id.root:
+            raise ModelMemoryContractError("public task and model request task ids differ")
+        prompt = self._bounded_need_prompt(task, focus_set, world, plan, request)
+        generated, call = await self._gateway.generate_structured(
+            request.model_copy(update={"prompt": prompt}),
+            HorizonNeedSet,
+        )
+        target = (task.target_chapter_start, task.target_chapter_end)
+        if (generated.horizon_start, generated.horizon_end) != target:
+            raise ModelMemoryContractError("generated need horizon differs from public task")
+        needs = self._all_needs(generated)
+        if len(needs) > 32:
+            raise ModelMemoryContractError("generated public MemoryNeed set exceeds 32 needs")
+        if len({need.need_id for need in needs}) != len(needs):
+            raise ModelMemoryContractError("generated MemoryNeed ids are not unique")
+        allowed_focus_ids = {focus.focus_id for focus in focus_set.focuses}
+        for need in needs:
+            if not need.focus_ids or not set(need.focus_ids).issubset(allowed_focus_ids):
+                raise ModelMemoryContractError(
+                    "generated public MemoryNeed lacks a legal bounded focus"
+                )
+            if need.horizon_target != target:
+                raise ModelMemoryContractError("generated MemoryNeed horizon is outside target")
+            if (
+                need.run_id != request.run_id
+                or need.task_id != request.task_id
+                or need.base_commit != world.source_commit
+            ):
+                raise ModelMemoryContractError("generated MemoryNeed audit identity mismatch")
+        return generated, call
+
     @staticmethod
     def _need_prompt(
         world: WorldRootDocument,
@@ -126,6 +170,77 @@ class ModelMemoryNeedGenerator:
             f"TARGET={json.dumps(public_target, ensure_ascii=False, sort_keys=True)}\n"
             f"WORLD={world.model_dump_json()}\n"
             f"PLAN={None if plan is None else plan.model_dump_json()}"
+        )
+
+    @staticmethod
+    def _bounded_need_prompt(
+        task: BenchmarkTaskContract,
+        focus_set: FocusSet,
+        world: WorldRootDocument,
+        plan: PlanRootDocument | None,
+        request: ModelRequest,
+    ) -> str:
+        canonical_ids = {focus.canonical_id for focus in focus_set.focuses}
+        focused_entity_ids = {
+            focus.canonical_id
+            for focus in focus_set.focuses
+            if focus.focus_type is TaskFocusType.ENTITY
+        }
+        bounded_world = {
+            "entities": [
+                item.model_dump(mode="json")
+                for item in world.entities
+                if item.entity_id in focused_entity_ids
+            ],
+            "states": [
+                item.model_dump(mode="json")
+                for item in world.states
+                if item.state_id in canonical_ids or item.subject_id in focused_entity_ids
+            ][:32],
+            "relations": [
+                item.model_dump(mode="json")
+                for item in world.relations
+                if item.relation_id in canonical_ids
+            ][:16],
+            "events": [
+                item.model_dump(mode="json")
+                for item in world.events
+                if item.event_id in canonical_ids
+            ][:8],
+            "obligations": [
+                item.model_dump(mode="json")
+                for item in world.obligations
+                if item.obligation_id in canonical_ids
+            ][:16],
+        }
+        plan_view = None
+        if plan is not None:
+            plan_view = {
+                "nodes": [
+                    item.model_dump(mode="json")
+                    for item in plan.nodes
+                    if item.plan_node_id in canonical_ids
+                ][:16],
+                "chapter_goals": [
+                    item.model_dump(mode="json")
+                    for item in plan.chapter_goals
+                    if item.goal_id in canonical_ids
+                ][:8],
+            }
+        audit = {
+            "run_id": request.run_id.root,
+            "task_id": request.task_id.root,
+            "base_commit": world.source_commit.root,
+        }
+        return (
+            "Generate HorizonNeedSet JSON from the safe public task and bounded focus view. "
+            "Every need must cite one or more supplied focus_ids. Never infer evaluator Gold, "
+            "target prose, target_plan, preparation, or any record outside this view.\n"
+            f"TASK={task.model_dump_json()}\n"
+            f"FOCUSES={focus_set.model_dump_json()}\n"
+            f"WORLD_VIEW={json.dumps(bounded_world, ensure_ascii=False, sort_keys=True)}\n"
+            f"PLAN_VIEW={json.dumps(plan_view, ensure_ascii=False, sort_keys=True)}\n"
+            f"AUDIT={json.dumps(audit, sort_keys=True)}"
         )
 
     @staticmethod

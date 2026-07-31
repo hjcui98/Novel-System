@@ -284,6 +284,10 @@ def test_opensearch_backend_routes_typed_channels_with_basis_filters(
     serialized = str(query)
     assert COMMIT.root in serialized
     assert SNAPSHOT.root in serialized
+    if pool is CandidatePool.GROUNDED:
+        assert "entity.lin-che" not in serialized
+    else:
+        assert "entity.lin-che" in serialized
 
 
 def test_opensearch_backend_fails_closed_on_invalid_queries_and_hits() -> None:
@@ -381,6 +385,30 @@ def test_opensearch_filters_optional_time_scope(time_scope: StoryTime) -> None:
     assert "worldline" in serialized
     assert ("story_time_start" in serialized) is (time_scope.start_ordinal is not None)
     assert "narrative_start" not in serialized
+
+
+def test_future_horizon_does_not_filter_historical_grounded_evidence() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = _search_backend(adapter, _units()[1])
+    query_need = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "旧誓言",
+        (CandidatePool.GROUNDED,),
+    ).model_copy(
+        update={
+            "chapter_target": None,
+            "horizon_target": (21, 25),
+            "entity_ids": (StableId("entity.lin-che"),),
+        }
+    )
+
+    backend.search(query_need, RetrievalChannel.GROUNDED_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "narrative_start" not in serialized
+    assert "narrative_end" not in serialized
+    assert "entity.lin-che" not in serialized
 
 
 def test_opensearch_lexical_query_uses_phrase_matching_and_pre_score_scope_filters() -> None:

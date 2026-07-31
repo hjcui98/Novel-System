@@ -27,6 +27,7 @@ def test_ensure_index_creates_only_when_missing() -> None:
     client.indices.exists.return_value = True
     adapter.ensure_index("evidence", mapping)
     client.indices.create.assert_not_called()
+    assert adapter.index_exists("evidence") is True
 
 
 def test_index_get_and_missing_document() -> None:

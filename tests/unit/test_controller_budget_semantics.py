@@ -55,7 +55,7 @@ def test_terminal_mapping_for_budget_and_access_failures() -> None:
         },
     )()
     budget.tool_budget.calls_used = 1
-    budget.note_tool_result(failed, backend_executed=False)  # type: ignore[arg-type]
+    budget.note_tool_result(failed, backend_executed=False)
     assert budget.terminal_failure == ControllerStopReason.BUDGET_EXHAUSTED.value
     assert budget.tool_failure_count == 1
     assert budget.backend_search_count == 0
@@ -74,7 +74,7 @@ def test_terminal_mapping_for_budget_and_access_failures() -> None:
         },
     )()
     budget2.tool_budget.calls_used = 1
-    budget2.note_tool_result(denied, backend_executed=False)  # type: ignore[arg-type]
+    budget2.note_tool_result(denied, backend_executed=False)
     assert budget2.terminal_failure == ControllerStopReason.ACCESS_BLOCKED.value
 
 

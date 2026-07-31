@@ -1,0 +1,182 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
+      "type": "string"
+    },
+    "WriterContextValidity": {
+      "enum": [
+        "current",
+        "historical",
+        "planned",
+        "uncertain"
+      ],
+      "title": "WriterContextValidity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "claim": {
+      "minLength": 1,
+      "title": "Claim",
+      "type": "string"
+    },
+    "claim_variant_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "context_item_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "evidence_ledger_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Evidence Ledger Ids",
+      "type": "array"
+    },
+    "mandatory": {
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "retrieval_unit_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieval Unit Ids",
+      "type": "array"
+    },
+    "section": {
+      "$ref": "#/$defs/WriterContextSection"
+    },
+    "supersedes_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Supersedes Item Ids",
+      "type": "array"
+    },
+    "support_group_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "support_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "validity": {
+      "$ref": "#/$defs/WriterContextValidity"
+    }
+  },
+  "required": [
+    "context_item_id",
+    "section",
+    "claim",
+    "validity",
+    "mandatory",
+    "confidence",
+    "need_ids",
+    "retrieval_unit_ids",
+    "evidence_ledger_ids"
+  ],
+  "title": "WriterContextItem",
+  "type": "object"
+}

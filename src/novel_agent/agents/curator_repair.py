@@ -339,9 +339,7 @@ class CuratorRepairAgent:
         for operation in changes.operations:
             original = parent_payloads.get(operation.target_id)
             if original is None:
-                raise CuratorRepairContractError(
-                    "evidence-only repair introduced a new target"
-                )
+                raise CuratorRepairContractError("evidence-only repair introduced a new target")
             if original != CuratorRepairAgent._payload_without_evidence(operation.payload):
                 raise CuratorRepairContractError(
                     "evidence-only repair changed immutable record content"

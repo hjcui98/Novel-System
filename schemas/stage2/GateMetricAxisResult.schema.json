@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "GateMetricAxis": {
+      "enum": [
+        "current_state_accuracy",
+        "operational_plan_coverage",
+        "key_historical_evidence_recall"
+      ],
+      "title": "GateMetricAxis",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "axis": {
+      "$ref": "#/$defs/GateMetricAxis"
+    },
+    "denominator_weight": {
+      "exclusiveMinimum": 0,
+      "title": "Denominator Weight",
+      "type": "number"
+    },
+    "item_count": {
+      "minimum": 0,
+      "title": "Item Count",
+      "type": "integer"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "threshold": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Threshold",
+      "type": "number"
+    },
+    "value": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Value",
+      "type": "number"
+    },
+    "weighted_score_sum": {
+      "minimum": 0,
+      "title": "Weighted Score Sum",
+      "type": "number"
+    }
+  },
+  "required": [
+    "axis",
+    "item_count",
+    "denominator_weight",
+    "weighted_score_sum",
+    "value",
+    "threshold",
+    "passed"
+  ],
+  "title": "GateMetricAxisResult",
+  "type": "object"
+}

@@ -57,6 +57,7 @@ def _state_op(text_support: str) -> tuple[CuratedOperationDraftV2, EvidenceCandi
 
 # -- Lexical gate (never blocks) --
 
+
 def test_lexical_hit_returns_supports() -> None:
     gate = EvidenceSupportGate()
     op, cand = _state_op("chen shows extreme_confidence cultivation-attitude clearly.")
@@ -88,8 +89,10 @@ def test_chinese_plan_evidence_flags_not_rejects() -> None:
         ),
         evidence_candidate_ids=(StableId("evidence-candidate.c21-plan"),),
     )
-    cand = _candidate("\u56db\u5341\u4e5d\u5377\u4e66\uff0c\u4e00\u767e\u904d\uff0c\u5341\u5929",
-                       cid="evidence-candidate.c21-plan")
+    cand = _candidate(
+        "\u56db\u5341\u4e5d\u5377\u4e66\uff0c\u4e00\u767e\u904d\uff0c\u5341\u5929",
+        cid="evidence-candidate.c21-plan",
+    )
     gate = EvidenceSupportGate()
     decisions = gate.evaluate_operation(operation_index=0, operation=plan_op, candidates=(cand,))
     assert decisions[0].disposition is EvidenceSupportDisposition.PARTIAL
@@ -146,8 +149,7 @@ def test_negation_near_primary_returns_contradicts() -> None:
 def test_disposition_far_negation_does_not_contradict() -> None:
     gate = EvidenceSupportGate()
     op, cand = _state_op(
-        "not at all relevant here today, but cultivation-attitude "
-        "shows extreme_confidence clearly."
+        "not at all relevant here today, but cultivation-attitude shows extreme_confidence clearly."
     )
     decisions = gate.evaluate_operation(operation_index=0, operation=op, candidates=(cand,))
     assert decisions[0].disposition is EvidenceSupportDisposition.SUPPORTS
@@ -156,31 +158,41 @@ def test_disposition_far_negation_does_not_contradict() -> None:
 
 # -- Token extraction (private helpers) --
 
+
 def test_record_tokens_for_each_kind() -> None:
     gate = EvidenceSupportGate()
     state_tokens = gate._record_tokens(
         CuratorStateRecord(
-            subject_id=StableId("s"), predicate="hp", value="critical",
-            valid_time=CuratorStoryTime(worldline="main"), truth_class=TruthClass.ASSERTION,
+            subject_id=StableId("s"),
+            predicate="hp",
+            value="critical",
+            valid_time=CuratorStoryTime(worldline="main"),
+            truth_class=TruthClass.ASSERTION,
         )
     )
     assert "hp" in state_tokens
     relation_tokens = gate._record_tokens(
         CuratorRelationRecord(
-            predicate="loves", subject_id=StableId("a"), object_id=StableId("b"),
-            valid_time=CuratorStoryTime(worldline="main"), truth_class=TruthClass.ASSERTION,
+            predicate="loves",
+            subject_id=StableId("a"),
+            object_id=StableId("b"),
+            valid_time=CuratorStoryTime(worldline="main"),
+            truth_class=TruthClass.ASSERTION,
         )
     )
     assert "loves" in relation_tokens
     event_tokens = gate._record_tokens(
         CuratorEventRecord(
-            event_type="battle", truth_class=TruthClass.ASSERTION,
+            event_type="battle",
+            truth_class=TruthClass.ASSERTION,
         )
     )
     assert "battle" in event_tokens
     obligation_tokens = gate._record_tokens(
         CuratorObligationRecord(
-            kind="objective", description="enter the tower", status="open",
+            kind="objective",
+            description="enter the tower",
+            status="open",
         )
     )
     assert "objective" in obligation_tokens
@@ -223,11 +235,15 @@ def test_record_tokens_extracts_word_parts_from_long_value() -> None:
 def test_scalar_none_handled() -> None:
     gate = EvidenceSupportGate()
     op = CuratedOperationDraftV2(
-        operation=ChangeOperationType.CREATE, record_kind=WorldRecordKind.STATE,
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.STATE,
         target_id=StableId("state.x"),
         record=CuratorStateRecord(
-            subject_id=StableId("s"), predicate="p", value=None,
-            valid_time=CuratorStoryTime(worldline="main"), truth_class=TruthClass.ASSERTION,
+            subject_id=StableId("s"),
+            predicate="p",
+            value=None,
+            valid_time=CuratorStoryTime(worldline="main"),
+            truth_class=TruthClass.ASSERTION,
         ),
         evidence_candidate_ids=(StableId("e.c"),),
     )
@@ -237,6 +253,7 @@ def test_scalar_none_handled() -> None:
 
 
 # -- Finding signatures (WP5) --
+
 
 def test_finding_signature_ignores_output_hash_and_is_stable() -> None:
     first = proposal_finding_signature(

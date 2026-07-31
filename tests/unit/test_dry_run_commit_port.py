@@ -17,7 +17,7 @@ def test_dry_run_commit_port_returns_typed_refusal_without_accepting() -> None:
     request = SimpleNamespace(request_id=StableId("request.dry-run"))
 
     # The port must refuse even if called.
-    result = port.resolve_or_replay_exact(request)
+    result = port.resolve_or_replay_exact(request)  # type: ignore[arg-type]
     assert result.status == MemoryWriteCommitStatus.DRY_RUN_REFUSED.value
     assert port.calls == 1
     assert port.accepted_count == 0
@@ -26,7 +26,7 @@ def test_dry_run_commit_port_returns_typed_refusal_without_accepting() -> None:
     assert port.current == canonical
 
     # Calling again still refuses.
-    result2 = port.resolve_or_replay_exact(request)
+    result2 = port.resolve_or_replay_exact(request)  # type: ignore[arg-type]
     assert result2.status == MemoryWriteCommitStatus.DRY_RUN_REFUSED.value
     assert port.calls == 2
     assert port.accepted_count == 0

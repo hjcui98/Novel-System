@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from novel_agent.domain.ids import CommitId, StableId
+from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
 from novel_agent.services.human_benchmark_compiler import (
     HumanBenchmarkCompileError,
     HumanBenchmarkCompiler,
@@ -42,14 +43,22 @@ def test_human_benchmark_compiler_rejects_malformed_plan_evidence_and_gold() -> 
     )
     assert empty_plan.chapter_goals == ()
     with pytest.raises(HumanBenchmarkCompileError, match="must be an object"):
-        compiler._historical_evidence({"gold_evidence_refs": []}, history, commit)
+        compiler._historical_evidence({"gold_evidence_refs": []}, {"items": []}, history, commit)
     with pytest.raises(HumanBenchmarkCompileError, match="mapping is malformed"):
-        compiler._historical_evidence({"gold_evidence_refs": {1: []}}, history, commit)
+        compiler._historical_evidence(
+            {"gold_evidence_refs": {1: []}}, {"items": []}, history, commit
+        )
     with pytest.raises(HumanBenchmarkCompileError, match="chapter is absent"):
-        compiler._historical_evidence({"gold_evidence_refs": {"G": [999]}}, history, commit)
+        compiler._historical_evidence(
+            {"gold_evidence_refs": {"G": [999]}},
+            {"items": []},
+            history,
+            commit,
+        )
     with pytest.raises(HumanBenchmarkCompileError, match="prelude is absent"):
         compiler._historical_evidence(
             {"gold_evidence_refs": {"G": [0]}},
+            {"items": []},
             history.model_copy(update={"prelude": None}),
             commit,
         )
@@ -58,6 +67,7 @@ def test_human_benchmark_compiler_rejects_malformed_plan_evidence_and_gold() -> 
             {"target_range": [21, 25]},
             {"items": {}},
             {},
+            {},
             future_evidence,
         )
     with pytest.raises(HumanBenchmarkCompileError, match="observed_use_gold"):
@@ -65,12 +75,14 @@ def test_human_benchmark_compiler_rejects_malformed_plan_evidence_and_gold() -> 
             {"target_range": [21, 25], "observed_use_gold": {}},
             {"items": []},
             {},
+            {},
             future_evidence,
         )
     with pytest.raises(HumanBenchmarkCompileError, match="lacks source evidence"):
         compiler._gold(
             {"target_range": [21, 25], "observed_use_gold": ["G"]},
             {"items": [None, {"id": "G", "fact": "fact"}]},
+            {},
             {},
             future_evidence,
         )
@@ -113,6 +125,16 @@ def test_human_benchmark_compiler_fail_closed_parsers_and_scalar_helpers(
     for range_value in ("1-2", [1]):
         with pytest.raises(HumanBenchmarkCompileError, match="two-item range"):
             compiler._range(range_value)
+
+    with pytest.raises(HumanBenchmarkCompileError, match="unsupported Gold type"):
+        compiler._gold_type({"type": "unknown-type"})
+    assert set(compiler._applicable_profiles({})) == set(BenchmarkInformationProfile)
+    invalid_profile_lists: tuple[object, ...] = ([], "visible_at_cutoff")
+    for value in invalid_profile_lists:
+        with pytest.raises(HumanBenchmarkCompileError, match="non-empty list"):
+            compiler._applicable_profiles({"applicable_profiles": value})
+    with pytest.raises(HumanBenchmarkCompileError, match="invalid information profile"):
+        compiler._applicable_profiles({"applicable_profiles": ["not-a-profile"]})
 
 
 def test_human_benchmark_compiler_derives_content_bound_gate_subset() -> None:
@@ -184,3 +206,104 @@ def test_human_benchmark_compiler_rejects_every_invalid_plan_gold_reference() ->
     for raw_case, message in cases:
         with pytest.raises(HumanBenchmarkCompileError, match=message):
             compiler._plan_gold(raw_case, plan, future, commit)
+
+
+def test_human_benchmark_compiler_precise_evidence_is_fail_closed() -> None:
+    compiler = HumanBenchmarkCompiler()
+    bundle = compiler.compile(PILOT)
+    case = bundle.case_manifests[0]
+    history = next(root for root in bundle.text_roots if root.root_hash == case.input_text_root)
+    commit = CommitId(history.root_hash.root)
+    raw_case = {"gold_evidence_refs": {"G": [0]}}
+
+    with pytest.raises(HumanBenchmarkCompileError, match="Gold items must be a list"):
+        compiler._historical_evidence(raw_case, {"items": {}}, history, commit)
+
+    malformed: tuple[tuple[object, str], ...] = (
+        ([], "non-empty list"),
+        ({}, "non-empty list"),
+        ([None], "must be an object"),
+        ([{}], "requires evidence"),
+        ([{"evidence": []}], "requires evidence"),
+        (
+            [
+                {
+                    "evidence": [{"chapter": 0, "quote": "按照中年道人的说法"}],
+                    "components": "bad",
+                }
+            ],
+            "components must be a list",
+        ),
+    )
+    for raw_sets, message in malformed:
+        with pytest.raises(HumanBenchmarkCompileError, match=message):
+            compiler._historical_evidence(
+                raw_case,
+                {"items": [{"id": "G", "accepted_evidence_sets": raw_sets}]},
+                history,
+                commit,
+            )
+
+    with pytest.raises(HumanBenchmarkCompileError, match="must be an object"):
+        compiler._annotated_evidence("bad", history, commit, namespace="test.raw")
+    with pytest.raises(HumanBenchmarkCompileError, match="prelude is absent"):
+        compiler._annotated_evidence(
+            {"chapter": 0, "quote": "青山"},
+            history.model_copy(update={"prelude": None}),
+            commit,
+            namespace="test.prelude",
+        )
+    with pytest.raises(HumanBenchmarkCompileError, match="chapter is absent"):
+        compiler._annotated_evidence(
+            {"chapter": 999, "quote": "missing"},
+            history,
+            commit,
+            namespace="test.chapter",
+        )
+    for quote in ("not present anywhere", "陈长生"):
+        with pytest.raises(HumanBenchmarkCompileError, match="found="):
+            compiler._annotated_evidence(
+                {"chapter": 0, "quote": quote},
+                history,
+                commit,
+                namespace="test.quote",
+            )
+
+
+def test_human_benchmark_compiler_precise_evidence_defaults_are_content_bound() -> None:
+    compiler = HumanBenchmarkCompiler()
+    bundle = compiler.compile(PILOT)
+    case = bundle.case_manifests[0]
+    history = next(root for root in bundle.text_roots if root.root_hash == case.input_text_root)
+    commit = CommitId(history.root_hash.root)
+    historical, accepted = compiler._historical_evidence(
+        {"gold_evidence_refs": {"G": [0]}},
+        {
+            "items": [
+                {
+                    "id": "G",
+                    "target_components": ["component"],
+                    "accepted_evidence_sets": [
+                        {"evidence": [{"chapter": 0, "quote": "按照中年道人的说法"}]}
+                    ],
+                }
+            ]
+        },
+        history,
+        commit,
+    )
+
+    assert historical["G"] == accepted["G"][0].evidence_refs
+    assert accepted["G"][0].evidence_set_id.root == "accepted.G.1"
+    assert accepted["G"][0].component_ids == ("component",)
+
+
+def test_packaging_frontmatter_is_excluded_but_narrative_prelude_is_preserved() -> None:
+    packaged = "作者\uff1a某人\n内容简介\uff1a未来剧透\n第一卷 开始\n序章正文"
+    assert HumanBenchmarkCompiler._strip_packaging_frontmatter(packaged) == (
+        "第一卷 开始\n序章正文"
+    )
+    narrative_only = "第一卷 开始\n序章正文"
+    assert HumanBenchmarkCompiler._strip_packaging_frontmatter(narrative_only) == narrative_only
+    no_volume_marker = "序章正文,没有卷标记"
+    assert HumanBenchmarkCompiler._strip_packaging_frontmatter(no_volume_marker) == no_volume_marker

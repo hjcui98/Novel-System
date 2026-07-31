@@ -12,6 +12,7 @@ from novel_agent.domain.ids import CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     NeedRisk,
+    R1RecordView,
     RequirementLevel,
     ResolutionPath,
     RetrievalChannel,
@@ -184,6 +185,9 @@ def test_r1_backend_returns_typed_traceable_units(
     assert temporal[0].unit.source_commit == commit_id
     assert temporal[0].unit.snapshot_id == StableId("snapshot.r1")
     assert temporal[0].unit.evidence_refs == world.states[0].evidence_refs
+    assert temporal[0].unit.mandatory is False
+    assert temporal[0].unit.text.startswith(world.states[0].subject_id.root)
+    assert not temporal[0].unit.text.startswith("{")
     with pytest.raises(ValueError, match="unsupported"):
         backend.search(need, RetrievalChannel.ANCHOR_BM25, 5)
     with pytest.raises(ValueError, match="graph depth"):
@@ -221,6 +225,75 @@ def test_r1_backend_returns_typed_traceable_units(
         state_row.record_json = corrupt
     with pytest.raises(ValueError, match="evidence_refs"):
         backend.search(need, RetrievalChannel.R1_EXACT, 5)
+
+
+def test_r1_record_text_renders_each_canonical_kind() -> None:
+    base = R1RecordView(
+        row_id=StableId("r1.test"),
+        source_commit=CommitId("sha256:" + "1" * 64),
+        record_kind="event",
+        record_id=StableId("record.test"),
+        predicate="fallback",
+        entity_ids=(),
+        record={},
+    )
+
+    assert (
+        R1RetrievalBackend._record_text(
+            base.model_copy(
+                update={
+                    "record": {
+                        "participant_ids": ["entity.a", "entity.b"],
+                        "event_type": "arrival",
+                    }
+                }
+            )
+        )
+        == "entity.a entity.b arrival"
+    )
+    assert (
+        R1RetrievalBackend._record_text(
+            base.model_copy(update={"record": {"participant_ids": "invalid"}})
+        )
+        == "fallback"
+    )
+    assert (
+        R1RetrievalBackend._record_text(
+            base.model_copy(
+                update={
+                    "record_kind": "obligation",
+                    "record": {"description": "keep the promise"},
+                }
+            )
+        )
+        == "keep the promise"
+    )
+    assert (
+        R1RetrievalBackend._record_text(
+            base.model_copy(
+                update={
+                    "record_kind": "relation",
+                    "record": {
+                        "subject_id": "entity.a",
+                        "predicate": "trusts",
+                        "object_id": "entity.b",
+                    },
+                }
+            )
+        )
+        == "entity.a trusts entity.b"
+    )
+    assert (
+        R1RetrievalBackend._record_text(
+            base.model_copy(
+                update={
+                    "record_kind": "plan_node",
+                    "record": {"summary": "future intent"},
+                }
+            )
+        )
+        == "future intent"
+    )
 
 
 def test_r1_current_state_keeps_canonical_assertions_retrievable(

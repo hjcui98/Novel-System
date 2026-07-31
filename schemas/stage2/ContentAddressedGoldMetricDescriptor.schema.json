@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "GoldMetricDescriptor": {
+      "additionalProperties": false,
+      "description": "Content-addressed evaluator descriptor bound to one manifest and Gold contract.",
+      "properties": {
+        "accepted_evidence_contract_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "accepted_evidence_contract_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "applicable_profiles": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkInformationProfile"
+          },
+          "title": "Applicable Profiles",
+          "type": "array"
+        },
+        "descriptor_version": {
+          "minLength": 1,
+          "title": "Descriptor Version",
+          "type": "string"
+        },
+        "evaluator_manifest_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_manifest_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gold_contract_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "gold_contract_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gold_kind": {
+          "enum": [
+            "observed_use",
+            "operational_constraint",
+            "plan_obligation"
+          ],
+          "title": "Gold Kind",
+          "type": "string"
+        },
+        "gold_type": {
+          "$ref": "#/$defs/GoldType"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "weight": {
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "descriptor_version",
+        "gold_id",
+        "gold_contract_ref",
+        "gold_contract_hash",
+        "gold_type",
+        "gold_kind",
+        "weight",
+        "mandatory",
+        "applicable_profiles",
+        "accepted_evidence_contract_ref",
+        "accepted_evidence_contract_hash",
+        "evaluator_manifest_id",
+        "evaluator_manifest_hash"
+      ],
+      "title": "GoldMetricDescriptor",
+      "type": "object"
+    },
+    "GoldType": {
+      "enum": [
+        "CURRENT_STATE",
+        "RELATIONSHIP_EMOTION",
+        "CAUSAL_HISTORY",
+        "KNOWLEDGE_BOUNDARY",
+        "PLAN_OBLIGATION",
+        "LONG_RANGE_CALLBACK",
+        "OBJECT_CONTINUITY"
+      ],
+      "title": "GoldType",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "descriptor": {
+      "$ref": "#/$defs/GoldMetricDescriptor"
+    },
+    "descriptor_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "descriptor_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "descriptor",
+    "descriptor_ref",
+    "descriptor_hash"
+  ],
+  "title": "ContentAddressedGoldMetricDescriptor",
+  "type": "object"
+}

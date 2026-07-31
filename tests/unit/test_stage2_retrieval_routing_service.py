@@ -221,7 +221,7 @@ class _RecordedBackend:
         )
 
 
-def test_deterministic_pair_arm_executes_registered_route_without_fallback_broadcast() -> None:
+def test_deterministic_pair_arm_executes_only_registered_primary_and_fallback_channels() -> None:
     memory_need = need(
         Stage1QueryIntent.SEMANTIC_HISTORY,
         (CandidatePool.ANCHOR, CandidatePool.GROUNDED),
@@ -236,10 +236,16 @@ def test_deterministic_pair_arm_executes_registered_route_without_fallback_broad
         per_channel_limit=5,
     )
 
-    assert backend.calls == [RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE]
+    assert backend.calls == [
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.GROUNDED_BM25,
+        RetrievalChannel.GROUNDED_DENSE,
+    ]
     assert trace.allowed_channels == tuple(backend.calls)
     assert trace.fusion_applied is True
-    assert trace.fallback_used is False
+    assert trace.fallback_used is True
+    assert trace.fallback_reason == "anchor_evidence_insufficient"
 
 
 def test_counterfactual_route_ablation_is_evaluator_only_and_separate() -> None:
@@ -302,6 +308,8 @@ def test_tier_and_domain_routers_cover_fail_closed_match_conditions() -> None:
     )
     decision = router.decide(exact_need, capability(), slots=slots)
     assert decision.tier is ResolutionTier.R0
+    entity_only = exact_need.model_copy(update={"predicates": ()})
+    assert router.decide(entity_only, capability()).tier is ResolutionTier.R1
 
     timed = exact_need.model_copy(
         update={"time_scope": StoryTime(worldline="other", start_ordinal=1)}

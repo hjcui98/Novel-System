@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,12 +21,14 @@ from novel_agent.domain.memory import (
     Stage1ContextPackage,
     Stage1QueryIntent,
 )
+from novel_agent.domain.memory_benchmark import ContextAssemblyStatus, EvidenceSet
 from novel_agent.domain.retrieval_routing import (
     RetrievalBackendProfile,
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
 from novel_agent.domain.stage2 import (
+    ArmExecutionStatus,
     BenchmarkInformationProfile,
     ControllerArm,
     ControllerMode,
@@ -44,10 +46,20 @@ from novel_agent.services.benchmark_importer import (
     content_id,
     world_root_content_id,
 )
+from novel_agent.services.memory_benchmark_contract import build_public_checkpoint_case
+from novel_agent.services.paired_controller import PairedMemoryControllerRunner
 from novel_agent.services.retrieval import RetrievalBackend
 from novel_agent.services.stage1_benchmark import Stage1NeedGenerator
 from novel_agent.services.stage2_paired_pilot import Stage2PairedPilotRunner
+from novel_agent.services.task_conditioned_need_generation import (
+    TaskPlanConditionedNeedGenerator,
+)
+from novel_agent.services.writer_context_assembler import (
+    WriterContextAssembler,
+    WriterContextAssemblyResult,
+)
 from tests.fixtures.stage1_synthetic import PLACEHOLDER_HASH, make_synthetic_bundle
+from tests.fixtures.stage2_memory_benchmark import resolved_public_comparison
 
 
 def _report() -> Stage2PairedPilotReport:
@@ -73,12 +85,235 @@ def test_paired_pilot_runs_both_arms_on_one_audited_basis() -> None:
     assert Stage2PairedPilotRunner().run(make_synthetic_bundle()) == report
 
 
-@pytest.mark.parametrize(("token_budget", "max_candidates"), ((0, 20), (4000, 0), (4000, 101)))
-def test_paired_pilot_rejects_invalid_limits(token_budget: int, max_candidates: int) -> None:
+def test_frozen_arm_embeds_content_addressed_support_inputs() -> None:
+    _bundle, _private_case, _public_case, _runner, comparison = resolved_public_comparison()
+    arm = comparison.deterministic
+
+    assert arm.context_assembly_spec is not None
+    assert arm.context_assembly_spec_ref is not None
+    assert arm.context_assembly_spec_ref.artifact_id == content_id(
+        arm.context_assembly_spec.model_dump(mode="json")
+    )
+    assert arm.support_receipts
+    assert {ref.artifact_id for ref in arm.support_receipt_refs} == {
+        content_id(receipt.model_dump(mode="json")) for receipt in arm.support_receipts
+    }
+
+
+@pytest.mark.parametrize(
+    ("token_budget", "max_candidates", "max_tool_calls", "arms"),
+    (
+        (0, 20, 48, ("A", "B", "C")),
+        (4000, 0, 48, ("A", "B", "C")),
+        (4000, 101, 48, ("A", "B", "C")),
+        (4000, 20, 0, ("A", "B", "C")),
+        (4000, 20, 48, ("B",)),
+    ),
+)
+def test_paired_pilot_rejects_invalid_limits(
+    token_budget: int,
+    max_candidates: int,
+    max_tool_calls: int,
+    arms: tuple[str, ...],
+) -> None:
     with pytest.raises(ValueError, match="paired Pilot"):
         Stage2PairedPilotRunner(
             token_budget=token_budget,
             max_candidates=max_candidates,
+            max_tool_calls=max_tool_calls,
+            arms=arms,
+        )
+
+
+def test_public_resolution_rejects_requested_profile_mismatch() -> None:
+    bundle, private_case, public_case, _runner, _comparison = resolved_public_comparison()
+    history = next(
+        root for root in bundle.text_roots if root.root_hash == private_case.input_text_root
+    )
+    config = PublicBenchmarkConfig(
+        schema_version=bundle.bundle_schema_version,
+        configuration_fingerprint=content_id({"profile-mismatch": True}),
+        expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
+    )
+    with pytest.raises(ValueError, match="profile does not match"):
+        Stage2PairedPilotRunner().resolve_state_case(
+            config,
+            public_case,
+            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+            history=history,
+            world=bundle.world_roots[0],
+            plan=bundle.plan_roots[0],
+            base_commit=bundle.world_roots[0].source_commit,
+        )
+
+
+def test_deterministic_only_resolution_does_not_execute_b_or_c() -> None:
+    bundle, private_case, public_case, _runner, _comparison = resolved_public_comparison()
+    history = next(
+        root for root in bundle.text_roots if root.root_hash == private_case.input_text_root
+    )
+    config = PublicBenchmarkConfig(
+        schema_version=bundle.bundle_schema_version,
+        configuration_fingerprint=content_id({"a-only": True}),
+        expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
+    )
+    comparison = Stage2PairedPilotRunner(arms=("A",)).resolve_state_case(
+        config,
+        public_case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        history=history,
+        world=bundle.world_roots[0],
+        plan=bundle.plan_roots[0],
+        base_commit=bundle.world_roots[0].source_commit,
+    )
+    assert not comparison.agentic.quality_eligible
+    assert comparison.agentic.execution_status is ArmExecutionStatus.SKIPPED
+    assert comparison.agentic.selected_unit_ids == ()
+    assert comparison.agentic.writer_context is None
+    assert "agentic_not_run_deterministic_gate" in comparison.blockers
+    assert comparison.arm_c_writer_context is None
+    assert comparison.arm_c_evidence_ledger is None
+    assert comparison.arm_c_status is None
+    assert comparison.arm_c_execution_status is ArmExecutionStatus.SKIPPED
+    assert comparison.arm_c_failure_category == "NOT_RUN_DETERMINISTIC_GATE"
+    assert comparison.freeze_receipt is not None
+    assert set(comparison.freeze_receipt.arm_artifact_hashes) == {"A", "B", "C"}
+
+
+def test_orphan_expanded_evidence_is_not_assigned_to_an_unrelated_need() -> None:
+    bundle, _private_case, public_case, runner, comparison = resolved_public_comparison()
+    world = bundle.world_roots[0]
+    candidate = comparison.deterministic.context.retrieval_traces[0].candidates[0].unit
+    orphan = candidate.model_copy(
+        update={
+            "unit_id": StableId("unit.expanded.orphan"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+            "parent_unit_id": StableId("unit.parent.not-selected"),
+            "parent_unit_ids": (),
+        }
+    )
+    deterministic = comparison.deterministic.model_copy(
+        update={
+            "context": comparison.deterministic.context.model_copy(
+                update={
+                    "raw_evidence_spans": (
+                        *comparison.deterministic.context.raw_evidence_spans,
+                        orphan,
+                    )
+                }
+            )
+        }
+    )
+    needs = TaskPlanConditionedNeedGenerator().generate(
+        public_case.task_contract,
+        world,
+    )
+
+    assembled = runner._assemble_stage2m_comparison(
+        comparison.model_copy(update={"deterministic": deterministic}),
+        case=public_case,
+        needs=needs,
+        fingerprint=content_id({"orphan-expanded-evidence": True}),
+    )
+
+    assert assembled.deterministic.writer_context is not None
+    assert orphan.unit_id not in assembled.deterministic.writer_context.lineage.retrieval_unit_ids
+
+
+def test_tiny_budget_records_all_writer_readiness_blockers() -> None:
+    bundle, private_case, public_case, _runner, _comparison = resolved_public_comparison()
+    history = next(
+        root for root in bundle.text_roots if root.root_hash == private_case.input_text_root
+    )
+    config = PublicBenchmarkConfig(
+        schema_version=bundle.bundle_schema_version,
+        configuration_fingerprint=content_id({"tiny": True}),
+        expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
+    )
+    comparison = Stage2PairedPilotRunner(token_budget=1, arms=("A",)).resolve_state_case(
+        config,
+        public_case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        history=history,
+        world=bundle.world_roots[0],
+        plan=bundle.plan_roots[0],
+        base_commit=bundle.world_roots[0].source_commit,
+    )
+    assert "arm_a_writer_context_not_ready" in comparison.blockers
+    assert comparison.arm_c_status is None
+
+
+def test_score_comparison_defends_against_malformed_arm_c_artifacts() -> None:
+    _bundle, private_case, _public, runner, comparison = resolved_public_comparison()
+    malformed = comparison.model_copy(update={"arm_c_evidence_ledger": None})
+    with pytest.raises(ValueError, match="Arm C Writer Context requires"):
+        runner.score_comparison(
+            private_case,
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            malformed,
+        )
+
+    no_c = comparison.model_copy(
+        update={
+            "arm_c_writer_context": None,
+            "arm_c_evidence_ledger": None,
+            "arm_c_status": None,
+        }
+    )
+    delta_runner = Stage2PairedPilotRunner(
+        controller_mode=ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+    )
+    scored = delta_runner.score_comparison(
+        private_case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        no_c,
+    )
+    assert scored.delta_metrics is not None
+    default_scored = runner.score_comparison(
+        private_case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        no_c,
+    )
+    assert default_scored.delta_metrics is None
+
+
+def test_legacy_bundle_path_consumes_preassembled_arm_c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _private_case, _public, _runner, comparison = resolved_public_comparison()
+    monkeypatch.setattr(
+        PairedMemoryControllerRunner,
+        "run",
+        lambda _self, *_args, **_kwargs: comparison,
+    )
+    runner = Stage2PairedPilotRunner()
+    case = bundle.case_manifests[0]
+    result = runner._run_case(
+        bundle,
+        case,
+        runner._configuration_fingerprint(bundle.content_hash),
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    assert result.delta_metrics is not None
+
+
+def test_legacy_bundle_path_rejects_arm_c_without_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _private_case, _public, _runner, comparison = resolved_public_comparison()
+    malformed = comparison.model_copy(update={"arm_c_evidence_ledger": None})
+    monkeypatch.setattr(
+        PairedMemoryControllerRunner,
+        "run",
+        lambda _self, *_args, **_kwargs: malformed,
+    )
+    runner = Stage2PairedPilotRunner()
+    with pytest.raises(ValueError, match="Arm C Writer Context requires"):
+        runner._run_case(
+            bundle,
+            bundle.case_manifests[0],
+            runner._configuration_fingerprint(bundle.content_hash),
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
         )
 
 
@@ -124,11 +359,12 @@ def _public_inputs() -> tuple[
             configuration_fingerprint=content_id({"fixture": "public"}),
             expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
         ),
-        PublicCheckpointCase(
+        build_public_checkpoint_case(
             case_id=case.case_id,
             project_id=case.project_id,
             target_range=case.target_range,
             history_range=case.history_range,
+            information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
         ),
     )
 
@@ -332,6 +568,87 @@ def test_paired_pilot_evidence_matching_handles_empty_and_span_paths() -> None:
     )
 
 
+def test_writer_metrics_honor_conjunctive_accepted_evidence_sets() -> None:
+    _bundle, private_case, _public, _runner, comparison = resolved_public_comparison()
+    arm = comparison.deterministic
+    assert arm.writer_context is not None and arm.evidence_ledger is not None
+    evidence_ref = arm.evidence_ledger.entries[0].evidence_refs[0]
+    gold = private_case.observed_use_gold[0].model_copy(
+        update={
+            "accepted_evidence_sets": (
+                EvidenceSet(
+                    evidence_set_id=StableId("evidence-set.writer-metrics"),
+                    evidence_refs=(evidence_ref,),
+                ),
+            )
+        }
+    )
+    case = private_case.model_copy(update={"observed_use_gold": (gold,)})
+
+    metrics = Stage2PairedPilotRunner._writer_metrics(
+        case,
+        arm.writer_context,
+        arm.evidence_ledger,
+        retrieval_call_count=arm.retrieval_call_count,
+        future_leakage_count=arm.future_leakage_count,
+        stop_reason=arm.stop_reason,
+    )
+
+    assert metrics.observed_use_coverage == 1.0
+
+
+def test_stage2m_assembly_preserves_typed_agentic_and_arm_c_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _private, public_case, runner, comparison = resolved_public_comparison()
+    needs = TaskPlanConditionedNeedGenerator().generate(
+        public_case.task_contract,
+        bundle.world_roots[0],
+    )
+    fingerprint = content_id({"typed-assembly-failures": True})
+    preblocked_agentic = comparison.agentic.model_copy(
+        update={"quality_eligible": False, "failure_category": "AGENTIC_NOT_READY"}
+    )
+    failed_b = runner._assemble_stage2m_comparison(
+        comparison.model_copy(
+            update={
+                "agentic": preblocked_agentic,
+                "comparable": False,
+                "blockers": ("agentic_preblocked",),
+            }
+        ),
+        case=public_case,
+        needs=needs,
+        fingerprint=fingerprint,
+    )
+    assert failed_b.agentic.execution_status is ArmExecutionStatus.FAILED
+    assert failed_b.arm_c_failure_category == "SKIPPED_AGENTIC_FAILURE"
+
+    original_assemble = WriterContextAssembler.assemble_from_spec
+
+    def fail_only_arm_c(
+        assembler: WriterContextAssembler,
+        *args: Any,
+        **kwargs: Any,
+    ) -> WriterContextAssemblyResult:
+        assembled = original_assemble(assembler, *args, **kwargs)
+        if kwargs.get("arm") == "C":
+            return assembled.model_copy(
+                update={"status": ContextAssemblyStatus.EVIDENCE_INSUFFICIENT}
+            )
+        return assembled
+
+    monkeypatch.setattr(WriterContextAssembler, "assemble_from_spec", fail_only_arm_c)
+    failed_c = runner._assemble_stage2m_comparison(
+        comparison,
+        case=public_case,
+        needs=needs,
+        fingerprint=fingerprint,
+    )
+    assert failed_c.arm_c_status is ContextAssemblyStatus.EVIDENCE_INSUFFICIENT
+    assert "arm_c_writer_context_not_ready" in failed_c.blockers
+
+
 def test_paired_pilot_matches_content_addressed_r1_plan_records_only_by_exact_goal() -> None:
     bundle = make_synthetic_bundle()
     case = bundle.case_manifests[0]
@@ -436,9 +753,7 @@ def _arm_c_result(
     return PairedContextArmResult(
         arm=arm,
         context=context,
-        selected_unit_ids=tuple(
-            dict.fromkeys(candidate.unit.unit_id for candidate in selected)
-        ),
+        selected_unit_ids=tuple(dict.fromkeys(candidate.unit.unit_id for candidate in selected)),
         retrieval_call_count=retrieval_call_count,
         stop_reason=ControllerStopReason.SUFFICIENT,
         comparison_basis_fingerprint=_ARM_C_CONFIG,
@@ -502,19 +817,11 @@ def test_arm_c_gold_recall_reflects_union() -> None:
     promise_evidence = case.observed_use_gold[0].evidence_refs[0]
     injury_evidence = case.operational_constraint_gold[0].evidence_refs[0]
     deterministic = _arm_c_result(
-        (
-            _arm_c_candidate(
-                StableId("unit.a.injury"), evidence_refs=(injury_evidence,)
-            ),
-        ),
+        (_arm_c_candidate(StableId("unit.a.injury"), evidence_refs=(injury_evidence,)),),
         arm=ControllerArm.DETERMINISTIC,
     )
     agentic = _arm_c_result(
-        (
-            _arm_c_candidate(
-                StableId("unit.b.promise"), evidence_refs=(promise_evidence,)
-            ),
-        ),
+        (_arm_c_candidate(StableId("unit.b.promise"), evidence_refs=(promise_evidence,)),),
         arm=ControllerArm.BOUNDED_R2,
     )
 

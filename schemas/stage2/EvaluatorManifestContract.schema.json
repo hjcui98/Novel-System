@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Content-addressed identity of the private Gold set revealed after freeze.",
+  "properties": {
+    "evaluator_manifest_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gold_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Gold Ids",
+      "type": "array"
+    },
+    "manifest_version": {
+      "minLength": 1,
+      "title": "Manifest Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifest_version",
+    "evaluator_manifest_id",
+    "gold_ids"
+  ],
+  "title": "EvaluatorManifestContract",
+  "type": "object"
+}

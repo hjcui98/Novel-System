@@ -441,7 +441,12 @@ class InMemoryRetrievalBackend:
         limit: int,
     ) -> tuple[ChannelHit, ...]:
         allowed_kinds = self._allowed_kinds(channel)
-        candidates = [unit for unit in self._units if unit.unit_kind in allowed_kinds]
+        candidates = [
+            unit
+            for unit in self._units
+            if unit.unit_kind in allowed_kinds
+            and (need.access_scope == "author_planning" or unit.access_scope == need.access_scope)
+        ]
         scored = [
             (self._score(need, unit, channel), unit)
             for unit in candidates

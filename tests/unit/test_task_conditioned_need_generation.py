@@ -1,0 +1,381 @@
+from __future__ import annotations
+
+import pytest
+
+from novel_agent.domain.ids import StableId
+from novel_agent.domain.memory import CandidatePool, RequirementLevel, Stage1QueryIntent
+from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
+from novel_agent.domain.world import (
+    Entity,
+    RelationRecord,
+    StateRecord,
+    StoryTime,
+    TruthClass,
+)
+from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+from novel_agent.services.task_conditioned_need_generation import (
+    NeedGenerationStatus,
+    TaskPlanConditionedNeedGenerator,
+)
+from novel_agent.services.task_focus import (
+    FocusSet,
+    TaskFocus,
+    TaskFocusSource,
+    TaskFocusType,
+)
+from tests.fixtures.stage1_synthetic import make_synthetic_bundle
+
+
+def test_irrelevant_world_growth_does_not_change_mandatory_needs() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    extra_entities = tuple(
+        Entity(
+            entity_id=StableId(f"entity.irrelevant.{index}"),
+            entity_type="irrelevant",
+            internal_label=f"irrelevant-{index}",
+        )
+        for index in range(1000)
+    )
+    extra_states = tuple(
+        StateRecord(
+            state_id=StableId(f"state.irrelevant.{index}"),
+            subject_id=entity.entity_id,
+            predicate="irrelevant",
+            value=index,
+            valid_time=StoryTime(worldline="main"),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        )
+        for index, entity in enumerate(extra_entities)
+    )
+    larger = world.model_copy(
+        update={
+            "entities": (*world.entities, *extra_entities),
+            "states": (*world.states, *extra_states),
+        }
+    )
+    generator = TaskPlanConditionedNeedGenerator()
+
+    small = generator.generate(task, world)
+    large = generator.generate(task, larger)
+
+    mandatory_small = tuple(
+        (item.need_type, item.entity_ids, item.query_text)
+        for item in small
+        if item.requirement is RequirementLevel.MANDATORY
+    )
+    mandatory_large = tuple(
+        (item.need_type, item.entity_ids, item.query_text)
+        for item in large
+        if item.requirement is RequirementLevel.MANDATORY
+    )
+    assert mandatory_large == mandatory_small
+    assert len(large) == len(small)
+    assert all(item.purpose and item.focus_ids and item.expected_section for item in large)
+    obligation_need = next(item for item in large if item.need_type == "unresolved_obligation")
+    assert obligation_need.query_intent is Stage1QueryIntent.KNOWN_ID
+    assert CandidatePool.R1 in obligation_need.allowed_candidate_pools
+    assert CandidatePool.GROUNDED in obligation_need.allowed_candidate_pools
+    assert obligation_need.requirement is RequirementLevel.MANDATORY
+    assert sum(item.requirement is RequirementLevel.MANDATORY for item in large) < len(large) // 2
+
+
+def test_need_generator_rejects_invalid_limit_and_visible_future_plan() -> None:
+    bundle = make_synthetic_bundle()
+    with pytest.raises(ValueError, match="max_total_needs"):
+        TaskPlanConditionedNeedGenerator(max_total_needs=0)
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    with pytest.raises(ValueError, match="cannot receive a future PlanRoot"):
+        TaskPlanConditionedNeedGenerator().generate(
+            task, bundle.world_roots[0], bundle.plan_roots[0]
+        )
+
+
+def test_focus_driven_state_relation_and_missing_entities_are_bounded() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    other = entity.model_copy(
+        update={
+            "entity_id": StableId("entity.need.other"),
+            "internal_label": "other",
+            "aliases": (),
+        }
+    )
+    relation = RelationRecord(
+        relation_id=StableId("relation.need.actual"),
+        predicate="trusts",
+        subject_id=entity.entity_id,
+        object_id=other.entity_id,
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = world.model_copy(
+        update={"entities": (*world.entities, other), "relations": (relation,)}
+    )
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    focuses = (
+        (TaskFocusType.ENTITY, StableId("entity.missing")),
+        (TaskFocusType.STATE, StableId("state.missing")),
+        (TaskFocusType.STATE, world.states[0].state_id),
+        (TaskFocusType.RELATION, StableId("relation.missing")),
+        (TaskFocusType.RELATION, relation.relation_id),
+        (TaskFocusType.EVENT, StableId("event.missing")),
+        (TaskFocusType.OBLIGATION, StableId("obligation.missing")),
+        (TaskFocusType.PLAN_INTENT, StableId("plan.missing")),
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=tuple(
+            TaskFocus(
+                focus_id=StableId(f"focus.fixture.{index}"),
+                focus_type=kind,
+                canonical_id=identity,
+                source=TaskFocusSource.CUTOFF_FRONTIER,
+                reason="fixture focus",
+            )
+            for index, (kind, identity) in enumerate(focuses)
+        ),
+    )
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    result = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate_with_lineage(task, world)
+    assert {item.query_intent for item in result.needs} == {
+        Stage1QueryIntent.CURRENT_STATE,
+        Stage1QueryIntent.RELATION_CHAIN,
+    }
+
+
+def test_author_plan_focus_is_followed_by_another_focus_iteration() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    original_plan = bundle.plan_roots[0]
+    target_node = original_plan.nodes[0].model_copy(
+        update={"plan_node_id": StableId("plan.synthetic.range.21-40")}
+    )
+    plan = original_plan.model_copy(update={"nodes": (target_node, *original_plan.nodes[1:])})
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.plan.actual"),
+                focus_type=TaskFocusType.PLAN_INTENT,
+                canonical_id=target_node.plan_node_id,
+                source=TaskFocusSource.PLAN_INTENT,
+                reason="fixture plan",
+            ),
+            TaskFocus(
+                focus_id=StableId("focus.entity.after-plan"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=world.entities[0].entity_id,
+                source=TaskFocusSource.CUTOFF_FRONTIER,
+                reason="fixture entity",
+            ),
+        ),
+    )
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    result = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate(task, world, plan)
+    assert any(item.query_intent is Stage1QueryIntent.PLAN_OBLIGATION for item in result)
+    plan_history = next(item for item in result if item.need_type == "plan_conditioned_history")
+    assert plan_history.requirement is RequirementLevel.MANDATORY
+    target_transition = next(
+        item for item in result if item.need_type == "target_transition_history"
+    )
+    assert target_transition.requirement is RequirementLevel.MANDATORY
+    assert target_node.summary in target_transition.query_text
+    callback = next(item for item in result if item.need_type == "long_range_callback")
+    assert callback.requirement is RequirementLevel.MANDATORY
+    assert target_node.summary in callback.query_text
+    frontier_entity = next(
+        item for item in result if item.query_intent is Stage1QueryIntent.CURRENT_STATE
+    )
+    assert frontier_entity.requirement is RequirementLevel.MANDATORY
+
+
+def test_author_plan_history_needs_are_split_only_from_visible_plan_facets() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    original_plan = bundle.plan_roots[0]
+    summary = "守住公开身份;处理旧约回响;前往新地点"
+    target_node = original_plan.nodes[0].model_copy(
+        update={
+            "plan_node_id": StableId("plan.synthetic.faceted.21-40"),
+            "summary": summary,
+        }
+    )
+    plan = original_plan.model_copy(update={"nodes": (target_node, *original_plan.nodes[1:])})
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.plan.faceted"),
+                focus_type=TaskFocusType.PLAN_INTENT,
+                canonical_id=target_node.plan_node_id,
+                source=TaskFocusSource.PLAN_INTENT,
+                reason="fixture plan",
+            ),
+        ),
+    )
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    result = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate(task, world, plan)
+    plan_history = tuple(item for item in result if item.need_type == "plan_conditioned_history")
+
+    assert len(plan_history) == 3
+    assert len({item.query_text for item in plan_history}) == 3
+    assert len({item.requirement for item in plan_history}) == 1
+    assert all(
+        any(facet in item.query_text for facet in summary.split(";")) for item in plan_history
+    )
+
+
+def test_only_one_frontier_entity_emits_the_rich_writer_facets() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    secondary_entity = entity.model_copy(
+        update={
+            "entity_id": StableId("entity.secondary"),
+            "internal_label": "secondary",
+            "aliases": (),
+        }
+    )
+    world = world.model_copy(update={"entities": (*world.entities, secondary_entity)})
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.priority.entity"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity.entity_id,
+                source=TaskFocusSource.OPEN_OBLIGATION,
+                reason="fixture priority entity",
+            ),
+            TaskFocus(
+                focus_id=StableId("focus.secondary.entity"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=secondary_entity.entity_id,
+                source=TaskFocusSource.OPEN_OBLIGATION,
+                reason="fixture secondary entity",
+            ),
+        ),
+    )
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    needs = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate(task, world)
+
+    primary = tuple(item for item in needs if item.entity_ids == (entity.entity_id,))
+    secondary = tuple(item for item in needs if item.entity_ids == (secondary_entity.entity_id,))
+
+    assert {item.need_type for item in primary} == {
+        "behavioral_profile",
+        "capability_boundary",
+        "capability_history",
+        "current_state",
+        "continuity_constraint",
+        "current_goal",
+        "goal_history",
+        "destination_history",
+        "eligibility_and_destination",
+        "environment_and_resources",
+        "environment_history",
+        "learning_foundation",
+        "relationship_emotion",
+        "knowledge_boundary",
+        "long_range_callback",
+    }
+    assert {item.need_type for item in secondary} == {"current_state"}
+    assert secondary[0].requirement is RequirementLevel.OPTIONAL
+    destination = next(item for item in primary if item.need_type == "destination_history")
+    assert destination.requirement is RequirementLevel.OPTIONAL
+
+
+def test_no_focus_and_need_budget_exhaustion_have_typed_statuses() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+
+    class EmptyExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return FocusSet(task_id=task.task_id, focuses=())
+
+    empty = TaskPlanConditionedNeedGenerator(
+        focus_extractor=EmptyExtractor(),  # type: ignore[arg-type]
+    ).generate_with_lineage(task, world)
+    assert empty.status is NeedGenerationStatus.NO_FOCUS
+
+    limited = TaskPlanConditionedNeedGenerator(max_total_needs=1).generate_with_lineage(task, world)
+    assert limited.status is NeedGenerationStatus.NEED_BUDGET_EXHAUSTED
+    assert limited.unexpanded_focus_ids
+
+
+def test_query_value_serializes_only_bounded_structured_world_values() -> None:
+    query_value = TaskPlanConditionedNeedGenerator._query_value
+
+    assert query_value(3) == "3"
+    assert query_value(True) == "True"
+    assert query_value(["one", 2]) == "one 2"
+    assert query_value(("one", False)) == "one False"
+    assert query_value({"state": ["ready", 2]}) == "state ready 2"
+    assert query_value(object()) == ""
+    assert len(query_value("x" * 300)) == 240

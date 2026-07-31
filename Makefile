@@ -12,7 +12,8 @@ export
 .PHONY: bootstrap quality infra-up infra-health migrate demo integration stage0 stage1-smoke infra-down \
 	models-bootstrap models-up models-health model-smoke models-down \
 	model-benchmark-smoke stage1-native-benchmark stage2-benchmark-read-pilot \
-	stage2-teacher-forced-e2e stage2r-backfill stage2r-gate stage2r-diagnose
+	stage2-teacher-forced-e2e stage2r-backfill stage2r-gate stage2r-diagnose \
+	stage2-memory-benchmark
 
 bootstrap:
 	@if test -x "$(UV)"; then \
@@ -149,6 +150,19 @@ stage2-teacher-forced-e2e:
 		--retrieval-backend "$${RETRIEVAL_BACKEND:-real_hybrid}" \
 		--model-base-url "$${MODEL_BASE_URL:-http://127.0.0.1:8002/v1}" \
 		--model "$${MODEL:-qwen36-27b-nvfp4}"
+
+stage2-memory-benchmark:
+	@test -n "$(SOURCE)" || { echo "SOURCE is required" >&2; exit 2; }
+	@test -n "$(OUTPUT)" || { echo "OUTPUT is required" >&2; exit 2; }
+	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }
+	@test -n "$(STAGE2R_DATABASE_URL)" || { echo "STAGE2R_DATABASE_URL is required" >&2; exit 2; }
+	@test -n "$(STAGE2R_EXPERIMENT_ID)" || { echo "STAGE2R_EXPERIMENT_ID is required" >&2; exit 2; }
+	@test -n "$(INFORMATION_PROFILE)" || { echo "INFORMATION_PROFILE is required" >&2; exit 2; }
+	@SOURCE="$(SOURCE)" OUTPUT="$(OUTPUT)" PROJECT_DIRECTORY="$(PROJECT_DIRECTORY)" \
+		STAGE2R_DATABASE_URL="$(STAGE2R_DATABASE_URL)" \
+		STAGE2R_EXPERIMENT_ID="$(STAGE2R_EXPERIMENT_ID)" \
+		INFORMATION_PROFILE="$(INFORMATION_PROFILE)" ARMS="$${ARMS:-A}" \
+		bash scripts/run_stage2_real_staged.sh
 
 stage2r-backfill:
 	@test -n "$(PROJECT_DIRECTORY)" || { echo "PROJECT_DIRECTORY is required" >&2; exit 2; }

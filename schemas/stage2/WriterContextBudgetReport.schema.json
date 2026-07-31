@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actual_rendered_writer_tokens": {
+      "minimum": 0,
+      "title": "Actual Rendered Writer Tokens",
+      "type": "integer"
+    },
+    "configured_writer_token_budget": {
+      "minimum": 1,
+      "title": "Configured Writer Token Budget",
+      "type": "integer"
+    },
+    "deduplicated_item_count": {
+      "minimum": 0,
+      "title": "Deduplicated Item Count",
+      "type": "integer"
+    },
+    "dropped_optional_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Dropped Optional Ids",
+      "type": "array"
+    },
+    "dropped_optional_reasons": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Dropped Optional Reasons",
+      "type": "object"
+    },
+    "evidence_ledger_tokens": {
+      "minimum": 0,
+      "title": "Evidence Ledger Tokens",
+      "type": "integer"
+    },
+    "final_status": {
+      "$ref": "#/$defs/ContextAssemblyStatus"
+    },
+    "header_citation_gap_tokens": {
+      "minimum": 0,
+      "title": "Header Citation Gap Tokens",
+      "type": "integer"
+    },
+    "mandatory_conclusion_tokens": {
+      "minimum": 0,
+      "title": "Mandatory Conclusion Tokens",
+      "type": "integer"
+    },
+    "optional_conclusion_tokens": {
+      "minimum": 0,
+      "title": "Optional Conclusion Tokens",
+      "type": "integer"
+    },
+    "reduction_rounds": {
+      "minimum": 0,
+      "title": "Reduction Rounds",
+      "type": "integer"
+    },
+    "superseded_item_count": {
+      "minimum": 0,
+      "title": "Superseded Item Count",
+      "type": "integer"
+    },
+    "tokenizer": {
+      "minLength": 1,
+      "title": "Tokenizer",
+      "type": "string"
+    },
+    "tokenizer_version": {
+      "minLength": 1,
+      "title": "Tokenizer Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tokenizer",
+    "tokenizer_version",
+    "configured_writer_token_budget",
+    "actual_rendered_writer_tokens",
+    "evidence_ledger_tokens",
+    "mandatory_conclusion_tokens",
+    "optional_conclusion_tokens",
+    "header_citation_gap_tokens",
+    "deduplicated_item_count",
+    "superseded_item_count",
+    "reduction_rounds",
+    "final_status"
+  ],
+  "title": "WriterContextBudgetReport",
+  "type": "object"
+}

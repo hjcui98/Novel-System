@@ -8,8 +8,11 @@ from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.changes import (
     ChangeOperationType,
     ChapterChangeDraft,
+    ChapterChangeDraftV2,
     CuratedOperationDraft,
+    CuratedOperationDraftV2,
     CuratorEntityRecord,
+    CuratorEventRecord,
     CuratorEvidenceSelection,
     CuratorObligationRecord,
     CuratorRelationRecord,
@@ -401,3 +404,47 @@ def test_model_curator_drops_unchanged_existing_state_replacements() -> None:
 
     assert changes.operations == ()
     assert current.state_id.root in reported.unresolved[-1]
+
+
+def test_v2_entity_alias_normalization_covers_event_and_relation_records() -> None:
+    world = make_synthetic_bundle().world_roots[0]
+    canonical = world.entities[0].entity_id
+    shortened = StableId(f"entity.short.{canonical.root.rsplit('.', 1)[-1]}")
+    candidate = StableId("candidate.alias-normalization")
+    event = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.EVENT,
+        target_id=StableId("event.alias-normalization"),
+        record=CuratorEventRecord(
+            event_type="arrives",
+            participant_ids=(shortened,),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        evidence_candidate_ids=(candidate,),
+    )
+    relation = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.RELATION,
+        target_id=StableId("relation.alias-normalization"),
+        record=CuratorRelationRecord(
+            subject_id=shortened,
+            predicate="trusts",
+            object_id=shortened,
+            valid_time=CuratorStoryTime(worldline="main", start_ordinal=23),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        evidence_candidate_ids=(candidate,),
+    )
+
+    normalized = ModelCurator._normalize_entity_reference_aliases(
+        ChapterChangeDraftV2(chapter_index=23, operations=(event, relation)),
+        world,
+    )
+    event_record = normalized.operations[0].record
+    relation_record = normalized.operations[1].record
+
+    assert isinstance(event_record, CuratorEventRecord)
+    assert event_record.participant_ids == (canonical,)
+    assert isinstance(relation_record, CuratorRelationRecord)
+    assert relation_record.subject_id == canonical
+    assert relation_record.object_id == canonical

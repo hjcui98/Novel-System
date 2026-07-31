@@ -1,13 +1,17 @@
 # Stage 2M Gate M4 根因分析与修复方案
 
-文档生命周期：`HISTORICAL_DIAGNOSTIC`
+文档生命周期：`ACTIVE_REMEDIATION`
 日期：2026-07-30
-状态更新：2026-07-31；部分修复已进入 WP8 诊断运行，当前结论见 `docs/project_status.md`
+状态更新：2026-07-31；P0/P1 代码与正式 Gate contract 已实现，P2 未验收，P3 尚未执行
 范围：WP7；`visible_at_cutoff`（VAC）与 `author_plan_conditioned`（APC）各
 P001-P005 / C20-C95；Arm A deterministic
-当前决策：**Gate M4 HOLD；不得启动 WP8**
+当前决策：**Gate M4 HOLD；正式 WP8 冻结；下一步执行 P2，满足前置条件后执行 P3**
 
-## 1. 结论
+本文的 2026-07-30 根因数据保留为修复前基线；从第 1.1 节起记录当前代码与诊断运行状态。
+开发人员应按第 7 节“当前状态与剩余动作”继续，不得把已经实现的 P0/P1 重新当作未开发需求，
+也不得把 2026-07-31 的受限 WP8 诊断运行解释为正式 P3 或正式 WP8。
+
+## 1. 2026-07-30 修复前结论
 
 本轮失败不是模型服务、数据库、snapshot/index、profile 隔离或 token 硬预算失败。
 基础设施和安全契约已经成立，真正阻塞 Gate M4 的是：
@@ -44,11 +48,57 @@ top-k，或把 typed failure 改成 READY 来过门。修复必须先建立公�
 > → deterministic Assembly validation/packing
 > → 同配置重跑 WP7
 
+### 1.1 2026-07-31 当前复核
+
+当前复核结论不是“修复尚未编码”，而是“修复代码已形成，但真实质量和正式运行尚未验收”：
+
+1. P0/P1 的核心实现已经进入当前工作区：
+   - evaluator receipt host validation；
+   - `gate_metric_formula.v1` 与 content-addressed Gold metric contract；
+   - APC canonical alias registry；
+   - public NeedFacet / NeedCompletionSpec；
+   - deterministic max-min scheduler；
+   - ClaimSupportGroup、support receipt、ClaimVariant 和 ContextAssemblySpec；
+   - support-aware selection 与 deterministic Assembler validation/packing。
+2. 正式 `MemoryBenchmarkReporter` 已冻结 `stage2m_wp7_arm_a.v1`：只接受 Arm A 的
+   C20/P001、C40/P002、C60/P003、C80/P004、C95/P005，要求五点共享同一冻结 run
+   identity，并校验 VAC/APC 固定分母。诊断模式不能输出 `gate_passed=true`。
+3. 2026-07-31 受限 WP8 诊断产出了双 profile 十个 Arm A，但十个
+   `stage2m_case_C*_A.json` 都是旧 case schema，缺少当前正式门必需的六个字段：
+   `code_version`、`run_config_hash`、`benchmark_contract_hash`、`matcher_version`、
+   `writer_token_budget`、`evidence_ledger_token_budget`。当前代码会 fail closed；禁止事后
+   backfill 后把旧运行签为 P3。
+4. 十个旧单点 `scenario_run.completed=false`，APC 根 report 只覆盖 C20，VAC 根目录没有
+   五点 unified report，因此生命周期和统一报告也不满足 P3。
+5. 从旧冻结 evaluator bundle 得到的只读诊断值为：
+
+| Profile | Current-state | Operational/plan | Historical | UNTRACEABLE | Contradiction |
+|---|---:|---:|---:|---:|---:|
+| APC | 3.50% | 19.79% | 36.78% | 7 / 72 | 0 |
+| VAC | 9.00% | 8.45% | 32.18% | 8 / 47 | 0 |
+
+以上所有质量轴均未达到 95% / 95% / 90%，且两个 profile 都触发 trace hard veto。
+APC C40 从 `EVIDENCE_INSUFFICIENT` 变为 READY、VAC C40 coverage 提升，只能证明局部行为
+变化，不能证明 M4 通过。
+
+### 1.2 当前工程质量门
+
+- Stage 2M 聚焦整改测试：118 项通过；
+- freeze/reveal integration：1 项通过；
+- Ruff lint、Ruff format、严格 MyPy：通过；
+- `make quality`：1497 项测试通过、9 项 deselected，Ruff、格式、严格 MyPy 通过，
+  statement/branch coverage 均为 100%；
+- 该工程质量门已关闭，但不替代 P2 哨兵、第二位 reviewer 或正式 P3 的真实运行证据；不得
+  在 P3 命令中静默添加 `--no-cov` 或降低阈值。
+
+因此当前开发入口是 P2 真实哨兵验证和 P3 前置治理，不是继续扩展 P0/P1 模型，也不是继续
+运行 B/C。
+
 ## 2. 判定依据与复核方法
 
 ### 2.1 权威输入
 
-- 最新 WP7 验收：
+- 修复前 WP7 验收基线：
   `reports/stage2m/wp7_five_checkpoint_deterministic_acceptance_20260730.md`
 - Gate M4 定义：
   `docs/stage2_memory_benchmark_task_closure_execution.md` 第 14.7 节
@@ -58,9 +108,16 @@ top-k，或把 typed failure 改成 READY 来过门。修复必须先建立公�
 - 两个只读 C95 项目的 content-addressed frozen artifacts：
   - `.../visible_at_cutoff/qwen36_real_a_profile_v1_20260729/objects/`
   - `.../author_plan_conditioned/qwen36_real_a_profile_v1_20260729/objects/`
+- 受限 WP8 诊断 run（仅失败/行为变化证据，不是正式准入输入）：
+  - `reports/stage2m/writer_context_benchmark/visible_at_cutoff/qwen36_wp8_v1_20260731/`
+  - `reports/stage2m/writer_context_benchmark/author_plan_conditioned/qwen36_wp8_v1_20260731/`
+- 十点人类可读展示：
+  `docs/stage2m_wp8_human_readable_outputs_20260731.md`
+- 当前阶段权威状态：`docs/project_status.md`
 
-本分析以最新 `qwen36_wp7_v1_20260730` 为准，不用更早 run 的粗粒度指标替代新的
-per-Gold 结果。
+根因基线以 `qwen36_wp7_v1_20260730` 为准；当前局部行为变化以
+`qwen36_wp8_v1_20260731` 只读诊断产物为准。两者都不能替代下一次新 P3 的正式
+per-Gold 和 lifecycle-closed aggregate。
 
 ### 2.2 只读分层复核
 
@@ -80,38 +137,35 @@ accepted alternative 仍按“一个 alternative 内所有 refs 必须完整解�
 
 | 机制 | 当前实现位置 |
 |---|---|
-| tool-call 耗尽后返回空结果 | `src/novel_agent/services/paired_controller.py:46-63` |
-| Need 按输入顺序串行消费全局预算 | `src/novel_agent/services/paired_controller.py:257-281` |
-| route stop 由 selected 是否非空决定 | `src/novel_agent/services/paired_controller.py:416-440` |
-| Need 先按 mandatory/priority 排序再截断到上限 | `src/novel_agent/services/task_conditioned_need_generation.py:692-716` |
-| optional claim 逐项填充 writer/ledger budget | `src/novel_agent/services/writer_context_assembler.py:159-179` |
-| 第一个合法 claim 关闭 mandatory Need | `src/novel_agent/services/writer_context_assembler.py:525-544` |
-| unresolved current conflict 触发 typed failure | `src/novel_agent/services/writer_context_assembler.py:200-210` |
-| accepted evidence alternative 必须完整解析 | `src/novel_agent/services/gold_evidence_matching.py:33-92` |
-| semantic alias 仍比较 presentation tail | `src/novel_agent/services/retrieval_unit_normalizer.py:143-174` |
-| model traceable judgment 未做空 ID host 校验 | `src/novel_agent/services/memory_benchmark_evaluation.py:372-404` |
-| public `Stage1MemoryNeed` 目前只有字符串 completion criteria | `src/novel_agent/domain/memory.py:148-176` |
-| Gold component 只存在 benchmark/evaluator domain | `src/novel_agent/domain/benchmark.py:200`、`src/novel_agent/domain/memory_benchmark.py:75` |
-| `PerGoldComparison` 尚不携带 Gold 类型、适用 profile 或 contract identity | `src/novel_agent/domain/memory_benchmark.py:236-246` |
-| 现有 `ContextAssemblySpec` 只含 selected/mandatory unit 与 token budget | `src/novel_agent/domain/stage2.py:807-817` |
-| Controller 是 `ContextAssemblySpec` 的现有生产者 | `src/novel_agent/runtime/memory_controller.py:866-871` |
+| 冻结 Gate 公式、Gold descriptor/contract 和 hash | `src/novel_agent/services/memory_benchmark_metric_contracts.py:22-153` |
+| 正式五点 Arm A 矩阵、run identity 与固定分母 | `src/novel_agent/services/memory_benchmark_reporting.py:54-302` |
+| public `NeedFacet` / `NeedCompletionSpec` | `src/novel_agent/domain/memory.py:149-232`、`src/novel_agent/services/need_completion.py:50-126` |
+| 实际 Need 的 deterministic max-min 调度 | `src/novel_agent/services/paired_controller.py:47-75`、`src/novel_agent/services/paired_controller.py:379-477` |
+| APC canonical value 与版本化 alias registry | `src/novel_agent/services/canonical_alias_registry.py:18-107`、`src/novel_agent/services/retrieval_unit_normalizer.py` |
+| `ClaimSupportGroup` / receipt-bound `ClaimVariant` | `src/novel_agent/domain/writer_context.py:176-217`、`src/novel_agent/services/claim_support.py:116-1403` |
+| `ContextAssemblySpec` 与 deterministic Assembler | `src/novel_agent/domain/stage2.py:818-844`、`src/novel_agent/services/writer_context_assembler.py:61-569` |
+| evaluator traceable-ID host validation | `src/novel_agent/services/memory_benchmark_evaluation.py:54-60`、`src/novel_agent/services/memory_benchmark_evaluation.py:262-301` |
+| 正式 case 六个 identity/budget 字段及 runner 写入 | `src/novel_agent/domain/memory_benchmark.py:241-257`、`src/novel_agent/services/teacher_forced_benchmark_e2e.py:2668-2684` |
+| StableId 长度修复与回归 | `src/novel_agent/services/controller_legal_actions.py:257-264`、`tests/regression/test_stage2_memory_benchmark_legacy_failures.py:57-67` |
 
-## 3. 已确认通过的契约
+第 4–5 节的代码叙述用于解释 2026-07-30 修复前行为，不得用其旧行号推断当前
+实现仍然缺失。当前实现状态以本表、第 7 节和实际测试为准。
 
-| 项目 | 结果 |
-|---|---|
-| 两个 profile 各五点完成 | 100% |
-| future leakage | 0 |
-| profile cross-contamination | 0 |
-| snapshot/index/basis attestation | 10/10 exact |
-| READY 或 typed failure | 9 READY + 1 EVIDENCE_INSUFFICIENT |
-| READY Writer Context 超 4000 tokens | 0 |
-| silent overflow / silent fallback | 0 |
-| canonical writes during evaluation | 0 |
+## 3. 当前已实现且必须保持的契约
 
-这些通过项应保持为回归不变量，不能用内容质量修复破坏。
+| 项目 | 当前状态 | P2/P3 要求 |
+|---|---|---|
+| public/private 与 freeze/reveal 边界 | 已实现，聚焦测试通过 | 保持 taint/leakage = 0 |
+| `gate_metric_formula.v1` 与 content-addressed Gold contract | 已实现，公式/hash/固定分母有测试 | 禁止在正式 run 中改公式或分母 |
+| `stage2m_wp7_arm_a.v1` 正式矩阵 | 已实现且 fail closed | 必须由新五点 run 实际通过 |
+| Need completion / 公平调度 / support closure / Assembly | 已实现，聚焦测试通过 | 必须在 P2 真实哨兵点证明质量改善 |
+| APC alias 和 evaluator host validation | 已实现，回归通过 | 真冲突与非法 receipt 仍必须 fail closed |
+| Writer/ledger 预算、future leakage、profile 隔离 | 旧诊断产物未见超预算/泄漏/串线 | 新 P2/P3 需要重新产生独立 attestation |
+| 旧十点 Arm A | 仅诊断；旧 schema、lifecycle 未完成 | 不得作为 P3 或 Gate M4 输入 |
 
-## 4. 失败事实
+以上实现项应保持为回归不变量，但“代码存在”不等于“真实运行已验收”。
+
+## 4. 2026-07-30 修复前失败事实（历史基线）
 
 ### 4.1 正式 per-Gold 结果
 
@@ -612,31 +666,45 @@ receipt schema 统一使用领域对象名 `traceable_context_item_ids`：
 prompt、receipt domain、host validator、序列化 schema 和测试必须在同一个 schema
 version 中使用该字段名；任何其他 traceable-ID 别名不得被静默兼容或忽略。
 
-## 7. 实施顺序
+## 7. 当前状态与剩余动作
 
-| 顺序 | 工作项 | 主责任层 | 完成信号 |
+| 顺序 | 当前状态 | 剩余动作 | 验收信号 |
 |---|---|---|---|
-| P0-1 | 诊断字段、stage-loss 基线和 evaluator receipt host 校验 | F-EVAL / observability | 空 traceable IDs 不可声明 SUPPORTS；修改前基线可复现 |
-| P0-2 | 冻结 `gate_metric_formula.v1`、GoldMetricDescriptor 与聚合器 | Gate M4 | 公式/hash/分母 fixture 固定；聚合不读取工作区 YAML |
-| P0-3 | APC canonical value + 版本化 alias registry | F-FRESHNESS / F-EVIDENCE | 有 receipt 的 alias 合并；无 receipt/真冲突继续 fail-closed |
-| P0-4 | public NeedFacet / NeedCompletionSpec 与 taint boundary | F-NEED / F-SCOPE | runtime 不导入 Gold component；closure 可由 public spec 判定 |
-| P1-1 | max-min call scheduler 与 typed budget trace | F-NEED / F-ROUTE | 实际 mandatory/high-risk Need 获得 primary allocation |
-| P1-2 | ClaimSupportGroup、可信 support receipt 与 closure | F-EVIDENCE | 多 span claim 无 receipt 不可 READY |
-| P1-3 | Controller support-aware selection、ClaimVariant / ContextAssemblySpec | F-RANK | 只输出已验证 variant；candidate-complete support 不再系统性归零 |
-| P1-4 | deterministic Assembler validation/packing | F-ASSEMBLY | 只选 spec 中合法 variant 并原子打包；不执行语义判断 |
-| P2 | APC C40、VAC C60/C80/C95 小点验证 | 全链路 | 每次算法变化按冻结公式产生可信前后对照 |
-| P3 | 同版本双 profile 五点 WP7 正式重跑 | Gate M4 | 达到第 9 节全部准入条件 |
+| P0-1 receipt host validation | `IMPLEMENTED_TESTED` | 保持当前 fail-closed 测试 | 空/非法 traceable IDs 不可声明 SUPPORTS |
+| P0-2 Gate 公式与聚合器 | `IMPLEMENTED_TESTED` | 在 P2/P3 验证实际产物能通过严格入口 | 公式/hash/固定分母与五点矩阵全部通过 |
+| P0-3 APC alias | `IMPLEMENTED_TESTED` | APC C40 真实哨兵复验 | alias 冲突消失，真冲突仍 fail closed |
+| P0-4 public completion contract | `IMPLEMENTED_TESTED` | 在真实 trace 中检查 facet closure 与 taint | runtime 不读 Gold，closure 可审计 |
+| P1-1 max-min scheduler | `IMPLEMENTED_TESTED` | VAC C60/C80/C95 真实调用分配复验 | critical Need 不再因输入顺序饿死 |
+| P1-2 support closure | `IMPLEMENTED_TESTED` | 核对多 span support group 在真实产物中完整 | 无可信 receipt 的复合 claim 不 READY |
+| P1-3 support-aware selection | `IMPLEMENTED_TESTED` | VAC C40/C80/C95 检查 candidate→selected 损失 | 只发布 receipt-bound variant，support closure 不系统归零 |
+| P1-4 deterministic Assembler | `IMPLEMENTED_TESTED` | 检查 selected→assembled→ledger 损失 | spec/hash/receipt 校验与原子 packing 均成立 |
+| P0-5 formal run provenance/lifecycle | `IMPLEMENTED_TESTED / RUNTIME_PENDING` | 代码、严格聚合校验和回归已完成；待 clean source + real infrastructure 执行正式 P2/P3 | `code_source_dirty=false`；五点共享 identity；`scenario_run.completed=true` |
+| WP6 reviewer | `NOT_ACCEPTED` | 第二位 reviewer 独立审阅当前 P001/P003 可读产物 | reviewer 签署且问题闭环 |
+| P2 真实哨兵 | `NOT_ACCEPTED` | 新 experiment id 运行 APC C40、VAC C40/C60/C80/C95；按责任层回归 | 当前契约下的前后对照完整，无 silent fallback |
+| P3 双 profile 五点 WP7 | `NOT_STARTED / NOT_ACCEPTED` | 只在 P0-5、WP6 reviewer、P2 和工程门完成后全新运行 | 达到第 9 节全部准入条件 |
 
-不把所有修复一次混入一个无法消融的大版本。诊断和 evaluator 校验先行，确保后续
-每个工作项都能输出可信的 candidate、selected、assembled、ledger 四层前后对照。
-在任何 alias、retrieval、selection 或 packing 行为变化之前，必须完成 P0-2；
-后续实验不得移动公式、Gold contract 或分母 fixture。
+开发人员不应为了“完成表格”重写 P0/P1；只有 P2 真实 trace 证明实现错误时，才回到
+对应责任层做最小修复。当前串行主线是：
+
+```text
+P0-5 正式运行 provenance/lifecycle + 仓库 quality 门 + WP6 reviewer
+  -> P2 真实哨兵
+  -> 冻结 clean code/config/contract
+  -> P3 双 profile 五点 Arm A
+  -> Gate M4
+```
+
+Stage 3 coverage 修复可由对应 owner 并行，但在 P3 正式启动前必须让 `make quality`
+正常通过或得到明确、版本化的项目级处置。不得降低门槛、跳过 coverage 或改动
+Gate 公式、Gold contract、matcher 和分母 fixture。
 
 ## 8. 测试与诊断要求
 
 ### 8.1 单元/契约测试
 
-必须新增：
+下列 1–18 是 P0/P1 契约清单，当前 118 项聚焦测试已通过；后续修复必须保持，
+不得删除断言来让 P2 通过。19、20 和 22 已有明确回归；21、23、24 是当前
+formal-run provenance/lifecycle 审计缺口，需在 P3 前补齐。
 
 1. runtime 模块不能导入、反序列化或输出 Gold component；
 2. VAC NeedFacet 不能由 Plan/Gold 派生；
@@ -660,7 +728,16 @@ version 中使用该字段名；任何其他 traceable-ID 别名不得被静默�
 17. GoldMetricDescriptor hash、accepted evidence contract 和 evaluator manifest
     identity 不完整或漂移时拒绝聚合；
 18. aggregator 在移除/改写工作区 Gold YAML 后仍能仅凭冻结 evaluator bundle
-    复算相同结果。
+    复算相同结果；
+19. formal reporter 只接受 Arm A 的 P001/C20、P002/C40、P003/C60、
+    P004/C80、P005/C95 精确五点，缺点、多点或错配必须拒绝；
+20. 五点的六个 identity/budget 字段或固定分母任一漂移时 fail closed；
+21. 旧 case 缺少六个正式字段时必须在 schema/reporter 边界被拒绝，不得有自动
+    backfill 或 legacy promotion 路径；
+22. `need_id + step_id` 超长时 action StableId 仍稳定、唯一且不超过 128 字符；
+23. formal runner 在 `code_source_dirty=true` 时必须在启动/冻结前 fail closed；
+24. 五点中任一 scenario 未 completed、freeze/reveal 顺序不合法或根 aggregate 缺点时，
+    formal lifecycle 验收必须拒绝。
 
 ### 8.2 冻结产物诊断字段
 
@@ -699,12 +776,66 @@ freeze/reveal 后的 evaluator artifact 中生成。
 5. P001/P003 人工复核 Context 是否可直接交给 Writer；
 6. 才执行两个 profile 的正式五点重跑。
 
+P2 不是 Gate M4 运行，可以只跑指定哨兵点；但必须使用新 experiment id、当前 schema
+和冻结身份字段，并以 diagnostic/non-formal 形式发布。诊断 reporter 即使质量数值达标，
+也不允许输出 `gate_passed=true`。
+
+当前 `make stage2-memory-benchmark` 包装入口用于 P3 正式五点；它的末端聚合器会严格要求五点，
+不应用它发布单点 P2。P2 先用 `scripts/resolve_stage2_checkpoint_commits.py` 获取目标章的
+`<checkpoint-commit>`，再按下列模板对每个哨兵点单独运行：
+
+```bash
+.conda-env/bin/python scripts/run_stage2_teacher_forced_e2e.py \
+  --source benchmarks/private/ztj_memory_pilot_v0.1 \
+  --output-directory <p2-profile-checkpoint-output> \
+  --resume-project <profile-isolated-project-directory> \
+  --resume-commit <checkpoint-commit> \
+  --resume-chapter <checkpoint> \
+  --max-chapter <checkpoint> \
+  --database-url <profile-isolated-loopback-postgresql-url> \
+  --experiment-id <new-p2-profile-checkpoint-experiment-id> \
+  --information-profile <visible_at_cutoff|author_plan_conditioned> \
+  --arms A \
+  --semantic-backend local_openai \
+  --retrieval-backend real_hybrid \
+  --model-base-url http://127.0.0.1:8002/v1 \
+  --model qwen36-27b-nvfp4 \
+  --model-max-output-tokens 8192 \
+  --model-max-retries 1
+```
+
+该路径对非五点矩阵写出 `diagnostic_partial_report_A.json`，不写 formal unified PASS。
+P2 不调用 `scripts/aggregate_stage2_checkpoint_reports.py` 去聚合不完整矩阵。
+
+### 8.4 P3 正式运行产物契约
+
+P3 必须是全新运行，不是对旧 WP7/WP8 JSON 的补字段操作。启动前必须同时满足：
+
+- 代码源树 clean，manifest 记录 `code_source_dirty=false`；
+- `make quality` 达到项目门，不使用 `--no-cov` 或降低覆盖率；
+- WP6 第二位 reviewer 已签署当前 P001/P003；
+- P2 哨兵点已闭环，没有 silent fallback、未解释的 schema 失败或 lifecycle 缺口；
+- 两个 profile 使用隔离 namespace 和新 experiment id，但共享已冻结的代码、公式、
+  benchmark contract、matcher 和预算身份。
+
+每个 profile 必须产出精确五个 Arm A case、每点 freeze/reveal receipt、五点
+`unified_report_A.json` 与 `unified_report.json`、`scenario_run.completed=true` 和完整
+flow/progress summary。每个 case 必须原生写入六个 identity/budget 字段；两个 profile 均
+`formal_contract_validated=true` 后才进入第 9 节 Gate 判定。
+
 ## 9. Gate M4 重新准入标准
 
 ### 9.1 工程与安全硬门
 
 沿用既有 Gate M4，不降低标准：
 
+- APC 和 VAC 均通过 `stage2m_wp7_arm_a.v1` 正式 contract validation；
+- 每个 profile 只包含 Arm A 的 P001/C20、P002/C40、P003/C60、P004/C80、
+  P005/C95 精确矩阵；
+- 五点的 `code_version`、`run_config_hash`、`benchmark_contract_hash`、
+  `matcher_version`、`writer_token_budget`、`evidence_ledger_token_budget` 完整且一致；
+- 正式运行记录 `code_source_dirty=false`，不接受对旧产物事后 backfill；
+- 每个 profile 的 `scenario_run.completed=true`，根 unified report 明确包含五点；
 - 两个 profile P001-P005 完成率分别 100%；
 - future leakage = 0；
 - profile cross-contamination = 0；
@@ -917,7 +1048,14 @@ ref matching 必须复用锁定的 `gold_evidence_matcher.v3` 身份/span 规则
 4. 质量阈值必须从新的 per-Gold 结果计算；
 5. 除代码和对应 version attestation 外，benchmark content、profile isolation、
    model、Writer/ledger budget、per-Need candidate limit、tool-call budget 保持锁定；
-6. 任何预算或 matcher 规则变化都必须作为独立消融，不能混入正式 Gate run。
+6. 任何预算或 matcher 规则变化都必须作为独立消融，不能混入正式 Gate run；
+7. 2026-07-31 WP8 诊断产物全部排除在 P3/Gate 输入外，旧 B/C 不得与新 A 拼接；
+8. P2 只使用 diagnostic reporter，不输出 formal PASS；P3 必须使用新 experiment id 和
+   默认严格 formal reporter；
+9. 正式运行前 `make quality` 必须通过或有项目级、版本化的明确处置，
+   不得在 P3 命令中临时跳过 coverage；
+10. WP6 第二位 reviewer 必须审阅当前 schema/算法下的 P001/P003 人类可读
+    Context、逐 Gold 和 Evidence Ledger，不得沿用旧版签署。
 
 满足以上条件并关闭 WP6 第二位人工 reviewer 治理项后，Gate M4 才能从 HOLD
 转为 PASS。此前继续禁止启动 WP8。
@@ -934,7 +1072,7 @@ ref matching 必须复用锁定的 `gold_evidence_matcher.v3` 身份/span 规则
 | APC P002/C40 typed failure | F-FRESHNESS | F-EVIDENCE normalization | 同证据语义别名被判冲突 |
 | verifier 空 traceable IDs 仍 SUPPORTS | F-EVAL | - | 不改变 fail-closed，但 receipt 必须加固 |
 
-正式状态保持：
+当前正式状态：
 
-> **Gate M4 HOLD；基础设施/隔离/预算契约通过，证据追溯与内容质量未通过；
-> WP8 未获授权。**
+> **P0/P1 代码与严格 Gate reporter 已实现；P2 未验收，P3 未执行；
+> Gate M4 HOLD；正式 WP8 未获授权。**

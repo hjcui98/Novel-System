@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "conflict": {
+      "default": false,
+      "title": "Conflict",
+      "type": "boolean"
+    },
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "gap_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "gap_id",
+    "description"
+  ],
+  "title": "ContextGap",
+  "type": "object"
+}

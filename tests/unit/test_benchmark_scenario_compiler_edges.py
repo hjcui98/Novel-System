@@ -40,7 +40,7 @@ def test_scenario_compiler_rejects_empty_cross_project_and_duplicate_checkpoints
         )
 
 
-def test_scenario_compiler_rejects_missing_plan_and_root_references() -> None:
+def test_scenario_compiler_keeps_case_target_plans_private() -> None:
     bundle = HumanBenchmarkCompiler().compile(PILOT)
     compiler = BenchmarkScenarioCompiler()
     first = bundle.case_manifests[0]
@@ -48,11 +48,10 @@ def test_scenario_compiler_rejects_missing_plan_and_root_references() -> None:
     no_plan_bundle = bundle.model_copy(
         update={"case_manifests": (no_plan, *bundle.case_manifests[1:])}
     )
-    with pytest.raises(ValueError, match="requires a PlanRoot"):
-        compiler.compile(
-            no_plan_bundle,
-            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
-        )
+    assert compiler.compile(
+        no_plan_bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
     assert compiler.compile(
         no_plan_bundle,
         BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
@@ -61,8 +60,6 @@ def test_scenario_compiler_rejects_missing_plan_and_root_references() -> None:
     missing = ArtifactId("sha256:" + "f" * 64)
     with pytest.raises(ValueError, match="missing TextRoot"):
         compiler._text_root(bundle, missing)
-    with pytest.raises(ValueError, match="missing PlanRoot"):
-        compiler._plan_root(bundle, missing)
 
 
 def test_scenario_compiler_rejects_inconsistent_independent_rebuild(

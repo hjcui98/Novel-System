@@ -25,6 +25,7 @@ from novel_agent.domain.text import (
     TextSpanRef,
 )
 from novel_agent.services.artifacts import sha256_id
+from novel_agent.services.canonical_alias_registry import CanonicalAliasRegistry
 from novel_agent.services.content_addressing import quote_hash
 
 
@@ -51,7 +52,13 @@ class AnchorBuilder:
             for block in scene.blocks
         }
         units: list[RetrievalUnit] = []
+        alias_registry = CanonicalAliasRegistry()
         for state in world.states:
+            canonical_value = (
+                alias_registry.resolve(state.predicate, state.value)
+                if isinstance(state.value, str)
+                else None
+            )
             units.append(
                 RetrievalUnit(
                     unit_id=StableId(f"anchor.{state.state_id.root}"),
@@ -66,6 +73,12 @@ class AnchorBuilder:
                     ),
                     entity_ids=(state.subject_id,),
                     predicate=state.predicate,
+                    canonical_value_id=(
+                        None if canonical_value is None else canonical_value.canonical_value_id
+                    ),
+                    canonicalizer_version=(
+                        None if canonical_value is None else canonical_value.canonicalizer_version
+                    ),
                     story_time_start=state.valid_time.start_ordinal,
                     story_time_end=state.valid_time.end_ordinal,
                     truth_class=state.truth_class,
@@ -392,6 +405,7 @@ class ContextCompiler:
             else:
                 dropped_optional.append(unit.unit_id)
         included = (*mandatory, *selected_optional)
+        needs = tuple(need for need, _trace in needs_and_traces)
         return Stage1ContextPackage(
             context_id=context_id,
             base_commit=base_commit,
@@ -416,6 +430,10 @@ class ContextCompiler:
                 in {RetrievalUnitKind.GROUNDED_BLOCK, RetrievalUnitKind.GROUNDED_SPAN}
             ),
             unresolved_gaps=tuple(unresolved),
+            need_facets=tuple(facet for need in needs for facet in need.need_facets),
+            need_completion_specs=tuple(
+                need.completion_spec for need in needs if need.completion_spec is not None
+            ),
             retrieval_traces=tuple(compiled_traces),
             budget_report=ContextBudgetReport(
                 token_budget=token_budget,

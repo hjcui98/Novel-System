@@ -28,6 +28,7 @@ from novel_agent.domain.memory import (
     PlanObligation,
     WorldRootDocument,
 )
+from novel_agent.domain.memory_benchmark import GoldType
 from novel_agent.domain.text import (
     EvidenceRef,
     EvidenceSupportStatus,
@@ -246,6 +247,7 @@ def make_synthetic_bundle() -> BenchmarkBundle:
                 target_chapters=(21,),
                 evidence_refs=(_evidence(history, 5, "旧誓言"),),
                 future_evidence_refs=(_evidence(future, 21, "旧誓言"),),
+                gold_type=GoldType.CAUSAL_HISTORY,
             ),
         ),
         operational_constraint_gold=(
@@ -257,6 +259,7 @@ def make_synthetic_bundle() -> BenchmarkBundle:
                 evidence_refs=(_evidence(history, 20, "受伤仍未痊愈"),),
                 future_evidence_refs=(_evidence(future, 22, "受伤仍未痊愈"),),
                 mandatory=True,
+                gold_type=GoldType.CURRENT_STATE,
             ),
         ),
         plan_obligation_gold=(
@@ -268,6 +271,7 @@ def make_synthetic_bundle() -> BenchmarkBundle:
                 evidence_refs=(_evidence(history, 5, "旧誓言"),),
                 future_evidence_refs=(_evidence(future, 23, "进入北塔"),),
                 mandatory=True,
+                gold_type=GoldType.PLAN_OBLIGATION,
             ),
         ),
         annotation_version=VERSION,

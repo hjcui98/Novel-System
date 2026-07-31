@@ -67,7 +67,10 @@ class RealHybridProjectionGateway:
         source_commit: CommitId,
     ) -> Stage2RetrievalBackendBundle:
         attestation = self._snapshots.get_attestation_for_commit(source_commit)
-        if attestation is None or not attestation.quality_eligible:
+        indexes_available = attestation is not None and all(
+            self._search_index.index_exists(index.physical_name) for index in attestation.indexes
+        )
+        if attestation is None or not attestation.quality_eligible or not indexes_available:
             rebuilt = self._builder.build(project_id, source_commit)
             if rebuilt.projection_attestation is None:
                 raise Stage2RetrievalBackendError("real-hybrid projection produced no attestation")
@@ -135,7 +138,6 @@ def build_real_hybrid_backend(
         RetrievalChannel.GROUNDED_BM25,
         RetrievalChannel.GROUNDED_DENSE,
         RetrievalChannel.HIERARCHY,
-        RetrievalChannel.TYPED_GRAPH,
     }
     routes: dict[RetrievalChannel, RetrievalBackend] = {}
     routes.update({channel: r1_backend for channel in available & r1_channels})

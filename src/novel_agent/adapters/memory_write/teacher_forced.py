@@ -204,7 +204,8 @@ class RefusingCommitPort:
         return self._canonical_commit
 
     def resolve_or_replay_exact(
-        self, request: DurableMemoryWriteCommitRequest,
+        self,
+        request: DurableMemoryWriteCommitRequest,
     ) -> MemoryWriteCommitResult:
         self.calls += 1
         return MemoryWriteCommitResult(
@@ -425,8 +426,7 @@ class TeacherForcedCuratorPort:
         self.last_receipt = result.receipt
         entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
         call_refs = tuple(
-            self._persist_model_call_entry(entry, manifest.schema_version)
-            for entry in entries
+            self._persist_model_call_entry(entry, manifest.schema_version) for entry in entries
         )
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries),
@@ -512,9 +512,7 @@ class TeacherForcedCuratorPort:
     ) -> CuratorProposalRejected:
         gateway = self._replay.curator.gateway
         entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
-        call_refs = tuple(
-            self._persist_model_call_entry(entry, version) for entry in entries
-        )
+        call_refs = tuple(self._persist_model_call_entry(entry, version) for entry in entries)
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries), version
         )

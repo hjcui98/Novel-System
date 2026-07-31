@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "ExpectedClaimScope": {
+      "enum": [
+        "current",
+        "historical",
+        "knowledge",
+        "planned"
+      ],
+      "title": "ExpectedClaimScope",
+      "type": "string"
+    },
+    "NeedFacetKind": {
+      "enum": [
+        "current_state",
+        "relation_state",
+        "capability_status",
+        "limitation",
+        "knowledge_boundary",
+        "causal_history",
+        "setup",
+        "unresolved_status",
+        "commitment",
+        "plan_node"
+      ],
+      "title": "NeedFacetKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "derivation_refs": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Derivation Refs",
+      "type": "array"
+    },
+    "expected_claim_scope": {
+      "$ref": "#/$defs/ExpectedClaimScope"
+    },
+    "facet_kind": {
+      "$ref": "#/$defs/NeedFacetKind"
+    },
+    "information_scope": {
+      "minLength": 1,
+      "title": "Information Scope",
+      "type": "string"
+    },
+    "need_facet_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "need_facet_id",
+    "need_id",
+    "facet_kind",
+    "expected_claim_scope",
+    "derivation_refs",
+    "producer",
+    "producer_version",
+    "information_scope"
+  ],
+  "title": "NeedFacet",
+  "type": "object"
+}

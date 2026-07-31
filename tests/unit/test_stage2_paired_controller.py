@@ -19,6 +19,8 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
+    FusedCandidate,
+    NeedExecutionStatus,
     NeedRisk,
     RequirementLevel,
     ResolutionPath,
@@ -197,6 +199,24 @@ def test_paired_runner_fails_closed_to_deterministic_context_on_agentic_timeout(
     assert result.agentic.stop_reason is ControllerStopReason.TOOL_FAILURE
 
 
+def test_compare_marks_deterministic_quality_ineligible_as_blocker() -> None:
+    item = need()
+    base = runner(item, unit())
+    comparison = base.run(
+        request(item),
+        text_root(),
+        thread_id="paired-deterministic-ineligible",
+    )
+    deterministic = comparison.deterministic.model_copy(
+        update={
+            "quality_eligible": False,
+            "failure_category": "CONTEXT_NOT_READY",
+        }
+    )
+    result = base.compare(request(item), deterministic, comparison.agentic)
+    assert "deterministic_arm_quality_ineligible" in result.blockers
+
+
 def test_paired_runner_applies_plan_permission_to_deterministic_and_agentic_arms() -> None:
     item = need(intent=Stage1QueryIntent.PLAN_NODE)
     result = runner(item, unit()).run(request(item), text_root(), thread_id="paired-plan-block")
@@ -352,6 +372,212 @@ class _HitBackend(_EmptyBackend):
         )
 
 
+class _RecordingEmptyBackend(_EmptyBackend):
+    def __init__(self) -> None:
+        self.calls: list[tuple[StableId, RetrievalChannel]] = []
+
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        self.calls.append((memory_need.need_id, channel))
+        return ()
+
+
+def test_registered_routes_allocate_first_call_max_min_and_type_budget_miss() -> None:
+    first = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.first"),
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    second = first.model_copy(
+        update={
+            "need_id": StableId("need.fair.second"),
+            "query_text": "second critical callback",
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plans = tuple(DeterministicChannelPlanner().plan(item, capability) for item in (first, second))
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+    fair_request = request(first, max_calls=2).model_copy(
+        update={"initial_memory_needs": (first, second)}
+    )
+    result = paired.run_deterministic(fair_request, text_root())
+
+    assert [need_id for need_id, _ in backend.calls] == [
+        first.need_id,
+        second.need_id,
+    ]
+    assert result.calls_allocated_by_need == {
+        first.need_id.root: 1,
+        second.need_id.root: 1,
+    }
+    assert {trace.need_execution_status for trace in result.context.retrieval_traces} == {
+        NeedExecutionStatus.EXECUTED_EMPTY
+    }
+
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+    exhausted = paired.run_deterministic(
+        fair_request.model_copy(
+            update={
+                "retrieval_budget": fair_request.retrieval_budget.model_copy(
+                    update={"max_tool_calls": 1}
+                )
+            }
+        ),
+        text_root(),
+    )
+    assert exhausted.context.retrieval_traces[0].need_execution_status is (
+        NeedExecutionStatus.EXECUTED_EMPTY
+    )
+    assert exhausted.context.retrieval_traces[1].need_execution_status is (
+        NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+    )
+
+
+def test_global_48_call_budget_serves_each_actual_need_before_any_second_call() -> None:
+    template = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            )
+        }
+    )
+    needs = tuple(
+        template.model_copy(
+            update={
+                "need_id": StableId(f"need.fair.global.{index:02d}"),
+                "query_text": f"critical callback {index}",
+            }
+        )
+        for index in range(49)
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plans = tuple(DeterministicChannelPlanner().plan(item, capability) for item in needs)
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+    fair_request = request(needs[0], max_calls=48).model_copy(
+        update={"initial_memory_needs": needs}
+    )
+
+    result = paired.run_deterministic(fair_request, text_root())
+
+    assert len(backend.calls) == 48
+    assert len({need_id for need_id, _channel in backend.calls}) == 48
+    assert max(result.calls_allocated_by_need.values()) == 1
+    assert (
+        result.context.retrieval_traces[-1].need_execution_status
+        is NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+    )
+
+
+def test_max_min_first_round_does_not_starve_optional_need() -> None:
+    mandatory = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.mandatory"),
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    optional = mandatory.model_copy(
+        update={
+            "need_id": StableId("need.fair.optional"),
+            "query_text": "optional but task-relevant history",
+            "requirement": RequirementLevel.OPTIONAL,
+            "risk_level": NeedRisk.MEDIUM,
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plans = tuple(
+        DeterministicChannelPlanner().plan(item, capability) for item in (mandatory, optional)
+    )
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+    fair_request = request(mandatory, max_calls=2).model_copy(
+        update={"initial_memory_needs": (mandatory, optional)}
+    )
+
+    result = paired.run_deterministic(fair_request, text_root())
+
+    assert [need_id for need_id, _channel in backend.calls] == [
+        mandatory.need_id,
+        optional.need_id,
+    ]
+    assert result.calls_allocated_by_need == {
+        mandatory.need_id.root: 1,
+        optional.need_id.root: 1,
+    }
+
+
 class _Reranker:
     profile = "paired-test"
 
@@ -400,7 +626,8 @@ def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels()
         per_channel_limit=2,
         reranker=RerankService(_Reranker()),
     )
-    assert successful.fallback_used is False
+    assert successful.fallback_used is True
+    assert successful.fallback_reason == "anchor_evidence_insufficient"
     assert successful.rerank_applied is True
     degraded = PairedMemoryControllerRunner._retrieve_route_plan(
         _HitBackend(),
@@ -424,6 +651,20 @@ def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels()
         per_channel_limit=2,
     )
     assert repeated.allowed_channels.count(RetrievalChannel.ANCHOR_BM25) == 1
+    skipped_fallback = PairedMemoryControllerRunner._retrieve_route_plan(
+        _HitBackend(),
+        item,
+        plan.model_copy(
+            update={
+                "conditional_fallbacks": tuple(
+                    fallback.model_copy(update={"condition": "plan_anchor_insufficient"})
+                    for fallback in plan.conditional_fallbacks
+                )
+            }
+        ),
+        per_channel_limit=2,
+    )
+    assert skipped_fallback.fallback_used is False
 
     with pytest.raises(ValueError, match="does not belong"):
         PairedMemoryControllerRunner._retrieve_route_plan(
@@ -452,6 +693,57 @@ def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels()
             )[0],
         ),
     )
+    semantic_need = item.model_copy(
+        update={"query_text": "hero distant callback unresolved secret"}
+    )
+    assert PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        PairedMemoryControllerRunner._direct_candidates(
+            {
+                RetrievalChannel.ANCHOR_BM25: (
+                    ChannelHit(
+                        unit=unit().model_copy(update={"text": "hero current state"}),
+                        channel=RetrievalChannel.ANCHOR_BM25,
+                        channel_rank=1,
+                        raw_score=1.0,
+                        candidate_count=1,
+                        hit_reason="candidate",
+                    ),
+                )
+            },
+            limit=1,
+        ),
+        need=semantic_need,
+    )
+    selected = PairedMemoryControllerRunner._direct_candidates(
+        {
+            RetrievalChannel.ANCHOR_BM25: (
+                ChannelHit(
+                    unit=unit(),
+                    channel=RetrievalChannel.ANCHOR_BM25,
+                    channel_rank=1,
+                    raw_score=1.0,
+                    candidate_count=1,
+                    hit_reason="candidate",
+                ),
+            )
+        },
+        limit=1,
+    )
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        selected,
+    )
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        selected,
+        need=semantic_need.model_copy(update={"query_text": "x"}),
+    )
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "plan_anchor_insufficient",
+        selected,
+    )
+    assert PairedMemoryControllerRunner._fallback_applies("plan_anchor_insufficient", ())
     with pytest.raises(ValueError, match="unregistered deterministic fallback"):
         PairedMemoryControllerRunner._fallback_applies("unknown", ())
 
@@ -500,3 +792,202 @@ def test_direct_candidate_and_merge_keep_mandatory_units_beyond_limit() -> None:
         limit=1,
     )
     assert merged[1].selected is True
+
+
+def test_fallback_merge_reserves_bounded_incoming_capacity() -> None:
+    source = unit().model_copy(update={"mandatory": False})
+
+    def candidate(prefix: str, index: int) -> FusedCandidate:
+        item = source.model_copy(update={"unit_id": StableId(f"{prefix}.{index}")})
+        hit = ChannelHit(
+            unit=item,
+            channel=RetrievalChannel.ANCHOR_BM25,
+            channel_rank=index,
+            raw_score=1.0 / index,
+            candidate_count=4,
+            hit_reason="candidate",
+        )
+        return FusedCandidate(
+            unit=item,
+            fused_rank=index,
+            rrf_score=1.0 / index,
+            channel_hits=(hit,),
+        )
+
+    merged = PairedMemoryControllerRunner._merge_candidates(
+        tuple(candidate("anchor", index) for index in range(1, 5)),
+        tuple(candidate("grounded", index) for index in range(1, 5)),
+        limit=4,
+        reserve_incoming=True,
+    )
+
+    assert [item.unit.unit_id.root for item in merged if item.selected] == [
+        "anchor.1",
+        "grounded.1",
+        "anchor.2",
+        "grounded.2",
+    ]
+    existing_longer = PairedMemoryControllerRunner._merge_candidates(
+        tuple(candidate("anchor-long", index) for index in range(1, 4)),
+        (candidate("grounded-short", 1),),
+        limit=4,
+        reserve_incoming=True,
+    )
+    incoming_longer = PairedMemoryControllerRunner._merge_candidates(
+        (candidate("anchor-short", 1),),
+        tuple(candidate("grounded-long", index) for index in range(1, 4)),
+        limit=4,
+        reserve_incoming=True,
+    )
+    assert len(existing_longer) == 4
+    assert len(incoming_longer) == 4
+
+
+def test_fair_registered_routes_block_plan_scope_and_reject_route_identity_drift() -> None:
+    plan_need = need(intent=Stage1QueryIntent.PLAN_NODE)
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=tuple(
+            channel for channel in RetrievalChannel if channel is not RetrievalChannel.RERANK
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(plan_need, capability)
+    paired = PairedMemoryControllerRunner(
+        _EmptyBackend(),
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan,),
+    )
+    blocked = paired.run_deterministic(request(plan_need), text_root())
+    assert blocked.context.retrieval_traces[0].need_execution_status is (
+        NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED
+    )
+    assert blocked.retrieval_call_count == 0
+
+    missing_route_need = need().model_copy(update={"need_id": StableId("need.route.missing")})
+    with pytest.raises(ValueError, match="no RoutePlan"):
+        paired.run_deterministic(request(missing_route_need), text_root())
+
+    wrong_basis = PairedMemoryControllerRunner(
+        _EmptyBackend(),
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan.model_copy(update={"base_commit": CommitId("sha256:" + "9" * 64)}),),
+    )
+    with pytest.raises(ValueError, match="basis differs"):
+        wrong_basis.run_deterministic(
+            request(plan_need, allow_future_plan=True),
+            text_root(),
+        )
+
+
+def test_fair_trace_assembly_covers_fallback_and_reranker_outcomes() -> None:
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            )
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    fair_runner = PairedMemoryControllerRunner(
+        _EmptyBackend(),
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan,),
+    )
+    fair_result = fair_runner.run_deterministic(
+        request(item, max_calls=12),
+        text_root(),
+    )
+    assert fair_result.context.retrieval_traces[0].fallback_used is True
+    non_applicable_fallback_plan = plan.model_copy(
+        update={
+            "conditional_fallbacks": tuple(
+                fallback.model_copy(update={"condition": "hierarchy_scope_resolved"})
+                for fallback in plan.conditional_fallbacks
+            )
+        }
+    )
+    non_applicable_runner = PairedMemoryControllerRunner(
+        _EmptyBackend(),
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (non_applicable_fallback_plan,),
+    )
+    non_applicable = non_applicable_runner.run_deterministic(
+        request(item, max_calls=12),
+        text_root(),
+    )
+    assert non_applicable.context.retrieval_traces[0].fallback_used is False
+    assert PairedMemoryControllerRunner._semantic_query_terms("林澈受伤")
+
+    hit_backend = _HitBackend()
+    primary_results = {
+        step.channel: hit_backend.search(item, step.channel, 2)
+        for group in plan.primary_groups
+        for step in group.steps
+    }
+    successful = PairedMemoryControllerRunner._assemble_route_trace(
+        item,
+        plan,
+        primary_results,
+        per_channel_limit=2,
+        reranker=RerankService(_Reranker()),
+    )
+    assert successful.fusion_applied is True
+    assert successful.rerank_applied is True
+    degraded = PairedMemoryControllerRunner._assemble_route_trace(
+        item,
+        plan,
+        primary_results,
+        per_channel_limit=2,
+        reranker=RerankService(_Reranker(fail=True)),
+    )
+    assert degraded.channel_failures[RetrievalChannel.RERANK] == ("reranker_degraded:RuntimeError")
+
+    fallback_channel = plan.conditional_fallbacks[0].steps[0].channel
+    fallback = PairedMemoryControllerRunner._assemble_route_trace(
+        item,
+        plan,
+        {fallback_channel: ()},
+        per_channel_limit=2,
+        reranker=None,
+    )
+    assert fallback.fallback_used is True
+    assert fallback.fallback_reason == plan.conditional_fallbacks[0].condition
+
+
+def test_legacy_fairness_marks_later_need_unexecuted_after_global_budget() -> None:
+    first = need()
+    second = first.model_copy(update={"need_id": StableId("need.legacy.second")})
+    legacy = runner(first, unit())
+    legacy_request = request(first, max_calls=1).model_copy(
+        update={"initial_memory_needs": (first, second)}
+    )
+    result = legacy.run_deterministic(legacy_request, text_root())
+    assert result.context.retrieval_traces[1].need_execution_status is (
+        NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+    )

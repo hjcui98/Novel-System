@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "FacetEvidenceRequirement": {
+      "enum": [
+        "traceable_cutoff_source",
+        "cutoff_current_source",
+        "plan_provenance",
+        "distinct_historical_source"
+      ],
+      "title": "FacetEvidenceRequirement",
+      "type": "string"
+    },
+    "NeedGapPolicy": {
+      "enum": [
+        "emit_typed_gap",
+        "fail_mandatory"
+      ],
+      "title": "NeedGapPolicy",
+      "type": "string"
+    },
+    "NeedUncertaintyPolicy": {
+      "enum": [
+        "allow_gap_only",
+        "reject_unverified_claim"
+      ],
+      "title": "NeedUncertaintyPolicy",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "evidence_requirement_by_facet": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FacetEvidenceRequirement"
+      },
+      "title": "Evidence Requirement By Facet",
+      "type": "object"
+    },
+    "gap_policy": {
+      "$ref": "#/$defs/NeedGapPolicy"
+    },
+    "irreducible_need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Irreducible Need Facet Ids",
+      "type": "array"
+    },
+    "min_distinct_chapters": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Min Distinct Chapters",
+      "type": "integer"
+    },
+    "min_distinct_evidence_sources": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Min Distinct Evidence Sources",
+      "type": "integer"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "producer": {
+      "minLength": 1,
+      "title": "Producer",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "require_causal_history": {
+      "default": false,
+      "title": "Require Causal History",
+      "type": "boolean"
+    },
+    "require_current_claim": {
+      "default": false,
+      "title": "Require Current Claim",
+      "type": "boolean"
+    },
+    "required_need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Required Need Facet Ids",
+      "type": "array"
+    },
+    "uncertainty_policy": {
+      "$ref": "#/$defs/NeedUncertaintyPolicy"
+    }
+  },
+  "required": [
+    "need_id",
+    "required_need_facet_ids",
+    "irreducible_need_facet_ids",
+    "evidence_requirement_by_facet",
+    "uncertainty_policy",
+    "gap_policy",
+    "producer",
+    "producer_version"
+  ],
+  "title": "NeedCompletionSpec",
+  "type": "object"
+}

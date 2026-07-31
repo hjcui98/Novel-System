@@ -87,16 +87,12 @@ class EvidenceSupportGate:
     ) -> tuple[EvidenceSupportDisposition, str]:
         if isinstance(record, CuratorStateRecord):
             scalar = EvidenceSupportGate._scalar_text(record.value).casefold()
-            if (
-                "半个时辰" in text
-                and scalar
-                in {
-                    "half_hour",
-                    "half-hour",
-                    "30_minutes",
-                    "thirty_minutes",
-                }
-            ):
+            if "半个时辰" in text and scalar in {
+                "half_hour",
+                "half-hour",
+                "30_minutes",
+                "thirty_minutes",
+            }:
                 return (
                     EvidenceSupportDisposition.CONTRADICTS,
                     "EXPLICIT_TRADITIONAL_TIME_UNIT_MISMATCH",
@@ -110,8 +106,12 @@ class EvidenceSupportGate:
         # is a hard signal that the candidate text denies the record.
         primary = tokens[0]
         negations = (
-            "\u4e0d\u662f", "\u5e76\u672a", "\u6ca1\u6709",
-            "\u7edd\u975e", "not ", "never ",
+            "\u4e0d\u662f",
+            "\u5e76\u672a",
+            "\u6ca1\u6709",
+            "\u7edd\u975e",
+            "not ",
+            "never ",
         )
         if primary and primary.casefold() in lowered:
             for negation in negations:

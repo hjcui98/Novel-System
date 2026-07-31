@@ -323,7 +323,7 @@ def test_curator_replay_agent_v2_without_proposal_feedback() -> None:
     )
 
     sent = endpoint.requests[0]
-    assert '<PROPOSAL_REPAIR_FEEDBACK' not in sent.prompt
-    assert '<MANDATORY_PROPOSAL_REPAIR_CONTRACT' not in sent.prompt
+    assert "<PROPOSAL_REPAIR_FEEDBACK" not in sent.prompt
+    assert "<MANDATORY_PROPOSAL_REPAIR_CONTRACT" not in sent.prompt
     assert result.receipt.agent_type is AgentType.MEMORY_CURATOR
     assert call.request_id == request().request_id

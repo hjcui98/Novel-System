@@ -1,0 +1,170 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CanonicalAliasReceipt": {
+      "additionalProperties": false,
+      "description": "Predicate-scoped proof that a versioned registry equates two raw values.",
+      "properties": {
+        "canonical_value_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonicalizer_version": {
+          "minLength": 1,
+          "title": "Canonicalizer Version",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "raw_values": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Raw Values",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "registry_version": {
+          "minLength": 1,
+          "title": "Registry Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "registry_version",
+        "predicate",
+        "raw_values",
+        "canonical_value_id",
+        "canonicalizer_version"
+      ],
+      "title": "CanonicalAliasReceipt",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assembler_version": {
+      "minLength": 1,
+      "title": "Assembler Version",
+      "type": "string"
+    },
+    "canonical_alias_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Canonical Alias Receipt Refs",
+      "type": "array"
+    },
+    "canonical_alias_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CanonicalAliasReceipt"
+      },
+      "title": "Canonical Alias Receipts",
+      "type": "array"
+    },
+    "context_assembly_spec_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "need_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "normalized_unit_count": {
+      "minimum": 0,
+      "title": "Normalized Unit Count",
+      "type": "integer"
+    },
+    "retrieval_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retrieval Unit Ids",
+      "type": "array"
+    },
+    "selected_claim_variant_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Claim Variant Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "assembler_version",
+    "normalized_unit_count"
+  ],
+  "title": "ContextLineage",
+  "type": "object"
+}

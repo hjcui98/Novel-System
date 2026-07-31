@@ -13,6 +13,9 @@ class OpenSearchIndex:
         if not self._client.indices.exists(index=index):
             self._client.indices.create(index=index, body=mapping)
 
+    def index_exists(self, index: str) -> bool:
+        return bool(self._client.indices.exists(index=index))
+
     def index_document(self, index: str, document_id: str, document: dict[str, Any]) -> None:
         self._client.index(index=index, id=document_id, body=document, refresh="wait_for")
 

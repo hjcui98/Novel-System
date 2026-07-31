@@ -2,10 +2,11 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 文档状态：WP8 diagnostic execution / Gate M4 not passed / Gate M5 incomplete
+> 文档状态：M4 remediation active / formal WP7 P3 rerun pending / formal WP8 frozen
 > 编写日期：2026-07-29
 > 最近更新：2026-07-31
-> 代码基线：`ca9c78e` 及 2026-07-29 工作区中已完成的 C95 Retrieval Gate 相关实现
+> 初始代码基线：`ca9c78e`
+> 当前开发基线：2026-07-31 Stage 2M 工作区；P0/P1 实现与正式五点 Gate contract 已进入代码，尚未形成可签署的 P3 run
 > 目标阶段：Stage 2M（Memory Benchmark Task Closure）
 > 前置阶段：Stage 2W / Stage 2R 已形成 C95 连续记忆、真实检索索引和冻结后揭示 Gold 的基础设施闭环
 > 后续阶段：Stage 3 Writer Core 的语义质量准入与生产 Writer Gateway 晋级
@@ -32,7 +33,7 @@
   -> 两个 profile × 五个 checkpoint 的质量与成本报告
 ```
 
-当前实现与该闭环之间有五个 P0 缺口：
+本规划形成时，初始实现与该闭环之间有五个 P0 缺口：
 
 1. 安全、通用的 benchmark task 没有成为稳定的公开运行契约；当前运行使用合成模板，而原始 `input.yaml` 又混有 evaluator-only 的精确 `target_plan` 和反向恢复提示，不能直接整体公开。
 2. 默认 Need Generator 枚举整个 World State，并把每条状态都变成 mandatory need，检索规模随世界状态线性增长。
@@ -40,25 +41,74 @@
 4. 现有评分主要判断“Gold 是否碰到任意证据”，没有形成可逐项评测的 ContextPackage 结论层，也没有逐 Gold 语义支持、矛盾和可追溯性判断。
 5. Arm C 只合并了 trace/selected unit id，没有重新组装 Writer 可见上下文；因此当前的 C 不是一个可被 Writer 消费和公平比较的真实实验臂。
 
-本规划将上述问题拆分为九个按依赖顺序执行的工作包（WP0-WP8）。完成后，系统才可以进入真实模型 A/B/C，并把结果用于决定 agentic Memory Controller 是否有质量收益。
+本规划将上述问题拆分为九个按依赖顺序执行的工作包（WP0-WP8）。截至
+2026-07-31，以上五项已经有对应的契约、Need、Writer Context、逐 Gold evaluator 和
+Arm C 重新组装实现；它们不再是“尚未写代码”的缺口。当前剩余主线是验证这些实现是否
+真正修复任务到证据质量，并形成符合当前正式 Gate contract 的 P3 五点运行。完成 P3 且
+Gate M4 PASS 后，系统才可以正式进入真实模型 A/B/C。
 
-### 0.1 2026-07-31 WP8 诊断执行更新
+### 0.1 2026-07-31 当前复核结论
 
-WP0-WP7 的代码和两个 profile × 五个 checkpoint 的 deterministic Arm A 路径已实现。虽然
-Gate M4 质量仍未通过，项目执行了一次受限 WP8 诊断运行，用于暴露 Agentic 路径问题；这次运行
-不构成第 13 节所定义的正式晋级证据。
+WP0-WP7 的代码路径和两个 profile × 五个 checkpoint 的 deterministic Arm A 路径已实现。
+项目曾在 Gate M4 未通过时执行一次受限 WP8 诊断运行，用于暴露 Agentic 路径问题；该运行
+不构成第 13 节所定义的正式晋级证据，也不能补签为 P3。
 
 当前结果：
 
 - 修复了 `controller_legal_actions.py` 中 `need_id + step_id` 组合导致的 `StableId` 长度溢出；
-- `author_plan_conditioned` 与 `visible_at_cutoff` 各五个 checkpoint 均产生 Arm A；
-- Arm B/C 只在部分早期 checkpoint 产生有效产物，C60 及以后为 Arm A-only；
-- 两个 profile 的 contradiction 均为 0，但 coverage 和 mandatory hit 远低于 Gate M4；
+- `author_plan_conditioned`（APC）与 `visible_at_cutoff`（VAC）各五个 checkpoint 均产生
+  Arm A；只有 VAC C20/C40 产生正式可比较的 A/B/C；
+- APC C20 请求 ABC，但 B 未 READY、C fallback，最终只发布 A；C60 及以后均为 A-only；
+- 十个旧 `stage2m_case_C*_A.json` 都缺少当前正式 case schema 必需的
+  `code_version`、`run_config_hash`、`benchmark_contract_hash`、`matcher_version`、
+  `writer_token_budget` 和 `evidence_ledger_token_budget`，当前正式 aggregator 必须拒绝；
+- 十个单点的 `scenario_run.completed` 均为 `false`，且没有双 profile 各自覆盖五点的正式
+  lifecycle-closed `unified_report.json`；
+- 冻结 evaluator bundle 的诊断复算结果为：APC current-state `3.50%`、
+  operational/plan `19.79%`、historical `36.78%`、UNTRACEABLE `7/72`；VAC 分别为
+  `9.00%`、`8.45%`、`32.18%`、UNTRACEABLE `8/47`；两个 profile contradiction 均为 0；
 - Agentic 的 silent failure 必须改成明确 typed skip/failure，不能计为完成；
 - deterministic 继续是冻结默认路径，Agentic 不晋升。
 
-当前汇总和阶段结论以 `docs/project_status.md` 为准。2026-07-30 的结果文档保留为 WP8 之前的
-历史快照。
+当前代码复核同时确认：
+
+- `gate_metric_formula.v1`、Gold descriptor/contract、accepted-evidence hash 链和固定分母已实现；
+- 正式 aggregator 默认只接受 Arm A 的 P001-P005/C20-C95 精确矩阵、同一冻结运行身份和
+  固定六组分母；非正式诊断聚合不能输出 `gate_passed=true`；
+- public NeedFacet/NeedCompletionSpec、max-min scheduler、ClaimSupportGroup、receipt-bound
+  ClaimVariant、ContextAssemblySpec、deterministic Assembler validation、APC alias registry 和
+  evaluator receipt host validation 已进入代码并有专项测试；
+- formal-run provenance/lifecycle 已进入正式入口：real_hybrid 脏源码 fail closed，manifest
+  原生写入六个 identity/budget 字段，单点 scenario 会按实际 checkpoint 收口，aggregate
+  会校验五点 freeze/reveal lifecycle、身份一致性和根场景完成状态；对应 legacy 缺字段、
+  dirty-source、identity drift、StableId 和未闭合 lifecycle 回归均已补齐；
+- `make quality` 已通过：1497 个测试通过、9 个按标记排除，Ruff、格式、严格 MyPy 通过，
+  statement/branch coverage 均为 `100%`；这只关闭工程质量门，不等同于 P2/P3 语义验收；
+- 本轮未把受环境权限限制而未执行的真实 P2、第二位人工 reviewer 签署或 P3 产物写成通过。
+
+十点 Context、逐 Gold 和 Evidence Ledger 的人类可读入口为
+`docs/stage2m_wp8_human_readable_outputs_20260731.md`。当前汇总和阶段结论以
+`docs/project_status.md` 为准；2026-07-30 的结果文档保留为修复前历史快照。
+
+### 0.2 从当前状态继续执行
+
+后续开发不得从 WP0 重做，也不得直接续跑 WP8。当前唯一正式执行链为：
+
+```text
+冻结现有诊断产物，仅作为失败基线
+  -> 保持 P0/P1 已实现契约和测试
+  -> 关闭 P3 前置质量门与第二位人工 reviewer 项
+  -> 按 M4 专项方案执行 P2 哨兵点真实验证
+  -> 冻结同一 clean code/config/contract，执行 P3 双 profile 五点 Arm A
+  -> 每个 profile 生成 lifecycle-closed formal unified report
+  -> Gate M4
+       ├── PASS：正式启动 WP8 A/B/C
+       └── FAIL：回到 P2 责任层修复，WP8 继续冻结
+```
+
+文档优先级：WP 划分、全局流程和 WP8 条件以本文为准；Gate M4 的算法边界、修复顺序、
+固定公式、P2/P3 产物和重新准入标准以
+`docs/stage2m_gate_m4_root_cause_and_remediation_20260730.md` 为准。
 
 ---
 
@@ -103,14 +153,17 @@ Gate M4 质量仍未通过，项目执行了一次受限 WP8 诊断运行，用�
 
 ### 1.3 当前回归基线
 
-审计时抽跑了 Benchmark、Need、Context、Paired Pilot、Teacher-forced E2E 和 Retrieval Gate 相关测试：
+本次 2026-07-31 对当前工作区的复核基线为：
 
-- 123 个测试用例全部通过；
-- 命令最终退出非零，是因为抽跑测试触发了全仓 `coverage fail-under=100`，而不是测试用例失败；
-- 当前测试通过只能证明既有契约被满足，不能证明 Writer 任务闭环已经完成；
-- `tests/unit/test_stage1_memory_pipeline.py` 中仍存在明确接受 `mandatory_tokens > token_budget` 的断言，这一行为与总体设计中的预算契约相反，必须在本阶段反转。
+- Stage 2M 聚焦整改测试 118 项通过；
+- freeze/reveal integration 1 项通过；
+- `ruff check .`、`ruff format --check .` 和严格 MyPy（299 个 source files）通过；
+- `make quality` 中 1497 项测试通过、9 项 deselected，statement/branch coverage 均为 100%，
+  因此完整工程命令通过；
 
-后续开发中，局部回归应使用 `--no-cov`；合并前再运行完整 `make quality`，避免把“未运行全仓导致覆盖率不足”和功能失败混为一谈。
+这些工程结果证明当前 Stage 2M 契约与聚合门有回归保护，不证明真实质量已达标。
+开发时可为快速定位运行聚焦测试；正式 P3 前必须让项目规定的完整 `make quality`
+正常通过或得到明确、版本化的项目级处置，不得在正式命令中静默跳过 coverage。
 
 ---
 
@@ -128,12 +181,12 @@ Gate M4 质量仍未通过，项目执行了一次受限 WP8 诊断运行，用�
 | 未来信息隔离 | 已完成基础门 | 公开输入先运行，结果冻结后才揭示 Gold；当前泄漏审计为 0 |
 | deterministic gateway | 条件准入 | 可供 DRAFT + writer-safe 场景使用，不等于任务质量达标 |
 | agentic gateway | 未准入 | 超时、成本和可比性仍未形成通过证据 |
-| Benchmark ContextPackage | 未完成 | 当前输出偏内部检索/调试对象，不是稳定、可直接评测的 Memory 读侧产品契约 |
-| 逐 Gold 任务质量评测 | 未完成 | 目前没有可审计的逐项支持、矛盾和证据判定 |
-| 五 checkpoint 基础聚合 | 已有基础设施 | `paired_case_C20...C95` 与 `e2e_paired_report_all_checkpoints.json` 已有聚合入口 |
-| 双 profile 新任务契约统一报告 | 未完成 | 尚未在新 Context/逐 Gold 契约下分别完成两套五 checkpoint 正式结果 |
+| Benchmark WriterContextPackage | 契约和组装实现已完成 | 已有人类可读产物，但真实质量远未达 M4 |
+| 逐 Gold 任务质量评测 | 契约和 evaluator 已完成 | 旧诊断可复算；需要新 P3 正式结果 |
+| 五 checkpoint 正式聚合 | 严格 reporter 已完成 | 旧 case schema/lifecycle 不合格，尚无可签署五点 report |
+| 双 profile 新任务契约统一报告 | 未验收 | P2/P3 未完成，Gate M4 保持 HOLD |
 
-### 2.2 真实运行暴露出的规模问题
+### 2.2 初始真实运行暴露出的规模问题（历史基线）
 
 C95 r35 诊断产物中的 P004/P005 两个代表案例显示（它们用于说明 Context 膨胀，不否定五 checkpoint 已完成的 Gate 证据）：
 
@@ -154,24 +207,25 @@ C95 r35 诊断产物中的 P004/P005 两个代表案例显示（它们用于说�
 
 当前里程碑应命名为：
 
-> **C95 Memory Infrastructure Closed / Memory Benchmark Task Open**
+> **C95 Memory Infrastructure Closed / M4 Remediation Active / Formal P3 Pending**
 
 允许的陈述：
 
 - 已经能安全地在 C95 真实状态和真实索引上运行记忆检索；
 - 已经能证明评测前没有把 Gold 或未来文本暴露给 Controller；
-- deterministic gateway 可以作为下一阶段 Writer Context 改造的底座。
+- deterministic gateway 可以作为下一阶段 Writer Context 改造的底座；
 - 当前 `CONDITIONAL_PASS` 和 deterministic 冻结决定保持有效；
-- 已有五 checkpoint Gate 证据和聚合脚本可被下一阶段复用。
+- P0/P1 整改契约和严格聚合器已有代码与测试，可直接进入 P2 验证。
 
 暂不允许的陈述：
 
 - 记忆模块已经通过真实小说写作 benchmark；
-- 当前 ContextPackage 可以直接用于 Writer 质量评测；
+- 当前 ContextPackage 质量已达到可供 Writer 正式准入的程度；
 - agentic arm 优于 deterministic arm；
 - Arm C 已证明增量信息对 Writer 有收益；
 - 当前 recall 数字代表完整、精确的 Gold 任务完成率。
-- `visible_at_cutoff` 与 `author_plan_conditioned` 已经在同一正式 run 中得到可直接比较的完整结果。
+- `visible_at_cutoff` 与 `author_plan_conditioned` 已经在同一正式 run 中得到可直接比较的完整结果；
+- 2026-07-31 受限 WP8 诊断产物可以通过补字段变成 P3 或 M4 证据。
 
 ---
 
@@ -222,7 +276,10 @@ C95 r35 诊断产物中的 P004/P005 两个代表案例显示（它们用于说�
 
 ---
 
-## 4. 当前实现的根因分析
+## 4. 本规划形成时的实现根因（历史设计输入）
+
+本节保留 WP0–WP5 的原始设计动机，不表示当前代码仍缺少这些类型或服务。
+当前实现与剩余工作以第 0.1、0.2、13 节状态表和 M4 专项方案为准。
 
 ### 4.1 P0：公开任务和 evaluator 精确计划没有形成安全的契约切面
 
@@ -1277,6 +1334,21 @@ WP1 完成后，还必须用独立 output/experiment id 补一条 `visible_at_cu
 
 ## 13. 分工作包实施计划
 
+以下 WP0–WP5 的“实施/测试/完成条件”保留为契约清单和追溯依据，不是当前待办清单。
+2026-07-31 复核状态如下：
+
+| 工作包 | 当前状态 | 开发决策 |
+|---|---|---|
+| WP0 历史失败 fixture | `IMPLEMENTED_TESTED` | 保持回归，不重做 |
+| WP1 公开/私有契约 | `IMPLEMENTED_TESTED` | 保持 taint/freeze 边界，只修 P2 暴露的缺陷 |
+| WP2 Task/Plan-conditioned Need | `IMPLEMENTED_TESTED` | 进入 P2 真实调度/召回验证 |
+| WP3 Writer Context / Evidence Ledger | `IMPLEMENTED_TESTED` | 进入 P2 support closure 和 packing 验证 |
+| WP4 逐 Gold evaluator | `IMPLEMENTED_TESTED` | 保持 host validation 与冻结公式 |
+| WP5 A/B/C 产物/报告 | `IMPLEMENTED_WITH_AGENTIC_GAPS` | 正式 M4 只用 Arm A；B/C 等 WP8 |
+| WP6 P001/P003 先行验收 | `SECOND_REVIEWER_PENDING` | 用当前可读产物完成独立签署 |
+| WP7 双 profile 五点 | `P2_PENDING / FORMAL_P3_NOT_RUN` | 按 M4 专项方案新跑，不补签旧产物 |
+| WP8 真实 A/B/C | `FROZEN` | 只在 Gate M4 PASS 后重新启动 |
+
 ### WP0：冻结当前基线与失败样本
 
 目标：把当前 P004/P005 的过大 Context、template task、B timeout 和伪 Arm C 固化为 regression fixtures。
@@ -1553,6 +1625,10 @@ WP1 完成后，还必须用独立 output/experiment id 补一条 `visible_at_cu
 
 预计：1-2 人日。
 
+当前状态：代码路径和单人/开发者审阅证据已存在，但第二位人工 reviewer 治理项尚无正式
+签署。P3 前必须使用当前人类可读 Context 对 P001/P003 完成第二轮独立复核；旧审阅不能因
+后续算法和 schema 已变化而自动沿用。
+
 ### WP7：五 checkpoint deterministic 正式运行
 
 目标：在同一版本下分别覆盖两个 profile 的 P001-P005。
@@ -1566,34 +1642,71 @@ WP1 完成后，还必须用独立 output/experiment id 补一条 `visible_at_cu
 - 若同 profile 历史物理索引缺失而 canonical commits 有有效 attestation，可只补建所需 checkpoint 投影；
 - 每个 profile 报告都必须同时包含 C20/C40/C60/C80/C95。
 
-建议运行入口：
+当前 P3 前置状态：
+
+- P0/P1 代码和专项测试已实现，不应重新开发同一套契约；
+- 正式 Gate reporter 已冻结为 `stage2m_wp7_arm_a.v1`，默认拒绝少于五点、非 Arm A、
+  checkpoint/case 错配、同 run identity 漂移或固定分母漂移；
+- 2026-07-31 的 WP8 诊断 case 使用旧 schema，不能通过当前正式 reporter；禁止事后补写六个
+  identity 字段后冒充新 P3；
+- P2 哨兵点和第二位人工 reviewer 尚未通过，因此 P3 尚未获准执行；
+- `make quality` 已通过（1497 passed、9 deselected、100% statement/branch coverage）；这只
+  关闭工程门，不能替代 P2 哨兵、第二 reviewer 或正式 P3 结果。
+
+目标运行入口（完成 P0-5 后才可作为正式 P3）：
 
 ```bash
 make stage2-memory-benchmark \
   SOURCE=benchmarks/private/ztj_memory_pilot_v0.1 \
   PROJECT_DIRECTORY=<profile-isolated-project-directory> \
+  STAGE2R_DATABASE_URL=<profile-isolated-loopback-postgresql-url> \
   STAGE2R_EXPERIMENT_ID=<profile-isolated-experiment-id> \
   INFORMATION_PROFILE=<visible_at_cutoff|author_plan_conditioned> \
   ARMS=A \
-  CHECKPOINTS=20,40,60,80,95 \
   OUTPUT=reports/stage2m/writer_context_benchmark/<profile>/<run-id>
 ```
+
+当前包装入口默认执行 C20/C40/C60/C80/C95 五点。两个 profile 分别运行一次，
+`PROJECT_DIRECTORY`、数据库、experiment id 和 `OUTPUT` 必须隔离。P2 哨兵不直接使用
+该正式五点命令冒充 P3，应使用独立诊断 experiment id 和指定 checkpoint 入口。
+
+当前包装入口已在启动前对 executable source tree 做 dirty-source fail closed；它仍把五点
+拆成单点 scenario，但末端 aggregator 已纳入五点 `scenario_run.completed`、身份一致性和
+freeze/reveal lifecycle formal validation。由于 P2 和第二位 reviewer 尚未验收，这条命令仍
+只是待批准的 P3 入口，不允许用尚未实际生成的输出签署 P3。
 
 完成条件：
 
 - 两个 profile 各五个 case 均有有效 freeze + evaluator artifact；
+- 每个 case 的正式报告在冻结时持有并校验
+  `code_version/run_config_hash/benchmark_contract_hash/matcher_version/`
+  `writer_token_budget/evidence_ledger_token_budget`；
+- 五个 case 使用同一 `code_version`、`run_config_hash`、benchmark contract、matcher 和预算；
+- `code_source_dirty=false`；若运行基础设施暂不能保证 clean tree，必须先修入口，不接受仅靠
+  运行后计算的 patch hash 替代；
+- checkpoint 与 case 必须精确为 C20/P001、C40/P002、C60/P003、C80/P004、C95/P005；
 - 所有 `READY` Context 均在预算内；
 - future leakage = 0；
 - profile cross-contamination = 0；
 - 无 template task；
 - 无 legacy full-world Need Generator；
 - per-Gold 和 aggregate 可相互追溯。
+- 每个 profile 的 `scenario_run.completed=true`，五个 freeze 均先于对应 evaluator reveal；
+- 每个 profile 同时发布包含五点的 `unified_report_A.json`、`unified_report.json` 和完整
+  scenario/flow summary；根目录单点 report 不得冒充五点 aggregate；
+- `formal_contract_validated=true`；只有正式 report 才允许产生 `gate_passed=true`；
+- 使用 `scripts/render_stage2m_human_outputs.py` 生成十点可读 Context，并完成 P001/P003 第二位
+  reviewer 签署。
 
 预计：0.5-1 人日加运行时间。
 
 ### WP8：真实模型 A/B/C 与晋级决策
 
 仅在 WP7 通过后启动。
+
+2026-07-31 的受限诊断运行不满足该前置条件。它只保留为 agentic failure 和质量失败样本；
+不得在该 run 上补跑剩余 B/C、拼接旧 A 或继续计算正式 lift。正式 WP8 必须从通过 M4 的 P3
+冻结结果派生新的 experiment id、manifest 和三臂 freeze。
 
 运行要求：
 
@@ -1687,6 +1800,9 @@ NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest \
 ### 14.7 Gate M4：Five-checkpoint Deterministic
 
 - 两个 profile 的 P001-P005 完成率分别 = 100%；
+- 两个 profile 分别通过 `stage2m_wp7_arm_a.v1` 正式 case matrix、run identity 和冻结分母校验；
+- `formal_contract_validated=true`，且每个 profile 的根 `unified_report.json` 明确包含五点；
+- 正式运行 `code_source_dirty=false`，不得对旧 case 事后 backfill identity 后签署；
 - future leakage = 0；
 - profile cross-contamination = 0；
 - basis/snapshot/index attestation = 100%；
@@ -1702,6 +1818,8 @@ NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest \
 - trace completeness = 100%。
 
 以上质量阈值必须基于新的逐 Gold 评测重新计算，不能沿用当前粗粒度 coverage 数字。
+APC 与 VAC 必须分别 PASS；跨 profile delta 只作诊断。任一 profile FAIL/HOLD 时，Gate M4
+整体保持 HOLD，WP8 冻结。
 
 ### 14.8 Gate M5：Agentic Comparison
 
@@ -1740,9 +1858,10 @@ NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest \
 
 ---
 
-## 16. 推荐提交顺序
+## 16. 原始推荐提交顺序（历史规划）
 
-为了降低大改风险，建议按以下独立提交推进：
+本节记录 WP0–WP8 的原始拆分，不得据此重复提交已实现的 P0/P1 代码。当前提交应只
+覆盖第 21 节的剩余动作或 P2 证明存在的具体缺陷。原始建议顺序为：
 
 1. `stage2m: freeze legacy benchmark failure fixtures`
 2. `stage2m: preserve public task and private gold contracts`
@@ -1771,6 +1890,9 @@ Run manifest 至少固定：
 ```yaml
 benchmark_bundle_hash: ...
 memory_benchmark_contract_version: memory_benchmark.v0.2
+gate_metric_formula_version: gate_metric_formula.v1
+gate_metric_formula_hash: ...
+gate_contract_version: stage2m_wp7_arm_a.v1
 information_profile: visible_at_cutoff | author_plan_conditioned
 public_task_template_version: memory_context_task.v1
 public_input_hash: ...
@@ -1785,12 +1907,17 @@ writer_context_profile: writer_context_v1
 writer_tokenizer: ...
 writer_token_budget: 4000
 evidence_ledger_token_budget: 12000
+run_config_hash: ...
+benchmark_contract_hash: ...
+matcher_version: gold_evidence_matcher.v3
 evaluator_version: per_gold_v1
 semantic_verifier_model: ...
 semantic_verifier_prompt_hash: ...
-code_commit: ...
+code_version: ...
+code_source_dirty: false
 source_state_hash: ...
 checkpoint_index_refs: ...
+scenario_run_completed: true
 random_seed: ...
 ```
 
@@ -1801,7 +1928,9 @@ random_seed: ...
 - 不把旧 evaluator 的分数与新 evaluator 混合求平均；
 - 每个 profile 的五案例正式 run 中不得按 case 单独放宽预算；
 - 失败重试必须保留原 receipt；
-- 报告必须标识工作区是否 dirty，并保存 source state manifest。
+- 正式 P3 必须 `code_source_dirty=false`，并保存 source state manifest；
+- 每个 profile 五个 case 的 code/config/contract/matcher/writer budget/ledger budget 必须一致；
+- 六个字段必须在 case 冻结时原生写入，禁止事后补写。
 
 ---
 
@@ -1924,9 +2053,11 @@ memory_evaluator_profile=per_gold_v1
 
 ---
 
-## 20. 人力与顺序估算
+## 20. 原始人力与顺序估算（不是剩余工作量）
 
-单人净开发工作量约 12-20 人日，另加 Gold 标注、真实模型运行和人工复核时间。建议按以下节奏：
+下表是 2026-07-29 从零规划 WP0–WP8 时的估算，不能用来判断 2026-07-31 的剩余
+工作量。当前仅按第 21 节估时；P0/P1 已实现部分不再重复计算。原始单人净开发估算约
+12–20 人日，另加 Gold 标注、真实模型运行和人工复核时间。
 
 | 阶段 | 工作包 | 估算 |
 |---|---|---:|
@@ -1957,22 +2088,25 @@ Gold evidence 精标可在 WP2/WP3 开发期间并行进行，但 evaluator 最�
 
 ## 21. 下一步立即执行清单
 
-按优先级直接开始：
+按以下顺序继续；前一组未验收时不进入后一组：
 
-1. 建立 `memory_benchmark.v0.2` contract 和 public/private taint test；
-2. 定义安全 public task 模板，移除固定答案条数，禁止透传精确 target plan；
-3. 为两个 profile 建立独立 PublicCheckpointCase、namespace 和 taint contract；
-4. 为 P001/P003 补齐 Gold weight/type/why/evidence/applicable_profiles annotations；
-5. 用 r35 小型 fixture 固化当前 overflow、template task 和伪 Arm C；
-6. 实现 `TaskFocusExtractor` 和反世界规模测试；
-7. 实现 `TaskPlanConditionedNeedGenerator`，禁止 real runner 使用 legacy generator；
-8. 实现 `WriterContextPackage + EvidenceLedger`；
-9. 将 mandatory overflow 从“合法测试”改为类型化失败；
-10. 实现逐 Gold evaluator；
-11. 修正 A/B/C 冻结与 C 重新组装；
-12. 先跑 P001/P003 × 两个 profile deterministic 并人工验收；
-13. 再跑两个 profile 各五 checkpoint deterministic；
-14. 最后才启动真实模型 A/B/C。
+1. formal-run 工程前置已完成代码实现与回归：
+   - 正式入口在 dirty source 时 fail closed，新 case 原生写入六个 identity/budget 字段；
+   - 五点 scenario lifecycle 和根 aggregate 已纳入严格校验；
+   - legacy 缺六字段、identity drift、StableId、dirty-source 和 lifecycle/aggregate 未闭合
+     回归均已覆盖；
+   - `make quality` 已达到 100% 工程门。剩余是 clean source + real infrastructure 上的实际
+     P2/P3 运行验收，不得用测试替代运行证据。
+2. 用当前人类可读产物完成 WP6 第二位 reviewer 的 P001/P003 独立审阅和签署。
+3. 执行 M4 专项 P2：APC C40，VAC C40/C60/C80/C95；每个点输出
+   candidate→selected→assembled→ledger 损失、typed budget trace 和 non-formal 诊断指标。
+4. P2 若失败，仅按 F-NEED/F-ROUTE/F-RANK/F-ASSEMBLY/F-EVIDENCE/F-EVAL 定位到的责任层
+   修复并重跑相应哨兵点；不重做整套 P0/P1。
+5. P2 验收后冻结 clean code/config/contract，用全新 experiment id 执行 P3：
+   APC 和 VAC 各 P001–P005/C20–C95，Arm A only。
+6. 用 `stage2m_wp7_arm_a.v1` 对两个 profile 分别聚合并执行 Gate M4；只有两者均 PASS
+   才解冻 WP8。
+7. Gate M4 PASS 后以新的 WP8 experiment id 重新开始真实 A/B/C；不拼接旧诊断 B/C。
 
 ---
 
@@ -1989,7 +2123,9 @@ Gold evidence 精标可在 WP2/WP3 开发期间并行进行，但 evaluator 最�
 - agentic gateway 不晋级；
 - Benchmark 不调用或评分续写 Writer，不设置预训练污染门禁；
 - `visible_at_cutoff` 与 `author_plan_conditioned` 必须独立运行和报告；
-- 当前 oversized Context 和粗粒度 recall 只作为诊断基线，不作为 Benchmark 通过证据；
+- 旧 WP7/WP8 Context 与诊断指标只作为历史/失败基线，不作为 P3 或 Benchmark 通过证据；
 - Stage 3 Writer 可以继续 DRAFT 隔离开发，但不能据此宣称记忆质量已经达标。
 
-完成 WP0-WP7 后，项目才真正具备“进入真实小说写作 Memory Benchmark”的条件；完成 WP8 并形成可比 A/B/C 证据后，才有资格讨论 agentic 或 hybrid Memory Gateway 的下一次晋级。
+当前不需要重做 WP0–WP5；需要完成 formal-run 前置、WP6 独立 reviewer、M4 P2 和全新
+WP7 P3。只有新 P3 让 APC/VAC 均通过 Gate M4，项目才能进入正式 WP8；完成 WP8 并
+形成可比 A/B/C 证据后，才能讨论 agentic 或 hybrid Memory Gateway 的下一次晋级。

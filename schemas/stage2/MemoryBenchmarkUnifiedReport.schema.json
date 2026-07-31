@@ -1,0 +1,691 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "CheckpointGateMetricReport": {
+      "additionalProperties": false,
+      "properties": {
+        "applicable_gold_count": {
+          "minimum": 0,
+          "title": "Applicable Gold Count",
+          "type": "integer"
+        },
+        "arm": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Arm",
+          "type": "string"
+        },
+        "assembly_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "current_state": {
+          "$ref": "#/$defs/GateMetricAxisResult"
+        },
+        "historical": {
+          "$ref": "#/$defs/GateMetricAxisResult"
+        },
+        "mandatory_status_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/GoldMatchStatus"
+          },
+          "title": "Mandatory Status Counts",
+          "type": "object"
+        },
+        "operational_plan": {
+          "$ref": "#/$defs/GateMetricAxisResult"
+        },
+        "typed_failure": {
+          "title": "Typed Failure",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "case_id",
+        "checkpoint_chapter",
+        "arm",
+        "assembly_status",
+        "typed_failure",
+        "applicable_gold_count",
+        "current_state",
+        "operational_plan",
+        "historical",
+        "mandatory_status_counts"
+      ],
+      "title": "CheckpointGateMetricReport",
+      "type": "object"
+    },
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    },
+    "EvidenceStageCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_reference_count": {
+          "minimum": 0,
+          "title": "Accepted Reference Count",
+          "type": "integer"
+        },
+        "complete_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Complete Alternative Ids",
+          "type": "array"
+        },
+        "matched_reference_count": {
+          "minimum": 0,
+          "title": "Matched Reference Count",
+          "type": "integer"
+        },
+        "partial_alternative_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Partial Alternative Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "accepted_reference_count",
+        "matched_reference_count"
+      ],
+      "title": "EvidenceStageCoverage",
+      "type": "object"
+    },
+    "EvidenceStageFailure": {
+      "enum": [
+        "COMPLETE",
+        "F-ASSEMBLY",
+        "F-RANK",
+        "F-NEED_ROUTE_RETRIEVE"
+      ],
+      "title": "EvidenceStageFailure",
+      "type": "string"
+    },
+    "GateMetricAxis": {
+      "enum": [
+        "current_state_accuracy",
+        "operational_plan_coverage",
+        "key_historical_evidence_recall"
+      ],
+      "title": "GateMetricAxis",
+      "type": "string"
+    },
+    "GateMetricAxisResult": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "$ref": "#/$defs/GateMetricAxis"
+        },
+        "denominator_weight": {
+          "exclusiveMinimum": 0,
+          "title": "Denominator Weight",
+          "type": "number"
+        },
+        "item_count": {
+          "minimum": 0,
+          "title": "Item Count",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Threshold",
+          "type": "number"
+        },
+        "value": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Value",
+          "type": "number"
+        },
+        "weighted_score_sum": {
+          "minimum": 0,
+          "title": "Weighted Score Sum",
+          "type": "number"
+        }
+      },
+      "required": [
+        "axis",
+        "item_count",
+        "denominator_weight",
+        "weighted_score_sum",
+        "value",
+        "threshold",
+        "passed"
+      ],
+      "title": "GateMetricAxisResult",
+      "type": "object"
+    },
+    "GoldMatchStatus": {
+      "enum": [
+        "HIT",
+        "PARTIAL",
+        "MISS",
+        "CONTRADICTS",
+        "UNTRACEABLE"
+      ],
+      "title": "GoldMatchStatus",
+      "type": "string"
+    },
+    "MemoryBenchmarkCaseArmReport": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Arm",
+          "type": "string"
+        },
+        "assembly_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "benchmark_contract_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "code_version": {
+          "minLength": 1,
+          "title": "Code Version",
+          "type": "string"
+        },
+        "comparable": {
+          "title": "Comparable",
+          "type": "boolean"
+        },
+        "evaluation": {
+          "$ref": "#/$defs/MemoryBenchmarkEvaluationReport"
+        },
+        "evidence_ledger_token_budget": {
+          "minimum": 1,
+          "title": "Evidence Ledger Token Budget",
+          "type": "integer"
+        },
+        "evidence_tokens": {
+          "minimum": 0,
+          "title": "Evidence Tokens",
+          "type": "integer"
+        },
+        "matcher_version": {
+          "minLength": 1,
+          "title": "Matcher Version",
+          "type": "string"
+        },
+        "run_config_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "selected_unit_count": {
+          "minimum": 0,
+          "title": "Selected Unit Count",
+          "type": "integer"
+        },
+        "writer_evidence_ledger_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "writer_token_budget": {
+          "minimum": 1,
+          "title": "Writer Token Budget",
+          "type": "integer"
+        },
+        "writer_tokens": {
+          "minimum": 0,
+          "title": "Writer Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "case_id",
+        "checkpoint_chapter",
+        "arm",
+        "code_version",
+        "run_config_hash",
+        "benchmark_contract_hash",
+        "matcher_version",
+        "writer_token_budget",
+        "evidence_ledger_token_budget",
+        "assembly_status",
+        "writer_tokens",
+        "evidence_tokens",
+        "selected_unit_count",
+        "comparable",
+        "writer_evidence_ledger_ref",
+        "evaluation"
+      ],
+      "title": "MemoryBenchmarkCaseArmReport",
+      "type": "object"
+    },
+    "MemoryBenchmarkEvaluationReport": {
+      "additionalProperties": false,
+      "properties": {
+        "comparisons": {
+          "items": {
+            "$ref": "#/$defs/PerGoldComparison"
+          },
+          "title": "Comparisons",
+          "type": "array"
+        },
+        "contradiction_rate": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Contradiction Rate",
+          "type": "number"
+        },
+        "evaluator_manifest_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_manifest_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evaluator_manifest_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "evaluator_version": {
+          "minLength": 1,
+          "title": "Evaluator Version",
+          "type": "string"
+        },
+        "freeze_receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gate_metric_formula_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "gate_metric_formula_version": {
+          "minLength": 1,
+          "title": "Gate Metric Formula Version",
+          "type": "string"
+        },
+        "mandatory_hit_rate": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mandatory Hit Rate",
+          "type": "number"
+        },
+        "profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion",
+          "default": "1.0.0"
+        },
+        "stage_loss_diagnostics": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PerGoldStageLossDiagnostic"
+          },
+          "title": "Stage Loss Diagnostics",
+          "type": "array"
+        },
+        "untraceable_rate": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Untraceable Rate",
+          "type": "number"
+        },
+        "weighted_coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weighted Coverage",
+          "type": "number"
+        }
+      },
+      "required": [
+        "evaluator_version",
+        "profile",
+        "comparisons",
+        "weighted_coverage",
+        "mandatory_hit_rate",
+        "contradiction_rate",
+        "untraceable_rate",
+        "freeze_receipt_id",
+        "evaluator_manifest_id",
+        "evaluator_manifest_ref",
+        "evaluator_manifest_hash",
+        "gate_metric_formula_version",
+        "gate_metric_formula_hash"
+      ],
+      "title": "MemoryBenchmarkEvaluationReport",
+      "type": "object"
+    },
+    "PerGoldComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "explanation": {
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gold_metric_descriptor_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "gold_metric_descriptor_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "matched_context_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Matched Context Item Ids",
+          "type": "array"
+        },
+        "matched_evidence_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Matched Evidence Ledger Ids",
+          "type": "array"
+        },
+        "missing_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Components",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/GoldMatchStatus"
+        },
+        "supported_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Components",
+          "type": "array"
+        },
+        "verifier_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "weight": {
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gold_id",
+        "status",
+        "weight",
+        "mandatory",
+        "gold_metric_descriptor_ref",
+        "gold_metric_descriptor_hash",
+        "explanation"
+      ],
+      "title": "PerGoldComparison",
+      "type": "object"
+    },
+    "PerGoldStageLossDiagnostic": {
+      "additionalProperties": false,
+      "description": "Evaluator-only accepted-evidence coverage across the frozen retrieval stages.",
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "primary_failure": {
+          "$ref": "#/$defs/EvidenceStageFailure"
+        },
+        "rank_selected": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "stage1_selected": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        },
+        "writer_ledger": {
+          "$ref": "#/$defs/EvidenceStageCoverage"
+        }
+      },
+      "required": [
+        "gold_id",
+        "candidate",
+        "rank_selected",
+        "stage1_selected",
+        "writer_ledger",
+        "primary_failure"
+      ],
+      "title": "PerGoldStageLossDiagnostic",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_count": {
+      "minimum": 0,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/MemoryBenchmarkCaseArmReport"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "checkpoint_metrics": {
+      "items": {
+        "$ref": "#/$defs/CheckpointGateMetricReport"
+      },
+      "title": "Checkpoint Metrics",
+      "type": "array"
+    },
+    "comparable_count": {
+      "minimum": 0,
+      "title": "Comparable Count",
+      "type": "integer"
+    },
+    "contradiction_free": {
+      "title": "Contradiction Free",
+      "type": "boolean"
+    },
+    "contradiction_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Contradiction Rate",
+      "type": "number"
+    },
+    "current_state": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "formal_contract_validated": {
+      "title": "Formal Contract Validated",
+      "type": "boolean"
+    },
+    "gate_contract_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "gate_contract_version": {
+      "minLength": 1,
+      "title": "Gate Contract Version",
+      "type": "string"
+    },
+    "gate_metric_formula_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "gate_metric_formula_version": {
+      "minLength": 1,
+      "title": "Gate Metric Formula Version",
+      "type": "string"
+    },
+    "gate_passed": {
+      "title": "Gate Passed",
+      "type": "boolean"
+    },
+    "historical": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "macro_mandatory_hit_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Macro Mandatory Hit Rate",
+      "type": "number"
+    },
+    "macro_weighted_coverage": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Macro Weighted Coverage",
+      "type": "number"
+    },
+    "operational_plan": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "ready_count": {
+      "minimum": 0,
+      "title": "Ready Count",
+      "type": "integer"
+    },
+    "report_version": {
+      "minLength": 1,
+      "title": "Report Version",
+      "type": "string"
+    },
+    "trace_complete": {
+      "title": "Trace Complete",
+      "type": "boolean"
+    },
+    "untraceable_rate": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Untraceable Rate",
+      "type": "number"
+    }
+  },
+  "required": [
+    "report_version",
+    "profile",
+    "cases",
+    "case_count",
+    "ready_count",
+    "comparable_count",
+    "macro_weighted_coverage",
+    "macro_mandatory_hit_rate",
+    "contradiction_rate",
+    "untraceable_rate",
+    "gate_metric_formula_version",
+    "gate_metric_formula_hash",
+    "gate_contract_version",
+    "gate_contract_hash",
+    "formal_contract_validated",
+    "current_state",
+    "operational_plan",
+    "historical",
+    "checkpoint_metrics",
+    "trace_complete",
+    "contradiction_free",
+    "gate_passed"
+  ],
+  "title": "MemoryBenchmarkUnifiedReport",
+  "type": "object"
+}

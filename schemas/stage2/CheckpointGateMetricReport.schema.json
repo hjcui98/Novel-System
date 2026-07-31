@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    },
+    "GateMetricAxis": {
+      "enum": [
+        "current_state_accuracy",
+        "operational_plan_coverage",
+        "key_historical_evidence_recall"
+      ],
+      "title": "GateMetricAxis",
+      "type": "string"
+    },
+    "GateMetricAxisResult": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "$ref": "#/$defs/GateMetricAxis"
+        },
+        "denominator_weight": {
+          "exclusiveMinimum": 0,
+          "title": "Denominator Weight",
+          "type": "number"
+        },
+        "item_count": {
+          "minimum": 0,
+          "title": "Item Count",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Threshold",
+          "type": "number"
+        },
+        "value": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Value",
+          "type": "number"
+        },
+        "weighted_score_sum": {
+          "minimum": 0,
+          "title": "Weighted Score Sum",
+          "type": "number"
+        }
+      },
+      "required": [
+        "axis",
+        "item_count",
+        "denominator_weight",
+        "weighted_score_sum",
+        "value",
+        "threshold",
+        "passed"
+      ],
+      "title": "GateMetricAxisResult",
+      "type": "object"
+    },
+    "GoldMatchStatus": {
+      "enum": [
+        "HIT",
+        "PARTIAL",
+        "MISS",
+        "CONTRADICTS",
+        "UNTRACEABLE"
+      ],
+      "title": "GoldMatchStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "applicable_gold_count": {
+      "minimum": 0,
+      "title": "Applicable Gold Count",
+      "type": "integer"
+    },
+    "arm": {
+      "enum": [
+        "A",
+        "B",
+        "C"
+      ],
+      "title": "Arm",
+      "type": "string"
+    },
+    "assembly_status": {
+      "$ref": "#/$defs/ContextAssemblyStatus"
+    },
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "current_state": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "historical": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "mandatory_status_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/GoldMatchStatus"
+      },
+      "title": "Mandatory Status Counts",
+      "type": "object"
+    },
+    "operational_plan": {
+      "$ref": "#/$defs/GateMetricAxisResult"
+    },
+    "typed_failure": {
+      "title": "Typed Failure",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "case_id",
+    "checkpoint_chapter",
+    "arm",
+    "assembly_status",
+    "typed_failure",
+    "applicable_gold_count",
+    "current_state",
+    "operational_plan",
+    "historical",
+    "mandatory_status_counts"
+  ],
+  "title": "CheckpointGateMetricReport",
+  "type": "object"
+}

@@ -128,6 +128,17 @@
           ],
           "title": "Target Range",
           "type": "array"
+        },
+        "task_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BenchmarkTaskContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -143,6 +154,73 @@
         "annotation_version"
       ],
       "title": "BenchmarkCaseManifest",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
       "type": "object"
     },
     "BenchmarkTrack": {
@@ -492,6 +570,44 @@
       "title": "EvidenceRef",
       "type": "object"
     },
+    "EvidenceSet": {
+      "additionalProperties": false,
+      "description": "One accepted, conjunctive evidence alternative for a Gold item.",
+      "properties": {
+        "component_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Component Ids",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_set_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "plan_node_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Node Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "evidence_set_id"
+      ],
+      "title": "EvidenceSet",
+      "type": "object"
+    },
     "EvidenceSupportStatus": {
       "enum": [
         "current_support",
@@ -506,6 +622,25 @@
     "GoldItem": {
       "additionalProperties": false,
       "properties": {
+        "accepted_evidence_sets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceSet"
+          },
+          "title": "Accepted Evidence Sets",
+          "type": "array"
+        },
+        "applicable_profiles": {
+          "default": [
+            "visible_at_cutoff",
+            "author_plan_conditioned"
+          ],
+          "items": {
+            "$ref": "#/$defs/BenchmarkInformationProfile"
+          },
+          "title": "Applicable Profiles",
+          "type": "array"
+        },
         "description": {
           "minLength": 1,
           "title": "Description",
@@ -519,6 +654,19 @@
           "title": "Evidence Refs",
           "type": "array"
         },
+        "fact": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fact"
+        },
         "future_evidence_refs": {
           "items": {
             "$ref": "#/$defs/EvidenceRef"
@@ -529,6 +677,17 @@
         },
         "gold_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "gold_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoldType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "kind": {
           "$ref": "#/$defs/GoldKind"
@@ -553,6 +712,25 @@
           "minItems": 1,
           "title": "Target Chapters",
           "type": "array"
+        },
+        "target_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Components",
+          "type": "array"
+        },
+        "weight": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        },
+        "why_needed": {
+          "default": "required by the benchmark annotation",
+          "title": "Why Needed",
+          "type": "string"
         }
       },
       "required": [
@@ -572,6 +750,19 @@
         "plan_obligation"
       ],
       "title": "GoldKind",
+      "type": "string"
+    },
+    "GoldType": {
+      "enum": [
+        "CURRENT_STATE",
+        "RELATIONSHIP_EMOTION",
+        "CAUSAL_HISTORY",
+        "KNOWLEDGE_BOUNDARY",
+        "PLAN_OBLIGATION",
+        "LONG_RANGE_CALLBACK",
+        "OBJECT_CONTINUITY"
+      ],
+      "title": "GoldType",
       "type": "string"
     },
     "HistoryAccessPolicy": {

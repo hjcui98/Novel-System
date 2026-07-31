@@ -1,9 +1,166 @@
 {
   "$defs": {
+    "ArmExecutionStatus": {
+      "enum": [
+        "COMPLETED",
+        "SKIPPED",
+        "FAILED"
+      ],
+      "title": "ArmExecutionStatus",
+      "type": "string"
+    },
     "ArtifactId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "ArtifactId",
       "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
+      "type": "object"
+    },
+    "CanonicalAliasReceipt": {
+      "additionalProperties": false,
+      "description": "Predicate-scoped proof that a versioned registry equates two raw values.",
+      "properties": {
+        "canonical_value_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonicalizer_version": {
+          "minLength": 1,
+          "title": "Canonicalizer Version",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "raw_values": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Raw Values",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "registry_version": {
+          "minLength": 1,
+          "title": "Registry Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "registry_version",
+        "predicate",
+        "raw_values",
+        "canonical_value_id",
+        "canonicalizer_version"
+      ],
+      "title": "CanonicalAliasReceipt",
+      "type": "object"
     },
     "ChannelHit": {
       "additionalProperties": false,
@@ -45,9 +202,530 @@
       "title": "ChannelHit",
       "type": "object"
     },
+    "ClaimReductionLevel": {
+      "enum": [
+        "full",
+        "narrow"
+      ],
+      "title": "ClaimReductionLevel",
+      "type": "string"
+    },
+    "ClaimSupportGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "counter_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Counter Evidence Refs",
+          "type": "array"
+        },
+        "cutoff_attestation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_resolution_status": {
+          "$ref": "#/$defs/EvidenceResolutionStatus"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "plan_node_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Node Ids",
+          "type": "array"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "retrieval_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "semantic_support_status": {
+          "$ref": "#/$defs/SemanticSupportStatus"
+        },
+        "support_group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "support_receipt_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "support_group_id",
+        "claim_id",
+        "need_ids",
+        "need_facet_ids",
+        "retrieval_unit_ids",
+        "evidence_resolution_status",
+        "semantic_support_status",
+        "support_receipt_ref",
+        "producer",
+        "producer_version",
+        "cutoff_attestation_ref"
+      ],
+      "title": "ClaimSupportGroup",
+      "type": "object"
+    },
+    "ClaimSupportReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "claim_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "claim_text_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "counter_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Counter Evidence Refs",
+          "type": "array"
+        },
+        "cutoff_attestation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_resolution_status": {
+          "$ref": "#/$defs/EvidenceResolutionStatus"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "plan_node_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Node Ids",
+          "type": "array"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_input_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_input_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_output_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_output_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "retrieval_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "semantic_support_status": {
+          "$ref": "#/$defs/SemanticSupportStatus"
+        },
+        "support_group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verification_model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verifier_input_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verifier_input_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verifier_output_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verifier_output_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "receipt_id",
+        "support_group_id",
+        "claim_id",
+        "claim_text_hash",
+        "need_ids",
+        "need_facet_ids",
+        "retrieval_unit_ids",
+        "evidence_resolution_status",
+        "semantic_support_status",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "cutoff_attestation_ref",
+        "information_scope",
+        "producer",
+        "producer_version"
+      ],
+      "title": "ClaimSupportReceipt",
+      "type": "object"
+    },
+    "ClaimVariant": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "claim_text": {
+          "minLength": 1,
+          "title": "Claim Text",
+          "type": "string"
+        },
+        "claim_text_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "claim_variant_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "covered_need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Covered Need Facet Ids",
+          "type": "array"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "reduction_level": {
+          "$ref": "#/$defs/ClaimReductionLevel"
+        },
+        "support_group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "support_receipt_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "token_cost": {
+          "minimum": 1,
+          "title": "Token Cost",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "claim_variant_id",
+        "claim_id",
+        "support_group_id",
+        "claim_text",
+        "claim_text_hash",
+        "covered_need_facet_ids",
+        "support_receipt_ref",
+        "token_cost",
+        "reduction_level",
+        "producer",
+        "producer_version"
+      ],
+      "title": "ClaimVariant",
+      "type": "object"
+    },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "CommitId",
+      "type": "string"
+    },
+    "ContextAssemblySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_claim_variant_ids_by_support_group": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/StableId"
+            },
+            "type": "array"
+          },
+          "title": "Allowed Claim Variant Ids By Support Group",
+          "type": "object"
+        },
+        "closed_need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Closed Need Facet Ids",
+          "type": "array"
+        },
+        "evidence_ledger_token_budget": {
+          "default": 12000,
+          "minimum": 1,
+          "title": "Evidence Ledger Token Budget",
+          "type": "integer"
+        },
+        "mandatory_claim_variant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Mandatory Claim Variant Ids",
+          "type": "array"
+        },
+        "mandatory_support_group_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Mandatory Support Group Ids",
+          "type": "array"
+        },
+        "mandatory_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Mandatory Unit Ids",
+          "type": "array"
+        },
+        "ordered_optional_support_group_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Ordered Optional Support Group Ids",
+          "type": "array"
+        },
+        "reduction_allowed": {
+          "default": true,
+          "title": "Reduction Allowed",
+          "type": "boolean"
+        },
+        "reduction_policy": {
+          "default": "receipt_bound_variants_only",
+          "minLength": 1,
+          "title": "Reduction Policy",
+          "type": "string"
+        },
+        "selected_support_group_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Support Group Ids",
+          "type": "array"
+        },
+        "selected_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Unit Ids",
+          "type": "array"
+        },
+        "selection_policy_version": {
+          "default": "legacy_unit_selection.v1",
+          "minLength": 1,
+          "title": "Selection Policy Version",
+          "type": "string"
+        },
+        "token_budget": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        },
+        "unresolved_need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Unresolved Need Facet Ids",
+          "type": "array"
+        },
+        "writer_token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writer Token Budget"
+        }
+      },
+      "title": "ContextAssemblySpec",
+      "type": "object"
+    },
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
       "type": "string"
     },
     "ContextBudgetReport": {
@@ -91,6 +769,110 @@
       "title": "ContextBudgetReport",
       "type": "object"
     },
+    "ContextGap": {
+      "additionalProperties": false,
+      "properties": {
+        "conflict": {
+          "default": false,
+          "title": "Conflict",
+          "type": "boolean"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gap_id",
+        "description"
+      ],
+      "title": "ContextGap",
+      "type": "object"
+    },
+    "ContextLineage": {
+      "additionalProperties": false,
+      "properties": {
+        "assembler_version": {
+          "minLength": 1,
+          "title": "Assembler Version",
+          "type": "string"
+        },
+        "canonical_alias_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Canonical Alias Receipt Refs",
+          "type": "array"
+        },
+        "canonical_alias_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CanonicalAliasReceipt"
+          },
+          "title": "Canonical Alias Receipts",
+          "type": "array"
+        },
+        "context_assembly_spec_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "normalized_unit_count": {
+          "minimum": 0,
+          "title": "Normalized Unit Count",
+          "type": "integer"
+        },
+        "retrieval_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "selected_claim_variant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Claim Variant Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "assembler_version",
+        "normalized_unit_count"
+      ],
+      "title": "ContextLineage",
+      "type": "object"
+    },
     "ControllerArm": {
       "enum": [
         "deterministic_stage1",
@@ -112,6 +894,179 @@
       ],
       "title": "ControllerStopReason",
       "type": "string"
+    },
+    "CutoffAttestation": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "retrieval_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "attestation_id",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "checkpoint_chapter",
+        "information_scope",
+        "retrieval_unit_ids",
+        "producer",
+        "producer_version"
+      ],
+      "title": "CutoffAttestation",
+      "type": "object"
+    },
+    "EvidenceLedger": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "minLength": 1,
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "entries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceLedgerEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "rendered_tokens": {
+          "minimum": 0,
+          "title": "Rendered Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "contract_version",
+        "rendered_tokens"
+      ],
+      "title": "EvidenceLedger",
+      "type": "object"
+    },
+    "EvidenceLedgerEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_excerpt": {
+          "minLength": 1,
+          "title": "Claim Excerpt",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "ledger_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "plan_node_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Node Ids",
+          "type": "array"
+        },
+        "retrieval_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "support_group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ledger_id",
+        "claim_excerpt",
+        "source_commit",
+        "information_scope"
+      ],
+      "title": "EvidenceLedgerEntry",
+      "type": "object"
     },
     "EvidenceRef": {
       "additionalProperties": false,
@@ -186,6 +1141,16 @@
       "title": "EvidenceRef",
       "type": "object"
     },
+    "EvidenceResolutionStatus": {
+      "enum": [
+        "resolved",
+        "unresolved",
+        "basis_mismatch",
+        "cutoff_violation"
+      ],
+      "title": "EvidenceResolutionStatus",
+      "type": "string"
+    },
     "EvidenceSupportStatus": {
       "enum": [
         "current_support",
@@ -195,6 +1160,26 @@
         "contradicted"
       ],
       "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "ExpectedClaimScope": {
+      "enum": [
+        "current",
+        "historical",
+        "knowledge",
+        "planned"
+      ],
+      "title": "ExpectedClaimScope",
+      "type": "string"
+    },
+    "FacetEvidenceRequirement": {
+      "enum": [
+        "traceable_cutoff_source",
+        "cutoff_current_source",
+        "plan_provenance",
+        "distinct_historical_source"
+      ],
+      "title": "FacetEvidenceRequirement",
       "type": "string"
     },
     "FusedCandidate": {
@@ -247,6 +1232,320 @@
       ],
       "title": "FusedCandidate",
       "type": "object"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "NeedCompletionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_requirement_by_facet": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FacetEvidenceRequirement"
+          },
+          "title": "Evidence Requirement By Facet",
+          "type": "object"
+        },
+        "gap_policy": {
+          "$ref": "#/$defs/NeedGapPolicy"
+        },
+        "irreducible_need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Irreducible Need Facet Ids",
+          "type": "array"
+        },
+        "min_distinct_chapters": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Distinct Chapters",
+          "type": "integer"
+        },
+        "min_distinct_evidence_sources": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Distinct Evidence Sources",
+          "type": "integer"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "require_causal_history": {
+          "default": false,
+          "title": "Require Causal History",
+          "type": "boolean"
+        },
+        "require_current_claim": {
+          "default": false,
+          "title": "Require Current Claim",
+          "type": "boolean"
+        },
+        "required_need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Required Need Facet Ids",
+          "type": "array"
+        },
+        "uncertainty_policy": {
+          "$ref": "#/$defs/NeedUncertaintyPolicy"
+        }
+      },
+      "required": [
+        "need_id",
+        "required_need_facet_ids",
+        "irreducible_need_facet_ids",
+        "evidence_requirement_by_facet",
+        "uncertainty_policy",
+        "gap_policy",
+        "producer",
+        "producer_version"
+      ],
+      "title": "NeedCompletionSpec",
+      "type": "object"
+    },
+    "NeedExecutionStatus": {
+      "description": "Whether a legal Need actually received retrieval budget.",
+      "enum": [
+        "executed_with_candidates",
+        "executed_empty",
+        "not_executed_budget_exhausted",
+        "not_executed_freshness_blocked",
+        "not_executed_scope_blocked"
+      ],
+      "title": "NeedExecutionStatus",
+      "type": "string"
+    },
+    "NeedFacet": {
+      "additionalProperties": false,
+      "properties": {
+        "derivation_refs": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Derivation Refs",
+          "type": "array"
+        },
+        "expected_claim_scope": {
+          "$ref": "#/$defs/ExpectedClaimScope"
+        },
+        "facet_kind": {
+          "$ref": "#/$defs/NeedFacetKind"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "need_facet_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "producer_version": {
+          "minLength": 1,
+          "title": "Producer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "need_facet_id",
+        "need_id",
+        "facet_kind",
+        "expected_claim_scope",
+        "derivation_refs",
+        "producer",
+        "producer_version",
+        "information_scope"
+      ],
+      "title": "NeedFacet",
+      "type": "object"
+    },
+    "NeedFacetKind": {
+      "enum": [
+        "current_state",
+        "relation_state",
+        "capability_status",
+        "limitation",
+        "knowledge_boundary",
+        "causal_history",
+        "setup",
+        "unresolved_status",
+        "commitment",
+        "plan_node"
+      ],
+      "title": "NeedFacetKind",
+      "type": "string"
+    },
+    "NeedGapPolicy": {
+      "enum": [
+        "emit_typed_gap",
+        "fail_mandatory"
+      ],
+      "title": "NeedGapPolicy",
+      "type": "string"
+    },
+    "NeedUncertaintyPolicy": {
+      "enum": [
+        "allow_gap_only",
+        "reject_unverified_claim"
+      ],
+      "title": "NeedUncertaintyPolicy",
+      "type": "string"
     },
     "QuoteHash": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -302,6 +1601,12 @@
           "title": "Anchors Expanded",
           "type": "integer"
         },
+        "calls_allocated": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Calls Allocated",
+          "type": "integer"
+        },
         "candidates": {
           "items": {
             "$ref": "#/$defs/FusedCandidate"
@@ -328,6 +1633,14 @@
           },
           "title": "Channel Failures",
           "type": "object"
+        },
+        "closed_need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Closed Need Facet Ids",
+          "type": "array"
         },
         "fallback_reason": {
           "anyOf": [
@@ -359,14 +1672,34 @@
         "intent": {
           "$ref": "#/$defs/Stage1QueryIntent"
         },
+        "irreducible_need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Irreducible Need Facet Ids",
+          "type": "array"
+        },
         "l0_tokens": {
           "default": 0,
           "minimum": 0,
           "title": "L0 Tokens",
           "type": "integer"
         },
+        "need_execution_status": {
+          "$ref": "#/$defs/NeedExecutionStatus",
+          "default": "executed_empty"
+        },
         "need_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "required_need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Required Need Facet Ids",
+          "type": "array"
         },
         "rerank_applied": {
           "default": false,
@@ -409,6 +1742,41 @@
           "minLength": 1,
           "title": "Access Scope",
           "type": "string"
+        },
+        "canonical_alias_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonical_value_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "canonicalizer_version": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonicalizer Version"
         },
         "content_hash": {
           "anyOf": [
@@ -629,6 +1997,25 @@
       "title": "RetrievalUnitKind",
       "type": "string"
     },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SemanticSupportStatus": {
+      "enum": [
+        "verified",
+        "unverified",
+        "contradicted"
+      ],
+      "title": "SemanticSupportStatus",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -648,11 +2035,21 @@
         "base_commit": {
           "$ref": "#/$defs/CommitId"
         },
+        "benchmark_quality_eligible": {
+          "default": false,
+          "title": "Benchmark Quality Eligible",
+          "type": "boolean"
+        },
         "budget_report": {
           "$ref": "#/$defs/ContextBudgetReport"
         },
         "context_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "contract_version": {
+          "default": "stage1_context.legacy",
+          "title": "Contract Version",
+          "type": "string"
         },
         "current_world_state": {
           "default": [],
@@ -668,6 +2065,22 @@
             "$ref": "#/$defs/RetrievalUnit"
           },
           "title": "Mandatory Constraints",
+          "type": "array"
+        },
+        "need_completion_specs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NeedCompletionSpec"
+          },
+          "title": "Need Completion Specs",
+          "type": "array"
+        },
+        "need_facets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NeedFacet"
+          },
+          "title": "Need Facets",
           "type": "array"
         },
         "raw_evidence_spans": {
@@ -760,6 +2173,11 @@
       "title": "Stage1QueryIntent",
       "type": "string"
     },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
     "TextSpanRef": {
       "additionalProperties": false,
       "properties": {
@@ -805,6 +2223,353 @@
       ],
       "title": "TruthClass",
       "type": "string"
+    },
+    "WriterContextBudgetReport": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_rendered_writer_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Writer Tokens",
+          "type": "integer"
+        },
+        "configured_writer_token_budget": {
+          "minimum": 1,
+          "title": "Configured Writer Token Budget",
+          "type": "integer"
+        },
+        "deduplicated_item_count": {
+          "minimum": 0,
+          "title": "Deduplicated Item Count",
+          "type": "integer"
+        },
+        "dropped_optional_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dropped Optional Ids",
+          "type": "array"
+        },
+        "dropped_optional_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Dropped Optional Reasons",
+          "type": "object"
+        },
+        "evidence_ledger_tokens": {
+          "minimum": 0,
+          "title": "Evidence Ledger Tokens",
+          "type": "integer"
+        },
+        "final_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "header_citation_gap_tokens": {
+          "minimum": 0,
+          "title": "Header Citation Gap Tokens",
+          "type": "integer"
+        },
+        "mandatory_conclusion_tokens": {
+          "minimum": 0,
+          "title": "Mandatory Conclusion Tokens",
+          "type": "integer"
+        },
+        "optional_conclusion_tokens": {
+          "minimum": 0,
+          "title": "Optional Conclusion Tokens",
+          "type": "integer"
+        },
+        "reduction_rounds": {
+          "minimum": 0,
+          "title": "Reduction Rounds",
+          "type": "integer"
+        },
+        "superseded_item_count": {
+          "minimum": 0,
+          "title": "Superseded Item Count",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "minLength": 1,
+          "title": "Tokenizer",
+          "type": "string"
+        },
+        "tokenizer_version": {
+          "minLength": 1,
+          "title": "Tokenizer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenizer",
+        "tokenizer_version",
+        "configured_writer_token_budget",
+        "actual_rendered_writer_tokens",
+        "evidence_ledger_tokens",
+        "mandatory_conclusion_tokens",
+        "optional_conclusion_tokens",
+        "header_citation_gap_tokens",
+        "deduplicated_item_count",
+        "superseded_item_count",
+        "reduction_rounds",
+        "final_status"
+      ],
+      "title": "WriterContextBudgetReport",
+      "type": "object"
+    },
+    "WriterContextItem": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "claim_variant_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "context_item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_ledger_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evidence Ledger Ids",
+          "type": "array"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "retrieval_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "section": {
+          "$ref": "#/$defs/WriterContextSection"
+        },
+        "supersedes_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supersedes Item Ids",
+          "type": "array"
+        },
+        "support_group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "validity": {
+          "$ref": "#/$defs/WriterContextValidity"
+        }
+      },
+      "required": [
+        "context_item_id",
+        "section",
+        "claim",
+        "validity",
+        "mandatory",
+        "confidence",
+        "need_ids",
+        "retrieval_unit_ids",
+        "evidence_ledger_ids"
+      ],
+      "title": "WriterContextItem",
+      "type": "object"
+    },
+    "WriterContextPackage": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Arm",
+          "type": "string"
+        },
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "budget_report": {
+          "$ref": "#/$defs/WriterContextBudgetReport"
+        },
+        "causal_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Causal History",
+          "type": "array"
+        },
+        "continuity_constraints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Continuity Constraints",
+          "type": "array"
+        },
+        "contract_version": {
+          "minLength": 1,
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "current_world_state": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Current World State",
+          "type": "array"
+        },
+        "evidence_ledger_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "gaps": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContextGap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "knowledge_and_disclosure": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Knowledge And Disclosure",
+          "type": "array"
+        },
+        "lineage": {
+          "$ref": "#/$defs/ContextLineage"
+        },
+        "long_range_callbacks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Long Range Callbacks",
+          "type": "array"
+        },
+        "plan_and_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Plan And Obligations",
+          "type": "array"
+        },
+        "relationship_and_emotion": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Relationship And Emotion",
+          "type": "array"
+        },
+        "rendered_context": {
+          "title": "Rendered Context",
+          "type": "string"
+        },
+        "task_contract": {
+          "$ref": "#/$defs/BenchmarkTaskContract"
+        }
+      },
+      "required": [
+        "contract_version",
+        "task_contract",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "arm",
+        "budget_report",
+        "evidence_ledger_ref",
+        "lineage",
+        "rendered_context"
+      ],
+      "title": "WriterContextPackage",
+      "type": "object"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
+      "type": "string"
+    },
+    "WriterContextValidity": {
+      "enum": [
+        "current",
+        "historical",
+        "planned",
+        "uncertain"
+      ],
+      "title": "WriterContextValidity",
+      "type": "string"
     }
   },
   "additionalProperties": false,
@@ -812,21 +2577,149 @@
     "arm": {
       "$ref": "#/$defs/ControllerArm"
     },
+    "assembly_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "calls_allocated_by_need": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Calls Allocated By Need",
+      "type": "object"
+    },
+    "claim_support_groups": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ClaimSupportGroup"
+      },
+      "title": "Claim Support Groups",
+      "type": "array"
+    },
+    "claim_variants": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ClaimVariant"
+      },
+      "title": "Claim Variants",
+      "type": "array"
+    },
     "comparison_basis_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
     },
     "context": {
       "$ref": "#/$defs/Stage1ContextPackage"
     },
+    "context_assembly_spec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextAssemblySpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "context_assembly_spec_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cutoff_attestations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CutoffAttestation"
+      },
+      "title": "Cutoff Attestations",
+      "type": "array"
+    },
+    "evidence_ledger": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceLedger"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "execution_status": {
+      "$ref": "#/$defs/ArmExecutionStatus",
+      "default": "COMPLETED"
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Category"
+    },
     "future_leakage_count": {
       "minimum": 0,
       "title": "Future Leakage Count",
       "type": "integer"
     },
+    "mandatory_need_facets_closed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Mandatory Need Facets Closed",
+      "type": "integer"
+    },
+    "mandatory_need_facets_total": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Mandatory Need Facets Total",
+      "type": "integer"
+    },
+    "need_completion_spec_version": {
+      "default": "need_completion_spec.v1",
+      "minLength": 1,
+      "title": "Need Completion Spec Version",
+      "type": "string"
+    },
+    "need_generation_status": {
+      "default": "completed",
+      "minLength": 1,
+      "title": "Need Generation Status",
+      "type": "string"
+    },
+    "quality_eligible": {
+      "default": true,
+      "title": "Quality Eligible",
+      "type": "boolean"
+    },
     "retrieval_call_count": {
       "minimum": 0,
       "title": "Retrieval Call Count",
       "type": "integer"
+    },
+    "selected_claim_variant_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Claim Variant Ids",
+      "type": "array"
     },
     "selected_unit_ids": {
       "items": {
@@ -837,6 +2730,49 @@
     },
     "stop_reason": {
       "$ref": "#/$defs/ControllerStopReason"
+    },
+    "support_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Support Receipt Refs",
+      "type": "array"
+    },
+    "support_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ClaimSupportReceipt"
+      },
+      "title": "Support Receipts",
+      "type": "array"
+    },
+    "typed_failure_diagnostic_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Typed Failure Diagnostic Codes",
+      "type": "array"
+    },
+    "unexpanded_focus_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unexpanded Focus Ids",
+      "type": "array"
+    },
+    "writer_context": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WriterContextPackage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

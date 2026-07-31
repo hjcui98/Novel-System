@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "arm_artifact_hashes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "propertyNames": {
+        "enum": [
+          "A",
+          "B",
+          "C"
+        ]
+      },
+      "title": "Arm Artifact Hashes",
+      "type": "object"
+    },
+    "code_version": {
+      "minLength": 1,
+      "title": "Code Version",
+      "type": "string"
+    },
+    "frozen_before_reveal": {
+      "title": "Frozen Before Reveal",
+      "type": "boolean"
+    },
+    "public_input_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_config_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "public_input_hash",
+    "code_version",
+    "run_config_hash",
+    "arm_artifact_hashes",
+    "frozen_before_reveal"
+  ],
+  "title": "FreezeReceipt",
+  "type": "object"
+}

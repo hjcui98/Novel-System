@@ -697,12 +697,18 @@ def test_tool_binding_faults_remain_typed(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_checked_in_stage2_schemas_match_models() -> None:
-    from novel_agent.domain import memory_write, retrieval_routing, stage2
+    from novel_agent.domain import (
+        memory_benchmark,
+        memory_write,
+        retrieval_routing,
+        stage2,
+        writer_context,
+    )
 
     schema_directory = REPOSITORY_ROOT / "schemas" / "stage2"
     model_types = {
         value.__name__: value
-        for module in (stage2, retrieval_routing, memory_write)
+        for module in (stage2, writer_context, memory_benchmark, retrieval_routing, memory_write)
         for value in vars(module).values()
         if isinstance(value, type)
         and issubclass(value, DomainModel)

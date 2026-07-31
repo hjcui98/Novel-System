@@ -21,7 +21,14 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
+    ExpectedClaimScope,
+    FacetEvidenceRequirement,
+    NeedCompletionSpec,
+    NeedFacet,
+    NeedFacetKind,
+    NeedGapPolicy,
     NeedRisk,
+    NeedUncertaintyPolicy,
     RequirementLevel,
     ResolutionPath,
     RetrievalChannel,
@@ -632,7 +639,8 @@ def test_registered_route_policy_covers_budget_missing_plan_and_fallback_exhaust
     optional = RouteBoundControllerPolicy((optional_plan,)).decide(
         {"request": request(need=optional_need), "tool_calls": ()}
     )
-    assert optional.stop_reason is ControllerStopReason.SUFFICIENT
+    assert optional.action is ControllerPolicyAction.CALL_TOOL
+    assert optional.rationale_code == "MAX_MIN_REGISTERED_ROUTE_STEP"
 
     successful_calls = tuple(
         (
@@ -853,6 +861,132 @@ def test_controller_trace_builder_ignores_failed_or_malformed_tool_payloads() ->
     assert runtime._result_unit_ids(malformed) == ()
     malformed_list = malformed.model_copy(update={"payload": {"hits": ["bad", {}]}})
     assert runtime._result_unit_ids(malformed_list) == ()
+
+
+def test_route_policy_public_primary_sufficiency_covers_all_public_facets() -> None:
+    base_need = memory_need()
+    facet_kinds = tuple(NeedFacetKind)
+    facets = tuple(
+        NeedFacet(
+            need_facet_id=StableId(f"need-facet.route.{kind.value}"),
+            need_id=base_need.need_id,
+            facet_kind=kind,
+            expected_claim_scope=(
+                ExpectedClaimScope.HISTORICAL
+                if kind in {NeedFacetKind.CAUSAL_HISTORY, NeedFacetKind.SETUP}
+                else ExpectedClaimScope.PLANNED
+                if kind is NeedFacetKind.PLAN_NODE
+                else ExpectedClaimScope.CURRENT
+            ),
+            derivation_refs=(StableId(f"derivation.route.{kind.value}"),),
+            producer="test",
+            producer_version="test.v1",
+            information_scope="writer_safe",
+        )
+        for kind in facet_kinds
+    )
+    completion = NeedCompletionSpec(
+        need_id=base_need.need_id,
+        required_need_facet_ids=tuple(item.need_facet_id for item in facets),
+        irreducible_need_facet_ids=(),
+        evidence_requirement_by_facet={
+            item.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE
+            for item in facets
+        },
+        uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+        gap_policy=NeedGapPolicy.EMIT_TYPED_GAP,
+        producer="test",
+        producer_version="test.v1",
+    )
+    need = base_need.model_copy(update={"need_facets": facets, "completion_spec": completion})
+    state = RetrievalUnit(
+        unit_id=StableId("anchor.route.state"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="hero injury cannot remain unresolved promise",
+    )
+    historical = state.model_copy(
+        update={
+            "unit_id": StableId("anchor.route.history"),
+            "unit_kind": RetrievalUnitKind.EVENT_ANCHOR,
+            "text": "hero injury historical setup",
+        }
+    )
+    planned = state.model_copy(
+        update={
+            "unit_id": StableId("anchor.route.plan"),
+            "unit_kind": RetrievalUnitKind.PLAN_ANCHOR,
+            "text": "hero injury planned node",
+        }
+    )
+
+    def hit(unit: RetrievalUnit, rank: int) -> Any:
+        return ChannelHit(
+            unit=unit,
+            channel=RetrievalChannel.R1_EXACT,
+            channel_rank=rank,
+            raw_score=1.0,
+            candidate_count=3,
+            hit_reason="public facet test",
+        ).model_dump(mode="json")
+
+    result = ToolResult(
+        tool_call_id=StableId("call.public-facets"),
+        status=ToolResultStatus.SUCCEEDED,
+        basis_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        payload={"hits": ["malformed", hit(state, 1), hit(historical, 2), hit(planned, 3)]},
+        coverage=1.0,
+        audit_ref=StableId("audit.public-facets"),
+    )
+    assert isinstance(result.payload, dict)
+    assert isinstance(result.payload["hits"], list)
+    assert ChannelHit.model_validate_json(json.dumps(result.payload["hits"][1])).unit == state
+    calls = ((need.need_id, "memory.search_exact", result),)
+    for facet in facets:
+        single_completion = completion.model_copy(
+            update={
+                "required_need_facet_ids": (facet.need_facet_id,),
+                "evidence_requirement_by_facet": {
+                    facet.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE
+                },
+            }
+        )
+        single_need = need.model_copy(
+            update={"need_facets": (facet,), "completion_spec": single_completion}
+        )
+        assert RouteBoundControllerPolicy._public_primary_sufficient(single_need, calls), (
+            facet.facet_kind
+        )
+    assert RouteBoundControllerPolicy._public_primary_sufficient(
+        base_need,
+        calls,
+    )
+    assert not RouteBoundControllerPolicy._public_primary_sufficient(
+        single_need.model_copy(update={"query_text": "completely absent terms"}),
+        calls,
+    )
+    assert not RouteBoundControllerPolicy._public_primary_sufficient(
+        need,
+        (
+            (
+                need.need_id,
+                "memory.search_exact",
+                result.model_copy(update={"payload": {"hits": [hit(state, 1)]}}),
+            ),
+        ),
+    )
+    assert not RouteBoundControllerPolicy._public_primary_sufficient(
+        need,
+        (
+            (
+                need.need_id,
+                "memory.search_exact",
+                result.model_copy(update={"payload": {"hits": ()}}),
+            ),
+        ),
+    )
 
 
 class _ReverseReranker:
@@ -1182,9 +1316,7 @@ def test_batch_plan_executes_first_action_without_key_error() -> None:
     assert result["resolution"].status is ResolutionStatus.READY
     # Both actions must have been executed (no KeyError on pending_need_id/pending_tool).
     assert len(result["tool_results"]) == 2
-    snapshot = runtime.graph.get_state(
-        {"configurable": {"thread_id": "batch-plan-key-error"}}
-    )
+    snapshot = runtime.graph.get_state({"configurable": {"thread_id": "batch-plan-key-error"}})
     tool_names = [call["tool_name"] for call in snapshot.values["tool_calls"]]
     assert "memory.search_exact" in tool_names
     assert "memory.search_temporal" in tool_names
@@ -1218,9 +1350,7 @@ def test_batch_plan_rechecks_legality_between_actions() -> None:
     # Only the first action should have been executed; the second is the same
     # action_id and is no longer legal after the first call.
     assert len(result["tool_results"]) == 1
-    snapshot = runtime.graph.get_state(
-        {"configurable": {"thread_id": "batch-plan-legal"}}
-    )
+    snapshot = runtime.graph.get_state({"configurable": {"thread_id": "batch-plan-legal"}})
     decisions = snapshot.values["policy_decisions"]
     rationale_codes = [item["rationale_code"] for item in decisions]
     assert "BATCH_PLAN_ACTION" in rationale_codes
@@ -1242,9 +1372,7 @@ def test_route_bound_need_is_accessible_returns_false_for_scope_mismatch() -> No
 
 
 def test_route_bound_policy_skips_inaccessible_mandatory_need() -> None:
-    inaccessible_need = memory_need().model_copy(
-        update={"access_scope": "author_planning"}
-    )
+    inaccessible_need = memory_need().model_copy(update={"access_scope": "author_planning"})
     capability = SnapshotCapability(
         source_commit=COMMIT,
         snapshot_id=SNAPSHOT,
@@ -1253,9 +1381,7 @@ def test_route_bound_policy_skips_inaccessible_mandatory_need() -> None:
     )
     plan = DeterministicChannelPlanner().plan(inaccessible_need, capability)
     policy = RouteBoundControllerPolicy((plan,))
-    decision = policy.decide(
-        {"request": request(need=inaccessible_need), "tool_calls": ()}
-    )
+    decision = policy.decide({"request": request(need=inaccessible_need), "tool_calls": ()})
     assert decision.stop_reason is ControllerStopReason.SUFFICIENT
 
 
@@ -1286,9 +1412,7 @@ def _graph_state(
 def test_decide_returns_terminal_failure_stop_reason() -> None:
     runtime, _ = controller(())
     req = request()
-    budget = ControllerBudgetState.from_policy(
-        runtime._tool_policy, max_tool_calls=4
-    )
+    budget = ControllerBudgetState.from_policy(runtime._tool_policy, max_tool_calls=4)
     budget.mark_terminal(ControllerStopReason.ACCESS_BLOCKED.value)
     runtime._budgets[req.request_id.root] = budget
     result = runtime._decide(_graph_state(req))
@@ -1302,9 +1426,7 @@ def test_decide_stops_when_trusted_call_budget_exhausted() -> None:
     req = request(max_rounds=3, max_tool_calls=12)
     # budget with higher max_tool_calls so can_invoke_tool stays True,
     # but trusted_call_limit (= round_limit = 3) is reached.
-    budget = ControllerBudgetState.from_policy(
-        runtime._tool_policy, max_tool_calls=12
-    )
+    budget = ControllerBudgetState.from_policy(runtime._tool_policy, max_tool_calls=12)
     runtime._budgets[req.request_id.root] = budget
     calls = [
         {
@@ -1412,9 +1534,7 @@ class _EmptyExecutePlanPolicy:
 def test_decide_stops_on_empty_batch_plan() -> None:
     runtime, _ = controller((), policy=_EmptyExecutePlanPolicy())
     req = request()
-    budget = ControllerBudgetState.from_policy(
-        runtime._tool_policy, max_tool_calls=4
-    )
+    budget = ControllerBudgetState.from_policy(runtime._tool_policy, max_tool_calls=4)
     runtime._budgets[req.request_id.root] = budget
     result = runtime._decide(_graph_state(req))
     assert result["stopped"] is True
@@ -1435,9 +1555,7 @@ class _StaleExecutePlanPolicy:
 def test_decide_stops_when_batch_first_action_not_legal() -> None:
     runtime, _ = controller((), policy=_StaleExecutePlanPolicy())
     req = request()
-    budget = ControllerBudgetState.from_policy(
-        runtime._tool_policy, max_tool_calls=4
-    )
+    budget = ControllerBudgetState.from_policy(runtime._tool_policy, max_tool_calls=4)
     runtime._budgets[req.request_id.root] = budget
     result = runtime._decide(_graph_state(req))
     assert result["stopped"] is True
@@ -1472,7 +1590,7 @@ def test_decide_blocks_call_when_need_tool_pair_not_in_legal_actions() -> None:
         ToolBinding(tool_policy, adapter.handlers()),
         tool_policy,
         ContextCompiler(EvidenceExpander()),
-        _IllegalPoolCallPolicy(),
+        _IllegalPoolCallPolicy(),  # type: ignore[arg-type]
         lambda _: True,
         InMemorySaver(),
     )
@@ -1483,9 +1601,7 @@ def test_decide_blocks_call_when_need_tool_pair_not_in_legal_actions() -> None:
 def test_execute_tool_returns_budget_exceeded_when_budget_exhausted() -> None:
     runtime, _ = controller(())
     req = request()
-    budget = ControllerBudgetState.from_policy(
-        runtime._tool_policy, max_tool_calls=4
-    )
+    budget = ControllerBudgetState.from_policy(runtime._tool_policy, max_tool_calls=4)
     budget.mark_terminal(ControllerStopReason.BUDGET_EXHAUSTED.value)
     runtime._budgets[req.request_id.root] = budget
     state = cast(

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 
@@ -23,6 +24,11 @@ from novel_agent.domain.benchmark import (
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, SchemaVersion, StableId
 from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory_benchmark import (
+    BenchmarkInformationProfile,
+    EvidenceSet,
+    GoldType,
+)
 from novel_agent.domain.text import (
     EvidenceRef,
     EvidenceSupportStatus,
@@ -50,6 +56,35 @@ class HumanBenchmarkCompiler:
 
     version = SchemaVersion("0.1.0")
 
+    _GOLD_TYPE_MAP: ClassVar[dict[str, GoldType]] = {
+        "CURRENT_STATE": GoldType.CURRENT_STATE,
+        "WORLD_STATE": GoldType.CURRENT_STATE,
+        "OBSERVED_FACT": GoldType.CAUSAL_HISTORY,
+        "OBSERVED_PATTERN": GoldType.CAUSAL_HISTORY,
+        "OBSERVED_USE": GoldType.CAUSAL_HISTORY,
+        "CAUSAL_HISTORY": GoldType.CAUSAL_HISTORY,
+        "INSTITUTIONAL_HISTORY": GoldType.CAUSAL_HISTORY,
+        "CHARACTER_TRAIT": GoldType.CURRENT_STATE,
+        "CAPABILITY": GoldType.CURRENT_STATE,
+        "CULTIVATION_STATE": GoldType.CURRENT_STATE,
+        "INSTITUTIONAL_STATE": GoldType.CURRENT_STATE,
+        "POLITICAL_STATE": GoldType.CURRENT_STATE,
+        "RELATIONSHIP_EMOTION": GoldType.RELATIONSHIP_EMOTION,
+        "TRUTH_BOUNDARY": GoldType.KNOWLEDGE_BOUNDARY,
+        "KNOWLEDGE_BOUNDARY": GoldType.KNOWLEDGE_BOUNDARY,
+        "POLITICAL_BOUNDARY": GoldType.KNOWLEDGE_BOUNDARY,
+        "PUBLIC_KNOWLEDGE": GoldType.KNOWLEDGE_BOUNDARY,
+        "SECRET_STATE": GoldType.KNOWLEDGE_BOUNDARY,
+        "PLAN_PATH": GoldType.PLAN_OBLIGATION,
+        "PLAN_OBLIGATION": GoldType.PLAN_OBLIGATION,
+        "CONTRACT": GoldType.PLAN_OBLIGATION,
+        "OPERATIONAL_CONSTRAINT": GoldType.OBJECT_CONTINUITY,
+        "LONG_RANGE_CALLBACK": GoldType.LONG_RANGE_CALLBACK,
+        "LONG_RANGE_PAYOFF": GoldType.LONG_RANGE_CALLBACK,
+        "OBJECT_CONTINUITY": GoldType.OBJECT_CONTINUITY,
+        "OBJECT_STATE": GoldType.OBJECT_CONTINUITY,
+    }
+
     def compile(self, root: Path) -> BenchmarkBundle:
         root = root.resolve()
         bundle_manifest = self._json(root / "bundle.json")
@@ -69,8 +104,9 @@ class HumanBenchmarkCompiler:
             input_data = self._yaml(root / self._string(raw_case["input_plan_root"]))
             gold_data = self._yaml(root / self._string(raw_case["gold_file_private"]))
             plan = self._plan_root(case_id, input_data)
-            historical_evidence = self._historical_evidence(
+            historical_evidence, accepted_evidence = self._historical_evidence(
                 raw_case,
+                gold_data,
                 history,
                 source_commit,
             )
@@ -79,6 +115,7 @@ class HumanBenchmarkCompiler:
                 raw_case,
                 gold_data,
                 historical_evidence,
+                accepted_evidence,
                 future_evidence,
             )
             plan_gold = self._plan_gold(raw_case, plan, future, source_commit)
@@ -280,6 +317,7 @@ class HumanBenchmarkCompiler:
             prelude_id = StableId(f"prelude.{namespace.root}")
             prelude_scenes: list[SceneDocument] = []
             for scene_index, (filename, text) in enumerate(prelude_documents):
+                text = self._strip_packaging_frontmatter(text)
                 scene_id = StableId(f"scene.{namespace.root}.prelude.{scene_index}")
                 prelude_scenes.append(
                     SceneDocument(
@@ -338,6 +376,22 @@ class HumanBenchmarkCompiler:
         )
         return provisional.model_copy(update={"root_hash": text_root_content_id(provisional)})
 
+    @staticmethod
+    def _strip_packaging_frontmatter(value: str) -> str:
+        """Exclude distributor metadata and synopsis before the first volume."""
+
+        marker = re.search(
+            r"(?im)^第[一二三四五六七八九十百千万0-9]+卷(?:\s|$)",
+            value,
+        )
+        if marker is None:
+            return value
+        prefix = value[: marker.start()]
+        packaging_markers = ("内容简介", "作者\uff1a", "本作品来自互联网", "全本校对")
+        if not any(item in prefix for item in packaging_markers):
+            return value
+        return value[marker.start() :]
+
     def _plan_root(self, case_id: StableId, raw: dict[str, Any]) -> PlanRootDocument:
         outlines = tuple(self._strings(raw.get("visible_outline", [])))
         goals_raw = raw.get("target_plan", [])
@@ -372,16 +426,76 @@ class HumanBenchmarkCompiler:
     def _historical_evidence(
         self,
         raw_case: dict[str, Any],
+        gold_data: dict[str, Any],
         root: TextRootDocument,
         commit: CommitId,
-    ) -> dict[str, tuple[EvidenceRef, ...]]:
+    ) -> tuple[
+        dict[str, tuple[EvidenceRef, ...]],
+        dict[str, tuple[EvidenceSet, ...]],
+    ]:
         raw_refs = raw_case.get("gold_evidence_refs", {})
         if not isinstance(raw_refs, dict):
             raise HumanBenchmarkCompileError("gold_evidence_refs must be an object")
+        raw_items = gold_data.get("items", [])
+        if not isinstance(raw_items, list):
+            raise HumanBenchmarkCompileError("Gold items must be a list")
+        annotations = {
+            self._string(item["id"]): item for item in raw_items if isinstance(item, dict)
+        }
         result: dict[str, tuple[EvidenceRef, ...]] = {}
+        accepted: dict[str, tuple[EvidenceSet, ...]] = {}
         for gold_id, chapter_refs in raw_refs.items():
             if not isinstance(gold_id, str) or not isinstance(chapter_refs, list):
                 raise HumanBenchmarkCompileError("gold evidence mapping is malformed")
+            annotation = annotations.get(gold_id, {})
+            raw_sets = annotation.get("accepted_evidence_sets")
+            if raw_sets is not None:
+                if not isinstance(raw_sets, list) or not raw_sets:
+                    raise HumanBenchmarkCompileError(
+                        f"accepted evidence sets must be a non-empty list: {gold_id}"
+                    )
+                compiled_sets: list[EvidenceSet] = []
+                flattened: list[EvidenceRef] = []
+                for set_index, raw_set in enumerate(raw_sets, start=1):
+                    if not isinstance(raw_set, dict):
+                        raise HumanBenchmarkCompileError(
+                            f"accepted evidence set must be an object: {gold_id}"
+                        )
+                    raw_evidence = raw_set.get("evidence")
+                    if not isinstance(raw_evidence, list) or not raw_evidence:
+                        raise HumanBenchmarkCompileError(
+                            f"accepted evidence set requires evidence: {gold_id}"
+                        )
+                    refs = tuple(
+                        self._annotated_evidence(
+                            raw_ref,
+                            root,
+                            commit,
+                            namespace=f"history.{gold_id}.set{set_index}.ref{ref_index}",
+                        )
+                        for ref_index, raw_ref in enumerate(raw_evidence, start=1)
+                    )
+                    flattened.extend(refs)
+                    raw_components = raw_set.get(
+                        "components", annotation.get("target_components", [])
+                    )
+                    if not isinstance(raw_components, list):
+                        raise HumanBenchmarkCompileError(
+                            f"accepted evidence components must be a list: {gold_id}"
+                        )
+                    set_id = str(raw_set.get("id", f"accepted.{gold_id}.{set_index}"))
+                    compiled_sets.append(
+                        EvidenceSet(
+                            evidence_set_id=StableId(set_id),
+                            evidence_refs=refs,
+                            component_ids=tuple(
+                                self._string(component) for component in raw_components
+                            ),
+                        )
+                    )
+                result[gold_id] = tuple(dict.fromkeys(flattened))
+                accepted[gold_id] = tuple(compiled_sets)
+                continue
             evidence: list[EvidenceRef] = []
             for chapter_ref in chapter_refs:
                 if isinstance(chapter_ref, str):
@@ -412,13 +526,14 @@ class HumanBenchmarkCompiler:
                     )
                 )
             result[gold_id] = tuple(evidence)
-        return result
+        return result, accepted
 
     def _gold(
         self,
         raw_case: dict[str, Any],
         gold_data: dict[str, Any],
         historical: dict[str, tuple[EvidenceRef, ...]],
+        accepted: dict[str, tuple[EvidenceSet, ...]],
         future: tuple[EvidenceRef, ...],
     ) -> tuple[tuple[GoldItem, ...], tuple[GoldItem, ...]]:
         raw_items = gold_data.get("items", [])
@@ -447,6 +562,28 @@ class HumanBenchmarkCompiler:
                         evidence_refs=evidence,
                         future_evidence_refs=future,
                         mandatory=bool(item.get("mandatory", False)),
+                        gold_type=self._gold_type(item),
+                        fact=self._string(item["fact"]),
+                        why_needed=self._string(
+                            item.get("why_needed", "required by the benchmark annotation")
+                        ),
+                        weight=float(item.get("weight", 1.0)),
+                        applicable_profiles=self._applicable_profiles(item),
+                        accepted_evidence_sets=accepted.get(
+                            identity,
+                            (
+                                EvidenceSet(
+                                    evidence_set_id=StableId(f"accepted.{identity}.historical"),
+                                    evidence_refs=evidence,
+                                    component_ids=tuple(
+                                        str(value) for value in item.get("target_components", [])
+                                    ),
+                                ),
+                            ),
+                        ),
+                        target_components=tuple(
+                            str(value) for value in item.get("target_components", [])
+                        ),
                     )
                 )
             return tuple(compiled)
@@ -454,6 +591,60 @@ class HumanBenchmarkCompiler:
         return (
             compile_ids("observed_use_gold", GoldKind.OBSERVED_USE),
             compile_ids("operational_constraint_gold", GoldKind.OPERATIONAL_CONSTRAINT),
+        )
+
+    def _annotated_evidence(
+        self,
+        raw: Any,
+        root: TextRootDocument,
+        commit: CommitId,
+        *,
+        namespace: str,
+    ) -> EvidenceRef:
+        if not isinstance(raw, dict):
+            raise HumanBenchmarkCompileError(f"reviewed evidence must be an object: {namespace}")
+        chapter_index = self._integer(raw.get("chapter"))
+        quote = self._string(raw.get("quote"))
+        if chapter_index == 0:
+            if root.prelude is None:
+                raise HumanBenchmarkCompileError(
+                    f"reviewed evidence prelude is absent: {namespace}"
+                )
+            blocks = tuple(block for scene in root.prelude.scenes for block in scene.blocks)
+        else:
+            chapter = next(
+                (item for item in root.chapters if item.chapter_index == chapter_index),
+                None,
+            )
+            if chapter is None:
+                raise HumanBenchmarkCompileError(
+                    f"reviewed evidence chapter is absent: {namespace}/{chapter_index}"
+                )
+            blocks = tuple(block for scene in chapter.scenes for block in scene.blocks)
+        matches: list[tuple[TextBlock, int]] = []
+        for block in blocks:
+            start = block.text.find(quote)
+            while start >= 0:
+                matches.append((block, start))
+                start = block.text.find(quote, start + 1)
+        if len(matches) != 1:
+            raise HumanBenchmarkCompileError(
+                "reviewed evidence quote must occur exactly once in its chapter: "
+                f"{namespace} found={len(matches)}"
+            )
+        block, start = matches[0]
+        end = start + len(quote)
+        suffix = sha256_id(f"{namespace}:{block.block_id.root}:{start}:{end}".encode()).root[-24:]
+        return EvidenceRef(
+            evidence_id=StableId(f"evidence.{suffix}"),
+            root_hash=root.root_hash,
+            object_hash=sha256_id(block.text.encode("utf-8")),
+            chapter_id=block.chapter_id,
+            scene_id=block.scene_id,
+            span=TextSpanRef(block_id=block.block_id, start=start, end=end),
+            quote_hash=quote_hash(quote),
+            support_status=EvidenceSupportStatus.CURRENT,
+            resolved_at_commit=commit,
         )
 
     def _plan_gold(
@@ -532,9 +723,51 @@ class HumanBenchmarkCompiler:
                     ),
                     future_evidence_refs=future_evidence,
                     mandatory=True,
+                    gold_type=GoldType.PLAN_OBLIGATION,
+                    fact="; ".join(goal.summary for goal in resolved_goals),
+                    why_needed="author-visible plan obligation applies to the target horizon",
+                    weight=1.0,
+                    applicable_profiles=(BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,),
+                    accepted_evidence_sets=(
+                        EvidenceSet(
+                            evidence_set_id=StableId(f"accepted.{identity}.plan"),
+                            plan_node_ids=tuple(
+                                StableId(
+                                    "plan.bootstrap.rough-story-outline.range."
+                                    f"{((goal.chapter_index - 1) // 20) * 20 + 1}-"
+                                    f"{((goal.chapter_index - 1) // 20 + 1) * 20}"
+                                )
+                                for goal in resolved_goals
+                            ),
+                        ),
+                    ),
+                    target_components=tuple(goal.goal_id.root for goal in resolved_goals),
                 )
             )
         return tuple(compiled)
+
+    def _gold_type(self, item: dict[str, Any]) -> GoldType:
+        raw = self._string(item.get("type", "CAUSAL_HISTORY")).upper()
+        try:
+            return self._GOLD_TYPE_MAP[raw]
+        except KeyError as error:
+            raise HumanBenchmarkCompileError(f"unsupported Gold type: {raw}") from error
+
+    @staticmethod
+    def _applicable_profiles(
+        item: dict[str, Any],
+    ) -> tuple[BenchmarkInformationProfile, ...]:
+        raw = item.get("applicable_profiles")
+        if raw is None:
+            return tuple(BenchmarkInformationProfile)
+        if not isinstance(raw, list) or not raw:
+            raise HumanBenchmarkCompileError("applicable_profiles must be a non-empty list")
+        try:
+            return tuple(BenchmarkInformationProfile(str(value)) for value in raw)
+        except ValueError as error:
+            raise HumanBenchmarkCompileError(
+                "Gold item contains an invalid information profile"
+            ) from error
 
     def _world_root(
         self,

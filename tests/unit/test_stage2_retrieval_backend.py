@@ -22,6 +22,7 @@ from novel_agent.services.stage2_retrieval_backend import (
     RealHybridProjectionGateway,
     Stage2RetrievalBackendError,
     _validate_attestation,
+    build_real_hybrid_backend,
 )
 
 COMMIT = CommitId("sha256:" + "a" * 64)
@@ -179,7 +180,7 @@ def test_projection_gateway_reuses_or_rebuilds_attested_snapshot(
         builder=cast(Any, builder),
         snapshots=cast(Any, snapshots),
         r1=cast(Any, object()),
-        search_index=cast(Any, object()),
+        search_index=cast(Any, SimpleNamespace(index_exists=lambda _: True)),
         embedder=cast(Any, object()),
         reranker=cast(Any, object()),
     )
@@ -198,3 +199,56 @@ def test_projection_gateway_reuses_or_rebuilds_attested_snapshot(
     )
     assert gateway.backend_for(PROJECT, COMMIT) is marker
     assert published
+
+    snapshots.get_attestation_for_commit = lambda _: current
+    gateway = RealHybridProjectionGateway(
+        builder=cast(Any, builder),
+        snapshots=cast(Any, snapshots),
+        r1=cast(Any, object()),
+        search_index=cast(Any, SimpleNamespace(index_exists=lambda _: False)),
+        embedder=cast(Any, object()),
+        reranker=cast(Any, object()),
+    )
+    assert gateway.backend_for(PROJECT, COMMIT) is marker
+    assert len(published) == 2
+
+
+def test_real_hybrid_typed_graph_route_is_owned_by_r1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = attestation()
+    item = item.model_copy(
+        update={
+            "capability": item.capability.model_copy(
+                update={
+                    "available_channels": (
+                        *item.capability.available_channels,
+                        RetrievalChannel.TYPED_GRAPH,
+                    )
+                }
+            )
+        }
+    )
+    r1_backend = object()
+    search_backend = object()
+    monkeypatch.setattr(backend_module, "R1RetrievalBackend", lambda *args, **kwargs: r1_backend)
+    monkeypatch.setattr(
+        backend_module,
+        "Stage2ROpenSearchBackend",
+        lambda *args, **kwargs: search_backend,
+    )
+
+    bundle = build_real_hybrid_backend(
+        r1=cast(Any, object()),
+        search_index=cast(Any, object()),
+        embedder=cast(Any, SimpleNamespace(profile="narrative-bge-m3-v0.1")),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        attestation=item,
+        reranker=cast(Any, object()),
+    )
+
+    routes = cast(Any, bundle.backend)._routes
+    assert routes[RetrievalChannel.TYPED_GRAPH] is r1_backend
+    assert routes[RetrievalChannel.ANCHOR_DENSE] is search_backend

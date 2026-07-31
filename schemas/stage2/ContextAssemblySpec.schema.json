@@ -8,6 +8,46 @@
   },
   "additionalProperties": false,
   "properties": {
+    "allowed_claim_variant_ids_by_support_group": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/StableId"
+        },
+        "type": "array"
+      },
+      "title": "Allowed Claim Variant Ids By Support Group",
+      "type": "object"
+    },
+    "closed_need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Closed Need Facet Ids",
+      "type": "array"
+    },
+    "evidence_ledger_token_budget": {
+      "default": 12000,
+      "minimum": 1,
+      "title": "Evidence Ledger Token Budget",
+      "type": "integer"
+    },
+    "mandatory_claim_variant_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Mandatory Claim Variant Ids",
+      "type": "array"
+    },
+    "mandatory_support_group_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Mandatory Support Group Ids",
+      "type": "array"
+    },
     "mandatory_unit_ids": {
       "default": [],
       "items": {
@@ -16,28 +56,75 @@
       "title": "Mandatory Unit Ids",
       "type": "array"
     },
+    "ordered_optional_support_group_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Ordered Optional Support Group Ids",
+      "type": "array"
+    },
     "reduction_allowed": {
       "default": true,
       "title": "Reduction Allowed",
       "type": "boolean"
     },
+    "reduction_policy": {
+      "default": "receipt_bound_variants_only",
+      "minLength": 1,
+      "title": "Reduction Policy",
+      "type": "string"
+    },
+    "selected_support_group_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Support Group Ids",
+      "type": "array"
+    },
     "selected_unit_ids": {
+      "default": [],
       "items": {
         "$ref": "#/$defs/StableId"
       },
       "title": "Selected Unit Ids",
       "type": "array"
     },
+    "selection_policy_version": {
+      "default": "legacy_unit_selection.v1",
+      "minLength": 1,
+      "title": "Selection Policy Version",
+      "type": "string"
+    },
     "token_budget": {
+      "default": 1,
       "minimum": 1,
       "title": "Token Budget",
       "type": "integer"
+    },
+    "unresolved_need_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unresolved Need Facet Ids",
+      "type": "array"
+    },
+    "writer_token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Writer Token Budget"
     }
   },
-  "required": [
-    "selected_unit_ids",
-    "token_budget"
-  ],
   "title": "ContextAssemblySpec",
   "type": "object"
 }

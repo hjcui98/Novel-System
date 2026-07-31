@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 from novel_agent.domain.ids import StableId
@@ -202,9 +203,7 @@ class LegalActionProvider:
             )
             if step.channel in TOOL_BY_CHANNEL
         }
-        primary_exhausted = primary_tools.issubset(
-            {tool_name for _, tool_name, _ in prior_calls}
-        )
+        primary_exhausted = primary_tools.issubset({tool_name for _, tool_name, _ in prior_calls})
         primary_succeeded = self._primary_succeeded(plan, prior_calls)
         for fallback in plan.conditional_fallbacks:
             applies = primary_exhausted and self._fallback_applies(
@@ -254,6 +253,14 @@ class LegalActionProvider:
             )
         return actions
 
+    @staticmethod
+    def _action_id(need_id: StableId, step_id: StableId) -> str:
+        seed = f"action.{need_id.root}.{step_id.root}"
+        if len(seed) < 128:
+            return seed
+        digest = hashlib.sha256(seed.encode()).hexdigest()[:32]
+        return f"action.{digest}"
+
     def _step_action(
         self,
         need: Stage1MemoryNeed,
@@ -271,7 +278,7 @@ class LegalActionProvider:
         if (need.need_id, tool_name) in called:
             return None
         return RegisteredControllerAction(
-            action_id=StableId(f"action.{need.need_id.root}.{step_id.root}"),
+            action_id=StableId(self._action_id(need.need_id, step_id)),
             need_id=need.need_id,
             route_step_id=step_id,
             tool_name=tool_name,

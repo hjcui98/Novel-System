@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from pydantic import Field, JsonValue, model_validator
 
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.text import EvidenceRef
@@ -18,6 +19,7 @@ from novel_agent.domain.world import (
     StoryTime,
     TruthClass,
 )
+from novel_agent.domain.writer_context import WriterContextSection
 
 
 class ObligationKind(StrEnum):
@@ -144,6 +146,93 @@ class CandidatePool(StrEnum):
     GRAPH = "graph"
 
 
+class NeedFacetKind(StrEnum):
+    CURRENT_STATE = "current_state"
+    RELATION_STATE = "relation_state"
+    CAPABILITY_STATUS = "capability_status"
+    LIMITATION = "limitation"
+    KNOWLEDGE_BOUNDARY = "knowledge_boundary"
+    CAUSAL_HISTORY = "causal_history"
+    SETUP = "setup"
+    UNRESOLVED_STATUS = "unresolved_status"
+    COMMITMENT = "commitment"
+    PLAN_NODE = "plan_node"
+
+
+class ExpectedClaimScope(StrEnum):
+    CURRENT = "current"
+    HISTORICAL = "historical"
+    KNOWLEDGE = "knowledge"
+    PLANNED = "planned"
+
+
+class FacetEvidenceRequirement(StrEnum):
+    TRACEABLE_CUTOFF_SOURCE = "traceable_cutoff_source"
+    CUTOFF_CURRENT_SOURCE = "cutoff_current_source"
+    PLAN_PROVENANCE = "plan_provenance"
+    DISTINCT_HISTORICAL_SOURCE = "distinct_historical_source"
+
+
+class NeedUncertaintyPolicy(StrEnum):
+    ALLOW_GAP_ONLY = "allow_gap_only"
+    REJECT_UNVERIFIED_CLAIM = "reject_unverified_claim"
+
+
+class NeedGapPolicy(StrEnum):
+    EMIT_TYPED_GAP = "emit_typed_gap"
+    FAIL_MANDATORY = "fail_mandatory"
+
+
+class NeedFacet(DomainModel):
+    need_facet_id: StableId
+    need_id: StableId
+    facet_kind: NeedFacetKind
+    expected_claim_scope: ExpectedClaimScope
+    derivation_refs: tuple[StableId, ...]
+    producer: str = Field(min_length=1)
+    producer_version: str = Field(min_length=1)
+    information_scope: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_derivation(self) -> NeedFacet:
+        if not self.derivation_refs:
+            raise ValueError("NeedFacet requires public derivation refs")
+        if len(self.derivation_refs) != len(set(self.derivation_refs)):
+            raise ValueError("NeedFacet derivation refs must be unique")
+        return self
+
+
+class NeedCompletionSpec(DomainModel):
+    need_id: StableId
+    required_need_facet_ids: tuple[StableId, ...]
+    irreducible_need_facet_ids: tuple[StableId, ...]
+    evidence_requirement_by_facet: dict[str, FacetEvidenceRequirement]
+    min_distinct_evidence_sources: int = Field(default=1, ge=1)
+    min_distinct_chapters: int = Field(default=1, ge=1)
+    require_current_claim: bool = False
+    require_causal_history: bool = False
+    uncertainty_policy: NeedUncertaintyPolicy
+    gap_policy: NeedGapPolicy
+    producer: str = Field(min_length=1)
+    producer_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_facets(self) -> NeedCompletionSpec:
+        required = set(self.required_need_facet_ids)
+        irreducible = set(self.irreducible_need_facet_ids)
+        if not required:
+            raise ValueError("NeedCompletionSpec requires at least one facet")
+        if len(required) != len(self.required_need_facet_ids):
+            raise ValueError("required NeedFacet ids must be unique")
+        if not irreducible.issubset(required):
+            raise ValueError("irreducible NeedFacet ids must be required")
+        if set(self.evidence_requirement_by_facet) != {
+            item.root for item in self.required_need_facet_ids
+        }:
+            raise ValueError("evidence requirements must cover every required NeedFacet")
+        return self
+
+
 class Stage1MemoryNeed(DomainModel):
     need_id: StableId
     run_id: RunId
@@ -167,6 +256,14 @@ class Stage1MemoryNeed(DomainModel):
     allowed_candidate_pools: tuple[CandidatePool, ...] = Field(min_length=1)
     expected_evidence_types: tuple[str, ...] = ()
     stop_condition: str = Field(min_length=1)
+    purpose: str | None = Field(default=None, min_length=1)
+    expected_section: WriterContextSection | None = None
+    focus_ids: tuple[StableId, ...] = ()
+    priority: int = Field(default=50, ge=0, le=100)
+    query_hints: tuple[str, ...] = ()
+    completion_criteria: str | None = Field(default=None, min_length=1)
+    need_facets: tuple[NeedFacet, ...] = ()
+    completion_spec: NeedCompletionSpec | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> Stage1MemoryNeed:
@@ -178,6 +275,24 @@ class Stage1MemoryNeed(DomainModel):
                 raise ValueError("memory need horizon is invalid")
         if len(self.hierarchy_parent_unit_ids) != len(set(self.hierarchy_parent_unit_ids)):
             raise ValueError("memory need hierarchy parents must be unique")
+        if len(self.focus_ids) != len(set(self.focus_ids)):
+            raise ValueError("memory need focus ids must be unique")
+        if bool(self.need_facets) != (self.completion_spec is not None):
+            raise ValueError("NeedFacet and NeedCompletionSpec must appear together")
+        if self.completion_spec is not None:
+            if self.completion_spec.need_id != self.need_id:
+                raise ValueError("NeedCompletionSpec need id mismatch")
+            facet_ids = {item.need_facet_id for item in self.need_facets}
+            if len(facet_ids) != len(self.need_facets):
+                raise ValueError("memory need facet ids must be unique")
+            if any(item.need_id != self.need_id for item in self.need_facets):
+                raise ValueError("NeedFacet need id mismatch")
+            if not set(self.completion_spec.required_need_facet_ids).issubset(facet_ids):
+                raise ValueError("NeedCompletionSpec references an unknown NeedFacet")
+            if not self.allow_plan and any(
+                item.information_scope == "author_plan" for item in self.need_facets
+            ):
+                raise ValueError("plan-derived NeedFacet requires allow_plan")
         return self
 
 
@@ -233,6 +348,9 @@ class RetrievalUnit(DomainModel):
     text: str = Field(min_length=1)
     entity_ids: tuple[StableId, ...] = ()
     predicate: str | None = None
+    canonical_value_id: StableId | None = None
+    canonicalizer_version: str | None = Field(default=None, min_length=1)
+    canonical_alias_receipt_ref: ArtifactRef | None = None
     parent_unit_id: StableId | None = None
     parent_unit_ids: tuple[StableId, ...] = ()
     worldline: str = Field(default="main", min_length=1)
@@ -250,6 +368,10 @@ class RetrievalUnit(DomainModel):
 
     @model_validator(mode="after")
     def validate_projection_metadata(self) -> RetrievalUnit:
+        if (self.canonical_value_id is None) != (self.canonicalizer_version is None):
+            raise ValueError("canonical value id and canonicalizer version must appear together")
+        if self.canonical_alias_receipt_ref is not None and self.canonical_value_id is None:
+            raise ValueError("canonical alias receipt requires canonical value metadata")
         if (
             self.narrative_start is not None
             and self.narrative_end is not None
@@ -294,6 +416,16 @@ class RetrievalStopReason(StrEnum):
     FALLBACK_EXHAUSTED = "fallback_exhausted"
 
 
+class NeedExecutionStatus(StrEnum):
+    """Whether a legal Need actually received retrieval budget."""
+
+    EXECUTED_WITH_CANDIDATES = "executed_with_candidates"
+    EXECUTED_EMPTY = "executed_empty"
+    NOT_EXECUTED_BUDGET_EXHAUSTED = "not_executed_budget_exhausted"
+    NOT_EXECUTED_FRESHNESS_BLOCKED = "not_executed_freshness_blocked"
+    NOT_EXECUTED_SCOPE_BLOCKED = "not_executed_scope_blocked"
+
+
 class RetrievalTrace(DomainModel):
     need_id: StableId
     intent: Stage1QueryIntent
@@ -306,11 +438,50 @@ class RetrievalTrace(DomainModel):
     fallback_used: bool = False
     fallback_reason: str | None = None
     stop_reason: RetrievalStopReason
+    need_execution_status: NeedExecutionStatus = NeedExecutionStatus.EXECUTED_EMPTY
+    calls_allocated: int = Field(default=0, ge=0)
+    required_need_facet_ids: tuple[StableId, ...] = ()
+    irreducible_need_facet_ids: tuple[StableId, ...] = ()
+    closed_need_facet_ids: tuple[StableId, ...] = ()
     anchors_expanded: int = Field(default=0, ge=0)
     spans_expanded: int = Field(default=0, ge=0)
     l0_tokens: int = Field(default=0, ge=0)
     scenes_expanded: int = Field(default=0, ge=0)
     full_chapters_read: int = Field(default=0, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_execution_diagnostics(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "need_execution_status" not in normalized:
+            normalized["need_execution_status"] = (
+                NeedExecutionStatus.EXECUTED_WITH_CANDIDATES
+                if normalized.get("candidates")
+                else NeedExecutionStatus.EXECUTED_EMPTY
+            )
+        if "calls_allocated" not in normalized:
+            normalized["calls_allocated"] = len(normalized.get("allowed_channels", ()))
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_execution_diagnostics(self) -> RetrievalTrace:
+        not_executed = self.need_execution_status.value.startswith("not_executed_")
+        if not_executed and self.calls_allocated:
+            raise ValueError("unexecuted Need cannot have allocated retrieval calls")
+        if not_executed and self.candidates:
+            raise ValueError("unexecuted Need cannot have retrieval candidates")
+        if (
+            self.need_execution_status is NeedExecutionStatus.EXECUTED_WITH_CANDIDATES
+            and not self.candidates
+        ):
+            raise ValueError("candidate execution status requires candidates")
+        if self.need_execution_status is NeedExecutionStatus.EXECUTED_EMPTY and self.candidates:
+            raise ValueError("empty execution status cannot contain candidates")
+        if not set(self.closed_need_facet_ids).issubset(self.required_need_facet_ids):
+            raise ValueError("closed Need facets must be required facets")
+        return self
 
 
 class ContextBudgetReport(DomainModel):
@@ -334,8 +505,20 @@ class Stage1ContextPackage(DomainModel):
     raw_evidence_spans: tuple[RetrievalUnit, ...] = ()
     style_or_reference_optional: tuple[RetrievalUnit, ...] = ()
     unresolved_gaps: tuple[str, ...] = ()
+    need_facets: tuple[NeedFacet, ...] = ()
+    need_completion_specs: tuple[NeedCompletionSpec, ...] = ()
     retrieval_traces: tuple[RetrievalTrace, ...] = ()
     budget_report: ContextBudgetReport
+    contract_version: str = "stage1_context.legacy"
+    benchmark_quality_eligible: bool = False
+
+    @model_validator(mode="after")
+    def validate_need_contracts(self) -> Stage1ContextPackage:
+        facet_need_ids = {item.need_id for item in self.need_facets}
+        spec_need_ids = {item.need_id for item in self.need_completion_specs}
+        if facet_need_ids != spec_need_ids:
+            raise ValueError("Stage1 Context NeedFacet and completion specs must cover same Needs")
+        return self
 
 
 class DerivedBuildStatus(StrEnum):

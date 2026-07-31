@@ -6,7 +6,6 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
     BenchmarkBundle,
     ChapterDocument,
-    PlanRootDocument,
     PreludeDocument,
     TextRootDocument,
 )
@@ -92,32 +91,9 @@ class BenchmarkScenarioCompiler:
                 )
             )
         for case in ordered_cases:
-            if case.input_plan_root is None:
-                if information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
-                    raise ValueError(
-                        "author-plan-conditioned scenario requires a PlanRoot per checkpoint"
-                    )
-            else:
-                plan = self._plan_root(bundle, case.input_plan_root)
-                plan_source = self._source(
-                    source_id=StableId(f"source.plan.{case.case_id.root}"),
-                    source_class=SourceClass.AUTHOR_KNOWN_FUTURE_PLAN,
-                    payload=canonical_json_bytes(plan.model_dump(mode="json")),
-                    bundle=bundle,
-                    earliest_visible_chapter=case.history_range[1],
-                )
-                sources.append(plan_source)
-                classifications.append(
-                    self._classification(
-                        plan_source,
-                        (SourceDestination.PLAN, SourceDestination.REFERENCE),
-                        (
-                            SourceDestination.TEXT,
-                            SourceDestination.WORLD,
-                            SourceDestination.EVALUATION,
-                        ),
-                    )
-                )
+            # Per-case PlanRoots are reconstructed from the completed target and
+            # remain evaluator-only. Public replay retains only the coarse PlanRoot
+            # created from bootstrap author input.
             future = self._text_root(bundle, case.future_text_root_private)
             future_source = self._source(
                 source_id=StableId(f"source.future.{case.case_id.root}"),
@@ -278,19 +254,6 @@ class BenchmarkScenarioCompiler:
         )
         if root is None:
             raise ValueError(f"scenario references a missing TextRoot: {root_hash.root}")
-        return root
-
-    @staticmethod
-    def _plan_root(
-        bundle: BenchmarkBundle,
-        root_hash: ArtifactId,
-    ) -> PlanRootDocument:
-        root = next(
-            (item for item in bundle.plan_roots if item.root_hash == root_hash),
-            None,
-        )
-        if root is None:
-            raise ValueError(f"scenario references a missing PlanRoot: {root_hash.root}")
         return root
 
     @staticmethod

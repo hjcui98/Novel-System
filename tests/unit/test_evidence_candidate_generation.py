@@ -205,7 +205,7 @@ def test_block_candidates_skips_empty_text_and_dialogue_split() -> None:
     assert candidates == ()
 
     # Dialogue split: text with quotes triggers _DIALOGUE_SPLIT path
-    dialogue_text = '\u201c第一段话\u201d\u201c第二段话\u201d'
+    dialogue_text = "\u201c第一段话\u201d\u201c第二段话\u201d"
     root2 = _text_root(dialogue_text)
     candidates2 = gen.generate(root2, 1)
     assert len(candidates2) >= 2
