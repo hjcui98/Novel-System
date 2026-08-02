@@ -373,7 +373,16 @@ class RouteProfile(DomainModel):
         if not planned.issubset(self.allowed_channels):
             raise ValueError("route profile step channel is not allowed")
         if self.resolution_tier is not ResolutionTier.R2 and self.conditional_fallbacks:
-            raise ValueError("only R2 route profiles may define conditional fallbacks")
+            r1_current_state_fallback = (
+                self.resolution_tier is ResolutionTier.R1
+                and self.query_intent is Stage1QueryIntent.CURRENT_STATE
+                and all(
+                    fallback.condition == "exact_current_record_absent"
+                    for fallback in self.conditional_fallbacks
+                )
+            )
+            if not r1_current_state_fallback:
+                raise ValueError("only R2 route profiles may define conditional fallbacks")
         return self
 
 
@@ -414,7 +423,16 @@ class RoutePlan(DomainModel):
         if active & set(excluded):
             raise ValueError("route plan channel cannot be active and excluded")
         if self.resolution_tier is not ResolutionTier.R2 and self.conditional_fallbacks:
-            raise ValueError("only R2 route plans may define conditional fallbacks")
+            r1_current_state_fallback = (
+                self.resolution_tier is ResolutionTier.R1
+                and getattr(self, "normalized_intent", None) is Stage1QueryIntent.CURRENT_STATE
+                and all(
+                    fallback.condition == "exact_current_record_absent"
+                    for fallback in self.conditional_fallbacks
+                )
+            )
+            if not r1_current_state_fallback:
+                raise ValueError("only R2 route plans may define conditional fallbacks")
         return self
 
 

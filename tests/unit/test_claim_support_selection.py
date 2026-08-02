@@ -10,13 +10,16 @@ from pydantic import ValidationError
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
+    NeedFacetKind,
     NeedRisk,
     RequirementLevel,
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
+    Stage1QueryIntent,
 )
 from novel_agent.domain.model_calls import (
+    ModelRequest,
     ModelRole,
     ModelUsage,
     ProviderModelResult,
@@ -31,6 +34,7 @@ from novel_agent.domain.writer_context import (
 from novel_agent.services.claim_support import (
     ControllerSupportSelector,
     SemanticSupportBatch,
+    SemanticSupportClaimDraft,
     SupportSelectionResult,
     TrustedClaimSupportProducer,
 )
@@ -53,8 +57,10 @@ class _SemanticSupportEndpoint:
 
     def __init__(self, payloads: tuple[dict[str, object] | Exception, ...]) -> None:
         self.payloads = list(payloads)
+        self.requests: list[ModelRequest] = []
 
-    async def generate(self, _request: object) -> ProviderModelResult:
+    async def generate(self, request: ModelRequest) -> ProviderModelResult:
+        self.requests.append(request)
         payload = self.payloads.pop(0)
         if isinstance(payload, Exception):
             raise payload
@@ -71,6 +77,10 @@ class _SemanticSupportEndpoint:
 
 def _support_gateway(*payloads: dict[str, object] | Exception) -> ModelGateway:
     endpoint = _SemanticSupportEndpoint(payloads)
+    return _gateway_for_endpoint(endpoint)
+
+
+def _gateway_for_endpoint(endpoint: _SemanticSupportEndpoint) -> ModelGateway:
     return ModelGateway(
         (
             RegisteredModelEndpoint(
@@ -81,6 +91,35 @@ def _support_gateway(*payloads: dict[str, object] | Exception) -> ModelGateway:
             ),
         )
     )
+
+
+def test_semantic_proposal_and_verifier_use_stage_specific_timeouts() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    proposal: dict[str, object] = {
+        "claims": [
+            {
+                "need_id": capability.need_id.root,
+                "need_facet_ids": [facet.need_facet_id.root for facet in capability.need_facets],
+                "retrieval_unit_ids": [unit.unit_id.root],
+                "claim_text": "林澈当前能力受伤势限制。",
+            }
+        ],
+        "insufficient_need_ids": [],
+    }
+    endpoint = _SemanticSupportEndpoint(
+        (proposal, {"decisions": [{"claim_index": 0, "supports": True}]})
+    )
+    TrustedClaimSupportProducer(semantic_gateway=_gateway_for_endpoint(endpoint)).produce(
+        task=task,
+        units=(unit,),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={unit.unit_id: (capability.need_id,)},
+        token_counter=assembler.count_tokens,
+    )
+
+    assert [request.timeout_seconds for request in endpoint.requests] == [300.0, 120.0]
 
 
 def _selection() -> tuple[
@@ -299,7 +338,7 @@ def test_grounded_claim_extraction_remains_deterministic_and_narrow() -> None:
     history_need = next(
         item
         for item in TaskPlanConditionedNeedGenerator().generate(task, world, None)
-        if item.need_type == "capability_history"
+        if item.need_type == "entity_history"
     )
     text = "林澈走入庭院。林澈负伤后仍挡在同伴身前。林澈随后休息。"
     evidence = world.states[0].evidence_refs[0]
@@ -414,6 +453,232 @@ def test_semantic_support_is_bound_to_public_ids_and_model_receipt() -> None:
     )
 
 
+def test_semantic_support_prompts_treat_unresolved_facet_as_currentness_question() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    unresolved_need = capability.model_copy(
+        update={
+            "need_facets": tuple(
+                facet.model_copy(update={"facet_kind": NeedFacetKind.UNRESOLVED_STATUS})
+                for facet in capability.need_facets
+            )
+        }
+    )
+    current_state = unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.current.relationship"),
+            "text": '落落 teacher "陈长生"',
+        }
+    )
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [
+                    {
+                        "need_id": unresolved_need.need_id.root,
+                        "need_facet_ids": [
+                            facet.need_facet_id.root for facet in unresolved_need.need_facets
+                        ],
+                        "retrieval_unit_ids": [current_state.unit_id.root],
+                        "claim_text": "落落希望陈长生成为老师, 该状态仍未决。",
+                    }
+                ],
+                "insufficient_need_ids": [],
+            },
+            {"decisions": [{"claim_index": 0, "supports": False}]},
+        )
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name=endpoint.model,
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        )
+    )
+
+    _groups, variants, receipts, _attestations = TrustedClaimSupportProducer(
+        semantic_gateway=gateway
+    ).produce(
+        task=task,
+        units=(current_state,),
+        needs=(unresolved_need,),
+        basis_commit_id=current_state.source_commit,
+        basis_snapshot_id=current_state.snapshot_id,
+        unit_need_ids={current_state.unit_id: (unresolved_need.need_id,)},
+        token_counter=assembler.count_tokens,
+    )
+
+    assert len(endpoint.requests) == 2
+    assert endpoint.requests[0].max_output_tokens == 2048
+    assert endpoint.requests[1].max_output_tokens == 1024
+    assert "coverage question, not an asserted value" in endpoint.requests[0].prompt
+    assert "Never infer that it remains unresolved from that label alone" in (
+        endpoint.requests[0].prompt
+    )
+    assert "Treat facet kinds as questions to resolve" in endpoint.requests[1].prompt
+    assert "earlier plan, wish, or promise override" in endpoint.requests[1].prompt
+    assert not any(item.model_call_record is not None for item in receipts)
+    assert all(item.claim_text != "落落希望陈长生成为老师, 该状态仍未决。" for item in variants)
+
+
+def test_semantic_verifier_sees_non_cited_counter_evidence_and_rejects_even_if_supported() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    stale = unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.counter.stale"),
+            "text": "林澈过去声称能力完全不受限制。",
+        }
+    )
+    current = unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.counter.current"),
+            "text": "林澈当前能力受伤势限制, 无法持续全力。",
+        }
+    )
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [
+                    {
+                        "need_id": capability.need_id.root,
+                        "need_facet_ids": [
+                            facet.need_facet_id.root for facet in capability.need_facets
+                        ],
+                        "retrieval_unit_ids": [stale.unit_id.root],
+                        "claim_text": "林澈能力完全不受限制。",
+                    }
+                ],
+                "insufficient_need_ids": [],
+            },
+            {
+                "decisions": [
+                    {
+                        "claim_index": 0,
+                        "supports": True,
+                        "counter_evidence_retrieval_unit_ids": [current.unit_id.root],
+                    }
+                ]
+            },
+        )
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name=endpoint.model,
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        )
+    )
+    producer = TrustedClaimSupportProducer(semantic_gateway=gateway)
+
+    _groups, variants, receipts, _attestations = producer.produce(
+        task=task,
+        units=(stale, current),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            stale.unit_id: (capability.need_id,),
+            current.unit_id: (capability.need_id,),
+        },
+        token_counter=assembler.count_tokens,
+    )
+
+    verifier_prompt = endpoint.requests[1].prompt
+    assert current.unit_id.root in verifier_prompt
+    assert '"cited_in_claim":false' in verifier_prompt
+    assert "SEMANTIC_SUPPORT_COUNTER_EVIDENCE_REJECTED" in producer.last_diagnostic_codes
+    assert not any(item.model_call_record is not None for item in receipts)
+    assert all(item.claim_text != "林澈能力完全不受限制。" for item in variants)
+
+
+def test_selector_prefers_verified_semantic_group_over_equal_facet_fallback() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    semantic_unit = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.semantic-target"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "林澈当前能力受伤势限制, 无法稳定发挥完整战力。",
+        }
+    )
+    facet_ids = [facet.need_facet_id.root for facet in capability.need_facets]
+    gateway = _support_gateway(
+        {
+            "claims": [
+                {
+                    "need_id": capability.need_id.root,
+                    "need_facet_ids": facet_ids,
+                    "retrieval_unit_ids": [semantic_unit.unit_id.root],
+                    "claim_text": "林澈当前能力受伤势限制, 无法稳定发挥完整战力。",
+                }
+            ],
+            "insufficient_need_ids": [],
+        },
+        {"decisions": [{"claim_index": 0, "supports": True}]},
+    )
+    result = ControllerSupportSelector(
+        TrustedClaimSupportProducer(semantic_gateway=gateway)
+    ).select(
+        task=task,
+        units=(unit, semantic_unit),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            unit.unit_id: (capability.need_id,),
+            semantic_unit.unit_id: (capability.need_id,),
+        },
+        writer_token_budget=4000,
+        evidence_ledger_token_budget=12_000,
+        token_counter=assembler.count_tokens,
+    )
+
+    assert result.context_assembly_spec.closed_need_facet_ids == tuple(
+        facet.need_facet_id for facet in capability.need_facets
+    )
+    assert result.context_assembly_spec.selected_unit_ids[0] == semantic_unit.unit_id
+
+
+def test_selector_preserves_optional_completion_groups_for_assembly() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    optional_capability = capability.model_copy(update={"requirement": RequirementLevel.OPTIONAL})
+    result = ControllerSupportSelector().select(
+        task=task,
+        units=(unit,),
+        needs=(optional_capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={unit.unit_id: (optional_capability.need_id,)},
+        writer_token_budget=4000,
+        evidence_ledger_token_budget=12_000,
+        token_counter=assembler.count_tokens,
+    )
+
+    assert result.support_groups
+    group_id = result.support_groups[0].support_group_id
+    assert result.context_assembly_spec.mandatory_support_group_ids == ()
+    assert result.context_assembly_spec.ordered_optional_support_group_ids[0] == group_id
+    assembled = assembler.assemble_from_spec(
+        task=task,
+        assembly_spec=result.context_assembly_spec,
+        support_groups=result.support_groups,
+        claim_variants=result.claim_variants,
+        support_receipts=result.support_receipts,
+        cutoff_attestations=result.cutoff_attestations,
+        needs=(optional_capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        arm="A",
+    )
+    assert assembled.status is ContextAssemblyStatus.READY
+    assert assembled.evidence_ledger.entries
+    assert assembled.evidence_ledger.entries[0].support_group_id == group_id
+
+
 def test_semantic_support_rejects_ids_outside_public_need_binding() -> None:
     task, capability, unit, assembler, _selection_result = _selection()
     gateway = _support_gateway(
@@ -444,6 +709,143 @@ def test_semantic_support_rejects_ids_outside_public_need_binding() -> None:
 
     assert not any(item.model_call_record is not None for item in receipts)
     assert all(item.claim_text != "不得被接受的越界结论。" for item in variants)
+
+
+def test_semantic_support_skips_invalid_proposal_before_valid_claim() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    facet_ids = [facet.need_facet_id.root for facet in capability.need_facets]
+    gateway = _support_gateway(
+        {
+            "claims": [
+                {
+                    "need_id": capability.need_id.root,
+                    "need_facet_ids": facet_ids,
+                    "retrieval_unit_ids": ["unit.not-in-public-input"],
+                    "claim_text": "越界 proposal 应被跳过。",
+                },
+                {
+                    "need_id": capability.need_id.root,
+                    "need_facet_ids": facet_ids,
+                    "retrieval_unit_ids": [unit.unit_id.root],
+                    "claim_text": "合法 proposal 应保留。",
+                },
+            ],
+            "insufficient_need_ids": [],
+        },
+        {"decisions": [{"claim_index": 1, "supports": True}]},
+    )
+
+    _groups, variants, _receipts, _attestations = TrustedClaimSupportProducer(
+        semantic_gateway=gateway
+    ).produce(
+        task=task,
+        units=(unit,),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={unit.unit_id: (capability.need_id,)},
+        token_counter=assembler.count_tokens,
+    )
+
+    assert any(item.claim_text == "合法 proposal 应保留。" for item in variants)
+    assert all(item.claim_text != "越界 proposal 应被跳过。" for item in variants)
+
+
+def test_semantic_support_normalizes_unknown_facet_ids_without_widening_binding() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    allowed_facet = capability.need_facets[0].need_facet_id
+    gateway = _support_gateway(
+        {
+            "claims": [
+                {
+                    "need_id": capability.need_id.root,
+                    "need_facet_ids": [allowed_facet.root, "retrieval_unit_ids"],
+                    "retrieval_unit_ids": [unit.unit_id.root],
+                    "claim_text": "只保留公开 facet 绑定的结论。",
+                }
+            ],
+            "insufficient_need_ids": [],
+        },
+        {"decisions": [{"claim_index": 0, "supports": True}]},
+    )
+
+    groups, _variants, receipts, _attestations = TrustedClaimSupportProducer(
+        semantic_gateway=gateway
+    ).produce(
+        task=task,
+        units=(unit,),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={unit.unit_id: (capability.need_id,)},
+        token_counter=assembler.count_tokens,
+    )
+
+    semantic_group_ids = {
+        receipt.support_group_id for receipt in receipts if receipt.model_call_record is not None
+    }
+    semantic_groups = tuple(
+        group for group in groups if group.support_group_id in semantic_group_ids
+    )
+    assert len(semantic_groups) == 1
+    assert semantic_groups[0].need_facet_ids == (allowed_facet,)
+
+
+def test_semantic_support_rejects_multi_unit_claim_for_single_required_facet() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    assert capability.completion_spec is not None
+    required_facet_id = capability.completion_spec.required_need_facet_ids[0]
+    single_facet_spec = capability.completion_spec.model_copy(
+        update={
+            "required_need_facet_ids": (required_facet_id,),
+            "irreducible_need_facet_ids": (required_facet_id,),
+            "evidence_requirement_by_facet": {
+                required_facet_id.root: capability.completion_spec.evidence_requirement_by_facet[
+                    required_facet_id.root
+                ]
+            },
+        }
+    )
+    single_facet_need = capability.model_copy(update={"completion_spec": single_facet_spec})
+    second_unit = unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.test.capability.second"),
+            "text": "另一段独立证据。",
+        }
+    )
+    gateway = _support_gateway(
+        {
+            "claims": [
+                {
+                    "need_id": single_facet_need.need_id.root,
+                    "need_facet_ids": [required_facet_id.root],
+                    "retrieval_unit_ids": [unit.unit_id.root, second_unit.unit_id.root],
+                    "claim_text": "单 facet 的完整结论需要拼接两段证据。",
+                }
+            ],
+            "insufficient_need_ids": [],
+        },
+        {"decisions": [{"claim_index": 0, "supports": True}]},
+    )
+
+    producer = TrustedClaimSupportProducer(semantic_gateway=gateway)
+    _groups, _variants, receipts, _attestations = producer.produce(
+        task=task,
+        units=(unit, second_unit),
+        needs=(single_facet_need,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            unit.unit_id: (single_facet_need.need_id,),
+            second_unit.unit_id: (single_facet_need.need_id,),
+        },
+        token_counter=assembler.count_tokens,
+    )
+
+    semantic_receipts = tuple(item for item in receipts if item.model_call_record is not None)
+    assert len(semantic_receipts) == 1
+    assert semantic_receipts[0].retrieval_unit_ids == (unit.unit_id, second_unit.unit_id)
+    assert producer.last_diagnostic_codes == ()
 
 
 def test_mandatory_support_group_is_atomic_under_tiny_budget() -> None:
@@ -522,6 +924,24 @@ def test_claim_support_static_resolution_and_callback_edges() -> None:
         unit.model_copy(update={"entity_ids": ()}),
         "完全无关",
     )
+    historical_need = capability.model_copy(
+        update={
+            "need_type": "capability_history",
+            "query_intent": Stage1QueryIntent.SEMANTIC_HISTORY,
+            "entity_ids": (),
+            "need_facets": tuple(
+                facet.model_copy(update={"facet_kind": NeedFacetKind.CAUSAL_HISTORY})
+                for facet in capability.need_facets
+            ),
+        }
+    )
+    historical_grounded = unit.model_copy(
+        update={
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "entity_ids": (),
+        }
+    )
+    assert producer._supported_facets(historical_need, historical_grounded, "完全无关")
     assert (
         producer._resolution_status(
             (),
@@ -555,10 +975,22 @@ def test_claim_support_static_resolution_and_callback_edges() -> None:
     )
     assert producer._chapter_number(StableId("chapter.prelude")) == 0
     assert producer._chapter_number(StableId("chapter.unknown")) is None
+    assert producer._chapter_index(unit.model_copy(update={"evidence_refs": ()})) is None
+    chapterless_evidence = unit.evidence_refs[0].model_copy(update={"chapter_id": None})
+    assert (
+        producer._chapter_index(unit.model_copy(update={"evidence_refs": (chapterless_evidence,)}))
+        is None
+    )
     assert "the" not in producer._query_terms("the gate and 林澈受伤")
 
     long_unit = unit.model_copy(update={"text": "无关句。" * 200 + "林澈受伤后能力受限。"})
     assert len(producer._semantic_excerpt(capability, long_unit)) <= 600
+    historical_long_unit = unit.model_copy(
+        update={"text": "无关句。" * 200 + "陈长生拔出短剑挡在同伴身前。"}
+    )
+    historical_excerpt = producer._semantic_excerpt(historical_need, historical_long_unit)
+    assert "短剑" in historical_excerpt
+    assert len(historical_excerpt) <= 1600
 
     retained: list[tuple[bytes, str]] = []
     progress: list[object] = []
@@ -646,6 +1078,341 @@ def test_semantic_producer_caches_valid_batches_and_reports_incomplete_needs() -
     )
     incomplete.produce(**kwargs)
     assert "SEMANTIC_SUPPORT_INCOMPLETE_NEED_COVERAGE" in incomplete.last_diagnostic_codes
+
+
+def test_semantic_producer_retains_grounded_evidence_beyond_lexical_top_six() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    lexical_units = tuple(
+        unit.model_copy(
+            update={
+                "unit_id": StableId(f"anchor.lexical.{index}"),
+                "text": "林澈当前能力可用。",
+            }
+        )
+        for index in range(6)
+    )
+    grounded = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.late-evidence"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "这是一段没有查询词但由历史证据直接支持的目标片段。",
+        }
+    )
+    facets = [facet.need_facet_id.root for facet in capability.need_facets]
+    gateway = _support_gateway(
+        {
+            "claims": [
+                {
+                    "need_id": capability.need_id.root,
+                    "need_facet_ids": facets,
+                    "retrieval_unit_ids": [grounded.unit_id.root],
+                    "claim_text": "历史证据支持该能力边界。",
+                }
+            ],
+            "insufficient_need_ids": [],
+        },
+        {"decisions": [{"claim_index": 0, "supports": True}]},
+    )
+    producer = TrustedClaimSupportProducer(semantic_gateway=gateway)
+    groups, _variants, _receipts, _attestations = producer.produce(
+        task=task,
+        units=(*lexical_units, grounded),
+        needs=(capability,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={item.unit_id: (capability.need_id,) for item in (*lexical_units, grounded)},
+        token_counter=assembler.count_tokens,
+    )
+
+    assert any(group.retrieval_unit_ids == (grounded.unit_id,) for group in groups)
+
+
+def test_semantic_long_range_producer_prioritizes_late_grounded_rescue() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    need = capability.model_copy(
+        update={
+            "need_type": "long_range_callback",
+            "need_facets": tuple(
+                facet.model_copy(update={"facet_kind": NeedFacetKind.CAUSAL_HISTORY})
+                for facet in capability.need_facets
+            ),
+        }
+    )
+    distractors = tuple(
+        unit.model_copy(
+            update={
+                "unit_id": StableId(f"anchor.distractor.{index}"),
+                "unit_kind": RetrievalUnitKind.CHAPTER_ANCHOR,
+                "text": "同伴在考试后等待榜单。",
+            }
+        )
+        for index in range(4)
+    )
+    grounded = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.late-rescue"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "魔族来袭时陈长生把小姑娘挡在身后。",
+        }
+    )
+    lineage_distractors = tuple(
+        unit.model_copy(
+            update={
+                "unit_id": StableId(f"grounded.distractor.{index}"),
+                "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+                "text": "这是与目标事件无关的历史片段。",
+            }
+        )
+        for index in range(4)
+    )
+    lineage_distractor_spans = tuple(
+        unit.model_copy(
+            update={
+                "unit_id": StableId(f"expanded.distractor.{index}"),
+                "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+                "parent_unit_id": distractor.unit_id,
+                "parent_unit_ids": (distractor.unit_id,),
+                "text": distractor.text,
+            }
+        )
+        for index, distractor in enumerate(lineage_distractors)
+    )
+    late_grounded_spans = tuple(
+        unit.model_copy(
+            update={
+                "unit_id": StableId(f"expanded.late-rescue.{index}"),
+                "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+                "parent_unit_id": grounded.unit_id,
+                "parent_unit_ids": (grounded.unit_id,),
+                "text": grounded.text,
+            }
+        )
+        for index in range(1)
+    )
+    orphan_grounded_span = unit.model_copy(
+        update={
+            "unit_id": StableId("expanded.late-rescue.orphan"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+            "parent_unit_id": None,
+            "parent_unit_ids": (),
+            "text": "没有父级的尾部 span。",
+        }
+    )
+    non_block_parent_span = unit.model_copy(
+        update={
+            "unit_id": StableId("expanded.late-rescue.non-block-parent"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+            "parent_unit_id": late_grounded_spans[0].unit_id,
+            "parent_unit_ids": (late_grounded_spans[0].unit_id,),
+            "text": "父级不是 grounded block 的尾部 span。",
+        }
+    )
+    late_tail_block = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.late-rescue.tail-block"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "尾部 grounded block。",
+        }
+    )
+    facets = [facet.need_facet_id.root for facet in need.need_facets]
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [
+                    {
+                        "need_id": need.need_id.root,
+                        "need_facet_ids": facets,
+                        "retrieval_unit_ids": [grounded.unit_id.root],
+                        "claim_text": "陈长生把小姑娘挡在身后。",
+                    }
+                ],
+                "insufficient_need_ids": [],
+            },
+            {"decisions": [{"claim_index": 0, "supports": True}]},
+        )
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name=endpoint.model,
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        )
+    )
+    groups, _variants, _receipts, _attestations = TrustedClaimSupportProducer(
+        semantic_gateway=gateway
+    ).produce(
+        task=task,
+        units=(
+            *distractors,
+            *lineage_distractors,
+            grounded,
+            *lineage_distractor_spans,
+            *late_grounded_spans,
+            orphan_grounded_span,
+            non_block_parent_span,
+            late_tail_block,
+        ),
+        needs=(need,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            item.unit_id: (need.need_id,)
+            for item in (
+                *distractors,
+                *lineage_distractors,
+                grounded,
+                *lineage_distractor_spans,
+                *late_grounded_spans,
+                orphan_grounded_span,
+                non_block_parent_span,
+                late_tail_block,
+            )
+        },
+        token_counter=assembler.count_tokens,
+    )
+
+    assert any(group.retrieval_unit_ids == (grounded.unit_id,) for group in groups)
+    prompt_input = json.loads(
+        endpoint.requests[0]
+        .prompt.split('<PUBLIC_SUPPORT_INPUT trusted="false">\n', 1)[1]
+        .rsplit("\n</PUBLIC_SUPPORT_INPUT>", 1)[0]
+    )
+    assert [
+        item["retrieval_unit_id"] for item in prompt_input["needs"][0]["evidence_units"][:2]
+    ] == [grounded.unit_id.root, late_grounded_spans[0].unit_id.root]
+    assert all(
+        distractor.unit_id.root
+        not in {item["retrieval_unit_id"] for item in prompt_input["needs"][0]["evidence_units"]}
+        for distractor in lineage_distractors
+    )
+
+
+def test_semantic_causal_history_prefers_grounded_followup_over_event_anchor() -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    need = capability.model_copy(
+        update={
+            "need_type": "causal_history",
+            "need_facets": tuple(
+                facet.model_copy(update={"facet_kind": NeedFacetKind.CAUSAL_HISTORY})
+                for facet in capability.need_facets
+            ),
+        }
+    )
+
+    def chapter_ref(chapter: int) -> Any:
+        return unit.evidence_refs[0].model_copy(
+            update={"chapter_id": StableId(f"chapter.test.{chapter}")}
+        )
+
+    event_anchor = unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.event.confrontation"),
+            "unit_kind": RetrievalUnitKind.EVENT_ANCHOR,
+            "text": "落落与黑袍人发生 confrontation。",
+            "evidence_refs": (chapter_ref(29),),
+        }
+    )
+    older_event_anchor = event_anchor.model_copy(
+        update={
+            "unit_id": StableId("anchor.event.older-confrontation"),
+            "evidence_refs": (chapter_ref(28),),
+        }
+    )
+    grounded_distractor = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.followup.distractor"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "第30章。旧书换新天。",
+            "evidence_refs": (chapter_ref(30),),
+        }
+    )
+    grounded_target = unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.followup.target"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "第31章。陈长生走到小姑娘身前, 把她挡在身后。",
+            "evidence_refs": (chapter_ref(31),),
+        }
+    )
+    facet_ids = [facet.need_facet_id.root for facet in need.need_facets]
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [
+                    {
+                        "need_id": need.need_id.root,
+                        "need_facet_ids": facet_ids,
+                        "retrieval_unit_ids": [grounded_target.unit_id.root],
+                        "claim_text": "陈长生把小姑娘挡在身后。",
+                    }
+                ],
+                "insufficient_need_ids": [],
+            },
+            {"decisions": [{"claim_index": 0, "supports": True}]},
+        )
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name=endpoint.model,
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        )
+    )
+    groups, _variants, _receipts, _attestations = TrustedClaimSupportProducer(
+        semantic_gateway=gateway
+    ).produce(
+        task=task,
+        units=(older_event_anchor, event_anchor, grounded_distractor, grounded_target),
+        needs=(need,),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            older_event_anchor.unit_id: (need.need_id,),
+            event_anchor.unit_id: (need.need_id,),
+            grounded_distractor.unit_id: (need.need_id,),
+            grounded_target.unit_id: (need.need_id,),
+        },
+        token_counter=assembler.count_tokens,
+    )
+
+    assert any(group.retrieval_unit_ids == (grounded_target.unit_id,) for group in groups)
+    prompt_input = json.loads(
+        endpoint.requests[0]
+        .prompt.split('<PUBLIC_SUPPORT_INPUT trusted="false">\n', 1)[1]
+        .rsplit("\n</PUBLIC_SUPPORT_INPUT>", 1)[0]
+    )
+    prompt_unit_ids = [
+        item["retrieval_unit_id"] for item in prompt_input["needs"][0]["evidence_units"]
+    ]
+    assert prompt_unit_ids[0] == grounded_target.unit_id.root
+    assert event_anchor.unit_id.root not in prompt_unit_ids
+
+
+def test_semantic_claim_draft_bounds_compound_evidence_ids() -> None:
+    _task, capability, unit, _assembler, _selection_result = _selection()
+    facet_id = capability.need_facets[0].need_facet_id
+    draft = SemanticSupportClaimDraft(
+        need_id=capability.need_id,
+        need_facet_ids=(facet_id,),
+        retrieval_unit_ids=(unit.unit_id, StableId("unit.second")),
+        claim_text="一条支持 claim。",
+    )
+    assert len(draft.retrieval_unit_ids) == 2
+    with pytest.raises(ValidationError, match="at most 3"):
+        SemanticSupportClaimDraft(
+            need_id=capability.need_id,
+            need_facet_ids=(facet_id,),
+            retrieval_unit_ids=tuple(
+                StableId(f"unit.{suffix}") for suffix in ("one", "two", "three", "four")
+            ),
+            claim_text="一条支持 claim。",
+        )
 
 
 class _DiscardingResponses(dict[str, str]):

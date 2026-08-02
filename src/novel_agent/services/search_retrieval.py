@@ -282,7 +282,11 @@ class Stage1SearchIndexer:
     @staticmethod
     def _mapping(dimension: int) -> dict[str, object]:
         return {
-            "settings": {"index": {"knn": True}},
+            # The local benchmark OpenSearch deployment is single-node.  An
+            # unassignable replica still consumes LOCAL_ONLY shard budget and
+            # can prevent a long teacher-forced run from creating its next
+            # checkpoint index, so projections are intentionally primary-only.
+            "settings": {"index": {"knn": True, "number_of_replicas": 0}},
             "mappings": {
                 "dynamic": "strict",
                 "properties": {

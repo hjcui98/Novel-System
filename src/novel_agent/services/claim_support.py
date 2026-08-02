@@ -54,8 +54,40 @@ from novel_agent.services.need_completion import (
 TokenCounter = Callable[[str], int]
 SupportArtifactWriter = Callable[[bytes, str], ArtifactRef]
 SupportProgressWriter = Callable[[Mapping[str, object]], None]
+# Two bounded Needs fit comfortably inside the 128K local endpoint and halve
+# the number of serial proposal requests. A larger batch makes one malformed
+# response affect too many Needs, so keep the blast radius small.
 PROPOSAL_BATCH_SIZE = 2
-VERIFICATION_BATCH_SIZE = 8
+SEMANTIC_SUPPORT_INPUT_LIMIT = 20
+# A semantic claim may close a small public multi-hop Need with more than one
+# cutoff-safe passage.  Keep this bounded: larger groups make the model's
+# entailment decision less auditable and increase the chance that unrelated
+# evidence is smuggled into one claim.
+SEMANTIC_SUPPORT_MAX_UNITS_PER_CLAIM = 3
+# A verifier must see every cutoff-safe unit exposed to the proposer for the
+# same Need. Otherwise a stale claim can cite one passage while a later unit
+# that supersedes it remains invisible to verification.
+SEMANTIC_SUPPORT_VERIFIER_CONTEXT_UNIT_LIMIT = SEMANTIC_SUPPORT_INPUT_LIMIT
+# Preserve the former maximum verifier prompt scale (8 claims x 8 units), but
+# batch by accumulated context rather than by claim count.
+SEMANTIC_SUPPORT_VERIFIER_BATCH_CONTEXT_UNIT_BUDGET = 64
+SEMANTIC_SUPPORT_LATE_GROUNDED_UNIT_LIMIT = 4
+SEMANTIC_SUPPORT_CAUSAL_CHAPTER_WINDOW = 2
+# Proposal calls occasionally spend most of a 1024-token completion on model
+# deliberation and reach the endpoint limit before the small structured payload
+# is closed.  This is a model-call ceiling only; Writer and evidence-ledger
+# budgets remain enforced independently by the assembler.
+SEMANTIC_SUPPORT_PROPOSAL_MAX_OUTPUT_TOKENS = 2048
+SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS = 1024
+# The local Qwen service is single-concurrency.  C60 showed that proposal
+# generations can legitimately cross 120 seconds, while every verifier batch
+# completed well below that ceiling.  A cancelled proposal can also remain in
+# the inference server briefly and make subsequent requests queue behind it.
+# Separate the two stages instead of applying the verifier's short limit to the
+# more expensive proposal call.
+SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS = 300.0
+SEMANTIC_SUPPORT_VERIFICATION_TIMEOUT_SECONDS = 120.0
+SEMANTIC_SUPPORT_HISTORICAL_EXCERPT_LIMIT = 1600
 
 
 class SupportSelectionResult(DomainModel):
@@ -74,7 +106,10 @@ class SemanticSupportClaimDraft(DomainModel):
 
     need_id: StableId
     need_facet_ids: tuple[StableId, ...] = Field(min_length=1)
-    retrieval_unit_ids: tuple[StableId, ...] = Field(min_length=1)
+    retrieval_unit_ids: tuple[StableId, ...] = Field(
+        min_length=1,
+        max_length=SEMANTIC_SUPPORT_MAX_UNITS_PER_CLAIM,
+    )
     claim_text: str = Field(min_length=1, max_length=600)
 
 
@@ -116,7 +151,7 @@ class _SemanticVerificationAudit:
 class TrustedClaimSupportProducer:
     """Produce replayable narrow claims from public retrieval results."""
 
-    version = "trusted_claim_support_producer.v14"
+    version = "trusted_claim_support_producer.v24"
 
     def __init__(
         self,
@@ -340,6 +375,7 @@ class TrustedClaimSupportProducer:
         assert self._semantic_gateway is not None
         need_by_id = {need.need_id: need for need in needs}
         unit_by_id = {unit.unit_id: unit for unit in units}
+        input_order = {unit.unit_id: index for index, unit in enumerate(units)}
         units_by_need: dict[StableId, list[RetrievalUnit]] = {need.need_id: [] for need in needs}
         for unit in units:
             for need_id in unit_need_ids.get(unit.unit_id, ()):
@@ -350,20 +386,145 @@ class TrustedClaimSupportProducer:
         public_needs: list[dict[str, object]] = []
         allowed_units_by_need: dict[StableId, set[StableId]] = {}
         for public_need in needs:
-            ranked = sorted(
+            ranked_all = sorted(
                 units_by_need[public_need.need_id],
-                key=lambda unit: (
-                    -self._claim_relevance(public_need, unit.text),
-                    0 if unit.mandatory else 1,
-                    unit.unit_id.root,
-                ),
-            )[:6]
+                # `units` is assembled from the Controller's fused retrieval
+                # order.  Sorting this list by query-term overlap promoted
+                # common words such as "同伴" above a more relevant grounded
+                # fallback hit and made the semantic proposer see the wrong
+                # evidence first.  Preserve the retrieval order here; the
+                # lexical relevance helper remains available for deterministic
+                # Controller selection after a claim has been proposed.
+                key=lambda unit: (input_order[unit.unit_id], unit.unit_id.root),
+            )
+            # Keep the semantic prompt bounded at the same scale as the
+            # Controller's candidate window. Long-range and plan-conditioned
+            # Needs deliberately put grounded rescue results first: the
+            # primary anchor window often contains a lexical near-match, while
+            # the declared grounded fallback contains the actual event. When
+            # an expanded span exposes a parent grounded block, prefer that
+            # canonical parent so the semantic claim follows the same unit
+            # lineage that the Writer ledger can select. This is still public
+            # retrieval metadata, not evaluator knowledge.
+            ordered: tuple[RetrievalUnit, ...] = tuple(ranked_all)
+            need_type = getattr(public_need.need_type, "value", public_need.need_type)
+            historical_grounded_rescue = need_type in {
+                "long_range_callback",
+                "plan_conditioned_history",
+            } or any(
+                facet.facet_kind is NeedFacetKind.CAUSAL_HISTORY
+                or facet.expected_claim_scope.value == "historical"
+                for facet in public_need.need_facets
+            )
+            if historical_grounded_rescue:
+                grounded = tuple(
+                    unit
+                    for unit in ranked_all
+                    if getattr(unit.unit_kind, "value", unit.unit_kind)
+                    in {
+                        RetrievalUnitKind.GROUNDED_BLOCK.value,
+                        RetrievalUnitKind.GROUNDED_SPAN.value,
+                    }
+                    and unit.evidence_refs
+                )
+                anchor_chapters = tuple(
+                    chapter
+                    for unit in ranked_all
+                    if getattr(unit.unit_kind, "value", unit.unit_kind)
+                    == RetrievalUnitKind.EVENT_ANCHOR.value
+                    for chapter in (self._chapter_index(unit),)
+                    if chapter is not None
+                )
+                latest_anchor_chapter = max(anchor_chapters, default=None)
+                local_grounded = tuple(
+                    unit
+                    for unit in grounded
+                    if (
+                        (chapter := self._chapter_index(unit)) is not None
+                        and latest_anchor_chapter is not None
+                        and 0
+                        < chapter - latest_anchor_chapter
+                        <= SEMANTIC_SUPPORT_CAUSAL_CHAPTER_WINDOW
+                    )
+                )
+                local_grounded = tuple(
+                    sorted(
+                        local_grounded,
+                        key=lambda unit: (
+                            -len(unit.text),
+                            0
+                            if getattr(unit.unit_kind, "value", unit.unit_kind)
+                            == RetrievalUnitKind.GROUNDED_BLOCK.value
+                            else 1,
+                            -(self._chapter_index(unit) or -1),
+                            input_order[unit.unit_id],
+                            unit.unit_id.root,
+                        ),
+                    )
+                )
+                late_grounded_candidates = grounded[-SEMANTIC_SUPPORT_LATE_GROUNDED_UNIT_LIMIT:]
+                grounded_by_id = {unit.unit_id: unit for unit in grounded}
+                lineage_grounded_list: list[RetrievalUnit] = []
+                for late_unit in late_grounded_candidates:
+                    if getattr(late_unit.unit_kind, "value", late_unit.unit_kind) != (
+                        RetrievalUnitKind.GROUNDED_SPAN.value
+                    ):
+                        continue
+                    for parent_id in (late_unit.parent_unit_id, *late_unit.parent_unit_ids):
+                        if parent_id is None:
+                            continue
+                        parent = grounded_by_id.get(parent_id)
+                        if (
+                            parent is not None
+                            and getattr(parent.unit_kind, "value", parent.unit_kind)
+                            == RetrievalUnitKind.GROUNDED_BLOCK.value
+                        ):
+                            lineage_grounded_list.append(parent)
+                rescue_candidates = (
+                    *local_grounded,
+                    *lineage_grounded_list,
+                    *late_grounded_candidates,
+                )
+                late_grounded = tuple({unit.unit_id: unit for unit in rescue_candidates}.values())[
+                    :SEMANTIC_SUPPORT_LATE_GROUNDED_UNIT_LIMIT
+                ]
+                late_ids = {unit.unit_id for unit in late_grounded}
+                if local_grounded:
+                    # A causal event with a local follow-up should not expose
+                    # older lexical matches to the proposer. They can win on
+                    # wording alone even after the event anchor is removed.
+                    ordered = local_grounded
+                else:
+                    # When no local chapter window is available, keep the
+                    # bounded grounded rescue set as the only prose evidence
+                    # shown to the semantic proposer.  The remaining grounded
+                    # hits are still available to deterministic support
+                    # production, but mixing them into this prompt lets a
+                    # lexical near-match close a historical Need before the
+                    # protected rescue unit is considered.
+                    ordered = (
+                        *late_grounded,
+                        *(
+                            unit
+                            for unit in ranked_all
+                            if unit.unit_id not in late_ids
+                            and getattr(unit.unit_kind, "value", unit.unit_kind)
+                            not in {
+                                RetrievalUnitKind.EVENT_ANCHOR.value,
+                                RetrievalUnitKind.GROUNDED_BLOCK.value,
+                                RetrievalUnitKind.GROUNDED_SPAN.value,
+                            }
+                        ),
+                    )
+            ranked = tuple(dict.fromkeys(ordered[:SEMANTIC_SUPPORT_INPUT_LIMIT]))
             if not ranked:
                 continue
             allowed_units_by_need[public_need.need_id] = {unit.unit_id for unit in ranked}
             public_needs.append(
                 {
                     "need_id": public_need.need_id.root,
+                    "need_type": public_need.need_type,
+                    "query_intent": public_need.query_intent.value,
                     "query_text": public_need.query_text[:1600],
                     "why_needed": public_need.why_needed[:600],
                     "required_need_facets": [
@@ -416,10 +577,34 @@ class TrustedClaimSupportProducer:
                 "when multiple cited units jointly establish the required public facets; "
                 "preserve quantities, negation, epistemic scope, causal links, limitations, "
                 "unresolved status, and relationship direction exactly. Do not add plausible "
-                "details. Every returned need_id, need_facet_id, and retrieval_unit_id must "
+                "details. A public facet kind is a coverage question, not an asserted value: "
+                "in particular, unresolved_status asks whether the matter is still open or has "
+                "been resolved. Never infer that it remains unresolved from that label alone. "
+                "When a supplied observed/current state establishes fulfillment or a current "
+                "relationship, report that resolved/current state; an earlier plan, wish, or "
+                "promise remains historical intent and cannot override the later state. "
+                "Every returned need_id, need_facet_id, and retrieval_unit_id must "
                 "be copied verbatim from the same Need entry. You MUST account for every "
                 "input Need: return exactly one concise compound claim when evidence supports "
                 "a required facet; otherwise copy its need_id into insufficient_need_ids. "
+                "For causal_history, long_range_callback, and plan_conditioned_history Needs, "
+                "when a grounded_block or grounded_span with evidence is available, prefer it "
+                "over an event anchor that only shares the query wording; use an anchor only "
+                "when no grounded unit can directly support the required facet. "
+                f"Each claim must cite exactly the smallest sufficient evidence set: normally one "
+                f"retrieval unit; use two or three only when distinct units are needed to close "
+                f"different required facets or historical steps, and never more than "
+                f"{SEMANTIC_SUPPORT_MAX_UNITS_PER_CLAIM}; "
+                "When one required facet is fully supported by one unit, cite that unit. When a "
+                "complete conclusion is distributed across multiple supplied evidence units, "
+                "combine two or three jointly necessary units into one compound claim instead "
+                "of emitting a partial claim; this is allowed even when the Need has one facet, "
+                "but never combine unrelated passages. For a grounded historical unit, include "
+                "all material subject/action/cause/consequence details "
+                "visible in that passage, rather than copying its chapter title or unrelated "
+                "background. "
+                "do not "
+                "copy the full evidence_units list into a claim. "
                 "The union of claimed and insufficient Need IDs must equal all input Need "
                 "IDs, with no unknown IDs.\n"
                 '<PUBLIC_SUPPORT_INPUT trusted="false">\n'
@@ -440,7 +625,8 @@ class TrustedClaimSupportProducer:
                     purpose=ModelCallPurpose.BATCH_TEST,
                     trace_id=f"stage2m-support-proposal:{task.task_id.root}:{suffix}",
                     prompt=prompt,
-                    timeout_seconds=300.0,
+                    max_output_tokens=SEMANTIC_SUPPORT_PROPOSAL_MAX_OUTPUT_TOKENS,
+                    timeout_seconds=SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS,
                 )
                 try:
                     batch, call = asyncio.run(
@@ -542,24 +728,50 @@ class TrustedClaimSupportProducer:
                 for draft in batch.claims
             )
         verification_items: list[dict[str, object]] = []
+        normalized_drafts: dict[int, SemanticSupportClaimDraft] = {}
         for claim_index, proposal in enumerate(proposal_audits):
             draft = proposal.draft
             need = need_by_id[draft.need_id]
             allowed_facets = {facet.need_facet_id for facet in need.need_facets}
             facet_ids = tuple(dict.fromkeys(draft.need_facet_ids))
             unit_ids = tuple(dict.fromkeys(draft.retrieval_unit_ids))
+            bound_facet_ids = tuple(item for item in facet_ids if item in allowed_facets)
+            if len(bound_facet_ids) != len(facet_ids):
+                self.last_diagnostic_codes = tuple(
+                    dict.fromkeys(
+                        (
+                            *self.last_diagnostic_codes,
+                            "SEMANTIC_SUPPORT_NORMALIZED_UNKNOWN_FACET_IDS",
+                        )
+                    )
+                )
             if (
-                not facet_ids
-                or not set(facet_ids).issubset(allowed_facets)
+                not bound_facet_ids
                 or not unit_ids
                 or not set(unit_ids).issubset(allowed_units_by_need.get(need.need_id, set()))
             ):
                 continue
+            normalized_draft = draft.model_copy(update={"need_facet_ids": bound_facet_ids})
+            normalized_drafts[claim_index] = normalized_draft
+            allowed_units = tuple(
+                unit
+                for unit in unit_by_id.values()
+                if unit.unit_id in allowed_units_by_need.get(need.need_id, set())
+            )
+            cited_ids = set(unit_ids)
+            context_units = tuple(
+                dict.fromkeys(
+                    (
+                        *tuple(unit for unit in allowed_units if unit.unit_id in cited_ids),
+                        *tuple(unit for unit in allowed_units if unit.unit_id not in cited_ids),
+                    )
+                )
+            )[:SEMANTIC_SUPPORT_VERIFIER_CONTEXT_UNIT_LIMIT]
             verification_items.append(
                 {
                     "claim_index": claim_index,
                     "need_id": need.need_id.root,
-                    "claim_text": draft.claim_text,
+                    "claim_text": normalized_draft.claim_text,
                     "need_facets": [
                         {
                             "need_facet_id": facet.need_facet_id.root,
@@ -567,7 +779,7 @@ class TrustedClaimSupportProducer:
                             "expected_claim_scope": facet.expected_claim_scope.value,
                         }
                         for facet in need.need_facets
-                        if facet.need_facet_id in facet_ids
+                        if facet.need_facet_id in bound_facet_ids
                     ],
                     "evidence_units": [
                         {
@@ -576,13 +788,35 @@ class TrustedClaimSupportProducer:
                         }
                         for unit_id in unit_ids
                     ],
+                    "context_units": [
+                        {
+                            "retrieval_unit_id": unit.unit_id.root,
+                            "cited_in_claim": unit.unit_id in cited_ids,
+                            "text": self._semantic_excerpt(need, unit),
+                        }
+                        for unit in context_units
+                    ],
                 }
             )
         if not verification_items:
             return (), (), (), ()
         verification_audits: dict[int, _SemanticVerificationAudit] = {}
-        for offset in range(0, len(verification_items), VERIFICATION_BATCH_SIZE):
-            verification_batch_items = verification_items[offset : offset + VERIFICATION_BATCH_SIZE]
+        verification_batches: list[list[dict[str, object]]] = []
+        pending_batch: list[dict[str, object]] = []
+        pending_context_units = 0
+        for item in verification_items:
+            context_unit_count = len(cast(list[object], item["context_units"]))
+            if pending_batch and pending_context_units + context_unit_count > (
+                SEMANTIC_SUPPORT_VERIFIER_BATCH_CONTEXT_UNIT_BUDGET
+            ):
+                verification_batches.append(pending_batch)
+                pending_batch = []
+                pending_context_units = 0
+            pending_batch.append(item)
+            pending_context_units += context_unit_count
+        if pending_batch:
+            verification_batches.append(pending_batch)
+        for batch_index, verification_batch_items in enumerate(verification_batches):
             batch_indexes = {cast(int, item["claim_index"]) for item in verification_batch_items}
             verifier_input = {
                 "task": task.model_dump(mode="json"),
@@ -600,9 +834,16 @@ class TrustedClaimSupportProducer:
                 "cutoff-safe evidence units and public Need facets. supports=true only when "
                 "all material clauses, quantities, negation, epistemic scope, causality, "
                 "limitations, unresolved status, and relationship direction are directly "
-                "entailed. Plausibility or partial support is false. If supplied evidence "
-                "contradicts a claim, set supports=false and copy the contradicting unit IDs "
-                "into counter_evidence_retrieval_unit_ids. Return exactly one decision for "
+                "entailed. Treat facet kinds as questions to resolve, not asserted values. "
+                "Reject a claim that calls a matter unresolved merely because its facet kind "
+                "is unresolved_status, or that lets an earlier plan, wish, or promise override "
+                "a supplied observed/current state establishing fulfillment or a current "
+                "relationship. Plausibility or partial support is false. context_units lists "
+                "every cutoff-safe unit for the same Need that the claim may legally cite, "
+                "including units the claim did not cite. If supplied evidence or any context "
+                "unit contradicts a claim, set supports=false and copy the contradicting unit "
+                "IDs into counter_evidence_retrieval_unit_ids. Those IDs must be copied "
+                "verbatim from context_units. Return exactly one decision for "
                 "every claim_index, without adding or omitting indexes.\n"
                 '<PUBLIC_SUPPORT_VERIFICATION_INPUT trusted="false">\n'
                 + verifier_input_bytes.decode("utf-8")
@@ -621,7 +862,8 @@ class TrustedClaimSupportProducer:
                     purpose=ModelCallPurpose.BATCH_TEST,
                     trace_id=(f"stage2m-support-verification:{task.task_id.root}:{suffix}"),
                     prompt=verifier_prompt,
-                    timeout_seconds=300.0,
+                    max_output_tokens=SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS,
+                    timeout_seconds=SEMANTIC_SUPPORT_VERIFICATION_TIMEOUT_SECONDS,
                 )
                 try:
                     verification, verification_call = asyncio.run(
@@ -633,7 +875,7 @@ class TrustedClaimSupportProducer:
                 except Exception as error:
                     self._record_progress(
                         stage="verification",
-                        batch_index=offset // VERIFICATION_BATCH_SIZE + 1,
+                        batch_index=batch_index + 1,
                         status="failed",
                         error_type=type(error).__name__,
                     )
@@ -688,7 +930,7 @@ class TrustedClaimSupportProducer:
             ) = verification_cached
             self._record_progress(
                 stage="verification",
-                batch_index=offset // VERIFICATION_BATCH_SIZE + 1,
+                batch_index=batch_index + 1,
                 status="completed",
                 input_hash=verifier_input_hash.root,
                 output_hash=verifier_output_hash.root,
@@ -704,7 +946,8 @@ class TrustedClaimSupportProducer:
                     invalid_decisions = True
                     continue
                 draft = proposal_audits[decision.claim_index].draft
-                allowed_counter_ids = set(draft.retrieval_unit_ids)
+                need = need_by_id[draft.need_id]
+                allowed_counter_ids = allowed_units_by_need.get(need.need_id, set())
                 if not set(decision.counter_evidence_retrieval_unit_ids).issubset(
                     allowed_counter_ids
                 ):
@@ -741,14 +984,26 @@ class TrustedClaimSupportProducer:
         attestations: list[CutoffAttestation] = []
         seen: set[tuple[StableId, str, tuple[StableId, ...]]] = set()
         for claim_index, proposal_audit in enumerate(proposal_audits):
-            draft = proposal_audit.draft
+            final_draft = normalized_drafts.get(claim_index)
+            if final_draft is None:
+                continue
             verification_audit = verification_audits.get(claim_index)
             if verification_audit is None or not verification_audit.decision.supports:
                 continue
-            need = need_by_id[draft.need_id]
-            facet_ids = tuple(dict.fromkeys(draft.need_facet_ids))
-            unit_ids = tuple(dict.fromkeys(draft.retrieval_unit_ids))
-            claim_text = self._clean_claim(draft.claim_text)
+            if verification_audit.decision.counter_evidence_retrieval_unit_ids:
+                self.last_diagnostic_codes = tuple(
+                    dict.fromkeys(
+                        (
+                            *self.last_diagnostic_codes,
+                            "SEMANTIC_SUPPORT_COUNTER_EVIDENCE_REJECTED",
+                        )
+                    )
+                )
+                continue
+            need = need_by_id[final_draft.need_id]
+            facet_ids = tuple(dict.fromkeys(final_draft.need_facet_ids))
+            unit_ids = tuple(dict.fromkeys(final_draft.retrieval_unit_ids))
+            claim_text = self._clean_claim(final_draft.claim_text)
             identity_key = (need.need_id, claim_text, unit_ids)
             if not claim_text or identity_key in seen:
                 continue
@@ -886,16 +1141,56 @@ class TrustedClaimSupportProducer:
             attestations.append(attestation)
         return tuple(groups), tuple(variants), tuple(receipts), tuple(attestations)
 
-    @classmethod
-    def _claim_relevance(cls, need: Stage1MemoryNeed, text: str) -> int:
-        folded = text.casefold()
-        return sum(term in folded for term in cls._query_terms(need.query_text))
+    @staticmethod
+    def _chapter_index(unit: RetrievalUnit) -> int | None:
+        if not unit.evidence_refs:
+            return None
+        chapter_id = unit.evidence_refs[0].chapter_id
+        if chapter_id is None:
+            return None
+        suffix = chapter_id.root.rsplit(".", 1)[-1]
+        return int(suffix) if suffix.isdecimal() else None
 
     @classmethod
     def _semantic_excerpt(cls, need: Stage1MemoryNeed, unit: RetrievalUnit) -> str:
-        if len(unit.text) <= 600:
+        historical = need.need_type in {
+            "causal_history",
+            "long_range_callback",
+            "plan_conditioned_history",
+        } or any(
+            facet.facet_kind is NeedFacetKind.CAUSAL_HISTORY
+            or getattr(facet.expected_claim_scope, "value", facet.expected_claim_scope)
+            == "historical"
+            for facet in need.need_facets
+        )
+        excerpt_limit = SEMANTIC_SUPPORT_HISTORICAL_EXCERPT_LIMIT if historical else 600
+        if len(unit.text) <= excerpt_limit:
             return unit.text
         terms = cls._query_terms(need.query_text)
+        historical_action_terms = (
+            "因为",
+            "所以",
+            "因此",
+            "于是",
+            "才",
+            "不得不",
+            "挡",
+            "拦",
+            "保护",
+            "救",
+            "杀",
+            "死",
+            "袭",
+            "面对",
+            "决定",
+            "答应",
+            "拒绝",
+            "进入",
+            "成为",
+            "带走",
+            "发生",
+            "随后",
+        )
         sentences = tuple(
             item.strip()
             for item in re.split(r"(?<=[\u3002\uff01\uff1f!?;\uff1b])|\n+", unit.text)
@@ -905,12 +1200,14 @@ class TrustedClaimSupportProducer:
             enumerate(sentences),
             key=lambda item: (
                 -sum(term in item[1].casefold() for term in terms),
+                -(sum(term in item[1] for term in historical_action_terms) if historical else 0),
                 item[0],
             ),
         )
-        selected_indexes = sorted(index for index, _text in ranked[:4])
+        sentence_limit = 10 if historical else 4
+        selected_indexes = sorted(index for index, _text in ranked[:sentence_limit])
         excerpt = " ".join(sentences[index] for index in selected_indexes)
-        return excerpt[:600]
+        return excerpt[:excerpt_limit]
 
     def _coalesce(
         self,
@@ -1132,7 +1429,28 @@ class TrustedClaimSupportProducer:
         folded = claim.casefold()
         query_terms = cls._query_terms(need.query_text)
         relevance = sum(term in folded for term in query_terms)
-        if relevance == 0 and not set(need.entity_ids).intersection(unit.entity_ids):
+        grounded_historical = (
+            bool(unit.evidence_refs)
+            and unit.unit_kind
+            in {
+                RetrievalUnitKind.GROUNDED_BLOCK,
+                RetrievalUnitKind.GROUNDED_SPAN,
+            }
+            and (
+                need.query_intent.value in {"semantic_history", "related_event"}
+                or need.need_type
+                in {"causal_history", "long_range_callback", "plan_conditioned_history"}
+                or any(
+                    facet.facet_kind in {NeedFacetKind.CAUSAL_HISTORY, NeedFacetKind.SETUP}
+                    for facet in need.need_facets
+                )
+            )
+        )
+        if (
+            relevance == 0
+            and not set(need.entity_ids).intersection(unit.entity_ids)
+            and not grounded_historical
+        ):
             return ()
         historical = unit.unit_kind in {
             RetrievalUnitKind.EVENT_ANCHOR,
@@ -1327,7 +1645,7 @@ class TrustedClaimSupportProducer:
 class ControllerSupportSelector:
     """Select receipt-bound support groups before deterministic assembly."""
 
-    version = "controller_support_selector.v2"
+    version = "controller_support_selector.v3"
 
     def __init__(self, producer: TrustedClaimSupportProducer | None = None) -> None:
         self._producer = producer or TrustedClaimSupportProducer()
@@ -1357,6 +1675,9 @@ class ControllerSupportSelector:
         )
         variant_by_group = {item.support_group_id: item for item in variants}
         need_by_id = {item.need_id: item for item in needs}
+        semantic_group_ids = {
+            item.support_group_id for item in receipts if item.model_call_record is not None
+        }
         verified = tuple(
             group
             for group in groups
@@ -1387,6 +1708,7 @@ class ControllerSupportSelector:
                 ),
                 key=lambda group: (
                     -len(set(group.need_facet_ids) - closed_facets),
+                    0 if group.support_group_id in semantic_group_ids else 1,
                     -self._relevance(
                         variant_by_group[group.support_group_id].claim_text,
                         need,
@@ -1431,6 +1753,7 @@ class ControllerSupportSelector:
             (group for group in verified if group not in selected),
             key=lambda group: (
                 -len(set(group.need_facet_ids) - closed_facets),
+                0 if group.support_group_id in semantic_group_ids else 1,
                 -max(
                     (
                         need_by_id[need_id].priority
@@ -1490,6 +1813,11 @@ class ControllerSupportSelector:
             packed_optional.append(group)
             estimated_writer_tokens += writer_cost
             estimated_ledger_tokens += ledger_cost
+        selected_optional_ids = tuple(
+            group.support_group_id
+            for group in selected
+            if group.support_group_id not in mandatory_group_ids
+        )
         selected_ids = tuple(group.support_group_id for group in selected)
         mandatory_ids = tuple(
             group.support_group_id
@@ -1533,7 +1861,9 @@ class ControllerSupportSelector:
                 sorted(all_required - closed_facets, key=lambda item: item.root)
             ),
             ordered_optional_support_group_ids=tuple(
-                group.support_group_id for group in packed_optional
+                dict.fromkeys(
+                    (*selected_optional_ids, *(group.support_group_id for group in packed_optional))
+                )
             ),
             writer_token_budget=writer_token_budget,
             evidence_ledger_token_budget=evidence_ledger_token_budget,

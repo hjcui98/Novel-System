@@ -285,6 +285,14 @@ class EvidenceExpander:
         for candidate in candidates:
             if not candidate.selected:
                 continue
+            if candidate.unit.unit_kind in {
+                RetrievalUnitKind.GROUNDED_BLOCK,
+                RetrievalUnitKind.GROUNDED_SPAN,
+            }:
+                # Grounded units already are L0 evidence. Expanding their own
+                # EvidenceRef creates a second unit with the same prose and
+                # charges the context budget twice without adding lineage.
+                continue
             for evidence in candidate.unit.evidence_refs:
                 selected_text = _resolve_evidence_text(evidence, blocks, label="anchor")
                 unit_id = StableId(f"expanded.{evidence.evidence_id.root}")
@@ -349,7 +357,15 @@ class ContextCompiler:
         if token_budget < 1:
             raise ValueError("context token budget must be positive")
         mandatory: list[RetrievalUnit] = []
-        optional: list[RetrievalUnit] = []
+        optional_groups_by_need: list[
+            tuple[
+                Stage1MemoryNeed,
+                list[tuple[RetrievalUnit, ...]],
+                list[tuple[RetrievalUnit, ...]],
+                bool,
+            ]
+        ] = []
+        optional_unit_order: list[RetrievalUnit] = []
         raw_evidence: list[RetrievalUnit] = []
         unresolved: list[str] = []
         compiled_traces: list[RetrievalTrace] = []
@@ -360,10 +376,19 @@ class ContextCompiler:
             if not selected:
                 unresolved.append(need.query_text)
                 compiled_traces.append(trace)
+                optional_groups_by_need.append((need, [], [], False))
                 continue
             units = tuple(candidate.unit for candidate in selected)
             self._assert_basis(units, base_commit, snapshot_id)
-            expanded = self._expander.expand(selected, text_root)
+            candidate_groups: list[tuple[RetrievalUnit, ...]] = []
+            candidate_expansion_groups: list[tuple[RetrievalUnit, ...]] = []
+            expanded_items: list[RetrievalUnit] = []
+            for candidate in selected:
+                candidate_expanded = self._expander.expand((candidate,), text_root)
+                candidate_groups.append((candidate.unit,))
+                candidate_expansion_groups.append(tuple(_dedupe(candidate_expanded)))
+                expanded_items.extend(candidate_expanded)
+            expanded = _dedupe(expanded_items)
             self._assert_basis(expanded, base_commit, snapshot_id)
             compiled_traces.append(
                 trace.model_copy(
@@ -381,29 +406,108 @@ class ContextCompiler:
                     }
                 )
             )
+            required_group_indexes = {
+                index
+                for index, group in enumerate(candidate_groups)
+                if any(unit.mandatory for unit in group)
+            }
             if need.requirement is RequirementLevel.MANDATORY:
-                mandatory.extend(units)
-                mandatory.extend(expanded)
-            else:
-                optional.extend(units)
-                optional.extend(expanded)
+                # A mandatory Need requires one best-ranked evidence group,
+                # not every candidate in its top-k retrieval window. Explicit
+                # mandatory units remain required wherever they rank. The
+                # remaining alternatives compete fairly for bounded context.
+                required_group_indexes.add(0)
+            optional_groups: list[tuple[RetrievalUnit, ...]] = []
+            optional_expansion_groups: list[tuple[RetrievalUnit, ...]] = []
+            for index, group in enumerate(candidate_groups):
+                expansion_group = candidate_expansion_groups[index]
+                if index in required_group_indexes:
+                    mandatory.extend(group)
+                    # Required evidence remains complete and fail-closed. The
+                    # compact-first policy only changes optional competition.
+                    mandatory.extend(expansion_group)
+                else:
+                    optional_groups.append(group)
+                    optional_expansion_groups.append(expansion_group)
+                    optional_unit_order.extend(group)
+                    optional_unit_order.extend(expansion_group)
+            optional_groups_by_need.append(
+                (
+                    need,
+                    optional_groups,
+                    optional_expansion_groups,
+                    bool(required_group_indexes),
+                )
+            )
             raw_evidence.extend(expanded)
 
         mandatory = _dedupe(mandatory)
-        optional = [unit for unit in _dedupe(optional) if unit not in mandatory]
         mandatory_tokens = sum(_estimate_tokens(unit.text) for unit in mandatory)
         remaining = max(0, token_budget - mandatory_tokens)
         selected_optional: list[RetrievalUnit] = []
-        dropped_optional: list[StableId] = []
+        included_ids = {unit.unit_id for unit in mandatory}
         optional_tokens = 0
-        for unit in optional:
-            cost = _estimate_tokens(unit.text)
-            if cost <= remaining:
-                selected_optional.append(unit)
-                optional_tokens += cost
-                remaining -= cost
-            else:
-                dropped_optional.append(unit.unit_id)
+        packing_order = tuple(
+            sorted(
+                range(len(optional_groups_by_need)),
+                key=lambda index: (-optional_groups_by_need[index][0].priority, index),
+            )
+        )
+        next_group_index = [0] * len(optional_groups_by_need)
+
+        def include_if_fits(group: tuple[RetrievalUnit, ...]) -> bool:
+            nonlocal optional_tokens, remaining
+            new_units = tuple(unit for unit in group if unit.unit_id not in included_ids)
+            if not new_units:
+                return bool(group)
+            cost = sum(_estimate_tokens(unit.text) for unit in new_units)
+            if cost > remaining:
+                return False
+            selected_optional.extend(new_units)
+            included_ids.update(unit.unit_id for unit in new_units)
+            optional_tokens += cost
+            remaining -= cost
+            return True
+
+        has_context_group = [entry[3] for entry in optional_groups_by_need]
+
+        # Give every Need that has no required group one budget opportunity
+        # before adding second alternatives for already-covered Needs.
+        for index in packing_order:
+            _need, groups, _expansions, _has_required_group = optional_groups_by_need[index]
+            if has_context_group[index] or not groups:
+                continue
+            has_context_group[index] = include_if_fits(groups[0])
+            next_group_index[index] = 1
+
+        # Compact -> expand: after every uncovered Need has had a chance to
+        # place its small semantic anchor, spend remaining budget on the L0
+        # evidence behind those first anchors. This prevents one long passage
+        # from starving later Needs while preserving cutoff-safe lineage.
+        for index in packing_order:
+            _need, groups, expansions, _has_required_group = optional_groups_by_need[index]
+            if next_group_index[index] != 1 or not groups:
+                continue
+            if all(unit.unit_id in included_ids for unit in groups[0]):
+                include_if_fits(expansions[0])
+
+        while any(
+            next_group_index[index] < len(optional_groups_by_need[index][1])
+            for index in packing_order
+        ):
+            for index in packing_order:
+                _need, groups, expansions, _has_required_group = optional_groups_by_need[index]
+                group_index = next_group_index[index]
+                if group_index >= len(groups):
+                    continue
+                if include_if_fits(groups[group_index]):
+                    include_if_fits(expansions[group_index])
+                next_group_index[index] += 1
+        dropped_optional = tuple(
+            unit.unit_id
+            for unit in _dedupe(optional_unit_order)
+            if unit.unit_id not in included_ids
+        )
         included = (*mandatory, *selected_optional)
         needs = tuple(need for need, _trace in needs_and_traces)
         return Stage1ContextPackage(
@@ -422,7 +526,9 @@ class ContextCompiler:
                 included,
                 {RetrievalUnitKind.FACT_ANCHOR, RetrievalUnitKind.RELATION_ANCHOR},
             ),
-            raw_evidence_spans=tuple(unit for unit in _dedupe(raw_evidence) if unit in included),
+            raw_evidence_spans=tuple(
+                unit for unit in _dedupe(raw_evidence) if unit.unit_id in included_ids
+            ),
             style_or_reference_optional=tuple(
                 unit
                 for unit in selected_optional
@@ -439,7 +545,7 @@ class ContextCompiler:
                 token_budget=token_budget,
                 mandatory_tokens=mandatory_tokens,
                 optional_tokens=optional_tokens,
-                dropped_optional_unit_ids=tuple(dropped_optional),
+                dropped_optional_unit_ids=dropped_optional,
                 full_chapter_read_count=sum(
                     trace.full_chapters_read for _, trace in needs_and_traces
                 ),

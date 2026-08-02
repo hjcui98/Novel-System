@@ -100,7 +100,7 @@ class Stage2PairedPilotRunner:
     silently receive this synthetic backend.
     """
 
-    version = "stage2-paired-pilot-v0.3"
+    version = "stage2-paired-pilot-v0.4"
 
     def __init__(
         self,

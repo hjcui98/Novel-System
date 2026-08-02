@@ -119,6 +119,8 @@ def test_stage2r_indexer_bulk_builds_attested_indexes_with_content_cache() -> No
     assert adapter.publish_aliases.call_count == 2
     assert adapter.publish_alias.call_count == 0
     assert adapter.index_document.call_count == 0
+    mapping = adapter.ensure_index.call_args.args[1]
+    assert mapping["settings"]["index"]["number_of_replicas"] == 0
     anchor_alias, grounded_alias = Stage2RSearchIndexer.aliases(PROJECT)
     assert "stage2r" in anchor_alias and "stage2r" in grounded_alias
     mapping = adapter.ensure_index.call_args.args[1]

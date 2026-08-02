@@ -384,7 +384,13 @@ class ModelCurator:
             "EVIDENCE_CANDIDATES catalog. Moving an invalid reference into unresolved "
             "is not a repair. Before responding, self-check the complete replacement "
             "Draft against WORLD, EVIDENCE_CANDIDATES, the output schema, and every "
-            "feedback item. Emit only the corrected complete Draft JSON.\n"
+            "feedback item. When FEEDBACK identifies a missing entity ID, either remove "
+            "every dependent operation or prepend one CREATE operation for that exact "
+            "entity ID. The CREATE must use record_kind=entity, operation=create, an "
+            "evidence-supported internal_label copied from the chapter, and only "
+            "directly stated aliases or identity_invariants; dependent operations must "
+            "follow it. Never repeat an unknown entity reference without that preceding "
+            "CREATE. Emit only the corrected complete Draft JSON.\n"
             f"FEEDBACK={repair_feedback}\n"
             "</MANDATORY_PROPOSAL_REPAIR_CONTRACT>"
             if repair_feedback is not None
@@ -438,6 +444,14 @@ class ModelCurator:
                     "Entity records must use entity_type, internal_label, aliases, and "
                     "identity_invariants. Always use evidence_candidate_ids, never "
                     "evidence_refs. "
+                    "If this chapter introduces a named person absent from WORLD and a "
+                    "durable operation records a fact about that person, emit one "
+                    "evidence-supported CREATE entity operation first. Use the exact "
+                    "entity ID that later operations reference, copy the source name "
+                    "into internal_label, and keep aliases and identity_invariants to "
+                    "facts explicitly stated by the cited candidates. Never reference a "
+                    "new entity from a state, relation, event, or obligation before its "
+                    "CREATE operation. "
                     "Before emitting a composite value, verify that every semantic component "
                     "(including each underscore-separated component) has explicit support in "
                     "at least one selected evidence candidate. "
@@ -457,6 +471,8 @@ class ModelCurator:
         if draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
         draft = self._normalize_entity_reference_aliases(draft, current_world)
+        draft, merge_receipts = self._merge_normalized_collisions_v2(draft, base_commit)
+        self.last_evidence_merge_receipts = merge_receipts
         proposed_operation_count = len(draft.operations)
         self._reject_dangling_entity_references(draft, current_world)
         draft = self._filter_existing_semantic_duplicates(
@@ -879,6 +895,117 @@ class ModelCurator:
                 else operation
             )
         return draft.model_copy(update={"operations": tuple(operations)})
+
+    @classmethod
+    def _merge_normalized_collisions_v2(
+        cls,
+        draft: ChapterChangeDraftV2,
+        base_commit: CommitId,
+    ) -> tuple[ChapterChangeDraftV2, tuple[ProposalEvidenceMergeReceipt, ...]]:
+        """Merge exact V2 target duplicates and reject semantic collisions."""
+
+        groups: dict[
+            tuple[WorldRecordKind, StableId],
+            list[tuple[int, CuratedOperationDraftV2]],
+        ] = {}
+        for index, operation in enumerate(draft.operations):
+            groups.setdefault((operation.record_kind, operation.target_id), []).append(
+                (index, operation)
+            )
+
+        merged: list[CuratedOperationDraftV2] = []
+        receipts: list[ProposalEvidenceMergeReceipt] = []
+        for (record_kind, target_id), indexed in groups.items():
+            if len(indexed) == 1:
+                merged.append(indexed[0][1])
+                continue
+            semantic_payloads = tuple(
+                canonical_json_bytes(
+                    operation.model_dump(mode="json", exclude={"evidence_candidate_ids"})
+                )
+                for _, operation in indexed
+            )
+            semantic_hashes = tuple(sha256_id(payload) for payload in semantic_payloads)
+            evidence_payloads = tuple(
+                canonical_json_bytes(candidate_id.root)
+                for _, operation in indexed
+                for candidate_id in operation.evidence_candidate_ids
+            )
+            evidence_hashes = tuple(sha256_id(payload) for payload in evidence_payloads)
+            operation_indexes = tuple(index for index, _ in indexed)
+            conflict = ProposalConflict(
+                record_kind=record_kind,
+                target_id=target_id,
+                operation_indexes=operation_indexes,
+                semantic_hashes=tuple(sorted(set(semantic_hashes), key=lambda item: item.root)),
+                evidence_hashes=tuple(sorted(set(evidence_hashes), key=lambda item: item.root)),
+            )
+            if len(set(semantic_hashes)) != 1:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
+                    (conflict,),
+                    safe_feedback=(
+                        (
+                            f"operations {operation_indexes} target the same "
+                            f"{record_kind.value} {target_id.root} with different records; "
+                            "return one semantic record for that target"
+                        )[:240],
+                    ),
+                    operation_indexes=operation_indexes,
+                    json_pointers=tuple(
+                        f"/operations/{index}/target_id" for index in operation_indexes
+                    ),
+                    violation_rule="normalized_target_must_be_unique",
+                )
+            unique_evidence = {
+                candidate_id.root: candidate_id
+                for _, operation in indexed
+                for candidate_id in operation.evidence_candidate_ids
+            }
+            ordered_evidence = tuple(unique_evidence[key] for key in sorted(unique_evidence))
+            if len(ordered_evidence) > 4:
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
+                    (conflict,),
+                    safe_feedback=(
+                        (
+                            f"operations {operation_indexes} are identical except for more "
+                            "evidence IDs than the bounded four-item evidence contract; "
+                            "return one target with at most four evidence candidates"
+                        )[:240],
+                    ),
+                    operation_indexes=operation_indexes,
+                    json_pointers=tuple(
+                        f"/operations/{index}/evidence_candidate_ids" for index in operation_indexes
+                    ),
+                    violation_rule="normalized_target_evidence_must_be_bounded",
+                )
+            first = indexed[0][1]
+            merged.append(first.model_copy(update={"evidence_candidate_ids": ordered_evidence}))
+            source_hashes = tuple(
+                sha256_id(canonical_json_bytes(operation.model_dump(mode="json")))
+                for _, operation in indexed
+            )
+            digest = cls._digest(
+                base_commit.root.encode(),
+                record_kind.value.encode(),
+                target_id.root.encode(),
+                semantic_hashes[0].root.encode(),
+            )
+            receipts.append(
+                ProposalEvidenceMergeReceipt(
+                    transform_id=StableId(f"proposal-evidence-merge.{digest}"),
+                    base_commit=base_commit,
+                    record_kind=record_kind,
+                    target_id=target_id,
+                    semantic_hash=semantic_hashes[0],
+                    source_operation_hashes=source_hashes,
+                    merged_evidence_hashes=tuple(
+                        sorted(set(evidence_hashes), key=lambda item: item.root)
+                    ),
+                )
+            )
+        return draft.model_copy(update={"operations": tuple(merged)}), tuple(receipts)
 
     @staticmethod
     def _world_model_view(current_world: WorldRootDocument) -> dict[str, object]:

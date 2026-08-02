@@ -34,8 +34,8 @@ from novel_agent.domain.retrieval_routing import (
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.retrieval import FusionService, RetrievalBackend
 
-ROUTE_POLICY_VERSION = SchemaVersion("2.1.0")
-ROUTE_PROFILE_VERSION = SchemaVersion("2.1.0")
+ROUTE_POLICY_VERSION = SchemaVersion("2.2.0")
+ROUTE_PROFILE_VERSION = SchemaVersion("2.2.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,11 +378,18 @@ class RoutePlanValidator:
             raise ValueError("route plan exposes a channel absent from registered profile")
         if plan.resolution_tier is ResolutionTier.R0 and active != {RetrievalChannel.R0}:
             raise ValueError("R0 route may only expose the context-local channel")
-        if plan.resolution_tier is ResolutionTier.R1 and any(
-            channel not in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}
-            for channel in active
-        ):
-            raise ValueError("R1 route may only expose registered exact/temporal channels")
+        if plan.resolution_tier is ResolutionTier.R1:
+            registered_r1_channels = {
+                RetrievalChannel.R1_EXACT,
+                RetrievalChannel.R1_TEMPORAL,
+                *(
+                    step.channel
+                    for fallback in plan.conditional_fallbacks
+                    for step in fallback.steps
+                ),
+            }
+            if any(channel not in registered_r1_channels for channel in active):
+                raise ValueError("R1 route may only expose registered exact/temporal channels")
 
 
 class CounterfactualRouteEvaluator:
@@ -445,13 +452,33 @@ def profile_for(intent: Stage1QueryIntent, tier: ResolutionTier) -> RouteProfile
         steps = tuple(
             _step(intent, channel, CandidatePool.R1, mandatory=True) for channel in channels
         )
+        fallbacks: tuple[ConditionalFallback, ...] = (
+            (
+                _fallback(
+                    intent,
+                    "exact_current_record_absent",
+                    (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+                ),
+            )
+            if intent is Stage1QueryIntent.CURRENT_STATE
+            else ()
+        )
+        allowed_channels = tuple(
+            dict.fromkeys(
+                (
+                    *channels,
+                    *(step.channel for fallback in fallbacks for step in fallback.steps),
+                )
+            )
+        )
         return RouteProfile(
             profile_id=profile_id,
             version=ROUTE_PROFILE_VERSION,
             query_intent=intent,
             resolution_tier=tier,
-            allowed_channels=channels,
+            allowed_channels=allowed_channels,
             mandatory_steps=steps,
+            conditional_fallbacks=fallbacks,
             evidence_policy=evidence,
             stop_policy=stop,
         )

@@ -337,6 +337,8 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     assert "Before responding, self-check the complete replacement Draft" in prompt
     assert "/operations/1/record/subject_id" in prompt
     assert "entity.guojiao-academy" in prompt
+    assert "prepend one CREATE operation for that exact entity ID" in prompt
+    assert "Never reference a new entity from a state, relation, event, or obligation" in prompt
 
 
 def test_replay_agent_uses_candidate_v2() -> None:

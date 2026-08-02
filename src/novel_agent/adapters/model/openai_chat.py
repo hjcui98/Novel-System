@@ -195,7 +195,7 @@ class OpenAICompatibleChatEndpoint:
             "model": self.model,
             "messages": [{"role": "user", "content": request.prompt}],
             "temperature": self.temperature,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": request.max_output_tokens or self.max_output_tokens,
             "response_format": response_format,
             "chat_template_kwargs": {"enable_thinking": False},
         }

@@ -448,3 +448,76 @@ def test_v2_entity_alias_normalization_covers_event_and_relation_records() -> No
     assert isinstance(relation_record, CuratorRelationRecord)
     assert relation_record.subject_id == canonical
     assert relation_record.object_id == canonical
+
+
+def test_v2_normalized_collisions_merge_evidence_and_reject_conflicts() -> None:
+    base_commit = make_synthetic_bundle().world_roots[0].source_commit
+    record = CuratorEventRecord(
+        event_type="arrives",
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    first = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.EVENT,
+        target_id=StableId("event.v2-collision"),
+        record=record,
+        evidence_candidate_ids=(StableId("candidate.one"),),
+    )
+    second = first.model_copy(update={"evidence_candidate_ids": (StableId("candidate.two"),)})
+    singleton = first.model_copy(update={"target_id": StableId("event.v2-singleton")})
+    draft = ChapterChangeDraftV2(
+        chapter_index=23,
+        operations=(first, second, singleton),
+    )
+
+    merged, receipts = ModelCurator._merge_normalized_collisions_v2(draft, base_commit)
+
+    assert len(merged.operations) == 2
+    assert merged.operations[0].evidence_candidate_ids == (
+        StableId("candidate.one"),
+        StableId("candidate.two"),
+    )
+    assert len(receipts) == 1
+
+    conflict = draft.model_copy(
+        update={
+            "operations": (
+                first,
+                second.model_copy(
+                    update={
+                        "record": record.model_copy(update={"event_type": "leaves"}),
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
+    ) as collision:
+        ModelCurator._merge_normalized_collisions_v2(conflict, base_commit)
+    assert collision.value.operation_indexes == (0, 1)
+    assert collision.value.violation_rule == "normalized_target_must_be_unique"
+
+    overflow = ChapterChangeDraftV2(
+        chapter_index=23,
+        operations=(
+            first,
+            first.model_copy(update={"evidence_candidate_ids": (StableId("candidate.two"),)}),
+            first.model_copy(
+                update={
+                    "evidence_candidate_ids": (
+                        StableId("candidate.three"),
+                        StableId("candidate.four"),
+                        StableId("candidate.five"),
+                    )
+                }
+            ),
+        ),
+    )
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_NORMALIZED_TARGET_COLLISION",
+    ) as overflow_rejection:
+        ModelCurator._merge_normalized_collisions_v2(overflow, base_commit)
+    assert overflow_rejection.value.violation_rule == "normalized_target_evidence_must_be_bounded"

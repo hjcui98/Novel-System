@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 
 from novel_agent.domain.ids import StableId
-from novel_agent.domain.memory import CandidatePool, RequirementLevel, Stage1QueryIntent
+from novel_agent.domain.memory import (
+    CandidatePool,
+    ObligationKind,
+    ObligationStatus,
+    PlanObligation,
+    RequirementLevel,
+    Stage1QueryIntent,
+)
 from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
 from novel_agent.domain.world import (
     Entity,
@@ -323,26 +330,87 @@ def test_only_one_frontier_entity_emits_the_rich_writer_facets() -> None:
     secondary = tuple(item for item in needs if item.entity_ids == (secondary_entity.entity_id,))
 
     assert {item.need_type for item in primary} == {
-        "behavioral_profile",
         "capability_boundary",
-        "capability_history",
         "current_state",
         "continuity_constraint",
-        "current_goal",
-        "goal_history",
-        "destination_history",
-        "eligibility_and_destination",
-        "environment_and_resources",
-        "environment_history",
-        "learning_foundation",
+        "entity_history",
         "relationship_emotion",
         "knowledge_boundary",
         "long_range_callback",
     }
     assert {item.need_type for item in secondary} == {"current_state"}
     assert secondary[0].requirement is RequirementLevel.OPTIONAL
-    destination = next(item for item in primary if item.need_type == "destination_history")
-    assert destination.requirement is RequirementLevel.OPTIONAL
+    history = next(item for item in primary if item.need_type == "entity_history")
+    assert history.requirement is RequirementLevel.OPTIONAL
+    assert len(history.query_hints) == 4
+    assert any("能力边界" in hint for hint in history.query_hints)
+    assert any("目标 动机" in hint for hint in history.query_hints)
+    assert any("环境 到达" in hint for hint in history.query_hints)
+    # Retrieval envelopes stay bounded even though the conclusion layer keeps
+    # its section/facet distinctions.
+    assert len(primary) == 7
+
+
+def test_knowledge_need_uses_bounded_public_obligation_and_relationship_state() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    relationship_state = StateRecord(
+        state_id=StableId("state.knowledge.relationship"),
+        subject_id=entity.entity_id,
+        predicate="attitude_towards_xu",
+        value="dislike_but_bound_by_marriage_contract",
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    irrelevant_state = relationship_state.model_copy(
+        update={
+            "state_id": StableId("state.knowledge.irrelevant"),
+            "predicate": "inventory_note",
+            "value": "unrelated-private-looking-token",
+        }
+    )
+    obligation = PlanObligation(
+        obligation_id=StableId("obligation.knowledge.marriage"),
+        kind=ObligationKind.PROMISE,
+        description="marriage_contract_with_xu",
+        status=ObligationStatus.OPEN,
+        owner_ids=(entity.entity_id,),
+    )
+    world = world.model_copy(
+        update={
+            "states": (*world.states, relationship_state, irrelevant_state),
+            "obligations": (*world.obligations, obligation),
+        }
+    )
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+
+    knowledge = next(
+        need
+        for need in TaskPlanConditionedNeedGenerator().generate(task, world)
+        if need.need_type == "knowledge_boundary"
+    )
+
+    assert "marriage_contract_with_xu" in knowledge.query_text
+    assert "attitude_towards_xu" in knowledge.query_text
+    assert "dislike_but_bound_by_marriage_contract" in knowledge.query_text
+    assert "unrelated-private-looking-token" not in knowledge.query_text
+    assert knowledge.query_text.index("marriage_contract_with_xu") < 700
+    assert knowledge.query_text.index("attitude_towards_xu") < 700
+    assert (
+        len(
+            TaskPlanConditionedNeedGenerator._knowledge_state_context(
+                entity.entity_id,
+                world.states,
+            )
+        )
+        <= 900
+    )
 
 
 def test_no_focus_and_need_budget_exhaustion_have_typed_statuses() -> None:

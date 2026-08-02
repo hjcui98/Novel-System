@@ -36,6 +36,12 @@ ANCHOR_KINDS = frozenset(
 )
 GROUNDED_KINDS = frozenset({RetrievalUnitKind.GROUNDED_BLOCK, RetrievalUnitKind.GROUNDED_SPAN})
 
+VISIBLE_SCOPES_BY_NEED_SCOPE = {
+    "writer_safe": frozenset({"writer_safe"}),
+    "author_planning": frozenset({"writer_safe", "author_planning"}),
+    "evaluator": frozenset({"writer_safe", "author_planning", "evaluator"}),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RouteDefinition:
@@ -130,7 +136,8 @@ class RerankService:
         scores = tuple(
             float(score)
             for score in self._adapter.score(
-                need.query_text, tuple(candidate.unit.text for candidate in eligible)
+                need.query_text,
+                tuple(candidate.unit.text for candidate in eligible),
             )
         )
         if len(scores) != len(eligible):
@@ -161,6 +168,7 @@ class RerankService:
                     }
                 )
             )
+        # Keep non-anchor and rejected/over-limit candidates in the trace for diagnostics.
         reranked.extend(candidate for candidate in candidates if candidate not in eligible)
         return tuple(reranked)
 
@@ -441,11 +449,13 @@ class InMemoryRetrievalBackend:
         limit: int,
     ) -> tuple[ChannelHit, ...]:
         allowed_kinds = self._allowed_kinds(channel)
+        visible_scopes = VISIBLE_SCOPES_BY_NEED_SCOPE.get(need.access_scope)
+        if visible_scopes is None:
+            return ()
         candidates = [
             unit
             for unit in self._units
-            if unit.unit_kind in allowed_kinds
-            and (need.access_scope == "author_planning" or unit.access_scope == need.access_scope)
+            if unit.unit_kind in allowed_kinds and unit.access_scope in visible_scopes
         ]
         scored = [
             (self._score(need, unit, channel), unit)

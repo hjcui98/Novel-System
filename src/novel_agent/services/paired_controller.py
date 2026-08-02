@@ -18,8 +18,10 @@ from novel_agent.domain.memory import (
     RetrievalStopReason,
     RetrievalTrace,
     RetrievalUnit,
+    RetrievalUnitKind,
     Stage1ContextPackage,
     Stage1MemoryNeed,
+    Stage1QueryIntent,
 )
 from novel_agent.domain.retrieval_routing import RoutePlan
 from novel_agent.domain.stage2 import (
@@ -44,7 +46,14 @@ from novel_agent.services.retrieval import (
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 from novel_agent.tools.retrieval import PLAN_INTENTS
 
-DETERMINISTIC_ROUTE_SCHEDULER_VERSION = "deterministic_max_min.v2"
+DETERMINISTIC_ROUTE_SCHEDULER_VERSION = "deterministic_task_weighted.v6"
+_HISTORICAL_NEED_TYPES = frozenset(
+    {"causal_history", "entity_history", "long_range_callback", "plan_conditioned_history"}
+)
+_HISTORICAL_QUERY_EXPANSION = (
+    "历史 经过 前因 起因 后果 结果 影响 变化 早期 首次 来源 "
+    "物件 持有 携带 保护 作用 决定 选择 未解决"
+)
 
 
 class _TraceDiagnostics(TypedDict):
@@ -404,7 +413,9 @@ class PairedMemoryControllerRunner:
             plans[need.need_id] = plan
             results[need.need_id] = {}
 
-        def next_channel(need: Stage1MemoryNeed) -> RetrievalChannel | None:
+        def next_channel(
+            need: Stage1MemoryNeed,
+        ) -> tuple[RetrievalChannel | None, bool, bool]:
             plan = plans[need.need_id]
             need_results = results[need.need_id]
             primary = tuple(
@@ -416,9 +427,13 @@ class PairedMemoryControllerRunner:
                     )
                 )
             )
-            for channel in primary:
+            for channel_index, channel in enumerate(primary):
                 if channel not in need_results:
-                    return channel
+                    if channel_index > 0:
+                        early_fallback = next_registered_fallback(need, plan, need_results)
+                        if early_fallback is not None:
+                            return early_fallback[0], True, early_fallback[1]
+                    return channel, False, False
             partial = self._assemble_route_trace(
                 need,
                 plan,
@@ -427,32 +442,66 @@ class PairedMemoryControllerRunner:
                 reranker=None,
             )
             for fallback in plan.conditional_fallbacks:
+                remaining = tuple(
+                    step.channel for step in fallback.steps if step.channel not in need_results
+                )
+                if not remaining or not self._fallback_applies(
+                    fallback.condition, partial.candidates, need=need
+                ):
+                    continue
+                return remaining[0], True, bool(len(remaining) < len(fallback.steps))
+            return None, False, False
+
+        def next_registered_fallback(
+            need: Stage1MemoryNeed,
+            plan: RoutePlan,
+            need_results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
+        ) -> tuple[RetrievalChannel, bool] | None:
+            """Spend the next slot on a declared rescue route before a second primary call."""
+
+            partial = self._assemble_route_trace(
+                need,
+                plan,
+                need_results,
+                per_channel_limit=per_channel_limit,
+                reranker=None,
+            )
+            for fallback in plan.conditional_fallbacks:
+                remaining = tuple(
+                    step.channel for step in fallback.steps if step.channel not in need_results
+                )
+                if not remaining:
+                    continue
                 if not self._fallback_applies(
                     fallback.condition,
                     partial.candidates,
                     need=need,
                 ):
                     continue
-                for step in fallback.steps:
-                    if step.channel not in need_results:
-                        return step.channel
+                return remaining[0], len(remaining) < len(fallback.steps)
             return None
 
         while backend.call_count < backend._max_calls:
+            initial_round_complete = all(call_counts[need_id] >= 1 for need_id in plans)
             pending = tuple(
-                (need, channel)
+                (need, channel, is_fallback, is_fallback_continuation)
                 for need_id, need in need_by_id.items()
                 if need_id in plans
-                for channel in (next_channel(need),)
+                for channel, is_fallback, is_fallback_continuation in (next_channel(need),)
                 if channel is not None
             )
             if not pending:
                 break
             risk_order = {NeedRisk.HIGH: 0, NeedRisk.MEDIUM: 1, NeedRisk.LOW: 2}
-            need, channel = min(
+            need, channel, is_fallback, _ = min(
                 pending,
                 key=lambda item: (
-                    call_counts[item[0].need_id],
+                    0 if initial_round_complete and item[3] else 1,
+                    # Before task weighting starts, every executable Need gets one
+                    # retrieval call.  Afterwards, spend the finite call budget on
+                    # the most task-relevant evidence group instead of mechanically
+                    # giving every low-priority Need a second call first.
+                    call_counts[item[0].need_id] if not initial_round_complete else 0,
                     0 if item[0].requirement is RequirementLevel.MANDATORY else 1,
                     risk_order[item[0].risk_level],
                     -len(
@@ -461,18 +510,25 @@ class PairedMemoryControllerRunner:
                         else ()
                     ),
                     -item[0].priority,
+                    call_counts[item[0].need_id],
+                    0 if item[2] else 1,
                     index_by_need[item[0].need_id],
                 ),
             )
+            query_need = (
+                PairedMemoryControllerRunner._historical_fallback_need(need)
+                if is_fallback
+                else need
+            )
             results[need.need_id][channel] = backend.search(
-                need,
+                query_need,
                 channel,
                 per_channel_limit,
             )
             call_counts[need.need_id] += 1
 
         still_pending = any(
-            next_channel(need) is not None
+            next_channel(need)[0] is not None
             for need_id, need in need_by_id.items()
             if need_id in plans
         )
@@ -496,6 +552,55 @@ class PairedMemoryControllerRunner:
                 )
             traces.append((need, trace))
         return traces
+
+    @staticmethod
+    def _historical_fallback_need(need: Stage1MemoryNeed) -> Stage1MemoryNeed:
+        """Expand only the registered grounded rescue query for historical Needs.
+
+        The primary Anchor query remains unchanged. The fallback receives public
+        Need text plus its public hints/reason and a small history vocabulary so
+        a composite causal alternative can be retrieved without adding an
+        evaluator-only query or a new semantic subsystem.
+        """
+
+        if (
+            need.need_type not in _HISTORICAL_NEED_TYPES
+            and need.query_intent is not Stage1QueryIntent.SEMANTIC_HISTORY
+        ):
+            return need
+        # Real task-conditioned queries can already exceed the backend's useful
+        # query budget because they include a large entity-anchor dump.  Reserve
+        # space for the public hints and history vocabulary instead of appending
+        # them after an unbounded primary query and then truncating them away.
+        query_prefix = need.query_text.strip()[:700]
+        hint_budget = 500
+        bounded_hints: list[str] = []
+        for hint in need.query_hints:
+            if hint_budget <= 0:
+                break
+            bounded = hint.strip()[: min(250, hint_budget)]
+            if bounded:
+                bounded_hints.append(bounded)
+                hint_budget -= len(bounded)
+        need_type = str(need.need_type).replace("_", " ")[:120]
+        need_id_suffix = need.need_id.root.rsplit(".", 1)[-1].replace("-", " ")[:160]
+        parts = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in (
+                    query_prefix,
+                    *bounded_hints,
+                    need.why_needed[:280],
+                    (need.purpose or "")[:280],
+                    need_type,
+                    need_id_suffix,
+                    _HISTORICAL_QUERY_EXPANSION,
+                )
+                if item.strip()
+            )
+        )
+        expanded = " ".join(parts)
+        return need.model_copy(update={"query_text": expanded[:2400]})
 
     @staticmethod
     def _retrieve_route_plan(
@@ -528,13 +633,19 @@ class PairedMemoryControllerRunner:
             *,
             use_rrf: bool,
             reserve_incoming: bool = False,
+            expand_historical_query: bool = False,
         ) -> None:
             nonlocal candidates
             group_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
             for channel in channels:
                 if channel in results:
                     continue
-                hits = backend.search(need, channel, per_channel_limit)
+                query_need = (
+                    PairedMemoryControllerRunner._historical_fallback_need(need)
+                    if expand_historical_query
+                    else need
+                )
+                hits = backend.search(query_need, channel, per_channel_limit)
                 results[channel] = hits
                 group_results[channel] = hits
                 called.append(channel)
@@ -577,6 +688,7 @@ class PairedMemoryControllerRunner:
                 steps,
                 use_rrf=fallback.fusion_profile is not None,
                 reserve_incoming=True,
+                expand_historical_query=True,
             )
 
         fusion_applied = any(group.fusion_profile is not None for group in plan.primary_groups) or (
@@ -587,10 +699,20 @@ class PairedMemoryControllerRunner:
         rerank_failure: str | None = None
         if fusion_applied and reranker is not None:
             try:
-                candidates = reranker.rerank(need, candidates, limit=per_channel_limit)
+                ranking_need = (
+                    PairedMemoryControllerRunner._historical_fallback_need(need)
+                    if fallback_used
+                    else need
+                )
+                candidates = reranker.rerank(ranking_need, candidates, limit=per_channel_limit)
                 rerank_applied = True
             except Exception as error:
                 rerank_failure = f"reranker_degraded:{type(error).__name__}"
+        candidates = PairedMemoryControllerRunner._protect_historical_evidence(
+            need,
+            candidates,
+            limit=per_channel_limit,
+        )
         selected = tuple(candidate for candidate in candidates if candidate.selected)
         return RetrievalTrace(
             need_id=need.need_id,
@@ -704,10 +826,20 @@ class PairedMemoryControllerRunner:
         rerank_failure: str | None = None
         if fusion_applied and reranker is not None:
             try:
-                candidates = reranker.rerank(need, candidates, limit=per_channel_limit)
+                ranking_need = (
+                    PairedMemoryControllerRunner._historical_fallback_need(need)
+                    if fallback_used
+                    else need
+                )
+                candidates = reranker.rerank(ranking_need, candidates, limit=per_channel_limit)
                 rerank_applied = True
             except Exception as error:
                 rerank_failure = f"reranker_degraded:{type(error).__name__}"
+        candidates = PairedMemoryControllerRunner._protect_historical_evidence(
+            need,
+            candidates,
+            limit=per_channel_limit,
+        )
         selected = tuple(candidate for candidate in candidates if candidate.selected)
         return RetrievalTrace(
             need_id=need.need_id,
@@ -801,16 +933,38 @@ class PairedMemoryControllerRunner:
 
         ordered = (*existing, *incoming)
         if reserve_incoming and existing and incoming:
-            # A full Anchor page must not make a legal Grounded fallback a no-op.
-            # Interleaving reserves half of the bounded candidate page for the
-            # evidence expansion while retaining the best Anchor conclusions.
-            interleaved: list[FusedCandidate] = []
-            for index in range(max(len(existing), len(incoming))):
-                if index < len(existing):
-                    interleaved.append(existing[index])
-                if index < len(incoming):
-                    interleaved.append(incoming[index])
-            ordered = tuple(interleaved)
+            # A full Anchor page must not make a legal fallback a no-op.  Keep
+            # a short alternating prefix for stable route ordering, then give
+            # evidence-bearing fallback candidates a larger bounded share. A
+            # grounded hit at channel rank 11 must remain selectable in a
+            # twenty-candidate page; plain interleaving would move it to rank
+            # 22 and silently discard the very evidence the fallback fetched.
+            incoming_has_evidence = any(
+                candidate.unit.unit_kind
+                in {RetrievalUnitKind.GROUNDED_BLOCK, RetrievalUnitKind.GROUNDED_SPAN}
+                and candidate.unit.evidence_refs
+                for candidate in incoming
+            )
+            if incoming_has_evidence:
+                incoming_quota = min(len(incoming), max(1, (limit * 2 + 2) // 3))
+                existing_quota = min(len(existing), max(0, limit - incoming_quota))
+                prefix = min(2, incoming_quota, existing_quota)
+                prioritized: list[FusedCandidate] = []
+                for index in range(prefix):
+                    prioritized.extend((existing[index], incoming[index]))
+                prioritized.extend(incoming[prefix:incoming_quota])
+                prioritized.extend(existing[prefix:existing_quota])
+                prioritized.extend(incoming[incoming_quota:])
+                prioritized.extend(existing[existing_quota:])
+                ordered = tuple(prioritized)
+            else:
+                interleaved: list[FusedCandidate] = []
+                for index in range(max(len(existing), len(incoming))):
+                    if index < len(existing):
+                        interleaved.append(existing[index])
+                    if index < len(incoming):
+                        interleaved.append(incoming[index])
+                ordered = tuple(interleaved)
         unique: dict[StableId, FusedCandidate] = {}
         for candidate in ordered:
             unique.setdefault(candidate.unit.unit_id, candidate)
@@ -828,6 +982,87 @@ class PairedMemoryControllerRunner:
         )
 
     @staticmethod
+    def _protect_historical_evidence(
+        need: Stage1MemoryNeed,
+        candidates: tuple[FusedCandidate, ...],
+        *,
+        limit: int,
+    ) -> tuple[FusedCandidate, ...]:
+        """Reserve a small bounded share for retrieved historical evidence.
+
+        RRF and reranking are allowed to prefer structured Anchor records, but
+        a historical Need must not lose every grounded passage merely because
+        those passages fall just below the shared top-k window.  The reserve
+        is limited to one fifth of the candidate window (at most four at the
+        formal limit of twenty) and only replaces non-mandatory non-grounded
+        candidates.  It never invents a candidate or broadens a retrieval
+        route.
+        """
+
+        if need.query_intent.value not in {"semantic_history", "related_event"}:
+            return candidates
+        if limit < 1:
+            raise ValueError("historical evidence protection limit must be positive")
+        evidence_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.unit.unit_kind
+            in {RetrievalUnitKind.GROUNDED_BLOCK, RetrievalUnitKind.GROUNDED_SPAN}
+            and candidate.unit.evidence_refs
+        )
+        if not evidence_candidates:
+            return candidates
+
+        reserve = min(4, max(1, limit // 5))
+        selected_evidence = sum(candidate.selected for candidate in evidence_candidates)
+        if selected_evidence >= reserve:
+            return candidates
+
+        by_unit_id = {candidate.unit.unit_id: candidate for candidate in candidates}
+        selected_count = sum(candidate.selected for candidate in candidates)
+        available_slots = max(0, limit - selected_count)
+        replacements = iter(
+            sorted(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.selected
+                    and not candidate.unit.mandatory
+                    and candidate.unit.unit_kind
+                    not in {RetrievalUnitKind.GROUNDED_BLOCK, RetrievalUnitKind.GROUNDED_SPAN}
+                ),
+                key=lambda candidate: (-candidate.fused_rank, candidate.unit.unit_id.root),
+            )
+        )
+        for candidate in evidence_candidates:
+            if selected_evidence >= reserve:
+                break
+            if candidate.selected:
+                continue
+            if available_slots > 0:
+                by_unit_id[candidate.unit.unit_id] = candidate.model_copy(
+                    update={"selected": True, "rejection_reason": None}
+                )
+                selected_evidence += 1
+                available_slots -= 1
+                continue
+            try:
+                replacement = next(replacements)
+            except StopIteration:
+                break
+            by_unit_id[candidate.unit.unit_id] = candidate.model_copy(
+                update={"selected": True, "rejection_reason": None}
+            )
+            by_unit_id[replacement.unit.unit_id] = replacement.model_copy(
+                update={
+                    "selected": False,
+                    "rejection_reason": "historical_evidence_reserve",
+                }
+            )
+            selected_evidence += 1
+        return tuple(by_unit_id[candidate.unit.unit_id] for candidate in candidates)
+
+    @staticmethod
     def _fallback_applies(
         condition: str,
         candidates: tuple[FusedCandidate, ...],
@@ -840,6 +1075,23 @@ class PairedMemoryControllerRunner:
                 return True
             if need is None:
                 return False
+            if need.need_type in {
+                "causal_history",
+                "entity_history",
+                "knowledge_boundary",
+                "long_range_callback",
+                "plan_conditioned_history",
+            }:
+                return not any(
+                    candidate.selected
+                    and candidate.unit.unit_kind
+                    in {
+                        RetrievalUnitKind.GROUNDED_BLOCK,
+                        RetrievalUnitKind.GROUNDED_SPAN,
+                    }
+                    and candidate.unit.evidence_refs
+                    for candidate in candidates
+                )
             evidenced_text = " ".join(
                 candidate.unit.text.casefold()
                 for candidate in candidates
@@ -852,6 +1104,8 @@ class PairedMemoryControllerRunner:
             # Broad history/callback Needs require evidence expansion unless
             # Anchor conclusions cover at least half of their semantic hints.
             return matched / len(terms) < 0.5
+        if condition == "exact_current_record_absent":
+            return not has_candidates
         if condition == "plan_anchor_insufficient":
             return not has_candidates
         if condition == "hierarchy_scope_resolved":

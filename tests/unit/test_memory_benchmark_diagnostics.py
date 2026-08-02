@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scripts.diagnose_stage2m_stage_loss import _parse_frozen_context, _parse_frozen_ledger
+
 from novel_agent.domain.memory_benchmark import (
     BenchmarkInformationProfile,
     EvidenceLedger,
@@ -49,6 +51,19 @@ def test_stage_loss_diagnostics_cover_every_applicable_gold() -> None:
         writer_ledger=ledger,
     )
     assert inapplicable == ()
+
+
+def test_stage_loss_script_parses_json_compatible_frozen_contracts() -> None:
+    _bundle, _private_case, _public, _runner, comparison = resolved_public_comparison()
+    context = comparison.deterministic.context
+    ledger = comparison.deterministic.evidence_ledger
+    assert ledger is not None
+
+    parsed_context = _parse_frozen_context(context.model_dump(mode="json"))
+    parsed_ledger = _parse_frozen_ledger(ledger.model_dump(mode="json"))
+
+    assert parsed_context == context
+    assert parsed_ledger == ledger
 
 
 def test_stage_loss_classification_distinguishes_final_assembly_loss() -> None:

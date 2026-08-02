@@ -29,6 +29,7 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
     WorldRootDocument,
 )
+from novel_agent.domain.world import StateRecord
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
@@ -63,7 +64,7 @@ class TaskPlanConditionedNeedGenerator:
     """Generate needs from the bounded FocusSet, never by enumerating WorldRoot."""
 
     profile = "task_plan_conditioned_v1"
-    version = "task_plan_conditioned_need.v19"
+    version = "task_plan_conditioned_need.v21"
     completion_spec_version = "need_completion_spec.v1"
 
     def __init__(
@@ -192,6 +193,7 @@ class TaskPlanConditionedNeedGenerator:
                 CandidatePool.ANCHOR,
                 CandidatePool.GROUNDED,
             ),
+            query_hints: tuple[str, ...] = (),
         ) -> None:
             need_id = StableId(f"need.stage2m.{identity}"[:128])
             facets, completion_spec = self._completion_contract(
@@ -236,7 +238,7 @@ class TaskPlanConditionedNeedGenerator:
                     expected_section=section,
                     focus_ids=(focus.focus_id,),
                     priority=priority,
-                    query_hints=(query,),
+                    query_hints=tuple(dict.fromkeys((query, *query_hints))),
                     completion_criteria="claim is supported by cutoff-valid evidence",
                     need_facets=facets,
                     completion_spec=completion_spec,
@@ -298,6 +300,10 @@ class TaskPlanConditionedNeedGenerator:
                         }
                     )
                 )[:1000]
+                knowledge_state_context = self._knowledge_state_context(
+                    entity.entity_id,
+                    world.states,
+                )
                 entity_context = " ".join(
                     value
                     for value in (
@@ -314,18 +320,36 @@ class TaskPlanConditionedNeedGenerator:
                     primary_entity_focus is not None
                     and focus.canonical_id == primary_entity_focus.canonical_id
                 )
-                add(
-                    identity=f"entity.{entity.entity_id.root}.state",
-                    focus=focus,
-                    need_type="current_state",
-                    intent=Stage1QueryIntent.CURRENT_STATE,
-                    query=query or entity.internal_label,
-                    entity_ids=(entity.entity_id,),
-                    section=WriterContextSection.CURRENT_WORLD_STATE,
-                    mandatory=is_primary_entity,
-                    priority=90,
-                    pools=(CandidatePool.R1, CandidatePool.ANCHOR, CandidatePool.GROUNDED),
-                )
+                # A recent Event and a one-hop Relation already produce their
+                # own retrieval envelopes below. Generating a generic current-
+                # state Need for every participant duplicated those envelopes
+                # and consumed one scheduler turn per incidental entity. Keep
+                # entity-state retrieval only when the public task, an open
+                # obligation, or visible plan actually names the entity (plus
+                # the one primary entity selected from that public frontier).
+                if is_primary_entity or focus.source in {
+                    TaskFocusSource.TASK,
+                    TaskFocusSource.OPEN_OBLIGATION,
+                    TaskFocusSource.PLAN_INTENT,
+                }:
+                    add(
+                        identity=f"entity.{entity.entity_id.root}.state",
+                        focus=focus,
+                        need_type="current_state",
+                        intent=Stage1QueryIntent.CURRENT_STATE,
+                        query=query or entity.internal_label,
+                        entity_ids=(entity.entity_id,),
+                        section=WriterContextSection.CURRENT_WORLD_STATE,
+                        mandatory=is_primary_entity,
+                        priority=(
+                            97
+                            if is_primary_entity
+                            else 88
+                            if focus.source is TaskFocusSource.OPEN_OBLIGATION
+                            else 84
+                        ),
+                        pools=(CandidatePool.R1, CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+                    )
                 if is_primary_entity:
                     label = entity.internal_label
                     add(
@@ -340,7 +364,7 @@ class TaskPlanConditionedNeedGenerator:
                         entity_ids=(entity.entity_id,),
                         section=WriterContextSection.CONTINUITY_CONSTRAINTS,
                         mandatory=True,
-                        priority=92,
+                        priority=96,
                         pools=(
                             CandidatePool.R1,
                             CandidatePool.ANCHOR,
@@ -366,145 +390,44 @@ class TaskPlanConditionedNeedGenerator:
                             CandidatePool.GROUNDED,
                         ),
                     )
+                    # Retrieval is intentionally coarser than the conclusion
+                    # contract.  Before retrieval we cannot know whether the
+                    # useful historical passage will be classified as a
+                    # capability change, goal, destination, learning source,
+                    # environment transition, or stable behaviour.  Emitting
+                    # one Need per label starved every Need under the global
+                    # call budget and made a wrong pre-retrieval label exclude
+                    # the correct evidence route.  Keep those interpretations
+                    # as bounded public reformulations on one historical
+                    # envelope; the NeedFacet/support layer still decides what
+                    # the evidence can actually establish.
                     add(
-                        identity=f"entity.{entity.entity_id.root}.capability-history",
+                        identity=f"entity.{entity.entity_id.root}.history",
                         focus=focus,
-                        need_type="capability_history",
+                        need_type="entity_history",
                         intent=Stage1QueryIntent.SEMANTIC_HISTORY,
                         query=(
-                            f"{label} 历史能力边界 前置条件 失败 尝试 "
-                            f"变化 来源 证据 {state_context}"
+                            f"{label} 重要历史 前因 变化 决定 结果 "
+                            f"{event_context} {relation_context} {obligation_context}"
                         ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CONTINUITY_CONSTRAINTS,
-                        mandatory=False,
-                        priority=94,
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.goal-history",
-                        focus=focus,
-                        need_type="goal_history",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 目标历史 原因 动机 选择 承诺 "
-                            f"{obligation_context} {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CONTINUITY_CONSTRAINTS,
-                        mandatory=False,
-                        priority=93,
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.destination-history",
-                        focus=focus,
-                        need_type="destination_history",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 去向 目的 地点 行动路线 前往 到达 "
-                            f"资格 原因 {event_context} {state_context}"
+                        query_hints=(
+                            (
+                                f"{label} 能力边界 前置条件 失败 尝试 学习经验 来源 "
+                                f"{state_context[:500]}"
+                            ),
+                            (
+                                f"{label} 目标 动机 承诺 去向 地点 资格 行动因果 "
+                                f"{obligation_context[:300]} {event_context[:300]}"
+                            ),
+                            (
+                                f"{label} 环境 到达 居住 组织 资源 行为习惯 决策原则 "
+                                f"{relation_context[:300]}"
+                            ),
                         ),
                         entity_ids=(entity.entity_id,),
                         section=WriterContextSection.CAUSAL_HISTORY,
                         mandatory=False,
-                        priority=93,
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.goal",
-                        focus=focus,
-                        need_type="current_goal",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 当前目标 目的 优先级 坚持 只能 "
-                            f"{obligation_context} {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CONTINUITY_CONSTRAINTS,
-                        mandatory=False,
-                        priority=94,
-                        pools=(
-                            CandidatePool.R1,
-                            CandidatePool.ANCHOR,
-                            CandidatePool.GROUNDED,
-                        ),
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.eligibility",
-                        focus=focus,
-                        need_type="eligibility_and_destination",
-                        intent=Stage1QueryIntent.RELATED_EVENT,
-                        query=(
-                            f"{label} 条件 资格 进入 前往 地点 目的地 "
-                            f"行动因果 {event_context} {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CAUSAL_HISTORY,
-                        mandatory=False,
-                        priority=93,
-                        pools=(
-                            CandidatePool.R1,
-                            CandidatePool.ANCHOR,
-                            CandidatePool.GROUNDED,
-                        ),
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.learning-foundation",
-                        focus=focus,
-                        need_type="learning_foundation",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 历史基础 知识 技能 经验 学习方法 "
-                            f"长期积累 来源 {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.LONG_RANGE_CALLBACKS,
-                        mandatory=False,
-                        priority=93,
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.environment-resources",
-                        focus=focus,
-                        need_type="environment_and_resources",
-                        intent=Stage1QueryIntent.CURRENT_STATE,
-                        query=(
-                            f"{label} 当前环境 地点 人员 组织 资源 "
-                            f"可用条件 {relation_context} {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CURRENT_WORLD_STATE,
-                        mandatory=False,
-                        priority=93,
-                        pools=(
-                            CandidatePool.R1,
-                            CandidatePool.ANCHOR,
-                            CandidatePool.GROUNDED,
-                        ),
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.behavior-profile",
-                        focus=focus,
-                        need_type="behavioral_profile",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 行为习惯 决策原则 处事方式 稳定模式 变化条件 {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CONTINUITY_CONSTRAINTS,
-                        mandatory=False,
-                        priority=93,
-                    )
-                    add(
-                        identity=f"entity.{entity.entity_id.root}.environment-history",
-                        focus=focus,
-                        need_type="environment_history",
-                        intent=Stage1QueryIntent.SEMANTIC_HISTORY,
-                        query=(
-                            f"{label} 环境历史 到达 居住 组织变化 "
-                            f"资源来源 当前形成过程 {event_context} {state_context}"
-                        ),
-                        entity_ids=(entity.entity_id,),
-                        section=WriterContextSection.CURRENT_WORLD_STATE,
-                        mandatory=False,
-                        priority=93,
+                        priority=95,
                         pools=(
                             CandidatePool.R1,
                             CandidatePool.ANCHOR,
@@ -523,7 +446,7 @@ class TaskPlanConditionedNeedGenerator:
                         entity_ids=(entity.entity_id,),
                         section=WriterContextSection.RELATIONSHIP_AND_EMOTION,
                         mandatory=False,
-                        priority=91,
+                        priority=95,
                         pools=(
                             CandidatePool.R1,
                             CandidatePool.ANCHOR,
@@ -537,12 +460,14 @@ class TaskPlanConditionedNeedGenerator:
                         intent=Stage1QueryIntent.SEMANTIC_HISTORY,
                         query=(
                             f"{label} 知情边界 知道 不知道 公开 未公开 "
-                            f"推测 不可断言 {relation_context} {target_plan_text}"
+                            f"推测 不可断言 {obligation_context[:300]} "
+                            f"{knowledge_state_context[:300]} {relation_context[:500]} "
+                            f"{target_plan_text}"
                         ),
                         entity_ids=(entity.entity_id,),
                         section=WriterContextSection.KNOWLEDGE_AND_DISCLOSURE,
                         mandatory=bool(target_plan_text),
-                        priority=95 if target_plan_text else 74,
+                        priority=96 if target_plan_text else 95,
                     )
                     add(
                         identity=f"entity.{entity.entity_id.root}.callback",
@@ -556,7 +481,7 @@ class TaskPlanConditionedNeedGenerator:
                         entity_ids=(entity.entity_id,),
                         section=WriterContextSection.LONG_RANGE_CALLBACKS,
                         mandatory=bool(target_plan_text),
-                        priority=96 if target_plan_text else 72,
+                        priority=97 if target_plan_text else 95,
                     )
                     if target_plan_text:
                         add(
@@ -779,6 +704,46 @@ class TaskPlanConditionedNeedGenerator:
                 for key, item in list(value.items())[:8]
             )[:240]
         return ""
+
+    @classmethod
+    def _knowledge_state_context(
+        cls,
+        entity_id: StableId,
+        states: tuple[StateRecord, ...],
+        *,
+        limit: int = 900,
+    ) -> str:
+        """Keep public relationship/disclosure anchors early in knowledge queries."""
+
+        keywords = (
+            "attitude",
+            "contract",
+            "disclos",
+            "know",
+            "marriage",
+            "promise",
+            "relation",
+            "secret",
+            "student",
+            "teacher",
+            "信任",
+            "关系",
+            "婚",
+            "态度",
+            "承诺",
+            "知",
+            "秘密",
+        )
+        selected: list[str] = []
+        for state in states:
+            if state.subject_id != entity_id:
+                continue
+            value = cls._query_value(state.value)
+            searchable = f"{state.predicate} {value}".casefold()
+            if not any(keyword in searchable for keyword in keywords):
+                continue
+            selected.extend(item for item in (state.predicate, value) if item)
+        return " ".join(dict.fromkeys(selected))[:limit]
 
     @classmethod
     def _completion_contract(

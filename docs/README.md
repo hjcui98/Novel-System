@@ -108,10 +108,18 @@ maintenance and regression analysis but do not define current progress:
 | `docs/stage3_writer_core_preparation_execution.md` | `SUPERSEDED` | Detailed legacy preparation design; replaced by the restrained Stage 3 overall design |
 | `长篇小说Agent技术与执行评审建议_v0.1.md` | `HISTORICAL_REVIEW` | Initial review whose accepted decisions were incorporated into the execution plan |
 
+## 8. Draft review inputs
+
+| Document | Lifecycle | Intended use |
+|---|---|---|
+| `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `DRAFT` | Code-level comparison with `rohitg00/agentmemory`; candidate Memory maturity work packages, Stage 3–7 placement, and benchmark/test gates |
+| `docs/stage2m_canary40_execution_20260802.md` | `CURRENT_RESULT / DIAGNOSTIC` | Real VAC C40/C60/C95 canary comparison and Gate HOLD evidence |
+| `docs/stage2m_phase4_c60_c95_trace_20260802.md` | `DIAGNOSTIC / HOLD` | Artifact-backed C60/C95 per-Gold loss localization and version boundary |
+
 Historical result numbers remain immutable. Corrections are added as a newer report or current
 status entry, not by rewriting old evidence.
 
-## 8. Naming and file rules
+## 9. Naming and file rules
 
 - New stage-facing files use `stage3`, `stage4`, and later canonical numbers.
 - Do not create new `stage2b` paths.
@@ -123,7 +131,7 @@ status entry, not by rewriting old evidence.
 - Private benchmark content stays under ignored `benchmarks/private/` and is never copied into
   documentation.
 
-## 9. Updating progress
+## 10. Updating progress
 
 When a gate or work package changes:
 

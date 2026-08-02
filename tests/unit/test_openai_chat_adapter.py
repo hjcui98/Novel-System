@@ -24,6 +24,7 @@ from novel_agent.domain.model_calls import (
 def _request(
     prompt: str = "test",
     response_schema: dict[str, JsonValue] | None = None,
+    max_output_tokens: int | None = None,
 ) -> ModelRequest:
     return ModelRequest(
         request_id=StableId("request.test"),
@@ -34,6 +35,7 @@ def _request(
         trace_id="trace-test",
         prompt=prompt,
         response_schema=response_schema,
+        max_output_tokens=max_output_tokens,
         timeout_seconds=10,
     )
 
@@ -332,6 +334,21 @@ def test_generate_sends_json_object_when_no_schema() -> None:
 
     endpoint = _endpoint(handler)
     asyncio.run(endpoint.generate(_request(response_schema=None)))
+
+
+def test_generate_uses_request_output_token_override() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 2048
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request(max_output_tokens=2048)))
 
 
 def test_generate_sends_json_schema_when_schema_provided() -> None:

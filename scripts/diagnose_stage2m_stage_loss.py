@@ -60,6 +60,18 @@ def _read_verified_artifact(project_directory: Path, artifact: dict[str, Any]) -
     return payload
 
 
+def _parse_frozen_context(payload: object) -> Stage1ContextPackage:
+    """Parse JSON-compatible frozen data through the strict domain boundary."""
+
+    return Stage1ContextPackage.model_validate(payload, strict=False)
+
+
+def _parse_frozen_ledger(payload: object) -> EvidenceLedger:
+    """Accept JSON arrays for tuple fields while retaining all domain validators."""
+
+    return EvidenceLedger.model_validate(payload, strict=False)
+
+
 def _stage_summary(
     diagnostics: tuple[PerGoldStageLossDiagnostic, ...],
     field: str,
@@ -112,12 +124,8 @@ def main() -> int:
         deterministic = frozen.get("deterministic")
         if not isinstance(deterministic, dict):
             raise SystemExit("frozen artifact has no deterministic arm")
-        stage1_context = Stage1ContextPackage.model_validate_json(
-            json.dumps(deterministic.get("context"))
-        )
-        writer_ledger = EvidenceLedger.model_validate_json(
-            json.dumps(deterministic.get("evidence_ledger"))
-        )
+        stage1_context = _parse_frozen_context(deterministic.get("context"))
+        writer_ledger = _parse_frozen_ledger(deterministic.get("evidence_ledger"))
         case = cases[case_id]
         gold_items = (
             *case.observed_use_gold,

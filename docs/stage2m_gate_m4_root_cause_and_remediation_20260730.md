@@ -2,14 +2,17 @@
 
 文档生命周期：`ACTIVE_REMEDIATION`
 日期：2026-07-30
-状态更新：2026-07-31；P0/P1 代码与正式 Gate contract 已实现，P2 未验收，P3 尚未执行
+状态更新：2026-08-02；P0/P1 与正式 Gate contract 已实现，P2 已接受为诊断证据；C40
+currentness 和 C60 模型超时已修，C60 support-group/claim synthesis 质量仍未通过；P3 未执行
 范围：WP7；`visible_at_cutoff`（VAC）与 `author_plan_conditioned`（APC）各
 P001-P005 / C20-C95；Arm A deterministic
-当前决策：**Gate M4 HOLD；正式 WP8 冻结；下一步执行 P2，满足前置条件后执行 P3**
+当前决策：**Gate M4 HOLD；正式 WP8 冻结；P2 = ACCEPTED_AS_DIAGNOSIS；当前只修 C60
+rank-complete evidence 到完整 claim 的损失，明确提升后再做同类 C95 canary；严格 P3/Gate 门
+保留到最终发布**
 
 本文的 2026-07-30 根因数据保留为修复前基线；从第 1.1 节起记录当前代码与诊断运行状态。
 开发人员应按第 7 节“当前状态与剩余动作”继续，不得把已经实现的 P0/P1 重新当作未开发需求，
-也不得把 2026-07-31 的受限 WP8 诊断运行解释为正式 P3 或正式 WP8。
+也不得把 2026-07-31 的受限 WP8 或 2026-08-01 的 P2 诊断运行解释为正式 P3 或正式 WP8。
 
 ## 1. 2026-07-30 修复前结论
 
@@ -83,16 +86,97 @@ APC C40 从 `EVIDENCE_INSUFFICIENT` 变为 READY、VAC C40 coverage 提升，只
 
 ### 1.2 当前工程质量门
 
-- Stage 2M 聚焦整改测试：118 项通过；
+- Stage 2M 聚焦整改测试已通过；
 - freeze/reveal integration：1 项通过；
 - Ruff lint、Ruff format、严格 MyPy：通过；
-- `make quality`：1497 项测试通过、9 项 deselected，Ruff、格式、严格 MyPy 通过，
+- 最新 `make quality`：1614 项测试通过、9 项 deselected，Ruff、格式、严格 MyPy 通过，
   statement/branch coverage 均为 100%；
-- 该工程质量门已关闭，但不替代 P2 哨兵、第二位 reviewer 或正式 P3 的真实运行证据；不得
-  在 P3 命令中静默添加 `--no-cov` 或降低阈值。
+- 该工程质量门已关闭，但不替代 P2 哨兵或正式 P3 的真实运行证据；日常 canary 不把全仓
+  `make quality` 作为迭代门，准备合并和正式 P3 前仍必须正常通过，不得静默添加 `--no-cov`
+  或降低阈值。
 
-因此当前开发入口是 P2 真实哨兵验证和 P3 前置治理，不是继续扩展 P0/P1 模型，也不是继续
-运行 B/C。
+因此当前开发入口是 C40/C60/C95 三点内容质量修复，不是继续扩展 P0/P1 治理、重复五点 P2
+或运行 B/C。
+
+### 1.3 2026-08-01 P2 真实哨兵执行结果（diagnostic/non-formal）
+
+在当前修复版本的 clean execution copy 上，使用本地真实 Qwen3.6 API
+(`http://127.0.0.1:8002/v1`，`qwen36-27b-nvfp4`) 完成了 M4 专项规定的五个单点。
+每个单点均写出 `diagnostic_partial_report_A.json`，运行过程无 blocker，检索和语义后端
+均 eligible，`Assembler` 为 `READY`，且 `scenario_run.completed=true`；这些产物均明确
+`formal_contract_validated=false`、`gate_passed=false`，没有调用不完整矩阵聚合器。
+
+| Profile / checkpoint | Experiment / 产物目录 | 运行与诊断结论 |
+|---|---|---|
+| APC P002/C40 | `stage2m-p2-remediation27-apc-c40-20260801` / `/tmp/ns-stage2m-formal-p2-remediation27-apc-c40-20260801` | `real_hybrid_completed`；weighted `0.0926`、mandatory `0.0909`；P002-G02 `MISS`、P002-G06 `UNTRACEABLE` |
+| VAC P002/C40 | `stage2m-p2-remediation26-vac-c40-20260801` / `/tmp/ns-stage2m-formal-p2-remediation26-vac-c40-20260801` | `teacher_forced_real_hybrid_completed`；P002-G02 仍为 `MISS`，但对应 support group 已进入最终 Evidence Ledger |
+| VAC P003/C60 | `stage2m-p2-remediation26-vac-c60-20260801` / `/tmp/ns-stage2m-formal-p2-remediation26-vac-c60-20260801` | `real_hybrid_completed`；最终 Gold verdict 全部为 `MISS` |
+| VAC P004/C80 | `stage2m-p2-remediation27-vac-c80-20260801` / `/tmp/ns-stage2m-formal-p2-remediation27-vac-c80-20260801` | `real_hybrid_completed`；`trace_complete=false`，P004-G05 为 `UNTRACEABLE`，其余为 `MISS` |
+| VAC P005/C95 | `stage2m-p2-remediation27-vac-c95-20260801` / `/tmp/ns-stage2m-formal-p2-remediation27-vac-c95-20260801` | `real_hybrid_completed`；`trace_complete=false`，P005-G09 为 `UNTRACEABLE`，其余为 `MISS` |
+
+P2 结果暴露并关闭了一个真实的 `selected → assembled → ledger` 丢失点：support-aware
+selector v3 现在会保留已选的 optional completion support group，VAC C40 的 P002-G02
+对应 group 已真实落入最终 ledger。该项仍被 evaluator 判为 `MISS`，原因是模型结论只表达了
+证据中的一个对话事实，未完整表达 Gold 要求的“挡在落落身前并持短剑挡敌”结论；这不是
+candidate/selection/assembly/ledger 链再次静默丢失。另一方面，C80/C95 的 trace 不完整和
+`UNTRACEABLE`，以及各点大量 semantic `MISS`，说明 P2 已完成诊断但尚未证明修复效果；这
+只决定下一轮修复目标，不阻塞开发。P3 仍未启动，因为三点 canary 尚未显示整体接近正式门。
+
+### 1.4 2026-08-01 直接修复与 C90–C95 续跑收口
+
+本次执行已经完成被真实运行直接证明的修复，不再重复跑完整 C40–C95。保留的运行证据如下：
+
+| 运行 | 直接证据 | 当前处置 |
+|---|---|---|
+| `remediation35` APC C40 | C45 暂停时定位到模型反复引用 `entity.tianhai-yaer` 却未先发出 CREATE；这是 Curator proposal repair contract 的缺口，不是放宽 dangling-reference 校验的理由 | 已补 V2 onboarding/repair contract，并保留该暂停产物作为根因证据 |
+| `remediation36` APC C40 续跑 | 从 C44 恢复后成功跨过 C45，继续提交到 C89；随后才因本地 OpenSearch shard 上限停止 | C45 修复已由真实 Qwen3.6 运行验证；不重做已完成章节 |
+| `remediation37` APC C89 续跑 | C90–C95 章节提交本身已完成；独立续跑的 formal lifecycle 未闭合，因此不冒充完整 P2/P3 report | 保留章节完成证据，不再为补齐旧 lifecycle 重跑 C40–C95 |
+
+对应的最小工程修复已落盘并有回归覆盖：
+
+- V2 Curator 在归一化后对同一 `(record_kind, target_id)` 做确定性合并；真正语义冲突在
+  materialization 前 fail closed，避免重复 target 把后续章节拖入不可解释的 materialization failure；
+- V2 proposal 与 repair prompt 明确要求新命名实体先以证据支持的精确 ID 发出 CREATE，之后才允许
+  state/relation/event/obligation 引用；
+- 本地单节点 OpenSearch projection index 明确设置 `number_of_replicas=0`，避免不可分配副本
+  消耗 `LOCAL_ONLY` shard budget 阻断长回放；这只修复基础设施配置，不改变 Gate 语义。
+
+误启动的 `remediation38` 全量运行已停止，精确前缀没有留下临时索引。当前结论保持：
+`P2_DIAGNOSTIC_COMPLETE / ACCEPTED_AS_DIAGNOSIS`、Gate M4 `HOLD`、正式 P3 尚未执行；C90–C95 的章节完成
+作为续跑诊断证据保留，不再以“补齐 formal lifecycle”为由重复运行。
+
+### 1.5 2026-08-01 既有检查点报告提取
+
+本次按已完成运行数据抽取检查点报告，不调用模型，也不重跑 C40–C95：
+
+| Profile | 选定报告 | 来源检查点 | 用途 |
+|---|---|---|---|
+| VAC | `/tmp/ns-stage2m-selected-checkpoints-vac-20260801/selected_checkpoint_report_A.json` | C40/C60/C80/C95 | 既有 P2 基线与后续 canary 对照 |
+| APC | `/tmp/ns-stage2m-selected-checkpoints-apc-20260801/selected_checkpoint_report_A.json` | C40 | 已有 APC 单点基线；没有伪造 APC C60/C80/C95 |
+
+对应 `selected_checkpoint_manifest.json` 均记录 `source_identity_consistent=true`，但明确
+`formal_contract_validated=false`、`gate_passed=false`，且选定子集不要求完整 scenario
+lifecycle。五个既有 P2 哨兵共 53 个 Gold：45 `MISS`、3 `UNTRACEABLE`、4 `HIT`、1
+`PARTIAL`；18 个证据链完整的 Gold 中仍有 13 个 `MISS`。当前修复只针对 C40 的 compound
+claim 合成和 C60/C95 的 long-range candidate recall；C80 不单独开修复分支。
+
+### 1.6 2026-08-01 聚焦修复 canary 结论
+
+按本方案只运行了 APC C40、VAC C40、VAC C60、VAC C95 四个 checkpoint/profile canary，
+没有重跑 C80、C90–C95 章节或 A/B/C。所有 canary 均完成 scenario lifecycle，
+`Assembler=READY`，且 future leakage、future-isolation failure 和 Writer/Ledger budget
+底线通过；它们仍是 `formal=false`、`gate=false` 的开发诊断产物。
+
+| Canary | 结果 | 诊断解释 |
+|---|---|---|
+| APC C40 | `HIT 1→4`，weighted `0.0926→0.2407`，mandatory `0.0909→0.3636` | compound claim 合成有真实局部改善，但 `F-ASSEMBLY` 和 trace 缺口仍在 |
+| VAC C40 | `HIT 3→2`，weighted `0.3636→0.2273`，新增 `CONTRADICTS` | 不能判定为改善，需要继续查语义结论与 stale/contrary context |
+| VAC C60 | `MISS 9→MISS 8 + PARTIAL 1`，weighted `0→0.0192` | fallback 已调用且 candidate complete alternative 增加，但 selected/ledger 仍为零，`F-NEED_ROUTE_RETRIEVE` 仍主导 |
+| VAC C95 | `MISS 10 + UNTRACEABLE 1` 基本不变，weighted 仍为 `0` | candidate complete alternative `1→2`，但 selected/ledger 仍为零，仍未形成可用 long-range alternative |
+
+因此这轮只证明改动已进入真实执行链，尚未证明质量接近 Gate M4。当前继续修 C40 的
+semantic contradiction/assembly 和 C60/C95 的 candidate→selected retrieval；不启动正式 P3，
+不把 canary 目录拼接或提升为正式报告，也不设置人工签署门槛。
 
 ## 2. 判定依据与复核方法
 
@@ -668,29 +752,58 @@ version 中使用该字段名；任何其他 traceable-ID 别名不得被静默�
 
 ## 7. 当前状态与剩余动作
 
+2026-08-02 最新接手基线：冻结 VAC C60 已使用 Need generator v21、task-weighted scheduler
+v6 和本地 `http://127.0.0.1:8002/v1` 完成真实单点 Arm A。22 个 Need 是自然生成结果，未触发
+当前 32 的兼容上限；不得以新的固定 Need 小整数继续收紧。11 个两-Need proposal 批和 3 个
+verification 批全部成功，`0 timeout / 0 endpoint error`，所以 endpoint/120 秒取消不再是当前
+主阻塞。产物目录为 `/tmp/ns-stage2m-v21-v6-qwen-c60-20260802`。
+
+质量仍未提升：C60 `weighted=0`、`mandatory=0`、9 个 Gold 全部 MISS；candidate/rank/stage1/
+ledger 的 complete alternative 数为 `3/2/0/0`，matched refs 为 `13/10/3/0`。G06/G09 在
+rank 已分别完整匹配 `2/2`、`3/3`，但没有形成 Writer 可用的完整 claim。完整 grounded 统一
+rerank及 query-aware compact/path-diversity 装箱均经真实 C60 证明无效并已撤销。下一步只查
+Controller support-aware selection 与 compound claim synthesis，不扩建治理契约，不启动 P3。
+
+2026-08-02 的最新证据覆盖旧 canary 结论：VAC C40 已通过 producer v23 的 currentness
+语义修复把 P002-G01 从 `CONTRADICTS` 改为 `HIT`，checkpoint contradiction 回到 0；
+C60 scheduler v5 使 candidate/rank 的 matched refs 和 partial alternatives 小幅增加，但没有
+增加 complete alternative。producer v24 另将 proposer completion ceiling 从 1024 调到
+2048，verifier 仍为 1024，以减少真实 Qwen 调用在结构化 JSON 闭合前耗尽输出上限；这不改
+Writer/Ledger 预算。C95 未重跑，P3 仍未启动。
+
+AO `session/ns-4@abf0731` 随后完成 VAC C40/C60/C95 canary40：C40 weighted 达到
+`0.4545` 且 contradiction=0，C60/C95 分别仍为 `0.0192/0`，因此 Gate 继续 HOLD。
+该运行使用 v19 Need generator 与旧 ContextCompiler；当前工作区已额外合并同 Need 完整反证
+扫描、scope lattice 和 Make ROOT，并保留 v20 Knowledge query 与 Context fair packing。
+
 | 顺序 | 当前状态 | 剩余动作 | 验收信号 |
 |---|---|---|---|
 | P0-1 receipt host validation | `IMPLEMENTED_TESTED` | 保持当前 fail-closed 测试 | 空/非法 traceable IDs 不可声明 SUPPORTS |
 | P0-2 Gate 公式与聚合器 | `IMPLEMENTED_TESTED` | 在 P2/P3 验证实际产物能通过严格入口 | 公式/hash/固定分母与五点矩阵全部通过 |
 | P0-3 APC alias | `IMPLEMENTED_TESTED` | APC C40 真实哨兵复验 | alias 冲突消失，真冲突仍 fail closed |
 | P0-4 public completion contract | `IMPLEMENTED_TESTED` | 在真实 trace 中检查 facet closure 与 taint | runtime 不读 Gold，closure 可审计 |
-| P1-1 max-min scheduler | `IMPLEMENTED_TESTED` | VAC C60/C80/C95 真实调用分配复验 | critical Need 不再因输入顺序饿死 |
-| P1-2 support closure | `IMPLEMENTED_TESTED` | 核对多 span support group 在真实产物中完整 | 无可信 receipt 的复合 claim 不 READY |
-| P1-3 support-aware selection | `IMPLEMENTED_TESTED` | VAC C40/C80/C95 检查 candidate→selected 损失 | 只发布 receipt-bound variant，support closure 不系统归零 |
+| P1-1 task-weighted scheduler v6 | `IMPLEMENTED_TESTED / C60_NO_QUALITY_GAIN` | 保留首轮不饿死；不要再加固定 Need 小上限 | 所有合法 Need 先获一次调用；剩余预算连续分配 |
+| P1-2 support closure | `IMPLEMENTED_TESTED / CURRENT_BLOCKER` | 逐项对照 G06/G09 rank-complete refs 与 claim variant，修原子 support group 合成 | G06/G09 的完整 evidence 形成一条 Writer 可读且 verifier 通过的 claim |
+| P1-3 support-aware selection | `IMPLEMENTED_TESTED / C40_CURRENTNESS_VERIFIED / CONTEXT_FAIR_PACKING_FIXED` | 用后续受影响 canary 验证 C60/C95 正确候选是否进入 Stage1；不重跑已完成章节 | mandatory Need 只锁定首个/显式 mandatory evidence group；其余按 Need 公平原子装箱，不重复展开 L0 |
 | P1-4 deterministic Assembler | `IMPLEMENTED_TESTED` | 检查 selected→assembled→ledger 损失 | spec/hash/receipt 校验与原子 packing 均成立 |
-| P0-5 formal run provenance/lifecycle | `IMPLEMENTED_TESTED / RUNTIME_PENDING` | 代码、严格聚合校验和回归已完成；待 clean source + real infrastructure 执行正式 P2/P3 | `code_source_dirty=false`；五点共享 identity；`scenario_run.completed=true` |
-| WP6 reviewer | `NOT_ACCEPTED` | 第二位 reviewer 独立审阅当前 P001/P003 可读产物 | reviewer 签署且问题闭环 |
-| P2 真实哨兵 | `NOT_ACCEPTED` | 新 experiment id 运行 APC C40、VAC C40/C60/C80/C95；按责任层回归 | 当前契约下的前后对照完整，无 silent fallback |
-| P3 双 profile 五点 WP7 | `NOT_STARTED / NOT_ACCEPTED` | 只在 P0-5、WP6 reviewer、P2 和工程门完成后全新运行 | 达到第 9 节全部准入条件 |
+| P0-5 formal run provenance/lifecycle | `IMPLEMENTED_TESTED / P2_DIAGNOSTIC_COMPLETE` | 五个 P2 单点已在 clean execution copy + real infrastructure 完成；仍待正式 P3 五点 lifecycle 验收 | `code_source_dirty=false`；五点共享 identity；`scenario_run.completed=true` |
+| P001/P003 自动化契约复核 | `AUTOMATED_CHECKS_ONLY / NON_BLOCKING` | 保留 schema、identity、evidence/cutoff 和 COMPLETE+MISS 的可读诊断；不设置人工签署门槛 | 自动化 contract/evidence 输出可复核；不以人工签名阻塞开发 |
+| P2 真实哨兵 | `ACCEPTED_AS_DIAGNOSIS / C40_TARGET_FIXED / C60_TIMEOUT_FIXED` | 只修 G06/G09 support selection/synthesis；C80 暂不重跑 | C60 模型批次 0 timeout；rank-complete evidence 进入完整 Writer claim；尚未达到 P3 触发条件 |
+| C45 新实体 onboarding | `IMPLEMENTED_TESTED / REAL_C45_CROSSED` | 保持精确 entity-ID 与 dangling-reference fail-closed；无需重跑已完成章节 | 真实 C45 续跑不再进入 poison loop |
+| V2 normalized target collision | `IMPLEMENTED_TESTED / FAIL_CLOSED` | 保持 materialization 前冲突拒绝与证据合并上限 | 同 target 同语义只合并证据，异语义拒绝 |
+| 单节点 projection replicas | `IMPLEMENTED_TESTED / CONFIGURED` | 仅影响新建 projection index 的本地资源配置 | `number_of_replicas=0`，不改变 Gate 评分 |
+| C90–C95 章节续跑 | `CHAPTERS_COMPLETE / FORMAL_LIFECYCLE_NOT_CLAIMED` | 保留 `remediation37` 章节提交证据；本任务不再补跑 C40–C95 | C90–C95 章节已完成，独立续跑 lifecycle 缺口明确记录 |
+| P3 双 profile 五点 WP7 | `NOT_STARTED / FINAL_GATE_ONLY` | 仅在三点 canary 接近正式门、底线无回归且最终 P3 前置条件满足后全新运行 | 达到第 9 节全部准入条件 |
 
 开发人员不应为了“完成表格”重写 P0/P1；只有 P2 真实 trace 证明实现错误时，才回到
-对应责任层做最小修复。当前串行主线是：
+对应责任层做最小修复。当前串行主线（本任务不再启动新的真实全量运行）是：
 
 ```text
-P0-5 正式运行 provenance/lifecycle + 仓库 quality 门 + WP6 reviewer
-  -> P2 真实哨兵
-  -> 冻结 clean code/config/contract
-  -> P3 双 profile 五点 Arm A
+既有 P2 诊断归档（接受为诊断证据）
+  -> C40 currentness 已验证；C60 v21/v6 与 8002 timeout 修复已验证
+  -> 用 G06/G09 frozen trace 修 Controller support group / compound claim synthesis
+  -> 只在机制有明确离线/单测证据后重跑 C60；C60 提升后才考虑同类 C95 canary
+  -> 继续目标层修复；接近正式门时才冻结 clean code/config/contract，执行 P3 双 profile 五点 Arm A
   -> Gate M4
 ```
 
@@ -702,7 +815,7 @@ Gate 公式、Gold contract、matcher 和分母 fixture。
 
 ### 8.1 单元/契约测试
 
-下列 1–18 是 P0/P1 契约清单，当前 118 项聚焦测试已通过；后续修复必须保持，
+下列 1–18 是 P0/P1 契约清单，当前 130 项聚焦测试已通过；后续修复必须保持，
 不得删除断言来让 P2 通过。19、20 和 22 已有明确回归；21、23、24 是当前
 formal-run provenance/lifecycle 审计缺口，需在 P3 前补齐。
 
@@ -769,12 +882,15 @@ freeze/reveal 后的 evaluator artifact 中生成。
 
 ### 8.3 小步真实验证
 
-1. APC P002/C40：确认 conflict 修复且无预算/证据 silent fallback；
-2. VAC P004/C80、P005/C95：确认后段 critical Need 得到真实 channel calls；
-3. VAC P003/C60：确认 prelude/long-range evidence 的 candidate recall 修复；
-4. VAC P002/C40：确认 candidate→rank→ledger 的完整 set 不再从 7→6→1；
-5. P001/P003 人工复核 Context 是否可直接交给 Writer；
-6. 才执行两个 profile 的正式五点重跑。
+1. C40：确认一个 Need 下的多证据 compound claim 能在 support producer 生成完整结论，
+   且没有预算、scope、cutoff 或 evidence silent fallback；
+2. C60：确认 long-range Need 的扩展 grounded fallback 能把复合历史 alternative 留在
+   candidate 层；
+3. C95：用同一 long-range fallback 检查后段召回和 trace 底线；
+4. C80 暂不单独修复，只作为三点 canary 的旁观对照；
+5. reviewer 如需并行，只检查 13 个 `COMPLETE + MISS` 样本并记录“claim 未表达/评测误判”，
+   不构成开发准入或人工签署门槛；
+6. 只有三点结果接近正式门时，才冻结最终 P3 的 clean source、schema、lifecycle 和严格聚合。
 
 P2 不是 Gate M4 运行，可以只跑指定哨兵点；但必须使用新 experiment id、当前 schema
 和冻结身份字段，并以 diagnostic/non-formal 形式发布。诊断 reporter 即使质量数值达标，
@@ -798,6 +914,7 @@ P2 不是 Gate M4 运行，可以只跑指定哨兵点；但必须使用新 expe
   --arms A \
   --semantic-backend local_openai \
   --retrieval-backend real_hybrid \
+  --allow-dirty-diagnostic \
   --model-base-url http://127.0.0.1:8002/v1 \
   --model qwen36-27b-nvfp4 \
   --model-max-output-tokens 8192 \
@@ -805,16 +922,19 @@ P2 不是 Gate M4 运行，可以只跑指定哨兵点；但必须使用新 expe
 ```
 
 该路径对非五点矩阵写出 `diagnostic_partial_report_A.json`，不写 formal unified PASS。
+`--allow-dirty-diagnostic` 只允许当前开发树运行这种非正式 Arm A canary，并会在 manifest
+中保留 `code_source_dirty=true`；最终 P3/Gate 仍必须移除该选项并使用 clean source。
 P2 不调用 `scripts/aggregate_stage2_checkpoint_reports.py` 去聚合不完整矩阵。
 
-### 8.4 P3 正式运行产物契约
+### 8.4 P3 正式运行产物契约（仅最终 P3/Gate）
 
 P3 必须是全新运行，不是对旧 WP7/WP8 JSON 的补字段操作。启动前必须同时满足：
 
 - 代码源树 clean，manifest 记录 `code_source_dirty=false`；
 - `make quality` 达到项目门，不使用 `--no-cov` 或降低覆盖率；
-- WP6 第二位 reviewer 已签署当前 P001/P003；
-- P2 哨兵点已闭环，没有 silent fallback、未解释的 schema 失败或 lifecycle 缺口；
+- C40/C60/C95 canary 已显示主要失败层得到改善，且四个 fail-closed 底线没有回归；
+- P2 诊断结果、三点前后对照和自动化 contract/evidence 输出已归档；人工 reviewer/签署不作为
+  本开发链准入条件；
 - 两个 profile 使用隔离 namespace 和新 experiment id，但共享已冻结的代码、公式、
   benchmark contract、matcher 和预算身份。
 
@@ -1054,11 +1174,11 @@ ref matching 必须复用锁定的 `gold_evidence_matcher.v3` 身份/span 规则
    默认严格 formal reporter；
 9. 正式运行前 `make quality` 必须通过或有项目级、版本化的明确处置，
    不得在 P3 命令中临时跳过 coverage；
-10. WP6 第二位 reviewer 必须审阅当前 schema/算法下的 P001/P003 人类可读
-    Context、逐 Gold 和 Evidence Ledger，不得沿用旧版签署。
+10. P001/P003 的 schema、algorithm、Context、逐 Gold 和 Evidence Ledger 必须能由当前
+    自动化 contract/evidence 检查复核；不沿用旧 artifact，也不把人工签署作为开发门。
 
-满足以上条件并关闭 WP6 第二位人工 reviewer 治理项后，Gate M4 才能从 HOLD
-转为 PASS。此前继续禁止启动 WP8。
+满足以上条件并由正式 P3 的严格聚合器产出两个 profile 的 `gate_passed=true` 后，Gate M4
+才可从 HOLD 转为 PASS。此前继续禁止启动 WP8。
 
 ## 10. 最终责任归因
 
@@ -1074,5 +1194,5 @@ ref matching 必须复用锁定的 `gold_evidence_matcher.v3` 身份/span 规则
 
 当前正式状态：
 
-> **P0/P1 代码与严格 Gate reporter 已实现；P2 未验收，P3 未执行；
+> **P0/P1 代码与严格 Gate reporter 已实现；P2 diagnostic 已完成并接受为诊断证据，P3 未执行；
 > Gate M4 HOLD；正式 WP8 未获授权。**

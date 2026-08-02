@@ -157,6 +157,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--model-max-output-tokens", type=int, default=8192)
     value.add_argument("--model-max-retries", type=int, default=0)
     value.add_argument(
+        "--allow-dirty-diagnostic",
+        action="store_true",
+        help=(
+            "allow a non-formal real_hybrid Arm A canary to record the current executable tree; "
+            "never use this option for final P3/Gate"
+        ),
+    )
+    value.add_argument(
         "--retrieval-backend",
         choices=tuple(item.value for item in RetrievalBackendProfile),
         default=RetrievalBackendProfile.REAL_HYBRID.value,
@@ -197,7 +205,9 @@ def main() -> int:
     output_directory = args.output_directory.resolve()
     retrieval_profile = RetrievalBackendProfile(args.retrieval_backend)
     repository_root = Path(__file__).parents[1]
-    require_clean_source = retrieval_profile is RetrievalBackendProfile.REAL_HYBRID
+    require_clean_source = (
+        retrieval_profile is RetrievalBackendProfile.REAL_HYBRID and not args.allow_dirty_diagnostic
+    )
     if require_clean_source:
         _assert_formal_source_clean(repository_root)
     quality_repair_flags = _load_quality_repair_flags(args)

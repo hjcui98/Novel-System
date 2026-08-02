@@ -79,6 +79,20 @@
     "model_role": {
       "$ref": "#/$defs/ModelRole"
     },
+    "max_output_tokens": {
+      "anyOf": [
+        {
+          "maximum": 131072,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Output Tokens"
+    },
     "prompt": {
       "title": "Prompt",
       "type": "string"

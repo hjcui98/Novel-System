@@ -162,6 +162,7 @@ stage2-memory-benchmark:
 		STAGE2R_DATABASE_URL="$(STAGE2R_DATABASE_URL)" \
 		STAGE2R_EXPERIMENT_ID="$(STAGE2R_EXPERIMENT_ID)" \
 		INFORMATION_PROFILE="$(INFORMATION_PROFILE)" ARMS="$${ARMS:-A}" \
+		ROOT="$(CURDIR)" \
 		bash scripts/run_stage2_real_staged.sh
 
 stage2r-backfill:

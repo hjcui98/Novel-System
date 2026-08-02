@@ -78,6 +78,7 @@ class ModelRequest(DomainModel):
     tool_policy_hash: ArtifactId | None = None
     render_fingerprint: ArtifactId | None = None
     response_schema: dict[str, JsonValue] | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1, le=131072)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
 
 

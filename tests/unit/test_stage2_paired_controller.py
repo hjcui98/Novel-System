@@ -6,7 +6,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import ValidationError
 
-from novel_agent.domain.benchmark import TextRootDocument
+from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
 from novel_agent.domain.ids import (
     ArtifactId,
     CommitId,
@@ -45,7 +45,10 @@ from novel_agent.domain.stage2 import (
     RetrievalBudget,
     ToolPolicy,
 )
+from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextBlock, TextSpanRef
 from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
+from novel_agent.services.artifacts import sha256_id
+from novel_agent.services.content_addressing import quote_hash
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
 from novel_agent.services.retrieval import InMemoryRetrievalBackend, RerankService
@@ -375,6 +378,7 @@ class _HitBackend(_EmptyBackend):
 class _RecordingEmptyBackend(_EmptyBackend):
     def __init__(self) -> None:
         self.calls: list[tuple[StableId, RetrievalChannel]] = []
+        self.queries: list[str] = []
 
     def search(
         self,
@@ -383,7 +387,35 @@ class _RecordingEmptyBackend(_EmptyBackend):
         limit: int,
     ) -> tuple[ChannelHit, ...]:
         self.calls.append((memory_need.need_id, channel))
+        self.queries.append(memory_need.query_text)
         return ()
+
+
+class _EvidenceForNeedBackend(_RecordingEmptyBackend):
+    def __init__(self, evidence_need_id: StableId, evidence_unit: RetrievalUnit) -> None:
+        super().__init__()
+        self._evidence_need_id = evidence_need_id
+        self._evidence_unit = evidence_unit
+
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        super().search(memory_need, channel, limit)
+        if memory_need.need_id != self._evidence_need_id:
+            return ()
+        return (
+            ChannelHit(
+                unit=self._evidence_unit,
+                channel=channel,
+                channel_rank=1,
+                raw_score=1.0,
+                candidate_count=1,
+                hit_reason="evidence",
+            ),
+        )
 
 
 def test_registered_routes_allocate_first_call_max_min_and_type_budget_miss() -> None:
@@ -464,6 +496,335 @@ def test_registered_routes_allocate_first_call_max_min_and_type_budget_miss() ->
     )
     assert exhausted.context.retrieval_traces[1].need_execution_status is (
         NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+    )
+
+
+def test_registered_long_range_need_uses_declared_grounded_fallback_before_second_anchor() -> None:
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.long-range"),
+            "need_type": "long_range_callback",
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan,),
+    )
+
+    result = paired.run_deterministic(request(item, max_calls=2), text_root())
+
+    assert [channel for _need_id, channel in backend.calls] == [
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.GROUNDED_BM25,
+    ]
+    assert result.context.retrieval_traces[0].fallback_used is True
+    assert result.context.retrieval_traces[0].fallback_reason == "anchor_evidence_insufficient"
+    assert backend.queries[0] == item.query_text
+    assert backend.queries[1] != item.query_text
+    assert "前因" in backend.queries[1]
+
+
+def test_historical_fallback_reserves_budget_for_public_query_expansion() -> None:
+    item = need(intent=Stage1QueryIntent.SEMANTIC_HISTORY).model_copy(
+        update={
+            "need_id": StableId("need.fair.long-range.destination-history"),
+            "need_type": "long_range_callback",
+            "query_text": "目标人物 去向 " + "宽泛实体锚点 " * 600,
+            "query_hints": ("稀有提示词: 神都南门后的最终目的地",),
+            "why_needed": "稀有原因词: 确认长程行动路线是否闭合",
+            "purpose": "稀有用途词: 向 Writer 提供完整历史 alternative",
+        }
+    )
+
+    fallback = PairedMemoryControllerRunner._historical_fallback_need(item)
+
+    assert fallback.query_text != item.query_text
+    assert len(fallback.query_text) <= 2400
+    assert fallback.query_text.startswith("目标人物 去向")
+    assert "神都南门后的最终目的地" in fallback.query_text
+    assert "确认长程行动路线是否闭合" in fallback.query_text
+    assert "向 Writer 提供完整历史 alternative" in fallback.query_text
+    assert "destination history" in fallback.query_text
+    assert "前因" in fallback.query_text
+
+
+def test_registered_fallback_remains_reachable_after_task_weighted_primary_call() -> None:
+    fallback_need = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.fallback-priority"),
+            "need_type": "causal_history",
+            "priority": 60,
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    evidence_need = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.primary-priority"),
+            "need_type": "relationship_emotion",
+            "query_text": "hero bond",
+            "priority": 100,
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    evidence_unit = unit().model_copy(
+        update={
+            "unit_id": StableId("anchor.evidence.hero-bond"),
+            "text": "hero bond",
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.hero-bond"),
+                    root_hash=CONFIG,
+                    object_hash=CONFIG,
+                    chapter_id=StableId("chapter.hero-bond"),
+                    span=TextSpanRef(block_id=StableId("block.hero-bond"), start=0, end=1),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    evidence_chapter_id = StableId("chapter.hero-bond")
+    evidence_scene_id = StableId("scene.hero-bond")
+    evidence_block = TextBlock(
+        block_id=StableId("block.hero-bond"),
+        chapter_id=evidence_chapter_id,
+        scene_id=evidence_scene_id,
+        narrative_index=0,
+        text="hero bond",
+    )
+    evidence_text_root = TextRootDocument(
+        root_hash=CONFIG,
+        schema_version=VERSION,
+        chapters=(
+            ChapterDocument(
+                chapter_id=evidence_chapter_id,
+                chapter_index=1,
+                scenes=(
+                    SceneDocument(
+                        scene_id=evidence_scene_id,
+                        scene_index=0,
+                        blocks=(evidence_block,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    evidence_unit = evidence_unit.model_copy(
+        update={
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.hero-bond"),
+                    root_hash=CONFIG,
+                    object_hash=sha256_id(evidence_block.text.encode("utf-8")),
+                    chapter_id=evidence_chapter_id,
+                    scene_id=evidence_scene_id,
+                    quote_hash=quote_hash(evidence_block.text),
+                    span=TextSpanRef(
+                        block_id=evidence_block.block_id,
+                        start=0,
+                        end=len(evidence_block.text),
+                    ),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plans = tuple(
+        DeterministicChannelPlanner().plan(item, capability)
+        for item in (fallback_need, evidence_need)
+    )
+    backend = _EvidenceForNeedBackend(evidence_need.need_id, evidence_unit)
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+
+    result = paired.run_deterministic(
+        request(fallback_need, max_calls=4).model_copy(
+            update={"initial_memory_needs": (fallback_need, evidence_need)}
+        ),
+        evidence_text_root,
+    )
+
+    assert [channel for _need_id, channel in backend.calls] == [
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.GROUNDED_BM25,
+    ]
+    assert result.context.retrieval_traces[0].fallback_used is True
+
+
+def test_registered_fallback_runs_after_a_capability_masked_primary() -> None:
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_id": StableId("need.fair.masked-primary"),
+            "need_type": "causal_history",
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan,),
+    )
+
+    result = paired.run_deterministic(request(item, max_calls=2), text_root())
+
+    assert [channel for _need_id, channel in backend.calls] == [
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.GROUNDED_BM25,
+    ]
+    assert result.context.retrieval_traces[0].fallback_used is True
+
+
+def test_r1_current_state_miss_uses_registered_semantic_fallback() -> None:
+    item = need(intent=Stage1QueryIntent.CURRENT_STATE).model_copy(
+        update={
+            "need_id": StableId("need.fair.current-state"),
+            "entity_ids": (StableId("entity.paired.hero"),),
+            "allowed_candidate_pools": (
+                CandidatePool.R1,
+                CandidatePool.ANCHOR,
+            ),
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.R1_EXACT,
+            RetrievalChannel.R1_TEMPORAL,
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        (plan,),
+    )
+
+    result = paired.run_deterministic(request(item, max_calls=2), text_root())
+
+    assert [channel for _need_id, channel in backend.calls] == [
+        RetrievalChannel.R1_EXACT,
+        RetrievalChannel.ANCHOR_BM25,
+    ]
+    assert result.context.retrieval_traces[0].fallback_reason == "exact_current_record_absent"
+
+
+def test_long_range_fallback_is_not_repeated_when_grounded_evidence_is_selected() -> None:
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_type": "long_range_callback",
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    grounded = unit().model_copy(
+        update={
+            "unit_id": StableId("expanded.grounded.callback"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.callback"),
+                    root_hash=CONFIG,
+                    object_hash=CONFIG,
+                    span=TextSpanRef(block_id=StableId("block.callback"), start=0, end=4),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    candidate = PairedMemoryControllerRunner._direct_candidates(
+        {
+            RetrievalChannel.GROUNDED_BM25: (
+                ChannelHit(
+                    unit=grounded,
+                    channel=RetrievalChannel.GROUNDED_BM25,
+                    channel_rank=1,
+                    raw_score=1.0,
+                    candidate_count=1,
+                    hit_reason="grounded",
+                ),
+            )
+        },
+        limit=1,
+    )
+
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient", candidate, need=item
     )
 
 
@@ -576,6 +937,68 @@ def test_max_min_first_round_does_not_starve_optional_need() -> None:
         mandatory.need_id.root: 1,
         optional.need_id.root: 1,
     }
+
+
+def test_task_weighted_scheduler_completes_high_priority_fallback_after_first_round() -> None:
+    template = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "need_type": "causal_history",
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            ),
+        }
+    )
+    high = template.model_copy(
+        update={
+            "need_id": StableId("need.weighted.high"),
+            "query_text": "high priority long-range history",
+            "priority": 100,
+        }
+    )
+    low = template.model_copy(
+        update={
+            "need_id": StableId("need.weighted.low"),
+            "query_text": "low priority incidental event",
+            "priority": 10,
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plans = tuple(DeterministicChannelPlanner().plan(item, capability) for item in (high, low))
+    backend = _RecordingEmptyBackend()
+    paired = PairedMemoryControllerRunner(
+        backend,
+        MagicMock(),
+        ContextCompiler(EvidenceExpander()),
+        CONFIG,
+        lambda _: True,
+        plans,
+    )
+
+    result = paired.run_deterministic(
+        request(high, max_calls=6).model_copy(update={"initial_memory_needs": (high, low)}),
+        text_root(),
+    )
+
+    assert backend.calls == [
+        (high.need_id, RetrievalChannel.ANCHOR_BM25),
+        (low.need_id, RetrievalChannel.ANCHOR_BM25),
+        (high.need_id, RetrievalChannel.GROUNDED_BM25),
+        (high.need_id, RetrievalChannel.GROUNDED_DENSE),
+        (high.need_id, RetrievalChannel.ANCHOR_DENSE),
+        (low.need_id, RetrievalChannel.GROUNDED_BM25),
+    ]
+    assert result.calls_allocated_by_need == {high.need_id.root: 4, low.need_id.root: 2}
 
 
 class _Reranker:
@@ -730,6 +1153,46 @@ def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels()
         },
         limit=1,
     )
+    causal_need = item.model_copy(update={"need_type": "causal_history"})
+    assert PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        selected,
+        need=causal_need,
+    )
+    knowledge_need = item.model_copy(update={"need_type": "knowledge_boundary"})
+    assert PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        selected,
+        need=knowledge_need,
+    )
+    grounded_selected = selected[0].model_copy(
+        update={
+            "unit": selected[0].unit.model_copy(
+                update={
+                    "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+                    "evidence_refs": (
+                        EvidenceRef(
+                            evidence_id=StableId("evidence.knowledge.grounded"),
+                            root_hash=CONFIG,
+                            object_hash=CONFIG,
+                            span=TextSpanRef(
+                                block_id=StableId("block.knowledge.grounded"),
+                                start=0,
+                                end=1,
+                            ),
+                            support_status=EvidenceSupportStatus.CURRENT,
+                            resolved_at_commit=COMMIT,
+                        ),
+                    ),
+                }
+            )
+        }
+    )
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "anchor_evidence_insufficient",
+        (grounded_selected,),
+        need=knowledge_need,
+    )
     assert not PairedMemoryControllerRunner._fallback_applies(
         "anchor_evidence_insufficient",
         selected,
@@ -841,6 +1304,253 @@ def test_fallback_merge_reserves_bounded_incoming_capacity() -> None:
     )
     assert len(existing_longer) == 4
     assert len(incoming_longer) == 4
+
+
+def test_evidence_fallback_keeps_late_grounded_hit_inside_candidate_limit() -> None:
+    anchor_source = unit().model_copy(update={"mandatory": False})
+    grounded_source = anchor_source.model_copy(
+        update={
+            "unit_id": StableId("grounded.target"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.grounded.target"),
+                    root_hash=CONFIG,
+                    object_hash=CONFIG,
+                    chapter_id=StableId("chapter.target"),
+                    span=TextSpanRef(block_id=StableId("block.target"), start=0, end=1),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+
+    def candidates(source: RetrievalUnit, prefix: str) -> tuple[FusedCandidate, ...]:
+        result: list[FusedCandidate] = []
+        for index in range(1, 21):
+            item = source.model_copy(update={"unit_id": StableId(f"{prefix}.{index}")})
+            hit = ChannelHit(
+                unit=item,
+                channel=RetrievalChannel.ANCHOR_BM25,
+                channel_rank=index,
+                raw_score=1.0 / index,
+                candidate_count=20,
+                hit_reason="candidate",
+            )
+            result.append(
+                FusedCandidate(
+                    unit=item,
+                    fused_rank=index,
+                    rrf_score=1.0 / index,
+                    channel_hits=(hit,),
+                )
+            )
+        return tuple(result)
+
+    incoming = list(candidates(grounded_source, "grounded"))
+    incoming[10] = incoming[10].model_copy(
+        update={"unit": grounded_source.model_copy(update={"unit_id": StableId("grounded.target")})}
+    )
+    merged = PairedMemoryControllerRunner._merge_candidates(
+        candidates(anchor_source, "anchor"),
+        tuple(incoming),
+        limit=20,
+        reserve_incoming=True,
+    )
+
+    target = next(
+        candidate for candidate in merged if candidate.unit.unit_id.root == "grounded.target"
+    )
+    assert target.selected is True
+    assert target.fused_rank <= 20
+
+
+def test_historical_evidence_protection_reserves_grounded_support() -> None:
+    historical_need = need(intent=Stage1QueryIntent.SEMANTIC_HISTORY)
+    anchor_source = unit().model_copy(update={"mandatory": False})
+    grounded_source = anchor_source.model_copy(
+        update={
+            "unit_id": StableId("grounded.protected"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.protected"),
+                    root_hash=CONFIG,
+                    object_hash=CONFIG,
+                    chapter_id=StableId("chapter.protected"),
+                    span=TextSpanRef(block_id=StableId("block.protected"), start=0, end=1),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+
+    def candidate(
+        source: RetrievalUnit,
+        unit_id: str,
+        rank: int,
+        *,
+        selected: bool,
+    ) -> FusedCandidate:
+        item = source.model_copy(update={"unit_id": StableId(unit_id)})
+        hit = ChannelHit(
+            unit=item,
+            channel=RetrievalChannel.ANCHOR_BM25,
+            channel_rank=rank,
+            raw_score=1.0 / rank,
+            candidate_count=5,
+            hit_reason="candidate",
+        )
+        return FusedCandidate(
+            unit=item,
+            fused_rank=rank,
+            rrf_score=1.0 / rank,
+            channel_hits=(hit,),
+            selected=selected,
+        )
+
+    candidates = (
+        *(candidate(anchor_source, f"anchor.{rank}", rank, selected=True) for rank in range(1, 5)),
+        candidate(grounded_source, grounded_source.unit_id.root, 5, selected=False),
+    )
+    protected = PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need,
+        candidates,
+        limit=4,
+    )
+
+    protected_grounded = next(
+        item for item in protected if item.unit.unit_id == grounded_source.unit_id
+    )
+    displaced_anchor = next(item for item in protected if item.unit.unit_id.root == "anchor.4")
+    assert protected_grounded.selected is True
+    assert displaced_anchor.selected is False
+    assert displaced_anchor.rejection_reason == "historical_evidence_reserve"
+    assert sum(item.selected for item in protected) == 4
+
+    assert (
+        PairedMemoryControllerRunner._protect_historical_evidence(need(), candidates, limit=4)
+        == candidates
+    )
+    with pytest.raises(ValueError, match="must be positive"):
+        PairedMemoryControllerRunner._protect_historical_evidence(
+            historical_need, candidates, limit=0
+        )
+
+
+def test_historical_evidence_protection_handles_empty_and_existing_reserve() -> None:
+    historical_need = need(intent=Stage1QueryIntent.RELATED_EVENT)
+    anchor_source = unit().model_copy(update={"mandatory": False})
+    anchor_hit = ChannelHit(
+        unit=anchor_source,
+        channel=RetrievalChannel.ANCHOR_BM25,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="anchor",
+    )
+    anchor_candidate = FusedCandidate(
+        unit=anchor_source,
+        fused_rank=1,
+        rrf_score=1.0,
+        channel_hits=(anchor_hit,),
+        selected=False,
+    )
+    assert PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need, (anchor_candidate,), limit=4
+    ) == (anchor_candidate,)
+
+    grounded_source = anchor_source.model_copy(
+        update={
+            "unit_id": StableId("grounded.already-reserved"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_SPAN,
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.already-reserved"),
+                    root_hash=CONFIG,
+                    object_hash=CONFIG,
+                    span=TextSpanRef(block_id=StableId("block.already-reserved"), start=0, end=1),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    grounded_hit = anchor_hit.model_copy(update={"unit": grounded_source})
+    grounded_candidate = FusedCandidate(
+        unit=grounded_source,
+        fused_rank=2,
+        rrf_score=0.5,
+        channel_hits=(grounded_hit,),
+        selected=True,
+    )
+    retained = PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need,
+        (anchor_candidate, grounded_candidate),
+        limit=4,
+    )
+    assert retained == (anchor_candidate, grounded_candidate)
+
+    second_grounded = grounded_source.model_copy(
+        update={
+            "unit_id": StableId("grounded.second-reserve"),
+            "evidence_refs": (
+                grounded_source.evidence_refs[0].model_copy(
+                    update={"evidence_id": StableId("evidence.second-reserve")}
+                ),
+            ),
+        }
+    )
+    second_grounded_candidate = grounded_candidate.model_copy(
+        update={
+            "unit": second_grounded,
+            "fused_rank": 3,
+            "rrf_score": 1 / 3,
+            "channel_hits": (anchor_hit.model_copy(update={"unit": second_grounded}),),
+            "selected": False,
+        }
+    )
+    filled = PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need,
+        (grounded_candidate, second_grounded_candidate),
+        limit=20,
+    )
+    assert filled[0].selected is True
+    assert filled[1].selected is True
+
+    reserve_one = PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need,
+        (
+            anchor_candidate,
+            grounded_candidate.model_copy(update={"selected": False}),
+            second_grounded_candidate,
+        ),
+        limit=4,
+    )
+    assert sum(item.selected for item in reserve_one) == 1
+    assert reserve_one[2].selected is False
+
+    mandatory_anchor = anchor_source.model_copy(
+        update={"unit_id": StableId("anchor.mandatory"), "mandatory": True}
+    )
+    mandatory_candidate = anchor_candidate.model_copy(
+        update={
+            "unit": mandatory_anchor,
+            "channel_hits": (anchor_hit.model_copy(update={"unit": mandatory_anchor}),),
+            "selected": True,
+        }
+    )
+    no_replacement = PairedMemoryControllerRunner._protect_historical_evidence(
+        historical_need,
+        (
+            mandatory_candidate,
+            grounded_candidate.model_copy(update={"selected": False}),
+        ),
+        limit=1,
+    )
+    assert no_replacement[1].selected is False
 
 
 def test_fair_registered_routes_block_plan_scope_and_reject_route_identity_drift() -> None:

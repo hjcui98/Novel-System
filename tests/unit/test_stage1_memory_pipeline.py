@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import pytest
 
-from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
+    ChannelHit,
+    FusedCandidate,
+    NeedExecutionStatus,
     NeedRisk,
     RequirementLevel,
     ResolutionPath,
+    RetrievalChannel,
+    RetrievalStopReason,
+    RetrievalTrace,
+    RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
     Stage1QueryIntent,
@@ -16,6 +23,7 @@ from novel_agent.services.memory_pipeline import (
     AnchorBuilder,
     ContextCompiler,
     EvidenceExpander,
+    _estimate_tokens,
     _with_content_metadata,
 )
 from novel_agent.services.retrieval import (
@@ -179,6 +187,181 @@ def test_content_metadata_promotes_legacy_parent_id() -> None:
     rebound = _with_content_metadata(legacy)
 
     assert rebound.parent_unit_ids == (parent,)
+
+
+def test_evidence_expander_does_not_duplicate_grounded_l0_units() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    grounded = next(
+        unit
+        for unit in AnchorBuilder().build(
+            bundle.world_roots[0],
+            history,
+            bundle.plan_roots[0],
+            snapshot_id=StableId("snapshot.synthetic.grounded"),
+        )
+        if unit.unit_kind is RetrievalUnitKind.GROUNDED_BLOCK
+    )
+    hit = ChannelHit(
+        unit=grounded,
+        channel=RetrievalChannel.GROUNDED_BM25,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="test",
+    )
+    candidate = FusedCandidate(
+        unit=grounded,
+        fused_rank=1,
+        rrf_score=1.0,
+        channel_hits=(hit,),
+    )
+
+    assert EvidenceExpander().expand((candidate,), history) == ()
+
+
+def test_context_compiler_gives_an_uncovered_need_a_slot_before_extra_alternatives() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.fair-context")
+    mandatory_need = memory_need(
+        "need.pipeline.mandatory-wide",
+        Stage1QueryIntent.CURRENT_STATE,
+        "wide mandatory query",
+        (CandidatePool.R1,),
+        mandatory=True,
+    )
+    optional_need = memory_need(
+        "need.pipeline.optional-history",
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "specific historical evidence",
+        (CandidatePool.ANCHOR,),
+        mandatory=False,
+    ).model_copy(update={"priority": 100})
+
+    def unit(identity: str, text: str) -> RetrievalUnit:
+        return RetrievalUnit(
+            unit_id=StableId(identity),
+            unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+            source_commit=world.source_commit,
+            snapshot_id=snapshot_id,
+            text=text,
+        )
+
+    first = unit("unit.context.required-first", "A" * 40)
+    redundant = unit("unit.context.redundant-second", "B" * 40)
+    target = unit("unit.context.optional-target", "C" * 40)
+
+    def candidate(item: RetrievalUnit, rank: int, count: int) -> FusedCandidate:
+        hit = ChannelHit(
+            unit=item,
+            channel=RetrievalChannel.R1_EXACT,
+            channel_rank=rank,
+            raw_score=float(count - rank + 1),
+            candidate_count=count,
+            hit_reason="test",
+        )
+        return FusedCandidate(
+            unit=item,
+            fused_rank=rank,
+            rrf_score=1.0 / rank,
+            channel_hits=(hit,),
+        )
+
+    def trace(need: Stage1MemoryNeed, items: tuple[RetrievalUnit, ...]) -> RetrievalTrace:
+        candidates = tuple(
+            candidate(item, index, len(items)) for index, item in enumerate(items, 1)
+        )
+        return RetrievalTrace(
+            need_id=need.need_id,
+            intent=need.query_intent,
+            allowed_channels=(RetrievalChannel.R1_EXACT,),
+            channel_candidate_counts={RetrievalChannel.R1_EXACT: len(candidates)},
+            candidates=candidates,
+            fusion_applied=False,
+            stop_reason=RetrievalStopReason.BUDGET_SATISFIED,
+            need_execution_status=NeedExecutionStatus.EXECUTED_WITH_CANDIDATES,
+            calls_allocated=1,
+        )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        (
+            (mandatory_need, trace(mandatory_need, (first, redundant))),
+            (optional_need, trace(optional_need, (target,))),
+        ),
+        history,
+        context_id=StableId("context.synthetic.fair-context"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="preserve one bounded evidence group per Need",
+        token_budget=_estimate_tokens(first.text) + _estimate_tokens(target.text),
+    )
+
+    assert tuple(unit.unit_id for unit in package.mandatory_constraints) == (first.unit_id,)
+    assert target.unit_id in {unit.unit_id for unit in package.current_world_state}
+    assert redundant.unit_id in package.budget_report.dropped_optional_unit_ids
+    assert package.budget_report.mandatory_tokens + package.budget_report.optional_tokens == (
+        package.budget_report.token_budget
+    )
+
+
+def _scoped_unit(
+    identity: str,
+    scope: str,
+    *,
+    commit: CommitId,
+    snapshot: StableId,
+) -> RetrievalUnit:
+    return RetrievalUnit(
+        unit_id=StableId(identity),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=commit,
+        snapshot_id=snapshot,
+        text="scope visible state",
+        entity_ids=(StableId("entity.scope.subject"),),
+        access_scope=scope,
+        evidence_refs=(),
+        support_status="supported",
+    )
+
+
+def test_in_memory_backend_applies_scope_lattice_and_rejects_unknown_scope() -> None:
+    world = make_synthetic_bundle().world_roots[0]
+    snapshot = StableId("snapshot.synthetic.scope-lattice")
+    safe = _scoped_unit(
+        "anchor.scope.safe", "writer_safe", commit=world.source_commit, snapshot=snapshot
+    )
+    plan = _scoped_unit(
+        "anchor.scope.plan", "author_planning", commit=world.source_commit, snapshot=snapshot
+    )
+    evaluator = _scoped_unit(
+        "anchor.scope.evaluator", "evaluator", commit=world.source_commit, snapshot=snapshot
+    )
+    backend = InMemoryRetrievalBackend((safe, plan, evaluator))
+
+    def visible(scope: str) -> set[StableId]:
+        scoped_need = memory_need(
+            f"need.scope.{scope}",
+            Stage1QueryIntent.CURRENT_STATE,
+            "scope visible state",
+            (CandidatePool.R1,),
+            mandatory=True,
+            entity_ids=(StableId("entity.scope.subject"),),
+        ).model_copy(
+            update={
+                "access_scope": scope,
+                "allow_plan": scope in {"author_planning", "evaluator"},
+            }
+        )
+        return {
+            hit.unit.unit_id for hit in backend.search(scoped_need, RetrievalChannel.R1_EXACT, 10)
+        }
+
+    assert visible("writer_safe") == {safe.unit_id}
+    assert visible("author_planning") == {safe.unit_id, plan.unit_id}
+    assert visible("evaluator") == {safe.unit_id, plan.unit_id, evaluator.unit_id}
+    assert visible("unknown") == set()
 
 
 def test_context_compiler_preserves_mandatory_closure_and_expands_l0_evidence() -> None:

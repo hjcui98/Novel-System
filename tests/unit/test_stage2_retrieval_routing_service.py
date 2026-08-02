@@ -167,6 +167,27 @@ def test_registered_known_id_uses_r1_and_same_basis_slot_uses_r0() -> None:
     assert active_channels(local) == {RetrievalChannel.R0}
 
 
+def test_current_state_r1_miss_has_a_registered_bounded_semantic_fallback() -> None:
+    planner = DeterministicChannelPlanner()
+    current = planner.plan(
+        need(
+            Stage1QueryIntent.CURRENT_STATE,
+            (CandidatePool.R1, CandidatePool.ANCHOR),
+            entities=(ENTITY,),
+        ),
+        capability(),
+    )
+
+    assert current.resolution_tier is ResolutionTier.R1
+    assert active_channels(current) == {
+        RetrievalChannel.R1_EXACT,
+        RetrievalChannel.R1_TEMPORAL,
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+    }
+    assert current.conditional_fallbacks[0].condition == "exact_current_record_absent"
+
+
 def test_router_fails_closed_for_basis_mismatch_and_validator_rejects_policy_expansion() -> None:
     planner = DeterministicChannelPlanner()
     semantic = need(Stage1QueryIntent.SEMANTIC_HISTORY, (CandidatePool.ANCHOR,))
