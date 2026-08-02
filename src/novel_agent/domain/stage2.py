@@ -8,7 +8,7 @@ from typing import Annotated
 
 from pydantic import Field, JsonValue, StringConstraints, model_validator
 
-from novel_agent.domain.artifacts import ArtifactRef, RootManifest
+from novel_agent.domain.artifacts import ArtifactRef, PlanRootRef, RootManifest
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.changes import ObservedChangeSet
 from novel_agent.domain.ids import (
@@ -29,6 +29,18 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.retrieval_routing import ChannelFailureCode
 from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.writer_context import (
+    BenchmarkInformationProfile,
+    BenchmarkTaskContract,
+    ClaimSupportGroup,
+    ClaimSupportReceipt,
+    ClaimVariant,
+    ContextAssemblyStatus,
+    CutoffAttestation,
+    EvidenceLedger,
+    FreezeReceipt,
+    WriterContextPackage,
+)
 
 
 class AgentType(StrEnum):
@@ -675,11 +687,6 @@ class AccessScope(StrEnum):
     EVALUATOR = "evaluator"
 
 
-class BenchmarkInformationProfile(StrEnum):
-    VISIBLE_AT_CUTOFF = "visible_at_cutoff"
-    AUTHOR_PLAN_CONDITIONED = "author_plan_conditioned"
-
-
 class PublicCheckpointCase(DomainModel):
     """Checkpoint case view stripped of all Gold, future text, and evaluator data.
 
@@ -692,6 +699,25 @@ class PublicCheckpointCase(DomainModel):
     project_id: ProjectId
     target_range: tuple[int, int]
     history_range: tuple[int, int]
+    task_contract: BenchmarkTaskContract
+    plan_root_ref: PlanRootRef | None = None
+    public_input_hash: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_public_contract(self) -> PublicCheckpointCase:
+        if self.task_contract.checkpoint_chapter != self.history_range[1]:
+            raise ValueError("public task checkpoint does not match history range")
+        if (
+            self.task_contract.target_chapter_start,
+            self.task_contract.target_chapter_end,
+        ) != self.target_range:
+            raise ValueError("public task target range does not match checkpoint case")
+        if (
+            self.task_contract.information_profile is BenchmarkInformationProfile.VISIBLE_AT_CUTOFF
+            and self.plan_root_ref is not None
+        ):
+            raise ValueError("visible_at_cutoff public case cannot expose a PlanRoot")
+        return self
 
 
 class PublicBenchmarkConfig(DomainModel):
@@ -781,15 +807,49 @@ class EvidenceLedgerEntry(DomainModel):
 
 
 class ContextAssemblySpec(DomainModel):
-    selected_unit_ids: tuple[StableId, ...]
+    selected_unit_ids: tuple[StableId, ...] = ()
     mandatory_unit_ids: tuple[StableId, ...] = ()
-    token_budget: int = Field(ge=1)
+    token_budget: int = Field(default=1, ge=1)
     reduction_allowed: bool = True
+    selected_support_group_ids: tuple[StableId, ...] = ()
+    mandatory_support_group_ids: tuple[StableId, ...] = ()
+    allowed_claim_variant_ids_by_support_group: dict[str, tuple[StableId, ...]] = Field(
+        default_factory=dict
+    )
+    mandatory_claim_variant_ids: tuple[StableId, ...] = ()
+    closed_need_facet_ids: tuple[StableId, ...] = ()
+    unresolved_need_facet_ids: tuple[StableId, ...] = ()
+    ordered_optional_support_group_ids: tuple[StableId, ...] = ()
+    writer_token_budget: int | None = Field(default=None, ge=1)
+    evidence_ledger_token_budget: int = Field(default=12_000, ge=1)
+    reduction_policy: str = Field(default="receipt_bound_variants_only", min_length=1)
+    selection_policy_version: str = Field(default="legacy_unit_selection.v1", min_length=1)
 
     @model_validator(mode="after")
     def validate_mandatory(self) -> ContextAssemblySpec:
         if not set(self.mandatory_unit_ids).issubset(self.selected_unit_ids):
             raise ValueError("mandatory assembly units must be selected")
+        selected_groups = set(self.selected_support_group_ids)
+        if not set(self.mandatory_support_group_ids).issubset(selected_groups):
+            raise ValueError("mandatory support groups must be selected")
+        if not set(self.ordered_optional_support_group_ids).issubset(selected_groups):
+            raise ValueError("optional support groups must be selected")
+        if self.selected_support_group_ids:
+            if self.writer_token_budget is None:
+                raise ValueError("support-aware assembly requires a Writer token budget")
+            if set(self.allowed_claim_variant_ids_by_support_group) != {
+                item.root for item in self.selected_support_group_ids
+            }:
+                raise ValueError("support-aware assembly requires variants for every group")
+            allowed_variants = {
+                variant_id
+                for values in self.allowed_claim_variant_ids_by_support_group.values()
+                for variant_id in values
+            }
+            if not set(self.mandatory_claim_variant_ids).issubset(allowed_variants):
+                raise ValueError("mandatory claim variants must be allowed by the spec")
+            if set(self.closed_need_facet_ids).intersection(self.unresolved_need_facet_ids):
+                raise ValueError("closed and unresolved Need facets must be disjoint")
         return self
 
 
@@ -1021,14 +1081,85 @@ class ControllerArm(StrEnum):
     BOUNDED_R2 = "bounded_r2"
 
 
+class ArmExecutionStatus(StrEnum):
+    COMPLETED = "COMPLETED"
+    SKIPPED = "SKIPPED"
+    FAILED = "FAILED"
+
+
 class PairedContextArmResult(DomainModel):
     arm: ControllerArm
+    execution_status: ArmExecutionStatus = ArmExecutionStatus.COMPLETED
     context: Stage1ContextPackage
     selected_unit_ids: tuple[StableId, ...]
     retrieval_call_count: int = Field(ge=0)
+    calls_allocated_by_need: dict[str, int] = Field(default_factory=dict)
     stop_reason: ControllerStopReason
     comparison_basis_fingerprint: ArtifactId
     future_leakage_count: int = Field(ge=0)
+    writer_context: WriterContextPackage | None = None
+    evidence_ledger: EvidenceLedger | None = None
+    assembly_status: ContextAssemblyStatus | None = None
+    quality_eligible: bool = True
+    failure_category: str | None = None
+    need_generation_status: str = Field(default="completed", min_length=1)
+    unexpanded_focus_ids: tuple[StableId, ...] = ()
+    need_completion_spec_version: str = Field(
+        default="need_completion_spec.v1",
+        min_length=1,
+    )
+    mandatory_need_facets_total: int = Field(default=0, ge=0)
+    mandatory_need_facets_closed: int = Field(default=0, ge=0)
+    support_receipt_refs: tuple[ArtifactRef, ...] = ()
+    selected_claim_variant_ids: tuple[StableId, ...] = ()
+    context_assembly_spec_ref: ArtifactRef | None = None
+    context_assembly_spec: ContextAssemblySpec | None = None
+    claim_support_groups: tuple[ClaimSupportGroup, ...] = ()
+    claim_variants: tuple[ClaimVariant, ...] = ()
+    support_receipts: tuple[ClaimSupportReceipt, ...] = ()
+    cutoff_attestations: tuple[CutoffAttestation, ...] = ()
+    typed_failure_diagnostic_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_writer_artifacts(self) -> PairedContextArmResult:
+        if any(value < 0 for value in self.calls_allocated_by_need.values()):
+            raise ValueError("per-Need call allocations must be non-negative")
+        if sum(self.calls_allocated_by_need.values()) > self.retrieval_call_count:
+            raise ValueError("per-Need allocations exceed the arm retrieval call count")
+        if self.mandatory_need_facets_closed > self.mandatory_need_facets_total:
+            raise ValueError("closed mandatory Need facets exceed the total")
+        if (self.writer_context is None) != (self.evidence_ledger is None):
+            raise ValueError("writer context and evidence ledger must appear together")
+        if self.writer_context is not None and self.assembly_status is None:
+            raise ValueError("writer artifact requires an assembly status")
+        if (
+            self.quality_eligible
+            and self.assembly_status is not None
+            and self.assembly_status is not ContextAssemblyStatus.READY
+        ):
+            raise ValueError("non-READY writer context cannot be quality eligible")
+        if not self.quality_eligible and self.failure_category is None:
+            raise ValueError("ineligible paired arm requires a failure category")
+        if self.execution_status is not ArmExecutionStatus.COMPLETED:
+            if self.quality_eligible:
+                raise ValueError("skipped or failed arm cannot be quality eligible")
+            if self.writer_context is not None or self.evidence_ledger is not None:
+                raise ValueError("skipped or failed arm cannot expose Writer artifacts")
+            if self.retrieval_call_count or self.calls_allocated_by_need:
+                raise ValueError("skipped or failed arm cannot report successful retrieval calls")
+        if self.context_assembly_spec is not None and self.context_assembly_spec_ref is None:
+            raise ValueError("embedded assembly spec requires its content-addressed ref")
+        if self.support_receipts and len(self.support_receipt_refs) != len(self.support_receipts):
+            raise ValueError("support receipts and their refs must appear together")
+        if self.support_receipts and any(
+            group.support_receipt_ref not in self.support_receipt_refs
+            for group in self.claim_support_groups
+        ):
+            raise ValueError("support group references an unavailable receipt")
+        variant_ids = {item.claim_variant_id for item in self.claim_variants}
+        if self.claim_variants and not set(self.selected_claim_variant_ids).issubset(variant_ids):
+            raise ValueError("selected claim variant is not embedded in the frozen arm")
+        return self
 
 
 class PairedContextComparison(DomainModel):
@@ -1038,6 +1169,12 @@ class PairedContextComparison(DomainModel):
     agentic: PairedContextArmResult
     comparable: bool
     blockers: tuple[str, ...] = ()
+    arm_c_writer_context: WriterContextPackage | None = None
+    arm_c_evidence_ledger: EvidenceLedger | None = None
+    arm_c_status: ContextAssemblyStatus | None = None
+    arm_c_execution_status: ArmExecutionStatus = ArmExecutionStatus.SKIPPED
+    arm_c_failure_category: str | None = "NOT_RUN"
+    freeze_receipt: FreezeReceipt | None = None
 
     @model_validator(mode="after")
     def validate_comparability(self) -> PairedContextComparison:
@@ -1060,11 +1197,25 @@ class PairedContextComparison(DomainModel):
             != self.agentic.comparison_basis_fingerprint
         ):
             raise ValueError("paired arms must share comparison configuration")
-        expected_comparable = not self.blockers and not (
-            self.deterministic.future_leakage_count or self.agentic.future_leakage_count
+        expected_comparable = (
+            not self.blockers
+            and self.deterministic.quality_eligible
+            and self.agentic.quality_eligible
+            and not (self.deterministic.future_leakage_count or self.agentic.future_leakage_count)
         )
         if self.comparable != expected_comparable:
             raise ValueError("paired comparison flag contradicts blockers or leakage")
+        if (self.arm_c_writer_context is None) != (self.arm_c_evidence_ledger is None):
+            raise ValueError("Arm C Writer Context and Evidence Ledger must appear together")
+        if self.arm_c_execution_status is ArmExecutionStatus.COMPLETED:
+            if self.arm_c_writer_context is None or self.arm_c_status is None:
+                raise ValueError("completed Arm C requires frozen Writer artifacts")
+            if self.arm_c_failure_category is not None:
+                raise ValueError("completed Arm C cannot carry a failure category")
+        elif self.arm_c_writer_context is not None or self.arm_c_evidence_ledger is not None:
+            raise ValueError("skipped or failed Arm C cannot expose Writer artifacts")
+        elif self.arm_c_failure_category is None:
+            raise ValueError("skipped or failed Arm C requires a typed failure category")
         return self
 
 
