@@ -8,7 +8,7 @@
 - Planner / reviewer / merge owner: Codex
 - Revision budget: `0/1`
 - Merge policy: `CODEX_ON_PASS`
-- Real endpoint authorization: `NOT_AUTHORIZED_IN_INITIAL_IMPLEMENTATION`
+- Real endpoint authorization: `BOUNDED_POST_OFFLINE_SMOKE_AUTHORIZED`
 
 ## 1. 权威来源与本计划的边界
 
@@ -35,6 +35,21 @@ P3。OpenCode 不得自行改变这里的设计决策；发现计划与代码不
 - 最终 `weighted=0`、`mandatory=0`、9 个 Gold 全部 `MISS`；
 - G06：candidate/rank/Stage1/Ledger accepted refs 为 `2/2 -> 2/2 -> 0/2 -> 0/2`；
 - G09：candidate/rank/Stage1/Ledger accepted refs 为 `3/3 -> 3/3 -> 1/3 -> 0/3`。
+
+2026-08-02 用户提供的当前真实模型服务状态：
+
+- GPU：空闲的 3 号卡；
+- base URL：`http://127.0.0.1:8002/v1`；
+- model family：Qwen3.6；实际调用时从 `/models` 读取当前 model ID，不另猜名称；
+- context window：`131072` tokens（128K）；
+- MTP：开启，`2` 个 speculative tokens；
+- KV cache：FP8；
+- 服务状态：`active/running`；
+- health check：HTTP `200`；
+- 已完成一次真实 generation 请求，请求成功且请求后服务继续正常。
+
+这证明 endpoint 当前可用，但不是永久健康保证。OpenCode 仍须先完成全部离线测试，之后只按
+第 9 节执行一次有界 synthetic support-closure smoke；不得据此直接启动 C60 或自动重试。
 
 对冻结 retrieval trace 的 evaluator-only 复核进一步确认：
 
@@ -337,12 +352,26 @@ git diff --check
 OpenCode 本轮不得运行：
 
 - `make quality`；
-- 真实 8002 模型调用；
 - C60/C95/C80 canary；
 - P3、五点矩阵、A/B/C；
 - 全小说 replay。
 
 `make quality` 由 Codex 在准备合并时只运行一次。
+
+离线 focused tests、Ruff、format、strict MyPy 全部通过后，OpenCode 获准执行一次真实模型
+support-closure smoke：
+
+1. 调用 `http://127.0.0.1:8002/v1/models`；若 10 秒内非 `200`，记录
+   `RUNTIME_FAILED / NON_COMPARABLE` 并停止；
+2. 使用 `/models` 返回的 Qwen3.6 model ID，不覆盖当前服务配置；
+3. 只使用 public synthetic fixture，不加载 private benchmark、Gold 或未来文本；
+4. 最多输入两个 synthetic Needs，验证一次 proposer batch 及其必要 verifier batch；
+5. 验证模型能从 compatible support pool 引用 2–3 个 unit，返回合法 structured output，且
+   host 能形成完整 receipt/group/variant；
+6. 不测试质量分数，不运行 chapter replay，不启动 C60；
+7. 任一 timeout、endpoint error、JSON/contract failure 都停止，不自动重试；
+8. 将 endpoint、model ID、请求次数、成功/失败、结构化产物状态和请求后 health 写入
+   `.agent/implementation.md`，不得写入 prompt 正文或私有文本。
 
 ## 10. `.agent/implementation.md` 证据合同
 
@@ -356,7 +385,7 @@ OpenCode 必须记录：
 6. target Need、origin Need 与 group ownership 如何区分；
 7. 所有命令、退出码和 passed 数；
 8. 是否修改 paired pilot；若修改，证明 origin lineage 原先在哪里丢失；
-9. 未运行真实 endpoint、canary 和 P3 的声明；
+9. 有界真实 endpoint smoke 的配置、调用数和结果；并声明未运行 canary 和 P3；
 10. 剩余风险，尤其是公共锚点过宽或元数据缺失情况。
 
 可记录冻结 trace 的结构性计数 `2/2 -> 0/2`、`3/3 -> 0/3`，但不得把 private Gold 文本、
@@ -383,8 +412,9 @@ Codex 只有在以下全部成立时才给 `PASS`：
 
 ## 12. 后续真实 C60 canary 的独立准入门
 
-本计划的初始 `/implement` 不授权真实模型调用。Codex 离线 review PASS 后，才可以另行把
-`.agent/review.md` 写为 `PASS_OFFLINE / C60_CANARY_AUTHORIZED`，并允许一次 C60 Arm A：
+初始 `/implement` 只授权第 9 节的一次有界 synthetic support-closure smoke，不授权真实 C60。
+Codex 离线代码 review 与该 smoke 都 PASS 后，才可以另行把 `.agent/review.md` 写为
+`PASS_OFFLINE / C60_CANARY_AUTHORIZED`，并允许一次 C60 Arm A：
 
 1. 先检查 `http://127.0.0.1:8002/v1/models`，10 秒内失败则停止；
 2. 确认仍为单并发 Qwen3.6 128K 配置；

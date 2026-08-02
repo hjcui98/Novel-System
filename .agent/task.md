@@ -14,6 +14,9 @@
 - Do not add an arbitrary fixed small Need limit.
 - Do not treat evidence-receipt matching alone as retrieval-quality improvement.
 - Avoid endpoint timeout/error loops; a failed endpoint run is non-comparable and must stop retries.
+- Use the active Qwen3.6 service at `http://127.0.0.1:8002/v1` only for the single bounded
+  post-offline synthetic smoke authorized by `.agent/plan.md`; read the current model ID from
+  `/models` and record the result in `.agent/implementation.md`.
 - Do not run C80, P3, the five-point matrix, or Stage 3 work in this task.
 
 ## Canonical authority

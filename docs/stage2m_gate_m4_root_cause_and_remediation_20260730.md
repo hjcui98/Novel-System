@@ -758,6 +758,13 @@ v6 和本地 `http://127.0.0.1:8002/v1` 完成真实单点 Arm A。22 个 Need �
 verification 批全部成功，`0 timeout / 0 endpoint error`，所以 endpoint/120 秒取消不再是当前
 主阻塞。产物目录为 `/tmp/ns-stage2m-v21-v6-qwen-c60-20260802`。
 
+同日用户重新确认 3 号卡上的 Qwen3.6 服务当前为 `active/running`：context window
+`131072`（128K）、MTP 开启且为 2 个 speculative tokens、KV cache 为 FP8；
+`http://127.0.0.1:8002/v1` health check 返回 HTTP 200，真实 generation 请求成功且请求后服务
+继续正常。该状态允许当前 support-closure 实现在线下测试通过后执行一次 public synthetic、
+有界的 proposer/verifier smoke；它不等于 C60/P3 准入，endpoint error/timeout 时仍必须
+`RUNTIME_FAILED / NON_COMPARABLE` 并停止自动重试。
+
 质量仍未提升：C60 `weighted=0`、`mandatory=0`、9 个 Gold 全部 MISS；candidate/rank/stage1/
 ledger 的 complete alternative 数为 `3/2/0/0`，matched refs 为 `13/10/3/0`。G06/G09 在
 rank 已分别完整匹配 `2/2`、`3/3`，但没有形成 Writer 可用的完整 claim。完整 grounded 统一
