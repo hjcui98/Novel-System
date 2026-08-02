@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scoped Plan"
+  short_description: "Codex 从权威阶段文档制定可批准的执行切片计划"
+  default_prompt: "Use $scoped-plan to turn the current task and canonical stage documents into an approval-ready execution slice."

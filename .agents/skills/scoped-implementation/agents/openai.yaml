@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scoped Implementation"
+  short_description: "OpenCode 按批准计划实施、验证并留下完整证据"
+  default_prompt: "Use $scoped-implementation to implement the approved .agent/plan.md within its declared scope."

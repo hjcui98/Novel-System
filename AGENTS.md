@@ -47,3 +47,19 @@ imperative mood. Pull requests should explain the problem and solution, list ver
 link relevant issues or ADRs, and call out migrations, schema changes, configuration changes, or
 benchmark evidence. Include screenshots only for visible API or reporting changes; never include
 secrets from `.env` or private benchmark data.
+
+## Codex–OpenCode Development Workflow
+
+Canonical Stage documents remain the source of truth. `.agent/plan.md` is only the approved slice
+for one implementation cycle.
+
+- Codex owns planning, architecture, stage boundaries, acceptance, and merge decisions. Invoke
+  `$scoped-plan` to prepare `.agent/plan.md`; it must stop at human approval.
+- Human approval is the act of starting OpenCode in this repository and invoking `/implement`.
+- OpenCode is the sole writer for that cycle. It follows `.agent/plan.md`, writes
+  `.agent/implementation.md`, and never launches another agent or commits/merges.
+- Codex invokes `$acceptance-review` against the actual diff and writes `.agent/review.md`.
+- One failed review permits one `/implement` repair. A second failure stops for human direction.
+- Use one shared worktree for the serial flow. Create separate worktrees only for genuinely
+  independent tasks with distinct owners and file boundaries.
+- Stage boundaries are fail-closed: a Stage 2M task must not modify or merge Stage 3 implementation.

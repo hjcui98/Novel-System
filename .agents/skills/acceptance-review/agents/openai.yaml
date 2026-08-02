@@ -1,0 +1,4 @@
+interface:
+  display_name: "Acceptance Review"
+  short_description: "Codex 按批准计划和实际差异执行独立验收与裁决"
+  default_prompt: "Use $acceptance-review to review the current diff only against the approved execution plan."
