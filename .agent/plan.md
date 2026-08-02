@@ -2,7 +2,7 @@
 
 - Plan state: `WAITING_FOR_HUMAN_APPROVAL`
 - Stage: `Stage 2M`
-- Production-code base: `2d8067b` (`fix(stage2m): isolate paired execution contracts from stage3`)
+- Production-code baseline: `90f05b1` (`test(stage2m): close consolidation quality gaps`)
 - Revision budget: `0/1`
 - Merge policy: `CODEX_ON_PASS`
 
