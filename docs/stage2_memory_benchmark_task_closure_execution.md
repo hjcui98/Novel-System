@@ -82,10 +82,15 @@ WP0-WP7 的代码路径和两个 profile × 五个 checkpoint 的 deterministic 
   原生写入六个 identity/budget 字段，单点 scenario 会按实际 checkpoint 收口，aggregate
   会校验五点 freeze/reveal lifecycle、身份一致性和根场景完成状态；对应 legacy 缺字段、
   dirty-source、identity drift、StableId 和未闭合 lifecycle 回归均已补齐；
-- `make quality` 已通过：1614 个测试通过、9 个按标记排除，Ruff、格式、严格 MyPy 通过，
+- `make quality` 已通过：1389 个测试通过、9 个按标记排除，Ruff、格式、严格 MyPy 通过，
   statement/branch coverage 均为 `100%`；这只关闭工程质量门，不等同于 P2/P3 语义验收；
 - 五个 P2 真实哨兵已在本地 Qwen3.6 真实 API 上完成 diagnostic/non-formal 运行，当前接受为
   `ACCEPTED_AS_DIAGNOSIS`；它们没有被写成正式 P3 或 Gate PASS。
+- 2026-08-02 已将现代 Stage 2M 修复基线合并到 `main`；失败的 `ns-6` evidence-block
+  binding 实验未合并，Stage 2M/AO 临时分支与 worktree 已清理。Stage 3 实现提交与其独立
+  worktree 均未进入 `main`，继续作为下一阶段边界外工作保留。
+- 后续开发继续以本文件和 M4 专项方案为权威来源；`.agent/plan.md` 只摘取一次已批准的执行
+  切片，由 Codex 负责方向和验收、OpenCode 作为该轮唯一写入者，不另建控制平台。
 
 十点 Context、逐 Gold 和 Evidence Ledger 的人类可读入口为
 `docs/stage2m_wp8_human_readable_outputs_20260731.md`。当前汇总和阶段结论以

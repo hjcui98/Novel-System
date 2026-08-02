@@ -776,6 +776,12 @@ AO `session/ns-4@abf0731` 随后完成 VAC C40/C60/C95 canary40：C40 weighted �
 该运行使用 v19 Need generator 与旧 ContextCompiler；当前工作区已额外合并同 Need 完整反证
 扫描、scope lattice 和 Make ROOT，并保留 v20 Knowledge query 与 Context fair packing。
 
+2026-08-02 接手收口：上述现代 Stage 2M 修复及后续 v21/v6 基线已合并到 `main`，生产代码
+基线为 `90f05b1`。`make quality` 在该基线上通过 1389 个测试、严格 MyPy 与 100% statement/
+branch coverage。失败的 `ns-6` evidence-block binding 实验未合并；Stage 2M/AO 临时 worktree
+和分支已清理；Stage 3 实现未合并并继续保留在独立 worktree。下一轮仍只执行下表 P1-2 的
+G06/G09 frozen-trace 切片，不回到 P0/P1 治理重建，也不提前启动 P3。
+
 | 顺序 | 当前状态 | 剩余动作 | 验收信号 |
 |---|---|---|---|
 | P0-1 receipt host validation | `IMPLEMENTED_TESTED` | 保持当前 fail-closed 测试 | 空/非法 traceable IDs 不可声明 SUPPORTS |
