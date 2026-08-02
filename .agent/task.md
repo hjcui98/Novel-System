@@ -3,7 +3,7 @@
 - Task: Stage 2M G06/G09 support-group and compound-claim quality
 - Stage: Stage 2M
 - Planner/reviewer: Codex
-- Implementer: OpenCode `scoped-implementer`
+- Implementer: OpenCode default `build` agent via `/implement`
 - Workflow state: `WAITING_FOR_HUMAN_APPROVAL`
 - Repair allowance: `0/1`
 - Merge policy: `CODEX_ON_PASS`

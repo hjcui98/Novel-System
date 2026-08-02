@@ -4,7 +4,7 @@
 - Stage: `Stage 2M`
 - Production-code baseline: `90f05b1` (`test(stage2m): close consolidation quality gaps`)
 - Required baseline check: `git merge-base --is-ancestor 90f05b1 HEAD`
-- Writer: OpenCode `scoped-implementer`，本轮唯一写入者
+- Writer: OpenCode default `build` agent via `/implement`，本轮唯一写入者
 - Planner / reviewer / merge owner: Codex
 - Revision budget: `0/1`
 - Merge policy: `CODEX_ON_PASS`

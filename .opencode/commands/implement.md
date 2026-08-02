@@ -1,7 +1,6 @@
 ---
 description: Implement the Codex-approved execution slice and write evidence
-agent: scoped-implementer
-model: opencode-go/deepseek-v4-flash
+agent: build
 subtask: false
 ---
 
