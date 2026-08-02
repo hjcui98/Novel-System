@@ -578,6 +578,17 @@ def test_optional_sort_and_grounded_extraction_cover_long_range_budget_edges() -
         {item.need_id: item for item in needs},
     )
     assert isinstance(sort_key, tuple)
+    matching_need = next(item for item in needs if item.need_id in claims[0].need_ids)
+    continuity_need = matching_need.model_copy(update={"need_type": "continuity_constraint"})
+    continuity_item = claims[0].model_copy(
+        update={"section": WriterContextSection.CURRENT_WORLD_STATE}
+    )
+    continuity_sort_key = assembler._optional_item_order(
+        continuity_item,
+        {item.ledger_id: item for item in ledger},
+        {continuity_need.need_id: continuity_need},
+    )
+    assert isinstance(continuity_sort_key, tuple)
     assert assembler._validity_from_facets((StableId("need-facet.unknown"),), {}).value == (
         "uncertain"
     )

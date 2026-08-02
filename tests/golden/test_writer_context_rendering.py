@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from tests.fixtures.stage2_memory_benchmark import writer_context_inputs
 
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import RequirementLevel, RetrievalUnitKind
@@ -8,7 +9,6 @@ from novel_agent.domain.memory_benchmark import ContextAssemblyStatus
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.writer_context_assembler import WriterContextAssembler
-from tests.fixtures.stage2_memory_benchmark import writer_context_inputs
 
 
 def test_rendering_is_byte_identical_and_has_fixed_section_headers() -> None:

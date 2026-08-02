@@ -30,7 +30,9 @@ from novel_agent.domain.memory import (
 from novel_agent.domain.retrieval_routing import ChannelFailureCode
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.writer_context import (
-    BenchmarkInformationProfile,
+    BenchmarkInformationProfile as BenchmarkInformationProfile,
+)
+from novel_agent.domain.writer_context import (
     BenchmarkTaskContract,
     ClaimSupportGroup,
     ClaimSupportReceipt,
@@ -930,9 +932,7 @@ class QualityRepairFeatureFlags(DomainModel):
 
     controller_mode: ControllerMode = ControllerMode.DETERMINISTIC
     curator_evidence_contract: CuratorEvidenceContract = CuratorEvidenceContract.CANDIDATE_ID_V2
-    evidence_support_gate: EvidenceSupportGateMode = (
-        EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
-    )
+    evidence_support_gate: EvidenceSupportGateMode = EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
     max_controller_decision_model_calls: int = Field(default=2, ge=0, le=8)
     max_agentic_actions: int = Field(default=8, ge=0, le=32)
 

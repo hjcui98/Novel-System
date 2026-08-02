@@ -6,6 +6,10 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from tests.fixtures.stage2_memory_benchmark import (
+    frozen_evaluation_inputs,
+    resolved_public_comparison,
+)
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.model import FakeModelEndpoint
@@ -30,10 +34,6 @@ from novel_agent.services.memory_benchmark_evaluation import (
 from novel_agent.services.memory_benchmark_metric_contracts import GoldMetricContractBuilder
 from novel_agent.services.memory_benchmark_reporting import MemoryBenchmarkReporter
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
-from tests.fixtures.stage2_memory_benchmark import (
-    frozen_evaluation_inputs,
-    resolved_public_comparison,
-)
 
 
 def _metric_bundle(

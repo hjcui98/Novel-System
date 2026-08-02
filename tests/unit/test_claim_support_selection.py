@@ -596,6 +596,105 @@ def test_semantic_verifier_sees_non_cited_counter_evidence_and_rejects_even_if_s
     assert all(item.claim_text != "林澈能力完全不受限制。" for item in variants)
 
 
+def test_semantic_verifier_splits_batches_by_accumulated_context_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, capability, unit, assembler, _selection_result = _selection()
+    assert capability.completion_spec is not None
+    second_need_id = StableId("need.test.capability.second")
+    facet_id_map = {
+        facet.need_facet_id: StableId(f"need-facet.test.capability.second.{index}")
+        for index, facet in enumerate(capability.need_facets)
+    }
+    second_facets = tuple(
+        facet.model_copy(
+            update={
+                "need_facet_id": facet_id_map[facet.need_facet_id],
+                "need_id": second_need_id,
+            }
+        )
+        for facet in capability.need_facets
+    )
+    second_completion = capability.completion_spec.model_copy(
+        update={
+            "need_id": second_need_id,
+            "required_need_facet_ids": tuple(
+                facet_id_map[facet_id]
+                for facet_id in capability.completion_spec.required_need_facet_ids
+            ),
+            "irreducible_need_facet_ids": tuple(
+                facet_id_map[facet_id]
+                for facet_id in capability.completion_spec.irreducible_need_facet_ids
+            ),
+            "evidence_requirement_by_facet": {
+                facet_id_map[
+                    facet.need_facet_id
+                ].root: capability.completion_spec.evidence_requirement_by_facet[
+                    facet.need_facet_id.root
+                ]
+                for facet in capability.need_facets
+                if facet.need_facet_id in capability.completion_spec.required_need_facet_ids
+            },
+        }
+    )
+    second_need = capability.model_copy(
+        update={
+            "need_id": second_need_id,
+            "need_facets": second_facets,
+            "completion_spec": second_completion,
+        }
+    )
+    second_unit = unit.model_copy(update={"unit_id": StableId("anchor.test.capability.second")})
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [
+                    {
+                        "need_id": capability.need_id.root,
+                        "need_facet_ids": [
+                            facet.need_facet_id.root for facet in capability.need_facets
+                        ],
+                        "retrieval_unit_ids": [unit.unit_id.root],
+                        "claim_text": "林澈当前能力受伤势限制。",
+                    },
+                    {
+                        "need_id": second_need.need_id.root,
+                        "need_facet_ids": [
+                            facet.need_facet_id.root for facet in second_need.need_facets
+                        ],
+                        "retrieval_unit_ids": [second_unit.unit_id.root],
+                        "claim_text": "林澈无法持续发挥完整战力。",
+                    },
+                ],
+                "insufficient_need_ids": [],
+            },
+            {"decisions": [{"claim_index": 0, "supports": True}]},
+            {"decisions": [{"claim_index": 1, "supports": True}]},
+        )
+    )
+    monkeypatch.setattr(
+        "novel_agent.services.claim_support.SEMANTIC_SUPPORT_VERIFIER_BATCH_CONTEXT_UNIT_BUDGET",
+        1,
+    )
+
+    TrustedClaimSupportProducer(semantic_gateway=_gateway_for_endpoint(endpoint)).produce(
+        task=task,
+        units=(unit, second_unit),
+        needs=(capability, second_need),
+        basis_commit_id=unit.source_commit,
+        basis_snapshot_id=unit.snapshot_id,
+        unit_need_ids={
+            unit.unit_id: (capability.need_id,),
+            second_unit.unit_id: (second_need.need_id,),
+        },
+        token_counter=assembler.count_tokens,
+    )
+
+    assert len(endpoint.requests) == 3
+    assert '"claim_index":0' in endpoint.requests[1].prompt
+    assert '"claim_index":1' in endpoint.requests[2].prompt
+
+
 def test_selector_prefers_verified_semantic_group_over_equal_facet_fallback() -> None:
     task, capability, unit, assembler, _selection_result = _selection()
     semantic_unit = unit.model_copy(

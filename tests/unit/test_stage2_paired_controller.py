@@ -569,6 +569,21 @@ def test_historical_fallback_reserves_budget_for_public_query_expansion() -> Non
     assert "前因" in fallback.query_text
 
 
+def test_historical_fallback_ignores_empty_hints_and_stops_at_hint_budget() -> None:
+    item = need(intent=Stage1QueryIntent.SEMANTIC_HISTORY).model_copy(
+        update={
+            "need_type": "long_range_callback",
+            "query_hints": ("   ", "甲" * 300, "乙" * 300, "丙不应进入查询"),
+        }
+    )
+
+    fallback = PairedMemoryControllerRunner._historical_fallback_need(item)
+
+    assert "甲" * 250 in fallback.query_text
+    assert "乙" * 250 in fallback.query_text
+    assert "丙不应进入查询" not in fallback.query_text
+
+
 def test_registered_fallback_remains_reachable_after_task_weighted_primary_call() -> None:
     fallback_need = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
         update={

@@ -814,8 +814,9 @@ class TrustedClaimSupportProducer:
                 pending_context_units = 0
             pending_batch.append(item)
             pending_context_units += context_unit_count
-        if pending_batch:
-            verification_batches.append(pending_batch)
+        # ``verification_items`` is non-empty here and every iteration appends
+        # its item after any overflow flush, so the trailing batch is required.
+        verification_batches.append(pending_batch)
         for batch_index, verification_batch_items in enumerate(verification_batches):
             batch_indexes = {cast(int, item["claim_index"]) for item in verification_batch_items}
             verifier_input = {
