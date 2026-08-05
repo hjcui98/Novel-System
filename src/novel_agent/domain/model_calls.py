@@ -80,6 +80,8 @@ class ModelRequest(DomainModel):
     response_schema: dict[str, JsonValue] | None = None
     max_output_tokens: int | None = Field(default=None, ge=1, le=131072)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
+    enable_thinking: bool | None = None
+    thinking_token_budget: int | None = Field(default=None, ge=0, le=131072)
 
 
 class ModelUsage(DomainModel):

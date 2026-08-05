@@ -2,9 +2,9 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 文档状态：M4 remediation active / P2 diagnostic accepted-as-diagnosis / formal WP7 P3 rerun pending / formal WP8 frozen
+> 文档状态：M4 remediation active / exact-slice read-grain repair required / formal WP7 P3 rerun pending / formal WP8 frozen
 > 编写日期：2026-07-29
-> 最近更新：2026-08-01
+> 最近更新：2026-08-03
 > 初始代码基线：`ca9c78e`
 > 当前开发基线：2026-08-01 Stage 2M 工作区；P0/P1 实现、直接修复与正式五点 Gate contract 已进入代码，P2 诊断与 C90–C95 章节续跑证据已完成，尚未形成 formal P3 run
 > 目标阶段：Stage 2M（Memory Benchmark Task Closure）
@@ -263,6 +263,87 @@ AO canary 使用 v19 Need generator 和旧 ContextCompiler，故能证明旧路�
 support group/claim variant；修复必须位于 Controller support-aware selection / claim synthesis，
 不能让 deterministic Assembler 新增自由语义。P3 仍为 `NOT_STARTED`，Gate M4 仍为 `HOLD`。
 
+### 0.1.8 2026-08-02 support-closure 连续执行任务
+
+当前工作区已完成 producer v25 的跨 Need compatible support pool：Need 继续拥有检索、路由和
+预算，但不再作为排他的后检索 evidence silo；其他合法 Need 已选中的 evidence 只有通过公开
+entity/focus 或精确 parent/child lineage、scope/cutoff/basis/snapshot/taint 校验后才能进入目标
+Need 的 semantic proposer pool，group/receipt 仍只关闭目标 Need。44 个聚焦测试已通过；首次
+全仓 `make quality` 暴露的剩余问题是新增测试中的 19 个 strict-MyPy typing 错误，不是否定该
+机制的真实质量结论。
+
+用户已明确要求停止“一次小修—一次人工切换”的碎片推进。`.agent/plan.md` 只作为本文档之下的
+当前实现补充：Codex 负责顶层根因、架构责任层、允许设计、真实验收信号和 stop/go；OpenCode
+default `build` 在一次 `/implement` 中负责 typing/全仓质量收口、真实 8002 C60 调用与监控、
+冻结产物逐层诊断、同责任链内的有界修复复跑、条件 C95，并把事实证据汇报到
+`.agent/implementation.md`。OpenCode 不修改本文、项目状态或设计文档；Codex 验收后回写。
+OpenCode 根据每次新的 first-loss 证据继续工作，不机械重复相同失败运行；当设计得到证明、证据
+表明方向错误或需要新的架构决策时再回到 Codex。该任务不授权 C40/C80、P3、五点、A/B/C、
+Gate 或 Stage 3。
+
+### 0.1.9 2026-08-02 support-closure campaign 执行完成
+
+`stage2m-support-closure` campaign 已在一次 `/implement` 内执行完毕并交回 Codex 终审（详见
+§21.2 与 `docs/stage2m_support_closure_campaign_20260802.md`）：全仓质量关闭（1402 passed /
+100%）；真实 C60 ×3（A0/A1/A2，producer v25→v26→v27，A1/A2 零 endpoint 错误）；机制 gain
+成立（语义 verified receipts 11→17→18、G06 一个 accepted ref 首次进 Evidence Ledger、
+untraceable 0.111→0、四类 fail-closed 不变式保持）；但 G06/G09 未形成引用完整证据组的单个
+verified Writer claim → `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED`，C95 未运行。残余 first
+loss 位于模型合成层（按查询主题选窄结论与部分证据组），host 责任走廊（pool/prompt/contract）
+已耗尽；下一步架构方向（跨 Need claim fusion / candidate-rank 走廊 / owner-query 对齐）需
+Codex 决策，本 campaign 不实施。
+
+### 0.1.10 2026-08-03 exact-slice 读取粒度修正决策
+
+Codex 已对 A4-A13 稳定 handoff 完成只读验收，结论为 `REPAIR`，见
+`.agent/review.md`。A4-A9 证明 assembly/lineage/pool 修复有效；A10-A13 又证明成功批次可以
+执行 atom proposal、独立验证和 compound whole verification。A13 漏斗为 304 slices、228 atoms
+proposed、227 verified、18 compounds verified，但 G06/G09 Ledger 仍为 `0/2`、`0/3`，
+weighted/mandatory coverage 仍为 0。这些数字保留为机制证据，不是继续全量 atom 化的理由。
+
+代码合同复核更正了根因：领域层虽支持 `TextBlock + TextSpanRef`，但 human benchmark
+compiler 当前把一份章节/场景正文作为一个 `TextBlock`，所以 grounded block 实际常是章节
+粒度。当前 workset 只对这些粗单元去重，未先派生自然段落 exact slices，随后又用短
+compact/语义 excerpt 压缩，产生了第一次信息损失；全量 per-slice atom 与 `atomics[:3]`
+再带来大 transport 面积和第二次损失。用两/三 atom 候选组合枚举替代“取前三”仍只修
+后一层，并会把 G06/G09 的 Gold 形状固化为通用架构，因此撤销该方向。
+
+`agentmemory_lab/results/REPORT_20260803.md` 的外部协议 v1 作为架构校准证据：VAC/raw 五点
+weighted coverage 为 `0.167/0.636/0.077/0.212/0.838`，平均 `0.386`；raw 不差于默认
+400-character synthetic compression，VAC=APC，未来泄漏为 0。它支持“先保留 raw，再做
+consumer-specific 派生”和“compact handle 后显式展开”的方向，但不替代 Stage 2M Gate：该
+协议没有 semantic verifier，部分样本只按 accepted chapter provenance 计 HIT，whole-chapter
+top-10/4k 也在 C60 暴露分散证据瓶颈。因此 NS 不采用整章 top-k、同 ID 覆盖 raw、fail-open
+project filtering 或访问即使用计数。
+
+当前批准的修复由总体架构 §13.1.1 和技术设计 §12.13/§13.5 约束：
+
+```text
+public Need
+  → 预过滤后的 compact handle
+  → 选中 handle 解析到 L0 TextBlock / exact span
+  → 按原文段落或连续句窗派生 exact EvidenceSlice
+  → token-bounded SupportWorkset
+  → 短 raw slices 原样装入语义工作输入并保留到 EvidenceLedger
+  → 单 slice 足够时生成并验证单来源 claim
+  → 仅未闭合 Need 做按需 multi-slice claim synthesis
+  → whole-claim independent verification
+  → 既有 group / receipt / variant / spec / Writer Context / Ledger
+```
+
+`SupportWorkset` 不是新的 Memory 产品。通过可见性、证据解析和 exact-span 校验的 slice 可以作为
+明确标记的 raw evidence 原样进入 support producer/语义 owner 输入并保留到 `EvidenceLedger`，
+但不得冒充 verified claim 或自动闭合 facet。当前 ADR-0004 / `writer_context.v1` 仍只向 Writer 渲染
+已验证 claim；本任务不新增 Writer raw partition，也不修改公共 schema。
+Writer 4000/Ledger 12000 仍约束最终产品，不反向成为原始证据唯一容量。证据条数不设固定
+三条上限；超预算时只用 public Need/facet、合法 source/chapter diversity 和稳定检索顺序。按需
+claim 合成必须返回 cited slice IDs，host 只校验身份和精确引用并集，不枚举 atom 组合或创造语义。
+这不是 learned fusion。
+
+Hook 平台、consolidation/长期记忆晋升、retention/自动遗忘、通用 observation graph、Viewer
+和 learned fusion 已在 Stage 3 上位章节登记为明确暂缓项，分别留给后续 Stage 的独立需求与
+门禁；不得进入当前 Stage 2M 修复。
+
 ### 0.2 从当前状态继续执行
 
 后续开发不得从 WP0 重做，也不得直接续跑 WP8。当前唯一正式执行链为：
@@ -270,8 +351,11 @@ support group/claim variant；修复必须位于 Controller support-aware select
 ```text
 冻结既有 P2 诊断产物并接受为诊断证据
   -> C40 currentness 已修；C60 v21/v6 + 8002 超时复验已完成
-  -> 以 G06/G09 rank-complete 样本修 support-group selection / compound claim synthesis
-  -> 只重跑受影响的 C60；C95 等 C60 同类机制显示明确提升后再跑
+  -> producer v25→v27 离线机制已实现并关闭全仓质量；support-closure campaign 已执行（C60 ×3）
+  -> A4-A13 保留 assembly/lineage/atom/funnel 历史证据，但暴露大 Block 读取粒度与全量 atom 开销
+  -> 实现段落/连续句窗 exact slices、token-bounded semantic-input packing、按需 claim 与 terminal funnel
+  -> 新 C60：追 candidate→block→slice→workset/semantic input→claim→verify→Writer/Ledger；禁止盲重试
+  -> C60 形成完整 Writer claim 后才条件运行 C95
   -> 未接近正式门：继续目标层修复；接近后才冻结 clean code/config/contract，执行 P3 双 profile 五点 Arm A
   -> 每个 profile 生成 lifecycle-closed formal unified report
   -> Gate M4
@@ -2279,9 +2363,13 @@ Gold evidence 精标可在 WP2/WP3 开发期间并行进行，但 evaluator 最�
    expansion 已提高 candidate/rank partial recall。mandatory top-20/Context 展开导致的
    rank→Stage1 饥饿已按 evidence group 公平装箱修复，并以冻结 C60 trace 离线复放验证；
    P003-G06 仍需由高信号 Knowledge query 提升正确候选，而不是继续扩大 Context 配额。
-   该查询修复已完成定向测试，尚未启动新 canary，未接近正式门前不启动 P3。
+   producer v25 已进一步解除 post-retrieval Need evidence silo；先关闭新增测试 typing 和全仓
+   质量，再由同一 OpenCode 任务启动新 C60、监控、逐层诊断并在 Codex 技术方向内继续修复。
 7. 最终 P3 才启用 clean source、六字段、五点 lifecycle、严格 aggregator、全仓质量和
    Gate M4 的 95%/95%/90% 阈值；两 profile 均 PASS 后才解冻 WP8。
+8. 只有 C60 形成完整 verifier-approved Writer claim 后才运行 C95。每次真实复跑都必须由新的
+   诊断或修复依据触发；endpoint/lifecycle 失败标记 non-comparable，禁止机械盲重试。
+   C40/C80/P3/A-B-C/Stage 3 不在本任务。
 
 ### 21.1 2026-08-01 执行结论
 
@@ -2296,6 +2384,68 @@ contradiction，VAC C60/C95 的主要损失仍在 long-range retrieval，故 P3 
 当前决策：`P2_DIAGNOSTIC_COMPLETE / ACCEPTED_AS_DIAGNOSIS`、Gate M4 `HOLD`、P3
 `NOT_STARTED`、正式 WP8 冻结。不要运行不完整矩阵聚合，也不要把 canary 或诊断目录提升为
 正式 P3；下一步继续目标层修复，只有 canary 接近正式门时才执行一次最终 P3。
+
+### 21.2 2026-08-02 support-closure campaign 执行结论
+
+`stage2m-support-closure` 长 campaign（`.agent/plan.md` + `docs/stage2m_support_closure_campaign_20260802.md`）
+已在一次 `/implement` 内完成并交回 Codex 终审：
+
+- 质量收口：新增测试区 19 个 strict-MyPy typing 错误修复；`make quality` 全绿（1402 passed，
+  100% coverage）。
+- 真实 C60 ×3（预算用尽）：A0（v25）、A1（v26）、A2（v27），均 VAC Arm A、real_hybrid、
+  Qwen3.6/8002、可比较；A1/A2 零 endpoint 错误；`claim_support_producer_version`
+  v25→v26→v27。
+- 机制 gain：语义 verified receipts 11→17→18；G06 一个 accepted ref 首次进入 Evidence Ledger
+  （0/2→1/2）；untraceable 0.111→0；四类 fail-closed 不变式全部保持。
+- 逐层 first-loss 修复：v26 Fix A（rescue 窗口保留全部 direct grounded evidence，G06 完整
+  pair 在事件 pool 共现）+ Fix B（per-Need 记账指令，batch-4 覆盖失败消除）；v27 Fix C（claim
+  只能引用同 entry 证据 + 完整组偏好，A1 的 knowledge 池外引用消除）。
+- 目标闸门未达：G06/G09 仍无引用完整证据组的单个 verified Writer claim；A2 残余损失在模型
+  合成层（按查询主题选窄结论与部分证据组），host 走廊（pool/prompt/contract）已耗尽 →
+  `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED`；C95 未运行（准入未满足）。
+- 下一步架构建议（供 Codex 决策，campaign 内不实施）：跨 Need verified drafts 的 claim
+  fusion（新语义 owner）；G01-G05/G07/G08 的 candidate/rank 层修复（memory_pipeline 走廊，
+  需独立证据）；G06/G09 自然 owner Need 的查询对齐。仅 reference 计数提升不得作为机制证据。
+- 文档：campaign log、本节、Gate M4 文档 §7、`docs/project_status.md` 已同步；
+  `.agent/implementation.md` 为完整 Codex handoff。
+
+### 21.3 2026-08-03 当前修复合同
+
+§21.2 保留为不可改写的 campaign 结论；A4-A13 实现与真实产物作为诊断基线保留。当前执行方向以
+本节和 `.agent/plan.md` 为准，验收仍是 `REPAIR`，不是 campaign 延长或 C95 准入。
+
+当前只解决一个根机制：把章节粒度 `TextBlock` 在读取侧无损派生为连续段落/句窗 slices，在 token
+预算内保留尽可能多的精确原文，并只对仍未闭合的 public Need 做语义 claim 合成与整体验证。
+责任仍在 Stage 2M resolver/support producer/controller corridor，deterministic Assembler 不拥有自由语义。
+
+实施必须同时满足：
+
+1. 从已通过 project/profile、basis、snapshot、scope、cutoff 和 taint 过滤的 ranked trace 解析原始
+   `TextBlock`；按原文段落边界派生 exact slice，仅超大单段按连续句窗切分。每个 slice 有稳定 ID、
+   exact start/end、text hash 和 parent lineage；compact 只作导航/派生 preview。
+2. 用独立 token 预算建立 ordered `SupportWorkset`；短 slices 原样保留，不设固定三条上限。超预算时
+   只用 public Need/facet、source/chapter diversity 和稳定检索顺序，deep-rank slice 仍有资格。
+3. 经边界和 exact-ref 校验的 slice 可原样进入 support producer/语义 owner 输入，并保留到独立
+   `EvidenceLedger`，但不是 verified claim，不自动闭合 facet。当前 Writer 仍只接收 verified claims。
+   单 slice 足够时只生成并整体验证一条单来源 claim；仅未闭合 Need 对 token-bounded exact slices 做按需
+   multi-slice synthesis。
+4. model 必须返回 public facets 与 cited slice IDs；host 校验身份、精确 refs 并集和安全证明，不枚举
+   两/三 atom 组合、不改写或补桥。whole verifier 以完整 claim、全部 cited slices 和 bounded
+   counter-evidence 重新判断。
+5. 批次只是 transport 优化，按单 Need 和 token-bounded chunk 隔离。输出
+   `candidate→block→slice→workset/semantic input→claim→whole verify→Controller→Writer/Ledger`
+   terminal typed funnel，记录每个请求和损失身份。
+6. 保留 v29 已证明有效的通用 assembly/lineage/pool 修复与全部安全边界；不得使用 Gold、accepted
+   refs、case/checkpoint/entity 特例，也不得增加预算、并发、重试或固定缩小 Need 数。
+
+下一次评审需要 license-free 回归覆盖段落/句窗精确 span、短 slice 直通、非连续 excerpt 禁止、token 而非
+固定条数装箱、deep-rank 资格、raw/claim 身份分离、按需多 slice claim、exact cited-ref union、counter-
+evidence、cutoff/basis/scope/taint、transport/per-item isolation 和 terminal funnel。最终代码的单次真实
+VAC C60 中，G06 `2/2` 与 G09 `3/3` 精确 slices 先保留到语义输入和 EvidenceLedger，并在 public
+合同允许时分别进入单条完整 verified Writer claim，全部引用边贯通 claim→receipt→variant→spec→Writer Context→Ledger，
+出现 verdict-level improvement，untraceable/leakage/profile contamination 为 0，Writer
+`<=4000`、Ledger `<=12000`，且 OpenCode 提交完整质量报告。只有上述 C60 条件满足后才能运行
+C95；P3、Gate M4 PASS、A/B/C 与 Stage 3 集成仍冻结。
 
 ---
 

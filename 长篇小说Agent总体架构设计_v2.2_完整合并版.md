@@ -10,6 +10,7 @@
 **文档层级**：总体逻辑架构与高层执行契约；不冻结具体数据库、模型、索引引擎、Agent 框架、Prompt、阈值、并发参数和部署方案。
 **项目阶段命名**：以 `docs/adr/0005-stage-numbering-and-document-lifecycle.md` 为准；本文中的 `Phase` 仅表示概念落地分层，不等同于项目 `Stage` 编号。
 **当前进度**：见 `docs/project_status.md`。
+**最近修订**：2026-08-03（补充无损证据基线、Support Workset 与增强通路边界）。
 
 ---
 
@@ -251,6 +252,7 @@ RunEventLog → RunCheckpoint / RunState / TaskGraph State → Context/Working M
 16. **自主运行必须由运行事实支撑恢复。** RunEventLog 是 Autonomous Operation Profile 下的 Operational Source of Record；RunCheckpoint 是绑定事件位置的恢复快照，RunState 与 TaskGraph State 是可由事件和检查点物化的运行视图。
 17. **生成结果不等于已接受事实或最佳候选。** Writer、Planner 或 Extractor 无权直接写 Canon；高影响创作在相应 Profile 下经过候选比较、覆盖检测、验证、质量评估和选择，所有正式变更均须经过审批门禁与原子提交。
 18. **检索治理集中，执行路径分层。** R0 Context-Local Resolve 与 R1 Scoped Exact Fast Path 可由 Runtime / Retrieval Service 在预授权契约下确定性执行；语义、多跳、冲突、权限敏感和证据充分性问题进入 R2 Memory Controller Agentic Retrieval。
+19. **真值关键读取必须保留无损基线。** L1/L2、摘要、compact、图和模型压缩可以改善召回、排序与导航，但不得替代可展开的 L0 精确证据，也不得成为 Writer 主张获得支持的必经真源。存储粒度不等于读取粒度；章节级 Block 必须能确定性展开为段落或连续句窗 exact slices，容量以明确 token 预算控制，不得以固定小条数取代证据充分性。任何 Writer 可见主张都必须能回到模型实际可见、范围精确且独立验证过的 L0 支持片段。
 
 ---
 
@@ -1460,6 +1462,58 @@ flowchart LR
 - 可以同时进入多个 L2 索引；
 - 不再保存 `representation.level`；
 - L1 和 L2 使用自己的 Derived ID，并通过 Source Refs 回指权威源。
+
+#### 13.1.1 真值关键基线与增强通路
+
+读取链分为两个职责不同、可以同时工作的通路：
+
+```text
+真值关键基线：
+public MemoryNeed
+  → scope / cutoff / basis / taint 预过滤
+  → compact retrieval handle
+  → 仅对选中 handle 解析 L0 Block
+  → 按原文段落/连续句窗生成精确 EvidenceSlice
+  → 内部 SupportWorkset
+  → 预算内原文证据直通语义 owner + 未闭合 Need 的按需 claim 生产/验证
+  → WriterContextPackage
+
+增强通路：
+L1 summary / dense / typed graph / model-derived compact
+  → 候选发现、排序、路径导航与补搜建议
+  → 回到同一精确 L0 展开入口
+```
+
+`SupportWorkset` 是 Memory Controller / support producer 在生成受支持主张前使用的内部工作集，
+不是新的公共 Memory 产品，也不直接暴露给 Writer。已接受的 read-side 产品仍是
+`WriterContextPackage`。经过可见性、真值边界和精确引用校验的 L0 slice 可以原样进入
+语义 owner 的工作输入，并以原文身份记录到 `EvidenceLedger`；它不因此成为 Writer-facing
+claim。当前已接受的 `writer_context.v1` 仍只编译已验证 claim。若未来要把 raw partition 直接
+暴露给 Writer，必须单独修订公共产品合同与 ADR，不得在 Stage 2M 内隐式改 schema。
+
+此边界要求：
+
+- Canon 可以继续以章节/场景文件保存较大 `TextBlock`，但存储粒度不等于读取粒度。
+  Resolver 必须优先按原文段落边界产生连续 slice；只有单段超出展开预算时，才按
+  连续句子窗切分。每个 slice 保留稳定身份、精确 start/end、文本 hash 和 parent lineage；
+- 检索先返回轻量 handle，再只展开被选中 Block 内的连续 exact slices；不得把整章
+  top-k 或最终 Writer token 上限同时当作上游证据工作集的唯一容量；
+- 较短 slice 原样保留并按 token 预算装箱，不设“最多三段”或其他固定小条数上限。
+  公开 Need/facet、合法 source/chapter diversity 和稳定检索顺序只用于预算内排序，不得使用 Gold；
+- 原始证据与摘要、compact、模型压缩使用不同身份并保留 derivation receipt；派生表示不得覆盖
+  或删除其 L0 来源；
+- parent/full-passage ref 只证明血缘。若模型实际只看到了截断或非连续 excerpt，该父引用不能把
+  未显示文本提升为语义支持；支持证明必须指向精确的模型可见 span 或等价的 typed derivation
+  map；
+- project/profile、basis commit、snapshot、scope、cutoff、truth 与 taint 过滤在评分和展开前
+  fail-closed；增强通道失败可以降级，真值边界不得降级；
+- 不得为每个 slice 强制生成 atom，也不得由 host 枚举固定两/三 atom 组合。单个
+  exact slice 已完整表达 Need 时，可直接生成并验证单来源 claim；仅当 Need 仍未闭合时，
+  语义 owner 才对一个 token-bounded exact-slice 工作集生成候选结论，再由 whole-claim verifier
+  对完整结论和全部 cited slices 独立校验。这是确定性切片/装箱与有界语义验证，
+  不是 learned fusion；
+- “检索结果被返回”与“消费者确认使用”是不同事实，分别记录 exposed receipt 与 use receipt，
+  访问频率不得由返回动作冒充真实使用。
 
 ### 13.2 L0：Grounded Units
 

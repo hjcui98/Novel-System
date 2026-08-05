@@ -2,7 +2,7 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-07-31
+> Updated: 2026-08-03
 >
 > Current progress source: `docs/project_status.md`
 >
@@ -31,7 +31,7 @@ Stage acceptance requires the stage-specific gate and evidence named in the curr
 | Stage 2A | Memory Agent Harness and Real-Project Validation | `DEVELOPMENT_COMPLETE / CONDITIONAL_PASS` |
 | Stage 2R | Stage 2A real hybrid retrieval workstream | `COMPLETE` |
 | Stage 2W | Stage 2A memory write and repair workstream | `COMPLETE` |
-| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ACTIVE / WP8_DIAGNOSTIC` |
+| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ACTIVE / M4_REPAIR` |
 | Stage 3 | Writer Core and Generation Quality | `PREPARATION_ACTIVE` |
 | Stage 4 | Advanced Agentic Retrieval and Risk Paths | `PLANNED` |
 | Stage 5 | Full Chapter and Volume Creation Loop | `PLANNED` |
@@ -59,7 +59,8 @@ canonical project `Stage` numbering.
 
 | Document | Lifecycle | Current use |
 |---|---|---|
-| `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; currently WP8 diagnostic execution |
+| `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; current exact paragraph/window slicing, token-bounded semantic-input/Ledger packing, and on-demand claim-closure repair |
+| `docs/stage2m_support_closure_campaign_20260802.md` | `ACTIVE` | 2026-08-02 support-closure campaign execution log: quality closure + real C60 ×3 (A0/A1/A2, producer v25→v27) + first-loss repairs; ended `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED` (mechanism gain confirmed, G06/G09 complete claims not formed) |
 | `docs/stage3_writer_core_overall_design.md` | `ACTIVE` | Stage 3 goals, scope, parallel boundaries, and completion criteria |
 | `docs/stage3_writer_core_preparation_assessment.md` | `ACTIVE` | Current technical readiness and resource envelope for Stage 3 |
 | `docs/stage3_writing_core_migration_execution.md` | `ACTIVE` | Workstream B Writing Core migration and implementation |
@@ -112,7 +113,7 @@ maintenance and regression analysis but do not define current progress:
 
 | Document | Lifecycle | Intended use |
 |---|---|---|
-| `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `DRAFT` | Code-level comparison with `rohitg00/agentmemory`; candidate Memory maturity work packages, Stage 3–7 placement, and benchmark/test gates |
+| `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `DRAFT` | Code-level and local protocol-v1 comparison with `rohitg00/agentmemory`; current deferral boundary, future Stage 4–7 placement, and candidate benchmark/test gates |
 | `docs/stage2m_canary40_execution_20260802.md` | `CURRENT_RESULT / DIAGNOSTIC` | Real VAC C40/C60/C95 canary comparison and Gate HOLD evidence |
 | `docs/stage2m_phase4_c60_c95_trace_20260802.md` | `DIAGNOSTIC / HOLD` | Artifact-backed C60/C95 per-Gold loss localization and version boundary |
 
@@ -132,6 +133,19 @@ status entry, not by rewriting old evidence.
   documentation.
 
 ## 10. Updating progress
+
+Document ownership in the Codex–OpenCode implementation loop:
+
+- Codex creates or edits architecture, design, planning, active execution, current-status, ADR,
+  `.agent/task.md`, `.agent/plan.md`, and `.agent/review.md` files.
+- `.agent/plan.md` supplements the applicable upper-level documents for one implementation task; it
+  does not replace or duplicate them.
+- OpenCode reads those documents and writes code, tests, runtime artifacts, and
+  `.agent/implementation.md`. It writes a separate result/summary document only when the Codex plan
+  explicitly names one.
+- After review, Codex integrates accepted evidence into existing project documents. A new design,
+  remediation, or execution document is created only for a materially new decision that the current
+  hierarchy cannot represent.
 
 When a gate or work package changes:
 

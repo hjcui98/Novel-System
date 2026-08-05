@@ -3,6 +3,7 @@
 **版本**：v0.1  
 **状态**：初步执行基线 / Evolving Implementation Contract  
 **日期**：2026-07-20  
+**最近修订**：2026-08-03（校正大 Block 读取粒度，补充 exact slice 直通与按需 claim 合同）
 **配套文档**：《长篇小说 Agent 资产、世界模型、控制平面、运行与自演化总体架构设计》v2.2  
 **文档层级**：总体架构之下的技术实现、工程边界与候选选型；不替代总体架构中的权威语义与 Core Invariant。
 **项目阶段命名**：以 `docs/adr/0005-stage-numbering-and-document-lifecycle.md` 为准；本文第 22 节的 `Phase` 为技术能力分层，不作为项目 `Stage` 编号。
@@ -1302,6 +1303,80 @@ stop_reason
 
 默认：一轮主检索 + 最多一轮补搜；重大章或严格 Profile 可以提高预算。
 
+## 12.13 Compact Handle、精确展开与 SupportWorkset
+
+正式读取不直接把搜索返回项当作语义证据。检索接口先返回轻量 handle，再由统一 resolver 对被
+选中的 handle 做精确展开：
+
+```text
+CompactRetrievalHandle
+├── retrieval_unit_id / representation_kind
+├── project / profile / basis / snapshot / cutoff
+├── source locator / path summary / score
+└── expandable L0 locator
+
+EvidenceSlice
+├── slice_id / parent_retrieval_unit_id
+├── exact source_ref + start/end
+├── visible_text + text_hash
+├── parent_lineage_ref（可选，只作血缘）
+└── scope / basis / snapshot / cutoff / taint attestation
+
+SupportWorkset
+├── task_id / target_need_id / public facet ids
+├── ordered exact EvidenceSlice[]
+├── bounded counter-evidence
+└── segmentation / expansion / token / rejection report
+```
+
+这些是内部 typed view，不要求立即新增公共领域 Schema。具体实现可以先使用 service-local
+dataclass/Pydantic model；只有跨进程或版本化消费者确实需要时才晋升公共合同。
+
+实现规则：
+
+1. Canon/导入器可以继续保存大 `TextBlock`；resolver 必须把存储粒度与读取粒度分开。
+   默认按原文段落边界生成连续 slice；单段过大时才按连续句窗切分。切片身份由
+   `parent block + start/end + text hash` 稳定派生。whole chapter 只能是经过预算证明的显式选择。
+2. L1 anchor、summary、style compact 和 graph path 可以提供导航与排序信号，但进入语义提取前
+   必须解析到准确的模型可见 L0 slice。
+3. 非连续 excerpt 不得继承 parent full passage 的语义覆盖范围。parent ref 保留为 lineage，
+   每个可主张 clause 必须由精确 span 或 typed segment derivation 支持。
+4. `SupportWorkset` 不是 `WriterContextPackage`。通过 project/profile/basis/snapshot/scope/
+   cutoff/taint 和 exact-span 校验的 slice，可以按 token 预算原样进入 support producer/
+   semantic owner 的工作输入，并保存到 `EvidenceLedger`；它们不因此成为已验证 claim。
+5. 原始 slice 与 derived preview 分 ID 保存。确定性或模型压缩只能生成可丢弃派生物，不得覆盖
+   raw 主记录或成为 exact evidence 的唯一入口。
+6. 较短 slices 原样保留，容量只由明确 token 预算控制，不按固定证据条数截断。当预算不能
+   容纳全部 slices 时，仅使用 public Need/facet、合法 source/chapter diversity 和原检索稳定顺序
+   选择；deep-rank slice 在预算用尽前仍有资格进入，不得使用 Gold。
+
+支持生产不再强制“每 slice 一 atom”作为所有证据的必经层。正式路径是：
+
+```text
+target MemoryNeed
+  → exact paragraph / contiguous sentence-window slices
+  → token-bounded raw-evidence packing
+  → single-slice claim when one slice is semantically sufficient
+  → otherwise on-demand multi-slice claim synthesis for the still-open Need
+  → independent whole-claim verification
+  → existing support group / receipt / variant / spec
+```
+
+单 slice 已完整表达目标时，语义 owner 产生一条只引用该 slice 的 claim 并独立验证。
+只有 public Need 仍未闭合时，才对一个按 token 有界、包含多个 exact slices 的工作集请求语义
+合成；模型必须返回 cited slice IDs，host 只验证身份、安全证明和引用精确集，不枚举“哪三个
+atom”、不改写或补桥。whole verifier 以完整 claim、全部 cited slices 和有界反证重新判定；
+最终 receipt/evidence refs 必须是该 claim 实际 cited slices 的精确并集。
+
+`ClaimAtom` 可作为单 slice 命题或调试中间件保留，但不得全量生成、不得被固定取前三条，
+也不得通过组合枚举把 benchmark 的两/三段 Gold 形状固化为通用架构。这一路径没有训练
+权重、在线学习或黑盒选组，不属于 learned fusion。
+
+当前 Stage 2M 已接受的 `writer_context.v1` 只向 Writer 渲染 receipt-bound verified claims，
+源文材料位于独立 `EvidenceLedger`。上述“raw 直通”指不经全量 atom 就进入内部语义输入
+与 Ledger，不是新增 Writer raw section。若要向 Writer 直接暴露 raw spans，必须先单独修订
+ADR-0004、公共 domain/schema 和对应预算/渲染合同；当前 Stage 2M 实现不得隐式越过该边界。
+
 ---
 
 # 13. Context Compiler
@@ -1343,6 +1418,9 @@ Unresolved Gaps
 Output Contract
 ```
 
+上述是通用 Context Compiler 分区超集；具体产品只能使用其已版本化合同允许的分区。当前
+Stage 2M `writer_context.v1` 不含 Writer-facing raw-spans 分区，源文保存在 `EvidenceLedger`。
+
 `mandatory_constraints` 不参与相关性淘汰；预算不足时压缩表达、分割任务或阻断，而不是删除。
 
 ## 13.3 技术组件
@@ -1368,6 +1446,43 @@ ContextDelta
 ```
 
 只有 Commit、Scope、POV、预算策略或 Mandatory Closure 发生关键改变时完整重编译。
+
+## 13.5 独立预算与失败域
+
+以下预算分别计量，不相互冒充或隐式借用：
+
+| 预算域 | 控制对象 | 失败时的正确行为 |
+|---|---|---|
+| Retrieval handle budget | 各通道候选数、去重和多样性 | 缩小候选或产生 typed gap |
+| Per-Need expansion budget | 精确 L0 slice 数、跨度和 token | 对目标 Need 报 insufficient，不先挤占 Writer 产品预算 |
+| Semantic-call budget | 按需单/多 slice claim proposal 与 whole verifier | 对受影响 Need/claim fail-closed |
+| Product budget | Writer Context 与 Evidence Ledger | Writer 只装配已验证 claims，Ledger 保存已校验证据；Mandatory 无法容纳则 typed overflow |
+
+Writer Context 与 Ledger 的具体上限由当前 Stage/Profile 配置冻结；技术设计不把某个实验数字永久
+写死为架构常量。最终产品预算不能反向成为 support producer 唯一的原始证据容量。
+
+模型批处理只是 transport 优化。单个 transport 不得绑定多个大 Need 的完整工作集；请求按
+Need 和 token-bounded slice chunk 隔离。只要结构化响应整体可解析，就按 Need、claim 和 verifier
+decision 独立校验：缺失或非法 item 只关闭对应 item；transport 失败或整体不可解析才关闭对应
+transport chunk。必须输出统一漏斗：
+
+```text
+raw candidate → L0 block resolved → exact slice segmented → SupportWorkset selected
+├─ raw slice packed → semantic input / EvidenceLedger retained
+└─ claim proposed/synthesized → whole claim verified → controller selected
+   → Writer claim packed → Ledger emitted
+```
+
+每个拒绝点记录 typed reason、目标身份和 artifact ref。只有漏斗中存在“精确证据充分但被错误
+拒绝”的实例，才允许放宽对应 validator，并同时保留无效对照仍失败的回归。低 aggregate score
+本身不能证明校验过严。
+
+正式使用度量区分：
+
+- `ContextExposedReceipt`：系统把哪些内容交给消费者；
+- `ContextUseReceipt`：消费者声明或可验证地使用了哪些内容。
+
+搜索结果返回只能增加 exposed 计数，不能自动增加 confirmed-use、importance 或 retention 信号。
 
 ---
 

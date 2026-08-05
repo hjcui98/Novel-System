@@ -2,7 +2,9 @@
 
 > Lifecycle: `DRAFT`
 >
-> Date: 2026-08-01 +08:00
+> Initial date: 2026-08-01 +08:00
+>
+> Updated: 2026-08-03 +08:00
 >
 > Purpose: 供后续 Stage 3–7 设计评审、成熟化改进和验收规划使用
 >
@@ -10,6 +12,9 @@
 >
 > Upstream evidence baseline:
 > [rohitg00/agentmemory@8c90741](https://github.com/rohitg00/agentmemory/tree/8c90741c633c020d5d24c34b6aa0ba53e2dd2226)
+>
+> Local executable source baseline: `agentmemory_lab/ref/agentmemory@d219763ccb2ac84ac36c091ae49091cac4a37c02`
+> (`0.9.28`); local protocol-v1 result: `agentmemory_lab/results/REPORT_20260803.md`
 >
 > Authority boundary: 本文是比较研究与候选方案，不是 ADR、阶段状态或 Gate 通过证据；
 > 当前状态仍以 [project_status.md](project_status.md) 为准，阶段编号仍以
@@ -48,13 +53,19 @@ NS 已经有比该项目更严格的 Canon、Commit、Projection、Freshness、E
 
 ### 0.2 优先级
 
-| 优先级 | 建议 | 结论 |
+下表是后续成熟度顺序，不是当前 Stage 2M/Stage 3 的实施授权。2026-08-03 决定先校正大
+`TextBlock` 的读取粒度，再关闭 exact raw slice 到 claim 的支持走廊；Hook、consolidation/晋升、
+retention/遗忘、通用 observation graph、Viewer 和
+learned fusion 全部暂缓到正式 Stage 站位。
+
+| 时点 | 建议 | 结论 |
 |---|---|---|
-| P0 | Capture contract、Observation provenance、异步 shadow pipeline、基准与消融合同 | 下一轮成熟化首先建设 |
-| P1 | Operational hybrid retrieval、compact → expand、使用效果回执、派生记录版本替代 | 在 P0 稳定后建设 |
-| P1 | 删除/替代/索引一致性、恢复、隐私、审计覆盖门禁 | 与 P1 检索同步建设 |
-| P2 | CLI/JSON/Markdown 的只读审计与重放导出 | 有运维消费方后建设 |
-| P3 | 统一 Replay/Memory Viewer | 可选，不是 Memory 产品或阶段前置条件 |
+| 当前 Stage 2M | 大 Block → paragraph/window exact slices、token-bounded semantic-input/Ledger packing、未闭合 Need 按需 claim 与 terminal funnel | 先保 raw 信息，不改 Writer 公共合同，不设固定三条/全量 atom 链 |
+| Stage 4 | compact → expand、source/path diversity、Context use receipt | 在高级读取路径有实证需求后建设 |
+| Stage 5 | 外部 Hook ingress 与 Observation provenance | 只覆盖现有 Runtime 管不到的真实 surface |
+| Stage 6 | Operational/Derived retention、恢复、索引一致性 | 不作用于 Canon truth/evidence |
+| Stage 7 | consolidation candidate、长期记忆晋升、独立 observation graph、learned fusion | 必须经 held-out gate 和隔离消融 |
+| post-Stage 7 | Viewer | 可选运维界面，不是 Memory 产品或前置条件 |
 
 ### 0.3 对 BM25＋向量＋图检索和 Hooks 的直接结论
 
@@ -124,7 +135,9 @@ Runtime 管不到的外部边界**。
 
 1. 本地工作树在评审时已有未提交修改。本文只增加新报告和文档索引，不把工作树修改当成已验收
    能力，也不修改现有脏文件。
-2. 上游源码和测试是设计证据；本次没有在本地安装其 Node/iii 运行时，也没有重跑上游 benchmark。
+2. 初版只把上游源码和测试作为设计证据；2026-08-03 已在隔离的
+   `agentmemory_lab/ref/agentmemory` 基线与本地服务上完成协议 v1 五 checkpoint 复现。该协议的
+   输入、评分和 verifier 合同与 NS Gate 不同，只能作为比较实验，不能替代 Stage 2M 证据。
 3. 上游公布的数据是其固定版本、数据集和机器上的自测，不能直接作为 NS Gate。
 4. `agentmemory` 面向 coding-agent session recall；NS 面向长篇小说的当前状态、历史证据、
    计划义务、知识边界和未来隔离。二者的 Recall 分母不相同。
@@ -242,14 +255,17 @@ Hook 的实现强调超时和错误不能中断主 Agent。
 pre-tool context injection 默认关闭，禁用时不得读 stdin、不得发网络请求、不得向 stdout 写入；
 后端不可用也必须安全退出。原因不是功能不足，而是每次文件工具调用都自动注入会持续消耗上下文。
 
-#### Observation 与 Memory 解耦
+#### Observation 与 Memory 应当解耦，但上游默认主记录并非无损双存
 
-上游把 RawObservation、CompressedObservation、SessionSummary、Semantic/Procedural Memory
-分开。自 v0.8.8 起，默认路径不强制 LLM 压缩，而是先生成可检索的 deterministic synthetic
-compression；模型压缩和 consolidation 都是可选、异步、可失败的增强。
+上游类型层把 RawObservation、CompressedObservation、SessionSummary、Semantic/Procedural
+Memory 分开。自 v0.8.8 起，默认路径不强制 LLM 压缩，而是先生成可检索的 deterministic
+synthetic compression；模型压缩和 consolidation 都是可选、异步、可失败的增强。但本地
+`0.9.28` 源码显示 `observe` 先写 RawObservation，随后默认 synthetic compression 仍以同一 ID
+写回主 KV，因而可能覆盖主记录中的 raw body；这是“类型分离”，不是“原始与派生记录默认各自
+持久化”。NS 必须使用不同 ID/记录保存 raw 与 derived preview，并保留 derivation receipt。
 
 这说明成熟流水线不应让“模型总结服务是否可用”阻塞事件持久化，也不应让一个失败的 embedding
-写入使原始 observation 丢失。
+写入使原始 observation 丢失；同时不能直接照搬上游同 ID overwrite 语义。
 
 #### Hybrid retrieval 有降级和消融意识
 
@@ -306,6 +322,12 @@ triple 各有胜负；coding-agent-life 的主要增益只出现在 temporal 问
    NS 应把 runtime/embedding/reranker/index mapping 的兼容性纳入 attestation，现有设计方向正确。
 4. 上游给 graph 加入查询上限、超时、snapshot 和 rebuild ceiling，证明通用图在规模上不是免费能力。
 5. 默认关闭 per-tool injection，证明“自动”不应等同“每次调用都注入”。
+6. 本地协议复现确认 project 过滤在无法解析项目身份时会按 unscoped 放行，并出现跨项目命中；
+   NS 必须继续在评分前 fail-closed，并在外部适配器无法保证身份时使用物理 store 隔离。
+7. 名为 `state_store.db` 的目标实际是目录型 KV，而不是单文件数据库；启动、清理、快照和恢复不能
+   以文件扩展名推断存储语义。
+8. 本地复现曾因旧服务端口仍存活而把新 run 指向非空旧 store。实验 harness 必须同时验证目标
+   端口属于本次进程且目标 store 为空；只通过 health check 不足以证明隔离。
 
 ## 5. 逐机制对照与 NS 方案
 
@@ -766,7 +788,7 @@ Audit 是 P0/P1，Viewer 是 P3。推荐顺序：
 |---|---|---|
 | Hook subprocess 的 fail-open、超时、stdout gate 测试 | 适配 | 外部 Hook adapter 与 contract tests |
 | observe 的校验、dedup、脱敏、per-session lock | 适配 | RunEvent ingress；项目身份改为 fail-closed |
-| synthetic compression 先于可选 LLM compression | 采用设计 | DerivedObservation 两阶段流水线 |
+| synthetic compression 先于可选 LLM compression | 有限适配 | 只能生成独立 Derived preview；raw exact support 保持独立身份和可展开入口 |
 | summarize/consolidation | 仅产生候选 | Stage 7 Experience/Skill candidate |
 | `sourceObservationIds` | 扩展采用 | ArtifactRef/hash/model-call/cutoff 完整 derivation receipt |
 | RRF `k=60` | 已存在，不算新增 | 保留本地单一 FusionService owner |
@@ -802,16 +824,18 @@ Audit 是 P0/P1，Viewer 是 P3。推荐顺序：
 | Stage 7 Controlled Evolution/Production | Experience/Skill 候选、held-out gate、生产容量 | consolidation→ExperienceCandidate、独立 Operational/Experience graph candidate、per-intent/learned fusion 实验、immutable revisions、promotion、隐私/成本/HA | Observation graph 与 World/Plan graph 混库混通道；自动修改 active Skill 或绕过 held-out gate |
 | 候选 post-Stage 7（用户所称 Stage 8） | 待 ADR；可能是持续生产治理 | 多项目 SLO、备份恢复演练、容量预测、跨区域/灾备、长期成本治理；可选只读 Viewer | 为了编号而重复 Stage 7 的生产扩展职责 |
 
-### 7.1 可以立即做但不改变 Gate 的工作
+### 7.1 当前只保留设计与证据，不启动成熟化平台
 
-以下工作可在当前 Gate 未闭合时以完全隔离的 shadow 方式开始：
+2026-08-03 决定不在 Stage 2M/Stage 3 启动以下实现：Hook 平台、Observation shadow platform、
+consolidation/长期晋升、retention/自动遗忘、通用 observation graph、Viewer 和 learned fusion。
+当前只允许：
 
-- 定义 Observation/Derivation/Use receipt 合同；
-- 对现有 RunEvent 做离线 replay 派生；
-- 建立不参与 Writer/Planner 正式 Context 的 Operational 索引；
-- 建立 benchmark corpus、adapter 和报告器；
-- 增加删除、恢复、privacy、index reconciliation 测试；
-- 输出只读 JSON/Markdown 审计包。
+- 保存本次源码基线、sanitized report、aggregate summary/manifest 和可复现 harness；
+- 把 compact→exact expand、raw/derived 分离和 exposed/used 区分写入上位架构与技术合同；
+- 在 Stage 2M 使用现有 trace/artifact 能力完成 claim 支持漏斗，不创建通用平台。
+
+其余工作到第 7 节对应 Stage 再重新评审；本草案的 MM0–MM6 是未来工作包候选，不构成当前
+`.agent/plan.md` 的授权。
 
 以下工作必须等待对应阶段 Gate/ADR：
 

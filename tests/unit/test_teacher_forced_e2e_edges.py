@@ -1138,3 +1138,27 @@ def test_progress_writer_reloads_and_deduplicates_chapters(tmp_path: Path) -> No
         assert restored.genesis_commit == writer.genesis_commit
         assert restored.last_chapter == 1
         assert restored.completed_chapters == [1]
+
+
+def test_support_terminal_state_uses_explicit_terminal_event() -> None:
+    events: list[dict[str, object]] = [
+        {"stage": "proposal", "status": "completed"},
+        {"stage": "terminal", "state": "completed_with_failures"},
+    ]
+    assert (
+        TeacherForcedBenchmarkE2ERunner._support_terminal_state(events, scenario_completed=True)
+        == "completed_with_failures"
+    )
+
+
+def test_support_terminal_state_legacy_fallback() -> None:
+    runner = TeacherForcedBenchmarkE2ERunner
+    assert runner._support_terminal_state([], scenario_completed=True) == "completed"
+    assert runner._support_terminal_state([], scenario_completed=False) == "completed_with_failures"
+    assert (
+        runner._support_terminal_state(
+            [{"stage": "proposal", "status": "failed"}],
+            scenario_completed=True,
+        )
+        == "completed_with_failures"
+    )

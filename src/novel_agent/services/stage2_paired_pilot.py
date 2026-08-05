@@ -480,6 +480,7 @@ class Stage2PairedPilotRunner:
         support_gateway: ModelGateway | None = None,
         support_artifact_writer: SupportArtifactWriter | None = None,
         support_progress_writer: SupportProgressWriter | None = None,
+        support_pre_proposal_trace: bool = False,
     ) -> PairedContextComparison:
         """Resolve both arms on E2E state without consulting private Gold.
 
@@ -629,6 +630,7 @@ class Stage2PairedPilotRunner:
             support_gateway=support_gateway,
             support_artifact_writer=support_artifact_writer,
             support_progress_writer=support_progress_writer,
+            support_pre_proposal_trace=support_pre_proposal_trace,
         )
 
     def _assemble_stage2m_comparison(
@@ -641,6 +643,7 @@ class Stage2PairedPilotRunner:
         support_gateway: ModelGateway | None = None,
         support_artifact_writer: SupportArtifactWriter | None = None,
         support_progress_writer: SupportProgressWriter | None = None,
+        support_pre_proposal_trace: bool = False,
     ) -> PairedContextComparison:
         """Create real A/B/C Writer Contexts from frozen selected retrieval units."""
 
@@ -694,7 +697,13 @@ class Stage2PairedPilotRunner:
             # part of the frozen MemorySelection even though they are not fused
             # search candidates themselves. Dropping them here turns chapter
             # titles into Writer claims and discards the supporting prose.
-            for expanded in arm.context.raw_evidence_spans:
+            # Compact excerpts of large grounded passages are created during
+            # budget packing, so they carry no fused-candidate lineage either;
+            # their parent linkage keeps the exact evidence edges Writer-facing.
+            for expanded in (
+                *arm.context.raw_evidence_spans,
+                *arm.context.style_or_reference_optional,
+            ):
                 parent_ids = tuple(
                     dict.fromkeys(
                         (
@@ -723,6 +732,7 @@ class Stage2PairedPilotRunner:
                 semantic_gateway=support_gateway,
                 artifact_writer=support_artifact_writer,
                 progress_writer=support_progress_writer,
+                pre_proposal_trace=support_pre_proposal_trace,
             )
         )
         selection_a = selector.select(
@@ -747,6 +757,16 @@ class Stage2PairedPilotRunner:
             basis_commit_id=comparison.deterministic.context.base_commit,
             basis_snapshot_id=comparison.deterministic.context.snapshot_id,
             arm="A",
+            raw_evidence_ledger_entries=selection_a.raw_evidence_ledger_entries,
+        )
+        producer_funnel = selector._producer.last_funnel
+        producer_funnel.writer_dropped = len(assembled_a.package.budget_report.dropped_optional_ids)
+        producer_funnel.ledger_dropped = len(selection_a.raw_evidence_ledger_entries) - len(
+            tuple(
+                entry
+                for entry in assembled_a.evidence_ledger.entries
+                if entry.support_group_id is None
+            )
         )
         mandatory_need_ids = {
             need.need_id for need in needs if need.requirement is RequirementLevel.MANDATORY

@@ -1,25 +1,20 @@
-# Current development task
+# Current task
 
-- Task: Stage 2M G06/G09 support-group and compound-claim quality
-- Stage: Stage 2M
-- Planner/reviewer: Codex
-- Implementer: OpenCode default `build` agent via `/implement`
-- Workflow state: `WAITING_FOR_HUMAN_APPROVAL`
-- Repair allowance: `0/1`
-- Merge policy: `CODEX_ON_PASS`
+- Task: correct Stage 2M evidence read grain, pack exact raw slices, and close claims on demand
+- Codex: architect, root-cause and direction owner, final reviewer
+- OpenCode default `build`: implementation, tests, real API execution, monitoring, diagnosis,
+  repair, and implementation evidence reporting
+- Approval: the user invokes `/implement`
+- Merge: Codex after acceptance
 
-## User decisions
+## User requirements
 
-- Preserve the existing Stage 2M document workflow; optimize only the execution interface.
-- Do not add an arbitrary fixed small Need limit.
-- Do not treat evidence-receipt matching alone as retrieval-quality improvement.
-- Avoid endpoint timeout/error loops; a failed endpoint run is non-comparable and must stop retries.
-- Use the active Qwen3.6 service at `http://127.0.0.1:8002/v1` only for the single bounded
-  post-offline synthetic smoke authorized by `.agent/plan.md`; read the current model ID from
-  `/models` and record the result in `.agent/implementation.md`.
-- Do not run C80, P3, the five-point matrix, or Stage 3 work in this task.
-
-## Canonical authority
-
-- `docs/stage2_memory_benchmark_task_closure_execution.md`, sections 0.1.7 and 0.2.
-- `docs/stage2m_gate_m4_root_cause_and_remediation_20260730.md`, sections 7 and 8.3.
+- Keep the interaction simple: Codex designs, OpenCode executes, Codex reviews.
+- Give OpenCode one substantial task rather than many tiny slices.
+- Use the canonical project documents as read-only authority; report real results in
+  `.agent/implementation.md` for Codex to accept and integrate.
+- Use and monitor the real Qwen3.6 API at `http://127.0.0.1:8002/v1`.
+- If Codex review does not pass, Codex supplies the next technical/architectural direction and
+  OpenCode continues. Do not impose an arbitrary repair-count limit.
+- Do not add a fixed small Need cap or mistake report plumbing for retrieval quality.
+- Stage 3, P3, formal Gate, C40, C80, and A/B/C are not part of this task.

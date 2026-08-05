@@ -1,32 +1,50 @@
 ---
 name: scoped-implementation
-description: Implement an approved .agent/plan.md as the sole OpenCode writer in one worktree, run only declared checks, and record a reviewable handoff. Use when a human invokes /implement after approving a Codex plan, or once more to address the first Codex review failure.
+description: "Let the OpenCode default build agent execute a Codex-approved design end to end, including implementation, tests, real API runs, monitoring, artifact analysis, in-direction repair, and evidence reporting. Use when the human invokes /implement."
 ---
 
 # Scoped Implementation
 
-Act as the OpenCode implementer, not the planner or reviewer. Invocation of `/implement` is the
-human approval for the current `.agent/plan.md`.
+Use this skill for `/implement`. Run the normal OpenCode `build` agent; `/implement` is a command
+entry point, not a new restricted agent or a separate orchestration platform.
 
-## Procedure
+## Read the Authorities
 
-1. Read `AGENTS.md`, `.agent/task.md`, `.agent/plan.md`, and, for a repair, `.agent/review.md`.
-2. Verify the stage, base commit, allowed files, plan state, and revision count. Stop as `BLOCKED` if
-   the plan is missing, stale, contradictory, outside the current worktree, or requires a new design
-   decision.
-3. Work as the only writer in this worktree. Do not invoke subagents, AO, another orchestrator, PR
-   automation, or an independent planning model.
-4. Modify only allowed files. Preserve unrelated dirty changes. Never add Gold/case/checkpoint-derived
-   runtime logic, lower a Gate, weaken provenance, or cross the declared stage boundary.
-5. Run the plan's targeted checks. Run a real endpoint/canary only when the plan explicitly permits
-   it and its health preflight passes; endpoint failure makes the run non-comparable and stops retries.
-6. Write `.agent/implementation.md` with changed files, behavioral explanation, exact commands and
-   results, residual risks, and `Revision: 0/1` or `1/1`. Do not claim PASS.
+1. Read `AGENTS.md` and use `docs/README.md` to resolve document precedence.
+2. Read the applicable upper-level architecture, design, status, and active execution documents
+   cited by `.agent/plan.md` before treating the task supplement as instructions.
+3. Read `.agent/task.md`, `.agent/plan.md`, and `.agent/review.md` when the latest review contains a
+   repair direction. The plan and review supplement the upper-level documents; they do not replace
+   them.
+4. If these sources conflict in a way that changes architecture, Stage, safety, or acceptance,
+   report the conflict to Codex instead of silently choosing a new direction.
 
-## Revision limit
+## Execute End to End
 
-On the first `FAIL`, fix only the findings in `.agent/review.md` and set `Revision: 1/1`. After a
-second `FAIL`, make no more changes and return control to the human.
+Follow Codex's root-cause judgment, design direction, invariants, acceptance signals, and stop
+conditions. Within that direction, use the normal implementation freedom of the `build` agent:
 
-Never commit, merge, reset, clean, delete a worktree, start P3, or broaden scope unless the approved
-plan explicitly assigns that operation.
+- inspect and modify all relevant production code, tests, scripts, configuration, and fixtures in
+  the responsible subsystem;
+- add regression coverage and run the focused and broader checks needed to establish confidence;
+- when the task calls for it, use the designated real API, monitor long-running work and model
+  calls, preserve artifacts, and diagnose the earliest real loss rather than relying only on final
+  scores;
+- repair implementation and runtime defects that remain inside the approved design, then rerun the
+  affected checks without waiting for a new micro-plan;
+- do not repeat an unchanged failed run: use its evidence to change the code, test, runtime
+  condition, or diagnosis first.
+
+Continue until the design is demonstrated, evidence shows the design direction is wrong, a new
+architectural decision is needed, or an external dependency is genuinely unavailable.
+
+## Report, Do Not Redesign the Documentation
+
+Keep `.agent/implementation.md` current with the implementation, exact commands, test and real-run
+results, artifact paths, diagnosis, repairs, and remaining risks. Write another execution result or
+summary document only when Codex's plan explicitly names it.
+
+OpenCode must not create or edit architecture, design, planning, ADR, active execution,
+current-status, `.agent/task.md`, `.agent/plan.md`, or `.agent/review.md` files. It reports evidence
+to Codex; it does not resolve architecture, promote a Stage, declare a formal Gate, or create a new
+workflow system.

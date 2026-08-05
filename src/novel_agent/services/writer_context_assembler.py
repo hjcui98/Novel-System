@@ -95,8 +95,15 @@ class WriterContextAssembler:
         basis_commit_id: CommitId,
         basis_snapshot_id: StableId,
         arm: Literal["A", "B", "C"],
+        raw_evidence_ledger_entries: tuple[EvidenceLedgerEntry, ...] = (),
     ) -> WriterContextAssemblyResult:
-        """Validate and pack only Controller-selected receipt-bound variants."""
+        """Validate and pack only Controller-selected receipt-bound variants.
+
+        ``raw_evidence_ledger_entries`` are exact raw slices retained in the
+        separate EvidenceLedger under raw identity (no support group, no facet
+        closure).  They never become Writer items and are dropped with a typed
+        loss only when the Ledger token budget cannot hold them.
+        """
 
         group_by_id = {item.support_group_id: item for item in support_groups}
         variant_by_id = {item.claim_variant_id: item for item in claim_variants}
@@ -272,10 +279,23 @@ class WriterContextAssembler:
         selected_ledger_ids = {
             ledger_id for item in selected for ledger_id in item.evidence_ledger_ids
         }
+        retained_raw: list[EvidenceLedgerEntry] = []
+        claim_ledger_tokens = self._evidence_tokens(
+            tuple(ledger_by_id[value] for value in selected_ledger_ids if value in ledger_by_id)
+        )
+        for entry in raw_evidence_ledger_entries:
+            proposed_raw = (*retained_raw, entry)
+            if self._evidence_tokens(proposed_raw) > ledger_budget - claim_ledger_tokens:
+                diagnostics.append(f"EVIDENCE_LEDGER_RAW_SLICE_BUDGET_DROP:{entry.ledger_id.root}")
+                continue
+            retained_raw.append(entry)
         ledger = EvidenceLedger(
             contract_version="evidence_ledger.v2",
             entries=tuple(
-                entry for entry in ledger_entries if entry.ledger_id in selected_ledger_ids
+                (
+                    *(entry for entry in ledger_entries if entry.ledger_id in selected_ledger_ids),
+                    *retained_raw,
+                )
             ),
             rendered_tokens=0,
         )

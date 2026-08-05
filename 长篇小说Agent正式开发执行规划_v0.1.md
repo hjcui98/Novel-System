@@ -6,7 +6,7 @@
 
 **初始日期**：2026-07-20
 
-**最近更新**：2026-07-31
+**最近更新**：2026-08-03
 **上位架构**：《长篇小说 Agent 资产、世界模型、控制平面、运行与自演化总体架构设计》v2.2  
 **配套技术设计**：《长篇小说 Agent 技术实施与选型设计》v0.1  
 **首个研究核心**：Narrative Memory & State Kernel / Real-Novel Replay Kernel  
@@ -1401,7 +1401,20 @@ Stage 1 Kernel ContextPackage
 - 是否减少修复轮次；
 - 是否在相同 token 成本下提升质量。
 
-Stage 3 仍不实现复杂 R2、长期自主调度和 Skill 演化。
+Stage 3 仍不实现复杂 R2、长期自主调度和 Skill 演化。以下能力在 Stage 3 中明确暂缓，不能以
+“完善 Writer Context”为由提前建设：
+
+| 暂缓能力 | 后续站位 | Stage 3 边界 |
+|---|---|---|
+| 通用/外部 Hook 平台 | Stage 5 在真实 Runtime surface 需要时再建 | 只使用已有显式 RunEvent 与 handoff |
+| consolidation / 长期记忆晋升 | Stage 7 的 Experience/Skill candidate 流程 | 不把观察或摘要直接晋升 Canon/active Skill |
+| retention / 自动遗忘 | Stage 6 仅对 Operational/Derived 试验 | Canon 与证据不按热度自动遗忘 |
+| 通用 observation graph | Stage 7 作为独立候选并经消融 | 不与 World/Plan typed graph 混库、混真值 |
+| Viewer | post-Stage 7 的可选运维表面 | Stage 3 使用 trace bundle/报告，不以 Viewer 作为产品 |
+| learned fusion | Stage 7 受控实验 | Stage 3 保持冻结、可解释的确定性读取合同 |
+
+这些后续站位是延期边界，不是提前授权；进入对应 Stage 前仍需实际需求、独立 benchmark 和该
+阶段的准入决定。
 
 ## 6.3 Stage 4：Agentic Retrieval 与高风险路径
 
@@ -1601,7 +1614,7 @@ CONDITIONAL PASS
     Agentic Controller not promoted
 
 ACTIVE
-    Stage 2M WP8 diagnostic quality program
+    Stage 2M exact-slice read-grain and on-demand claim-closure repair
     Stage 3 Writer Core preparation and isolated engineering
 
 BLOCKED
@@ -1618,6 +1631,11 @@ Writer code exists. It requires migration to `WriterContextPackage`, current-mai
 gates, and an independently evaluated real Writer experiment.
 
 当前详细状态、Stage 2M 指标和下一步允许动作统一见 `docs/project_status.md`。
+当前 Stage 2M 不扩建记忆平台；只校正“大 TextBlock 直接压缩”导致的读取粒度损失。
+执行必须先派生段落/连续句窗 exact slices，再按 token 预算直通 support producer/语义输入并保留到
+EvidenceLedger，只对仍未闭合的 Need 做按需 claim 合成与整体验证。当前 Writer 公共合同仍只接收
+verified claims。不设固定三条证据上限，不枚举两/三 atom 组合，不使用
+Gold 选组。
 
 ---
 

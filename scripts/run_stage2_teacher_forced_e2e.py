@@ -191,6 +191,16 @@ def parser() -> argparse.ArgumentParser:
             "refusing commit port without accepting a Canonical commit"
         ),
     )
+    value.add_argument(
+        "--support-pre-proposal-trace",
+        action="store_true",
+        help=(
+            "Run the deterministic pre-SupportWorkset corridor (handles -> ranked -> "
+            "compatible -> pool -> L0 resolution -> exact slices -> workset -> chunks -> "
+            "raw Ledger) and record the durable membership audit without any model call. "
+            "Diagnostic only; no claims are proposed or verified."
+        ),
+    )
     return value
 
 
@@ -252,6 +262,7 @@ def main() -> int:
             database_url=args.database_url,
             quality_repair_flags=quality_repair_flags,
             memory_write_dry_run=bool(args.memory_write_dry_run),
+            support_pre_proposal_trace=bool(args.support_pre_proposal_trace),
         ).run(
             args.source,
             args.output_directory,

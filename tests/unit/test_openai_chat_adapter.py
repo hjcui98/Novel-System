@@ -25,6 +25,8 @@ def _request(
     prompt: str = "test",
     response_schema: dict[str, JsonValue] | None = None,
     max_output_tokens: int | None = None,
+    enable_thinking: bool | None = None,
+    thinking_token_budget: int | None = None,
 ) -> ModelRequest:
     return ModelRequest(
         request_id=StableId("request.test"),
@@ -37,6 +39,8 @@ def _request(
         response_schema=response_schema,
         max_output_tokens=max_output_tokens,
         timeout_seconds=10,
+        enable_thinking=enable_thinking,
+        thinking_token_budget=thinking_token_budget,
     )
 
 
@@ -377,7 +381,22 @@ def test_generate_sends_json_schema_when_schema_provided() -> None:
     asyncio.run(endpoint.generate(_request(response_schema=schema)))
 
 
-def test_generate_enforces_enable_thinking_false() -> None:
+def test_generate_enforces_enable_thinking_true() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["chat_template_kwargs"] == {"enable_thinking": True}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request()))
+
+
+def test_generate_honors_explicit_enable_thinking_false() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert body["chat_template_kwargs"] == {"enable_thinking": False}
@@ -389,7 +408,28 @@ def test_generate_enforces_enable_thinking_false() -> None:
         )
 
     endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request(enable_thinking=False)))
+
+
+def test_generate_passes_through_thinking_token_budget() -> None:
+    seen_budget: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen_budget.append("thinking_token_budget" in body)
+        if "thinking_token_budget" in body:
+            assert body["thinking_token_budget"] == 3000
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request(thinking_token_budget=3000)))
     asyncio.run(endpoint.generate(_request()))
+    assert seen_budget == [True, False]
 
 
 # --- Retry ---

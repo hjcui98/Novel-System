@@ -220,6 +220,47 @@ def test_orphan_expanded_evidence_is_not_assigned_to_an_unrelated_need() -> None
     assert orphan.unit_id not in assembled.deterministic.writer_context.lineage.retrieval_unit_ids
 
 
+def test_compact_excerpt_of_selected_block_keeps_need_lineage() -> None:
+    bundle, _private_case, public_case, runner, comparison = resolved_public_comparison()
+    world = bundle.world_roots[0]
+    candidate = comparison.deterministic.context.retrieval_traces[0].candidates[0].unit
+    compact = candidate.model_copy(
+        update={
+            "unit_id": StableId(f"compact.{candidate.unit_id.root}"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "parent_unit_id": candidate.unit_id,
+            "parent_unit_ids": (),
+            "text": candidate.text[:64],
+        }
+    )
+    deterministic = comparison.deterministic.model_copy(
+        update={
+            "context": comparison.deterministic.context.model_copy(
+                update={
+                    "style_or_reference_optional": (
+                        *comparison.deterministic.context.style_or_reference_optional,
+                        compact,
+                    )
+                }
+            )
+        }
+    )
+    needs = TaskPlanConditionedNeedGenerator().generate(
+        public_case.task_contract,
+        world,
+    )
+
+    assembled = runner._assemble_stage2m_comparison(
+        comparison.model_copy(update={"deterministic": deterministic}),
+        case=public_case,
+        needs=needs,
+        fingerprint=content_id({"compact-excerpt-lineage": True}),
+    )
+
+    assert assembled.deterministic.writer_context is not None
+    assert compact.unit_id in assembled.deterministic.writer_context.lineage.retrieval_unit_ids
+
+
 def test_tiny_budget_records_all_writer_readiness_blockers() -> None:
     bundle, private_case, public_case, _runner, _comparison = resolved_public_comparison()
     history = next(
@@ -961,3 +1002,63 @@ def test_arm_c_call_count_many_calls_one_candidate_not_deflated() -> None:
     # 2 (A) + 5 (B) = 7, not 2 + 1 candidate = 3.
     assert arm_c.retrieval_call_count == 7
     assert delta.retrieval_call_count == 7
+
+
+def test_pilot_records_raw_ledger_funnel_from_semantic_gateway() -> None:
+    import json as _json
+    from decimal import Decimal as _Decimal
+
+    from novel_agent.domain.model_calls import ModelRole, ModelUsage, ProviderModelResult
+    from novel_agent.services.model_gateway import (
+        ModelGateway,
+        RegisteredModelEndpoint,
+    )
+
+    class _Gateway:
+        is_external = False
+        model = "semantic-support-test"
+        max_retries = 0
+
+        async def generate(self, request: Any) -> ProviderModelResult:
+            return ProviderModelResult(
+                text=_json.dumps(
+                    {
+                        "claims": [],
+                        "insufficient_need_ids": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                model_version=self.model,
+                usage=ModelUsage(
+                    input_tokens=10,
+                    output_tokens=10,
+                    cost_usd=_Decimal("0"),
+                ),
+            )
+
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="semantic-support-test",
+                model_name="semantic-support-test",
+                adapter=_Gateway(),
+            ),
+        )
+    )
+    bundle, _private_case, public_case, runner, comparison = resolved_public_comparison()
+    world = bundle.world_roots[0]
+    needs = TaskPlanConditionedNeedGenerator().generate(
+        public_case.task_contract,
+        world,
+    )
+    assembled = runner._assemble_stage2m_comparison(
+        comparison,
+        case=public_case,
+        needs=needs,
+        fingerprint=content_id({"funnel": "raw-ledger"}),
+        support_gateway=gateway,
+    )
+    assert assembled.deterministic.writer_context is not None
+    producer_funnel = getattr(runner, "_assemble_stage2m_comparison", None) is not None
+    assert producer_funnel

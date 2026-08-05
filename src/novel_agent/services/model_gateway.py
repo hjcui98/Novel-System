@@ -91,6 +91,19 @@ class ModelGateway:
     def call_ledger(self) -> ModelCallLedgerPort:
         return self._call_ledger
 
+    def endpoint_adapter(self, role: ModelRole) -> ModelEndpointPort:
+        """Public adapter access for transport-diagnostic classification.
+
+        The support corridor uses this only to read retry attempts for
+        sanitized failed-call diagnostics; the adapter never sees private
+        source text beyond the already-audited request prompts.
+        """
+
+        endpoint = self._endpoints.get(role)
+        if endpoint is None:
+            raise ModelRoutingError(f"no endpoint configured for {role.value}")
+        return endpoint.adapter
+
     async def generate_text(self, request: ModelRequest) -> ModelTextResult:
         self._validate_purpose(request)
         endpoint = self._endpoints.get(request.model_role)

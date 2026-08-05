@@ -6,7 +6,9 @@
 >
 > 开发状态：`NOT_STARTED`
 >
-> 日期：2026-07-31
+> 初始日期：2026-07-31
+>
+> 最近修订：2026-08-03
 >
 > 阶段：Stage 3 — Writer Core and Generation Quality
 >
@@ -85,10 +87,20 @@ contract 开发 Writer、Editor 和评价链；Stage 2M 稳定后，再由工作
 - Candidate ChangeBundle 的生产提交和 Canon 写入；
 - 长期自主恢复、跨机器调度和大规模并发；
 - 多候选搜索、常驻多 Judge 或自动 Skill 演化；
+- 通用/外部 Hook 平台；
+- consolidation 或长期记忆自动晋升；
+- Operational/Derived retention 与自动遗忘；
+- 通用 observation graph；
+- Viewer 产品；
+- learned fusion 或在线自适应检索策略；
 - 为每次运行新增一套哈希门禁、证明文件或验收清单；
 - 没有真实需求支撑的数据库 migration、平台层或通用框架。
 
-这些能力分别属于 Stage 4–7，或应在真实 Stage 3 结果证明需要后再增加。
+这些能力分别属于 Stage 4–7，或应在真实 Stage 3 结果证明需要后再增加。其中 compact→exact
+expand 属于 Stage 4 的高级读取接口；Hook 仅在 Stage 5 有真实外部 Runtime surface 时考虑；
+Operational retention 属于 Stage 6；consolidation/晋升、独立 observation graph 与 learned
+fusion 属于 Stage 7 的受控候选；Viewer 延后到 post-Stage 7 的可选运维表面。列入后续站位不
+等于预先批准实施，仍须对应 Stage 的需求、消融和门禁。
 
 ### 3.3 必须保持的边界
 

@@ -20,10 +20,14 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
 )
 from novel_agent.services.memory_pipeline import (
+    COMPACT_BLOCK_EXCERPT_LIMIT,
     AnchorBuilder,
     ContextCompiler,
     EvidenceExpander,
+    _compact_block_excerpt,
+    _compact_block_unit,
     _estimate_tokens,
+    _query_terms,
     _with_content_metadata,
 )
 from novel_agent.services.retrieval import (
@@ -448,3 +452,539 @@ def test_context_compiler_rejects_stale_snapshot_units() -> None:
             task_contract="must not read a stale snapshot",
             token_budget=100,
         )
+
+
+def _large_block_candidate(item: RetrievalUnit, rank: int, count: int) -> FusedCandidate:
+    hit = ChannelHit(
+        unit=item,
+        channel=RetrievalChannel.GROUNDED_BM25,
+        channel_rank=rank,
+        raw_score=float(count - rank + 1),
+        candidate_count=count,
+        hit_reason="test",
+    )
+    return FusedCandidate(
+        unit=item,
+        fused_rank=rank,
+        rrf_score=1.0 / rank,
+        channel_hits=(hit,),
+    )
+
+
+def _large_block_trace(need: Stage1MemoryNeed, item: RetrievalUnit) -> RetrievalTrace:
+    return RetrievalTrace(
+        need_id=need.need_id,
+        intent=need.query_intent,
+        allowed_channels=(RetrievalChannel.GROUNDED_BM25,),
+        channel_candidate_counts={RetrievalChannel.GROUNDED_BM25: 1},
+        candidates=(_large_block_candidate(item, 1, 1),),
+        fusion_applied=False,
+        stop_reason=RetrievalStopReason.BUDGET_SATISFIED,
+        need_execution_status=NeedExecutionStatus.EXECUTED_WITH_CANDIDATES,
+        calls_allocated=1,
+    )
+
+
+def test_context_compiler_compacts_large_block_when_full_text_does_not_fit() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-block")
+    reference = world.states[0].evidence_refs[0]
+    block_text = "".join(f"落落说道 这是第{index}句。" for index in range(300))
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text=block_text,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(reference,),
+    )
+    need = memory_need(
+        "need.pipeline.compact-block",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+    full_cost = _estimate_tokens(block_text)
+    compact_id = StableId("compact.grounded.block.ZTJ-P005.56.0")
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, block)),),
+        history,
+        context_id=StableId("context.synthetic.compact-block"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="represent a large block by a bounded excerpt",
+        token_budget=_estimate_tokens("落" * 600) + 1,
+    )
+
+    style_ids = {unit.unit_id for unit in package.style_or_reference_optional}
+    assert full_cost > package.budget_report.token_budget
+    assert compact_id in style_ids
+    assert block.unit_id in package.budget_report.dropped_optional_unit_ids
+    compact = next(
+        unit for unit in package.style_or_reference_optional if unit.unit_id == compact_id
+    )
+    assert compact.evidence_refs
+    assert all(
+        item.evidence_id.root.startswith("evidence.segment.") for item in compact.evidence_refs
+    )
+    assert all(item.span is not None for item in compact.evidence_refs)
+    assert len(compact.text) < len(block_text)
+    assert compact.parent_unit_id == block.unit_id
+    assert package.budget_report.optional_tokens <= package.budget_report.token_budget
+
+
+def test_context_compiler_packs_full_block_when_budget_allows() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.full-block")
+    block_text = "落落说道 这是第一句。"
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text=block_text,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(world.states[0].evidence_refs[0],),
+    )
+    need = memory_need(
+        "need.pipeline.full-block",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, block)),),
+        history,
+        context_id=StableId("context.synthetic.full-block"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="keep the full passage when it is small",
+        token_budget=_estimate_tokens(block_text),
+    )
+
+    style_ids = {unit.unit_id for unit in package.style_or_reference_optional}
+    assert block.unit_id in style_ids
+    assert not any(
+        unit.unit_id.root.startswith("compact.") for unit in package.style_or_reference_optional
+    )
+    assert block.unit_id not in package.budget_report.dropped_optional_unit_ids
+
+
+def test_context_compiler_compacts_large_block_even_when_budget_allows() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-always")
+    block_text = "".join(f"落落说道 这是第{index}句。" for index in range(300))
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text=block_text,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(world.states[0].evidence_refs[0],),
+    )
+    need = memory_need(
+        "need.pipeline.compact-always",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+    compact_id = StableId("compact.grounded.block.ZTJ-P005.56.0")
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, block)),),
+        history,
+        context_id=StableId("context.synthetic.compact-always"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="represent large passages by bounded excerpts",
+        token_budget=_estimate_tokens(block_text),
+    )
+
+    style_ids = {unit.unit_id for unit in package.style_or_reference_optional}
+    assert compact_id in style_ids
+    assert block.unit_id not in style_ids
+    compact = next(
+        unit for unit in package.style_or_reference_optional if unit.unit_id == compact_id
+    )
+    assert compact.evidence_refs
+    assert all(
+        item.evidence_id.root.startswith("evidence.segment.") for item in compact.evidence_refs
+    )
+    assert compact.content_hash == block.content_hash
+
+
+def test_context_compiler_never_compacts_non_grounded_units() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.no-compact")
+    anchor = RetrievalUnit(
+        unit_id=StableId("anchor.state.subject"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text="大" * 400,
+        entity_ids=(StableId("entity.subject"),),
+    )
+    need = memory_need(
+        "need.pipeline.no-compact",
+        Stage1QueryIntent.CURRENT_STATE,
+        "anchor query terms",
+        (CandidatePool.ANCHOR,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, anchor)),),
+        history,
+        context_id=StableId("context.synthetic.no-compact"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="never compact non-grounded units",
+        token_budget=_estimate_tokens("大" * 100),
+    )
+
+    assert anchor.unit_id in package.budget_report.dropped_optional_unit_ids
+    assert not any(
+        unit.unit_id.root.startswith("compact.") for unit in package.style_or_reference_optional
+    )
+
+
+def test_query_terms_skips_stopwords_keeps_ascii_and_bigrams_chinese() -> None:
+    terms = _query_terms("the 落落 陈长生 says 的")
+    assert "the" not in terms
+    assert "的" not in terms
+    assert "says" in terms
+    assert "落落" in terms
+    assert "陈长" in terms
+    assert "长生" in terms
+
+
+def test_compact_block_excerpt_short_text_is_not_compacted() -> None:
+    assert (
+        _compact_block_excerpt("短文本。" * 10, "短文本", limit=COMPACT_BLOCK_EXCERPT_LIMIT) is None
+    )
+
+
+def test_compact_block_excerpt_whitespace_only_text_returns_none() -> None:
+    assert _compact_block_excerpt("\n" * 700, "句", limit=COMPACT_BLOCK_EXCERPT_LIMIT) is None
+
+
+def test_compact_block_excerpt_single_oversized_sentence_returns_none() -> None:
+    assert _compact_block_excerpt("长" * 700, "长", limit=COMPACT_BLOCK_EXCERPT_LIMIT) is None
+
+
+def test_compact_block_excerpt_head_budget_covers_all_sentences() -> None:
+    excerpt = _compact_block_excerpt(
+        "长" + "\n" * 700 + "长", "长", limit=COMPACT_BLOCK_EXCERPT_LIMIT
+    )
+    assert excerpt == "长 长"
+
+
+def test_context_compiler_rejects_compact_of_multi_unit_expansion() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-multi")
+    reference = world.states[0].evidence_refs[0]
+    anchor = RetrievalUnit(
+        unit_id=StableId("anchor.state.subject"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text="受伤仍未痊愈。",
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(
+            reference,
+            reference.model_copy(update={"evidence_id": StableId("evidence.synthetic.20.999")}),
+        ),
+    )
+    need = memory_need(
+        "need.pipeline.compact-multi",
+        Stage1QueryIntent.CURRENT_STATE,
+        "anchor query terms",
+        (CandidatePool.ANCHOR,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, anchor)),),
+        history,
+        context_id=StableId("context.synthetic.compact-multi"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="never compact a multi-unit expansion group",
+        token_budget=_estimate_tokens(anchor.text) + 1,
+    )
+
+    assert anchor.unit_id not in package.budget_report.dropped_optional_unit_ids
+    assert any(
+        unit_id.root.startswith("expanded.")
+        for unit_id in package.budget_report.dropped_optional_unit_ids
+    )
+
+
+def test_context_compiler_rejects_compact_when_excerpt_still_exceeds_budget() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-too-big")
+    block_text = "".join(f"落落说道 这是第{index}句。" for index in range(300))
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text=block_text,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(world.states[0].evidence_refs[0],),
+    )
+    need = memory_need(
+        "need.pipeline.compact-too-big",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, block)),),
+        history,
+        context_id=StableId("context.synthetic.compact-too-big"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="drop the block when even the excerpt does not fit",
+        token_budget=_estimate_tokens("落" * 60),
+    )
+
+    assert block.unit_id in package.budget_report.dropped_optional_unit_ids
+    assert not any(
+        unit.unit_id.root.startswith("compact.") for unit in package.style_or_reference_optional
+    )
+
+
+def test_context_compiler_rejects_redundant_compact_representation() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-redundant")
+    reference = world.states[0].evidence_refs[0]
+    block_text = "".join(f"落落说道 这是第{index}句。" for index in range(300))
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text=block_text,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(reference,),
+    )
+    first = memory_need(
+        "need.pipeline.compact-redundant-first",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+    second = memory_need(
+        "need.pipeline.compact-redundant-second",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        (
+            (first, _large_block_trace(first, block)),
+            (second, _large_block_trace(second, block)),
+        ),
+        history,
+        context_id=StableId("context.synthetic.compact-redundant"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="never pack the same compact representation twice",
+        token_budget=_estimate_tokens("落" * 600) + 1,
+    )
+
+    compact_units = [
+        unit
+        for unit in package.style_or_reference_optional
+        if unit.unit_id.root.startswith("compact.")
+    ]
+    assert len(compact_units) == 1
+    assert compact_units[0].parent_unit_id == block.unit_id
+    assert block.unit_id in package.budget_report.dropped_optional_unit_ids
+
+
+def test_context_compiler_drops_delimiter_only_block_without_compact() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.compact-empty")
+    block = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        text="\n" * 700,
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(world.states[0].evidence_refs[0],),
+    )
+    need = memory_need(
+        "need.pipeline.compact-empty",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((need, _large_block_trace(need, block)),),
+        history,
+        context_id=StableId("context.synthetic.compact-empty"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="drop a large block with no extractable sentences",
+        token_budget=_estimate_tokens("落" * 100),
+    )
+
+    assert block.unit_id in package.budget_report.dropped_optional_unit_ids
+    assert not any(
+        unit.unit_id.root.startswith("compact.") for unit in package.style_or_reference_optional
+    )
+
+
+def test_compact_block_unit_rejects_non_grounded_unit() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    anchor = RetrievalUnit(
+        unit_id=StableId("anchor.state.subject"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.synthetic.compact-unit"),
+        text="大" * 700,
+        entity_ids=(StableId("entity.subject"),),
+    )
+    assert _compact_block_unit(anchor, query_text="anchor query") is None
+    short_block = anchor.model_copy(
+        update={
+            "unit_id": StableId("grounded.block.ZTJ-P005.36.0"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+            "text": "短文本。" * 5,
+        }
+    )
+    assert _compact_block_unit(short_block, query_text="anchor query") is None
+
+
+def test_context_compiler_deep_grounded_block_survives_budget_competition() -> None:
+    bundle = make_synthetic_bundle()
+    history, _ = bundle.text_roots
+    world = bundle.world_roots[0]
+    snapshot_id = StableId("snapshot.synthetic.deep-grounded")
+    reference = world.states[0].evidence_refs[0]
+
+    def block(unit_id: str, seed: int) -> RetrievalUnit:
+        return RetrievalUnit(
+            unit_id=StableId(unit_id),
+            unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+            source_commit=world.source_commit,
+            snapshot_id=snapshot_id,
+            text="".join(f"落落说道 这是第{index}句。" for index in range(seed * 40 + 80)),
+            entity_ids=(StableId("entity.subject"),),
+            evidence_refs=(reference,),
+        )
+
+    high_priority = block("grounded.block.ZTJ-P005.33.0", 5)
+    deep_block = block("grounded.block.ZTJ-P005.56.0", 5)
+    high_need = memory_need(
+        "need.pipeline.deep-grounded-high",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+    high_need = high_need.model_copy(update={"priority": 97})
+    deep_need = memory_need(
+        "need.pipeline.deep-grounded-low",
+        Stage1QueryIntent.CURRENT_STATE,
+        "block query terms",
+        (CandidatePool.GROUNDED,),
+        mandatory=False,
+    )
+    deep_need = deep_need.model_copy(update={"priority": 60})
+    high_candidates = tuple(_large_block_candidate(high_priority, rank, 5) for rank in range(1, 6))
+    high_trace = RetrievalTrace(
+        need_id=high_need.need_id,
+        intent=high_need.query_intent,
+        allowed_channels=(RetrievalChannel.GROUNDED_BM25,),
+        channel_candidate_counts={RetrievalChannel.GROUNDED_BM25: 5},
+        candidates=high_candidates,
+        fusion_applied=False,
+        stop_reason=RetrievalStopReason.BUDGET_SATISFIED,
+        need_execution_status=NeedExecutionStatus.EXECUTED_WITH_CANDIDATES,
+        calls_allocated=1,
+    )
+    deep_trace = _large_block_trace(deep_need, deep_block)
+
+    package = ContextCompiler(EvidenceExpander()).compile(
+        ((high_need, high_trace), (deep_need, deep_trace)),
+        history,
+        context_id=StableId("context.synthetic.deep-grounded"),
+        base_commit=world.source_commit,
+        snapshot_id=snapshot_id,
+        task_contract="deep grounded evidence survives budget competition",
+        token_budget=700,
+    )
+
+    style_ids = {unit.unit_id.root for unit in package.style_or_reference_optional}
+    assert "compact.grounded.block.ZTJ-P005.56.0" in style_ids
+    deep_compact = next(
+        unit
+        for unit in package.style_or_reference_optional
+        if unit.unit_id.root == "compact.grounded.block.ZTJ-P005.56.0"
+    )
+    assert deep_compact.evidence_refs
+    assert all(
+        item.evidence_id.root.startswith("evidence.segment.") for item in deep_compact.evidence_refs
+    )
+    assert all(item.span is not None for item in deep_compact.evidence_refs)
+
+
+def test_compact_segment_ref_requires_source_evidence() -> None:
+    import pytest as _pytest
+
+    from novel_agent.services.memory_pipeline import _segment_evidence_ref
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    no_evidence = RetrievalUnit(
+        unit_id=StableId("grounded.block.ZTJ-P005.56.0"),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.synthetic.segment-ref"),
+        text="落落说道 这是第一句。",
+        entity_ids=(StableId("entity.subject"),),
+    )
+    with _pytest.raises(ValueError, match="requires an evidence reference"):
+        _segment_evidence_ref(no_evidence, "落落说道 这是第一句。", 0, 10)
+    spanless = no_evidence.model_copy(
+        update={
+            "evidence_refs": (world.states[0].evidence_refs[0].model_copy(update={"span": None}),)
+        }
+    )
+    with _pytest.raises(ValueError, match="requires a precise span"):
+        _segment_evidence_ref(spanless, "落落说道 这是第一句。", 0, 10)

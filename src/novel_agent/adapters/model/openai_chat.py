@@ -191,14 +191,21 @@ class OpenAICompatibleChatEndpoint:
                     "strict": True,
                 },
             }
-        return {
+        payload: dict[str, object] = {
             "model": self.model,
             "messages": [{"role": "user", "content": request.prompt}],
             "temperature": self.temperature,
             "max_tokens": request.max_output_tokens or self.max_output_tokens,
             "response_format": response_format,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "chat_template_kwargs": {
+                "enable_thinking": (
+                    request.enable_thinking if request.enable_thinking is not None else True
+                )
+            },
         }
+        if request.thinking_token_budget is not None:
+            payload["thinking_token_budget"] = request.thinking_token_budget
+        return payload
 
     async def aclose(self) -> None:
         if self._client is not None:

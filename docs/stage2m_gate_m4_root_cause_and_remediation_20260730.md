@@ -2,13 +2,14 @@
 
 文档生命周期：`ACTIVE_REMEDIATION`
 日期：2026-07-30
-状态更新：2026-08-02；P0/P1 与正式 Gate contract 已实现，P2 已接受为诊断证据；C40
-currentness 和 C60 模型超时已修，C60 support-group/claim synthesis 质量仍未通过；P3 未执行
+状态更新：2026-08-03；P0/P1 与正式 Gate contract 已实现，P2 已接受为诊断证据；C40
+currentness 和 C60 模型超时已修，A10-A13 仍未形成 C60 完整 claim；当前转为 exact-slice
+读取粒度修正；P3 未执行
 范围：WP7；`visible_at_cutoff`（VAC）与 `author_plan_conditioned`（APC）各
 P001-P005 / C20-C95；Arm A deterministic
 当前决策：**Gate M4 HOLD；正式 WP8 冻结；P2 = ACCEPTED_AS_DIAGNOSIS；当前只修 C60
-rank-complete evidence 到完整 claim 的损失，明确提升后再做同类 C95 canary；严格 P3/Gate 门
-保留到最终发布**
+的大 Block→exact paragraph/window slice→semantic input/claim 读取链，明确提升后再做同类 C95 canary；
+严格 P3/Gate 门保留到最终发布**
 
 本文的 2026-07-30 根因数据保留为修复前基线；从第 1.1 节起记录当前代码与诊断运行状态。
 开发人员应按第 7 节“当前状态与剩余动作”继续，不得把已经实现的 P0/P1 重新当作未开发需求，
@@ -789,6 +790,56 @@ branch coverage。失败的 `ns-6` evidence-block binding 实验未合并；Stag
 和分支已清理；Stage 3 实现未合并并继续保留在独立 worktree。下一轮仍只执行下表 P1-2 的
 G06/G09 frozen-trace 切片，不回到 P0/P1 治理重建，也不提前启动 P3。
 
+同日后续工作区已实现 `trusted_claim_support_producer.v25`：由其他合法 Need route 选中的 unit
+可在公开 entity/focus 或精确 lineage 兼容、完整 fail-closed 校验后进入目标 Need 的 bounded
+semantic support pool；借用 unit 不关闭 origin Need，verifier 仍看到全部兼容反证。44 个聚焦
+测试通过，合并前全仓质量当前只剩新增测试 typing 的 strict-MyPy 收口。为避免继续把同一根因
+拆成大量人工切换，执行改为一个文档驱动的连续任务：Codex 判断根因、设计、责任层和验收信号，
+OpenCode 在一次 `/implement` 中完成全仓质量、真实 C60 监控、冻结产物诊断、证据驱动修复复验、
+条件 C95，并在 `.agent/implementation.md` 汇报执行证据。`.agent/plan.md` 只是继承本文与 Stage
+2M 主执行文档的任务补充；OpenCode 不修改这些上位文档，Codex 验收后负责回写。P3/Gate 仍未
+授权。
+
+2026-08-02 `stage2m-support-closure` campaign 已完成并交回 Codex（详见
+`docs/stage2m_support_closure_campaign_20260802.md` 与 `.agent/implementation.md`）：
+
+- 质量：新增测试 typing 的 19 个 strict-MyPy 错误修复；`make quality` 全绿（1402 passed /
+  100% statement+branch coverage）。
+- 真实 C60 ×3（预算用尽，均 VAC Arm A / real_hybrid / Qwen3.6/8002 / 可比较）：
+  - A0（v25）：batch 10 内容级 `OpenAIChatEndpointError`（服务 200，非不可用）；batch 4
+    覆盖契约失败；11 semantic receipts；
+  - A1（v26，Fix A rescue 窗口完整保留 direct grounded + Fix B per-Need 记账指令）：零诊断，
+    17 semantic receipts；knowledge claim 池外引用被 normalization 丢弃；
+  - A2（v27，Fix C 池内引用约束 + 完整组偏好）：18 semantic receipts；G06 一个 accepted ref
+    首次进入 Evidence Ledger（0/2→1/2）；untraceable 0.111→0；零 endpoint 错误。
+- 机制 gain 成立但目标闸门未达：G06/G09 仍未形成引用完整证据组的单个 verified Writer
+  claim；A2 残余 first loss 在模型合成层（按查询主题选窄结论与部分证据组），host 走廊
+  （pool/prompt/contract）已耗尽 → `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED`；C95 未运行
+  （准入未满足）。
+- 下一步架构方向（需 Codex 决策，campaign 内不实施）：跨 Need verified drafts 的 claim
+  fusion（新语义 owner）；G01-G05/G07/G08 的 candidate/rank 层修复（memory_pipeline 走廊，
+  需独立证据）；G06/G09 自然 owner Need 的查询对齐。仅 reference 计数提升不得作为机制证据。
+
+2026-08-03 当前决策覆盖上述“待 Codex 决策”，但不改写历史运行数据。A10-A13 全量 atom
+路径证明机制可运行，但产生 304 slices/228 proposals 仍没有让 G06/G09 进入 Ledger。代码
+复核又确认 benchmark 的一份章节/场景文本会导入为一个大 `TextBlock`。因此当前不做跨 Need
+fusion，不建立两/三 atom 候选组合枚举，而先实现：
+
+```text
+selected block / exact span
+  -> paragraph-first, contiguous-window-only EvidenceSlice
+  -> token-bounded ordered SupportWorkset
+  -> raw slices direct packing into semantic input / EvidenceLedger
+  -> single-slice claim when sufficient
+  -> on-demand multi-slice synthesis only for a still-open Need
+  -> independent whole verification and exact cited-ref union
+```
+
+证据条数不设固定三条上限。原文 slice 可以作为 raw evidence 原样进入语义工作输入并保留到
+`EvidenceLedger`，但不因此成为 verified claim。当前 `writer_context.v1` 仍只向 Writer 渲染 verified
+claims，不新增 raw partition。host 只校验 public Need/facet、cited slice IDs、证据并集与安全证明，不使用 Gold 选组、
+不改写或补桥。若 public Need/facet 粗到无法不依赖 Gold 选出正确证据，必须返回架构层细化合同。
+
 | 顺序 | 当前状态 | 剩余动作 | 验收信号 |
 |---|---|---|---|
 | P0-1 receipt host validation | `IMPLEMENTED_TESTED` | 保持当前 fail-closed 测试 | 空/非法 traceable IDs 不可声明 SUPPORTS |
@@ -796,12 +847,12 @@ G06/G09 frozen-trace 切片，不回到 P0/P1 治理重建，也不提前启动 
 | P0-3 APC alias | `IMPLEMENTED_TESTED` | APC C40 真实哨兵复验 | alias 冲突消失，真冲突仍 fail closed |
 | P0-4 public completion contract | `IMPLEMENTED_TESTED` | 在真实 trace 中检查 facet closure 与 taint | runtime 不读 Gold，closure 可审计 |
 | P1-1 task-weighted scheduler v6 | `IMPLEMENTED_TESTED / C60_NO_QUALITY_GAIN` | 保留首轮不饿死；不要再加固定 Need 小上限 | 所有合法 Need 先获一次调用；剩余预算连续分配 |
-| P1-2 support closure | `IMPLEMENTED_TESTED / CURRENT_BLOCKER` | 逐项对照 G06/G09 rank-complete refs 与 claim variant，修原子 support group 合成 | G06/G09 的完整 evidence 形成一条 Writer 可读且 verifier 通过的 claim |
-| P1-3 support-aware selection | `IMPLEMENTED_TESTED / C40_CURRENTNESS_VERIFIED / CONTEXT_FAIR_PACKING_FIXED` | 用后续受影响 canary 验证 C60/C95 正确候选是否进入 Stage1；不重跑已完成章节 | mandatory Need 只锁定首个/显式 mandatory evidence group；其余按 Need 公平原子装箱，不重复展开 L0 |
-| P1-4 deterministic Assembler | `IMPLEMENTED_TESTED` | 检查 selected→assembled→ledger 损失 | spec/hash/receipt 校验与原子 packing 均成立 |
+| P1-2 support closure | `A13_MECHANISM_VALIDATED / TARGET_GATE_NOT_MET / READ_GRAIN_REPAIR_REQUIRED` | 保留 A0-A13 证据；先把大 Block 派生为 exact paragraph/window slices，按 token 直通语义输入/Ledger，只对未闭合 Need 合成 claim；不做固定三 atom 或组合枚举 | G06/G09 exact slices 保留到语义输入/Ledger，并各形成一条 Writer 可读且 verifier 通过的 claim |
+| P1-3 support-aware selection | `IMPLEMENTED_TESTED / C40_CURRENTNESS_VERIFIED / CONTEXT_FAIR_PACKING_FIXED` | 将现有 group 公平装箱改为 exact-slice token 装箱，验证 deep-rank 资格；不重跑已完成章节 | mandatory 与 optional 都不因固定小条数或重复 L0 展开丢失合法 exact slice |
+| P1-4 deterministic Assembler | `IMPLEMENTED_TESTED` | 检查 raw/claim identity 与 selected→assembled→ledger 损失 | spec/hash/receipt 校验成立；Writer 只接收 verified claim |
 | P0-5 formal run provenance/lifecycle | `IMPLEMENTED_TESTED / P2_DIAGNOSTIC_COMPLETE` | 五个 P2 单点已在 clean execution copy + real infrastructure 完成；仍待正式 P3 五点 lifecycle 验收 | `code_source_dirty=false`；五点共享 identity；`scenario_run.completed=true` |
 | P001/P003 自动化契约复核 | `AUTOMATED_CHECKS_ONLY / NON_BLOCKING` | 保留 schema、identity、evidence/cutoff 和 COMPLETE+MISS 的可读诊断；不设置人工签署门槛 | 自动化 contract/evidence 输出可复核；不以人工签名阻塞开发 |
-| P2 真实哨兵 | `ACCEPTED_AS_DIAGNOSIS / C40_TARGET_FIXED / C60_TIMEOUT_FIXED` | 只修 G06/G09 support selection/synthesis；C80 暂不重跑 | C60 模型批次 0 timeout；rank-complete evidence 进入完整 Writer claim；尚未达到 P3 触发条件 |
+| P2 真实哨兵 | `ACCEPTED_AS_DIAGNOSIS / C40_TARGET_FIXED / C60_READ_GRAIN_OPEN` | 只修 C60 block→slice→semantic input/claim 链；C80 暂不重跑 | 精确 slices 按 token 进入语义输入/Ledger；G06/G09 完整 Writer claim 成立；尚未达到 P3 触发条件 |
 | C45 新实体 onboarding | `IMPLEMENTED_TESTED / REAL_C45_CROSSED` | 保持精确 entity-ID 与 dangling-reference fail-closed；无需重跑已完成章节 | 真实 C45 续跑不再进入 poison loop |
 | V2 normalized target collision | `IMPLEMENTED_TESTED / FAIL_CLOSED` | 保持 materialization 前冲突拒绝与证据合并上限 | 同 target 同语义只合并证据，异语义拒绝 |
 | 单节点 projection replicas | `IMPLEMENTED_TESTED / CONFIGURED` | 仅影响新建 projection index 的本地资源配置 | `number_of_replicas=0`，不改变 Gate 评分 |
@@ -809,13 +860,15 @@ G06/G09 frozen-trace 切片，不回到 P0/P1 治理重建，也不提前启动 
 | P3 双 profile 五点 WP7 | `NOT_STARTED / FINAL_GATE_ONLY` | 仅在三点 canary 接近正式门、底线无回归且最终 P3 前置条件满足后全新运行 | 达到第 9 节全部准入条件 |
 
 开发人员不应为了“完成表格”重写 P0/P1；只有 P2 真实 trace 证明实现错误时，才回到
-对应责任层做最小修复。当前串行主线（本任务不再启动新的真实全量运行）是：
+对应责任层做最小修复。当前串行主线是一个连续的长任务，不是新的真实全量运行：
 
 ```text
 既有 P2 诊断归档（接受为诊断证据）
   -> C40 currentness 已验证；C60 v21/v6 与 8002 timeout 修复已验证
-  -> 用 G06/G09 frozen trace 修 Controller support group / compound claim synthesis
-  -> 只在机制有明确离线/单测证据后重跑 C60；C60 提升后才考虑同类 C95 canary
+  -> 保留 producer v25-v29 与 A0-A13 机制/质量证据
+  -> 实现 Block→exact paragraph/window slices→token-bounded semantic-input packing→on-demand claim
+  -> 新 C60 真实运行、监控和 block→slice→semantic input/claim→Writer/Ledger terminal trace
+  -> 按 first-loss 修复/复验；C60 形成完整 verified claim 后才考虑同类 C95 canary
   -> 继续目标层修复；接近正式门时才冻结 clean code/config/contract，执行 P3 双 profile 五点 Arm A
   -> Gate M4
 ```
@@ -1202,10 +1255,11 @@ ref matching 必须复用锁定的 `gold_evidence_matcher.v3` 身份/span 规则
 | VAC C80/C95 后段 Need 0-call | F-NEED / scheduler | F-ROUTE | 顺序全局预算饿死 |
 | VAC candidate-complete 到 selected=0 | F-RANK | F-NEED | 排序未保护 evidence closure |
 | VAC selected 到 ledger 大量丢失 | F-ASSEMBLY | F-EVIDENCE | first-claim mandatory closure + optional packing |
+| 章节级 `TextBlock` 经 excerpt/atom 后仍丢分散证据 | F-EVIDENCE read grain | F-ASSEMBLY / semantic synthesis | 先派生 paragraph/window exact slices，再按 token 装箱；不枚举固定 atom 组 |
 | APC P002/C40 typed failure | F-FRESHNESS | F-EVIDENCE normalization | 同证据语义别名被判冲突 |
 | verifier 空 traceable IDs 仍 SUPPORTS | F-EVAL | - | 不改变 fail-closed，但 receipt 必须加固 |
 
 当前正式状态：
 
 > **P0/P1 代码与严格 Gate reporter 已实现；P2 diagnostic 已完成并接受为诊断证据，P3 未执行；
-> Gate M4 HOLD；正式 WP8 未获授权。**
+> 当前唯一修复链是 Block→exact slice→token-bounded semantic input/claim；Gate M4 HOLD；正式 WP8 未获授权。**

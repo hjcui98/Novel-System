@@ -2,9 +2,9 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Status date: 2026-07-31 +08:00
+> Status date: 2026-08-03 +08:00
 >
-> Code baseline: `ca9c78e` plus the current dirty Stage 2M worktree fingerprint
+> Code baseline: `e2c9705` plus the current dirty Stage 2M v29 worktree fingerprint
 >
 > Canonical naming: `docs/adr/0005-stage-numbering-and-document-lifecycle.md`
 
@@ -22,6 +22,16 @@ lifecycle is incomplete. Gate M4 remains `HOLD` and formal WP8 is frozen. This d
 Canon safety or C95 infrastructure acceptance; it blocks claims that the Memory benchmark or
 agentic promotion has passed.
 
+The 2026-08-03 Codex acceptance decision is `REPAIR`. Assembly, compact lineage, exact segment refs,
+per-item isolation, and support-pool corrections are retained, but A10-A13 still form no complete
+G06/G09 verified Writer claim and C60 has no verdict-level improvement. Code inspection found the
+earlier mismatch: benchmark source files are stored as large chapter/scene `TextBlock` values, while
+the support path compresses them before deriving natural exact paragraph slices. The next permitted
+mechanism is `large Block -> exact paragraph/contiguous-window slices -> token-bounded semantic-input/Ledger packing ->
+selective claim synthesis/whole verification`. Fixed three-atom selection and two/three-atom
+combination enumeration are not permitted. C95 remains prohibited until final-code C60 demonstrates
+the corrected corridor.
+
 Stage 3 preparation is active. Writer Core has a substantial isolated implementation in a separate
 worktree, but it is uncommitted, unmerged, based on the former Stage 2B namespace, and integrated
 against the legacy `Stage1ContextPackage` rather than the accepted `WriterContextPackage`.
@@ -35,7 +45,7 @@ against the legacy `Stage1ContextPackage` rather than the accepted `WriterContex
 | Stage 2A | Development complete | CONDITIONAL_PASS | Freeze deterministic Memory Gateway |
 | Stage 2R | Complete | Physical index/basis gate passed | Maintenance only |
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
-| Stage 2M | M4 remediation active; P2 accepted as diagnosis; formal P3 pending | M4 HOLD; formal WP8 frozen | Fix C40/C60/C95, run targeted canaries, then run a new P3 only if close to gate |
+| Stage 2M | Exact-slice read-grain repair required; P2 accepted as diagnosis; formal P3 pending | M4 HOLD; C95 admission unmet; formal WP8 frozen | Derive paragraph/window slices, pack semantic input/Ledger by tokens, synthesize claims on demand, prove at C60, then conditionally run C95 |
 | Stage 3 | Preparation active | Engineering integration pending; semantic gate not run | Rebase/migrate isolated Writer Core |
 | Stage 4 | Planned | Not run | Blocked by Stage 3 semantic evidence |
 | Stage 5 | Planned | Not run | Blocked |
@@ -164,6 +174,72 @@ The runs intentionally used `--allow-dirty-diagnostic`, so their manifests retai
 The canary result is therefore diagnostic progress, not Gate progress: continue the targeted C40
 semantic/assembly and C60/C95 candidate-to-selected retrieval work, and do not start formal P3.
 
+### 4.6 2026-08-02 support-closure continuous task
+
+Newer evidence supersedes the next-action wording above without rewriting its historical numbers:
+
+- VAC C40 currentness/contradiction has been repaired and is not scheduled for another rerun;
+- the port-8002 VAC C60 v21/v6 run completed 11 proposer and 3 verifier batches with zero endpoint
+  errors/timeouts, but G06/G09 rank-complete evidence still did not become complete Ledger claims;
+- the current working diff implements `trusted_claim_support_producer.v25`, allowing strictly
+  compatible selected evidence to cross retrieval Need routes while retaining target-only ownership,
+  exact provenance, and counter-evidence verification;
+- 44 focused tests pass; the remaining pre-runtime engineering action is to close strict typing in
+  the new tests and pass full `make quality`;
+- execution is now one Codex-designed/OpenCode-executed task: full quality, real C60 monitoring,
+  frozen first-loss diagnosis, evidence-driven repairs/replays, conditional C95, and document
+  handoff to Codex.
+
+### 4.7 2026-08-02 support-closure campaign executed
+
+The `stage2m-support-closure` campaign ran to completion inside one `/implement` and is handed back
+for the final Codex review:
+
+- **Quality closed**: the 19 strict-MyPy typing errors in the new tests were fixed; `make quality`
+  passes (1402 tests, 100% statement/branch coverage).
+- **Real C60 ×3**（budget exhausted; all VAC Arm A, real hybrid, Qwen3.6/8002, comparable）:
+  - A0 (producer v25): batch-10 content-level `OpenAIChatEndpointError`（server 200; not an outage）,
+    batch-4 coverage-contract failure; 11 semantic receipts;
+  - A1 (v26): zero diagnostics, 17 semantic receipts; knowledge draft cited an out-of-pool unit and
+    was dropped at normalization;
+  - A2 (v27): 18 semantic receipts; G06 first accepted ref reached the Evidence Ledger (0/2→1/2);
+    untraceable 0.111→0; zero endpoint errors.
+- **Mechanism gain confirmed, target gate not met**: G06/G09 still lack a single verified Writer
+  claim citing the complete evidence group; the residual first loss sits in the model synthesis layer
+  (query-narrow conclusions over partial evidence groups) after the host corridor (pool/prompt/
+  contract) was exhausted → `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED`; C95 was not run (admission
+  unmet).
+- **Next architecture directions for Codex** (not implemented in the campaign): cross-Need fusion of
+  verified drafts (new semantic owner); candidate/rank-layer repair for G01-G05/G07/G08
+  (memory_pipeline corridor, needs its own evidence); query alignment for the natural owner Needs of
+  G06/G09. Reference-count movement alone is not mechanism evidence.
+
+The task-local implementation supplement is `.agent/plan.md`; OpenCode records execution evidence
+in `.agent/implementation.md`, and Codex integrates accepted results into this status page and the
+active Stage 2M execution document. Gate M4 remains `HOLD`, P3 remains `NOT_STARTED`, and Stage 3 is
+outside this task.
+
+### 4.8 2026-08-03 A4-A13 acceptance and corrected repair direction
+
+Codex reviewed the stable handoffs without rerunning tests, benchmarks, services, or real APIs and
+returned `REPAIR`:
+
+- A6-A9 retain G06 `2/2` and G09 `3/3` at Stage1, proving the earlier assembly starvation is fixed;
+- compact lineage and pool ordering move individual target refs into support groups/Ledger;
+- A8 reaches only G06 `1/2`, G09 `1/3` in the Ledger; A9 reaches G06 `0/2`, G09 `1/3`;
+- no run forms a complete verified G06/G09 Writer claim, and weighted/mandatory coverage remains 0.
+
+A10-A13 add 304 workset slices, 228 proposed atoms, 227 verified atoms, and 18 verified compounds,
+but G06/G09 remain `0/2` and `0/3` in the Ledger. This exposes a read-grain problem before claim
+grouping: a benchmark chapter/scene file becomes one large `TextBlock`, and the support path uses
+short compact/semantic excerpts before deriving natural paragraph slices. Current architecture now
+requires deterministic paragraph/contiguous-window exact slices, token-bounded semantic-input/Ledger packing,
+selective single- or multi-slice claim production, independent whole-claim verification, exact cited
+reference union, and terminal per-item diagnostics. Universal per-slice atomization, fixed first-three
+selection, and host enumeration of two/three-atom groups are superseded. Writer/Ledger budgets and all
+cutoff, basis, scope, taint, provenance, Gate, and Stage boundaries remain unchanged. External
+agentmemory protocol v1 remains comparison evidence only.
+
 ## 5. Stage 3 preparation status
 
 The current Stage 3 scope, minimal generation loop, four development workstreams, and restrained
@@ -201,8 +277,11 @@ Production gate = BLOCKED
 
 Stage 2M may:
 
-- continue only the targeted C40/C60/C95 repair loop and run an affected canary when the code change
-  is ready for evidence;
+- implement only the exact paragraph/window slicing, semantic-input/Ledger packing, and on-demand claim
+  closure repair described in the
+  active Stage 2M §21.3 and current `.agent/plan.md`;
+- run one final-code real VAC C60 after full quality evidence, then run C95 only if C60 forms the
+  complete G06 `2/2` and G09 `3/3` verified claims with verdict-level improvement;
 - allow an optional reviewer to inspect the 13 `COMPLETE + MISS` items in parallel;
 - run a new clean double-profile WP7/P3 Arm A matrix and evaluate Gate M4 only when the canary is
   close to the final thresholds and the four fail-closed bottom lines have no regression;

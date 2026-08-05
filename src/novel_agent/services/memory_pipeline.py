@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
@@ -455,12 +456,35 @@ class ContextCompiler:
         )
         next_group_index = [0] * len(optional_groups_by_need)
 
-        def include_if_fits(group: tuple[RetrievalUnit, ...]) -> bool:
+        def include_if_fits(
+            group: tuple[RetrievalUnit, ...], *, need: Stage1MemoryNeed | None = None
+        ) -> bool:
             nonlocal optional_tokens, remaining
             new_units = tuple(unit for unit in group if unit.unit_id not in included_ids)
             if not new_units:
                 return bool(group)
             cost = sum(_estimate_tokens(unit.text) for unit in new_units)
+            if need is not None and len(new_units) == 1:
+                unit = new_units[0]
+                if unit.unit_kind in {
+                    RetrievalUnitKind.GROUNDED_BLOCK,
+                    RetrievalUnitKind.GROUNDED_SPAN,
+                } and (cost > remaining or cost > COMPACT_FULL_TEXT_TOKEN_CAP):
+                    # A large grounded passage does not fit (or is too large to
+                    # justify its full text) but still has exact evidence
+                    # references a Writer can cite.  Represent it by a bounded
+                    # excerpt instead of dropping the evidence entirely, so
+                    # deep-ranked blocks survive budget competition.
+                    compact = _compact_block_unit(unit, query_text=need.query_text)
+                    if compact is not None and compact.unit_id in included_ids:
+                        # The passage is already represented by its excerpt;
+                        # never charge the full text for a duplicate.
+                        return False
+                    if compact is not None and compact.unit_id not in included_ids:
+                        compact_cost = _estimate_tokens(compact.text)
+                        if compact_cost <= remaining:
+                            new_units = (compact,)
+                            cost = compact_cost
             if cost > remaining:
                 return False
             selected_optional.extend(new_units)
@@ -477,8 +501,42 @@ class ContextCompiler:
             _need, groups, _expansions, _has_required_group = optional_groups_by_need[index]
             if has_context_group[index] or not groups:
                 continue
-            has_context_group[index] = include_if_fits(groups[0])
+            has_context_group[index] = include_if_fits(groups[0], need=_need)
             next_group_index[index] = 1
+
+        # Grounded evidence tier: deep-ranked direct passages must not be
+        # starved by the tail alternatives of already-covered Needs.  Walk
+        # every Need's not-yet-represented grounded groups round-robin (one
+        # group per Need per round) and admit each passage as a bounded
+        # compact excerpt when it is large or does not fit, otherwise in full.
+        # The compact keeps the exact evidence references, so the Writer can
+        # cite the passage without charging its full text to the budget.  A
+        # full round without progress terminates the tier.
+        grounded_offsets = [1] * len(optional_groups_by_need)
+        while True:
+            advanced = False
+            for index in packing_order:
+                _need, groups, _expansions, _has_required_group = optional_groups_by_need[index]
+                offset = grounded_offsets[index]
+                while offset < len(groups):
+                    unit = groups[offset][0]
+                    if unit.unit_id in included_ids or (
+                        unit.unit_kind
+                        not in {
+                            RetrievalUnitKind.GROUNDED_BLOCK,
+                            RetrievalUnitKind.GROUNDED_SPAN,
+                        }
+                    ):
+                        offset += 1
+                        advanced = True
+                        continue
+                    include_if_fits(groups[offset], need=_need)
+                    offset += 1
+                    advanced = True
+                    break
+                grounded_offsets[index] = offset
+            if not advanced:
+                break
 
         # Compact -> expand: after every uncovered Need has had a chance to
         # place its small semantic anchor, spend remaining budget on the L0
@@ -489,7 +547,7 @@ class ContextCompiler:
             if next_group_index[index] != 1 or not groups:
                 continue
             if all(unit.unit_id in included_ids for unit in groups[0]):
-                include_if_fits(expansions[0])
+                include_if_fits(expansions[0], need=_need)
 
         while any(
             next_group_index[index] < len(optional_groups_by_need[index][1])
@@ -500,8 +558,8 @@ class ContextCompiler:
                 group_index = next_group_index[index]
                 if group_index >= len(groups):
                     continue
-                if include_if_fits(groups[group_index]):
-                    include_if_fits(expansions[group_index])
+                if include_if_fits(groups[group_index], need=_need):
+                    include_if_fits(expansions[group_index], need=_need)
                 next_group_index[index] += 1
         dropped_optional = tuple(
             unit.unit_id
@@ -566,6 +624,213 @@ class ContextCompiler:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
+
+
+# A bounded excerpt a large grounded unit may be compacted to when its full
+# text would not fit the writer budget.  The excerpt keeps the unit's exact
+# evidence references, so the compact representation can still be cited while
+# the full passage is dropped.
+COMPACT_BLOCK_EXCERPT_LIMIT = 320
+_COMPACT_HEAD_BUDGET_RATIO = 0.4
+# Large grounded passages are represented by bounded excerpts instead of full
+# text, so deep-ranked direct evidence keeps an affordable place in a bounded
+# Writer budget without starving every other Need.
+COMPACT_FULL_TEXT_TOKEN_CAP = 200
+
+
+def _query_terms(value: str) -> tuple[str, ...]:
+    tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", value.casefold())
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "use",
+        "with",
+    }
+    terms: list[str] = []
+    for token in tokens:
+        if len(token) < 2 or token in stopwords:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token) and len(token) > 2:
+            terms.extend(token[index : index + 2] for index in range(len(token) - 1))
+        else:
+            terms.append(token)
+    return tuple(dict.fromkeys(terms))
+
+
+def _compact_block_segments(
+    text: str, query_text: str, *, limit: int
+) -> tuple[tuple[str, int, int], ...] | None:
+    """Return the retained sentences of a bounded excerpt with precise spans.
+
+    Each segment is ``(sentence, start, end)`` with ``start``/``end`` measured
+    in the source passage text, so a compact excerpt can carry exact
+    model-visible support provenance instead of a whole-passage reference that
+    implies unseen text is part of the support.
+
+    The excerpt keeps the passage head in original order and then adds the
+    query-term-ranked sentences that fit the remaining budget, so the writer
+    keeps a coherent and relevant view of the block without its full text.
+    """
+
+    if len(text) <= limit:
+        return None
+    split_items = tuple(
+        item
+        for item in re.finditer(
+            r"[^\u3002\uff01\uff1f!?;\uff1b\n]+[\u3002\uff01\uff1f!?;\uff1b]*|[\u3002\uff01\uff1f!?;\uff1b]+",
+            text,
+        )
+        if item.group().strip()
+    )
+    sentences: list[tuple[str, int, int]] = []
+    for item in split_items:
+        raw = item.group()
+        start = item.start() + len(raw) - len(raw.lstrip())
+        end = item.end() - (len(raw) - len(raw.rstrip()))
+        sentences.append((raw.strip(), start, end))
+    if not sentences:
+        return None
+    terms = _query_terms(query_text)
+    head_budget = int(limit * _COMPACT_HEAD_BUDGET_RATIO)
+    head_indexes: list[int] = []
+    head_chars = 0
+    for index, (sentence, _start, _end) in enumerate(sentences):
+        if head_chars + len(sentence) > head_budget:
+            break
+        head_indexes.append(index)
+        head_chars += len(sentence)
+    head_set = set(head_indexes)
+    ranked = sorted(
+        (
+            (index, sentence)
+            for index, (sentence, _start, _end) in enumerate(sentences)
+            if index not in head_set
+        ),
+        key=lambda item: (
+            -sum(term in item[1].casefold() for term in terms),
+            item[0],
+        ),
+    )
+    selected_indexes: list[int] = list(head_indexes)
+    chars = head_chars
+    for index, sentence in ranked:
+        if chars + len(sentence) > limit:
+            continue
+        selected_indexes.append(index)
+        chars += len(sentence)
+    selected_indexes.sort()
+    selected = [sentences[index] for index in selected_indexes]
+    excerpt = " ".join(segment for segment, _start, _end in selected)
+    while selected and len(excerpt) > limit:
+        selected.pop()
+        excerpt = " ".join(segment for segment, _start, _end in selected)
+    if not excerpt or len(excerpt) >= len(text):
+        return None
+    return tuple(selected)
+
+
+def _compact_block_excerpt(text: str, query_text: str, *, limit: int) -> str | None:
+    """Return the bounded excerpt text for a large grounded unit, or None."""
+
+    segments = _compact_block_segments(text, query_text, limit=limit)
+    if segments is None:
+        return None
+    return " ".join(segment for segment, _start, _end in segments)
+
+
+def _compact_block_unit(
+    unit: RetrievalUnit,
+    *,
+    query_text: str,
+    limit: int = COMPACT_BLOCK_EXCERPT_LIMIT,
+) -> RetrievalUnit | None:
+    """Build a bounded excerpt unit for a large grounded unit.
+
+    The compact unit carries one precise source-span EvidenceRef per retained
+    sentence (the model-visible support provenance) and records the source
+    unit as its parent.  The whole-passage reference is retained only as
+    parent/source lineage: unseen excerpt text never counts as semantic
+    support.  The unit stays citable and traceable without charging the full
+    text to the budget.
+    """
+
+    if unit.unit_kind not in {
+        RetrievalUnitKind.GROUNDED_BLOCK,
+        RetrievalUnitKind.GROUNDED_SPAN,
+    }:
+        return None
+    segments = _compact_block_segments(unit.text, query_text, limit=limit)
+    if segments is None:
+        return None
+    excerpt = " ".join(segment for segment, _start, _end in segments)
+    segment_refs = tuple(
+        _segment_evidence_ref(unit, segment, start, end) for segment, start, end in segments
+    )
+    parent_ids = tuple(dict.fromkeys((*unit.parent_unit_ids, unit.unit_id)))
+    source_refs = () if unit.source_artifact is None else (unit.source_artifact,)
+    return unit.model_copy(
+        update={
+            "unit_id": StableId(f"compact.{unit.unit_id.root}"),
+            "text": excerpt,
+            "evidence_refs": segment_refs,
+            "source_refs": source_refs,
+            "content_hash": unit.content_hash,
+            "parent_unit_id": unit.unit_id,
+            "parent_unit_ids": parent_ids,
+        }
+    )
+
+
+def _segment_evidence_ref(
+    unit: RetrievalUnit,
+    segment: str,
+    start: int,
+    end: int,
+) -> EvidenceRef:
+    """Build a precise source-span EvidenceRef for one retained segment.
+
+    The segment ref inherits the passage identity (root/object hash, chapter,
+    scene, commit) from the unit's whole-passage reference while pinning the
+    span and quote to exactly the visible sentence.  The whole-passage
+    reference itself stays parent/source lineage only.
+    """
+
+    parent_ref = next(
+        (
+            reference
+            for reference in unit.evidence_refs
+            if reference.span is not None
+            and reference.span.block_id == unit.unit_id.root.replace("grounded.block.", "block.", 1)
+        ),
+        unit.evidence_refs[0] if unit.evidence_refs else None,
+    )
+    if parent_ref is None:
+        raise ValueError("grounded segment source requires an evidence reference")
+    if parent_ref.span is None:
+        raise ValueError("grounded segment source requires a precise span")
+    digest = quote_hash(segment).root.removeprefix("sha256:")[:24]
+    return parent_ref.model_copy(
+        update={
+            "evidence_id": StableId(f"evidence.segment.{unit.unit_id.root}.{start}.{digest}"),
+            "quote_hash": quote_hash(segment),
+            "span": parent_ref.span.model_copy(update={"start": start, "end": end}),
+        }
+    )
 
 
 def _evidence_snippets(

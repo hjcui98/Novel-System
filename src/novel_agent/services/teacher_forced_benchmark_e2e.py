@@ -296,6 +296,7 @@ class TeacherForcedBenchmarkE2ERunner:
         database_url: str | None = None,
         quality_repair_flags: QualityRepairFeatureFlags | None = None,
         memory_write_dry_run: bool = False,
+        support_pre_proposal_trace: bool = False,
     ) -> None:
         self._semantic_endpoint = semantic_endpoint
         self._retrieval_backend_profile = retrieval_backend_profile
@@ -303,6 +304,7 @@ class TeacherForcedBenchmarkE2ERunner:
         self._database_url = database_url
         self._quality_repair_flags = quality_repair_flags or QualityRepairFeatureFlags()
         self._memory_write_dry_run = memory_write_dry_run
+        self._support_pre_proposal_trace = support_pre_proposal_trace
         self._paired = Stage2PairedPilotRunner(
             token_budget=token_budget,
             max_candidates=max_candidates,
@@ -604,6 +606,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 real_hybrid_backend_provider=self._real_hybrid_backend_provider,
                 support_gateway=(harness.gateway if self._semantic_endpoint is not None else None),
                 support_progress_writer=record_support_progress,
+                support_pre_proposal_trace=self._support_pre_proposal_trace,
             )
             evaluator = _E2EEvaluator(
                 bundle,
@@ -874,6 +877,27 @@ class TeacherForcedBenchmarkE2ERunner:
                 "project_database": database_descriptor,
                 "project_directory": str(resolved_project_directory),
             }
+            if support_progress_events:
+                terminal_state = self._support_terminal_state(
+                    support_progress_events,
+                    scenario_completed=scenario_result.completed,
+                )
+                progress_path = output_directory / "support_progress.json"
+                temporary_path = output_directory / "support_progress.json.tmp"
+                temporary_path.write_text(
+                    json.dumps(
+                        {
+                            "state": terminal_state,
+                            "events": support_progress_events,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(temporary_path, progress_path)
             self._write_json(output_directory / "flow_summary.json", summary)
             return summary
         finally:
@@ -900,6 +924,31 @@ class TeacherForcedBenchmarkE2ERunner:
         if parsed.scheme.startswith("postgresql+"):
             return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}/{parsed.path.lstrip('/')}"
         return str(database_path)
+
+    @staticmethod
+    def _support_terminal_state(
+        support_progress_events: list[dict[str, object]],
+        *,
+        scenario_completed: bool,
+    ) -> str:
+        """Resolve the terminal support-progress state.
+
+        The producer records an explicit three-state terminal event; a legacy
+        event stream without one falls back to the scenario lifecycle result.
+        """
+        terminal_events = [
+            event
+            for event in support_progress_events
+            if event.get("stage") == "terminal" and "state" in event
+        ]
+        if terminal_events:
+            return str(terminal_events[-1]["state"])
+        return (
+            "completed"
+            if scenario_completed
+            and not any(event.get("status") == "failed" for event in support_progress_events)
+            else "completed_with_failures"
+        )
 
     def _scripted_smoke_attestation(self, source_commit: CommitId) -> ProjectionAttestation:
         snapshot_id = snapshot_id_for_commit(source_commit)
@@ -2450,6 +2499,7 @@ class _E2EContextFreezer:
         real_hybrid_backend_provider: RealHybridBackendProvider | None = None,
         support_gateway: ModelGateway | None = None,
         support_progress_writer: Callable[[Mapping[str, object]], None] | None = None,
+        support_pre_proposal_trace: bool = False,
     ) -> None:
         self.config = config
         self.transition = transition
@@ -2459,6 +2509,7 @@ class _E2EContextFreezer:
         self.real_hybrid_backend_provider = real_hybrid_backend_provider
         self.support_gateway = support_gateway
         self.support_progress_writer = support_progress_writer
+        self.support_pre_proposal_trace = support_pre_proposal_trace
         self.comparisons: dict[StableId, PairedContextComparison] = {}
         self._latest_attestation: ProjectionAttestation | None = None
 
@@ -2532,6 +2583,7 @@ class _E2EContextFreezer:
                 VERSION,
             ),
             support_progress_writer=self.support_progress_writer,
+            support_pre_proposal_trace=self.support_pre_proposal_trace,
         )
         if self.support_progress_writer is not None:
             self.support_progress_writer(
@@ -2761,6 +2813,7 @@ class _E2EEvaluator:
                             ),
                             prompt="replaced by Stage 2M semantic verifier",
                             timeout_seconds=300,
+                            enable_thinking=False,
                         ),
                     )
                 )

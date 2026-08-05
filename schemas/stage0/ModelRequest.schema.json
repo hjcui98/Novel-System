@@ -76,8 +76,17 @@
       ],
       "default": null
     },
-    "model_role": {
-      "$ref": "#/$defs/ModelRole"
+    "enable_thinking": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enable Thinking"
     },
     "max_output_tokens": {
       "anyOf": [
@@ -92,6 +101,9 @@
       ],
       "default": null,
       "title": "Max Output Tokens"
+    },
+    "model_role": {
+      "$ref": "#/$defs/ModelRole"
     },
     "prompt": {
       "title": "Prompt",
@@ -163,6 +175,20 @@
     },
     "task_id": {
       "$ref": "#/$defs/TaskId"
+    },
+    "thinking_token_budget": {
+      "anyOf": [
+        {
+          "maximum": 131072,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thinking Token Budget"
     },
     "timeout_seconds": {
       "default": 30.0,

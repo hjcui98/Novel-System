@@ -60,3 +60,9 @@ models/
 checkpoints/
 *.safetensors
 *.gguf
+
+# External agentmemory lab (third-party code, runtime data; keep docs & scripts)
+agentmemory_lab/*
+!agentmemory_lab/*.md
+!agentmemory_lab/*.sh
+!agentmemory_lab/env.example
