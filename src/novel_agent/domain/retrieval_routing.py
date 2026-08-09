@@ -19,6 +19,7 @@ from novel_agent.domain.memory import (
     RetrievalChannel,
     Stage1QueryIntent,
 )
+from novel_agent.domain.planning_memory import RetrievalQueryBundle
 
 
 class RetrievalBackendProfile(StrEnum):
@@ -403,6 +404,9 @@ class RoutePlan(DomainModel):
     evidence_policy: EvidenceExpansionPolicy
     stop_policy: RouteStopPolicy
     excluded_channels: tuple[ExcludedChannel, ...] = ()
+    compiled_query_bundle: RetrievalQueryBundle
+    effective_channels: tuple[RetrievalChannel, ...] = ()
+    query_unavailable_reasons: dict[RetrievalChannel, str] = Field(default_factory=dict)
     policy_version: SchemaVersion
 
     @model_validator(mode="after")
@@ -433,6 +437,10 @@ class RoutePlan(DomainModel):
             )
             if not r1_current_state_fallback:
                 raise ValueError("only R2 route plans may define conditional fallbacks")
+        if active != set(self.effective_channels):
+            raise ValueError("route plan effective channels must equal its active steps")
+        if set(self.query_unavailable_reasons) & active:
+            raise ValueError("route plan cannot execute a query-unavailable channel")
         return self
 
 

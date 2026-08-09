@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Run-level lineage for one Planner invocation.\n\nThe full model/prompt/world/raw-response fingerprint lives here once per\nrun; every emitted ``Stage1MemoryNeed`` references it by\n``planner_artifact_ref`` plus its own ``planned_draft_id`` and\n``validated_need_set_hash``.",
+  "properties": {
+    "effective_seed_supported": {
+      "title": "Effective Seed Supported",
+      "type": "boolean"
+    },
+    "fallback_used": {
+      "title": "Fallback Used",
+      "type": "boolean"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "planner_model": {
+      "minLength": 1,
+      "title": "Planner Model",
+      "type": "string"
+    },
+    "planner_model_revision": {
+      "minLength": 1,
+      "title": "Planner Model Revision",
+      "type": "string"
+    },
+    "planner_output_schema_version": {
+      "minLength": 1,
+      "title": "Planner Output Schema Version",
+      "type": "string"
+    },
+    "planner_prompt_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "planner_prompt_version": {
+      "minLength": 1,
+      "title": "Planner Prompt Version",
+      "type": "string"
+    },
+    "planning_context_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "raw_response_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "requested_seed": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Seed"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "temperature": {
+      "maximum": 2.0,
+      "minimum": 0.0,
+      "title": "Temperature",
+      "type": "number"
+    },
+    "validated_need_set_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "world_summary_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "run_id",
+    "planner_model",
+    "planner_model_revision",
+    "planner_prompt_version",
+    "planner_prompt_hash",
+    "planner_output_schema_version",
+    "temperature",
+    "effective_seed_supported",
+    "planning_context_hash",
+    "world_summary_hash",
+    "raw_response_hash",
+    "validated_need_set_hash",
+    "fallback_used",
+    "input_tokens",
+    "output_tokens"
+  ],
+  "title": "PlannerArtifactMetadata",
+  "type": "object"
+}

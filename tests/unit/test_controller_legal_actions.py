@@ -22,6 +22,7 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
+from novel_agent.domain.planning_memory import RetrievalQueryBundle
 from novel_agent.domain.retrieval_routing import (
     ConditionalFallback,
     EvidenceExpansionPolicy,
@@ -75,6 +76,10 @@ def _need(
         allowed_candidate_pools=pools,
         stop_condition="done",
         allow_plan=is_plan,
+        planner_may_read_plan=is_plan,
+        retrieval_may_return_plan=is_plan,
+        claim_may_cite_plan=is_plan,
+        legacy_allow_plan=is_plan,
         access_scope="author_planning" if is_plan else "writer_safe",
     )
 
@@ -128,7 +133,23 @@ def _plan(
         conditional_fallbacks=fallbacks,
         evidence_policy=EvidenceExpansionPolicy(required_strength="exact"),
         stop_policy=RouteStopPolicy(stop_when="mandatory_closed"),
+        compiled_query_bundle=_query_bundle(),
+        effective_channels=tuple(
+            dict.fromkeys(
+                (*channels, *(step.channel for fallback in fallbacks for step in fallback.steps))
+            )
+        ),
         policy_version=SchemaVersion("1.0.0"),
+    )
+
+
+def _query_bundle() -> RetrievalQueryBundle:
+    entity = StableId("entity.query")
+    return RetrievalQueryBundle(
+        semantic_query="q",
+        lexical_queries=("q",),
+        exact_entity_ids=(entity,),
+        graph_seeds=(entity,),
     )
 
 
@@ -357,6 +378,8 @@ def test_actions_for_need_includes_primary_group_steps() -> None:
         primary_groups=(group,),
         evidence_policy=EvidenceExpansionPolicy(required_strength="exact"),
         stop_policy=RouteStopPolicy(stop_when="mandatory_closed"),
+        compiled_query_bundle=_query_bundle(),
+        effective_channels=(RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL),
         policy_version=SchemaVersion("1.0.0"),
     )
     provider = LegalActionProvider(
@@ -449,6 +472,8 @@ def test_available_action_summaries_deduplicates_duplicate_tool_names() -> None:
         primary_groups=(group,),
         evidence_policy=EvidenceExpansionPolicy(required_strength="exact"),
         stop_policy=RouteStopPolicy(stop_when="mandatory_closed"),
+        compiled_query_bundle=_query_bundle(),
+        effective_channels=(RetrievalChannel.R1_EXACT,),
         policy_version=SchemaVersion("1.0.0"),
     )
     provider = LegalActionProvider(
@@ -518,6 +543,8 @@ def test_primary_group_step_not_in_policy_is_skipped() -> None:
         primary_groups=(group,),
         evidence_policy=EvidenceExpansionPolicy(required_strength="exact"),
         stop_policy=RouteStopPolicy(stop_when="mandatory_closed"),
+        compiled_query_bundle=_query_bundle(),
+        effective_channels=(RetrievalChannel.R1_EXACT, RetrievalChannel.TYPED_GRAPH),
         policy_version=SchemaVersion("1.0.0"),
     )
     provider = LegalActionProvider(
@@ -572,6 +599,8 @@ def test_fallback_step_not_in_policy_is_skipped() -> None:
         conditional_fallbacks=(fallback,),
         evidence_policy=EvidenceExpansionPolicy(required_strength="exact"),
         stop_policy=RouteStopPolicy(stop_when="mandatory_closed"),
+        compiled_query_bundle=_query_bundle(),
+        effective_channels=(RetrievalChannel.R1_EXACT, RetrievalChannel.TYPED_GRAPH),
         policy_version=SchemaVersion("1.0.0"),
     )
     provider = LegalActionProvider(

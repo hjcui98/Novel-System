@@ -32,7 +32,8 @@ from novel_agent.domain.retrieval_routing import (
     SnapshotCapabilityStatus,
 )
 from novel_agent.services.content_addressing import canonical_json_bytes
-from novel_agent.services.retrieval import FusionService, RetrievalBackend
+from novel_agent.services.need_query_compiler import NeedQueryCompiler
+from novel_agent.services.retrieval import ROUTES, FusionService, RetrievalBackend
 
 ROUTE_POLICY_VERSION = SchemaVersion("2.2.0")
 ROUTE_PROFILE_VERSION = SchemaVersion("2.2.0")
@@ -223,15 +224,31 @@ class DeterministicChannelPlanner:
             need, capability, slots=slots, access_scope=access_scope
         )
         profile = profile_for(need.query_intent, decision.tier)
+        query_bundle = NeedQueryCompiler().compile(need)
+        registered_route = ROUTES[need.query_intent]
+        registered_channels = tuple(
+            dict.fromkeys((*registered_route.channels, *registered_route.fallback_channels))
+        )
+        query_channels, query_unavailable = NeedQueryCompiler.eligible_channels(
+            need, query_bundle, registered_channels
+        )
         capability_channels = set(capability.available_channels)
         available = {
             channel
             for channel in capability_channels
             if _pool(channel) in need.allowed_candidate_pools
+            and channel in registered_channels
+            and channel in query_channels
         }
         if decision.tier is ResolutionTier.R0:
             available.add(RetrievalChannel.R0)
-        excluded = self._excluded(profile, capability_channels, available)
+        excluded = self._excluded(
+            profile,
+            capability_channels,
+            available,
+            registered_channels=set(registered_channels),
+            query_unavailable=query_unavailable,
+        )
         mandatory = tuple(step for step in profile.mandatory_steps if step.channel in available)
         groups = tuple(
             group
@@ -259,7 +276,8 @@ class DeterministicChannelPlanner:
         identity = hashlib.sha256(
             (
                 f"{profile.profile_id.root}\0{need.need_id.root}\0{need.base_commit.root}\0"
-                f"{capability.snapshot_id.root}\0{features_hash.root}"
+                f"{capability.snapshot_id.root}\0{features_hash.root}\0"
+                f"{hashlib.sha256(canonical_json_bytes(query_bundle.model_dump(mode='json'))).hexdigest()}"
             ).encode()
         ).hexdigest()
         plan = RoutePlan(
@@ -286,6 +304,18 @@ class DeterministicChannelPlanner:
             evidence_policy=profile.evidence_policy,
             stop_policy=profile.stop_policy,
             excluded_channels=excluded,
+            compiled_query_bundle=query_bundle,
+            effective_channels=tuple(
+                dict.fromkeys(
+                    step.channel
+                    for step in (
+                        *mandatory,
+                        *(step for group in groups for step in group.steps),
+                        *(step for fallback in fallbacks for step in fallback.steps),
+                    )
+                )
+            ),
+            query_unavailable_reasons=query_unavailable,
             policy_version=ROUTE_POLICY_VERSION,
         )
         RoutePlanValidator().validate(plan, need, capability, profile)
@@ -307,13 +337,21 @@ class DeterministicChannelPlanner:
         steps = tuple(step for step in fallback.steps if step.channel in available)
         if not steps:
             return None
-        return fallback.model_copy(update={"steps": steps})
+        return fallback.model_copy(
+            update={
+                "steps": steps,
+                "fusion_profile": fallback.fusion_profile if len(steps) > 1 else None,
+            }
+        )
 
     @staticmethod
     def _excluded(
         profile: RouteProfile,
         capability_channels: set[RetrievalChannel],
         available: set[RetrievalChannel],
+        *,
+        registered_channels: set[RetrievalChannel],
+        query_unavailable: dict[RetrievalChannel, str],
     ) -> tuple[ExcludedChannel, ...]:
         planned = {
             step.channel
@@ -331,9 +369,25 @@ class DeterministicChannelPlanner:
             )
         ]
         excluded.extend(
+            ExcludedChannel(channel=channel, reason="not_selected_by_registered_route")
+            for channel in sorted(
+                planned & capability_channels - registered_channels,
+                key=lambda channel: channel.value,
+            )
+        )
+        excluded.extend(
+            ExcludedChannel(channel=channel, reason=query_unavailable[channel])
+            for channel in sorted(
+                planned & capability_channels & set(query_unavailable),
+                key=lambda channel: channel.value,
+            )
+        )
+        excluded.extend(
             ExcludedChannel(channel=channel, reason="candidate_pool_forbidden")
             for channel in sorted(
-                planned & capability_channels - available,
+                planned
+                & capability_channels
+                & registered_channels - set(query_unavailable) - available,
                 key=lambda channel: channel.value,
             )
         )

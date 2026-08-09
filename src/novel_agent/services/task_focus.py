@@ -111,7 +111,23 @@ class TaskFocusExtractor:
             result.append(replacement)
 
         # Explicit names in the safe task remain useful for synthetic/unseen tasks.
-        folded_task = task.task_text.casefold()
+        # Task-intent profiles (TASK_INTENT_ONLY / AUTHOR_PLAN_CONDITIONED) fold
+        # the normalized task intent into the TASK source so the concrete task
+        # intent can anchor entity focuses.
+        folded_task = " ".join(
+            (
+                task.task_text,
+                (
+                    task.task_intent
+                    if task.information_profile
+                    in {
+                        BenchmarkInformationProfile.TASK_INTENT_ONLY,
+                        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+                    }
+                    else ""
+                ),
+            )
+        ).casefold()
         matched_task_entities: dict[str, list[tuple[int, StableId]]] = {}
         for index, (entity_id, aliases) in enumerate(labels.items()):
             if not any(alias and alias.casefold() in folded_task for alias in aliases):
@@ -310,6 +326,41 @@ class TaskFocusExtractor:
             return False
         start, end = (int(value) for value in match.groups())
         return start <= task.target_chapter_end and end >= task.target_chapter_start
+
+    def extend(
+        self,
+        focus_set: FocusSet,
+        entity_ids: tuple[StableId, ...],
+        *,
+        source: TaskFocusSource = TaskFocusSource.PLAN_INTENT,
+        reason: str = "entity grounded from planner draft",
+    ) -> FocusSet:
+        """Backfill planner-grounded entities into a FocusSet without re-extraction.
+
+        Deterministic and bounded: already-present entities are skipped and
+        the total focus count never exceeds the extractor limit.
+        """
+
+        existing = {item.canonical_id for item in focus_set.focuses}
+        added = tuple(
+            TaskFocus(
+                focus_id=StableId(f"focus.planner_grounded.{entity_id.root}"[:128]),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity_id,
+                source=source,
+                reason=reason,
+            )
+            for entity_id in entity_ids
+            if entity_id not in existing
+        )
+        headroom = max(0, self._max_focuses - len(focus_set.focuses))
+        retained = tuple((*focus_set.focuses, *added[:headroom]))
+        overflow = tuple(item.focus_id for item in added[headroom:])
+        return FocusSet(
+            task_id=focus_set.task_id,
+            focuses=retained,
+            truncated_focus_ids=(*focus_set.truncated_focus_ids, *overflow),
+        )
 
     @staticmethod
     def _event_chapter(event: Event) -> int:

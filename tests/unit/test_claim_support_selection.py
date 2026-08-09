@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, cast
 
@@ -42,9 +46,10 @@ from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.claim_support import (
     _MULTI_SLICE_PROMPT_TEMPLATE,
     SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS,
-    SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET,
+    ClaimSupportTransportConfig,
     ControllerSupportSelector,
     EvidenceSlice,
+    SupportFunnel,
     SupportSelectionResult,
     TrustedClaimSupportProducer,
 )
@@ -53,6 +58,10 @@ from novel_agent.services.memory_benchmark_contract import build_safe_task_contr
 from novel_agent.services.model_gateway import (
     ModelGateway,
     RegisteredModelEndpoint,
+)
+from novel_agent.services.model_request_admission import (
+    ModelRequestAdmissionController,
+    SchedulingBudgetUnsatisfiableError,
 )
 from novel_agent.services.task_conditioned_need_generation import (
     TaskPlanConditionedNeedGenerator,
@@ -113,7 +122,9 @@ def _support_gateway(*payloads: dict[str, object] | Exception) -> ModelGateway:
     return _gateway_for_endpoint(endpoint)
 
 
-def _gateway_for_endpoint(endpoint: _SemanticSupportEndpoint) -> ModelGateway:
+def _gateway_for_endpoint(
+    endpoint: _SemanticSupportEndpoint | _ContentAwareSupportEndpoint,
+) -> ModelGateway:
     return ModelGateway(
         (
             RegisteredModelEndpoint(
@@ -169,10 +180,118 @@ def test_semantic_stage_thinking_configuration() -> None:
     probe, multi, verifier = endpoint.requests
     assert probe.enable_thinking is False
     assert probe.thinking_token_budget is None
-    assert multi.enable_thinking is True
-    assert multi.thinking_token_budget == SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET
+    assert multi.enable_thinking is False
+    assert multi.thinking_token_budget is None
+    assert multi.max_output_tokens == 2048
     assert verifier.enable_thinking is False
     assert verifier.thinking_token_budget is None
+
+
+def test_claim_support_transport_config_rejects_incoherent_thinking_budget() -> None:
+    with pytest.raises(ValueError, match="output tokens"):
+        ClaimSupportTransportConfig(multi_max_output_tokens=0)
+
+    with pytest.raises(ValueError, match="disabled Claim Support thinking"):
+        ClaimSupportTransportConfig(
+            multi_enable_thinking=False,
+            multi_thinking_token_budget=1,
+            multi_max_output_tokens=1024,
+        )
+
+    with pytest.raises(ValueError, match="fit inside"):
+        ClaimSupportTransportConfig(
+            multi_enable_thinking=True,
+            multi_thinking_token_budget=1025,
+            multi_max_output_tokens=1024,
+        )
+
+
+def test_main_path_descriptors_carry_need_stage_dependency_and_deadline() -> None:
+    task, world = _cross_need_task()
+    knowledge = _generated_need(task, world, "knowledge_boundary")
+    unit_a = _unit(
+        world,
+        unit_id="grounded.block.test.descriptor-identity",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=19,
+        seed="descriptor.identity",
+    )
+    endpoint = _SemanticSupportEndpoint(
+        (
+            {
+                "claims": [],
+                "insufficient_need_ids": [knowledge.need_id.root],
+            },
+            {
+                "claims": [
+                    {
+                        "need_id": knowledge.need_id.root,
+                        "need_facet_ids": _atom_required_facets(knowledge),
+                        "slice_unit_ids": [_slice_id_for(unit_a)],
+                        "claim_text": "徐有容身在南方。",
+                    }
+                ],
+                "insufficient_need_ids": [],
+            },
+            {"decisions": [{"claim_index": 0, "supports": True}]},
+        )
+    )
+    controller = ModelRequestAdmissionController(
+        endpoint_request_limit=2,
+        kv_token_budget=200_000,
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="semantic-support-test",
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        ),
+        admission_controller=controller,
+        scheduling_timeout_seconds=60.0,
+    )
+    TrustedClaimSupportProducer(semantic_gateway=gateway).produce(
+        task=task,
+        units=(unit_a,),
+        needs=(knowledge,),
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        unit_need_ids={unit_a.unit_id: (knowledge.need_id,)},
+        token_counter=WriterContextAssembler().count_tokens,
+    )
+
+    admitted_descriptors = cast(
+        tuple[dict[str, object], ...], controller.snapshot()["admitted_descriptors"]
+    )
+    descriptors = {
+        cast(str, descriptor["request_id"]): descriptor for descriptor in admitted_descriptors
+    }
+    probe_request, multi_request, verifier_request = endpoint.requests
+    for request in (probe_request, multi_request, verifier_request):
+        descriptor = descriptors[request.request_id.root]
+        assert descriptor["need_id"] == knowledge.need_id.root
+        assert descriptor["scheduling_deadline"] is not None
+        assert descriptor["scheduling_timeout_seconds"] == 60.0
+        assert descriptor["endpoint_id"] == "semantic-support-test"
+    assert descriptors[probe_request.request_id.root]["stage"] == "claim_support_single_proposal"
+    assert descriptors[multi_request.request_id.root]["stage"] == "claim_support_multi_proposal"
+    assert descriptors[verifier_request.request_id.root]["stage"] == "claim_support_verification"
+    assert descriptors[verifier_request.request_id.root]["dependency_ids"] == (
+        multi_request.request_id.root,
+    )
+    ledger_request_ids = {
+        request_id
+        for request in endpoint.requests
+        if gateway.call_ledger.load(request.request_id) is not None
+        for request_id in (request.request_id.root,)
+    }
+    assert {descriptor["request_id"] for descriptor in descriptors.values()} == (
+        {request.request_id.root for request in endpoint.requests}
+    )
+    assert ledger_request_ids == {request.request_id.root for request in endpoint.requests}
 
 
 def test_semantic_proposal_and_verifier_use_stage_specific_timeouts() -> None:
@@ -203,7 +322,7 @@ def test_semantic_proposal_and_verifier_use_stage_specific_timeouts() -> None:
         token_counter=assembler.count_tokens,
     )
 
-    assert [request.timeout_seconds for request in endpoint.requests] == [300.0, 120.0]
+    assert [request.timeout_seconds for request in endpoint.requests] == [600.0, 120.0]
 
 
 def _selection() -> tuple[
@@ -1626,7 +1745,7 @@ def test_multi_slice_template_front_loads_required_facet_directives() -> None:
 
 
 def test_producer_version_is_v31() -> None:
-    assert TrustedClaimSupportProducer.version == "trusted_claim_support_producer.v31"
+    assert TrustedClaimSupportProducer.version == "trusted_claim_support_producer.v32"
 
 
 def test_single_slice_garbage_claim_rejected_before_verification() -> None:
@@ -3047,10 +3166,17 @@ def test_legal_for_need_unknown_scope_and_plan_information() -> None:
         target_range=(21, 23),
         information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
     )
-    planning_need = capability.model_copy(
-        update={"access_scope": "author_planning", "allow_plan": True}
+    strict_apc_need = capability.model_copy(
+        update={
+            "access_scope": "writer_safe",
+            "allow_plan": False,
+            "planner_may_read_plan": True,
+            "retrieval_may_return_plan": False,
+            "claim_may_cite_plan": False,
+            "legacy_allow_plan": False,
+        }
     )
-    assert producer._legal_for_need(plan_task, planning_need, plan_unit)
+    assert not producer._legal_for_need(plan_task, strict_apc_need, plan_unit)
 
 
 def test_resolution_status_unresolved_basis_and_cutoff_paths() -> None:
@@ -3095,6 +3221,26 @@ def test_resolution_status_unresolved_basis_and_cutoff_paths() -> None:
             plan_node_ids=(),
         )
         is EvidenceResolutionStatus.CUTOFF_VIOLATION
+    )
+    assert (
+        producer._resolution_status(
+            (),
+            unit,
+            basis_commit_id=unit.source_commit,
+            checkpoint_chapter=20,
+            plan_node_ids=(StableId("goal.test"),),
+        )
+        is EvidenceResolutionStatus.RESOLVED
+    )
+    assert (
+        producer._resolution_status(
+            (),
+            mismatched,
+            basis_commit_id=unit.source_commit,
+            checkpoint_chapter=20,
+            plan_node_ids=(StableId("goal.test"),),
+        )
+        is EvidenceResolutionStatus.BASIS_MISMATCH
     )
 
 
@@ -3600,6 +3746,135 @@ def test_resolve_exact_slices_deduplicates_identical_passages() -> None:
     assert slices[0].parent_unit_id == first.unit_id
 
 
+def test_equal_verification_inputs_are_single_flight_across_workers() -> None:
+    task, world = _cross_need_task()
+    knowledge = _generated_need(task, world, "knowledge_boundary")
+    unit_a = _unit(
+        world,
+        unit_id="grounded.block.test.single-flight",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=18,
+        seed="single-flight",
+    )
+    endpoint = _SemanticSupportEndpoint(({"decisions": [{"claim_index": 0, "supports": True}]},))
+    producer = TrustedClaimSupportProducer(semantic_gateway=_gateway_for_endpoint(endpoint))
+    slices, _resolution_rows, _slice_rows = producer._resolve_exact_slices(
+        (unit_a,),
+        need=knowledge,
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        checkpoint_chapter=task.checkpoint_chapter,
+        origin_need_ids={},
+    )
+
+    def verify() -> Any:
+        return producer._verify_claim_whole(
+            task=task,
+            need=knowledge,
+            claim_text="徐有容身在南方。",
+            facet_ids=(knowledge.need_facets[0].need_facet_id,),
+            cited_slices=(slices[0],),
+            context_slices=(),
+            basis_commit_id=world.source_commit,
+            basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+            funnel=SupportFunnel(),
+            proposal_request_id=StableId("support-whole-verification.test-proposal"),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _index: verify(), range(2)))
+
+    assert all(result is not None for result in results)
+    assert len(endpoint.requests) == 1
+
+
+def test_equal_verification_failures_are_shared_without_duplicate_calls() -> None:
+    class DelayedFailureEndpoint(_SemanticSupportEndpoint):
+        async def generate(self, request: ModelRequest) -> ProviderModelResult:
+            await asyncio.sleep(0.05)
+            return await super().generate(request)
+
+    task, world = _cross_need_task()
+    knowledge = _generated_need(task, world, "knowledge_boundary")
+    unit = _unit(
+        world,
+        unit_id="grounded.block.test.single-flight-failure",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=18,
+        seed="single-flight-failure",
+    )
+    endpoint = DelayedFailureEndpoint((RuntimeError("shared transport failure"),))
+    producer = TrustedClaimSupportProducer(semantic_gateway=_gateway_for_endpoint(endpoint))
+    slices, _resolution_rows, _slice_rows = producer._resolve_exact_slices(
+        (unit,),
+        need=knowledge,
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        checkpoint_chapter=task.checkpoint_chapter,
+        origin_need_ids={},
+    )
+
+    def verify() -> Any:
+        return producer._verify_claim_whole(
+            task=task,
+            need=knowledge,
+            claim_text="徐有容身在南方。",
+            facet_ids=(knowledge.need_facets[0].need_facet_id,),
+            cited_slices=(slices[0],),
+            context_slices=(),
+            basis_commit_id=world.source_commit,
+            basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+            funnel=SupportFunnel(),
+            proposal_request_id=StableId("support-whole-verification.test-proposal"),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _index: verify(), range(2)))
+    assert results == (None, None)
+    assert len(endpoint.requests) == 1
+
+
+def test_verifier_capacity_failure_does_not_release_unacquired_budget() -> None:
+    task, world = _cross_need_task()
+    knowledge = _generated_need(task, world, "knowledge_boundary")
+    unit = _unit(
+        world,
+        unit_id="grounded.block.test.verifier-budget",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=18,
+        seed="verifier-budget",
+    )
+    endpoint = _SemanticSupportEndpoint(())
+    producer = TrustedClaimSupportProducer(
+        semantic_gateway=_gateway_for_endpoint(endpoint), max_inflight_kv_tokens=1
+    )
+    slices, _resolution_rows, _slice_rows = producer._resolve_exact_slices(
+        (unit,),
+        need=knowledge,
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        checkpoint_chapter=task.checkpoint_chapter,
+        origin_need_ids={},
+    )
+    result = producer._verify_claim_whole(
+        task=task,
+        need=knowledge,
+        claim_text="徐有容身在南方。",
+        facet_ids=(knowledge.need_facets[0].need_facet_id,),
+        cited_slices=(slices[0],),
+        context_slices=(),
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        funnel=SupportFunnel(),
+        proposal_request_id=StableId("support-whole-verification.test-proposal"),
+    )
+    assert result is None
+    assert producer._inflight_kv_tokens == 0
+
+
 def test_emit_verified_claim_skips_whitespace_only_text() -> None:
     task, world = _cross_need_task()
     knowledge = _generated_need(task, world, "knowledge_boundary")
@@ -3631,6 +3906,7 @@ def test_emit_verified_claim_skips_whitespace_only_text() -> None:
         basis_commit_id=world.source_commit,
         basis_snapshot_id=CROSS_NEED_SNAPSHOT,
         funnel=producer.last_funnel,
+        proposal_request_id=StableId("support-whole-verification.test-proposal"),
     )
     assert audit is not None
     # The host fail-closed garbage guard rejects whitespace-only claims before
@@ -5079,6 +5355,76 @@ def test_failed_proposal_event_retains_sanitized_diagnostics_and_failed_input_re
         assert value >= 1
 
 
+def test_invalid_multi_json_retains_output_usage_latency_and_resolvable_artifact() -> None:
+    task, world = _cross_need_task()
+    knowledge = _generated_need(task, world, "knowledge_boundary")
+    unit = _unit(
+        world,
+        unit_id="grounded.block.test.invalid.multi",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=18,
+        seed="invalid.multi.telemetry",
+    )
+    invalid_output = '{"claims":"invalid","insufficient_need_ids":[]}'
+    endpoint = _RawTextEndpoint(
+        (
+            json.dumps(
+                {"claims": [], "insufficient_need_ids": [knowledge.need_id.root]},
+                ensure_ascii=False,
+            ),
+            invalid_output,
+        )
+    )
+    stored: dict[str, bytes] = {}
+
+    def write_artifact(payload: bytes, media_type: str) -> ArtifactRef:
+        ref = ArtifactRef(
+            artifact_id=sha256_id(payload),
+            media_type=media_type,
+            byte_length=len(payload),
+            schema_version=SchemaVersion("1.0.0"),
+        )
+        stored[ref.artifact_id.root] = payload
+        return ref
+
+    progress: list[Mapping[str, object]] = []
+    TrustedClaimSupportProducer(
+        semantic_gateway=_gateway_for_endpoint(endpoint),
+        artifact_writer=write_artifact,
+        progress_writer=progress.append,
+    ).produce(
+        task=task,
+        units=(unit,),
+        needs=(knowledge,),
+        basis_commit_id=world.source_commit,
+        basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+        unit_need_ids={unit.unit_id: (knowledge.need_id,)},
+        token_counter=WriterContextAssembler().count_tokens,
+    )
+
+    failed = next(
+        event
+        for event in progress
+        if event.get("stage") == "proposal"
+        and event.get("status") == "failed"
+        and event.get("batch_index") == 2
+    )
+    failed_call = failed["failed_call"]
+    assert isinstance(failed_call, dict)
+    assert failed_call["category"] == "invalid_structured_content"
+    assert failed_call["finish_reason"] == "stop"
+    assert failed_call["input_tokens"] == 10
+    assert failed_call["output_tokens"] == 10
+    assert failed_call["reasoning_tokens"] == 0
+    assert isinstance(failed_call["latency_ms"], int)
+    output_ref = failed_call["failed_output_ref"]
+    assert isinstance(output_ref, dict)
+    output_id = output_ref["artifact_id"]
+    assert stored[output_id] == invalid_output.encode("utf-8")
+    assert failed["output_hash"] == output_id
+
+
 def test_classify_failed_call_distinguishes_categories() -> None:
     import httpx
 
@@ -5450,3 +5796,368 @@ def test_workset_chunks_empty_workset_returns_no_chunks() -> None:
         basis_snapshot_id=CROSS_NEED_SNAPSHOT,
     )
     assert chunks == ()
+
+
+class _ContentAwareSupportEndpoint:
+    """Respond from request content so concurrent order never matters.
+
+    Every proposal request returns a single-slice-sufficient claim citing the
+    first exact slice in the serialized input; every verification request
+    accepts.  Concurrency only reorders submission, never the request content,
+    so serial and concurrent runs must produce byte-identical outcomes.
+    """
+
+    is_external = False
+    model = "content-aware-support-test"
+    max_retries = 0
+
+    def __init__(self, claim_text_by_need: Mapping[str, str], delay: float = 0.02) -> None:
+        self._claim_text_by_need = dict(claim_text_by_need)
+        self._delay = delay
+        self.requests: list[ModelRequest] = []
+        self.max_inflight = 0
+        self._inflight = 0
+
+    async def generate(self, request: ModelRequest) -> ProviderModelResult:
+        self.requests.append(request)
+        self._inflight += 1
+        self.max_inflight = max(self.max_inflight, self._inflight)
+        try:
+            await asyncio.sleep(self._delay)
+            prompt = request.prompt
+            if "PUBLIC_SUPPORT_VERIFICATION_INPUT" in prompt:
+                payload: dict[str, object] = {"decisions": [{"claim_index": 0, "supports": True}]}
+            else:
+                body = prompt.split('<PUBLIC_SUPPORT_INPUT trusted="false">\n', 1)[1]
+                body = body.rsplit("\n</PUBLIC_SUPPORT_INPUT>", 1)[0]
+                producer_input = cast(dict[str, object], json.loads(body))
+                need = cast(dict[str, object], cast(list[object], producer_input["needs"])[0])
+                need_id = str(need["need_id"])
+                facets = [
+                    str(item["need_facet_id"])
+                    for item in cast(list[dict[str, object]], need["required_need_facets"])
+                ]
+                first_slice = str(
+                    cast(dict[str, object], cast(list[object], need["exact_slices"])[0])[
+                        "slice_unit_id"
+                    ]
+                )
+                payload = {
+                    "claims": [
+                        {
+                            "need_id": need_id,
+                            "need_facet_ids": facets,
+                            "slice_unit_id": first_slice,
+                            "claim_text": self._claim_text_by_need[need_id],
+                            "single_slice_sufficient": True,
+                        }
+                    ],
+                    "insufficient_need_ids": [],
+                }
+            return ProviderModelResult(
+                text=json.dumps(payload, ensure_ascii=False),
+                model_version=self.model,
+                usage=ModelUsage(
+                    input_tokens=10,
+                    output_tokens=10,
+                    cost_usd=Decimal("0"),
+                ),
+            )
+        finally:
+            self._inflight -= 1
+
+
+def _stable_json(item: Any) -> Any:
+    """Strip wall-clock timestamps from call records before comparison.
+
+    started_at/completed_at are real times; two serial runs differ in them,
+    so they are excluded from the concurrency-identity assertion.  The
+    request_id (content-derived) and usage remain, proving the same request
+    was executed.
+    """
+
+    data = item.model_dump(mode="json")
+
+    def scrub(obj: Any) -> None:
+        if isinstance(obj, dict):
+            obj.pop("started_at", None)
+            obj.pop("completed_at", None)
+            obj.pop("latency_ms", None)
+            if "artifact_id" in obj:
+                obj["artifact_id"] = "ARTIFACT"  # content hash embeds timestamps
+            for value in obj.values():
+                scrub(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                scrub(value)
+
+    scrub(data)
+    return data
+
+
+def test_need_pipeline_concurrency_is_identical_to_serial() -> None:
+    task, world = _cross_need_task()
+    needs = tuple(
+        _generated_need(task, world, need_type)
+        for need_type in ("knowledge_boundary", "capability_boundary", "long_range_callback")
+    )
+    claim_text = {
+        needs[0].need_id.root: "徐有容身在南方且与陈长生并无直接交谈。",
+        needs[1].need_id.root: "林澈当前能力受伤势限制。",
+        needs[2].need_id.root: "陈长生十二岁离山, 伏笔在国教学院重燃。",
+    }
+    unit_by_need: dict[StableId, RetrievalUnit] = {}
+    unit_need_ids: dict[StableId, tuple[StableId, ...]] = {}
+    for index, need in enumerate(needs):
+        unit = _unit(
+            world,
+            unit_id=f"grounded.block.conc.{index}",
+            text="徐有容身在南方。",
+            entity_ids=(ENTITY_LIN_CHE,),
+            chapter=20 - index,
+            seed=f"conc.{index}",
+        )
+        unit_by_need[need.need_id] = unit
+        unit_need_ids[unit.unit_id] = (need.need_id,)
+    units = tuple(unit_by_need[need.need_id] for need in needs)
+
+    def run(max_concurrent: int) -> tuple[Any, ...]:
+        endpoint = _ContentAwareSupportEndpoint(dict(claim_text), delay=0.05)
+        gateway = _gateway_for_endpoint(endpoint)
+        progress: list[Mapping[str, object]] = []
+        artifact_writes: list[tuple[str, str]] = []
+
+        def write_artifact(payload: bytes, media_type: str) -> ArtifactRef:
+            artifact_writes.append((threading.current_thread().name, media_type))
+            return ArtifactRef(
+                artifact_id=sha256_id(payload),
+                media_type=media_type,
+                byte_length=len(payload),
+                schema_version=SchemaVersion("1.0.0"),
+            )
+
+        producer = TrustedClaimSupportProducer(
+            semantic_gateway=gateway,
+            artifact_writer=write_artifact,
+            progress_writer=progress.append,
+            max_concurrent_needs=max_concurrent,
+        )
+        outcome = producer.produce(
+            task=task,
+            units=units,
+            needs=needs,
+            basis_commit_id=world.source_commit,
+            basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+            unit_need_ids=unit_need_ids,
+            token_counter=WriterContextAssembler().count_tokens,
+        )
+        return outcome, producer, progress, endpoint, artifact_writes
+
+    serial_outcome, serial_producer, serial_progress, serial_endpoint, serial_writes = run(1)
+    (
+        concurrent_outcome,
+        concurrent_producer,
+        concurrent_progress,
+        concurrent_endpoint,
+        concurrent_writes,
+    ) = run(3)
+
+    for serial_tuple, concurrent_tuple in zip(serial_outcome, concurrent_outcome, strict=True):
+        assert len(serial_tuple) == len(concurrent_tuple)
+        for serial_item, concurrent_item in zip(serial_tuple, concurrent_tuple, strict=True):
+            assert _stable_json(concurrent_item) == _stable_json(serial_item)
+    assert concurrent_producer.last_funnel.as_dict() == serial_producer.last_funnel.as_dict()
+    assert concurrent_producer.last_diagnostic_codes == serial_producer.last_diagnostic_codes
+    assert [event.get("batch_index") for event in concurrent_progress] == [
+        event.get("batch_index") for event in serial_progress
+    ]
+    assert [event.get("stage") for event in concurrent_progress] == [
+        event.get("stage") for event in serial_progress
+    ]
+    assert concurrent_endpoint.max_inflight >= 2  # need pipelines actually overlapped
+    assert serial_endpoint.max_inflight == 1  # serial path stays strictly sequential
+    assert [media_type for _thread, media_type in concurrent_writes] == [
+        media_type for _thread, media_type in serial_writes
+    ]
+    assert {thread for thread, _media_type in concurrent_writes} == {"MainThread"}
+    verified = tuple(
+        group
+        for group in concurrent_outcome[0]
+        if group.semantic_support_status is SemanticSupportStatus.VERIFIED
+    )
+    assert len(verified) >= len(needs)  # one semantic claim per Need plus deterministic groups
+
+
+def test_coordinator_rejects_conflicting_artifact_writer_reference() -> None:
+    task, world = _cross_need_task()
+    need = _generated_need(task, world, "knowledge_boundary")
+    unit = _unit(
+        world,
+        unit_id="grounded.block.conflicting-writer",
+        text="徐有容身在南方。",
+        entity_ids=(ENTITY_LIN_CHE,),
+        chapter=18,
+        seed="conflicting-writer",
+    )
+    producer = TrustedClaimSupportProducer(
+        semantic_gateway=_gateway_for_endpoint(
+            _ContentAwareSupportEndpoint({need.need_id.root: "徐有容身在南方。"})
+        ),
+        artifact_writer=lambda payload, media_type: ArtifactRef(
+            artifact_id=ArtifactId("sha256:" + "f" * 64),
+            media_type=media_type,
+            byte_length=len(payload),
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    with pytest.raises(RuntimeError, match="conflicting content ref"):
+        producer.produce(
+            task=task,
+            units=(unit,),
+            needs=(need,),
+            basis_commit_id=world.source_commit,
+            basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+            unit_need_ids={unit.unit_id: (need.need_id,)},
+            token_counter=WriterContextAssembler().count_tokens,
+        )
+
+
+def test_producer_rejects_invalid_concurrency_limits() -> None:
+    with pytest.raises(ValueError, match="max concurrent needs"):
+        TrustedClaimSupportProducer(max_concurrent_needs=0)
+    with pytest.raises(ValueError, match="max concurrent needs"):
+        TrustedClaimSupportProducer(max_concurrent_needs=9)
+
+
+def test_diagnostic_codes_collect_into_worker_local_state() -> None:
+    producer = TrustedClaimSupportProducer()
+    producer._local_progress.diagnostics = ["WORKER_DIAGNOSTIC"]
+    try:
+        assert producer._diagnostic_codes() == ("WORKER_DIAGNOSTIC",)
+        producer._append_diagnostic_code("WORKER_SECOND")
+        assert producer._diagnostic_codes() == ("WORKER_DIAGNOSTIC", "WORKER_SECOND")
+        assert producer.last_diagnostic_codes == ()
+    finally:
+        producer._local_progress.diagnostics = None
+    assert producer._diagnostic_codes() == ()
+
+
+def test_diagnostic_codes_accumulate_on_host_state_outside_workers() -> None:
+    producer = TrustedClaimSupportProducer()
+    assert producer._diagnostic_codes() == ()
+    producer._append_diagnostic_code("HOST_DIAGNOSTIC")
+    producer._append_diagnostic_code("HOST_DIAGNOSTIC")
+    assert producer.last_diagnostic_codes == ("HOST_DIAGNOSTIC",)
+    assert producer._diagnostic_codes() == ("HOST_DIAGNOSTIC",)
+
+
+def test_producer_rejects_invalid_kv_budget() -> None:
+    with pytest.raises(ValueError, match="KV tokens"):
+        TrustedClaimSupportProducer(max_inflight_kv_tokens=0)
+
+
+def test_kv_capacity_admission_waits_and_releases() -> None:
+    producer = TrustedClaimSupportProducer(max_inflight_kv_tokens=100)
+    assert producer._inflight_kv_tokens == 0
+    producer._acquire_kv_capacity(60)
+    producer._acquire_kv_capacity(40)
+    assert producer._inflight_kv_tokens == 100
+
+    acquired: list[bool] = []
+
+    def blocker() -> None:
+        producer._acquire_kv_capacity(20)
+        acquired.append(True)
+
+    thread = threading.Thread(target=blocker)
+    thread.start()
+    for _ in range(20):
+        if producer._inflight_kv_tokens >= 120:
+            break
+        time.sleep(0.01)
+    assert not acquired  # still blocked below the budget
+    producer._release_kv_capacity(40)
+    thread.join(timeout=5)
+    assert acquired
+    assert producer._inflight_kv_tokens == 80
+    producer._release_kv_capacity(60)
+    producer._release_kv_capacity(20)
+    assert producer._inflight_kv_tokens == 0
+
+
+def test_kv_budget_limits_concurrency_without_changing_outcome() -> None:
+    task, world = _cross_need_task()
+    needs = tuple(
+        _generated_need(task, world, need_type)
+        for need_type in ("knowledge_boundary", "capability_boundary", "long_range_callback")
+    )
+    claim_text = {need.need_id.root: f"事实 {index} 完整表述。" for index, need in enumerate(needs)}
+
+    def run(max_concurrent: int, kv_budget: int | None) -> tuple[Any, ...]:
+        unit_need_ids, units = {}, []
+        for index, need in enumerate(needs):
+            unit = _unit(
+                world,
+                unit_id=f"grounded.block.kv.{index}",
+                text="徐有容身在南方。",
+                entity_ids=(ENTITY_LIN_CHE,),
+                chapter=20 - index,
+                seed=f"kv.{index}",
+            )
+            unit_need_ids[unit.unit_id] = (need.need_id,)
+            units.append(unit)
+        endpoint = _ContentAwareSupportEndpoint(claim_text, delay=0.05)
+        gateway = _gateway_for_endpoint(endpoint)
+        producer = TrustedClaimSupportProducer(
+            semantic_gateway=gateway,
+            max_concurrent_needs=max_concurrent,
+            max_inflight_kv_tokens=kv_budget,
+        )
+        outcome = producer.produce(
+            task=task,
+            units=tuple(units),
+            needs=needs,
+            basis_commit_id=world.source_commit,
+            basis_snapshot_id=CROSS_NEED_SNAPSHOT,
+            unit_need_ids=unit_need_ids,
+            token_counter=WriterContextAssembler().count_tokens,
+        )
+        return outcome, producer, endpoint
+
+    unbounded_outcome, unbounded_producer, _unbounded_endpoint = run(3, None)
+    bounded_outcome, bounded_producer, bounded_endpoint = run(3, 1_000_000)
+
+    for serial_tuple, concurrent_tuple in zip(unbounded_outcome, bounded_outcome, strict=True):
+        assert len(serial_tuple) == len(concurrent_tuple)
+        for serial_item, concurrent_item in zip(serial_tuple, concurrent_tuple, strict=True):
+            assert _stable_json(concurrent_item) == _stable_json(serial_item)
+    assert bounded_producer.last_funnel.as_dict() == unbounded_producer.last_funnel.as_dict()
+    assert bounded_endpoint.max_inflight >= 2  # admission did not serialize the run
+    assert bounded_producer._inflight_kv_tokens == 0  # all capacity released
+
+
+def test_kv_capacity_rejects_oversized_request_without_deadlock() -> None:
+    producer = TrustedClaimSupportProducer(max_inflight_kv_tokens=100)
+    with pytest.raises(
+        SchedulingBudgetUnsatisfiableError,
+        match="SCHEDULING_BUDGET_UNSATISFIABLE",
+    ):
+        producer._acquire_kv_capacity(5000)
+    assert producer._inflight_kv_tokens == 0
+
+
+def test_shared_admission_and_local_kv_release_invariants() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    producer = TrustedClaimSupportProducer(admission_controller=controller)
+    producer._acquire_kv_capacity(10)
+    with pytest.raises(RuntimeError, match="already owns"):
+        producer._acquire_kv_capacity(10)
+    with pytest.raises(RuntimeError, match="lease mismatch"):
+        producer._release_kv_capacity(11)
+    producer._release_kv_capacity(10)
+    with pytest.raises(RuntimeError, match="lease mismatch"):
+        producer._release_kv_capacity(10)
+
+    local = TrustedClaimSupportProducer(max_inflight_kv_tokens=100)
+    with pytest.raises(RuntimeError, match="below zero"):
+        local._release_kv_capacity(1)

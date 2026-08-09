@@ -22,7 +22,7 @@ def test_stage2_benchmark_flow_persists_current_read_pilot_without_overclaiming(
     summary = Stage2BenchmarkFlowRunner().run(make_synthetic_bundle(), tmp_path)
 
     assert summary["status"] == "read_pilot_completed"
-    assert summary["paired_results_count"] == 2
+    assert summary["paired_results_count"] == 3
     assert summary["future_leakage_count"] == 0
     assert summary["bounded_controller_executed"] is True
     assert summary["planner_bootstrap_executed"] is False
@@ -40,7 +40,7 @@ def test_stage2_benchmark_flow_persists_current_read_pilot_without_overclaiming(
     engine = build_engine(f"sqlite:///{(tmp_path / 'evaluation/ledger.sqlite3').resolve()}")
     try:
         with engine.connect() as connection:
-            assert connection.scalar(select(func.count()).select_from(EvaluationEntryRow)) == 2
+            assert connection.scalar(select(func.count()).select_from(EvaluationEntryRow)) == 3
     finally:
         engine.dispose()
 

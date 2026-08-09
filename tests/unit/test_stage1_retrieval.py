@@ -143,6 +143,99 @@ def test_exact_current_state_bypasses_anchor_and_rrf() -> None:
         for candidate in trace.candidates
         for hit in candidate.channel_hits
     )
+    assert trace.direct_unit_ids == tuple(
+        dict.fromkeys(candidate.unit.unit_id for candidate in trace.candidates)
+    )
+    assert trace.direct_unit_ids
+
+
+def test_query_compiler_builds_per_channel_bundle() -> None:
+    from novel_agent.domain.planning_memory import RetrievalQueryBundle
+    from novel_agent.services.need_query_compiler import NeedQueryCompiler
+
+    planner_need = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "主体查询",
+        (CandidatePool.ANCHOR,),
+        entity_ids=(CHARACTER,),
+    ).model_copy(
+        update={
+            "semantic_question": "在截止点前 林澈 的伤势是否痊愈?",
+            "query_hints": ("林澈 伤势 未痊愈 来源", "主体查询"),
+            "predicates": ("injury",),
+            "retrieval_may_return_plan": False,
+            "planner_may_read_plan": True,
+            "claim_may_cite_plan": False,
+            "legacy_allow_plan": False,
+            "allow_plan": False,
+        }
+    )
+    bundle = NeedQueryCompiler().compile(planner_need)
+    assert isinstance(bundle, RetrievalQueryBundle)
+    assert bundle.semantic_query == "在截止点前 林澈 的伤势是否痊愈?"
+    assert bundle.lexical_queries == ("主体查询", "林澈 伤势 未痊愈 来源")
+    assert bundle.exact_entity_ids == (CHARACTER,)
+    assert bundle.exact_predicates == ("injury",)
+    assert bundle.graph_seeds == (CHARACTER,)
+    assert bundle.excluded_information_labels == ("plan",)
+
+    plan_channel = planner_need.model_copy(
+        update={
+            "retrieval_may_return_plan": True,
+            "legacy_allow_plan": True,
+            "allow_plan": True,
+            "claim_may_cite_plan": True,
+        }
+    )
+    assert NeedQueryCompiler().compile(plan_channel).excluded_information_labels == ()
+
+    with pytest.raises(ValueError, match="lexical queries must be unique"):
+        RetrievalQueryBundle(
+            semantic_query="q",
+            lexical_queries=("a", "a"),
+        )
+    with pytest.raises(ValueError, match="exact entity ids must be unique"):
+        RetrievalQueryBundle(
+            semantic_query="q",
+            lexical_queries=("a",),
+            exact_entity_ids=(StableId("entity.dup"), StableId("entity.dup")),
+        )
+    with pytest.raises(ValueError, match="exact predicates must be unique"):
+        RetrievalQueryBundle(
+            semantic_query="q",
+            lexical_queries=("a",),
+            exact_predicates=("injury", "injury"),
+        )
+
+    empty_bundle = RetrievalQueryBundle(semantic_query=" ", lexical_queries=(" ",))
+    channels = (
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.R1_EXACT,
+        RetrievalChannel.TYPED_GRAPH,
+        RetrievalChannel.HIERARCHY,
+        RetrievalChannel.RERANK,
+    )
+    eligible, unavailable = NeedQueryCompiler.eligible_channels(
+        planner_need.model_copy(update={"hierarchy_parent_unit_ids": ()}),
+        empty_bundle,
+        channels,
+    )
+    assert eligible == (RetrievalChannel.RERANK,)
+    assert set(unavailable) == set(channels[:-1])
+
+    executable_bundle = bundle.model_copy(
+        update={"graph_seeds": (CHARACTER,), "graph_relations": ("knows",)}
+    )
+    eligible, unavailable = NeedQueryCompiler.eligible_channels(
+        planner_need.model_copy(
+            update={"hierarchy_parent_unit_ids": (StableId("chapter.parent"),)}
+        ),
+        executable_bundle,
+        channels,
+    )
+    assert eligible == channels
+    assert unavailable == {}
 
 
 def test_semantic_history_is_anchor_first_with_application_rrf_diagnostics() -> None:
@@ -349,12 +442,59 @@ def test_need_cannot_silently_use_a_forbidden_candidate_pool() -> None:
         (CandidatePool.R1,),
     )
 
-    try:
-        orchestrator().retrieve(semantic_need)
-    except ValueError as error:
-        assert str(error) == "memory need candidate pools forbid every channel for its intent"
-    else:
-        raise AssertionError("forbidden route unexpectedly executed")
+    trace = orchestrator().retrieve(semantic_need)
+    assert trace.stop_reason.value == "no_executable_query"
+    assert trace.need_execution_status.value == "not_executed_no_executable_query"
+    assert trace.calls_allocated == 0
+    assert trace.effective_channels == ()
+
+
+def test_unanchored_exact_and_graph_needs_have_typed_no_query_traces() -> None:
+    exact = orchestrator().retrieve(
+        need(Stage1QueryIntent.CURRENT_STATE, "当前状态", (CandidatePool.R1,))
+    )
+    assert exact.effective_channels == ()
+    assert exact.query_unavailable_reasons == {
+        RetrievalChannel.R1_EXACT: "missing_exact_entity_or_predicate",
+        RetrievalChannel.R1_TEMPORAL: "missing_exact_entity_or_predicate",
+    }
+
+    graph = orchestrator().retrieve(
+        need(Stage1QueryIntent.CAUSAL_MULTI_HOP, "因果", (CandidatePool.GRAPH,))
+    )
+    assert graph.effective_channels == ()
+    assert graph.query_unavailable_reasons == {RetrievalChannel.TYPED_GRAPH: "missing_graph_seed"}
+
+    hierarchy = orchestrator().retrieve(
+        need(Stage1QueryIntent.GLOBAL_ARC, "长线", (CandidatePool.HIERARCHY,))
+    )
+    assert hierarchy.query_unavailable_reasons == {
+        RetrievalChannel.HIERARCHY: "missing_hierarchy_basis"
+    }
+    executable_hierarchy = orchestrator().retrieve(
+        need(
+            Stage1QueryIntent.GLOBAL_ARC,
+            "长线",
+            (CandidatePool.HIERARCHY,),
+        ).model_copy(update={"hierarchy_parent_unit_ids": (StableId("anchor.parent"),)})
+    )
+    assert RetrievalChannel.HIERARCHY in executable_hierarchy.effective_channels
+
+
+def test_effective_channels_are_route_pool_and_query_intersection() -> None:
+    trace = orchestrator().retrieve(
+        need(
+            Stage1QueryIntent.SEMANTIC_HISTORY,
+            "旧誓言",
+            (CandidatePool.ANCHOR, CandidatePool.R1),
+            entity_ids=(CHARACTER,),
+        )
+    )
+    assert trace.effective_channels == (
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+    )
+    assert trace.compiled_query_bundle["semantic_query"] == "旧誓言"
 
 
 def test_fusion_and_backend_reject_malformed_inputs() -> None:

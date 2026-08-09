@@ -14,6 +14,7 @@ from novel_agent.domain.memory import (
     RetrievalUnitKind,
     Stage1QueryIntent,
 )
+from novel_agent.domain.planning_memory import RetrievalQueryBundle
 from novel_agent.domain.retrieval_routing import (
     ChannelCoverage,
     ChannelFailure,
@@ -43,6 +44,14 @@ from novel_agent.services.stage2_retrieval_backend import _load_persisted_attest
 HASH_A = ArtifactId("sha256:" + "a" * 64)
 COMMIT = CommitId(HASH_A.root)
 SNAPSHOT = StableId("snapshot.stage2r")
+
+
+def query_bundle() -> RetrievalQueryBundle:
+    return RetrievalQueryBundle(
+        semantic_query="q",
+        lexical_queries=("q",),
+        exact_entity_ids=(StableId("entity.route"),),
+    )
 
 
 def capability(
@@ -322,9 +331,40 @@ def test_route_plan_and_counterfactual_records_enforce_runtime_authority_boundar
         mandatory_steps=(primary_step,),
         evidence_policy=evidence,
         stop_policy=stop,
+        compiled_query_bundle=query_bundle(),
+        effective_channels=(RetrievalChannel.R1_EXACT,),
         policy_version=SchemaVersion("0.1.0"),
     )
     assert plan.resolution_tier is ResolutionTier.R1
+    with pytest.raises(ValueError, match="effective channels"):
+        RoutePlan.model_validate(plan.model_dump() | {"effective_channels": ()})
+    with pytest.raises(ValueError, match="query-unavailable"):
+        RoutePlan.model_validate(
+            plan.model_dump()
+            | {
+                "query_unavailable_reasons": {
+                    RetrievalChannel.R1_EXACT: "missing_exact_entity_or_predicate"
+                }
+            }
+        )
+    semantic_step = step(RetrievalChannel.ANCHOR_BM25)
+    legal_r1_fallback = RoutePlan.model_validate(
+        plan.model_dump()
+        | {
+            "conditional_fallbacks": (
+                ConditionalFallback(
+                    fallback_id=StableId("fallback.current-state"),
+                    condition="exact_current_record_absent",
+                    steps=(semantic_step,),
+                ),
+            ),
+            "effective_channels": (
+                RetrievalChannel.R1_EXACT,
+                RetrievalChannel.ANCHOR_BM25,
+            ),
+        }
+    )
+    assert legal_r1_fallback.resolution_tier is ResolutionTier.R1
     with pytest.raises(ValidationError, match="active and excluded"):
         RoutePlan.model_validate(
             plan.model_dump()

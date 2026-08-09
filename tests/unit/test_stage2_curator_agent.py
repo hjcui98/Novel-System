@@ -12,8 +12,9 @@ from novel_agent.domain.changes import (
     ChangeOperationType,
     ChapterChangeDraft,
     ChapterChangeDraftV2,
-    CuratedOperationDraftV2,
     CuratorObligationRecord,
+    CuratorV2EvidenceDraft,
+    CuratorV2OperationDraft,
     WorldRecordKind,
 )
 from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId, TaskId
@@ -66,7 +67,7 @@ def ref(path: Path, contract_id: str) -> PromptContractRef:
 
 
 def harness(
-    draft: ChapterChangeDraft | ChapterChangeDraftV2,
+    draft: ChapterChangeDraft | ChapterChangeDraftV2 | CuratorV2EvidenceDraft,
     *,
     evidence_contract: CuratorEvidenceContract = CuratorEvidenceContract.LEGACY_OFFSET_V1,
     enforce_support_gate: bool = True,
@@ -139,16 +140,16 @@ def harness(
     ), endpoint
 
 
-def _v2_draft() -> ChapterChangeDraftV2:
+def _v2_draft() -> CuratorV2EvidenceDraft:
     bundle = make_synthetic_bundle()
     text_root = bundle.text_roots[1]
     candidates = EvidenceCandidateGenerator().generate(text_root, 23)
     assert candidates
     candidate = candidates[0]
-    return ChapterChangeDraftV2(
+    return CuratorV2EvidenceDraft(
         chapter_index=23,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.OBLIGATION,
                 target_id=StableId("obligation.synthetic.north-tower"),
@@ -159,7 +160,7 @@ def _v2_draft() -> ChapterChangeDraftV2:
                     owner_ids=(StableId("entity.synthetic.lin-che"),),
                     due_chapter=23,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -294,7 +295,7 @@ def test_curator_replay_agent_v2_renders_trusted_proposal_feedback() -> None:
     assert '<MANDATORY_PROPOSAL_REPAIR_CONTRACT trusted="true">' in sent.prompt
     assert sent.prompt.endswith("</MANDATORY_PROPOSAL_REPAIR_CONTRACT>")
     assert feedback in sent.prompt
-    assert "ChapterChangeDraftV2" in sent.prompt or "evidence_candidate_ids" in sent.prompt
+    assert "evidence_quotes" in sent.prompt
     assert "Always emit the operations key" in sent.prompt
     assert "no_durable_delta_reason" in sent.prompt
 

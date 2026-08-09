@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "PlannerInvocationAttemptStatus": {
+      "enum": [
+        "succeeded",
+        "empty_drafts",
+        "error"
+      ],
+      "title": "PlannerInvocationAttemptStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One provider call, reconciled one-to-one with the Gateway ledger.",
+  "properties": {
+    "error_category": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Category"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "raw_response": {
+      "default": "",
+      "title": "Raw Response",
+      "type": "string"
+    },
+    "raw_response_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "status": {
+      "$ref": "#/$defs/PlannerInvocationAttemptStatus"
+    }
+  },
+  "required": [
+    "request_id",
+    "status",
+    "raw_response_hash",
+    "input_tokens",
+    "output_tokens"
+  ],
+  "title": "PlannerInvocationAttempt",
+  "type": "object"
+}

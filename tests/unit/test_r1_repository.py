@@ -146,7 +146,11 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
     assert (
         len(
             repository.exact(
-                _need(commit_id, Stage1QueryIntent.MANDATORY_CONSTRAINT),
+                _need(
+                    commit_id,
+                    Stage1QueryIntent.MANDATORY_CONSTRAINT,
+                    entities=(entity_id,),
+                ),
                 temporal=False,
                 limit=10,
             )
@@ -155,8 +159,14 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
     )
     with pytest.raises(ValueError, match="positive"):
         repository.exact(_need(commit_id, Stage1QueryIntent.KNOWN_ID), temporal=False, limit=0)
+    with pytest.raises(ValueError, match="unfiltered factual exact"):
+        repository.exact(_need(commit_id, Stage1QueryIntent.KNOWN_ID), temporal=False, limit=1)
     assert repository.exact(
-        _need(commit_id, Stage1QueryIntent.KNOWN_ID).model_copy(update={"chapter_target": None}),
+        _need(
+            commit_id,
+            Stage1QueryIntent.KNOWN_ID,
+            entities=(entity_id,),
+        ).model_copy(update={"chapter_target": None}),
         temporal=False,
         limit=1,
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from novel_agent.domain.memory_benchmark import (
     PerGoldComparison,
 )
 from novel_agent.services.artifacts import sha256_id
-from novel_agent.services.content_addressing import content_id
+from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.memory_benchmark_metric_contracts import (
     GATE_METRIC_FORMULA_HASH,
@@ -98,7 +99,7 @@ class _ResolvedGold:
 
 
 class MemoryBenchmarkReporter:
-    version = "stage2m_unified_report.v2"
+    version = "stage2m_unified_report.v3"
 
     def __init__(
         self,
@@ -115,6 +116,7 @@ class MemoryBenchmarkReporter:
         *,
         profile: BenchmarkInformationProfile,
         cases: tuple[MemoryBenchmarkCaseArmReport, ...],
+        aggregation_manifest_ref: ArtifactRef | None = None,
     ) -> MemoryBenchmarkUnifiedReport:
         if not cases:
             raise ValueError("Gate M4 aggregation requires at least one case")
@@ -127,6 +129,12 @@ class MemoryBenchmarkReporter:
         identities = {(item.case_id, item.arm) for item in cases}
         if len(identities) != len(cases):
             raise ValueError("unified report contains duplicate case/arm results")
+        if aggregation_manifest_ref is not None:
+            self._validate_aggregation_manifest(
+                aggregation_manifest_ref,
+                profile=profile,
+                cases=cases,
+            )
 
         resolved_by_case: list[tuple[MemoryBenchmarkCaseArmReport, tuple[_ResolvedGold, ...]]] = []
         seen_gold: set[object] = set()
@@ -192,7 +200,13 @@ class MemoryBenchmarkReporter:
                 in self.axes_for_descriptor(item.descriptor)
             ),
         )
-        if self._enforce_formal_contract:
+        if self._enforce_formal_contract and profile in {
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        }:
+            # The frozen denominator contract covers the formal gate profiles
+            # only; ablation profiles (TASK_INTENT_ONLY) aggregate without
+            # invented denominators.
             self._validate_denominators(
                 profile=profile,
                 all_gold=all_gold,
@@ -230,6 +244,12 @@ class MemoryBenchmarkReporter:
             gate_contract_version=_FORMAL_GATE_CONTRACT_VERSION,
             gate_contract_hash=_FORMAL_GATE_CONTRACT_HASH,
             formal_contract_validated=self._enforce_formal_contract,
+            aggregation_manifest_ref=aggregation_manifest_ref,
+            aggregation_manifest_hash=(
+                aggregation_manifest_ref.artifact_id
+                if aggregation_manifest_ref is not None
+                else None
+            ),
             current_state=current,
             operational_plan=operational,
             historical=historical,
@@ -245,6 +265,45 @@ class MemoryBenchmarkReporter:
                 and contradiction_free
             ),
         )
+
+    def _validate_aggregation_manifest(
+        self,
+        manifest_ref: ArtifactRef,
+        *,
+        profile: BenchmarkInformationProfile,
+        cases: tuple[MemoryBenchmarkCaseArmReport, ...],
+    ) -> None:
+        payload = json.loads(self._read_artifact(manifest_ref))
+        if (
+            payload.get("profile") != profile.value
+            or payload.get("formula_version") != GATE_METRIC_FORMULA_VERSION
+            or payload.get("formula_hash") != GATE_METRIC_FORMULA_HASH.root
+        ):
+            raise ValueError("aggregation manifest profile/formula identity mismatch")
+        arm = cases[0].arm
+        children = tuple(child for child in payload.get("children", ()) if child.get("arm") == arm)
+        identities = tuple(
+            (str(child.get("case_id")), int(child.get("checkpoint", -1)), str(child.get("arm")))
+            for child in children
+        )
+        expected = tuple(
+            (case.case_id.root, case.checkpoint_chapter, case.arm)
+            for case in sorted(cases, key=lambda item: (item.checkpoint_chapter, item.case_id.root))
+        )
+        if len(identities) != len(set(identities)) or tuple(sorted(identities)) != tuple(
+            sorted(expected)
+        ):
+            raise ValueError("aggregation manifest children are missing, duplicate, or foreign")
+        case_by_identity: dict[tuple[str, int, str], MemoryBenchmarkCaseArmReport] = {
+            (case.case_id.root, case.checkpoint_chapter, case.arm): case for case in cases
+        }
+        for child, identity in zip(children, identities, strict=True):
+            reference = ArtifactRef.model_validate(child.get("artifact_ref"))
+            expected_bytes = canonical_json_bytes(
+                case_by_identity[identity].model_dump(mode="json")
+            )
+            if self._read_artifact(reference) != expected_bytes:
+                raise ValueError("aggregation manifest child report content conflicts")
 
     @staticmethod
     def _validate_case_matrix(cases: tuple[MemoryBenchmarkCaseArmReport, ...]) -> None:

@@ -18,6 +18,9 @@ from novel_agent.domain.changes import (
     CuratorEntityRecord,
     CuratorStateRecord,
     CuratorStoryTime,
+    CuratorV2EvidenceDraft,
+    CuratorV2OperationDraft,
+    EvidenceCandidate,
     EvidenceRepairAction,
     EvidenceRepairDraft,
     EvidenceSupportDisposition,
@@ -52,12 +55,13 @@ class _FakeGateway:
         self._draft = draft
         self.requests: list[ModelRequest] = []
 
-    async def generate_structured(self, request, model_type):
+    async def generate_structured(self, request, model_type, **kwargs):
         self.requests.append(request)
-        assert model_type is ChapterChangeDraftV2
+        assert model_type is CuratorV2EvidenceDraft
+        assert "json_object_framing" not in kwargs
         assert "EVIDENCE_CANDIDATES" in request.prompt
         assert "keep no_durable_delta_reason under 80 characters" in request.prompt
-        assert "Never emit an empty no_op_evidence_candidate_ids" in request.prompt
+        assert "Never emit an empty no_op_evidence_quotes" in request.prompt
         call = type(
             "Call",
             (),
@@ -79,7 +83,7 @@ class _ModelVerifierGateway:
         self._verification = verification
         self.requests: list[ModelRequest] = []
 
-    async def generate_structured(self, request, model_type):
+    async def generate_structured(self, request, model_type, **kwargs):
         self.requests.append(request)
         call = type(
             "Call",
@@ -89,7 +93,7 @@ class _ModelVerifierGateway:
                 "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
             },
         )()
-        if model_type is ChapterChangeDraftV2:
+        if model_type is CuratorV2EvidenceDraft:
             return self._draft, call
         assert issubclass(model_type, EvidenceSemanticDecisionDraft)
         assert "EVIDENCE_VERIFICATION_INPUT" in request.prompt
@@ -108,7 +112,7 @@ class _NoOpVerifierGateway:
         self._verification = verification
         self.requests: list[ModelRequest] = []
 
-    async def generate_structured(self, request, model_type):
+    async def generate_structured(self, request, model_type, **kwargs):
         self.requests.append(request)
         call = type(
             "Call",
@@ -118,7 +122,7 @@ class _NoOpVerifierGateway:
                 "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
             },
         )()
-        if model_type is ChapterChangeDraftV2:
+        if model_type is CuratorV2EvidenceDraft:
             return self._draft, call
         assert model_type is NoOpSemanticVerificationDraft
         assert "NO_OP_VERIFICATION_INPUT" in request.prompt
@@ -186,10 +190,10 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     good = next(item for item in candidates if "confidence" in item.text)
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.attitude"),
@@ -200,7 +204,7 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
                     valid_time=CuratorStoryTime(worldline="main"),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(good.candidate_id,),
+                evidence_quotes=(good.text,),
             ),
         ),
     )
@@ -242,10 +246,10 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
         return (*base, weak)
 
     gen_all.generate = _generate_with_weak  # type: ignore[method-assign]
-    unrelated = ChapterChangeDraftV2(
+    unrelated = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.attitude"),
@@ -256,7 +260,7 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
                     valid_time=CuratorStoryTime(worldline="main"),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(weak.candidate_id,),
+                evidence_quotes=(weak.text,),
             ),
         ),
     )
@@ -285,10 +289,10 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     root = _root_with(text)
     generator = EvidenceCandidateGenerator()
     candidate = next(item for item in generator.generate(root, 21) if "confidence" in item.text)
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.attitude.repaired"),
@@ -299,7 +303,7 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
                     valid_time=CuratorStoryTime(worldline="main"),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -386,11 +390,12 @@ class _RepairGateway:
 _COMMIT = CommitId("sha256:" + "3" * 64)
 
 
-def _v2_state_draft(candidate_id: StableId, chapter_index: int = 21) -> ChapterChangeDraftV2:
-    return ChapterChangeDraftV2(
+def _v2_state_draft(evidence: object, chapter_index: int = 21) -> CuratorV2EvidenceDraft:
+    quote = evidence.text if isinstance(evidence, EvidenceCandidate) else str(evidence)
+    return CuratorV2EvidenceDraft(
         chapter_index=chapter_index,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.attitude"),
@@ -401,22 +406,274 @@ def _v2_state_draft(candidate_id: StableId, chapter_index: int = 21) -> ChapterC
                     valid_time=CuratorStoryTime(worldline="main"),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate_id,),
+                evidence_quotes=(quote,),
             ),
         ),
     )
 
 
-def _v2_no_op_draft(candidate_id: StableId) -> ChapterChangeDraftV2:
-    return ChapterChangeDraftV2(
+def _v2_no_op_draft(evidence: object) -> CuratorV2EvidenceDraft:
+    quote = evidence.text if isinstance(evidence, EvidenceCandidate) else str(evidence)
+    return CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(),
         coverage=1.0,
         unresolved=(),
         declared_vs_observed_diff=(),
         no_durable_delta_reason="chapter only repeats accepted durable facts",
-        no_op_evidence_candidate_ids=(candidate_id,),
+        no_op_evidence_quotes=(quote,),
     )
+
+
+def test_v2_quote_operation_domain_edges() -> None:
+    from novel_agent.domain.changes import CuratorV2OperationDraft
+
+    base = dict(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.STATE,
+        target_id=StableId("state.attitude"),
+        record=CuratorStateRecord(
+            subject_id=StableId("entity.chen"),
+            predicate="cultivation-attitude",
+            value="extreme_confidence",
+            valid_time=CuratorStoryTime(worldline="main"),
+            truth_class=TruthClass.ASSERTION,
+        ),
+    )
+    with pytest.raises(ValidationError, match="must not be blank"):
+        CuratorV2OperationDraft.model_validate(base | {"evidence_quotes": ("  ",)})
+    with pytest.raises(ValidationError, match="must be unique"):
+        CuratorV2OperationDraft.model_validate(
+            base | {"evidence_quotes": ("重复引用内容足够长", "重复引用内容足够长")}
+        )
+    with pytest.raises(ValidationError, match="does not match typed record"):
+        CuratorV2OperationDraft.model_validate(
+            base
+            | {
+                "record_kind": WorldRecordKind.ENTITY,
+                "evidence_quotes": ("有效引用",),
+            }
+        )
+
+
+def test_v2_evidence_draft_domain_edges() -> None:
+    base = dict(
+        chapter_index=21,
+        operations=(),
+        coverage=1.0,
+        unresolved=(),
+        declared_vs_observed_diff=(),
+        no_durable_delta_reason="chapter only repeats accepted durable facts",
+        no_op_evidence_quotes=("有效引用",),
+    )
+    with pytest.raises(ValidationError, match="non-empty Curator draft"):
+        CuratorV2EvidenceDraft.model_validate(
+            base | {"operations": (_v2_state_draft("有效引用").operations[0],)}
+        )
+    with pytest.raises(ValidationError, match="requires a no-durable-delta reason"):
+        CuratorV2EvidenceDraft.model_validate(base | {"no_durable_delta_reason": None})
+    with pytest.raises(ValidationError, match="must not be blank"):
+        CuratorV2EvidenceDraft.model_validate(base | {"no_op_evidence_quotes": ("  ",)})
+
+
+def test_evidence_quote_resolver_rejects_single_char_and_unresolved() -> None:
+    gen = EvidenceCandidateGenerator()
+    with pytest.raises(ValueError, match="too short"):
+        gen.resolve_evidence_quotes(("妖",), ())
+    with pytest.raises(ValueError, match="unresolved"):
+        gen.resolve_evidence_quotes(("有效引用内容足够长",), ())
+    # short but semantically complete quotes bind when unique
+    cand = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.oppose"),
+        block_id=StableId("block.oppose"),
+        chapter_index=21,
+        scene_index=0,
+        text="\u201c我反对。",
+        start=0,
+        end=6,
+        content_hash=ArtifactId("sha256:" + "f" * 64),
+    )
+    assert gen.resolve_evidence_quotes(("我反对",), (cand,)) == (cand,)
+
+
+def test_closest_quote_hint_suggests_longer_fragment_when_unresolvable() -> None:
+    text = "陈长生在客栈整理道藏笔记。"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    draft = _v2_state_draft("短")
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(CuratorProposalSemanticRejected, match="INVALID_EVIDENCE") as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.too-short-hint")
+            )
+        )
+    assert "longer verbatim fragment" in exc.value.safe_feedback[0]
+    assert "too short" in exc.value.safe_feedback[0]
+
+
+def test_closest_candidate_skips_punctuation_only_spans() -> None:
+    gen = EvidenceCandidateGenerator()
+    punct = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.punct"),
+        block_id=StableId("block.punct"),
+        chapter_index=21,
+        scene_index=0,
+        text="\u2026\u2026\uff01\uff1f",
+        start=0,
+        end=4,
+        content_hash=ArtifactId("sha256:" + "e" * 64),
+    )
+    content = punct.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.content"),
+            "text": "我只能进国教学院",
+        }
+    )
+    assert gen.closest_candidate("我只能进国教学院", (punct, content)) is content
+    assert gen.closest_candidate("完全无关的内容文本", (punct, content)) is None
+
+
+def test_evidence_quote_resolver_ambiguous_joined_and_pair_branches() -> None:
+    gen = EvidenceCandidateGenerator()
+    cue = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.cue"),
+        block_id=StableId("block.dialogue"),
+        chapter_index=21,
+        scene_index=0,
+        text="宁婆婆看着他面无表情说道\uff1a",
+        start=0,
+        end=12,
+        content_hash=ArtifactId("sha256:" + "d" * 64),
+    )
+    content = cue.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.content"),
+            "text": "\u201c但你只能进国教学院。",
+            "start": 12,
+            "end": 25,
+        }
+    )
+    cue2 = cue.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.cue2"),
+            "text": "宁婆婆看着他面无表情说道\uff1a",
+        }
+    )
+    content2 = cue2.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.content2"),
+            "text": "\u201c但你只能进国教学院。",
+        }
+    )
+    quote = "宁婆婆看着他面无表情说道\uff1a\u201c但你只能进国教学院。"
+    with pytest.raises(ValueError, match="candidate pairs"):
+        gen.resolve_evidence_quotes((quote,), (cue, content, cue2, content2))
+    # pair_bound only: quote is a strict substring of the joined adjacent
+    # pair but contains no complete candidate
+    a = cue.model_copy(
+        update={"candidate_id": StableId("evidence-candidate.pair-a"), "text": "AAAAAAAAAA"}
+    )
+    b = cue.model_copy(
+        update={"candidate_id": StableId("evidence-candidate.pair-b"), "text": "BBBBBBBB"}
+    )
+    assert gen.resolve_evidence_quotes(("AAAABBBB",), (a, b)) == (b,)
+    # len(pair_bound) == 0 -> unresolved
+    with pytest.raises(ValueError, match="unresolved"):
+        gen.resolve_evidence_quotes(("完全不在目录中的引用内容足够长",), (cue, content))
+    # len(pair_bound) == 0 when a longer candidate contains the quote: quote
+    # exactly in a single candidate still resolves via exact
+    assert gen.resolve_evidence_quotes(("AAAAAAAAAA",), (a, b)) == (a,)
+
+
+def test_evidence_quote_resolver_binds_dialogue_span_across_split_boundary() -> None:
+    gen = EvidenceCandidateGenerator()
+    cue = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.cue"),
+        block_id=StableId("block.dialogue"),
+        chapter_index=21,
+        scene_index=0,
+        text="宁婆婆看着他面无表情说道\uff1a",
+        start=0,
+        end=12,
+        content_hash=ArtifactId("sha256:" + "c" * 64),
+    )
+    content = cue.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.content"),
+            "text": "\u201c但你只能进国教学院。",
+            "start": 12,
+            "end": 25,
+        }
+    )
+    other = cue.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.other"),
+            "text": "另一个完全不同的原文片段",
+        }
+    )
+    quote = "宁婆婆看着他面无表情说道\uff1a\u201c但你只能进国教学院。"
+    resolved = gen.resolve_evidence_quotes((quote,), (cue, content, other))
+    assert resolved == (content,)
+    with pytest.raises(ValueError, match="ambiguous"):
+        gen.resolve_evidence_quotes(
+            ("宁婆婆看着他面无表情说道\uff1a\u201c但你只能进国教学院。另一个完全不同的原文片段",),
+            (cue, content, other),
+        )
+
+
+def test_evidence_quote_resolver_binds_quote_containing_candidate() -> None:
+    gen = EvidenceCandidateGenerator()
+    candidate = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.span"),
+        block_id=StableId("block.span"),
+        chapter_index=21,
+        scene_index=0,
+        text="我不能拿第二或者第三",
+        start=0,
+        end=12,
+        content_hash=ArtifactId("sha256:" + "b" * 64),
+    )
+    other = candidate.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.other"),
+            "text": "另一个完全不同的原文片段",
+        }
+    )
+    quote = "陈长生看着他说道\uff1a\u201c我不能拿第二或者第三\uff0c我只能拿第一。"
+    resolved = gen.resolve_evidence_quotes((quote,), (candidate, other))
+    assert resolved == (candidate,)
+    assert gen.resolve_evidence_quotes((candidate.text,), (candidate, other)) == (candidate,)
+    with pytest.raises(ValueError, match="ambiguous"):
+        gen.resolve_evidence_quotes(
+            ("包含两个候选的原文\u3002我不能拿第二或者第三\uff0c另一个完全不同的原文片段",),
+            (candidate, other),
+        )
+
+
+def test_evidence_quote_resolver_ambiguity_fails_closed() -> None:
+    first = EvidenceCandidate(
+        candidate_id=StableId("evidence-candidate.ambig-1"),
+        block_id=StableId("block.ambig"),
+        chapter_index=21,
+        scene_index=0,
+        text="同一个足够长的原文片段出现在两个候选里",
+        start=0,
+        end=20,
+        content_hash=ArtifactId("sha256:" + "a" * 64),
+    )
+    second = first.model_copy(
+        update={
+            "candidate_id": StableId("evidence-candidate.ambig-2"),
+            "text": "另一个不同的足够长的原文片段",
+        }
+    )
+    gen = EvidenceCandidateGenerator()
+    with pytest.raises(ValueError, match="ambiguous"):
+        gen.resolve_evidence_quotes(("足够长的原文片段",), (first, second))
+    resolved = gen.resolve_evidence_quotes((first.text,), (first, second))
+    assert resolved == (first,)
+    assert gen.resolve_evidence_quotes((second.text,), (first, second)) == (second,)
 
 
 def test_v2_requires_operations_key() -> None:
@@ -435,7 +692,24 @@ def test_v2_requires_operations_key() -> None:
 def test_v2_rejects_no_op_proof_when_operations_exist(
     update: dict[str, object],
 ) -> None:
-    draft = _v2_state_draft(StableId("evidence-candidate.support"))
+    draft = ChapterChangeDraftV2(
+        chapter_index=21,
+        operations=(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_candidate_ids=(StableId("evidence-candidate.v2"),),
+            ),
+        ),
+    )
     with pytest.raises(ValidationError, match="non-empty Curator draft"):
         ChapterChangeDraftV2.model_validate(
             {
@@ -451,7 +725,7 @@ def test_v2_explicit_no_op_fails_closed_without_trusted_verifier() -> None:
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
     curator = ModelCurator(
-        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        _FakeGateway(_v2_no_op_draft(candidate)),
         evidence_generator=gen,
         enforce_support_gate=True,
     )
@@ -490,8 +764,8 @@ def test_v2_explicit_no_op_fails_closed_without_trusted_verifier() -> None:
         ),
         ({"no_durable_delta_reason": None}, "no_durable_delta_reason is required"),
         (
-            {"no_op_evidence_candidate_ids": ()},
-            "no_op_evidence_candidate_ids are required",
+            {"no_op_evidence_quotes": ()},
+            "no_op_evidence_quotes are required",
         ),
     ),
 )
@@ -503,7 +777,7 @@ def test_v2_incomplete_empty_draft_fails_closed_at_support_gate(
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
-    draft = _v2_no_op_draft(candidate.candidate_id).model_copy(update=update)
+    draft = _v2_no_op_draft(candidate).model_copy(update=update)
     curator = ModelCurator(
         _FakeGateway(draft),
         evidence_generator=gen,
@@ -530,7 +804,7 @@ def test_v2_incomplete_empty_draft_fails_closed_at_support_gate(
         "/unresolved",
         "/declared_vs_observed_diff",
         "/no_durable_delta_reason",
-        "/no_op_evidence_candidate_ids",
+        "/no_op_evidence_quotes",
     )
 
 
@@ -546,7 +820,7 @@ def test_v2_explicit_no_op_passes_when_trusted_verifier_accepts() -> None:
         return (True, "NO_DURABLE_DELTA_CONFIRMED")
 
     curator = ModelCurator(
-        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        _FakeGateway(_v2_no_op_draft(candidate)),
         evidence_generator=gen,
         enforce_support_gate=True,
         no_op_verifier=verifier,
@@ -572,7 +846,7 @@ def test_v2_explicit_no_op_can_use_narrow_model_verifier() -> None:
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
-    draft = _v2_no_op_draft(candidate.candidate_id)
+    draft = _v2_no_op_draft(candidate)
     gateway = _NoOpVerifierGateway(
         draft,
         NoOpSemanticVerificationDraft(
@@ -609,7 +883,7 @@ def test_v2_no_op_model_verifier_fails_closed_on_candidate_binding_mismatch() ->
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
     gateway = _NoOpVerifierGateway(
-        _v2_no_op_draft(candidate.candidate_id),
+        _v2_no_op_draft(candidate),
         NoOpSemanticVerificationDraft(
             selected_candidate_ids=(StableId("evidence-candidate.wrong"),),
             verified_no_durable_delta=True,
@@ -646,7 +920,7 @@ def test_v2_no_op_model_verifier_fails_closed_when_gateway_raises() -> None:
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
     gateway = _NoOpVerifierGateway(
-        _v2_no_op_draft(candidate.candidate_id),
+        _v2_no_op_draft(candidate),
         RuntimeError("verifier unavailable"),
     )
     curator = ModelCurator(
@@ -686,7 +960,7 @@ def test_v2_explicit_no_op_rejects_failed_verification(verifier_mode: str) -> No
         return (False, "NEW_DURABLE_FACT_PRESENT")
 
     curator = ModelCurator(
-        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        _FakeGateway(_v2_no_op_draft(candidate)),
         evidence_generator=gen,
         enforce_support_gate=True,
         no_op_verifier=verifier,
@@ -721,7 +995,7 @@ def test_v2_explicit_no_op_can_pass_when_support_gate_disabled() -> None:
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
     curator = ModelCurator(
-        _FakeGateway(_v2_no_op_draft(candidate.candidate_id)),
+        _FakeGateway(_v2_no_op_draft(candidate)),
         evidence_generator=gen,
         enforce_support_gate=False,
     )
@@ -738,11 +1012,31 @@ def test_v2_explicit_no_op_can_pass_when_support_gate_disabled() -> None:
     assert curator.last_no_op_verification is None
 
 
+def test_v2_rejection_feedback_names_closest_catalog_candidate() -> None:
+    text = "宁婆婆面无表情说道\uff1a我只能进国教学院。"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    draft = _v2_state_draft("宁婆婆看着他面无表情说道\uff1a但你只能进国教学院。")
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.closest-hint")
+            )
+        )
+    assert "closest catalog text" in exc.value.safe_feedback[0]
+    assert "copy it verbatim" in exc.value.safe_feedback[0]
+
+
 def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
     text = "chen repeats an already accepted durable fact."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
-    draft = _v2_no_op_draft(StableId("evidence-candidate.missing"))
+    draft = _v2_no_op_draft("这段伪造引用不在本章目录中")
     curator = ModelCurator(
         _FakeGateway(draft),
         evidence_generator=gen,
@@ -761,11 +1055,8 @@ def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
                 _request("req.v2.noop.unknown-candidate"),
             )
         )
-    assert exc.value.json_pointers == ("/no_op_evidence_candidate_ids/0",)
-    assert exc.value.safe_feedback == (
-        "evidence-candidate.missing: unknown evidence candidate; replace it with a "
-        "candidate_id copied verbatim from this chapter's EVIDENCE_CANDIDATES catalog",
-    )
+    assert exc.value.json_pointers == ("/no_op_evidence_quotes/0",)
+    assert "evidence quote unresolved" in exc.value.safe_feedback[0]
 
 
 def _v2_parent_changes(
@@ -802,24 +1093,7 @@ def test_v2_rejects_unknown_evidence_candidate_id() -> None:
     text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
-    draft = ChapterChangeDraftV2(
-        chapter_index=21,
-        operations=(
-            CuratedOperationDraftV2(
-                operation=ChangeOperationType.CREATE,
-                record_kind=WorldRecordKind.STATE,
-                target_id=StableId("state.attitude"),
-                record=CuratorStateRecord(
-                    subject_id=StableId("entity.chen"),
-                    predicate="cultivation-attitude",
-                    value="extreme_confidence",
-                    valid_time=CuratorStoryTime(worldline="main"),
-                    truth_class=TruthClass.ASSERTION,
-                ),
-                evidence_candidate_ids=(StableId("evidence-candidate.missing"),),
-            ),
-        ),
-    )
+    draft = _v2_state_draft("这段伪造引用不存在于任何本章候选的原文中")
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     with pytest.raises(
         CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
@@ -829,14 +1103,11 @@ def test_v2_rejects_unknown_evidence_candidate_id() -> None:
                 root, 21, _COMMIT, _world(), _request("req.v2.unknown-candidate")
             )
         )
-    assert exc.value.violation_rule == "candidate_id_must_belong_to_chapter"
+    assert exc.value.violation_rule == "evidence_quote_must_match_chapter_catalog"
     assert exc.value.information_boundary is False
-    assert exc.value.operation_indexes == (0,)
-    assert exc.value.safe_feedback == (
-        "evidence-candidate.missing: unknown evidence candidate; replace it with a "
-        "candidate_id copied verbatim from this chapter's EVIDENCE_CANDIDATES catalog",
-    )
-    assert exc.value.json_pointers == ("/operations/0/evidence_candidate_ids/0",)
+    assert exc.value.operation_indexes == ()
+    assert "evidence quote unresolved" in exc.value.safe_feedback[0]
+    assert exc.value.json_pointers == ("/operations/0/evidence_quotes/0",)
 
 
 def test_v2_skips_support_gate_enforcement_when_disabled() -> None:
@@ -850,7 +1121,7 @@ def test_v2_skips_support_gate_enforcement_when_disabled() -> None:
     unrelated = next(
         item for item in candidates if "confidence" not in item.text and "attitude" not in item.text
     )
-    draft = _v2_state_draft(unrelated.candidate_id)
+    draft = _v2_state_draft(unrelated)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=False)
     changes, _call, _out = asyncio.run(
         curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.gate-disabled"))
@@ -868,10 +1139,10 @@ def test_v2_entity_record_omits_evidence_refs_from_record_payload() -> None:
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "chen" in item.text)
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.ENTITY,
                 target_id=StableId("entity.chen"),
@@ -879,7 +1150,7 @@ def test_v2_entity_record_omits_evidence_refs_from_record_payload() -> None:
                     entity_type="character",
                     internal_label="chen",
                 ),
-                evidence_candidate_ids=(good.candidate_id,),
+                evidence_quotes=(good.text,),
             ),
         ),
     )
@@ -899,7 +1170,7 @@ def test_evidence_repair_v2_replaces_evidence_with_new_candidate_ids() -> None:
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
     other = next(item for item in candidates if item.candidate_id != good.candidate_id)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     repair = EvidenceRepairDraft(
         operation_index=0,
@@ -936,7 +1207,7 @@ def test_evidence_repair_v2_drops_operation_on_drop_action() -> None:
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     repair = EvidenceRepairDraft(
         operation_index=0,
@@ -960,7 +1231,7 @@ def test_evidence_repair_v2_keeps_operation_on_mark_unresolved() -> None:
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     repair = EvidenceRepairDraft(
         operation_index=0,
@@ -986,7 +1257,7 @@ def test_evidence_repair_v2_passes_through_operations_without_repair_draft() -> 
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     curator = ModelCurator(_RepairGateway([]), evidence_generator=gen, enforce_support_gate=True)
     changes, _call, drafts = asyncio.run(
@@ -1003,7 +1274,7 @@ def test_evidence_repair_v2_rejects_unknown_replacement_candidate() -> None:
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     repair = EvidenceRepairDraft(
         operation_index=0,
@@ -1032,7 +1303,7 @@ def test_evidence_repair_v2_filters_parent_ops_by_repair_operation_indexes() -> 
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     good = next(item for item in candidates if "confidence" in item.text)
-    parent_changes = _v2_parent_changes(root, gen, good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
 
     repair = EvidenceRepairDraft(
         operation_index=0,
@@ -1068,7 +1339,7 @@ def test_v2_filters_contradicts_evidence_to_audited_no_op() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     bad = candidates[0]
-    draft = _v2_state_draft(bad.candidate_id)
+    draft = _v2_state_draft(bad)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     changes, _call, filtered = asyncio.run(
         curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.contradicts"))
@@ -1094,7 +1365,7 @@ def test_v2_partial_evidence_passes_when_verifier_supports() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     weak = candidates[0]
-    draft = _v2_state_draft(weak.candidate_id)
+    draft = _v2_state_draft(weak)
 
     verifier_calls: list[tuple[object, object]] = []
 
@@ -1124,7 +1395,7 @@ def test_v2_partial_evidence_verifier_rejection_becomes_audited_no_op() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     weak = candidates[0]
-    draft = _v2_state_draft(weak.candidate_id)
+    draft = _v2_state_draft(weak)
 
     def verifier(record, candidate) -> tuple[EvidenceSupportDisposition, str]:
         return (EvidenceSupportDisposition.CONTRADICTS, "VERIFIER_CONTRADICTS")
@@ -1158,7 +1429,7 @@ def test_v2_partial_evidence_fails_closed_without_verifier() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     weak = candidates[0]
-    draft = _v2_state_draft(weak.candidate_id)
+    draft = _v2_state_draft(weak)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     with pytest.raises(
         CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_EVIDENCE_UNRESOLVED"
@@ -1178,7 +1449,7 @@ def test_v2_partial_evidence_fails_closed_when_verifier_raises() -> None:
     candidates = gen.generate(root, 21)
     assert candidates
     weak = candidates[0]
-    draft = _v2_state_draft(weak.candidate_id)
+    draft = _v2_state_draft(weak)
 
     def verifier(record, candidate) -> tuple[EvidenceSupportDisposition, str]:
         raise RuntimeError("verifier crashed")
@@ -1205,7 +1476,7 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
-    draft = _v2_state_draft(candidate.candidate_id)
+    draft = _v2_state_draft(candidate)
     verification = EvidenceSemanticVerificationDraft(
         decisions=(
             EvidenceSemanticVerificationItem(
@@ -1243,13 +1514,13 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     prompt = gateway.requests[0].prompt
     assert prompt.index("</CURATOR_INPUT>") < prompt.index("<CURATOR_OUTPUT_CONTRACT")
     assert "MUST be copied verbatim" in prompt
-    assert "Do not restate facts already present in WORLD" in prompt
+    assert "Every operation MUST carry a non-empty evidence_quotes array" in prompt
     assert "composite method or process MUST cite" in prompt
     assert "half_shichen is not half_hour" in prompt
     assert "encoded as a belief/estimate/claim" in prompt
     assert "every semantic component" in prompt
     assert "no_durable_delta_reason MUST be null" in prompt
-    assert "no_op_evidence_candidate_ids MUST be an empty array" in prompt
+    assert "no_op_evidence_quotes MUST be an empty array" in prompt
     assert curator.last_prompt_fingerprint is not None
 
 
@@ -1278,12 +1549,13 @@ def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> N
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     assert len(candidates) >= 2
-    candidate_ids = (candidates[0].candidate_id, candidates[1].candidate_id)
-    base = _v2_state_draft(candidate_ids[0])
+    base = _v2_state_draft(candidates[0])
     draft = base.model_copy(
         update={
             "operations": (
-                base.operations[0].model_copy(update={"evidence_candidate_ids": candidate_ids}),
+                base.operations[0].model_copy(
+                    update={"evidence_quotes": (candidates[0].text, candidates[1].text)}
+                ),
             )
         }
     )
@@ -1291,7 +1563,7 @@ def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> N
         decisions=(
             EvidenceSemanticVerificationItem(
                 operation_index=0,
-                candidate_ids=candidate_ids,
+                candidate_ids=(candidates[0].candidate_id, candidates[1].candidate_id),
                 disposition=EvidenceSupportDisposition.SUPPORTS,
                 reason_code="COMBINED_EVIDENCE_SUPPORT",
             ),
@@ -1314,19 +1586,24 @@ def test_v2_model_semantic_verifier_evaluates_combined_operation_evidence() -> N
     assert changes.operations
     assert len(gateway.requests) == 2
     verifier_prompt = gateway.requests[1].prompt
-    assert all(candidate_id.root in verifier_prompt for candidate_id in candidate_ids)
+    assert all(
+        candidate_id.root in verifier_prompt
+        for candidate_id in (candidates[0].candidate_id, candidates[1].candidate_id)
+    )
     assert '"evidence":[' in verifier_prompt
 
 
 def test_v2_model_semantic_verifier_drops_only_rejected_operations() -> None:
-    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    root = _root_with(
+        "陈长生的读书方法十分特殊。他反复阅读道藏并整理出重要笔记。当天的天气晴朗无云。"
+    )
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     assert len(candidates) >= 2
     supported = candidates[0]
     rejected = candidates[-1]
-    first = _v2_state_draft(supported.candidate_id).operations[0]
-    draft = ChapterChangeDraftV2(
+    first = _v2_state_draft(supported).operations[0]
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
             first,
@@ -1340,7 +1617,7 @@ def test_v2_model_semantic_verifier_drops_only_rejected_operations() -> None:
                         valid_time=CuratorStoryTime(worldline="current"),
                         truth_class=TruthClass.ASSERTION,
                     ),
-                    "evidence_candidate_ids": (rejected.candidate_id,),
+                    "evidence_quotes": (rejected.text,),
                 }
             ),
         ),
@@ -1391,14 +1668,16 @@ def test_v2_model_semantic_verifier_drops_only_rejected_operations() -> None:
 
 
 def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
-    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    root = _root_with(
+        "陈长生的读书方法十分特殊。他反复阅读道藏并整理出重要笔记。当天的天气晴朗无云。"
+    )
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     assert len(candidates) >= 2
     supported = candidates[0]
     unresolved = candidates[-1]
-    first = _v2_state_draft(supported.candidate_id).operations[0]
-    draft = ChapterChangeDraftV2(
+    first = _v2_state_draft(supported).operations[0]
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
             first,
@@ -1412,7 +1691,7 @@ def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
                         valid_time=CuratorStoryTime(worldline="current"),
                         truth_class=TruthClass.ASSERTION,
                     ),
-                    "evidence_candidate_ids": (unresolved.candidate_id,),
+                    "evidence_quotes": (unresolved.text,),
                 }
             ),
         ),
@@ -1459,13 +1738,15 @@ def test_v2_model_semantic_verifier_drops_only_missing_decisions() -> None:
 
 
 def test_v2_model_semantic_verifier_binds_decisions_by_operation_index() -> None:
-    root = _root_with("陈长生的读书方法十分特殊。天气晴朗。")
+    root = _root_with(
+        "陈长生的读书方法十分特殊。他反复阅读道藏并整理出重要笔记。当天的天气晴朗无云。"
+    )
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     assert len(candidates) >= 2
     mismatched = candidates[0]
     supported = candidates[-1]
-    first = _v2_state_draft(mismatched.candidate_id).operations[0]
+    first = _v2_state_draft(mismatched).operations[0]
     second = first.model_copy(
         update={
             "target_id": StableId("state.supported"),
@@ -1476,10 +1757,10 @@ def test_v2_model_semantic_verifier_binds_decisions_by_operation_index() -> None
                 valid_time=CuratorStoryTime(worldline="current"),
                 truth_class=TruthClass.ASSERTION,
             ),
-            "evidence_candidate_ids": (supported.candidate_id,),
+            "evidence_quotes": (supported.text,),
         }
     )
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(first, second),
     )
@@ -1535,7 +1816,7 @@ def test_v2_model_semantic_verifier_ignores_unknown_echoed_candidate_id() -> Non
     root = _root_with("陈长生的读书方法十分特殊。")
     gen = EvidenceCandidateGenerator()
     candidate = gen.generate(root, 21)[0]
-    draft = _v2_state_draft(candidate.candidate_id)
+    draft = _v2_state_draft(candidate)
     gateway = _ModelVerifierGateway(
         draft,
         EvidenceSemanticVerificationDraft(
@@ -1618,18 +1899,18 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
         valid_time=CuratorStoryTime(worldline="current", start_ordinal=20),
         truth_class=TruthClass.ASSERTION,
     )
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.duplicate-under-new-id"),
                 record=existing_record,
-                evidence_candidate_ids=(StableId("evidence-candidate.from-old-chapter"),),
+                evidence_quotes=(candidate.text,),
             ),
-            _v2_state_draft(candidate.candidate_id).operations[0],
-            CuratedOperationDraftV2(
+            _v2_state_draft(candidate).operations[0],
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.REPLACE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.replace-missing"),
@@ -1643,7 +1924,7 @@ def test_v2_filters_existing_semantic_duplicate_before_candidate_scope_check() -
                     ),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -1703,8 +1984,8 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = next(item for item in gen.generate(root, 21) if "confidence" in item.text)
-    first = _v2_state_draft(candidate.candidate_id).operations[0]
-    mismatched = CuratedOperationDraftV2(
+    first = _v2_state_draft(candidate).operations[0]
+    mismatched = CuratorV2OperationDraft(
         operation=ChangeOperationType.REPLACE,
         record_kind=WorldRecordKind.STATE,
         target_id=StableId("state.reading-method"),
@@ -1715,9 +1996,9 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
             valid_time=CuratorStoryTime(worldline="current", start_ordinal=21),
             truth_class=TruthClass.ASSERTION,
         ),
-        evidence_candidate_ids=(candidate.candidate_id,),
+        evidence_quotes=(candidate.text,),
     )
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(first, mismatched),
     )
@@ -1774,10 +2055,10 @@ def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> Non
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.xu-shi-ji-attitude"),
@@ -1791,7 +2072,7 @@ def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> Non
                     ),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -1834,10 +2115,10 @@ def test_v2_normalizes_unique_short_entity_reference_to_canon_id() -> None:
     world = _world().model_copy(
         update={"entities": (_world().entities[0].model_copy(update={"entity_id": canon_id}),)}
     )
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.chen.preference"),
@@ -1848,7 +2129,7 @@ def test_v2_normalizes_unique_short_entity_reference_to_canon_id() -> None:
                     valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -1877,10 +2158,10 @@ def test_v2_normalizes_unique_short_entity_reference_to_canon_id() -> None:
 
 
 def test_v2_does_not_guess_ambiguous_short_entity_reference() -> None:
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.chen.preference"),
@@ -1891,7 +2172,7 @@ def test_v2_does_not_guess_ambiguous_short_entity_reference() -> None:
                     valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(StableId("evidence-candidate.placeholder"),),
+                evidence_quotes=("evidence-candidate.placeholder",),
             ),
         ),
     )
@@ -1917,10 +2198,10 @@ def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.ENTITY,
                 target_id=StableId("entity.xu-shi-ji"),
@@ -1928,9 +2209,9 @@ def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
                     entity_type="character",
                     internal_label="徐世绩",
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.xu-shi-ji-attitude"),
@@ -1944,7 +2225,7 @@ def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
                     ),
                     truth_class=TruthClass.ASSERTION,
                 ),
-                evidence_candidate_ids=(candidate.candidate_id,),
+                evidence_quotes=(candidate.text,),
             ),
         ),
     )
@@ -1965,7 +2246,13 @@ def test_v2_allows_reference_to_entity_created_in_same_proposal() -> None:
     )
 
     assert len(changes.operations) == 2
-    assert accepted.operations == draft.operations
+    assert all(
+        accepted.record_kind == draft_operation.record_kind
+        and accepted.target_id == draft_operation.target_id
+        and candidate.candidate_id in accepted.evidence_candidate_ids
+        for accepted, draft_operation in zip(accepted.operations, draft.operations, strict=True)
+        for _quote in draft_operation.evidence_quotes
+    )
 
 
 def test_v2_rejects_reference_when_support_gate_drops_entity_create() -> None:
@@ -1973,7 +2260,7 @@ def test_v2_rejects_reference_when_support_gate_drops_entity_create() -> None:
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidate = next(item for item in gen.generate(root, 21) if "appreciates" in item.text)
-    entity = CuratedOperationDraftV2(
+    entity = CuratorV2OperationDraft(
         operation=ChangeOperationType.CREATE,
         record_kind=WorldRecordKind.ENTITY,
         target_id=StableId("entity.xu-shi-ji"),
@@ -1981,9 +2268,9 @@ def test_v2_rejects_reference_when_support_gate_drops_entity_create() -> None:
             entity_type="character",
             internal_label="徐世绩",
         ),
-        evidence_candidate_ids=(candidate.candidate_id,),
+        evidence_quotes=(candidate.text,),
     )
-    state = CuratedOperationDraftV2(
+    state = CuratorV2OperationDraft(
         operation=ChangeOperationType.CREATE,
         record_kind=WorldRecordKind.STATE,
         target_id=StableId("state.xu-shi-ji-attitude"),
@@ -1994,9 +2281,9 @@ def test_v2_rejects_reference_when_support_gate_drops_entity_create() -> None:
             valid_time=CuratorStoryTime(worldline="current", start_ordinal=21),
             truth_class=TruthClass.ASSERTION,
         ),
-        evidence_candidate_ids=(candidate.candidate_id,),
+        evidence_quotes=(candidate.text,),
     )
-    draft = ChapterChangeDraftV2(chapter_index=21, operations=(entity, state))
+    draft = CuratorV2EvidenceDraft(chapter_index=21, operations=(entity, state))
     verification = EvidenceSemanticVerificationDraft(
         decisions=(
             EvidenceSemanticVerificationItem(
@@ -2043,6 +2330,7 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
     text = "chen repeats an already accepted durable fact."
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
     existing_record = CuratorStateRecord(
         subject_id=StableId("entity.chen"),
         predicate="has_cultivation_status",
@@ -2050,15 +2338,15 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
         valid_time=CuratorStoryTime(worldline="current", start_ordinal=22),
         truth_class=TruthClass.ASSERTION,
     )
-    draft = ChapterChangeDraftV2(
+    draft = CuratorV2EvidenceDraft(
         chapter_index=21,
         operations=(
-            CuratedOperationDraftV2(
+            CuratorV2OperationDraft(
                 operation=ChangeOperationType.CREATE,
                 record_kind=WorldRecordKind.STATE,
                 target_id=StableId("state.duplicate-under-new-id"),
                 record=existing_record,
-                evidence_candidate_ids=(StableId("evidence-candidate.from-old-chapter"),),
+                evidence_quotes=(candidate.text,),
             ),
         ),
         coverage=0.8,
@@ -2177,7 +2465,7 @@ def test_v2_model_semantic_verifier_fails_closed_on_incomplete_batch(
             }
         )
     gateway = _ModelVerifierGateway(
-        _v2_state_draft(candidate.candidate_id),
+        _v2_state_draft(candidate),
         verification,
     )
     curator = ModelCurator(
@@ -2223,7 +2511,7 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
     candidates = gen.generate(root, 21)
     assert candidates
     weak = candidates[0]
-    draft = _v2_state_draft(weak.candidate_id)
+    draft = _v2_state_draft(weak)
     curator = ModelCurator(
         _FakeGateway(draft),
         evidence_generator=gen,
@@ -2244,7 +2532,7 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
     bad_root = _root_with(bad_text)
     bad_candidates = gen.generate(bad_root, 21)
     assert bad_candidates
-    bad_draft = _v2_state_draft(bad_candidates[0].candidate_id)
+    bad_draft = _v2_state_draft(bad_candidates[0])
     bad_curator = ModelCurator(
         _FakeGateway(bad_draft),
         evidence_generator=gen,

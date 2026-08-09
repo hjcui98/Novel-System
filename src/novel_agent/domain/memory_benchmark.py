@@ -201,6 +201,7 @@ class EvidenceStageFailure(StrEnum):
     F_ASSEMBLY = "F-ASSEMBLY"
     F_RANK = "F-RANK"
     F_NEED_ROUTE_RETRIEVE = "F-NEED_ROUTE_RETRIEVE"
+    F_CLAIM_EVALUATOR = "F-CLAIM-EVALUATOR"
 
 
 class PerGoldStageLossDiagnostic(DomainModel):
@@ -212,6 +213,153 @@ class PerGoldStageLossDiagnostic(DomainModel):
     stage1_selected: EvidenceStageCoverage
     writer_ledger: EvidenceStageCoverage
     primary_failure: EvidenceStageFailure
+
+
+class GoldBlindness(StrEnum):
+    """Gold recoverability classification (semantic evaluation §5.7)."""
+
+    BLIND_RECOVERABLE = "blind_recoverable"
+    PLAN_DEPENDENT = "plan_dependent"
+    HINDSIGHT_ONLY = "hindsight_only"
+
+
+class GoldNeedSpec(DomainModel):
+    """Evaluator-side specification of the needs a Gold conclusion requires.
+
+    Need Recall is computed deterministically against these components
+    (scope / entity labels / facet kinds), never by another LLM judgment.
+    """
+
+    gold_id: StableId
+    blindness: GoldBlindness = GoldBlindness.BLIND_RECOVERABLE
+    required_need_scopes: tuple[str, ...] = ()
+    required_entities: tuple[str, ...] = ()
+    required_facets: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_spec(self) -> GoldNeedSpec:
+        if (
+            not self.required_need_scopes
+            and not self.required_entities
+            and not self.required_facets
+        ):
+            raise ValueError("Gold need spec requires at least one component")
+        if len(self.required_need_scopes) != len(set(self.required_need_scopes)):
+            raise ValueError("Gold need spec scopes must be unique")
+        if len(self.required_entities) != len(set(self.required_entities)):
+            raise ValueError("Gold need spec entities must be unique")
+        if len(self.required_facets) != len(set(self.required_facets)):
+            raise ValueError("Gold need spec facets must be unique")
+        return self
+
+
+class SegmentAvailability(StrEnum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+class GoldNeedBinding(DomainModel):
+    """Evaluator-only, deterministic Gold -> one Need -> its Ledger subset."""
+
+    profile: BenchmarkInformationProfile
+    gold_id: StableId
+    blindness: GoldBlindness | None = None
+    spec_hash: ArtifactId | None = None
+    selected_need_id: StableId | None = None
+    scope_hits: tuple[str, ...] = ()
+    scope_misses: tuple[str, ...] = ()
+    entity_hits: tuple[str, ...] = ()
+    entity_misses: tuple[str, ...] = ()
+    facet_hits: tuple[str, ...] = ()
+    facet_misses: tuple[str, ...] = ()
+    eligible_ledger_ids: tuple[StableId, ...] = ()
+    full_need_match: bool = False
+    tie_break_evidence: tuple[str, ...] = ()
+    availability: SegmentAvailability = SegmentAvailability.AVAILABLE
+    unavailable_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_availability(self) -> GoldNeedBinding:
+        if self.availability is SegmentAvailability.UNAVAILABLE:
+            if self.unavailable_reason is None or self.selected_need_id is not None:
+                raise ValueError("unavailable Gold binding requires reason and no selected Need")
+        elif self.unavailable_reason is not None:
+            raise ValueError("available Gold binding cannot carry unavailable reason")
+        return self
+
+
+class FiveSegmentReport(DomainModel):
+    """Five-segment diagnostic view: goals, needs, evidence, completion, leakage.
+
+    Leakage is reported separately and never folded into accuracy segments.
+    ``planner_fallback_rate`` and ``grounding_success_rate`` are the Gate 1
+    planning-health segments: the fallback share of Need-generation runs and
+    the GROUNDED share of all grounded entity mentions.
+    """
+
+    plan_goals_total: int = Field(ge=0)
+    plan_goals_covered: int = Field(ge=0)
+    plan_goal_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    plan_goal_availability: SegmentAvailability = SegmentAvailability.AVAILABLE
+    need_recall_total: int = Field(ge=0)
+    need_recall_matched: int = Field(ge=0)
+    need_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    need_recall_availability: SegmentAvailability = SegmentAvailability.AVAILABLE
+    evidence_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidence_recall_total: int = Field(default=0, ge=0)
+    evidence_recall_matched: int = Field(default=0, ge=0)
+    evidence_recall_availability: SegmentAvailability = SegmentAvailability.AVAILABLE
+    completion_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    completion_gold_total: int = Field(default=0, ge=0)
+    completion_weight_total: float = Field(default=0.0, ge=0.0)
+    completion_availability: SegmentAvailability = SegmentAvailability.AVAILABLE
+    future_leakage_count: int = Field(ge=0)
+    plan_citation_count: int = Field(ge=0)
+    plan_leakage_count: int = Field(ge=0)
+    planner_fallback_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    grounding_success_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    planner_artifact_ref: ArtifactRef | None = None
+    planner_fallback_reason: str | None = None
+    grounded_status_counts: tuple[int, int, int] = (0, 0, 0)
+    bindings: tuple[GoldNeedBinding, ...] = ()
+    missing_spec_gold_ids: tuple[StableId, ...] = ()
+    legacy_plan_obligation_coverage: float | None = None
+    legacy_plan_obligation_unavailable_reason: str = "NOT_APPLICABLE_STRICT_D9"
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> FiveSegmentReport:
+        if self.planner_fallback_rate == 1.0 and self.planner_fallback_reason is None:
+            raise ValueError("Planner fallback report requires its typed reason")
+        if self.planner_fallback_rate == 0.0 and self.planner_fallback_reason is not None:
+            raise ValueError("non-fallback Planner report cannot carry a fallback reason")
+        grounded_total = sum(self.grounded_status_counts)
+        expected_grounding = (
+            self.grounded_status_counts[0] / grounded_total if grounded_total else 1.0
+        )
+        if abs(self.grounding_success_rate - expected_grounding) > 1e-12:
+            raise ValueError("Planner grounding rate/counts are inconsistent")
+        if self.plan_goals_covered > self.plan_goals_total:
+            raise ValueError("covered plan goals cannot exceed total plan goals")
+        if self.need_recall_matched > self.need_recall_total:
+            raise ValueError("matched need components cannot exceed total components")
+        if self.plan_leakage_count > self.plan_citation_count:
+            raise ValueError("plan leakage cannot exceed plan citations")
+        if self.evidence_recall_matched > self.evidence_recall_total:
+            raise ValueError("matched evidence cannot exceed evidence denominator")
+        if self.completion_gold_total == 0 and self.completion_weight_total != 0.0:
+            raise ValueError("completion denominator count/weight are inconsistent")
+        availability_pairs = (
+            (self.plan_goal_coverage, self.plan_goal_availability),
+            (self.need_recall, self.need_recall_availability),
+            (self.evidence_recall, self.evidence_recall_availability),
+            (self.completion_accuracy, self.completion_availability),
+        )
+        if any(
+            (metric is None) != (availability is SegmentAvailability.UNAVAILABLE)
+            for metric, availability in availability_pairs
+        ):
+            raise ValueError("segment metric availability is inconsistent")
+        return self
 
 
 class MemoryBenchmarkEvaluationReport(DomainModel):
@@ -229,7 +377,8 @@ class MemoryBenchmarkEvaluationReport(DomainModel):
     gate_metric_formula_version: str = Field(min_length=1)
     gate_metric_formula_hash: ArtifactId
     stage_loss_diagnostics: tuple[PerGoldStageLossDiagnostic, ...] = ()
-    schema_version: SchemaVersion = SchemaVersion("1.0.0")
+    five_segments: FiveSegmentReport | None = None
+    schema_version: SchemaVersion = SchemaVersion("2.0.0")
 
     @model_validator(mode="after")
     def validate_manifest_ref(self) -> MemoryBenchmarkEvaluationReport:
@@ -311,6 +460,8 @@ class MemoryBenchmarkUnifiedReport(DomainModel):
     gate_contract_version: str = Field(min_length=1)
     gate_contract_hash: ArtifactId
     formal_contract_validated: bool
+    aggregation_manifest_ref: ArtifactRef | None = None
+    aggregation_manifest_hash: ArtifactId | None = None
     current_state: GateMetricAxisResult
     operational_plan: GateMetricAxisResult
     historical: GateMetricAxisResult
@@ -321,6 +472,13 @@ class MemoryBenchmarkUnifiedReport(DomainModel):
 
     @model_validator(mode="after")
     def validate_gate_signature(self) -> MemoryBenchmarkUnifiedReport:
+        if (self.aggregation_manifest_ref is None) != (self.aggregation_manifest_hash is None):
+            raise ValueError("aggregation manifest ref/hash must appear together")
+        if (
+            self.aggregation_manifest_ref is not None
+            and self.aggregation_manifest_ref.artifact_id != self.aggregation_manifest_hash
+        ):
+            raise ValueError("aggregation manifest ref/hash mismatch")
         if self.gate_passed and not self.formal_contract_validated:
             raise ValueError("Gate M4 cannot pass without the formal five-checkpoint contract")
         return self

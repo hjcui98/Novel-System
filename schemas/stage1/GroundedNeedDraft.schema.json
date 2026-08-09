@@ -1,0 +1,204 @@
+{
+  "$defs": {
+    "GroundedEntityMention": {
+      "additionalProperties": false,
+      "description": "Grounding result for one entity mention.",
+      "properties": {
+        "canonical_label": {
+          "title": "Canonical Label",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grounding_method": {
+          "default": "",
+          "title": "Grounding Method",
+          "type": "string"
+        },
+        "grounding_status": {
+          "$ref": "#/$defs/GroundingStatus"
+        },
+        "mention": {
+          "minLength": 1,
+          "title": "Mention",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mention",
+        "canonical_label",
+        "confidence",
+        "grounding_status"
+      ],
+      "title": "GroundedEntityMention",
+      "type": "object"
+    },
+    "GroundedRelationMention": {
+      "additionalProperties": false,
+      "description": "Grounding result for one relation mention.",
+      "properties": {
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "grounding_method": {
+          "default": "",
+          "title": "Grounding Method",
+          "type": "string"
+        },
+        "grounding_status": {
+          "$ref": "#/$defs/GroundingStatus"
+        },
+        "object_label": {
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "relation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relation_label": {
+          "minLength": 1,
+          "title": "Relation Label",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "relation_label",
+        "object_label",
+        "grounding_status",
+        "confidence"
+      ],
+      "title": "GroundedRelationMention",
+      "type": "object"
+    },
+    "GroundingStatus": {
+      "enum": [
+        "grounded",
+        "ambiguous",
+        "unresolved"
+      ],
+      "title": "GroundingStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Grounder output: the semantic draft with canonical world ids.",
+  "properties": {
+    "draft_id": {
+      "minLength": 1,
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "entity_mentions": {
+      "items": {
+        "$ref": "#/$defs/GroundedEntityMention"
+      },
+      "title": "Entity Mentions",
+      "type": "array"
+    },
+    "historical_time_scope": {
+      "default": "",
+      "title": "Historical Time Scope",
+      "type": "string"
+    },
+    "query_hints": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Query Hints",
+      "type": "array"
+    },
+    "relation_mentions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GroundedRelationMention"
+      },
+      "title": "Relation Mentions",
+      "type": "array"
+    },
+    "required_claim_scopes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Claim Scopes",
+      "type": "array"
+    },
+    "semantic_question": {
+      "minLength": 1,
+      "title": "Semantic Question",
+      "type": "string"
+    },
+    "suggested_facets": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Suggested Facets",
+      "type": "array"
+    },
+    "trigger_plan_chapters": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Trigger Plan Chapters",
+      "type": "array"
+    },
+    "trigger_plan_goal": {
+      "default": "",
+      "title": "Trigger Plan Goal",
+      "type": "string"
+    },
+    "why_needed": {
+      "default": "",
+      "title": "Why Needed",
+      "type": "string"
+    }
+  },
+  "required": [
+    "draft_id",
+    "semantic_question",
+    "entity_mentions"
+  ],
+  "title": "GroundedNeedDraft",
+  "type": "object"
+}

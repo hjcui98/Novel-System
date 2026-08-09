@@ -55,10 +55,10 @@ def _put_contract(repository: ArtifactRepository, value: object) -> ArtifactRef:
 
 
 def test_gate_metric_formula_identity_is_frozen() -> None:
-    assert GATE_METRIC_FORMULA_VERSION == "gate_metric_formula.v1"
+    assert GATE_METRIC_FORMULA_VERSION == "gate_metric_formula.v2"
     assert (
         GATE_METRIC_FORMULA_HASH.root
-        == "sha256:15c3aa5cd723554487e5f60a83e2528d9ab6fb1364d1dfae53778dc2bcec077a"
+        == "sha256:6fdfa956164b1823cec6b8058a63f9a710dc53b5faff00eae32d8d7046915cec"
     )
 
 
@@ -235,7 +235,7 @@ def _formula_case(
     total_weight = sum(item.weight for item in comparisons)
     weighted = sum(item.weight * score[item.status] for item in comparisons) / total_weight
     evaluation = MemoryBenchmarkEvaluationReport(
-        evaluator_version="per_gold_v2",
+        evaluator_version="per_gold_v3",
         profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
         comparisons=comparisons,
         weighted_coverage=weighted,
@@ -258,7 +258,7 @@ def _formula_case(
         code_version="formula-test.v1",
         run_config_hash=ArtifactId("sha256:" + "1" * 64),
         benchmark_contract_hash=ArtifactId("sha256:" + "2" * 64),
-        matcher_version="gold_evidence_matcher.v3",
+        matcher_version="gold_evidence_matcher.v4",
         writer_token_budget=4000,
         evidence_ledger_token_budget=12_000,
         assembly_status=assembly_status,
@@ -333,7 +333,7 @@ def _formal_cases(
             SchemaVersion("1.0.0"),
         )
         evaluation = MemoryBenchmarkEvaluationReport(
-            evaluator_version="per_gold_v2",
+            evaluator_version="per_gold_v3",
             profile=profile,
             comparisons=comparisons,
             weighted_coverage=1.0,
@@ -355,7 +355,7 @@ def _formal_cases(
                 code_version="formal-test.v1",
                 run_config_hash=ArtifactId("sha256:" + "1" * 64),
                 benchmark_contract_hash=bundle.content_hash,
-                matcher_version="gold_evidence_matcher.v3",
+                matcher_version="gold_evidence_matcher.v4",
                 writer_token_budget=4000,
                 evidence_ledger_token_budget=12_000,
                 assembly_status=ContextAssemblyStatus.READY,
@@ -1175,6 +1175,101 @@ def test_formal_report_rejects_freeze_matcher_manifest_and_denominator_drift(
         reporter.aggregate(
             profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
             cases=wrong_manifest,
+        )
+
+
+def test_aggregation_manifest_names_exact_child_reports_and_rejects_missing_child(
+    tmp_path: Path,
+) -> None:
+    repository = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    profile = BenchmarkInformationProfile.VISIBLE_AT_CUTOFF
+    cases = _formal_cases(repository, profile)
+    reporter = MemoryBenchmarkReporter(artifact_reader=repository.read_verified)
+    children = []
+    for case in cases:
+        reference = repository.put(
+            canonical_json_bytes(case.model_dump(mode="json")),
+            "application/vnd.novel-agent.stage2m-case-arm-report+json",
+            SchemaVersion("1.0.0"),
+        )
+        children.append(
+            {
+                "case_id": case.case_id.root,
+                "checkpoint": case.checkpoint_chapter,
+                "arm": case.arm,
+                "artifact_ref": reference.model_dump(mode="json"),
+            }
+        )
+    manifest = {
+        "manifest_version": "stage2m_report_manifest.v1",
+        "profile": profile.value,
+        "formula_version": GATE_METRIC_FORMULA_VERSION,
+        "formula_hash": GATE_METRIC_FORMULA_HASH.root,
+        "children": children,
+    }
+    manifest_ref = repository.put(
+        canonical_json_bytes(manifest),
+        "application/vnd.novel-agent.stage2m-report-manifest+json",
+        SchemaVersion("1.0.0"),
+    )
+
+    report = reporter.aggregate(
+        profile=profile,
+        cases=cases,
+        aggregation_manifest_ref=manifest_ref,
+    )
+    assert report.aggregation_manifest_ref == manifest_ref
+
+    missing_ref = repository.put(
+        canonical_json_bytes(manifest | {"children": children[:-1]}),
+        "application/vnd.novel-agent.stage2m-report-manifest+json",
+        SchemaVersion("1.0.0"),
+    )
+    with pytest.raises(ValueError, match="missing, duplicate, or foreign"):
+        MemoryBenchmarkReporter(artifact_reader=repository.read_verified).aggregate(
+            profile=profile,
+            cases=cases,
+            aggregation_manifest_ref=missing_ref,
+        )
+
+    wrong_identity_ref = repository.put(
+        canonical_json_bytes(manifest | {"formula_version": "wrong"}),
+        "application/vnd.novel-agent.stage2m-report-manifest+json",
+        SchemaVersion("1.0.0"),
+    )
+    with pytest.raises(ValueError, match="profile/formula identity mismatch"):
+        reporter.aggregate(
+            profile=profile,
+            cases=cases,
+            aggregation_manifest_ref=wrong_identity_ref,
+        )
+
+    foreign_report_ref = repository.put(
+        canonical_json_bytes(
+            cases[0].model_copy(update={"writer_tokens": 101}).model_dump(mode="json")
+        ),
+        "application/vnd.novel-agent.stage2m-case-arm-report+json",
+        SchemaVersion("1.0.0"),
+    )
+    conflicting_children = [*children]
+    conflicting_children[0] = {
+        **conflicting_children[0],
+        "artifact_ref": foreign_report_ref.model_dump(mode="json"),
+    }
+    conflict_ref = repository.put(
+        canonical_json_bytes(manifest | {"children": conflicting_children}),
+        "application/vnd.novel-agent.stage2m-report-manifest+json",
+        SchemaVersion("1.0.0"),
+    )
+    with pytest.raises(ValueError, match="child report content conflicts"):
+        reporter.aggregate(profile=profile, cases=cases, aggregation_manifest_ref=conflict_ref)
+
+    payload = report.model_dump()
+    with pytest.raises(ValidationError, match="must appear together"):
+        MemoryBenchmarkUnifiedReport.model_validate(payload | {"aggregation_manifest_hash": None})
+    with pytest.raises(ValidationError, match="ref/hash mismatch"):
+        MemoryBenchmarkUnifiedReport.model_validate(
+            payload | {"aggregation_manifest_hash": ArtifactId("sha256:" + "f" * 64)}
         )
 
     resolved: list[_ResolvedGold] = []

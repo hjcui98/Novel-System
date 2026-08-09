@@ -5,6 +5,9 @@ from unittest.mock import patch
 
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import (
+    ExpectedClaimScope,
+    NeedFacet,
+    NeedFacetKind,
     RequirementLevel,
     RetrievalUnitKind,
     Stage1QueryIntent,
@@ -306,6 +309,14 @@ def test_need_matching_requires_both_section_and_entity_overlap() -> None:
 
     assert WriterContextAssembler._need_matches(matching, unit)
     assert not WriterContextAssembler._need_matches(unrelated, unit)
+    assert WriterContextAssembler._need_matches(
+        matching.model_copy(update={"entity_ids": ()}), unit
+    )
+
+    plan_need = matching.model_copy(update={"query_intent": Stage1QueryIntent.PLAN_NODE})
+    plan_unit = next(item for item in units if item.unit_kind is RetrievalUnitKind.PLAN_ANCHOR)
+    assert WriterContextAssembler._unit_is_legal_for_need(plan_need, plan_unit)
+    assert not WriterContextAssembler._unit_is_legal_for_need(plan_need, unit)
 
 
 def test_explicit_retrieval_lineage_controls_writer_section() -> None:
@@ -351,6 +362,19 @@ def test_explicit_retrieval_lineage_controls_writer_section() -> None:
     assert projected[0].section is need.expected_section
     assert projected[0].need_ids == (need.need_id,)
 
+    plan_need = need.model_copy(update={"query_intent": Stage1QueryIntent.PLAN_NODE})
+    blocked = WriterContextAssembler().assemble(
+        task=task,
+        units=(unit,),
+        needs=(plan_need,),
+        basis_commit_id=commit,
+        basis_snapshot_id=StableId("snapshot.stage2m"),
+        arm="A",
+        writer_token_budget=4000,
+        unit_need_ids={unit.unit_id: (plan_need.need_id,)},
+    )
+    assert blocked.package.rendered_context == ""
+
 
 def test_partial_explicit_lineage_leaves_unmapped_units_for_default_matching() -> None:
     task, needs, units, commit = _inputs()
@@ -384,28 +408,12 @@ def test_partial_explicit_lineage_leaves_unmapped_units_for_default_matching() -
     assert mapped.unit_id in result.package.lineage.retrieval_unit_ids
 
 
-def test_plan_need_rejects_observed_state_even_with_explicit_lineage() -> None:
-    task, needs, units, commit = _inputs()
-    unit = next(item for item in units if item.unit_kind is RetrievalUnitKind.STATE_ANCHOR)
-    plan_need = next(
-        item
+def test_strict_d9_generator_emits_no_plan_retrieval_need() -> None:
+    _task, needs, _units, _commit = _inputs()
+    assert all(
+        item.query_intent not in {Stage1QueryIntent.PLAN_NODE, Stage1QueryIntent.PLAN_OBLIGATION}
         for item in needs
-        if item.query_intent in {Stage1QueryIntent.PLAN_NODE, Stage1QueryIntent.PLAN_OBLIGATION}
     )
-
-    result = WriterContextAssembler().assemble(
-        task=task,
-        units=(unit,),
-        needs=(plan_need,),
-        basis_commit_id=commit,
-        basis_snapshot_id=StableId("snapshot.stage2m"),
-        arm="A",
-        writer_token_budget=4000,
-        unit_need_ids={unit.unit_id: (plan_need.need_id,)},
-    )
-
-    assert not result.package.plan_and_obligations
-    assert not result.evidence_ledger.entries
 
 
 def test_optional_selection_round_robins_needs_before_second_claim() -> None:
@@ -592,6 +600,29 @@ def test_optional_sort_and_grounded_extraction_cover_long_range_budget_edges() -
     assert assembler._validity_from_facets((StableId("need-facet.unknown"),), {}).value == (
         "uncertain"
     )
+    for index, (scope, expected) in enumerate(
+        (
+            (ExpectedClaimScope.PLANNED, "planned"),
+            (ExpectedClaimScope.HISTORICAL, "historical"),
+            (ExpectedClaimScope.CURRENT, "current"),
+        )
+    ):
+        facet = NeedFacet(
+            need_facet_id=StableId(f"need-facet.validity.{index}"),
+            need_id=needs[0].need_id,
+            facet_kind=NeedFacetKind.CURRENT_STATE,
+            expected_claim_scope=scope,
+            derivation_refs=(StableId("derivation.validity"),),
+            producer="test",
+            producer_version="v1",
+            information_scope="test",
+        )
+        assert (
+            assembler._validity_from_facets(
+                (facet.need_facet_id,), {facet.need_facet_id: facet}
+            ).value
+            == expected
+        )
 
     evidence = source.evidence_refs[0]
     assert evidence.span is not None

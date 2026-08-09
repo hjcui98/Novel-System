@@ -17,6 +17,7 @@ from novel_agent.domain.text import EvidenceRef
 
 class BenchmarkInformationProfile(StrEnum):
     VISIBLE_AT_CUTOFF = "visible_at_cutoff"
+    TASK_INTENT_ONLY = "task_intent_only"
     AUTHOR_PLAN_CONDITIONED = "author_plan_conditioned"
 
 
@@ -30,6 +31,10 @@ class BenchmarkTaskContract(DomainModel):
     information_profile: BenchmarkInformationProfile
     task_template_version: str = Field(min_length=1)
     output_contract_version: str = Field(min_length=1)
+    # Derived from the case AuthorPlanningContext; empty for blind profiles.
+    task_intent: str = ""
+    planning_context_ref: ArtifactId | None = None
+    planning_context_hash: ArtifactId | None = None
 
     @model_validator(mode="after")
     def validate_range(self) -> BenchmarkTaskContract:

@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Bounded relation row in the deterministic world summary.",
+  "properties": {
+    "object_label": {
+      "minLength": 1,
+      "title": "Object Label",
+      "type": "string"
+    },
+    "predicate": {
+      "minLength": 1,
+      "title": "Predicate",
+      "type": "string"
+    },
+    "subject_label": {
+      "minLength": 1,
+      "title": "Subject Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_label",
+    "predicate",
+    "object_label"
+  ],
+  "title": "PlannerRelationSummary",
+  "type": "object"
+}

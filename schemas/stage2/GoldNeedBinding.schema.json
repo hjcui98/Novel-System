@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "GoldBlindness": {
+      "description": "Gold recoverability classification (semantic evaluation §5.7).",
+      "enum": [
+        "blind_recoverable",
+        "plan_dependent",
+        "hindsight_only"
+      ],
+      "title": "GoldBlindness",
+      "type": "string"
+    },
+    "SegmentAvailability": {
+      "enum": [
+        "available",
+        "unavailable"
+      ],
+      "title": "SegmentAvailability",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluator-only, deterministic Gold -> one Need -> its Ledger subset.",
+  "properties": {
+    "availability": {
+      "$ref": "#/$defs/SegmentAvailability",
+      "default": "available"
+    },
+    "blindness": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoldBlindness"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "eligible_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Eligible Ledger Ids",
+      "type": "array"
+    },
+    "entity_hits": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Entity Hits",
+      "type": "array"
+    },
+    "entity_misses": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Entity Misses",
+      "type": "array"
+    },
+    "facet_hits": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Facet Hits",
+      "type": "array"
+    },
+    "facet_misses": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Facet Misses",
+      "type": "array"
+    },
+    "full_need_match": {
+      "default": false,
+      "title": "Full Need Match",
+      "type": "boolean"
+    },
+    "gold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "scope_hits": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scope Hits",
+      "type": "array"
+    },
+    "scope_misses": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scope Misses",
+      "type": "array"
+    },
+    "selected_need_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "spec_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tie_break_evidence": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Tie Break Evidence",
+      "type": "array"
+    },
+    "unavailable_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unavailable Reason"
+    }
+  },
+  "required": [
+    "profile",
+    "gold_id"
+  ],
+  "title": "GoldNeedBinding",
+  "type": "object"
+}

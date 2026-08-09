@@ -2,9 +2,11 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Status date: 2026-08-03 +08:00
+> Status date: 2026-08-09 +08:00
 >
-> Code baseline: `e2c9705` plus the current dirty Stage 2M v29 worktree fingerprint
+> Cross-cutting engineering constraint clarified: 2026-08-08 +08:00
+>
+> Code baseline: HEAD `420e163` plus accepted dirty executable fingerprint `sha256:20daa522...b089b881`
 >
 > Canonical naming: `docs/adr/0005-stage-numbering-and-document-lifecycle.md`
 
@@ -22,19 +24,27 @@ lifecycle is incomplete. Gate M4 remains `HOLD` and formal WP8 is frozen. This d
 Canon safety or C95 infrastructure acceptance; it blocks claims that the Memory benchmark or
 agentic promotion has passed.
 
-The 2026-08-03 Codex acceptance decision is `REPAIR`. Assembly, compact lineage, exact segment refs,
-per-item isolation, and support-pool corrections are retained, but A10-A13 still form no complete
-G06/G09 verified Writer claim and C60 has no verdict-level improvement. Code inspection found the
-earlier mismatch: benchmark source files are stored as large chapter/scene `TextBlock` values, while
-the support path compresses them before deriving natural exact paragraph slices. The next permitted
-mechanism is `large Block -> exact paragraph/contiguous-window slices -> token-bounded semantic-input/Ledger packing ->
-selective claim synthesis/whole verification`. Fixed three-atom selection and two/three-atom
-combination enumeration are not permitted. C95 remains prohibited until final-code C60 demonstrates
-the corrected corridor.
+The 2026-08-09 Codex acceptance decision is `PASS` for the APC/TIO architecture implementation and
+formal-run admission prerequisites. Typed planning context, strict D9, Planner/Grounder/Validator,
+per-channel query compilation, five-segment reporting, exact-slice Claim Support, endpoint-global
+request/KV scheduling, failure telemetry, frozen Planner replay, and current-fingerprint bounded
+serial/safe-concurrent parity are accepted. This supersedes the 2026-08-03 repair direction as the
+current implementation status without rewriting its historical evidence.
+
+Stage 2M Gate M4 and the new Gate 0-3 remain `HOLD/PENDING`: no clean-source APC/TIO P001-P005 formal
+matrix has run. The next permitted action is to form a clean executable identity and run the fresh
+Phase 4 matrix with independent checkpoint artifacts. The accepted bounded P002 evidence proves the
+mechanism and scheduling boundary, not benchmark quality thresholds.
 
 Stage 3 preparation is active. Writer Core has a substantial isolated implementation in a separate
 worktree, but it is uncommitted, unmerged, based on the former Stage 2B namespace, and integrated
 against the legacy `Stage1ContextPackage` rather than the accepted `WriterContextPackage`.
+
+All permitted work is additionally constrained by minimum-sufficient engineering. Current repairs
+must extend the existing semantic owners, Model Gateway/scheduler boundary, artifact store, report
+hierarchy, and module topology. No speculative platform, second pipeline, new infrastructure family,
+or cross-stage generalization is authorized without a demonstrated requirement and a new Codex
+architecture decision. This does not relax any safety, quality, reproducibility, or Gate evidence.
 
 ## 2. Stage status
 
@@ -45,7 +55,7 @@ against the legacy `Stage1ContextPackage` rather than the accepted `WriterContex
 | Stage 2A | Development complete | CONDITIONAL_PASS | Freeze deterministic Memory Gateway |
 | Stage 2R | Complete | Physical index/basis gate passed | Maintenance only |
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
-| Stage 2M | Exact-slice read-grain repair required; P2 accepted as diagnosis; formal P3 pending | M4 HOLD; C95 admission unmet; formal WP8 frozen | Derive paragraph/window slices, pack semantic input/Ledger by tokens, synthesize claims on demand, prove at C60, then conditionally run C95 |
+| Stage 2M | APC/TIO architecture implemented; final-fingerprint bounded admission accepted | M4 HOLD; Gate 0-3 formal matrix pending | Form a clean executable identity, then run fresh APC P001-P005 plus TIO ablation with independent checkpoint artifacts |
 | Stage 3 | Preparation active | Engineering integration pending; semantic gate not run | Rebase/migrate isolated Writer Core |
 | Stage 4 | Planned | Not run | Blocked by Stage 3 semantic evidence |
 | Stage 5 | Planned | Not run | Blocked |
@@ -240,6 +250,27 @@ selection, and host enumeration of two/three-atom groups are superseded. Writer/
 cutoff, basis, scope, taint, provenance, Gate, and Stage boundaries remain unchanged. External
 agentmemory protocol v1 remains comparison evidence only.
 
+### 4.9 2026-08-09 APC/TIO implementation and formal-run admission
+
+Codex accepted the stable implementation handoff without rerunning tests, benchmarks, services or real APIs:
+
+- final executable identity is producer `trusted_claim_support_producer.v32` and source fingerprint
+  `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`;
+- `make quality` reports 1642 passed, 9 deselected and 100% branch coverage; full pre-commit passed;
+- the frozen non-fallback P002 Planner artifact is replayable and basis/hash checked;
+- Claim Support multi is fixed at `thinking=false / reasoning=0 / max output=2048`;
+- current-fingerprint P002 serial `(Need 1 / endpoint 1)` and safe-concurrent `(Need 2 / endpoint 1)`
+  execute the same 14 semantic requests and each persist two proposal→whole-verifier→verified-receipt
+  chains, with balanced leases and zero timeout/OOM/context reduction/leakage;
+- Writer 1,061/4,000 and Ledger 11,981/12,000 remain within budget; both runs have identical rendered
+  context, 107 semantic Ledger entries and five-segment report;
+- endpoint limit 2 is prohibited for the current local Qwen workload because it deterministically
+  caused the same multi prompt to grow to 2048 and truncate.
+
+This closes implementation and bounded scheduling admission only. Formal APC/TIO Phase 4 must use a
+clean executable-source identity, new DB/output/experiment identities and one immutable child report per
+checkpoint. P004/P005 remain frozen, leakage remains zero-tolerance, and no Stage/Gate PASS is inferred.
+
 ## 5. Stage 3 preparation status
 
 The current Stage 3 scope, minimal generation loop, four development workstreams, and restrained
@@ -277,15 +308,18 @@ Production gate = BLOCKED
 
 Stage 2M may:
 
-- implement only the exact paragraph/window slicing, semantic-input/Ledger packing, and on-demand claim
-  closure repair described in the
-  active Stage 2M §21.3 and current `.agent/plan.md`;
-- run one final-code real VAC C60 after full quality evidence, then run C95 only if C60 forms the
-  complete G06 `2/2` and G09 `3/3` verified claims with verdict-level improvement;
-- allow an optional reviewer to inspect the 13 `COMPLETE + MISS` items in parallel;
-- run a new clean double-profile WP7/P3 Arm A matrix and evaluate Gate M4 only when the canary is
-  close to the final thresholds and the four fail-closed bottom lines have no regression;
-- start a new formal WP8 A/B/C experiment only after both profiles pass Gate M4.
+- use the smallest change at the demonstrated responsible layer and reuse existing contracts and
+  infrastructure; defer unrelated generalization and return to Codex before adding a parallel
+  framework or new platform;
+- preserve the accepted APC/TIO implementation and fixed semantic/transport budgets without further
+  tuning before the formal matrix;
+- form a clean executable-source identity, then run `.agent/plan.md` §6.3 with new DB, output root and
+  experiment identities;
+- run APC P001-P005 as the main profile and TASK_INTENT_ONLY as the defined ablation, keeping P004/P005
+  frozen and checkpoint reports independently addressable;
+- report Gate 0-3 and M4 measurements without choosing thresholds from held-out results;
+- leave Agentic comparison and any higher-concurrency service work deferred until the formal Arm A
+  evidence establishes a new need.
 
 Stage 3 preparation may:
 

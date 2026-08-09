@@ -19,7 +19,7 @@ from novel_agent.services.content_addressing import canonical_json_bytes, conten
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 
 VERSION = SchemaVersion("1.0.0")
-GATE_METRIC_FORMULA_VERSION = "gate_metric_formula.v1"
+GATE_METRIC_FORMULA_VERSION = "gate_metric_formula.v2"
 GATE_METRIC_THRESHOLDS: dict[str, float] = {
     "current_state_accuracy": 0.95,
     "operational_plan_coverage": 0.95,
@@ -48,6 +48,11 @@ GATE_METRIC_FORMULA = {
     "typed_failure": "all-applicable-gold-zero",
     "hard_veto": ["UNTRACEABLE", "CONTRADICTS", "incomplete-trace"],
     "empty_denominator": "fail-closed-without-content-addressed-na-declaration",
+    "five_segment_binding": "per-profile-per-gold-single-need-and-need-bound-ledger",
+    "segment_availability": "nullable-with-typed-denominator-availability",
+    "plan_policy": "strict-d9-plan-guides-planner-only",
+    "evidence_ancestry": "same-canonical-observed-text-root-required",
+    "terminal_stage_loss": "complete-only-when-final-verdict-hit",
     "thresholds": GATE_METRIC_THRESHOLDS,
 }
 GATE_METRIC_FORMULA_HASH = content_id(GATE_METRIC_FORMULA)

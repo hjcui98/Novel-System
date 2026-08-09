@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +23,18 @@ from novel_agent.domain.memory_benchmark import (
     GoldMatchStatus,
     PerGoldStageLossDiagnostic,
 )
-from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.model_calls import (
+    ModelCallPurpose,
+    ModelRequest,
+    ModelRole,
+    ModelUsage,
+    ProviderModelResult,
+)
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+from novel_agent.services.memory_benchmark_diagnostics import StageLossDiagnosticBuilder
 from novel_agent.services.memory_benchmark_evaluation import (
     MemoryBenchmarkEvaluator,
     ModelSemanticSupportVerifier,
@@ -39,6 +49,18 @@ from novel_agent.services.writer_context_assembler import WriterContextAssembler
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
 
+def test_stage_loss_failure_classifies_candidate_only_as_rank_loss() -> None:
+    assert (
+        StageLossDiagnosticBuilder._failure(
+            candidate_complete=True,
+            rank_complete=False,
+            stage1_complete=False,
+            writer_complete=False,
+        )
+        is EvidenceStageFailure.F_RANK
+    )
+
+
 def test_semantic_verifier_rejects_invalid_batch_limits() -> None:
     gateway = ModelGateway(())
 
@@ -46,6 +68,169 @@ def test_semantic_verifier_rejects_invalid_batch_limits() -> None:
         ModelSemanticSupportVerifier(gateway, batch_size=0)
     with pytest.raises(ValueError, match="batch attempts"):
         ModelSemanticSupportVerifier(gateway, max_batch_attempts=0)
+    with pytest.raises(ValueError, match="concurrent batches"):
+        ModelSemanticSupportVerifier(gateway, max_concurrent_batches=0)
+    with pytest.raises(ValueError, match="concurrent batches"):
+        ModelSemanticSupportVerifier(gateway, max_concurrent_batches=9)
+
+
+class _TrackingScriptedEndpoint:
+    """Scripted endpoint that records peak concurrent in-flight requests."""
+
+    is_external = False
+
+    def __init__(self, responder: Callable[[ModelRequest], str], delay: float = 0.02) -> None:
+        self._responder = responder
+        self._delay = delay
+        self.requests: list[ModelRequest] = []
+        self.max_inflight = 0
+        self._inflight = 0
+
+    async def generate(self, request: ModelRequest) -> ProviderModelResult:
+        self.requests.append(request)
+        self._inflight += 1
+        self.max_inflight = max(self.max_inflight, self._inflight)
+        try:
+            await asyncio.sleep(self._delay)
+            return ProviderModelResult(
+                text=self._responder(request),
+                model_version="tracking-scripted-v1",
+                usage=ModelUsage(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost_usd=Decimal("0"),
+                ),
+            )
+        finally:
+            self._inflight -= 1
+
+
+def _multi_gold_verifier_request() -> ModelRequest:
+    return ModelRequest(
+        request_id=StableId("request.semantic.batch"),
+        run_id=RunId("run.semantic.batch"),
+        task_id=TaskId("task.semantic.batch"),
+        model_role=ModelRole.BATCH_TEST,
+        purpose=ModelCallPurpose.EVALUATION,
+        trace_id="trace-semantic-batch",
+        prompt="replaced",
+    )
+
+
+def _batch_responder(request: ModelRequest) -> str:
+    """Return a NONE judgment for every Gold id listed in the request prompt."""
+
+    marker = "GOLD_CASES="
+    start = request.prompt.index(marker) + len(marker)
+    end = request.prompt.index("\nFROZEN_CLAIMS=", start)
+    case_batch = ast.literal_eval(request.prompt[start:end])
+    batch = SemanticVerificationBatch(
+        judgments=tuple(
+            SemanticGoldJudgment(
+                gold_id=StableId(str(case["gold_id"])),
+                all_claims_support=SemanticSupport.NONE,
+                traceable_claims_support=SemanticSupport.NONE,
+                all_context_item_ids=(),
+                traceable_context_item_ids=(),
+                explanation="scripted none for every Gold",
+            )
+            for case in case_batch
+        )
+    )
+    return batch.model_dump_json()
+
+
+def _all_gold_items() -> tuple[Any, ...]:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    return tuple(
+        (
+            *case.observed_use_gold,
+            *case.operational_constraint_gold,
+            *case.plan_obligation_gold,
+        )
+    )
+
+
+def test_semantic_verifier_concurrent_batches_preserve_order_and_match_serial() -> None:
+    gold_items = _all_gold_items()
+    assert len(gold_items) >= 3  # two batches at batch_size=2
+    _gold, package, ledger, _receipt = _frozen()
+
+    serial_endpoint = _TrackingScriptedEndpoint(_batch_responder)
+    concurrent_endpoint = _TrackingScriptedEndpoint(_batch_responder)
+    serial_gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="semantic-serial",
+                model_name="semantic-serial",
+                adapter=serial_endpoint,
+            ),
+        )
+    )
+    concurrent_gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="semantic-concurrent",
+                model_name="semantic-concurrent",
+                adapter=concurrent_endpoint,
+            ),
+        )
+    )
+    serial_batch, serial_calls = asyncio.run(
+        ModelSemanticSupportVerifier(serial_gateway, max_concurrent_batches=1).verify(
+            gold_items=gold_items,
+            package=package,
+            evidence_ledger=ledger,
+            request=_multi_gold_verifier_request(),
+        )
+    )
+    concurrent_batch, concurrent_calls = asyncio.run(
+        ModelSemanticSupportVerifier(concurrent_gateway).verify(
+            gold_items=gold_items,
+            package=package,
+            evidence_ledger=ledger,
+            request=_multi_gold_verifier_request(),
+        )
+    )
+
+    assert concurrent_batch == serial_batch
+    assert [call.request_id.root for call in concurrent_calls] == [
+        call.request_id.root for call in serial_calls
+    ]
+    assert [judgment.gold_id for judgment in concurrent_batch.judgments] == [
+        judgment.gold_id for judgment in serial_batch.judgments
+    ]
+    assert concurrent_endpoint.max_inflight >= 2  # batches actually overlapped
+    assert serial_endpoint.max_inflight == 1  # serial path stays strictly sequential
+
+
+def test_semantic_verifier_serial_configuration_never_concurrent() -> None:
+    gold_items = _all_gold_items()
+    _gold, package, ledger, _receipt = _frozen()
+    endpoint = _TrackingScriptedEndpoint(_batch_responder)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="semantic-serial-only",
+                model_name="semantic-serial-only",
+                adapter=endpoint,
+            ),
+        )
+    )
+    batch, _calls = asyncio.run(
+        ModelSemanticSupportVerifier(gateway, max_concurrent_batches=1).verify(
+            gold_items=gold_items,
+            package=package,
+            evidence_ledger=ledger,
+            request=_multi_gold_verifier_request(),
+        )
+    )
+    assert endpoint.max_inflight == 1
+    assert len(batch.judgments) == len(gold_items)
 
 
 def _frozen() -> tuple[Any, ...]:
@@ -156,6 +341,32 @@ def test_typed_context_failure_produces_auditable_all_miss_report(tmp_path: Path
     assert "EVIDENCE_INSUFFICIENT" in report.comparisons[0].explanation
     assert report.weighted_coverage == 0.0
     assert report.mandatory_hit_rate == 0.0
+
+    coverage = EvidenceStageCoverage(
+        accepted_reference_count=1,
+        matched_reference_count=1,
+        complete_alternative_ids=(StableId("accepted.complete-before-final-verdict"),),
+    )
+    complete_diagnostic = PerGoldStageLossDiagnostic(
+        gold_id=gold.gold_id,
+        candidate=coverage,
+        rank_selected=coverage,
+        stage1_selected=coverage,
+        writer_ledger=coverage,
+        primary_failure=EvidenceStageFailure.COMPLETE,
+    )
+    reconciled = evaluator.evaluate_typed_failure(
+        gold_items=(gold,),
+        profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        assembly_status=ContextAssemblyStatus.EVIDENCE_INSUFFICIENT,
+        freeze_receipt=receipt,
+        stage_loss_diagnostics=(complete_diagnostic,),
+        **_metric_args(tmp_path / "terminal-stage", (gold,)),
+    )
+    assert (
+        reconciled.stage_loss_diagnostics[0].primary_failure
+        is EvidenceStageFailure.F_CLAIM_EVALUATOR
+    )
     with pytest.raises(ValueError, match="READY context"):
         evaluator.evaluate_typed_failure(
             gold_items=(gold,),

@@ -18,6 +18,7 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
+from novel_agent.domain.planning_memory import RetrievalQueryBundle
 from novel_agent.domain.retrieval_routing import L2IndexManifest
 from novel_agent.ports.search_index import SearchIndexPort
 from novel_agent.services.embedding_cache import (
@@ -25,6 +26,7 @@ from novel_agent.services.embedding_cache import (
     EmbeddingCacheRepository,
     EmbeddingCacheStats,
 )
+from novel_agent.services.need_query_compiler import compile_need_query
 from novel_agent.services.retrieval import ANCHOR_KINDS, GROUNDED_KINDS, RetrievalBackend
 
 FACTUAL_INTENTS = {
@@ -483,8 +485,9 @@ class Stage1OpenSearchBackend:
             raise ValueError("OpenSearch retrieval limit must be positive")
         if need.base_commit != self._source_commit:
             raise ValueError("OpenSearch query canonical basis mismatch")
+        bundle = compile_need_query(need)
         alias, kinds = self._route(channel)
-        filters = self._filters(need, kinds)
+        filters = self._filters(need, kinds, bundle)
         if channel is RetrievalChannel.HIERARCHY and need.hierarchy_parent_unit_ids:
             parent_ids = [item.root for item in need.hierarchy_parent_unit_ids]
             filters.append(
@@ -501,7 +504,7 @@ class Stage1OpenSearchBackend:
         query: dict[str, object]
         if channel in {RetrievalChannel.ANCHOR_DENSE, RetrievalChannel.GROUNDED_DENSE}:
             vector = CachedEmbeddingService._normalize(
-                self._embedder.embed((need.query_text,))[0],
+                self._embedder.embed((bundle.semantic_query,))[0],
                 self._embedder.dimension,
             )
             query = {
@@ -522,23 +525,61 @@ class Stage1OpenSearchBackend:
                 lexical_clause = {
                     "bool": {
                         "should": [
-                            {"match_phrase": {"text.standard": {"query": need.query_text}}},
-                            {"match_phrase": {"text.cjk": {"query": need.query_text}}},
+                            {
+                                "match_phrase": {
+                                    "text.standard": {"query": bundle.lexical_queries[0]}
+                                }
+                            },
+                            {"match_phrase": {"text.cjk": {"query": bundle.lexical_queries[0]}}},
                         ],
                         "minimum_should_match": 1,
                     }
                 }
             else:
-                lexical_clause = {
-                    "multi_match": {
-                        "query": need.query_text,
-                        "fields": [
-                            "text.standard^1.0",
-                            "text.cjk^1.2",
-                            "exact_terms^3.0",
-                        ],
+                hint_clauses = tuple(
+                    {
+                        "multi_match": {
+                            "query": hint,
+                            "fields": [
+                                "text.standard^0.6",
+                                "text.cjk^0.7",
+                                "exact_terms^1.8",
+                            ],
+                        }
                     }
-                }
+                    for hint in bundle.lexical_queries[1:]
+                )
+                lexical_clause = (
+                    {
+                        "multi_match": {
+                            "query": bundle.lexical_queries[0],
+                            "fields": [
+                                "text.standard^1.0",
+                                "text.cjk^1.2",
+                                "exact_terms^3.0",
+                            ],
+                        }
+                    }
+                    if not hint_clauses
+                    else {
+                        "bool": {
+                            "should": [
+                                {
+                                    "multi_match": {
+                                        "query": bundle.lexical_queries[0],
+                                        "fields": [
+                                            "text.standard^1.0",
+                                            "text.cjk^1.2",
+                                            "exact_terms^3.0",
+                                        ],
+                                    }
+                                },
+                                *hint_clauses,
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    }
+                )
             query = {
                 "bool": {
                     "must": [lexical_clause],
@@ -552,6 +593,7 @@ class Stage1OpenSearchBackend:
         self,
         need: Stage1MemoryNeed,
         kinds: frozenset[RetrievalUnitKind],
+        bundle: RetrievalQueryBundle | None = None,
     ) -> list[dict[str, object]]:
         """Apply basis, access, temporal, and narrative filters before scoring."""
 
@@ -562,7 +604,8 @@ class Stage1OpenSearchBackend:
             {"terms": {"retrieval_unit_kind": [kind.value for kind in kinds]}},
             {"terms": {"access_scope": list(self._visible_access_scopes(need))}},
         ]
-        if not need.allow_plan:
+        excluded = bundle.excluded_information_labels if bundle is not None else ()
+        if "plan" in excluded:
             filters.append({"term": {"information_label": "observed"}})
         if need.query_intent in FACTUAL_INTENTS:
             filters.append(

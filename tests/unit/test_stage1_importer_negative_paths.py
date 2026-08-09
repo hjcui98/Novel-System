@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from novel_agent.domain.benchmark import BenchmarkBundle, ChapterSummaryRootDocument
 from novel_agent.domain.ids import ArtifactId, StableId
+from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
 from novel_agent.services.benchmark_importer import (
     BenchmarkBundleImporter,
     BenchmarkImportError,
     bundle_content_id,
+    content_id,
     summary_root_content_id,
     text_root_content_id,
 )
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
+from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
 UNKNOWN_HASH = ArtifactId("sha256:" + "f" * 64)
@@ -36,6 +40,268 @@ def test_load_wraps_missing_files_and_schema_errors(tmp_path: Path) -> None:
     invalid.write_text("{}", encoding="utf-8")
     with pytest.raises(BenchmarkImportError, match="schema validation"):
         BenchmarkBundleImporter().load(invalid)
+
+
+def test_planning_context_ref_is_bound_to_bundle_and_profile() -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    BenchmarkBundleImporter().validate(bundle)
+    case = bundle.case_manifests[0]
+    context = next(
+        item for item in bundle.planning_contexts if item.source_hash == case.planning_context_hash
+    )
+
+    missing = case.model_copy(
+        update={
+            "planning_context_hash": UNKNOWN_HASH,
+            "planning_context_ref": UNKNOWN_HASH,
+        }
+    )
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (missing, *bundle.case_manifests[1:])}),
+        "missing planning context",
+    )
+
+    swapped = case.model_copy(
+        update={
+            "planning_context_ref": UNKNOWN_HASH,
+        }
+    )
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (swapped, *bundle.case_manifests[1:])}),
+        "planning context ref mismatch",
+    )
+
+    profile_mismatch = case.model_copy(
+        update={
+            "information_profile": (
+                BenchmarkInformationProfile.VISIBLE_AT_CUTOFF
+                if case.information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+                else BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+            )
+        }
+    )
+    validate_error(
+        bundle.model_copy(
+            update={"case_manifests": (profile_mismatch, *bundle.case_manifests[1:])}
+        ),
+        "profile mismatch",
+    )
+
+    orphan_intent = case.model_copy(
+        update={
+            "task_intent": "有任务意图却没有计划上下文引用。",
+            "planning_context_ref": None,
+            "planning_context_hash": None,
+        }
+    )
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (orphan_intent, *bundle.case_manifests[1:])}),
+        "lacks a planning context ref",
+    )
+    assert context is not None
+
+
+def test_planning_context_normalization_and_case_binding_fail_closed() -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    case = bundle.case_manifests[0]
+    context = next(
+        item for item in bundle.planning_contexts if item.source_hash == case.planning_context_hash
+    )
+
+    validate_error(
+        bundle.model_copy(
+            update={
+                "case_manifests": (
+                    case.model_copy(update={"planning_context_ref": None}),
+                    *bundle.case_manifests[1:],
+                )
+            }
+        ),
+        "ref/hash must appear as a pair",
+    )
+
+    corrupt = context.model_copy(update={"task_intent": context.task_intent + " drift"})
+    validate_error(
+        bundle.model_copy(update={"planning_contexts": (corrupt, *bundle.planning_contexts[1:])}),
+        "source hash mismatch",
+    )
+    validate_error(
+        bundle.model_copy(update={"planning_contexts": (context, context)}),
+        "duplicate normalized planning context identity",
+    )
+
+    for update, message in (
+        ({"target_range": (22, 23)}, "target range mismatch"),
+        ({"task_intent": context.task_intent + " drift"}, "task intent mismatch"),
+    ):
+        changed = context.model_copy(update=update)
+        changed = changed.model_copy(
+            update={
+                "source_hash": content_id(
+                    {
+                        "profile": changed.profile.value,
+                        "task_intent": changed.task_intent,
+                        "target_range": changed.target_range,
+                        "visible_outline_nodes": [
+                            node.model_dump(mode="json") for node in changed.visible_outline_nodes
+                        ],
+                        "chapter_goals": [
+                            goal.model_dump(mode="json") for goal in changed.chapter_goals
+                        ],
+                        "planner_may_read_plan": changed.planner_may_read_plan,
+                    }
+                )
+            }
+        )
+        changed_case = case.model_copy(
+            update={
+                "planning_context_hash": changed.source_hash,
+                "planning_context_ref": content_id(changed.model_dump(mode="json")),
+            }
+        )
+        validate_error(
+            bundle.model_copy(
+                update={"planning_contexts": (changed,), "case_manifests": (changed_case,)}
+            ),
+            message,
+        )
+
+    assert case.information_profile is not None
+    mismatched_task = case.model_copy(
+        update={
+            "task_contract": build_safe_task_contract(
+                case_id=case.case_id,
+                checkpoint_chapter=case.history_range[1],
+                target_range=case.target_range,
+                information_profile=case.information_profile,
+                task_intent="drift",
+                planning_context_ref=case.planning_context_ref,
+                planning_context_hash=case.planning_context_hash,
+            )
+        }
+    )
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (mismatched_task,)}),
+        "task/planning context mismatch",
+    )
+
+    matching_task = build_safe_task_contract(
+        case_id=case.case_id,
+        checkpoint_chapter=case.history_range[1],
+        target_range=case.target_range,
+        information_profile=case.information_profile,
+        task_intent=case.task_intent,
+        planning_context_ref=case.planning_context_ref,
+        planning_context_hash=case.planning_context_hash,
+    )
+    BenchmarkBundleImporter().validate(
+        rehash(
+            bundle.model_copy(
+                update={
+                    "case_manifests": (case.model_copy(update={"task_contract": matching_task}),)
+                }
+            )
+        )
+    )
+
+    planless_gold = tuple(
+        item.model_copy(update={"plan_evidence_refs": ()}) for item in case.plan_obligation_gold
+    )
+    planless = case.model_copy(
+        update={
+            "input_plan_root": None,
+            "chapter_goal_ids": (),
+            "plan_obligation_gold": planless_gold,
+            "gate_eligible": False,
+            "task_contract": matching_task,
+        }
+    )
+    validate_error(
+        bundle.model_copy(update={"case_manifests": (planless,)}),
+        "APC planning context requires a PlanRoot",
+    )
+
+    visible_context = context.model_copy(
+        update={"profile": BenchmarkInformationProfile.VISIBLE_AT_CUTOFF}
+    )
+    visible_context = visible_context.model_copy(
+        update={
+            "source_hash": content_id(
+                {
+                    "profile": visible_context.profile.value,
+                    "task_intent": visible_context.task_intent,
+                    "target_range": visible_context.target_range,
+                    "visible_outline_nodes": [
+                        node.model_dump(mode="json")
+                        for node in visible_context.visible_outline_nodes
+                    ],
+                    "chapter_goals": [
+                        goal.model_dump(mode="json") for goal in visible_context.chapter_goals
+                    ],
+                    "planner_may_read_plan": visible_context.planner_may_read_plan,
+                }
+            )
+        }
+    )
+    visible_case = case.model_copy(
+        update={
+            "information_profile": BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            "planning_context_hash": visible_context.source_hash,
+            "planning_context_ref": content_id(visible_context.model_dump(mode="json")),
+            "task_contract": None,
+        }
+    )
+    BenchmarkBundleImporter().validate(
+        rehash(
+            bundle.model_copy(
+                update={"planning_contexts": (visible_context,), "case_manifests": (visible_case,)}
+            )
+        )
+    )
+
+    altered_context = context.model_copy(
+        update={"visible_outline_nodes": context.visible_outline_nodes[:-1]}
+    )
+    altered_context = altered_context.model_copy(
+        update={
+            "source_hash": content_id(
+                {
+                    "profile": altered_context.profile.value,
+                    "task_intent": altered_context.task_intent,
+                    "target_range": altered_context.target_range,
+                    "visible_outline_nodes": [
+                        node.model_dump(mode="json")
+                        for node in altered_context.visible_outline_nodes
+                    ],
+                    "chapter_goals": [
+                        goal.model_dump(mode="json") for goal in altered_context.chapter_goals
+                    ],
+                    "planner_may_read_plan": altered_context.planner_may_read_plan,
+                }
+            )
+        }
+    )
+    altered_case = case.model_copy(
+        update={
+            "planning_context_hash": altered_context.source_hash,
+            "planning_context_ref": content_id(altered_context.model_dump(mode="json")),
+            "task_contract": None,
+        }
+    )
+    validate_error(
+        bundle.model_copy(
+            update={"planning_contexts": (altered_context,), "case_manifests": (altered_case,)}
+        ),
+        "planning context and PlanRoot content mismatch",
+    )
+
+
+def test_bundle_rejects_duplicate_planning_context_source_hashes() -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    duplicated = bundle.model_copy(update={"planning_contexts": (bundle.planning_contexts[0],) * 2})
+    validate = cast(Any, BenchmarkBundle.validate_unique_roots_and_cases)
+    with pytest.raises(ValueError, match="planning context source hashes must be unique"):
+        validate(duplicated)
 
 
 def test_root_hash_and_manifest_reference_failures() -> None:

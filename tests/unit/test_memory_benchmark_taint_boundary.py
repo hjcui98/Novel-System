@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from novel_agent.domain.ids import ProjectId, StableId
+from novel_agent.domain.artifacts import PlanRootRef
+from novel_agent.domain.ids import ArtifactId, ProjectId, SchemaVersion, StableId
 from novel_agent.domain.memory_benchmark import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
@@ -20,6 +21,8 @@ from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.memory_benchmark_contract import (
     PublicBenchmarkTaintError,
     assert_safe_public_payload,
+    build_public_checkpoint_case,
+    build_safe_task_contract,
     profile_namespace,
     verify_public_checkpoint_case,
 )
@@ -129,3 +132,76 @@ def test_recursive_taint_hash_and_namespace_checks_fail_closed() -> None:
     )()
     with pytest.raises(PublicBenchmarkTaintError, match="hash mismatch"):
         verify_public_checkpoint_case(fake)
+
+
+def test_task_contract_composes_safe_contract_with_normalized_task_intent() -> None:
+    planning_context_hash = content_id({"planning": "source"})
+    planning_context_ref = content_id({"planning": "document"})
+    contract = build_safe_task_contract(
+        case_id=StableId("case.intent"),
+        checkpoint_chapter=20,
+        target_range=(21, 25),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 21-25 章准备历史上下文 不续写",
+        planning_context_ref=planning_context_ref,
+        planning_context_hash=planning_context_hash,
+    )
+    assert contract.task_text.startswith("为目标章节 21-25 准备必要的历史记忆 ContextPackage。")
+    assert "评测 Gold" in contract.task_text
+    assert contract.task_intent == "为写 21-25 章准备历史上下文 不续写"
+    assert contract.planning_context_ref == planning_context_ref
+    assert contract.planning_context_hash == planning_context_hash
+    assert contract.task_template_version == "memory_context_task.v1"
+
+    with pytest.raises(PublicBenchmarkTaintError, match="blind profile"):
+        build_safe_task_contract(
+            case_id=StableId("case.intent"),
+            checkpoint_chapter=20,
+            target_range=(21, 25),
+            information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            task_intent="任何任务意图都不该进入盲式档位",
+        )
+    with pytest.raises(PublicBenchmarkTaintError, match="fixed answer-count"):
+        build_safe_task_contract(
+            case_id=StableId("case.intent"),
+            checkpoint_chapter=20,
+            target_range=(21, 25),
+            information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+            task_intent="任务要求最多 20 项历史条目。",
+        )
+
+
+def test_public_checkpoint_case_forwards_planning_context_refs() -> None:
+    planning_context_hash = content_id({"planning": "source"})
+    planning_context_ref = content_id({"planning": "document"})
+    public = build_public_checkpoint_case(
+        case_id=StableId("case.public"),
+        project_id=ProjectId("project.public"),
+        history_range=(1, 20),
+        target_range=(21, 25),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 21-25 章准备历史上下文。",
+        planning_context_ref=planning_context_ref,
+        planning_context_hash=planning_context_hash,
+        plan_root_ref=PlanRootRef(
+            artifact_id=ArtifactId("sha256:" + "d" * 64),
+            media_type="application/json",
+            byte_length=1,
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    assert public.task_contract.task_intent == "为写 21-25 章准备历史上下文。"
+    assert public.task_contract.planning_context_ref == planning_context_ref
+    assert public.task_contract.planning_context_hash == planning_context_hash
+    verify_public_checkpoint_case(public)
+
+    vac = build_public_checkpoint_case(
+        case_id=StableId("case.public"),
+        project_id=ProjectId("project.public"),
+        history_range=(1, 20),
+        target_range=(21, 25),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    assert vac.task_contract.task_intent == ""
+    assert vac.plan_root_ref is None
+    verify_public_checkpoint_case(vac)

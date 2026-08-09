@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "One natural-language entity reference in a draft (no graph id).",
+  "properties": {
+    "label": {
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "role_in_need": {
+      "default": "",
+      "minLength": 0,
+      "title": "Role In Need",
+      "type": "string"
+    }
+  },
+  "required": [
+    "label"
+  ],
+  "title": "EntityMention",
+  "type": "object"
+}

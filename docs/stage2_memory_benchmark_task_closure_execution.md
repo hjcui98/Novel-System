@@ -2,9 +2,9 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 文档状态：M4 remediation active / exact-slice read-grain repair required / formal WP7 P3 rerun pending / formal WP8 frozen
+> 文档状态：APC/TIO implementation accepted / formal Phase 4 admitted / M4 and Gate 0-3 pending
 > 编写日期：2026-07-29
-> 最近更新：2026-08-03
+> 最近更新：2026-08-09
 > 初始代码基线：`ca9c78e`
 > 当前开发基线：2026-08-01 Stage 2M 工作区；P0/P1 实现、直接修复与正式五点 Gate contract 已进入代码，P2 诊断与 C90–C95 章节续跑证据已完成，尚未形成 formal P3 run
 > 目标阶段：Stage 2M（Memory Benchmark Task Closure）
@@ -518,6 +518,8 @@ C95 r35 诊断产物中的 P004/P005 两个代表案例显示（它们用于说�
 10. `visible_at_cutoff` 和 `author_plan_conditioned` 分别在同一代码、各自固定配置和评测版本下完成 P001-P005，并生成 profile-separated 统一报告；
 11. 在 deterministic 门通过后才启动真实 agentic A/B/C；agentic 超时不得伪造成有效 B 输出；
 12. 完整 `make quality` 和新增 contract/integration tests 通过。
+13. 实现遵守最小充分工程：只增加关闭上述合同和 Gate 所需的机制，不建立第二套 Memory
+    pipeline、调度平台、Artifact/报告体系、规则 DSL 或跨 Stage 通用框架。
 
 ### 3.4 本阶段非目标
 
@@ -530,6 +532,27 @@ C95 r35 诊断产物中的 P004/P005 两个代表案例显示（它们用于说�
 - 不要求 Context 输出固定条数；
 - 不在本阶段让 Memory 模块直接写入 canonical state；
 - 不以扩大上下文窗口替代信息选择和压缩。
+
+### 3.5 最小充分工程边界
+
+本阶段的“不要过度工程化”具有以下确定含义：
+
+1. 修复必须落在已诊断的责任层，优先复用现有 `AuthorPlanningContext`、Need/Query/Writer
+   Context 合同、Model Gateway、Artifact Store、Evaluator 和 Runner；不为同一语义建立第二
+   owner 或平行执行路径。
+2. 新类型只用于表达现有合同无法可靠表达的权限、身份、失败、可用性或审计不变量；新 Service
+   只在现有责任主体会发生职责冲突时引入。不得把每个函数包装成 Port，也不得为单一 case 建
+   通用规则引擎。
+3. 不在 Stage 2M 顺带实现全链 async、分布式 scheduler、动态资源自治、Agent 插件平台、新存储
+   后端、评测数据仓库、可视化控制台或 Stage 3 Writer 产品通道。它们只有在独立需求和 benchmark
+   证明必要后才进入相应 Stage。
+4. 优化先做删除、合并、收窄和接线修复；仅为“未来扩展”服务的配置维度、抽象层和兼容双轨
+   保持 `deferred`。迁移完成后应删除 deprecated 路径，而不是永久维护新旧双实现。
+5. 最小充分不降低证据强度。严格 D9、Gold 隔离、hash/profile 绑定、Writer/Ledger 预算、类型化
+   失败、可复现 artifact、回归测试、100% coverage、真实运行证据和 Gate 0-3/M4 均保持必需。
+
+若关闭当前缺口必须新增跨 Stage 平台或改变产品边界，应停止实现并返回 Codex，而不是以可扩展性
+为理由扩大任务。
 
 ---
 
@@ -2309,6 +2332,16 @@ memory_evaluator_profile=per_gold_v1
 - cross-profile 缓存命中视为 P0；
 - 聚合器拒绝合并 profile 不一致的 case artifact。
 
+### 风险 10：修复演变为平行平台或永久双轨
+
+控制：
+
+- 每个新增组件标明当前调用方、唯一 owner、所保护的不变量和对应验收；
+- 优先扩展现有合同与 Gateway，不新增同职责框架、存储或调度控制面；
+- 过渡字段必须有删除条件，不能把兼容路径固化为第二套语义；
+- 发现需要跨 Stage 基础设施或独立产品通道时返回 Codex；
+- 不得以“简化”为由删除安全、测试、观测或可复现证据。
+
 ---
 
 ## 20. 原始人力与顺序估算（不是剩余工作量）
@@ -2447,6 +2480,33 @@ VAC C60 中，G06 `2/2` 与 G09 `3/3` 精确 slices 先保留到语义输入和 
 `<=4000`、Ledger `<=12000`，且 OpenCode 提交完整质量报告。只有上述 C60 条件满足后才能运行
 C95；P3、Gate M4 PASS、A/B/C 与 Stage 3 集成仍冻结。
 
+### 21.4 2026-08-09 APC/TIO 实现验收与正式矩阵准入
+
+本节是当前执行状态，取代 §21.3 的“继续 C60 后条件运行 C95”作为下一动作；§21.1-21.3 的历史
+数据与诊断结论保持不改写。
+
+Codex 已接受当前 APC/TIO 架构实现、最终源码质量证据、非 fallback Planner 冻结重放和 P002/C40
+bounded serial/safe-concurrent parity。接受的 executable identity 为 producer
+`trusted_claim_support_producer.v32`、source fingerprint
+`sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`。Claim Support multi
+固定 `thinking=false / reasoning=0 / output=2048`；本地 Qwen 正式负载固定 Need concurrency 2、
+endpoint request limit 1，禁止同时两路生成。
+
+两次 current-fingerprint bounded run 均完成相同 14-request set、两个
+proposal→whole-verifier→verified-receipt 链，Writer/Ledger/five-segment 语义一致，future/plan
+leakage、timeout、OOM、context reduction 和 lease leak 均为 0。工程证据为 1642 passed、9
+deselected、100% branch coverage 和全量 pre-commit 通过。完整验收和 paired artifact 归属纠正见
+`.agent/review.md`。
+
+下一动作是 `.agent/plan.md` §6.3：先形成 clean executable-source identity，再以新 DB、output root
+和 experiment ID 运行 APC P001-P005 主矩阵与 TASK_INTENT_ONLY ablation；每个 checkpoint 独立保存
+report/manifest child ref。本文旧称 formal WP7/P3 的下一次正式矩阵，以本次 APC/TIO Phase 4 合同为
+准，不再运行旧 VAC/APC 双 profile 配置。P004/P005、Writer 4000、Ledger 12000、D9 和 leakage
+零容忍保持冻结。
+
+此验收只解除正式运行前置阻塞，不宣告 M4、Gate 0-3 或 Stage 2M PASS；最终质量、阈值和 held-out
+判断必须由新矩阵产生。Agentic、C4 多 Case 并行、动态调参和额外平台继续 deferred。
+
 ---
 
 ## 22. 最终决策
@@ -2461,10 +2521,12 @@ C95；P3、Gate M4 PASS、A/B/C 与 Stage 3 集成仍冻结。
 - deterministic gateway 保持冻结/条件准入；
 - agentic gateway 不晋级；
 - Benchmark 不调用或评分续写 Writer，不设置预训练污染门禁；
-- `visible_at_cutoff` 与 `author_plan_conditioned` 必须独立运行和报告；
+- `author_plan_conditioned` 与 `task_intent_only` 必须独立运行和报告；`history_only` 只保留为 legacy baseline；
 - 旧 WP7/WP8 Context 与诊断指标只作为历史/失败基线，不作为 P3 或 Benchmark 通过证据；
 - Stage 3 Writer 可以继续 DRAFT 隔离开发，但不能据此宣称记忆质量已经达标。
+- 所有剩余修复采用最小充分机制，复用现有责任主体；不预建与当前 Gate 无关的平台、第二管线或
+  后续 Stage 能力。
 
-当前不需要重做 WP0–WP5，也不需要等待人工 reviewer 签署；canary 对照已经完成，但仍需关闭
-被证明的 C40/C60/C95 责任层缺口。只有 canary 接近正式门时才执行全新 WP7 P3；新 P3 让
-APC/VAC 均通过 Gate M4 后，项目才能进入正式 WP8。
+当前不需要重做 WP0-WP5、Planner、bounded parity 或旧 C60/C95 canary，也不需要等待人工 reviewer
+签署。下一步只需形成 clean executable-source identity，并按 §21.4 执行一次全新的 APC/TIO Phase 4；
+在该矩阵产出并经 Codex 判断前，M4、Gate 0-3、Agentic 晋级和 Stage 3 Memory 语义集成继续冻结。

@@ -152,6 +152,59 @@
     "run_id": {
       "$ref": "#/$defs/RunId"
     },
+    "scheduling_dependency_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Scheduling Dependency Ids",
+      "type": "array"
+    },
+    "scheduling_need_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scheduling_priority": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Scheduling Priority",
+      "type": "integer"
+    },
+    "scheduling_stage": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scheduling Stage"
+    },
+    "scheduling_timeout_seconds": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "maximum": 3600.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scheduling Timeout Seconds"
+    },
     "skill_contract_hashes": {
       "default": [],
       "items": {

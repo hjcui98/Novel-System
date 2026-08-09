@@ -247,7 +247,14 @@ class Stage1MemoryNeed(DomainModel):
     predicates: tuple[str, ...] = ()
     time_scope: StoryTime | None = None
     access_scope: str = Field(default="writer_safe", min_length=1)
+    # Deprecated single-flag alias of the layered plan policies below.  Kept
+    # only for the transition; it must equal retrieval_may_return_plan and is
+    # removed after every call site migrates to the layered policies.
     allow_plan: bool = False
+    planner_may_read_plan: bool = False
+    retrieval_may_return_plan: bool = False
+    claim_may_cite_plan: bool = False
+    legacy_allow_plan: bool = False
     hierarchy_parent_unit_ids: tuple[StableId, ...] = ()
     why_needed: str = Field(min_length=1)
     risk_level: NeedRisk
@@ -264,6 +271,14 @@ class Stage1MemoryNeed(DomainModel):
     completion_criteria: str | None = Field(default=None, min_length=1)
     need_facets: tuple[NeedFacet, ...] = ()
     completion_spec: NeedCompletionSpec | None = None
+    # LLM Planner lineage (Phase 1).  Present together on planner-produced
+    # needs; template needs keep them empty.
+    semantic_question: str = ""
+    trigger_plan_chapters: tuple[int, ...] = ()
+    trigger_plan_goal: str = ""
+    planner_artifact_ref: ArtifactId | None = None
+    planned_draft_id: str | None = Field(default=None, min_length=1)
+    validated_need_set_hash: ArtifactId | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> Stage1MemoryNeed:
@@ -277,6 +292,26 @@ class Stage1MemoryNeed(DomainModel):
             raise ValueError("memory need hierarchy parents must be unique")
         if len(self.focus_ids) != len(set(self.focus_ids)):
             raise ValueError("memory need focus ids must be unique")
+        if self.legacy_allow_plan != self.retrieval_may_return_plan:
+            raise ValueError("legacy allow_plan must equal the retrieval plan policy")
+        if self.allow_plan != self.retrieval_may_return_plan:
+            raise ValueError("deprecated allow_plan must equal retrieval_may_return_plan")
+        if self.retrieval_may_return_plan and not self.planner_may_read_plan:
+            raise ValueError("retrieval plan access requires planner plan access")
+        planner_refs = (
+            self.planner_artifact_ref,
+            self.planned_draft_id,
+            self.validated_need_set_hash,
+        )
+        lineage_complete = bool(self.semantic_question) and all(
+            item is not None for item in planner_refs
+        )
+        if (self.semantic_question or any(item is not None for item in planner_refs)) and not (
+            lineage_complete
+        ):
+            raise ValueError("planner-derived need requires complete planner lineage")
+        if lineage_complete and self.trigger_plan_chapters and not self.trigger_plan_goal:
+            raise ValueError("planner-derived trigger chapters require the canonical goal text")
         if bool(self.need_facets) != (self.completion_spec is not None):
             raise ValueError("NeedFacet and NeedCompletionSpec must appear together")
         if self.completion_spec is not None:
@@ -289,10 +324,10 @@ class Stage1MemoryNeed(DomainModel):
                 raise ValueError("NeedFacet need id mismatch")
             if not set(self.completion_spec.required_need_facet_ids).issubset(facet_ids):
                 raise ValueError("NeedCompletionSpec references an unknown NeedFacet")
-            if not self.allow_plan and any(
+            if not self.claim_may_cite_plan and any(
                 item.information_scope == "author_plan" for item in self.need_facets
             ):
-                raise ValueError("plan-derived NeedFacet requires allow_plan")
+                raise ValueError("plan-derived NeedFacet requires claim_may_cite_plan")
         return self
 
 
@@ -414,6 +449,7 @@ class RetrievalStopReason(StrEnum):
     BUDGET_SATISFIED = "budget_satisfied"
     CANDIDATES_EXHAUSTED = "candidates_exhausted"
     FALLBACK_EXHAUSTED = "fallback_exhausted"
+    NO_EXECUTABLE_QUERY = "no_executable_query"
 
 
 class NeedExecutionStatus(StrEnum):
@@ -424,6 +460,7 @@ class NeedExecutionStatus(StrEnum):
     NOT_EXECUTED_BUDGET_EXHAUSTED = "not_executed_budget_exhausted"
     NOT_EXECUTED_FRESHNESS_BLOCKED = "not_executed_freshness_blocked"
     NOT_EXECUTED_SCOPE_BLOCKED = "not_executed_scope_blocked"
+    NOT_EXECUTED_NO_EXECUTABLE_QUERY = "not_executed_no_executable_query"
 
 
 class RetrievalTrace(DomainModel):
@@ -447,6 +484,12 @@ class RetrievalTrace(DomainModel):
     spans_expanded: int = Field(default=0, ge=0)
     l0_tokens: int = Field(default=0, ge=0)
     scenes_expanded: int = Field(default=0, ge=0)
+    # Direct-retrieval unit ids, distinct from corridor expansion units
+    # (raw evidence spans / style-or-reference optional units).
+    direct_unit_ids: tuple[StableId, ...] = ()
+    compiled_query_bundle: dict[str, JsonValue] = Field(default_factory=dict)
+    effective_channels: tuple[RetrievalChannel, ...] = ()
+    query_unavailable_reasons: dict[RetrievalChannel, str] = Field(default_factory=dict)
     full_chapters_read: int = Field(default=0, ge=0)
 
     @model_validator(mode="before")

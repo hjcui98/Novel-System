@@ -35,6 +35,10 @@ def test_plan_alternative_matches_exact_plan_provenance() -> None:
     match = GoldEvidenceMatcher().match(plan_gold, ledger.model_copy(update={"entries": (entry,)}))
     assert match.matched
     assert match.supported_components == ("plan",)
+    coverage = GoldEvidenceMatcher().coverage(
+        plan_gold, ledger.model_copy(update={"entries": (entry,)})
+    )
+    assert coverage.matched_reference_count == 1
 
 
 def test_missing_plan_does_not_match_and_block_namespace_is_not_identity() -> None:
@@ -77,6 +81,25 @@ def test_same_object_requires_precise_spans() -> None:
     assert not GoldEvidenceMatcher()._ref_matches(
         different_object, ledger.entries[0].evidence_refs[0]
     )
+
+
+def test_same_object_and_span_cannot_cross_unproven_text_root_ancestry() -> None:
+    gold, _package, ledger, _receipt = frozen_evaluation_inputs()
+    expected = gold.evidence_refs[0]
+    actual = (
+        ledger.entries[0]
+        .evidence_refs[0]
+        .model_copy(
+            update={
+                "evidence_id": StableId("evidence.foreign-case-copy"),
+                "root_hash": ArtifactId("sha256:" + "9" * 64),
+                "object_hash": expected.object_hash,
+                "span": expected.span,
+            }
+        )
+    )
+
+    assert not GoldEvidenceMatcher()._ref_matches(expected, actual)
 
 
 def test_precise_child_span_matches_reviewed_broad_span() -> None:

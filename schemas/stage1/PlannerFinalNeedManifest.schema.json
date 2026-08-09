@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Stable identity of one emitted Need without circular artifact references.",
+  "properties": {
+    "completion_contract_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_payload_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "query_bundle_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "source_draft_id": {
+      "minLength": 1,
+      "title": "Source Draft Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "need_id",
+    "source_draft_id",
+    "need_payload_hash",
+    "completion_contract_hash",
+    "query_bundle_hash"
+  ],
+  "title": "PlannerFinalNeedManifest",
+  "type": "object"
+}

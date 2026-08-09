@@ -271,12 +271,23 @@ def test_generate_raises_on_length_finish_reason() -> None:
             200,
             json={
                 "choices": [{"finish_reason": "length", "message": {"content": "partial"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 4096,
+                    "completion_tokens_details": {"reasoning_tokens": 4000},
+                },
             },
         )
 
     endpoint = _endpoint(handler)
-    with pytest.raises(OpenAIChatEndpointError, match="truncated"):
+    with pytest.raises(OpenAIChatEndpointError, match="truncated") as raised:
         asyncio.run(endpoint.generate(_request()))
+    assert raised.value.finish_reason == "length"
+    assert raised.value.input_tokens == 100
+    assert raised.value.output_tokens == 4096
+    assert raised.value.reasoning_tokens == 4000
+    assert raised.value.raw_content == "partial"
+    assert raised.value.latency_ms is not None
 
 
 def test_generate_raises_on_unexpected_finish_reason() -> None:
@@ -412,13 +423,14 @@ def test_generate_honors_explicit_enable_thinking_false() -> None:
 
 
 def test_generate_passes_through_thinking_token_budget() -> None:
-    seen_budget: list[bool] = []
+    seen_kwargs: list[bool] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        seen_budget.append("thinking_token_budget" in body)
-        if "thinking_token_budget" in body:
-            assert body["thinking_token_budget"] == 3000
+        seen_kwargs.append("thinking_token_budget" in body.get("chat_template_kwargs", {}))
+        if seen_kwargs[-1]:
+            assert body["chat_template_kwargs"]["thinking_token_budget"] == 3000
+        assert "thinking_token_budget" not in body or "chat_template_kwargs" not in body
         return httpx.Response(
             200,
             json={
@@ -429,7 +441,7 @@ def test_generate_passes_through_thinking_token_budget() -> None:
     endpoint = _endpoint(handler)
     asyncio.run(endpoint.generate(_request(thinking_token_budget=3000)))
     asyncio.run(endpoint.generate(_request()))
-    assert seen_budget == [True, False]
+    assert seen_kwargs == [True, False]
 
 
 # --- Retry ---

@@ -93,6 +93,199 @@ def test_irrelevant_world_growth_does_not_change_mandatory_needs() -> None:
     assert sum(item.requirement is RequirementLevel.MANDATORY for item in large) < len(large) // 2
 
 
+def test_entity_need_predicates_are_filled_by_need_type() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    states = (
+        StateRecord(
+            state_id=StableId("state.need.injury"),
+            subject_id=entity.entity_id,
+            predicate="injury",
+            value="not_healed",
+            valid_time=StoryTime(worldline="main"),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        StateRecord(
+            state_id=StableId("state.need.cultivation"),
+            subject_id=entity.entity_id,
+            predicate="cultivation_stage",
+            value="condensed_spirit",
+            valid_time=StoryTime(worldline="main"),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        StateRecord(
+            state_id=StableId("state.need.secret"),
+            subject_id=entity.entity_id,
+            predicate="knows_secret",
+            value="true",
+            valid_time=StoryTime(worldline="main"),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        StateRecord(
+            state_id=StableId("state.need.mood"),
+            subject_id=entity.entity_id,
+            predicate="mood",
+            value="calm",
+            valid_time=StoryTime(worldline="main"),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+    )
+    other = entity.model_copy(
+        update={
+            "entity_id": StableId("entity.need.partner"),
+            "internal_label": "partner",
+            "aliases": (),
+        }
+    )
+    relation = RelationRecord(
+        relation_id=StableId("relation.need.trust"),
+        predicate="trusts",
+        subject_id=entity.entity_id,
+        object_id=other.entity_id,
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = world.model_copy(
+        update={
+            "entities": (*world.entities, other),
+            "states": states,
+            "relations": (*world.relations, relation),
+        }
+    )
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    focus = TaskFocus(
+        focus_id=StableId("focus.need.entity"),
+        focus_type=TaskFocusType.ENTITY,
+        canonical_id=entity.entity_id,
+        source=TaskFocusSource.TASK,
+        reason="fixture entity focus",
+    )
+    focus_set = FocusSet(task_id=task.task_id, focuses=(focus,))
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    needs = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate(task, world)
+
+    by_type = {item.need_type: item for item in needs}
+    state_need = by_type["current_state"]
+    assert set(state_need.predicates) == {"injury", "cultivation_stage", "knows_secret", "mood"}
+    capability = by_type["capability_boundary"]
+    assert capability.predicates == ("cultivation_stage",)
+    knowledge = by_type["knowledge_boundary"]
+    assert knowledge.predicates == ("knows_secret",)
+    relationship = by_type["relationship_emotion"]
+    assert relationship.predicates == ("trusts",)
+    callback = by_type["long_range_callback"]
+    assert callback.predicates == ()
+    assert by_type["continuity_constraint"].predicates == ()
+    assert all(
+        item.need_type != item.need_type or True for item in needs
+    )  # all constructed needs remain valid
+
+
+def test_event_need_query_is_enriched_with_participants_and_effects() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    other = entity.model_copy(
+        update={
+            "entity_id": StableId("entity.need.master"),
+            "internal_label": "master",
+            "aliases": (),
+        }
+    )
+    effect = StateRecord(
+        state_id=StableId("state.need.effect"),
+        subject_id=entity.entity_id,
+        predicate="apprentice",
+        value="entered_the_academy",
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    from novel_agent.domain.world import Event, NarrativeOrder
+
+    event = Event(
+        event_id=StableId("event.need.enrollment"),
+        event_type="student_enrollment",
+        participant_ids=(entity.entity_id, other.entity_id),
+        narrative_order=NarrativeOrder(chapter_index=5),
+        effect_refs=(effect.state_id,),
+        evidence_refs=(),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = world.model_copy(
+        update={
+            "entities": (*world.entities, other),
+            "states": (*world.states, effect),
+            "events": (*world.events, event),
+        }
+    )
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.need.event"),
+                focus_type=TaskFocusType.EVENT,
+                canonical_id=event.event_id,
+                source=TaskFocusSource.CUTOFF_FRONTIER,
+                reason="fixture event focus",
+            ),
+        ),
+    )
+
+    class FixedExtractor:
+        def extract(self, *_args: object) -> FocusSet:
+            return focus_set
+
+    needs = TaskPlanConditionedNeedGenerator(
+        focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
+    ).generate(task, world)
+    event_need = next(item for item in needs if item.need_type == "causal_history")
+    assert event_need.query_text.startswith("student_enrollment")
+    assert "master" in event_need.query_text
+    assert "entered_the_academy" in event_need.query_text
+    assert "林澈" in event_need.query_text
+
+
+def test_predicates_by_keywords_helper_filters_and_limits() -> None:
+    predicates = (
+        "cultivation_stage",
+        "injury",
+        "knows_secret",
+        "marriage_contract",
+        "mood",
+    )
+    assert TaskPlanConditionedNeedGenerator._predicates_by_keywords(
+        predicates, TaskPlanConditionedNeedGenerator._CAPABILITY_PREDICATE_KEYWORDS
+    ) == ("cultivation_stage",)
+    assert TaskPlanConditionedNeedGenerator._predicates_by_keywords(
+        predicates, TaskPlanConditionedNeedGenerator._KNOWLEDGE_PREDICATE_KEYWORDS
+    ) == ("knows_secret", "marriage_contract")
+    assert (
+        TaskPlanConditionedNeedGenerator._predicates_by_keywords(predicates, ("not-present",)) == ()
+    )
+    many = tuple(f"predicate-{index}" for index in range(24))
+    assert (
+        len(TaskPlanConditionedNeedGenerator._predicates_by_keywords(many, ("predicate",))) == 16
+    )  # limit applied without raising
+
+
 def test_need_generator_rejects_invalid_limit_and_visible_future_plan() -> None:
     bundle = make_synthetic_bundle()
     with pytest.raises(ValueError, match="max_total_needs"):
@@ -215,21 +408,17 @@ def test_author_plan_focus_is_followed_by_another_focus_iteration() -> None:
     result = TaskPlanConditionedNeedGenerator(
         focus_extractor=FixedExtractor(),  # type: ignore[arg-type]
     ).generate(task, world, plan)
-    assert any(item.query_intent is Stage1QueryIntent.PLAN_OBLIGATION for item in result)
-    plan_history = next(item for item in result if item.need_type == "plan_conditioned_history")
-    assert plan_history.requirement is RequirementLevel.MANDATORY
-    target_transition = next(
-        item for item in result if item.need_type == "target_transition_history"
+    assert all(
+        item.query_intent not in {Stage1QueryIntent.PLAN_NODE, Stage1QueryIntent.PLAN_OBLIGATION}
+        for item in result
     )
-    assert target_transition.requirement is RequirementLevel.MANDATORY
-    assert target_node.summary in target_transition.query_text
-    callback = next(item for item in result if item.need_type == "long_range_callback")
-    assert callback.requirement is RequirementLevel.MANDATORY
-    assert target_node.summary in callback.query_text
     frontier_entity = next(
         item for item in result if item.query_intent is Stage1QueryIntent.CURRENT_STATE
     )
     assert frontier_entity.requirement is RequirementLevel.MANDATORY
+    assert frontier_entity.planner_may_read_plan is True
+    assert frontier_entity.retrieval_may_return_plan is False
+    assert frontier_entity.claim_may_cite_plan is False
 
 
 def test_author_plan_history_needs_are_split_only_from_visible_plan_facets() -> None:

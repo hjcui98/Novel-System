@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "EntityMention": {
+      "additionalProperties": false,
+      "description": "One natural-language entity reference in a draft (no graph id).",
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "role_in_need": {
+          "default": "",
+          "minLength": 0,
+          "title": "Role In Need",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "EntityMention",
+      "type": "object"
+    },
+    "RelationMention": {
+      "additionalProperties": false,
+      "description": "One natural-language relation reference in a draft (no graph id).",
+      "properties": {
+        "object_label": {
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "relation_label": {
+          "minLength": 1,
+          "title": "Relation Label",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "relation_label",
+        "object_label"
+      ],
+      "title": "RelationMention",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "LLM Planner output: semantic question plus mention-level anchors.\n\nContains no graph ids.  ``draft_id`` is a short, non-empty identifier the\nLLM assigns; the validator sanitizes it into the final need id.",
+  "properties": {
+    "draft_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "entity_mentions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EntityMention"
+      },
+      "title": "Entity Mentions",
+      "type": "array"
+    },
+    "historical_time_scope": {
+      "default": "",
+      "title": "Historical Time Scope",
+      "type": "string"
+    },
+    "query_hints": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Query Hints",
+      "type": "array"
+    },
+    "relation_mentions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RelationMention"
+      },
+      "title": "Relation Mentions",
+      "type": "array"
+    },
+    "required_claim_scopes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Claim Scopes",
+      "type": "array"
+    },
+    "semantic_question": {
+      "minLength": 1,
+      "title": "Semantic Question",
+      "type": "string"
+    },
+    "suggested_facets": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Suggested Facets",
+      "type": "array"
+    },
+    "trigger_plan_chapters": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Trigger Plan Chapters",
+      "type": "array"
+    },
+    "trigger_plan_goal": {
+      "default": "",
+      "title": "Trigger Plan Goal",
+      "type": "string"
+    },
+    "why_needed": {
+      "default": "",
+      "title": "Why Needed",
+      "type": "string"
+    }
+  },
+  "required": [
+    "draft_id",
+    "semantic_question"
+  ],
+  "title": "PlannedNeedDraft",
+  "type": "object"
+}

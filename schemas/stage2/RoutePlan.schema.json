@@ -178,6 +178,82 @@
       "title": "RetrievalChannel",
       "type": "string"
     },
+    "RetrievalQueryBundle": {
+      "additionalProperties": false,
+      "description": "Per-channel compiled queries for one Stage1MemoryNeed.\n\nCompiled deterministically by ``NeedQueryCompiler``; the executed channel\nset is the intersection of ``ROUTES[query_intent]`` and the queries\navailable in this bundle.",
+      "properties": {
+        "exact_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Exact Entity Ids",
+          "type": "array"
+        },
+        "exact_predicates": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Exact Predicates",
+          "type": "array"
+        },
+        "excluded_information_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Excluded Information Labels",
+          "type": "array"
+        },
+        "graph_relations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Graph Relations",
+          "type": "array"
+        },
+        "graph_seeds": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Graph Seeds",
+          "type": "array"
+        },
+        "lexical_queries": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Lexical Queries",
+          "type": "array"
+        },
+        "semantic_query": {
+          "minLength": 1,
+          "title": "Semantic Query",
+          "type": "string"
+        },
+        "time_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "semantic_query",
+        "lexical_queries"
+      ],
+      "title": "RetrievalQueryBundle",
+      "type": "object"
+    },
     "RouteExecution": {
       "enum": [
         "serial",
@@ -322,12 +398,66 @@
       ],
       "title": "Stage1QueryIntent",
       "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "properties": {
     "base_commit": {
       "$ref": "#/$defs/CommitId"
+    },
+    "compiled_query_bundle": {
+      "$ref": "#/$defs/RetrievalQueryBundle"
     },
     "conditional_fallbacks": {
       "default": [],
@@ -343,6 +473,14 @@
       },
       "minItems": 1,
       "title": "Domains",
+      "type": "array"
+    },
+    "effective_channels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "title": "Effective Channels",
       "type": "array"
     },
     "evidence_policy": {
@@ -395,6 +533,16 @@
     "profile_id": {
       "$ref": "#/$defs/StableId"
     },
+    "query_unavailable_reasons": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/RetrievalChannel"
+      },
+      "title": "Query Unavailable Reasons",
+      "type": "object"
+    },
     "resolution_tier": {
       "$ref": "#/$defs/ResolutionTier"
     },
@@ -423,6 +571,7 @@
     "routing_features_hash",
     "evidence_policy",
     "stop_policy",
+    "compiled_query_bundle",
     "policy_version"
   ],
   "title": "RoutePlan",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from argparse import Namespace
 from pathlib import Path
@@ -15,6 +16,7 @@ from scripts.run_stage2_teacher_forced_e2e import (
 
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import (
+    BenchmarkInformationProfile,
     ControllerMode,
     CuratorEvidenceContract,
     EvidenceSupportGateMode,
@@ -51,6 +53,21 @@ def _args(experiment_id: str = "stage2r-run3") -> Namespace:
         model_base_url="http://127.0.0.1:8002/v1",
         model="qwen36-27b-nvfp4",
         memory_write_dry_run=False,
+        arms="A",
+        token_budget=4000,
+        max_candidates=20,
+        max_tool_calls=48,
+        support_max_concurrent_needs=1,
+        support_kv_token_budget=200_000,
+        endpoint_request_limit=1,
+        checkpoint_workers=1,
+        evaluator_max_concurrent_batches=1,
+        model_scheduling_timeout_seconds=120.0,
+        frozen_planner_artifact=None,
+        resume_commit=None,
+        resume_chapter=None,
+        quality_repair_config=None,
+        allow_dirty_diagnostic=False,
     )
 
 
@@ -64,7 +81,7 @@ def test_experiment_manifest_is_credential_safe_and_resume_stable(tmp_path: Path
     payload = json.loads((tmp_path / "experiment_manifest.json").read_text("utf-8"))
     assert payload["experiment_id"] == "stage2r-run3"
     assert payload["database"] == ("postgresql+psycopg://127.0.0.1:5432/novel_agent_stage2r_run3")
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["task_focus_version"] == TaskFocusExtractor.version
     assert payload["need_generation_profile"] == TaskPlanConditionedNeedGenerator.version
     assert payload["retrieval_unit_normalizer_version"] == RetrievalUnitNormalizer.version
@@ -75,10 +92,36 @@ def test_experiment_manifest_is_credential_safe_and_resume_stable(tmp_path: Path
     assert payload["gate_metric_formula_hash"] == GATE_METRIC_FORMULA_HASH.root
     assert payload["code_version"] == Stage2PairedPilotRunner.version
     expected_run_config_hash = Stage2PairedPilotRunner(
-        arms=("A", "B", "C"),
+        arms=("A",),
         retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
     ).public_configuration_fingerprint(bundle.bundle_schema_version.root)
     assert payload["run_config_hash"] == expected_run_config_hash.root
+    execution_config = payload["execution_config"]
+    assert execution_config["support_max_concurrent_needs"] == 1
+    assert execution_config["support_multi_enable_thinking"] is False
+    assert execution_config["support_multi_thinking_token_budget"] == 0
+    assert execution_config["support_multi_max_output_tokens"] == 2048
+    assert execution_config["evaluator_max_concurrent_batches"] == 1
+    assert execution_config["checkpoint_workers"] == 1
+    assert execution_config["endpoint_request_limit"] == 1
+    assert execution_config["configured_kv_token_budget"] == 200_000
+    assert execution_config["effective_kv_token_budget"] == 160_000
+    assert execution_config["kv_safety_reserve_ratio"] == 0.2
+    assert execution_config["model_sequence_limit"] == 131_072
+    assert execution_config["scheduling_timeout_seconds"] == 120.0
+    assert execution_config["frozen_planner_artifact_hash"] is None
+    assert payload["execution_config_hash"].startswith("sha256:")
+    assert payload["execution_config_hash"] == (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                execution_config,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     assert payload["benchmark_contract_hash"] == bundle.content_hash.root
     assert payload["matcher_version"] == GoldEvidenceMatcher.version
     assert payload["writer_token_budget"] == 4000
@@ -89,6 +132,45 @@ def test_experiment_manifest_is_credential_safe_and_resume_stable(tmp_path: Path
 
     with pytest.raises(ValueError, match="manifest differs"):
         _ensure_experiment_manifest(_args("stage2r-run4"), bundle, tmp_path, flags)
+
+
+def test_parser_exposes_fixed_claim_support_transport_policy() -> None:
+    parsed = stage2_runner.parser().parse_args(
+        [
+            "--source",
+            str(PILOT),
+            "--output-directory",
+            "/tmp/stage2m-parser-test",
+            "--experiment-id",
+            "stage2m-parser-test",
+            "--support-multi-thinking",
+            "--support-multi-thinking-token-budget",
+            "256",
+            "--support-multi-max-output-tokens",
+            "1536",
+        ]
+    )
+    assert parsed.support_multi_thinking is True
+    assert parsed.support_multi_thinking_token_budget == 256
+    assert parsed.support_multi_max_output_tokens == 1536
+
+
+def test_default_information_profile_resolves_from_planning_contexts() -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    assert stage2_runner._default_information_profile(bundle) == (
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value
+    )
+    blind = bundle.model_copy(
+        update={
+            "case_manifests": tuple(
+                case.model_copy(update={"information_profile": None})
+                for case in bundle.case_manifests
+            )
+        }
+    )
+    assert stage2_runner._default_information_profile(blind) == (
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value
+    )
 
 
 def test_formal_manifest_rejects_dirty_executable_source(
@@ -128,6 +210,35 @@ def test_evaluation_manifest_is_separate_from_immutable_project(tmp_path: Path) 
     evaluation = json.loads((output_directory / "experiment_manifest.json").read_text("utf-8"))
     assert evaluation["experiment_id"] == "stage2m-evaluation"
     assert evaluation["project_directory"] == str(project_directory.resolve())
+
+
+def test_execution_config_drift_is_fail_closed(tmp_path: Path) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    flags = QualityRepairFeatureFlags()
+    baseline = _args("stage2m-exec-drift")
+    _ensure_experiment_manifest(baseline, bundle, tmp_path, flags)
+
+    drifted = _args("stage2m-exec-drift")
+    drifted.support_max_concurrent_needs = 4
+    drifted.endpoint_request_limit = 4
+    with pytest.raises(ValueError, match="manifest differs"):
+        _ensure_experiment_manifest(drifted, bundle, tmp_path, flags)
+
+
+def test_execution_config_binds_frozen_planner_artifact_content(tmp_path: Path) -> None:
+    bundle = HumanBenchmarkCompiler().compile(PILOT)
+    flags = QualityRepairFeatureFlags()
+    frozen = tmp_path / "frozen-planner.json"
+    frozen.write_text('{"artifact_version": "planner-invocation.v2"}\n', encoding="utf-8")
+    args = _args("stage2m-frozen-planner")
+    args.frozen_planner_artifact = frozen
+
+    _ensure_experiment_manifest(args, bundle, tmp_path, flags)
+
+    payload = json.loads((tmp_path / "experiment_manifest.json").read_text("utf-8"))
+    expected = "sha256:" + hashlib.sha256(frozen.read_bytes()).hexdigest()
+    assert payload["execution_config"]["frozen_planner_artifact_hash"] == expected
+    assert payload["execution_config_hash"] != payload["run_config_hash"]
 
 
 def test_quality_repair_config_parses_json_enum_values_in_strict_mode(

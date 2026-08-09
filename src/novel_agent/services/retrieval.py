@@ -13,6 +13,7 @@ from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
     FusedCandidate,
+    NeedExecutionStatus,
     RetrievalChannel,
     RetrievalStopReason,
     RetrievalTrace,
@@ -21,6 +22,7 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
+from novel_agent.services.need_query_compiler import NeedQueryCompiler, compile_need_query
 
 ANCHOR_KINDS = frozenset(
     {
@@ -136,7 +138,7 @@ class RerankService:
         scores = tuple(
             float(score)
             for score in self._adapter.score(
-                need.query_text,
+                compile_need_query(need).semantic_query,
                 tuple(candidate.unit.text for candidate in eligible),
             )
         )
@@ -327,13 +329,31 @@ class RetrievalOrchestrator:
 
     def retrieve(self, need: Stage1MemoryNeed) -> RetrievalTrace:
         route = ROUTES[need.query_intent]
-        primary_channels = tuple(
+        bundle = compile_need_query(need)
+        pool_allowed = tuple(
             channel
-            for channel in route.channels
+            for channel in (*route.channels, *route.fallback_channels)
             if _pool_for_channel(channel) in need.allowed_candidate_pools
         )
+        query_eligible, unavailable = NeedQueryCompiler.eligible_channels(
+            need, bundle, pool_allowed
+        )
+        primary_channels = tuple(channel for channel in route.channels if channel in query_eligible)
         if not primary_channels:
-            raise ValueError("memory need candidate pools forbid every channel for its intent")
+            return RetrievalTrace(
+                need_id=need.need_id,
+                intent=need.query_intent,
+                allowed_channels=(),
+                channel_candidate_counts={},
+                candidates=(),
+                fusion_applied=False,
+                stop_reason=RetrievalStopReason.NO_EXECUTABLE_QUERY,
+                need_execution_status=NeedExecutionStatus.NOT_EXECUTED_NO_EXECUTABLE_QUERY,
+                calls_allocated=0,
+                compiled_query_bundle=bundle.model_dump(mode="json"),
+                effective_channels=(),
+                query_unavailable_reasons=unavailable,
+            )
         primary = self._run_channels(need, primary_channels)
         candidates = self._combine(primary, fusion=route.fusion)
         rerank_used = (
@@ -352,9 +372,7 @@ class RetrievalOrchestrator:
         fallback_reason: str | None = None
         all_results = dict(primary)
         fallback_channels = tuple(
-            channel
-            for channel in route.fallback_channels
-            if _pool_for_channel(channel) in need.allowed_candidate_pools
+            channel for channel in route.fallback_channels if channel in query_eligible
         )
         if not selected and fallback_channels:
             fallback_used = True
@@ -390,6 +408,12 @@ class RetrievalOrchestrator:
             fallback_used=fallback_used,
             fallback_reason=fallback_reason,
             stop_reason=stop_reason,
+            direct_unit_ids=tuple(dict.fromkeys(candidate.unit.unit_id for candidate in selected)),
+            compiled_query_bundle=bundle.model_dump(mode="json"),
+            effective_channels=tuple(
+                dict.fromkeys((*primary_channels, *(fallback_channels if fallback_used else ())))
+            ),
+            query_unavailable_reasons=unavailable,
         )
 
     def _run_channels(

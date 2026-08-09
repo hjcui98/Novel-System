@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import cast
 
@@ -47,6 +49,10 @@ from novel_agent.domain.writer_context import (
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.content_addressing import canonical_json_bytes, quote_hash
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_request_admission import (
+    ModelRequestAdmissionController,
+    SchedulingBudgetUnsatisfiableError,
+)
 from novel_agent.services.need_completion import (
     NeedCompletionEvaluator,
     NeedCompletionResult,
@@ -76,19 +82,15 @@ SEMANTIC_SUPPORT_CAUSAL_CHAPTER_WINDOW = 2
 # enforced independently by the assembler.  The single-slice probe runs without
 # thinking mode and shares the 4096 ceiling used by the multi-slice synthesis.
 SEMANTIC_SUPPORT_PROPOSAL_MAX_OUTPUT_TOKENS = 4096
-# A synthesized multi-slice claim may cite many exact slices; the completion
-# carries a bounded thinking-mode deliberation plus the final JSON.  The
-# measured synthesis closes at ~600-2000 completion tokens with a 500-token
-# thinking budget, so the 4096 ceiling leaves generous headroom and completes
-# well inside the ModelRequest 600-second timeout.
-SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS = 4096
-# The local Qwen3.6 endpoint enforces a hard per-request thinking token budget
-# (`thinking_token_budget`): the sampler forces the close of the thinking block
-# once the budget is consumed, so a multi-slice synthesis request completes
-# with bounded deliberation and still closes the structured JSON within the
-# output ceiling.  Measured on the live endpoint: a 170-slice synthesis with a
-# 500-token budget closes in ~34s with a valid cross-slice claim.
-SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET = 500
+# The frozen P002/C40 211-slice prompt repeatedly exhausted 4096 completion
+# tokens even with a nominal 500-token thinking budget.  With thinking disabled
+# the identical prompt returned valid typed JSON in 283 tokens.  This is a
+# transport guard only: prompt, evidence, workset, and typed contract are intact.
+SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS = 2048
+# Keep the disabled-mode budget explicit in execution identity.  Callers may
+# opt into a measured fixed budget through ClaimSupportTransportConfig; the
+# CLI validates it against the same fixed output ceiling.
+SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET = 0
 # The whole-claim verifier runs without thinking mode; its per-claim entailment
 # decision stays small, so the ceiling covers the bounded decisions JSON.
 SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS = 1024
@@ -98,7 +100,7 @@ SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS = 1024
 # the inference server briefly and make subsequent requests queue behind it.
 # Separate the two stages instead of applying the verifier's short limit to the
 # more expensive proposal call.
-SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS = 300.0
+SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS = 600.0
 # A multi-slice synthesis request carries a serialized-request-bounded chunk
 # of the Need's workset plus the task contract, so its completion can take
 # substantially longer than a single-slice proposal.  The domain ModelRequest
@@ -474,6 +476,12 @@ class _FailedCallDiagnostic:
     status_code: int | None = None
     retry_count: int = 0
     failed_input_ref: ArtifactRef | None = None
+    failed_output_ref: ArtifactRef | None = None
+    finish_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    latency_ms: int | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -486,13 +494,68 @@ class _FailedCallDiagnostic:
                 if self.failed_input_ref is not None
                 else None
             ),
+            "failed_output_ref": (
+                self.failed_output_ref.model_dump(mode="json")
+                if self.failed_output_ref is not None
+                else None
+            ),
+            "finish_reason": self.finish_reason,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "latency_ms": self.latency_ms,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _NeedSupportOutcome:
+    """Local result of one Need pipeline for deterministic merge by the host.
+
+    Every list is collected inside a single worker thread; the host merges
+    outcomes in original Need order, so the merged funnel counts, groups,
+    receipts, attestations, progress events, and diagnostics are identical to
+    a strictly serial execution.
+    """
+
+    need_id: StableId
+    funnel: SupportFunnel
+    groups: tuple[ClaimSupportGroup, ...]
+    variants: tuple[ClaimVariant, ...]
+    receipts: tuple[ClaimSupportReceipt, ...]
+    attestations: tuple[CutoffAttestation, ...]
+    progress_events: tuple[dict[str, object], ...]
+    diagnostics: tuple[str, ...]
+    artifact_intents: tuple[_ArtifactIntent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactIntent:
+    payload: bytes
+    media_type: str
+    expected_ref: ArtifactRef
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimSupportTransportConfig:
+    """Fixed, replayable transport guards for Claim Support generation."""
+
+    multi_enable_thinking: bool = False
+    multi_thinking_token_budget: int = SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET
+    multi_max_output_tokens: int = SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.multi_max_output_tokens <= 4096:
+            raise ValueError("Claim Support multi output tokens must be between 1 and 4096")
+        if not 0 <= self.multi_thinking_token_budget <= self.multi_max_output_tokens:
+            raise ValueError("Claim Support thinking budget must fit inside its output budget")
+        if not self.multi_enable_thinking and self.multi_thinking_token_budget != 0:
+            raise ValueError("disabled Claim Support thinking requires a zero thinking budget")
 
 
 class TrustedClaimSupportProducer:
     """Produce replayable narrow claims from public retrieval results."""
 
-    version = "trusted_claim_support_producer.v31"
+    version = "trusted_claim_support_producer.v32"
 
     def __init__(
         self,
@@ -501,6 +564,10 @@ class TrustedClaimSupportProducer:
         artifact_writer: SupportArtifactWriter | None = None,
         progress_writer: SupportProgressWriter | None = None,
         pre_proposal_trace: bool = False,
+        max_concurrent_needs: int = 1,
+        max_inflight_kv_tokens: int | None = None,
+        admission_controller: ModelRequestAdmissionController | None = None,
+        transport_config: ClaimSupportTransportConfig | None = None,
     ) -> None:
         """Produce deterministic support evidence for public Needs.
 
@@ -510,11 +577,41 @@ class TrustedClaimSupportProducer:
         Ledger) and records the durable membership audit without any model
         call.  It never proposes or verifies claims and is used to locate the
         first source-family loss on a frozen input before a real run.
+
+        ``max_concurrent_needs`` controls only the scheduling of independent
+        Need pipelines in the semantic support stage (1 = strictly serial,
+        the historical default).  Concurrency changes when requests are
+        submitted, never the request content, workset, chunk semantics, claim
+        logic, or budgets; every Need keeps its internal
+        proposal -> verify -> chunk -> verify dependency chain serial.
+
+        ``max_inflight_kv_tokens`` bounds the summed estimated sequence tokens
+        of in-flight model requests (prompt estimate + reserved output +
+        safety margin).  Requests above the budget wait for capacity instead
+        of failing and never shrink their own context.  ``None`` disables the
+        token budget (request-count limiting only).
+
+        ``admission_controller``, when injected, replaces the internal
+        per-producer KV scheduler with a global controller shared across
+        corridors/cases; ``max_inflight_kv_tokens`` is then informational and
+        must be consistent with the controller budget.
         """
+        if not 1 <= max_concurrent_needs <= 8:
+            raise ValueError("max concurrent needs must be between 1 and 8")
+        if max_inflight_kv_tokens is not None and max_inflight_kv_tokens < 1:
+            raise ValueError("max inflight KV tokens must be positive or None")
         self._semantic_gateway = semantic_gateway
         self._artifact_writer = artifact_writer
         self._progress_writer = progress_writer
         self._pre_proposal_trace = pre_proposal_trace
+        self._max_concurrent_needs = max_concurrent_needs
+        self._max_inflight_kv_tokens = max_inflight_kv_tokens
+        self._admission_controller = admission_controller
+        self._transport_config = transport_config or ClaimSupportTransportConfig()
+        self._verification_cache_lock = threading.Lock()
+        self._kv_scheduler_condition = threading.Condition(threading.Lock())
+        self._inflight_kv_tokens = 0
+        self._local_progress = threading.local()
         self.last_diagnostic_codes: tuple[str, ...] = ()
         self.last_funnel: SupportFunnel = SupportFunnel()
         self.last_workset_reports: tuple[SupportWorksetReport, ...] = ()
@@ -530,6 +627,7 @@ class TrustedClaimSupportProducer:
                 ArtifactRef,
             ],
         ] = {}
+        self._verification_inflight: dict[str, threading.Event] = {}
 
     def produce(
         self,
@@ -861,6 +959,271 @@ class TrustedClaimSupportProducer:
             + "\n</PUBLIC_SUPPORT_INPUT>"
         )
         return prompt
+
+    @staticmethod
+    def _merge_funnel(target: SupportFunnel, delta: SupportFunnel) -> None:
+        """Accumulate one Need pipeline's funnel delta into the run funnel.
+
+        Field-wise summation over int counters plus ordered tuple extension is
+        identical to the strictly serial accumulation, so the merged funnel is
+        byte-for-byte equal to a serial execution.
+        """
+        for name in SupportFunnel.as_dict(SupportFunnel()):
+            if name in {"affected_need_ids", "affected_slice_counts"}:
+                existing = getattr(target, name)
+                added = getattr(delta, name)
+                setattr(target, name, (*existing, *added))
+            else:
+                setattr(target, name, getattr(target, name) + getattr(delta, name))
+
+    def _produce_need_pipeline(
+        self,
+        *,
+        task: BenchmarkTaskContract,
+        need: Stage1MemoryNeed,
+        workset: Sequence[EvidenceSlice],
+        entry: dict[str, object],
+        basis_commit_id: CommitId,
+        basis_snapshot_id: StableId,
+        token_counter: TokenCounter,
+        origin_need_ids: Mapping[StableId, tuple[StableId, ...]],
+    ) -> _NeedSupportOutcome:
+        """Run one Need's proposal -> verify -> chunk -> verify chain.
+
+        The Need pipeline is independent of every other Need: worksets are
+        pre-built by the host, verified claims append groups scoped to this
+        Need only, and the funnel/audit state is collected locally so the host
+        merges outcomes deterministically in original Need order.
+        """
+        funnel = SupportFunnel()
+        groups: list[ClaimSupportGroup] = []
+        variants: list[ClaimVariant] = []
+        receipts: list[ClaimSupportReceipt] = []
+        attestations: list[CutoffAttestation] = []
+        progress_events: list[dict[str, object]] = []
+        diagnostics: list[str] = []
+        artifact_intents: list[_ArtifactIntent] = []
+        self._local_progress.collector = progress_events
+        self._local_progress.diagnostics = diagnostics
+        self._local_progress.artifact_intents = artifact_intents
+        need_id = StableId(cast(str, entry["need_id"]))
+        try:
+            required_facets = tuple(
+                facet.need_facet_id
+                for facet in need.need_facets
+                if need.completion_spec is None
+                or facet.need_facet_id in need.completion_spec.required_need_facet_ids
+            )
+            # Single-slice sufficiency: the semantic owner decides whether one
+            # exact slice directly expresses the complete required-facet
+            # conclusion.  The host never closes a facet from the proposal
+            # alone; the whole-claim verifier runs over the complete claim,
+            # the cited slice, and bounded counter-evidence.  The probe window
+            # is a bounded prefix of the workset so the request stays under the
+            # endpoint's practical request ceiling; multi-slice synthesis then
+            # receives the full token-bounded workset.  A pre-proposal trace
+            # runs no model call and therefore proposes nothing.
+            single_window = self._single_slice_window(
+                workset,
+                token_counter=token_counter,
+            )
+            single_audit: _SliceProposalAudit | None = None
+            if self._semantic_gateway is not None:
+                single_audit = self._propose_single_slice(
+                    task=task,
+                    need=need,
+                    workset=single_window,
+                    entry=entry,
+                    basis_commit_id=basis_commit_id,
+                    basis_snapshot_id=basis_snapshot_id,
+                    funnel=funnel,
+                )
+            if single_audit is not None and single_audit.single_slice:
+                claim = cast(SingleSliceClaimDraft, single_audit.batch.claims[0])
+                if claim.single_slice_sufficient:
+                    funnel.single_slice_proposals += 1
+                    if self._reject_garbage_claim(claim.claim_text):
+                        funnel.proposals_rejected += 1
+                        self._record_progress(
+                            stage="proposal_rejected",
+                            reason="rejected:garbage_claim",
+                            need_id=need.need_id.root,
+                            claim_text=claim.claim_text,
+                        )
+                    elif (
+                        cited := self._slice_by_id(workset, claim.slice_unit_id)
+                    ) is not None and set(claim.need_facet_ids).issubset(
+                        {facet.need_facet_id for facet in need.need_facets}
+                    ):
+                        audit = self._verify_claim_whole(
+                            task=task,
+                            need=need,
+                            claim_text=claim.claim_text,
+                            facet_ids=claim.need_facet_ids,
+                            cited_slices=(cited,),
+                            context_slices=tuple(
+                                slice_ for slice_ in workset if slice_.slice_id != cited.slice_id
+                            ),
+                            basis_commit_id=basis_commit_id,
+                            basis_snapshot_id=basis_snapshot_id,
+                            funnel=funnel,
+                            proposal_request_id=single_audit.call.request_id,
+                        )
+                        if audit is not None:
+                            self._emit_verified_claim(
+                                need=need,
+                                claim_text=claim.claim_text,
+                                unit_ids=(cited.slice_id,),
+                                evidence_refs=(cited.evidence_ref,),
+                                facet_ids=claim.need_facet_ids,
+                                audit=audit,
+                                proposal_audit=single_audit,
+                                task=task,
+                                basis_commit_id=basis_commit_id,
+                                basis_snapshot_id=basis_snapshot_id,
+                                token_counter=token_counter,
+                                groups=groups,
+                                variants=variants,
+                                receipts=receipts,
+                                attestations=attestations,
+                                producer_marker="single",
+                            )
+                            funnel.single_slice_verified += 1
+                    else:
+                        funnel.proposals_rejected += 1
+            # On-demand multi-slice synthesis only for a still-open Need.
+            # Transport isolation: the workset is partitioned into serialized
+            # request-bounded chunks; each chunk is one synthesis request, and
+            # a transport failure loses only that chunk's slices.  Required-
+            # facet closure is recomputed after every emitted verified claim,
+            # so a Need closed by an early chunk schedules no further chunks.
+            covered_facets = {
+                facet_id
+                for group in groups
+                if need_id in group.need_ids
+                for facet_id in group.need_facet_ids
+            }
+            chunks = self._workset_chunks(
+                workset,
+                task=task,
+                need=need,
+                entry=entry,
+                basis_commit_id=basis_commit_id,
+                basis_snapshot_id=basis_snapshot_id,
+            )
+            for chunk_index, chunk in enumerate(chunks):
+                chunk_rows = [
+                    self._slice_audit_row(
+                        stage=AUDIT_SEMANTIC_CHUNKS_EXPOSED,
+                        slice_=slice_,
+                        order=index,
+                        cost=len(slice_.text.encode("utf-8")),
+                        origin_need_ids=(
+                            origin_need_ids.get(slice_.parent_unit_id, ())
+                            if slice_.parent_unit_id is not None
+                            else ()
+                        ),
+                        chunk_index=chunk_index,
+                    )
+                    for index, slice_ in enumerate(chunk)
+                ]
+                self._emit_audit(AUDIT_SEMANTIC_CHUNKS_EXPOSED, need_id, chunk_rows)
+                if set(required_facets).issubset(covered_facets):
+                    break
+                if self._semantic_gateway is None:
+                    continue
+                multi_audit = self._propose_multi_slice(
+                    task=task,
+                    need=need,
+                    workset=chunk,
+                    entry=entry,
+                    basis_commit_id=basis_commit_id,
+                    basis_snapshot_id=basis_snapshot_id,
+                    funnel=funnel,
+                )
+                if multi_audit is None or multi_audit.single_slice:
+                    continue
+                multi_claim = cast(MultiSliceClaimDraft, multi_audit.batch.claims[0])
+                funnel.multi_slice_proposals += 1
+                cited_ids = set(multi_claim.slice_unit_ids)
+                chunk_ids = {slice_.slice_id for slice_ in chunk}
+                legal_facets = {facet.need_facet_id for facet in need.need_facets}
+                if (
+                    cited_ids.issubset(chunk_ids)
+                    and cited_ids
+                    and set(multi_claim.need_facet_ids).issubset(legal_facets)
+                ):
+                    if self._reject_garbage_claim(multi_claim.claim_text):
+                        funnel.proposals_rejected += 1
+                        self._record_progress(
+                            stage="proposal_rejected",
+                            reason="rejected:garbage_claim",
+                            need_id=need.need_id.root,
+                            claim_text=multi_claim.claim_text,
+                        )
+                        continue
+                    cited_slices = tuple(slice_ for slice_ in chunk if slice_.slice_id in cited_ids)
+                    audit = self._verify_claim_whole(
+                        task=task,
+                        need=need,
+                        claim_text=multi_claim.claim_text,
+                        facet_ids=multi_claim.need_facet_ids,
+                        cited_slices=cited_slices,
+                        context_slices=tuple(
+                            slice_ for slice_ in chunk if slice_.slice_id not in cited_ids
+                        ),
+                        basis_commit_id=basis_commit_id,
+                        basis_snapshot_id=basis_snapshot_id,
+                        funnel=funnel,
+                        proposal_request_id=multi_audit.call.request_id,
+                    )
+                    if audit is not None:
+                        self._emit_verified_claim(
+                            need=need,
+                            claim_text=multi_claim.claim_text,
+                            unit_ids=tuple(slice_.slice_id for slice_ in cited_slices),
+                            evidence_refs=tuple(slice_.evidence_ref for slice_ in cited_slices),
+                            facet_ids=multi_claim.need_facet_ids,
+                            audit=audit,
+                            proposal_audit=multi_audit,
+                            task=task,
+                            basis_commit_id=basis_commit_id,
+                            basis_snapshot_id=basis_snapshot_id,
+                            token_counter=token_counter,
+                            groups=groups,
+                            variants=variants,
+                            receipts=receipts,
+                            attestations=attestations,
+                            producer_marker="synthesized",
+                        )
+                        funnel.multi_slice_verified += 1
+                        covered_facets.update(multi_claim.need_facet_ids)
+                else:
+                    funnel.proposals_rejected += 1
+            covered_facets = {
+                facet_id
+                for group in groups
+                if need_id in group.need_ids
+                for facet_id in group.need_facet_ids
+            }
+            if not set(required_facets).issubset(covered_facets):
+                funnel.facet_not_closed += 1
+
+        finally:
+            self._local_progress.collector = None
+            self._local_progress.diagnostics = None
+            self._local_progress.artifact_intents = None
+        return _NeedSupportOutcome(
+            need_id=need_id,
+            funnel=funnel,
+            groups=tuple(groups),
+            variants=tuple(variants),
+            receipts=tuple(receipts),
+            attestations=tuple(attestations),
+            progress_events=tuple(progress_events),
+            diagnostics=tuple(diagnostics),
+            artifact_intents=tuple(artifact_intents),
+        )
 
     def _produce_semantic_support_with_worksets(
         self,
@@ -1259,211 +1622,70 @@ class TrustedClaimSupportProducer:
         variants: list[ClaimVariant] = []
         receipts: list[ClaimSupportReceipt] = []
         attestations: list[CutoffAttestation] = []
-        for entry in public_needs:
-            need_id = StableId(cast(str, entry["need_id"]))
-            need = need_by_id[need_id]
-            workset = worksets_by_need.get(need_id, ())
-            if not workset:
-                funnel.facet_not_closed += 1
-                continue
-            required_facets = tuple(
-                facet.need_facet_id
-                for facet in need.need_facets
-                if need.completion_spec is None
-                or facet.need_facet_id in need.completion_spec.required_need_facet_ids
-            )
-            # Single-slice sufficiency: the semantic owner decides whether one
-            # exact slice directly expresses the complete required-facet
-            # conclusion.  The host never closes a facet from the proposal
-            # alone; the whole-claim verifier runs over the complete claim,
-            # the cited slice, and bounded counter-evidence.  The probe window
-            # is a bounded prefix of the workset so the request stays under the
-            # endpoint's practical request ceiling; multi-slice synthesis then
-            # receives the full token-bounded workset.  A pre-proposal trace
-            # runs no model call and therefore proposes nothing.
-            single_window = self._single_slice_window(
-                workset,
-                token_counter=token_counter,
-            )
-            single_audit: _SliceProposalAudit | None = None
-            if self._semantic_gateway is not None:
-                single_audit = self._propose_single_slice(
-                    task=task,
-                    need=need,
-                    workset=single_window,
-                    entry=entry,
-                    basis_commit_id=basis_commit_id,
-                    basis_snapshot_id=basis_snapshot_id,
-                    funnel=funnel,
-                )
-            if single_audit is not None and single_audit.single_slice:
-                claim = cast(SingleSliceClaimDraft, single_audit.batch.claims[0])
-                if claim.single_slice_sufficient:
-                    funnel.single_slice_proposals += 1
-                    if self._reject_garbage_claim(claim.claim_text):
-                        funnel.proposals_rejected += 1
-                        self._record_progress(
-                            stage="proposal_rejected",
-                            reason="rejected:garbage_claim",
-                            need_id=need.need_id.root,
-                            claim_text=claim.claim_text,
-                        )
-                    elif (
-                        cited := self._slice_by_id(workset, claim.slice_unit_id)
-                    ) is not None and set(claim.need_facet_ids).issubset(
-                        {facet.need_facet_id for facet in need.need_facets}
-                    ):
-                        audit = self._verify_claim_whole(
-                            task=task,
-                            need=need,
-                            claim_text=claim.claim_text,
-                            facet_ids=claim.need_facet_ids,
-                            cited_slices=(cited,),
-                            context_slices=tuple(
-                                slice_ for slice_ in workset if slice_.slice_id != cited.slice_id
-                            ),
-                            basis_commit_id=basis_commit_id,
-                            basis_snapshot_id=basis_snapshot_id,
-                            funnel=funnel,
-                        )
-                        if audit is not None:
-                            self._emit_verified_claim(
-                                need=need,
-                                claim_text=claim.claim_text,
-                                unit_ids=(cited.slice_id,),
-                                evidence_refs=(cited.evidence_ref,),
-                                facet_ids=claim.need_facet_ids,
-                                audit=audit,
-                                proposal_audit=single_audit,
-                                task=task,
-                                basis_commit_id=basis_commit_id,
-                                basis_snapshot_id=basis_snapshot_id,
-                                token_counter=token_counter,
-                                groups=groups,
-                                variants=variants,
-                                receipts=receipts,
-                                attestations=attestations,
-                                producer_marker="single",
-                            )
-                            funnel.single_slice_verified += 1
-                    else:
-                        funnel.proposals_rejected += 1
-            # On-demand multi-slice synthesis only for a still-open Need.
-            # Transport isolation: the workset is partitioned into serialized
-            # request-bounded chunks; each chunk is one synthesis request, and
-            # a transport failure loses only that chunk's slices.  Required-
-            # facet closure is recomputed after every emitted verified claim,
-            # so a Need closed by an early chunk schedules no further chunks.
-            covered_facets = {
-                facet_id
-                for group in groups
-                if need_id in group.need_ids
-                for facet_id in group.need_facet_ids
-            }
-            chunks = self._workset_chunks(
-                workset,
-                task=task,
-                need=need,
-                entry=entry,
-                basis_commit_id=basis_commit_id,
-                basis_snapshot_id=basis_snapshot_id,
-            )
-            for chunk_index, chunk in enumerate(chunks):
-                chunk_rows = [
-                    self._slice_audit_row(
-                        stage=AUDIT_SEMANTIC_CHUNKS_EXPOSED,
-                        slice_=slice_,
-                        order=index,
-                        cost=len(slice_.text.encode("utf-8")),
-                        origin_need_ids=(
-                            origin_need_ids.get(slice_.parent_unit_id, ())
-                            if slice_.parent_unit_id is not None
-                            else ()
-                        ),
-                        chunk_index=chunk_index,
-                    )
-                    for index, slice_ in enumerate(chunk)
-                ]
-                self._emit_audit(AUDIT_SEMANTIC_CHUNKS_EXPOSED, need_id, chunk_rows)
-                if set(required_facets).issubset(covered_facets):
-                    break
-                if self._semantic_gateway is None:
-                    continue
-                multi_audit = self._propose_multi_slice(
-                    task=task,
-                    need=need,
-                    workset=chunk,
-                    entry=entry,
-                    basis_commit_id=basis_commit_id,
-                    basis_snapshot_id=basis_snapshot_id,
-                    funnel=funnel,
-                )
-                if multi_audit is None or multi_audit.single_slice:
-                    continue
-                multi_claim = cast(MultiSliceClaimDraft, multi_audit.batch.claims[0])
-                funnel.multi_slice_proposals += 1
-                cited_ids = set(multi_claim.slice_unit_ids)
-                chunk_ids = {slice_.slice_id for slice_ in chunk}
-                legal_facets = {facet.need_facet_id for facet in need.need_facets}
-                if (
-                    cited_ids.issubset(chunk_ids)
-                    and cited_ids
-                    and set(multi_claim.need_facet_ids).issubset(legal_facets)
-                ):
-                    if self._reject_garbage_claim(multi_claim.claim_text):
-                        funnel.proposals_rejected += 1
-                        self._record_progress(
-                            stage="proposal_rejected",
-                            reason="rejected:garbage_claim",
-                            need_id=need.need_id.root,
-                            claim_text=multi_claim.claim_text,
-                        )
-                        continue
-                    cited_slices = tuple(slice_ for slice_ in chunk if slice_.slice_id in cited_ids)
-                    audit = self._verify_claim_whole(
+        outcomes: list[_NeedSupportOutcome] = []
+        if self._max_concurrent_needs <= 1 or len(public_needs) <= 1:
+            for entry in public_needs:
+                need_id = StableId(cast(str, entry["need_id"]))
+                outcomes.append(
+                    self._produce_need_pipeline(
                         task=task,
-                        need=need,
-                        claim_text=multi_claim.claim_text,
-                        facet_ids=multi_claim.need_facet_ids,
-                        cited_slices=cited_slices,
-                        context_slices=tuple(
-                            slice_ for slice_ in chunk if slice_.slice_id not in cited_ids
-                        ),
+                        need=need_by_id[need_id],
+                        workset=worksets_by_need.get(need_id, ()),
+                        entry=entry,
                         basis_commit_id=basis_commit_id,
                         basis_snapshot_id=basis_snapshot_id,
-                        funnel=funnel,
+                        token_counter=token_counter,
+                        origin_need_ids=origin_need_ids,
                     )
-                    if audit is not None:
-                        self._emit_verified_claim(
-                            need=need,
-                            claim_text=multi_claim.claim_text,
-                            unit_ids=tuple(slice_.slice_id for slice_ in cited_slices),
-                            evidence_refs=tuple(slice_.evidence_ref for slice_ in cited_slices),
-                            facet_ids=multi_claim.need_facet_ids,
-                            audit=audit,
-                            proposal_audit=multi_audit,
-                            task=task,
-                            basis_commit_id=basis_commit_id,
-                            basis_snapshot_id=basis_snapshot_id,
-                            token_counter=token_counter,
-                            groups=groups,
-                            variants=variants,
-                            receipts=receipts,
-                            attestations=attestations,
-                            producer_marker="synthesized",
-                        )
-                        funnel.multi_slice_verified += 1
-                        covered_facets.update(multi_claim.need_facet_ids)
-                else:
-                    funnel.proposals_rejected += 1
-            covered_facets = {
-                facet_id
-                for group in groups
-                if need_id in group.need_ids
-                for facet_id in group.need_facet_ids
-            }
-            if not set(required_facets).issubset(covered_facets):
-                funnel.facet_not_closed += 1
+                )
+        else:
+            with ThreadPoolExecutor(
+                max_workers=self._max_concurrent_needs,
+                thread_name_prefix="need-support",
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._produce_need_pipeline,
+                        task=task,
+                        need=need_by_id[StableId(cast(str, entry["need_id"]))],
+                        workset=worksets_by_need.get(StableId(cast(str, entry["need_id"])), ()),
+                        entry=entry,
+                        basis_commit_id=basis_commit_id,
+                        basis_snapshot_id=basis_snapshot_id,
+                        token_counter=token_counter,
+                        origin_need_ids=origin_need_ids,
+                    )
+                    for entry in public_needs
+                ]
+                for future in futures:
+                    outcomes.append(future.result())
+        merged_diagnostics: list[str] = []
+        proposal_offset = 0
+        for outcome in outcomes:
+            for intent in outcome.artifact_intents:
+                if self._artifact_writer is None:
+                    continue
+                actual_ref = self._artifact_writer(intent.payload, intent.media_type)
+                if actual_ref != intent.expected_ref:
+                    raise RuntimeError(
+                        "coordinator artifact persistence returned a conflicting content ref"
+                    )
+            self._merge_funnel(funnel, outcome.funnel)
+            groups.extend(outcome.groups)
+            variants.extend(outcome.variants)
+            receipts.extend(outcome.receipts)
+            attestations.extend(outcome.attestations)
+            merged_diagnostics.extend(outcome.diagnostics)
+            for event in outcome.progress_events:
+                if event.get("stage") == "proposal" and "batch_index" in event:
+                    event = {
+                        **event,
+                        "batch_index": proposal_offset + int(cast(int, event["batch_index"])),
+                    }
+                self._record_progress(**event)
+            proposal_offset += outcome.funnel.proposal_requests
+        if merged_diagnostics:
+            self.last_diagnostic_codes = tuple(dict.fromkeys(merged_diagnostics))
 
         # Raw-slice ledger retention: the packed exact slices are retained in
         # the separate EvidenceLedger under raw identity (no support group, no
@@ -2000,6 +2222,8 @@ class TrustedClaimSupportProducer:
             max_output_tokens=SEMANTIC_SUPPORT_PROPOSAL_MAX_OUTPUT_TOKENS,
             timeout_seconds=SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS,
             enable_thinking=False,
+            scheduling_need_id=need.need_id,
+            scheduling_stage="claim_support_single_proposal",
         )
         budget_fields: dict[str, object] = {
             "estimated_input_tokens": estimated_input_tokens,
@@ -2007,6 +2231,8 @@ class TrustedClaimSupportProducer:
             "timeout_seconds": SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS,
             "applied_input_token_budget": SEMANTIC_SUPPORT_SERIALIZED_REQUEST_TOKEN_BUDGET,
         }
+        reserved_tokens = estimated_input_tokens + SEMANTIC_SUPPORT_PROPOSAL_MAX_OUTPUT_TOKENS
+        self._acquire_kv_capacity(reserved_tokens)
         try:
             result = asyncio.run(self._semantic_gateway.generate_text(proposal_request))
             batch = SingleSliceProposalBatch.model_validate_json(
@@ -2015,6 +2241,12 @@ class TrustedClaimSupportProducer:
             call = result.call_record
         except ValidationError as error:
             funnel.proposals_rejected += 1
+            failed_output_bytes = result.text.encode("utf-8")
+            failed_output_hash = sha256_id(failed_output_bytes)
+            failed_output_ref = self._retain_bytes(
+                failed_output_bytes,
+                "application/vnd.novel-agent.failed-model-output+text",
+            )
             diagnostic = _FailedCallDiagnostic(
                 category="invalid_structured_content",
                 detail=self._sanitize_error_message(str(error)),
@@ -2022,6 +2254,12 @@ class TrustedClaimSupportProducer:
                     prompt_bytes,
                     "application/vnd.novel-agent.support-proposal-prompt+text",
                 ),
+                failed_output_ref=failed_output_ref,
+                finish_reason="stop",
+                input_tokens=result.call_record.usage.input_tokens,
+                output_tokens=result.call_record.usage.output_tokens,
+                reasoning_tokens=result.call_record.usage.reasoning_tokens,
+                latency_ms=result.call_record.latency_ms,
             )
             self._record_progress(
                 stage="proposal",
@@ -2031,6 +2269,7 @@ class TrustedClaimSupportProducer:
                 need_ids=[need.need_id.root],
                 slice_unit_ids=[slice_.slice_id.root for slice_ in workset],
                 input_hash=input_hash.root,
+                output_hash=failed_output_hash.root,
                 prompt_bytes=len(prompt_bytes),
                 request_id=proposal_request.request_id.root,
                 failed_call=diagnostic.as_dict(),
@@ -2052,6 +2291,12 @@ class TrustedClaimSupportProducer:
                     prompt_bytes,
                     "application/vnd.novel-agent.support-proposal-prompt+text",
                 ),
+                failed_output_ref=classified.failed_output_ref,
+                finish_reason=classified.finish_reason,
+                input_tokens=classified.input_tokens,
+                output_tokens=classified.output_tokens,
+                reasoning_tokens=classified.reasoning_tokens,
+                latency_ms=classified.latency_ms,
             )
             self._record_progress(
                 stage="proposal",
@@ -2066,24 +2311,15 @@ class TrustedClaimSupportProducer:
                 failed_call=diagnostic.as_dict(),
                 **budget_fields,
             )
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (
-                        *self.last_diagnostic_codes,
-                        f"PRODUCER_SINGLE_SLICE_{type(error).__name__.upper()}",
-                    )
-                )
-            )
+            self._append_diagnostic_code(f"PRODUCER_SINGLE_SLICE_{type(error).__name__.upper()}")
             return None
+        finally:
+            self._release_kv_capacity(reserved_tokens)
         raw_output = self._semantic_gateway.raw_responses.get(proposal_request.request_id.root)
         if raw_output is None:
             funnel.proposal_transport_failures += 1
             funnel.slices_not_proposed_transport += len(workset)
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (*self.last_diagnostic_codes, "PRODUCER_SINGLE_SLICE_RAW_OUTPUT_MISSING")
-                )
-            )
+            self._append_diagnostic_code("PRODUCER_SINGLE_SLICE_RAW_OUTPUT_MISSING")
             return None
         raw_output_bytes = raw_output.encode("utf-8")
         output_hash = sha256_id(raw_output_bytes)
@@ -2111,6 +2347,11 @@ class TrustedClaimSupportProducer:
             slice_unit_ids=[slice_.slice_id.root for slice_ in workset],
             request_id=proposal_request.request_id.root,
             prompt_bytes=len(prompt_bytes),
+            latency_ms=call.latency_ms,
+            finish_reason="stop",
+            input_tokens=call.usage.input_tokens,
+            output_tokens=call.usage.output_tokens,
+            reasoning_tokens=call.usage.reasoning_tokens,
             **budget_fields,
         )
         return _SliceProposalAudit(
@@ -2144,7 +2385,7 @@ class TrustedClaimSupportProducer:
         only the affected chunk's slices.
         """
 
-        output_headroom = SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS
+        output_headroom = self._transport_config.multi_max_output_tokens
         prompt_budget = max(
             1,
             SEMANTIC_SUPPORT_SERIALIZED_REQUEST_TOKEN_BUDGET - output_headroom,
@@ -2231,17 +2472,27 @@ class TrustedClaimSupportProducer:
             purpose=ModelCallPurpose.BATCH_TEST,
             trace_id=(f"stage2m-support-multi:{task.task_id.root}:{suffix}"),
             prompt=prompt,
-            max_output_tokens=SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS,
+            max_output_tokens=self._transport_config.multi_max_output_tokens,
             timeout_seconds=SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_TIMEOUT_SECONDS,
-            enable_thinking=True,
-            thinking_token_budget=SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET,
+            enable_thinking=self._transport_config.multi_enable_thinking,
+            thinking_token_budget=(
+                self._transport_config.multi_thinking_token_budget
+                if self._transport_config.multi_enable_thinking
+                else None
+            ),
+            scheduling_need_id=need.need_id,
+            scheduling_stage="claim_support_multi_proposal",
         )
         budget_fields: dict[str, object] = {
             "estimated_input_tokens": estimated_input_tokens,
-            "max_output_tokens": SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS,
+            "max_output_tokens": self._transport_config.multi_max_output_tokens,
+            "enable_thinking": self._transport_config.multi_enable_thinking,
+            "thinking_token_budget": self._transport_config.multi_thinking_token_budget,
             "timeout_seconds": SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_TIMEOUT_SECONDS,
             "applied_input_token_budget": SEMANTIC_SUPPORT_SERIALIZED_REQUEST_TOKEN_BUDGET,
         }
+        reserved_tokens = estimated_input_tokens + self._transport_config.multi_max_output_tokens
+        self._acquire_kv_capacity(reserved_tokens)
         try:
             result = asyncio.run(self._semantic_gateway.generate_text(proposal_request))
             batch = MultiSliceProposalBatch.model_validate_json(
@@ -2250,6 +2501,12 @@ class TrustedClaimSupportProducer:
             call = result.call_record
         except ValidationError as error:
             funnel.proposals_rejected += 1
+            failed_output_bytes = result.text.encode("utf-8")
+            failed_output_hash = sha256_id(failed_output_bytes)
+            failed_output_ref = self._retain_bytes(
+                failed_output_bytes,
+                "application/vnd.novel-agent.failed-model-output+text",
+            )
             diagnostic = _FailedCallDiagnostic(
                 category="invalid_structured_content",
                 detail=self._sanitize_error_message(str(error)),
@@ -2257,6 +2514,12 @@ class TrustedClaimSupportProducer:
                     prompt_bytes,
                     "application/vnd.novel-agent.support-proposal-prompt+text",
                 ),
+                failed_output_ref=failed_output_ref,
+                finish_reason="stop",
+                input_tokens=result.call_record.usage.input_tokens,
+                output_tokens=result.call_record.usage.output_tokens,
+                reasoning_tokens=result.call_record.usage.reasoning_tokens,
+                latency_ms=result.call_record.latency_ms,
             )
             self._record_progress(
                 stage="proposal",
@@ -2266,6 +2529,7 @@ class TrustedClaimSupportProducer:
                 need_ids=[need.need_id.root],
                 slice_unit_ids=[slice_.slice_id.root for slice_ in workset],
                 input_hash=input_hash.root,
+                output_hash=failed_output_hash.root,
                 prompt_bytes=len(prompt_bytes),
                 request_id=proposal_request.request_id.root,
                 failed_call=diagnostic.as_dict(),
@@ -2287,6 +2551,12 @@ class TrustedClaimSupportProducer:
                     prompt_bytes,
                     "application/vnd.novel-agent.support-proposal-prompt+text",
                 ),
+                failed_output_ref=classified.failed_output_ref,
+                finish_reason=classified.finish_reason,
+                input_tokens=classified.input_tokens,
+                output_tokens=classified.output_tokens,
+                reasoning_tokens=classified.reasoning_tokens,
+                latency_ms=classified.latency_ms,
             )
             self._record_progress(
                 stage="proposal",
@@ -2301,24 +2571,15 @@ class TrustedClaimSupportProducer:
                 failed_call=diagnostic.as_dict(),
                 **budget_fields,
             )
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (
-                        *self.last_diagnostic_codes,
-                        f"PRODUCER_MULTI_SLICE_{type(error).__name__.upper()}",
-                    )
-                )
-            )
+            self._append_diagnostic_code(f"PRODUCER_MULTI_SLICE_{type(error).__name__.upper()}")
             return None
+        finally:
+            self._release_kv_capacity(reserved_tokens)
         raw_output = self._semantic_gateway.raw_responses.get(proposal_request.request_id.root)
         if raw_output is None:
             funnel.proposal_transport_failures += 1
             funnel.slices_not_proposed_transport += len(workset)
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (*self.last_diagnostic_codes, "PRODUCER_MULTI_SLICE_RAW_OUTPUT_MISSING")
-                )
-            )
+            self._append_diagnostic_code("PRODUCER_MULTI_SLICE_RAW_OUTPUT_MISSING")
             return None
         raw_output_bytes = raw_output.encode("utf-8")
         output_hash = sha256_id(raw_output_bytes)
@@ -2345,6 +2606,11 @@ class TrustedClaimSupportProducer:
             slice_unit_ids=[slice_.slice_id.root for slice_ in workset],
             request_id=proposal_request.request_id.root,
             prompt_bytes=len(prompt_bytes),
+            latency_ms=call.latency_ms,
+            finish_reason="stop",
+            input_tokens=call.usage.input_tokens,
+            output_tokens=call.usage.output_tokens,
+            reasoning_tokens=call.usage.reasoning_tokens,
             **budget_fields,
         )
         return _SliceProposalAudit(
@@ -2368,6 +2634,7 @@ class TrustedClaimSupportProducer:
         basis_commit_id: CommitId,
         basis_snapshot_id: StableId,
         funnel: SupportFunnel,
+        proposal_request_id: StableId,
     ) -> _SemanticVerificationAudit | None:
         """Independently verify a complete claim over its cited exact slices.
 
@@ -2454,11 +2721,40 @@ class TrustedClaimSupportProducer:
         )
         verifier_prompt_bytes = verifier_prompt.encode("utf-8")
         verifier_input_hash = sha256_id(verifier_prompt_bytes)
-        cached = self._verification_cache.get(verifier_input_hash.root)
+        verification_cache_key = sha256_id(
+            canonical_json_bytes(
+                {
+                    "prompt_hash": verifier_input_hash.root,
+                    "endpoint_policy": self._semantic_gateway.endpoint_policy_identity(
+                        ModelRole.BATCH_TEST
+                    ),
+                    "max_output_tokens": SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS,
+                    "timeout_seconds": SEMANTIC_SUPPORT_VERIFICATION_TIMEOUT_SECONDS,
+                    "enable_thinking": False,
+                }
+            )
+        )
+        with self._verification_cache_lock:
+            cached = self._verification_cache.get(verification_cache_key.root)
+            inflight = self._verification_inflight.get(verification_cache_key.root)
+            cache_owner = cached is None and inflight is None
+            if cache_owner:
+                inflight = threading.Event()
+                self._verification_inflight[verification_cache_key.root] = inflight
+        if cached is None and not cache_owner:
+            assert inflight is not None
+            inflight.wait()
+            with self._verification_cache_lock:
+                cached = self._verification_cache.get(verification_cache_key.root)
+            if cached is None:
+                self._append_diagnostic_code("SEMANTIC_SUPPORT_WHOLE_VERIFIER_SHARED_FAILURE")
+                funnel.verifier_transport_failures += 1
+                return None
         if cached is not None:
             verification, call, input_hash, output_hash, input_ref, output_ref = cached
         else:
-            suffix = verifier_input_hash.root.removeprefix("sha256:")[:24]
+            assert inflight is not None
+            suffix = verification_cache_key.root.removeprefix("sha256:")[:24]
             verifier_request = ModelRequest(
                 request_id=StableId(f"support-whole-verification.{suffix}"),
                 run_id=need.run_id,
@@ -2470,14 +2766,53 @@ class TrustedClaimSupportProducer:
                 max_output_tokens=SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS,
                 timeout_seconds=SEMANTIC_SUPPORT_VERIFICATION_TIMEOUT_SECONDS,
                 enable_thinking=False,
+                scheduling_need_id=need.need_id,
+                scheduling_stage="claim_support_verification",
+                scheduling_dependency_ids=(proposal_request_id,),
             )
+            verifier_reserved = (
+                self._estimate_prompt_tokens(verifier_prompt)
+                + SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS
+            )
+            capacity_acquired = False
             try:
+                self._acquire_kv_capacity(verifier_reserved)
+                capacity_acquired = True
                 verification, call = asyncio.run(
                     self._semantic_gateway.generate_structured(
                         verifier_request,
                         SemanticSupportVerificationBatch,
                     )
                 )
+                raw_verifier_output = self._semantic_gateway.raw_responses.get(
+                    verifier_request.request_id.root
+                )
+                if raw_verifier_output is None:
+                    self._append_diagnostic_code(
+                        "SEMANTIC_SUPPORT_WHOLE_VERIFIER_RAW_OUTPUT_MISSING"
+                    )
+                    funnel.verifier_transport_failures += 1
+                    return None
+                raw_verifier_output_bytes = raw_verifier_output.encode("utf-8")
+                verifier_output_hash = sha256_id(raw_verifier_output_bytes)
+                verifier_input_ref = self._retain_bytes(
+                    verifier_prompt_bytes,
+                    "application/vnd.novel-agent.support-verification-prompt+text",
+                )
+                verifier_output_ref = self._retain_bytes(
+                    raw_verifier_output_bytes,
+                    "application/vnd.novel-agent.support-verification-output+json",
+                )
+                cached = (
+                    verification,
+                    call,
+                    verifier_input_hash,
+                    verifier_output_hash,
+                    verifier_input_ref,
+                    verifier_output_ref,
+                )
+                with self._verification_cache_lock:
+                    self._verification_cache[verification_cache_key.root] = cached
             except Exception as error:
                 classified = self._classify_failed_call(error)
                 diagnostic = _FailedCallDiagnostic(
@@ -2503,49 +2838,19 @@ class TrustedClaimSupportProducer:
                     timeout_seconds=SEMANTIC_SUPPORT_VERIFICATION_TIMEOUT_SECONDS,
                     failed_call=diagnostic.as_dict(),
                 )
-                self.last_diagnostic_codes = tuple(
-                    dict.fromkeys(
-                        (
-                            *self.last_diagnostic_codes,
-                            f"SEMANTIC_SUPPORT_WHOLE_VERIFIER_{type(error).__name__.upper()}",
-                        )
-                    )
+                self._append_diagnostic_code(
+                    f"SEMANTIC_SUPPORT_WHOLE_VERIFIER_{type(error).__name__.upper()}"
                 )
                 funnel.verifier_transport_failures += 1
                 return None
-            raw_verifier_output = self._semantic_gateway.raw_responses.get(
-                verifier_request.request_id.root
-            )
-            if raw_verifier_output is None:
-                self.last_diagnostic_codes = tuple(
-                    dict.fromkeys(
-                        (
-                            *self.last_diagnostic_codes,
-                            "SEMANTIC_SUPPORT_WHOLE_VERIFIER_RAW_OUTPUT_MISSING",
-                        )
-                    )
-                )
-                funnel.verifier_transport_failures += 1
-                return None
-            raw_verifier_output_bytes = raw_verifier_output.encode("utf-8")
-            verifier_output_hash = sha256_id(raw_verifier_output_bytes)
-            verifier_input_ref = self._retain_bytes(
-                verifier_prompt_bytes,
-                "application/vnd.novel-agent.support-verification-prompt+text",
-            )
-            verifier_output_ref = self._retain_bytes(
-                raw_verifier_output_bytes,
-                "application/vnd.novel-agent.support-verification-output+json",
-            )
-            cached = (
-                verification,
-                call,
-                verifier_input_hash,
-                verifier_output_hash,
-                verifier_input_ref,
-                verifier_output_ref,
-            )
-            self._verification_cache[verifier_input_hash.root] = cached
+            finally:
+                if capacity_acquired:
+                    self._release_kv_capacity(verifier_reserved)
+                # A waiter observes either the completed cache entry or the
+                # typed shared failure; it never issues a duplicate request.
+                with self._verification_cache_lock:
+                    owner_event = self._verification_inflight.pop(verification_cache_key.root)
+                    owner_event.set()
         verification, call, input_hash, output_hash, input_ref, output_ref = cached
         self._record_progress(
             stage="verification",
@@ -2556,26 +2861,14 @@ class TrustedClaimSupportProducer:
             decision_count=len(verification.decisions),
         )
         if not verification.decisions or len(verification.decisions) != 1:
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (*self.last_diagnostic_codes, "SEMANTIC_SUPPORT_WHOLE_INCOMPLETE_DECISIONS")
-                )
-            )
+            self._append_diagnostic_code("SEMANTIC_SUPPORT_WHOLE_INCOMPLETE_DECISIONS")
             return None
         decision = verification.decisions[0]
         if decision.claim_index != 0:
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (*self.last_diagnostic_codes, "SEMANTIC_SUPPORT_WHOLE_INVALID_DECISION_INDEX")
-                )
-            )
+            self._append_diagnostic_code("SEMANTIC_SUPPORT_WHOLE_INVALID_DECISION_INDEX")
             return None
         if not decision.supports or decision.counter_evidence_retrieval_unit_ids:
-            self.last_diagnostic_codes = tuple(
-                dict.fromkeys(
-                    (*self.last_diagnostic_codes, "SEMANTIC_SUPPORT_WHOLE_VERIFIER_REJECTED")
-                )
-            )
+            self._append_diagnostic_code("SEMANTIC_SUPPORT_WHOLE_VERIFIER_REJECTED")
             funnel.whole_verifier_rejected += 1
             return None
         return _SemanticVerificationAudit(
@@ -3122,7 +3415,7 @@ class TrustedClaimSupportProducer:
         plan_information = TrustedClaimSupportProducer._is_plan_information(unit)
         if plan_information and (
             task.information_profile is BenchmarkInformationProfile.VISIBLE_AT_CUTOFF
-            or not need.allow_plan
+            or not need.claim_may_cite_plan
         ):
             return False
         visible_scopes = {
@@ -3439,6 +3732,22 @@ class TrustedClaimSupportProducer:
         )
 
     def _retain_bytes(self, payload: bytes, media_type: str) -> ArtifactRef:
+        intent_collector = getattr(self._local_progress, "artifact_intents", None)
+        if intent_collector is not None:
+            expected_ref = ArtifactRef(
+                artifact_id=sha256_id(payload),
+                media_type=media_type,
+                byte_length=len(payload),
+                schema_version=SchemaVersion("1.0.0"),
+            )
+            intent_collector.append(
+                _ArtifactIntent(
+                    payload=payload,
+                    media_type=media_type,
+                    expected_ref=expected_ref,
+                )
+            )
+            return expected_ref
         if self._artifact_writer is not None:
             return self._artifact_writer(payload, media_type)
         return ArtifactRef(
@@ -3500,11 +3809,75 @@ class TrustedClaimSupportProducer:
             detail=detail,
             status_code=status_code,
             retry_count=retry_count,
+            failed_output_ref=(
+                self._retain_bytes(
+                    raw_output.encode("utf-8"),
+                    "application/vnd.novel-agent.failed-model-output+text",
+                )
+                if isinstance((raw_output := getattr(error, "raw_content", None)), str)
+                else None
+            ),
+            finish_reason=getattr(error, "finish_reason", None),
+            input_tokens=getattr(error, "input_tokens", None),
+            output_tokens=getattr(error, "output_tokens", None),
+            reasoning_tokens=getattr(error, "reasoning_tokens", None),
+            latency_ms=getattr(error, "latency_ms", None),
         )
 
     def _record_progress(self, **event: object) -> None:
-        if self._progress_writer is not None:
+        collector = getattr(self._local_progress, "collector", None)
+        if collector is not None:
+            collector.append(event)
+        elif self._progress_writer is not None:
             self._progress_writer(event)
+
+    def _diagnostic_codes(self) -> tuple[str, ...]:
+        diagnostics = getattr(self._local_progress, "diagnostics", None)
+        return tuple(diagnostics) if diagnostics is not None else self.last_diagnostic_codes
+
+    def _append_diagnostic_code(self, code: str) -> None:
+        diagnostics = getattr(self._local_progress, "diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.append(code)
+            return
+        self.last_diagnostic_codes = tuple(dict.fromkeys((*self.last_diagnostic_codes, code)))
+
+    def _acquire_kv_capacity(self, estimated_tokens: int) -> None:
+        """Wait on a condition for capacity; impossible requests fail typed."""
+        if self._admission_controller is not None:
+            if getattr(self._local_progress, "kv_lease", None) is not None:
+                raise RuntimeError("semantic support worker already owns a model request lease")
+            self._local_progress.kv_lease = self._admission_controller.acquire(estimated_tokens)
+            return
+        if self._max_inflight_kv_tokens is None:
+            return
+        local_budget = self._max_inflight_kv_tokens
+        if estimated_tokens > local_budget:
+            raise SchedulingBudgetUnsatisfiableError(
+                "SCHEDULING_BUDGET_UNSATISFIABLE: semantic support request exceeds "
+                "the configured local KV budget"
+            )
+        with self._kv_scheduler_condition:
+            self._kv_scheduler_condition.wait_for(
+                lambda: self._inflight_kv_tokens + estimated_tokens <= local_budget
+            )
+            self._inflight_kv_tokens += estimated_tokens
+
+    def _release_kv_capacity(self, estimated_tokens: int) -> None:
+        if self._admission_controller is not None:
+            lease = getattr(self._local_progress, "kv_lease", None)
+            if lease is None or lease.info.reserved_sequence_tokens != estimated_tokens:
+                raise RuntimeError("semantic support model request lease mismatch")
+            lease.release()
+            self._local_progress.kv_lease = None
+            return
+        if self._max_inflight_kv_tokens is None:
+            return
+        with self._kv_scheduler_condition:
+            self._inflight_kv_tokens -= estimated_tokens
+            if self._inflight_kv_tokens < 0:
+                raise RuntimeError("semantic support KV capacity released below zero")
+            self._kv_scheduler_condition.notify_all()
 
 
 class ControllerSupportSelector:

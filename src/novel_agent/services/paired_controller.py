@@ -410,6 +410,9 @@ class PairedMemoryControllerRunner:
                 raise ValueError("registered-route run has no RoutePlan for an actual Need")
             if plan.base_commit != need.base_commit:
                 raise ValueError("registered RoutePlan basis differs from its Need")
+            if not plan.effective_channels:
+                blocked[need.need_id] = NeedExecutionStatus.NOT_EXECUTED_NO_EXECUTABLE_QUERY
+                continue
             plans[need.need_id] = plan
             results[need.need_id] = {}
 
@@ -536,7 +539,11 @@ class PairedMemoryControllerRunner:
         traces: list[tuple[Stage1MemoryNeed, RetrievalTrace]] = []
         for need in needs:
             if need.need_id in blocked:
-                trace = self._empty_trace(need, status=blocked[need.need_id])
+                trace = self._empty_trace(
+                    need,
+                    status=blocked[need.need_id],
+                    plan=self._route_plans.get(need.need_id),
+                )
             elif not call_counts[need.need_id] and backend.exhausted:
                 trace = self._empty_trace(
                     need,
@@ -729,6 +736,9 @@ class PairedMemoryControllerRunner:
             ),
             fallback_used=fallback_used,
             fallback_reason=fallback_reason,
+            compiled_query_bundle=plan.compiled_query_bundle.model_dump(mode="json"),
+            effective_channels=plan.effective_channels,
+            query_unavailable_reasons=plan.query_unavailable_reasons,
             stop_reason=(
                 RetrievalStopReason.EXACT_SATISFIED
                 if selected and not fallback_used
@@ -856,6 +866,9 @@ class PairedMemoryControllerRunner:
             ),
             fallback_used=fallback_used,
             fallback_reason=fallback_reason,
+            compiled_query_bundle=plan.compiled_query_bundle.model_dump(mode="json"),
+            effective_channels=plan.effective_channels,
+            query_unavailable_reasons=plan.query_unavailable_reasons,
             stop_reason=(
                 RetrievalStopReason.EXACT_SATISFIED
                 if selected and not fallback_used
@@ -1132,6 +1145,7 @@ class PairedMemoryControllerRunner:
         need: Stage1MemoryNeed,
         *,
         status: NeedExecutionStatus = NeedExecutionStatus.EXECUTED_EMPTY,
+        plan: RoutePlan | None = None,
     ) -> RetrievalTrace:
         spec = need.completion_spec
         return RetrievalTrace(
@@ -1141,13 +1155,22 @@ class PairedMemoryControllerRunner:
             channel_candidate_counts={},
             candidates=(),
             fusion_applied=False,
-            stop_reason=RetrievalStopReason.CANDIDATES_EXHAUSTED,
+            stop_reason=(
+                RetrievalStopReason.NO_EXECUTABLE_QUERY
+                if status is NeedExecutionStatus.NOT_EXECUTED_NO_EXECUTABLE_QUERY
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            ),
             need_execution_status=status,
             calls_allocated=0,
             required_need_facet_ids=(spec.required_need_facet_ids if spec is not None else ()),
             irreducible_need_facet_ids=(
                 spec.irreducible_need_facet_ids if spec is not None else ()
             ),
+            compiled_query_bundle=(
+                plan.compiled_query_bundle.model_dump(mode="json") if plan is not None else {}
+            ),
+            effective_channels=(plan.effective_channels if plan is not None else ()),
+            query_unavailable_reasons=(plan.query_unavailable_reasons if plan is not None else {}),
         )
 
     @staticmethod

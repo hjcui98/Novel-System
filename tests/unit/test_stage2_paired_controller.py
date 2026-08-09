@@ -59,6 +59,7 @@ SNAPSHOT = StableId("snapshot.paired")
 CONFIG = ArtifactId("sha256:" + "c" * 64)
 PRIVATE = ArtifactId("sha256:" + "f" * 64)
 VERSION = SchemaVersion("2.0.0")
+HERO = StableId("entity.hero")
 
 
 def need(
@@ -74,6 +75,7 @@ def need(
         need_type="continuity",
         query_intent=intent,
         query_text="hero injury",
+        entity_ids=(HERO,),
         why_needed="paired controller comparison",
         risk_level=NeedRisk.HIGH,
         requirement=RequirementLevel.MANDATORY,
@@ -151,6 +153,7 @@ def unit(*, source_artifact: ArtifactId = CONFIG) -> RetrievalUnit:
         snapshot_id=SNAPSHOT,
         source_artifact=source_artifact,
         text="hero injury remains",
+        entity_ids=(HERO,),
         mandatory=True,
     )
 
@@ -754,7 +757,7 @@ def test_registered_fallback_runs_after_a_capability_masked_primary() -> None:
     assert result.context.retrieval_traces[0].fallback_used is True
 
 
-def test_r1_current_state_miss_uses_registered_semantic_fallback() -> None:
+def test_r1_current_state_executes_only_registered_exact_queries() -> None:
     item = need(intent=Stage1QueryIntent.CURRENT_STATE).model_copy(
         update={
             "need_id": StableId("need.fair.current-state"),
@@ -791,9 +794,14 @@ def test_r1_current_state_miss_uses_registered_semantic_fallback() -> None:
 
     assert [channel for _need_id, channel in backend.calls] == [
         RetrievalChannel.R1_EXACT,
-        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.R1_TEMPORAL,
     ]
-    assert result.context.retrieval_traces[0].fallback_reason == "exact_current_record_absent"
+    trace = result.context.retrieval_traces[0]
+    assert trace.fallback_used is False
+    assert trace.effective_channels == (
+        RetrievalChannel.R1_EXACT,
+        RetrievalChannel.R1_TEMPORAL,
+    )
 
 
 def test_long_range_fallback_is_not_repeated_when_grounded_evidence_is_selected() -> None:
@@ -1009,11 +1017,11 @@ def test_task_weighted_scheduler_completes_high_priority_fallback_after_first_ro
         (high.need_id, RetrievalChannel.ANCHOR_BM25),
         (low.need_id, RetrievalChannel.ANCHOR_BM25),
         (high.need_id, RetrievalChannel.GROUNDED_BM25),
-        (high.need_id, RetrievalChannel.GROUNDED_DENSE),
         (high.need_id, RetrievalChannel.ANCHOR_DENSE),
         (low.need_id, RetrievalChannel.GROUNDED_BM25),
+        (low.need_id, RetrievalChannel.ANCHOR_DENSE),
     ]
-    assert result.calls_allocated_by_need == {high.need_id.root: 4, low.need_id.root: 2}
+    assert result.calls_allocated_by_need == {high.need_id.root: 3, low.need_id.root: 3}
 
 
 class _Reranker:
@@ -1222,6 +1230,10 @@ def test_route_plan_execution_covers_fallback_exhaustion_and_repeated_channels()
         selected,
     )
     assert PairedMemoryControllerRunner._fallback_applies("plan_anchor_insufficient", ())
+    assert PairedMemoryControllerRunner._fallback_applies("exact_current_record_absent", ())
+    assert not PairedMemoryControllerRunner._fallback_applies(
+        "exact_current_record_absent", selected
+    )
     with pytest.raises(ValueError, match="unregistered deterministic fallback"):
         PairedMemoryControllerRunner._fallback_applies("unknown", ())
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from novel_agent.domain.ids import ProjectId, StableId
+from novel_agent.domain.memory import Stage1QueryIntent
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, PublicCheckpointCase
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
@@ -40,7 +41,8 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["chapter_commit_count"] == 96
     assert summary["curator_replay_agent_calls"] == 95
     assert summary["checkpoint_chapters"] == [20, 40, 60, 80, 95]
-    assert summary["paired_results_count"] == 5
+    assert summary["paired_results_count"] == 0
+    assert summary["paired_comparison_status"] == "NOT_RUN"
     # Scripted smoke does not carry trusted semantic support receipts for the
     # plan-conditioned mandatory facets.  It must now fail closed rather than
     # treating candidate presence as Writer-ready.
@@ -140,30 +142,22 @@ def test_plan_needs_does_not_access_gold(tmp_path: Path) -> None:
     assert tuple(n.query_text for n in needs) == tuple(n.query_text for n in corrupted_needs)
 
 
-def test_plan_needs_uses_only_public_case_fields() -> None:
+def test_author_plan_does_not_create_memory_evidence_needs() -> None:
     bundle = HumanBenchmarkCompiler().compile(PILOT)
     case = bundle.case_manifests[0]
     plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
     world = next(
         root for root in bundle.world_roots if root.root_hash == case.input_world_root_verified
     )
-    runner_plan_needs = Stage2PairedPilotRunner._plan_needs
-
-    public = build_public_checkpoint_case(
-        case_id=case.case_id,
-        project_id=case.project_id,
-        target_range=case.target_range,
-        history_range=case.history_range,
-        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    needs = Stage1NeedGenerator().generate(world, case)
+    scoped = Stage2PairedPilotRunner._scope_needs(
+        needs,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
     )
-    needs_from_public = runner_plan_needs(public, plan, world.source_commit, ())
-
-    needs_from_full = runner_plan_needs(case, plan, world.source_commit, ())
-
-    assert len(needs_from_public) == len(needs_from_full)
-    assert tuple(n.query_text for n in needs_from_public) == tuple(
-        n.query_text for n in needs_from_full
-    )
+    assert plan.chapter_goals
+    assert all(need.query_intent is not Stage1QueryIntent.PLAN_NODE for need in scoped)
+    assert all(not need.retrieval_may_return_plan for need in scoped)
+    assert all(not need.claim_may_cite_plan for need in scoped)
 
 
 def test_public_checkpoint_case_cannot_receive_gold() -> None:
@@ -269,7 +263,8 @@ def test_resume_rebuilds_checkpoint_without_recommitting_accepted_chapter(
     assert recovered["segment_commit_count"] == 0
     assert recovered["segment_preamble_count"] == 21
     assert recovered["total_commit_count"] == 21
-    assert recovered["paired_results_count"] == 1
+    assert recovered["paired_results_count"] == 0
+    assert recovered["paired_comparison_status"] == "NOT_RUN"
     assert recovered["checkpoint_chain_consistent"] is True
     progress = json.loads((output / "progress_manifest.json").read_text("utf-8"))
     assert progress["completed_chapters"] == list(range(21))

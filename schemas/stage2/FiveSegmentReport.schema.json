@@ -1,0 +1,450 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "GoldBlindness": {
+      "description": "Gold recoverability classification (semantic evaluation §5.7).",
+      "enum": [
+        "blind_recoverable",
+        "plan_dependent",
+        "hindsight_only"
+      ],
+      "title": "GoldBlindness",
+      "type": "string"
+    },
+    "GoldNeedBinding": {
+      "additionalProperties": false,
+      "description": "Evaluator-only, deterministic Gold -> one Need -> its Ledger subset.",
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/SegmentAvailability",
+          "default": "available"
+        },
+        "blindness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoldBlindness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "eligible_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Eligible Ledger Ids",
+          "type": "array"
+        },
+        "entity_hits": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Hits",
+          "type": "array"
+        },
+        "entity_misses": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Misses",
+          "type": "array"
+        },
+        "facet_hits": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Facet Hits",
+          "type": "array"
+        },
+        "facet_misses": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Facet Misses",
+          "type": "array"
+        },
+        "full_need_match": {
+          "default": false,
+          "title": "Full Need Match",
+          "type": "boolean"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "scope_hits": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Scope Hits",
+          "type": "array"
+        },
+        "scope_misses": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Scope Misses",
+          "type": "array"
+        },
+        "selected_need_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "spec_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tie_break_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tie Break Evidence",
+          "type": "array"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "profile",
+        "gold_id"
+      ],
+      "title": "GoldNeedBinding",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SegmentAvailability": {
+      "enum": [
+        "available",
+        "unavailable"
+      ],
+      "title": "SegmentAvailability",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Five-segment diagnostic view: goals, needs, evidence, completion, leakage.\n\nLeakage is reported separately and never folded into accuracy segments.\n``planner_fallback_rate`` and ``grounding_success_rate`` are the Gate 1\nplanning-health segments: the fallback share of Need-generation runs and\nthe GROUNDED share of all grounded entity mentions.",
+  "properties": {
+    "bindings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GoldNeedBinding"
+      },
+      "title": "Bindings",
+      "type": "array"
+    },
+    "completion_accuracy": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Accuracy"
+    },
+    "completion_availability": {
+      "$ref": "#/$defs/SegmentAvailability",
+      "default": "available"
+    },
+    "completion_gold_total": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Completion Gold Total",
+      "type": "integer"
+    },
+    "completion_weight_total": {
+      "default": 0.0,
+      "minimum": 0.0,
+      "title": "Completion Weight Total",
+      "type": "number"
+    },
+    "evidence_recall": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Recall"
+    },
+    "evidence_recall_availability": {
+      "$ref": "#/$defs/SegmentAvailability",
+      "default": "available"
+    },
+    "evidence_recall_matched": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Evidence Recall Matched",
+      "type": "integer"
+    },
+    "evidence_recall_total": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Evidence Recall Total",
+      "type": "integer"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "grounded_status_counts": {
+      "default": [
+        0,
+        0,
+        0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Grounded Status Counts",
+      "type": "array"
+    },
+    "grounding_success_rate": {
+      "default": 1.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Grounding Success Rate",
+      "type": "number"
+    },
+    "legacy_plan_obligation_coverage": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Legacy Plan Obligation Coverage"
+    },
+    "legacy_plan_obligation_unavailable_reason": {
+      "default": "NOT_APPLICABLE_STRICT_D9",
+      "title": "Legacy Plan Obligation Unavailable Reason",
+      "type": "string"
+    },
+    "missing_spec_gold_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Missing Spec Gold Ids",
+      "type": "array"
+    },
+    "need_recall": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Need Recall"
+    },
+    "need_recall_availability": {
+      "$ref": "#/$defs/SegmentAvailability",
+      "default": "available"
+    },
+    "need_recall_matched": {
+      "minimum": 0,
+      "title": "Need Recall Matched",
+      "type": "integer"
+    },
+    "need_recall_total": {
+      "minimum": 0,
+      "title": "Need Recall Total",
+      "type": "integer"
+    },
+    "plan_citation_count": {
+      "minimum": 0,
+      "title": "Plan Citation Count",
+      "type": "integer"
+    },
+    "plan_goal_availability": {
+      "$ref": "#/$defs/SegmentAvailability",
+      "default": "available"
+    },
+    "plan_goal_coverage": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Goal Coverage"
+    },
+    "plan_goals_covered": {
+      "minimum": 0,
+      "title": "Plan Goals Covered",
+      "type": "integer"
+    },
+    "plan_goals_total": {
+      "minimum": 0,
+      "title": "Plan Goals Total",
+      "type": "integer"
+    },
+    "plan_leakage_count": {
+      "minimum": 0,
+      "title": "Plan Leakage Count",
+      "type": "integer"
+    },
+    "planner_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planner_fallback_rate": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Planner Fallback Rate",
+      "type": "number"
+    },
+    "planner_fallback_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Planner Fallback Reason"
+    }
+  },
+  "required": [
+    "plan_goals_total",
+    "plan_goals_covered",
+    "need_recall_total",
+    "need_recall_matched",
+    "future_leakage_count",
+    "plan_citation_count",
+    "plan_leakage_count"
+  ],
+  "title": "FiveSegmentReport",
+  "type": "object"
+}

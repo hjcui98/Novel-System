@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "description": "Bounded recent-event row in the deterministic world summary.",
+  "properties": {
+    "chapter": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapter"
+    },
+    "event_type": {
+      "minLength": 1,
+      "title": "Event Type",
+      "type": "string"
+    },
+    "participant_labels": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Participant Labels",
+      "type": "array"
+    }
+  },
+  "required": [
+    "event_type"
+  ],
+  "title": "PlannerEventSummary",
+  "type": "object"
+}

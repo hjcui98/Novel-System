@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,7 +20,26 @@ from novel_agent.domain.model_calls import (
 
 
 class OpenAIChatEndpointError(RuntimeError):
-    pass
+    """Transport failure with safe provider telemetry when a response exists."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        finish_reason: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        raw_content: str | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.finish_reason = finish_reason
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.reasoning_tokens = reasoning_tokens
+        self.raw_content = raw_content
+        self.latency_ms = latency_ms
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +146,7 @@ class OpenAICompatibleChatEndpoint:
         client: httpx.AsyncClient,
     ) -> ProviderModelResult:
         payload = self._build_payload(request)
+        started_clock = monotonic()
         try:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -154,23 +175,57 @@ class OpenAICompatibleChatEndpoint:
         finish_reason = choice.get("finish_reason")
         message = choice.get("message") or {}
         content = message.get("content")
+        usage = payload_dict.get("usage") or {}
+        completion_details = usage.get("completion_tokens_details") or {}
+        failure_finish_reason = str(finish_reason) if finish_reason is not None else None
+        failure_input_tokens = int(usage.get("prompt_tokens", 0))
+        failure_output_tokens = int(usage.get("completion_tokens", 0))
+        failure_reasoning_tokens = int(
+            completion_details.get("reasoning_tokens", usage.get("reasoning_tokens", 0))
+        )
+        failure_raw_content = content if isinstance(content, str) else None
+        failure_latency_ms = max(0, round((monotonic() - started_clock) * 1000))
 
         if finish_reason == "length":
-            raise OpenAIChatEndpointError("chat completion was truncated by output length limit")
+            raise OpenAIChatEndpointError(
+                "chat completion was truncated by output length limit",
+                finish_reason=failure_finish_reason,
+                input_tokens=failure_input_tokens,
+                output_tokens=failure_output_tokens,
+                reasoning_tokens=failure_reasoning_tokens,
+                raw_content=failure_raw_content,
+                latency_ms=failure_latency_ms,
+            )
         if finish_reason != "stop":
             raise OpenAIChatEndpointError(
-                f"chat completion finished with unexpected reason: {finish_reason}"
+                f"chat completion finished with unexpected reason: {finish_reason}",
+                finish_reason=failure_finish_reason,
+                input_tokens=failure_input_tokens,
+                output_tokens=failure_output_tokens,
+                reasoning_tokens=failure_reasoning_tokens,
+                raw_content=failure_raw_content,
+                latency_ms=failure_latency_ms,
             )
         if not isinstance(content, str) or not content.strip():
-            raise OpenAIChatEndpointError("chat completion returned null or empty content")
+            raise OpenAIChatEndpointError(
+                "chat completion returned null or empty content",
+                finish_reason=failure_finish_reason,
+                input_tokens=failure_input_tokens,
+                output_tokens=failure_output_tokens,
+                reasoning_tokens=failure_reasoning_tokens,
+                raw_content=failure_raw_content,
+                latency_ms=failure_latency_ms,
+            )
 
-        usage = payload_dict.get("usage") or {}
         return ProviderModelResult(
             text=content,
             model_version=str(payload_dict.get("model") or self.model_version),
             usage=ModelUsage(
                 input_tokens=int(usage.get("prompt_tokens", 0)),
                 output_tokens=int(usage.get("completion_tokens", 0)),
+                reasoning_tokens=int(
+                    completion_details.get("reasoning_tokens", usage.get("reasoning_tokens", 0))
+                ),
                 cost_usd=Decimal("0"),
             ),
         )
@@ -191,20 +246,26 @@ class OpenAICompatibleChatEndpoint:
                     "strict": True,
                 },
             }
+        template_kwargs: dict[str, object] = {
+            "enable_thinking": (
+                request.enable_thinking if request.enable_thinking is not None else True
+            )
+        }
+        if request.thinking_token_budget is not None:
+            template_kwargs["thinking_token_budget"] = request.thinking_token_budget
+        print(
+            f"[measure] payload kwargs={template_kwargs} max_tokens={request.max_output_tokens} "
+            f"prompt_chars={len(request.prompt)} response_format={response_format['type']}",
+            flush=True,
+        )
         payload: dict[str, object] = {
             "model": self.model,
             "messages": [{"role": "user", "content": request.prompt}],
             "temperature": self.temperature,
             "max_tokens": request.max_output_tokens or self.max_output_tokens,
             "response_format": response_format,
-            "chat_template_kwargs": {
-                "enable_thinking": (
-                    request.enable_thinking if request.enable_thinking is not None else True
-                )
-            },
+            "chat_template_kwargs": template_kwargs,
         }
-        if request.thinking_token_budget is not None:
-            payload["thinking_token_budget"] = request.thinking_token_budget
         return payload
 
     async def aclose(self) -> None:

@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "GroundingStatus": {
+      "enum": [
+        "grounded",
+        "ambiguous",
+        "unresolved"
+      ],
+      "title": "GroundingStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Grounding result for one entity mention.",
+  "properties": {
+    "canonical_label": {
+      "title": "Canonical Label",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "entity_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "grounding_method": {
+      "default": "",
+      "title": "Grounding Method",
+      "type": "string"
+    },
+    "grounding_status": {
+      "$ref": "#/$defs/GroundingStatus"
+    },
+    "mention": {
+      "minLength": 1,
+      "title": "Mention",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mention",
+    "canonical_label",
+    "confidence",
+    "grounding_status"
+  ],
+  "title": "GroundedEntityMention",
+  "type": "object"
+}

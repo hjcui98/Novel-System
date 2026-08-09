@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "GoldBlindness": {
+      "description": "Gold recoverability classification (semantic evaluation §5.7).",
+      "enum": [
+        "blind_recoverable",
+        "plan_dependent",
+        "hindsight_only"
+      ],
+      "title": "GoldBlindness",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluator-side specification of the needs a Gold conclusion requires.\n\nNeed Recall is computed deterministically against these components\n(scope / entity labels / facet kinds), never by another LLM judgment.",
+  "properties": {
+    "blindness": {
+      "$ref": "#/$defs/GoldBlindness",
+      "default": "blind_recoverable"
+    },
+    "gold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "required_entities": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Entities",
+      "type": "array"
+    },
+    "required_facets": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Facets",
+      "type": "array"
+    },
+    "required_need_scopes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Need Scopes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "gold_id"
+  ],
+  "title": "GoldNeedSpec",
+  "type": "object"
+}

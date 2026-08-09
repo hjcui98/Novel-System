@@ -8,6 +8,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",

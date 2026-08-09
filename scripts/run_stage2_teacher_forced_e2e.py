@@ -10,6 +10,7 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import ParseResult, urlparse
 from uuid import uuid4
@@ -37,10 +38,12 @@ from novel_agent.adapters.postgres.database import build_engine, build_session_f
 from novel_agent.domain.benchmark import BenchmarkBundle
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
+from novel_agent.domain.planning_memory import PlannerInvocationArtifact
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage2 import BenchmarkInformationProfile, QualityRepairFeatureFlags
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.claim_support import (
+    ClaimSupportTransportConfig,
     ControllerSupportSelector,
     TrustedClaimSupportProducer,
 )
@@ -54,6 +57,7 @@ from novel_agent.services.memory_benchmark_metric_contracts import (
     GATE_METRIC_FORMULA_HASH,
     GATE_METRIC_FORMULA_VERSION,
 )
+from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 from novel_agent.services.projection import (
     ArtifactProjectionSourceLoader,
     DerivedSnapshotRepository,
@@ -72,6 +76,23 @@ from novel_agent.services.teacher_forced_benchmark_e2e import (
     TeacherForcedBenchmarkE2ERunner,
 )
 from novel_agent.services.writer_context_assembler import WriterContextAssembler
+
+
+@dataclass(frozen=True, slots=True)
+class Stage2MExecutionConfig:
+    support_max_concurrent_needs: int
+    evaluator_max_concurrent_batches: int
+    checkpoint_workers: int
+    endpoint_request_limit: int
+    configured_kv_token_budget: int | None
+    effective_kv_token_budget: int | None
+    kv_safety_reserve_ratio: float
+    model_sequence_limit: int
+    scheduling_timeout_seconds: float
+    frozen_planner_artifact_hash: str | None
+    support_multi_enable_thinking: bool
+    support_multi_thinking_token_budget: int
+    support_multi_max_output_tokens: int
 
 
 def _bounded_int(label: str, *, minimum: int, maximum: int) -> Callable[[str], int]:
@@ -132,7 +153,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--information-profile",
         choices=tuple(item.value for item in BenchmarkInformationProfile),
-        default=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
+        default=None,
+        help=(
+            "information profile override; defaults to the compiled case "
+            "AuthorPlanningContext.profile"
+        ),
     )
     value.add_argument("--token-budget", type=int, default=4000)
     value.add_argument(
@@ -156,6 +181,22 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--model", default="qwen36-27b-nvfp4")
     value.add_argument("--model-max-output-tokens", type=int, default=8192)
     value.add_argument("--model-max-retries", type=int, default=0)
+    value.add_argument(
+        "--support-multi-thinking",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="enable bounded thinking for Claim Support multi-slice proposals",
+    )
+    value.add_argument(
+        "--support-multi-thinking-token-budget",
+        type=_bounded_int("support multi thinking token budget", minimum=0, maximum=4096),
+        default=0,
+    )
+    value.add_argument(
+        "--support-multi-max-output-tokens",
+        type=_bounded_int("support multi max output tokens", minimum=1, maximum=4096),
+        default=2048,
+    )
     value.add_argument(
         "--allow-dirty-diagnostic",
         action="store_true",
@@ -201,16 +242,69 @@ def parser() -> argparse.ArgumentParser:
             "Diagnostic only; no claims are proposed or verified."
         ),
     )
+    value.add_argument(
+        "--support-max-concurrent-needs",
+        type=_bounded_int("support max concurrent needs", minimum=1, maximum=8),
+        default=4,
+        help=(
+            "independent Need pipelines run concurrently in the semantic support "
+            "corridor (1 = strictly serial); concurrency changes scheduling only"
+        ),
+    )
+    value.add_argument(
+        "--support-kv-token-budget",
+        type=int,
+        default=200_000,
+        help="global in-flight KV-token budget across all corridors (0 disables)",
+    )
+    value.add_argument(
+        "--endpoint-request-limit",
+        type=int,
+        default=8,
+        help="global in-flight model request limit across all corridors",
+    )
+    value.add_argument(
+        "--checkpoint-workers",
+        type=int,
+        default=2,
+        help=(
+            "checkpoint corridors run on a bounded worker pool while chapter "
+            "replay continues (1 = corridors serialize with replay)"
+        ),
+    )
+    value.add_argument(
+        "--frozen-planner-artifact",
+        type=Path,
+        help="frozen Planner invocation JSON for bounded parity replay",
+    )
+    value.add_argument(
+        "--evaluator-max-concurrent-batches",
+        type=int,
+        default=4,
+        help="semantic evaluator batch concurrency (1 = strictly serial)",
+    )
+    value.add_argument(
+        "--model-scheduling-timeout-seconds",
+        type=float,
+        default=120.0,
+        help="maximum capacity-queue wait before typed scheduling timeout",
+    )
     return value
 
 
 def main() -> int:
     args = parser().parse_args()
+    support_transport_config = ClaimSupportTransportConfig(
+        multi_enable_thinking=args.support_multi_thinking,
+        multi_thinking_token_budget=args.support_multi_thinking_token_budget,
+        multi_max_output_tokens=args.support_multi_max_output_tokens,
+    )
     if (args.resume_commit is None) != (args.resume_chapter is None):
         raise ValueError("--resume-commit and --resume-chapter must be supplied together")
     if args.resume_commit is not None and args.resume_project is None:
         raise ValueError("explicit historical resume requires --resume-project")
     bundle = HumanBenchmarkCompiler().compile(args.source)
+    args.information_profile = args.information_profile or _default_information_profile(bundle)
     project_directory = (args.resume_project or args.output_directory).resolve()
     output_directory = args.output_directory.resolve()
     retrieval_profile = RetrievalBackendProfile(args.retrieval_backend)
@@ -221,6 +315,13 @@ def main() -> int:
     if require_clean_source:
         _assert_formal_source_clean(repository_root)
     quality_repair_flags = _load_quality_repair_flags(args)
+    frozen_planner_artifact = (
+        PlannerInvocationArtifact.model_validate_json(
+            args.frozen_planner_artifact.read_text("utf-8")
+        )
+        if args.frozen_planner_artifact is not None
+        else None
+    )
     _ensure_experiment_manifest(
         args,
         bundle,
@@ -263,6 +364,23 @@ def main() -> int:
             quality_repair_flags=quality_repair_flags,
             memory_write_dry_run=bool(args.memory_write_dry_run),
             support_pre_proposal_trace=bool(args.support_pre_proposal_trace),
+            support_max_concurrent_needs=args.support_max_concurrent_needs,
+            support_max_inflight_kv_tokens=(
+                args.support_kv_token_budget if args.support_kv_token_budget > 0 else None
+            ),
+            support_admission_controller=(
+                ModelRequestAdmissionController(
+                    endpoint_request_limit=args.endpoint_request_limit,
+                    kv_token_budget=(
+                        args.support_kv_token_budget if args.support_kv_token_budget > 0 else None
+                    ),
+                )
+            ),
+            checkpoint_workers=args.checkpoint_workers,
+            frozen_planner_artifact=frozen_planner_artifact,
+            evaluator_max_concurrent_batches=args.evaluator_max_concurrent_batches,
+            model_scheduling_timeout_seconds=args.model_scheduling_timeout_seconds,
+            support_transport_config=support_transport_config,
         ).run(
             args.source,
             args.output_directory,
@@ -288,6 +406,20 @@ def main() -> int:
             import asyncio
 
             asyncio.run(endpoint.aclose())
+
+
+def _default_information_profile(bundle: BenchmarkBundle) -> str:
+    """Resolve the run profile from the compiled case planning contexts."""
+    profiles = tuple(
+        dict.fromkeys(
+            case.information_profile.value
+            for case in bundle.case_manifests
+            if case.information_profile is not None
+        )
+    )
+    if not profiles:
+        return BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value
+    return profiles[0]
 
 
 def _real_hybrid_gateway(
@@ -490,8 +622,44 @@ def _ensure_experiment_manifest(
     run_config_hash = benchmark_runner.public_configuration_fingerprint(
         bundle.bundle_schema_version.root
     )
+    configured_kv_budget = (
+        args.support_kv_token_budget if args.support_kv_token_budget > 0 else None
+    )
+    execution_config = Stage2MExecutionConfig(
+        support_max_concurrent_needs=args.support_max_concurrent_needs,
+        evaluator_max_concurrent_batches=args.evaluator_max_concurrent_batches,
+        checkpoint_workers=args.checkpoint_workers,
+        endpoint_request_limit=args.endpoint_request_limit,
+        configured_kv_token_budget=configured_kv_budget,
+        effective_kv_token_budget=(
+            None if configured_kv_budget is None else int(configured_kv_budget * 0.8)
+        ),
+        kv_safety_reserve_ratio=0.2,
+        model_sequence_limit=131_072,
+        scheduling_timeout_seconds=args.model_scheduling_timeout_seconds,
+        frozen_planner_artifact_hash=(
+            "sha256:" + hashlib.sha256(args.frozen_planner_artifact.read_bytes()).hexdigest()
+            if args.frozen_planner_artifact is not None
+            else None
+        ),
+        support_multi_enable_thinking=getattr(args, "support_multi_thinking", False),
+        support_multi_thinking_token_budget=getattr(args, "support_multi_thinking_token_budget", 0),
+        support_multi_max_output_tokens=getattr(args, "support_multi_max_output_tokens", 2048),
+    )
+    execution_payload = asdict(execution_config)
+    execution_config_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                execution_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "experiment_id": args.experiment_id,
         "code_commit": code_commit,
         "code_source_fingerprint": _code_source_fingerprint(repository_root).root,
@@ -526,6 +694,8 @@ def _ensure_experiment_manifest(
         "gate_metric_formula_hash": GATE_METRIC_FORMULA_HASH.root,
         "code_version": Stage2PairedPilotRunner.version,
         "run_config_hash": run_config_hash.root,
+        "execution_config": execution_payload,
+        "execution_config_hash": execution_config_hash,
         "benchmark_contract_hash": bundle.content_hash.root,
         "matcher_version": GoldEvidenceMatcher.version,
         "writer_token_budget": getattr(args, "token_budget", 4000),

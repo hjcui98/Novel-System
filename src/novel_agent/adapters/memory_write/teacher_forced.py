@@ -392,6 +392,12 @@ class TeacherForcedCuratorPort:
         manifest = _basis_manifest(basis)
         gateway = self._replay.curator.gateway
         started_at = datetime.now(UTC)
+        print(
+            f"[measure] ch{chapter_index} attempt {request.attempt_no} start "
+            f"world_entities={len(world.entities)} world_states={len(world.states)} "
+            f"text_bytes={len(text.model_dump_json())}",
+            flush=True,
+        )
         try:
             result, _ = await self._replay.run(
                 version=manifest.schema_version,
@@ -416,6 +422,9 @@ class TeacherForcedCuratorPort:
             if not entries:
                 raise
             self.proposal_calls += 1
+            import traceback
+
+            traceback.print_exc()
             raise CuratorProposalTransportError(
                 type(error).__name__,
                 model_request_ids=tuple(entry.request_id for entry in entries),
@@ -517,11 +526,22 @@ class TeacherForcedCuratorPort:
             tuple(entry.request_id for entry in entries), version
         )
         if isinstance(error, ValidationError):
-            paths = tuple(
-                ".".join(str(part) for part in item["loc"]) or "$"
-                for item in error.errors(include_url=False, include_input=False)
+            errors = error.errors(include_url=False, include_input=False)
+            paths = tuple(".".join(str(part) for part in item["loc"]) or "$" for item in errors)
+            extra_fields = sorted(
+                {
+                    key
+                    for item in error.errors(include_url=False)
+                    if item["type"] == "extra_forbidden"
+                    for key in (item.get("input") or {})
+                }
             )
-            detail = "Curator Draft failed the structured domain contract"
+            detail = (
+                "Curator Draft failed the structured domain contract; remove the "
+                f"extra fields: {', '.join(extra_fields)}"
+                if extra_fields
+                else "Curator Draft failed the structured domain contract"
+            )
             kind = ProposalRejectionKind.SCHEMA_REJECTED
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
             reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"

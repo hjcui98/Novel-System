@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "Bounded entity row in the deterministic world summary.",
+  "properties": {
+    "aliases": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Aliases",
+      "type": "array"
+    },
+    "entity_type": {
+      "default": "",
+      "title": "Entity Type",
+      "type": "string"
+    },
+    "label": {
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "label"
+  ],
+  "title": "PlannerEntitySummary",
+  "type": "object"
+}

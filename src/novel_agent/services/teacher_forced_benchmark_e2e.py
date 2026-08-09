@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -55,9 +56,14 @@ from novel_agent.domain.benchmark import (
     TextRootDocument,
 )
 from novel_agent.domain.changes import (
-    ChapterChangeDraft,
+    ChangeOperationType,
+    CuratorStateRecord,
+    CuratorStoryTime,
+    CuratorV2EvidenceDraft,
+    CuratorV2OperationDraft,
     ObservedChangeSet,
     ValidationStatus,
+    WorldRecordKind,
 )
 from novel_agent.domain.ids import (
     ArtifactId,
@@ -91,6 +97,7 @@ from novel_agent.domain.memory_write import (
     SourceProvenance,
 )
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.planning_memory import PlannerInvocationArtifact
 from novel_agent.domain.retrieval_routing import (
     ProjectionAttestation,
     RetrievalBackendProfile,
@@ -104,6 +111,7 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentSpec,
     AgentType,
+    ArmExecutionStatus,
     AuthorApprovalDecision,
     AuthorApprovalStatus,
     BenchmarkInformationProfile,
@@ -155,6 +163,7 @@ from novel_agent.services.bootstrap_workflow import (
     GenesisCoordinator,
     SqlAuthorApprovalRepository,
 )
+from novel_agent.services.claim_support import ClaimSupportTransportConfig
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import (
     canonical_json_bytes,
@@ -162,6 +171,7 @@ from novel_agent.services.content_addressing import (
     plan_root_content_id,
     world_root_content_id,
 )
+from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.information_boundary import InformationBoundaryPort
 from novel_agent.services.memory_benchmark_contract import build_public_checkpoint_case
@@ -170,12 +180,17 @@ from novel_agent.services.memory_benchmark_evaluation import (
     MemoryBenchmarkEvaluator,
     ModelSemanticSupportVerifier,
 )
-from novel_agent.services.memory_benchmark_metric_contracts import GoldMetricContractBuilder
+from novel_agent.services.memory_benchmark_metric_contracts import (
+    GATE_METRIC_FORMULA_HASH,
+    GATE_METRIC_FORMULA_VERSION,
+    GoldMetricContractBuilder,
+)
 from novel_agent.services.memory_benchmark_reporting import MemoryBenchmarkReporter
 from novel_agent.services.memory_write_validation import Stage2ValidationV2Adapter
 from novel_agent.services.memory_write_workflow import LocalMemoryWriteWorkflow
 from novel_agent.services.model_curation import ModelCurator
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -196,16 +211,21 @@ ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 
 
 def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
-    """Allow three observations of one typed finding before quarantine."""
+    """Allow three observations of one typed finding before quarantine.
+
+    The proposal budget is raised above the historical default because the
+    local endpoint in json_object framing can need several contract-feedback
+    retries on complex chapters before producing a valid draft.
+    """
 
     return MemoryWriteBudget(
-        max_curator_proposal_attempts=3,
-        max_curator_proposal_rejections=3,
+        max_curator_proposal_attempts=5,
+        max_curator_proposal_rejections=5,
         same_content_hash_limit=3,
         same_finding_signature_limit=3,
-        max_total_model_calls=6,
+        max_total_model_calls=10,
         token_budget=96_000,
-        wall_clock_budget_ms=540_000,
+        wall_clock_budget_ms=900_000,
     )
 
 
@@ -297,7 +317,17 @@ class TeacherForcedBenchmarkE2ERunner:
         quality_repair_flags: QualityRepairFeatureFlags | None = None,
         memory_write_dry_run: bool = False,
         support_pre_proposal_trace: bool = False,
+        support_max_concurrent_needs: int = 1,
+        support_max_inflight_kv_tokens: int | None = None,
+        support_admission_controller: ModelRequestAdmissionController | None = None,
+        checkpoint_workers: int = 2,
+        frozen_planner_artifact: PlannerInvocationArtifact | None = None,
+        evaluator_max_concurrent_batches: int = 4,
+        model_scheduling_timeout_seconds: float = 120.0,
+        support_transport_config: ClaimSupportTransportConfig | None = None,
     ) -> None:
+        if checkpoint_workers < 1:
+            raise ValueError("checkpoint workers must be positive")
         self._semantic_endpoint = semantic_endpoint
         self._retrieval_backend_profile = retrieval_backend_profile
         self._real_hybrid_backend_provider = real_hybrid_backend_provider
@@ -305,6 +335,14 @@ class TeacherForcedBenchmarkE2ERunner:
         self._quality_repair_flags = quality_repair_flags or QualityRepairFeatureFlags()
         self._memory_write_dry_run = memory_write_dry_run
         self._support_pre_proposal_trace = support_pre_proposal_trace
+        self._support_max_concurrent_needs = support_max_concurrent_needs
+        self._support_max_inflight_kv_tokens = support_max_inflight_kv_tokens
+        self._support_admission_controller = support_admission_controller
+        self._checkpoint_workers = checkpoint_workers
+        self._frozen_planner_artifact = frozen_planner_artifact
+        self._evaluator_max_concurrent_batches = evaluator_max_concurrent_batches
+        self._model_scheduling_timeout_seconds = model_scheduling_timeout_seconds
+        self._support_transport_config = support_transport_config or ClaimSupportTransportConfig()
         self._paired = Stage2PairedPilotRunner(
             token_budget=token_budget,
             max_candidates=max_candidates,
@@ -372,6 +410,8 @@ class TeacherForcedBenchmarkE2ERunner:
             harness = self._agent_harness(
                 self._semantic_endpoint,
                 quality_repair_flags=self._quality_repair_flags,
+                admission_controller=self._support_admission_controller,
+                scheduling_timeout_seconds=self._model_scheduling_timeout_seconds,
             )
             resume_attestation: ProjectionAttestation | None = None
             if resume:
@@ -571,31 +611,33 @@ class TeacherForcedBenchmarkE2ERunner:
                 expected_profiles=bundle.expected_profiles,
             )
             support_progress_events: list[dict[str, object]] = []
+            support_progress_lock = threading.Lock()
 
             def record_support_progress(event: Mapping[str, object]) -> None:
-                support_progress_events.append(
-                    {
-                        "sequence": len(support_progress_events) + 1,
-                        "recorded_at": datetime.now(UTC).isoformat(),
-                        **event,
-                    }
-                )
-                progress_path = output_directory / "support_progress.json"
-                temporary_path = output_directory / "support_progress.json.tmp"
-                temporary_path.write_text(
-                    json.dumps(
+                with support_progress_lock:
+                    support_progress_events.append(
                         {
-                            "state": "running",
-                            "events": support_progress_events,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
+                            "sequence": len(support_progress_events) + 1,
+                            "recorded_at": datetime.now(UTC).isoformat(),
+                            **event,
+                        }
                     )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                os.replace(temporary_path, progress_path)
+                    progress_path = output_directory / "support_progress.json"
+                    temporary_path = output_directory / "support_progress.json.tmp"
+                    temporary_path.write_text(
+                        json.dumps(
+                            {
+                                "state": "running",
+                                "events": support_progress_events,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    os.replace(temporary_path, progress_path)
 
             freezer = _E2EContextFreezer(
                 public_config,
@@ -607,6 +649,11 @@ class TeacherForcedBenchmarkE2ERunner:
                 support_gateway=(harness.gateway if self._semantic_endpoint is not None else None),
                 support_progress_writer=record_support_progress,
                 support_pre_proposal_trace=self._support_pre_proposal_trace,
+                support_max_concurrent_needs=self._support_max_concurrent_needs,
+                support_max_inflight_kv_tokens=self._support_max_inflight_kv_tokens,
+                support_admission_controller=self._support_admission_controller,
+                frozen_planner_artifact=self._frozen_planner_artifact,
+                support_transport_config=self._support_transport_config,
             )
             evaluator = _E2EEvaluator(
                 bundle,
@@ -616,6 +663,7 @@ class TeacherForcedBenchmarkE2ERunner:
                 self._paired,
                 semantic_gateway=harness.gateway,
                 model_semantic_verifier_enabled=self._semantic_endpoint is not None,
+                max_concurrent_batches=self._evaluator_max_concurrent_batches,
             )
             segment_preamble = self._segment_preamble_count(progress_path) if resume else 0
             try:
@@ -626,6 +674,7 @@ class TeacherForcedBenchmarkE2ERunner:
                             transition,
                             freezer,
                             evaluator,
+                            checkpoint_workers=self._checkpoint_workers,
                         ).run(scenario, genesis_commit)
                 else:
                     with _ProgressWriter(progress_path) as progress_writer:
@@ -731,13 +780,75 @@ class TeacherForcedBenchmarkE2ERunner:
                 self._write_model(output_directory / "e2e_paired_report.json", paired_report)
             else:
                 paired_report = None
+            formal_matrix = False
             if evaluator.stage2m_results:
+                child_report_refs: list[dict[str, object]] = []
                 for item in evaluator.stage2m_results:
+                    report_bytes = canonical_json_bytes(item.model_dump(mode="json"))
+                    report_ref = artifacts.put(
+                        report_bytes,
+                        "application/vnd.novel-agent.stage2m-case-arm-report+json",
+                        VERSION,
+                    )
+                    child_report_refs.append(
+                        {
+                            "case_id": item.case_id.root,
+                            "checkpoint": item.checkpoint_chapter,
+                            "arm": item.arm,
+                            "artifact_ref": report_ref.model_dump(mode="json"),
+                        }
+                    )
+                    immutable_case_path = (
+                        output_directory
+                        / "reports"
+                        / GATE_METRIC_FORMULA_VERSION
+                        / information_profile.value
+                        / item.case_id.root
+                        / f"C{item.checkpoint_chapter}"
+                        / item.arm
+                        / f"{report_ref.artifact_id.root.removeprefix('sha256:')}.json"
+                    )
+                    self._write_immutable(immutable_case_path, report_bytes)
                     self._write_model(
                         output_directory
                         / f"stage2m_case_C{item.checkpoint_chapter}_{item.arm}.json",
                         item,
                     )
+                report_manifest = {
+                    "manifest_version": "stage2m_report_manifest.v1",
+                    "bundle_hash": bundle.content_hash.root,
+                    "profile": information_profile.value,
+                    "formula_version": GATE_METRIC_FORMULA_VERSION,
+                    "formula_hash": GATE_METRIC_FORMULA_HASH.root,
+                    "children": sorted(
+                        child_report_refs,
+                        key=lambda child: (
+                            int(cast(int, child["checkpoint"])),
+                            str(child["case_id"]),
+                            str(child["arm"]),
+                        ),
+                    ),
+                }
+                manifest_bytes = canonical_json_bytes(report_manifest)
+                manifest_ref = artifacts.put(
+                    manifest_bytes,
+                    "application/vnd.novel-agent.stage2m-report-manifest+json",
+                    VERSION,
+                )
+                self._write_immutable(
+                    output_directory
+                    / "report_manifests"
+                    / f"{manifest_ref.artifact_id.root.removeprefix('sha256:')}.json",
+                    manifest_bytes,
+                )
+                self._write_json(
+                    output_directory / "report_index.json",
+                    {
+                        "latest_manifest_ref": manifest_ref.model_dump(mode="json"),
+                        "formula_version": GATE_METRIC_FORMULA_VERSION,
+                        "formula_hash": GATE_METRIC_FORMULA_HASH.root,
+                    },
+                )
                 cases_by_arm = {
                     arm: tuple(item for item in evaluator.stage2m_results if item.arm == arm)
                     for arm in sorted({item.arm for item in evaluator.stage2m_results})
@@ -755,7 +866,11 @@ class TeacherForcedBenchmarkE2ERunner:
                 if formal_matrix:
                     formal_report = MemoryBenchmarkReporter(
                         artifact_reader=artifacts.read_verified
-                    ).aggregate(profile=information_profile, cases=arm_a_cases)
+                    ).aggregate(
+                        profile=information_profile,
+                        cases=arm_a_cases,
+                        aggregation_manifest_ref=manifest_ref,
+                    )
                     self._write_model(output_directory / "unified_report_A.json", formal_report)
                     self._write_model(output_directory / "unified_report.json", formal_report)
                 for arm, arm_cases in cases_by_arm.items():
@@ -764,7 +879,11 @@ class TeacherForcedBenchmarkE2ERunner:
                     diagnostic = MemoryBenchmarkReporter(
                         artifact_reader=artifacts.read_verified,
                         enforce_formal_contract=False,
-                    ).aggregate(profile=information_profile, cases=arm_cases)
+                    ).aggregate(
+                        profile=information_profile,
+                        cases=arm_cases,
+                        aggregation_manifest_ref=manifest_ref,
+                    )
                     self._write_model(
                         output_directory / f"diagnostic_partial_report_{arm}.json",
                         diagnostic,
@@ -784,6 +903,28 @@ class TeacherForcedBenchmarkE2ERunner:
             )
             retrieval_quality_eligible = bool(
                 latest_attestation is not None and latest_attestation.quality_eligible
+            )
+            scheduler_snapshot = (
+                self._support_admission_controller.snapshot()
+                if self._support_admission_controller is not None
+                else None
+            )
+            lifecycle_statuses = self._execution_lifecycle_statuses(
+                scheduler_snapshot,
+                scenario_completed=scenario_result.completed,
+                single_arm_result_count=sum(item.arm == "A" for item in evaluator.stage2m_results),
+                checkpoint_count=len(scenario_result.checkpoints),
+                generation_quality_eligible=harness.responses is None,
+                retrieval_quality_eligible=retrieval_quality_eligible,
+            )
+            scheduling_failure_count = cast(int, lifecycle_statuses["scheduling_failure_count"])
+            support_terminal_state = (
+                self._support_terminal_state(
+                    support_progress_events,
+                    scenario_completed=scenario_result.completed,
+                )
+                if support_progress_events
+                else "not_run"
             )
             summary: dict[str, Any] = {
                 "status": (
@@ -808,6 +949,20 @@ class TeacherForcedBenchmarkE2ERunner:
                 else [],
                 "checkpoint_chain_consistent": chain_consistent,
                 "scenario_run_completed": scenario_result.completed,
+                "checkpoint_scenario_status": cast(
+                    str, lifecycle_statuses["checkpoint_scenario_status"]
+                ),
+                "single_arm_evaluation_status": cast(
+                    str, lifecycle_statuses["single_arm_evaluation_status"]
+                ),
+                "paired_comparison_status": (
+                    "NOT_RUN"
+                    if paired_report is None or not paired_report.paired_results_count
+                    else "COMPLETED"
+                    if paired_report.paired_results_count == len(paired_report.cases)
+                    else "PARTIAL"
+                ),
+                "matrix_evaluation_status": "COMPLETED" if formal_matrix else "INCOMPLETE",
                 "scenario_run_blockers": scenario_result.blockers,
                 "future_isolation_failure_count": sum(
                     not item.future_isolation.passed for item in checkpoints
@@ -820,6 +975,27 @@ class TeacherForcedBenchmarkE2ERunner:
                 "guardian_agent_calls": transition.guardian_calls,
                 "guardian_gate_decisions": transition.guardian_gate_decisions,
                 "validator_calls": transition.validator_calls,
+                "need_planner_artifact_refs": [
+                    comparison.planner_artifact_ref.model_dump(mode="json")
+                    for _, comparison in sorted(
+                        freezer.comparisons.items(), key=lambda item: item[0].root
+                    )
+                    if comparison.planner_artifact_ref is not None
+                ],
+                "need_planner_invocation_count": sum(
+                    comparison.planner_artifact_ref is not None
+                    for comparison in freezer.comparisons.values()
+                ),
+                "need_planner_fallback_count": sum(
+                    comparison.planner_fallback_used for comparison in freezer.comparisons.values()
+                ),
+                "need_planner_grounded_status_counts": [
+                    sum(
+                        comparison.grounded_status_counts[index]
+                        for comparison in freezer.comparisons.values()
+                    )
+                    for index in range(3)
+                ],
                 "memory_write_status_counts": transition.memory_write_status_counts,
                 "memory_write_candidate_revisions": transition.memory_write_candidate_revisions,
                 "memory_write_repair_calls": transition.memory_write_repair_calls,
@@ -865,29 +1041,29 @@ class TeacherForcedBenchmarkE2ERunner:
                     ).model_dump(mode="json")
                 ),
                 "retrieval_quality_eligible": retrieval_quality_eligible,
-                "semantic_quality_eligible": (
-                    harness.responses is None and retrieval_quality_eligible
+                "semantic_quality_eligible": cast(
+                    bool, lifecycle_statuses["semantic_quality_eligible"]
                 ),
                 "curator_semantic_extraction_enabled": harness.responses is None,
-                "quality_blocker": self._quality_blocker(
-                    harness.responses is None, retrieval_quality_eligible
-                ),
+                "quality_blocker": cast(str, lifecycle_statuses["quality_blocker"]),
                 "quality_repair_flags": transition.quality_repair_flags.model_dump(mode="json"),
                 "postcommit_recovery": postcommit_recovery,
                 "project_database": database_descriptor,
                 "project_directory": str(resolved_project_directory),
+                "model_request_scheduler": scheduler_snapshot,
+                "scheduling_failure_count": scheduling_failure_count,
+                "support_terminal_state": support_terminal_state,
+                "model_call_records": [
+                    record.model_dump(mode="json") for record in harness.gateway.call_records
+                ],
             }
             if support_progress_events:
-                terminal_state = self._support_terminal_state(
-                    support_progress_events,
-                    scenario_completed=scenario_result.completed,
-                )
                 progress_path = output_directory / "support_progress.json"
                 temporary_path = output_directory / "support_progress.json.tmp"
                 temporary_path.write_text(
                     json.dumps(
                         {
-                            "state": terminal_state,
+                            "state": support_terminal_state,
                             "events": support_progress_events,
                         },
                         ensure_ascii=False,
@@ -949,6 +1125,62 @@ class TeacherForcedBenchmarkE2ERunner:
             and not any(event.get("status") == "failed" for event in support_progress_events)
             else "completed_with_failures"
         )
+
+    @staticmethod
+    def _execution_lifecycle_statuses(
+        scheduler_snapshot: dict[str, object] | None,
+        *,
+        scenario_completed: bool,
+        single_arm_result_count: int,
+        checkpoint_count: int,
+        generation_quality_eligible: bool,
+        retrieval_quality_eligible: bool,
+    ) -> dict[str, str | int | bool]:
+        """Reconcile scheduling infrastructure failure with quality eligibility.
+
+        A typed scheduling timeout is an execution-infrastructure failure: it
+        must demote the scenario and single-arm lifecycle states, block
+        semantic quality eligibility, and surface a non-empty quality blocker.
+        Model output/validation outcomes remain measurable model behavior and
+        do not by themselves become an infrastructure blocker.
+        """
+        scheduling_failure_count = (
+            cast(int, scheduler_snapshot["scheduling_timeouts"])
+            if scheduler_snapshot is not None
+            else 0
+        )
+        has_scheduling_failure = scheduling_failure_count > 0
+        return {
+            "scheduling_failure_count": scheduling_failure_count,
+            "checkpoint_scenario_status": (
+                "COMPLETED_WITH_EXECUTION_FAILURE"
+                if scenario_completed and has_scheduling_failure
+                else "COMPLETED"
+                if scenario_completed
+                else "INCOMPLETE"
+            ),
+            "single_arm_evaluation_status": (
+                "COMPLETED_WITH_EXECUTION_FAILURE"
+                if has_scheduling_failure and single_arm_result_count > 0
+                else "COMPLETED"
+                if single_arm_result_count == checkpoint_count and checkpoint_count > 0
+                else "NOT_RUN"
+                if single_arm_result_count == 0
+                else "PARTIAL"
+            ),
+            "semantic_quality_eligible": (
+                generation_quality_eligible
+                and retrieval_quality_eligible
+                and not has_scheduling_failure
+            ),
+            "quality_blocker": (
+                "SCHEDULING_INFRASTRUCTURE_FAILURE"
+                if has_scheduling_failure
+                else TeacherForcedBenchmarkE2ERunner._quality_blocker(
+                    generation_quality_eligible, retrieval_quality_eligible
+                )
+            ),
+        }
 
     def _scripted_smoke_attestation(self, source_commit: CommitId) -> ProjectionAttestation:
         snapshot_id = snapshot_id_for_commit(source_commit)
@@ -1344,6 +1576,20 @@ class TeacherForcedBenchmarkE2ERunner:
     @staticmethod
     def _request(identity: str, mode: AgentMode) -> ModelRequest:
         suffix = identity.replace("_", "-")
+        # Transport configuration for the local endpoint.  Replay curators
+        # (complex multi-operation grammar-mode proposals) get bounded
+        # thinking: the pre-b11 project runs that produced 95 chapters used
+        # the endpoint's default thinking, and without it the model's
+        # proposals drift (missing/hallucinated evidence ids).  Bootstrap
+        # agents stay deterministic with thinking disabled.  Output ceiling
+        # Domain transport contract: timeout_seconds is capped at 600 and
+        # output is capped at 12288.  Thinking is disabled for the replay
+        # curator: the semantic-quote evidence contract plus strict json_schema
+        # framing already prevent the legacy evidence-id hallucination that
+        # thinking was introduced to mitigate, and unbounded thinking blows
+        # past the transport ceiling at ~18 tokens/s decode.  Without thinking
+        # the curator draft is short and deterministic (measured well under
+        # 600s), keeping proposal, repair, and support calls inside the budget.
         return ModelRequest(
             request_id=StableId(f"request.teacher-forced.{suffix}"),
             run_id=RunId("run.teacher-forced.e2e"),
@@ -1352,7 +1598,11 @@ class TeacherForcedBenchmarkE2ERunner:
             purpose=ModelCallPurpose.BATCH_TEST,
             trace_id=f"trace-teacher-forced-{mode.value}-{suffix}",
             prompt="replaced by StructuredAgentRunner",
-            timeout_seconds=300,
+            max_output_tokens=12288,
+            timeout_seconds=600,
+            enable_thinking=False,
+            thinking_token_budget=None,
+            scheduling_stage=f"agent_{suffix}",
         )
 
     @staticmethod
@@ -1365,6 +1615,8 @@ class TeacherForcedBenchmarkE2ERunner:
         endpoint: ModelEndpointPort | None = None,
         *,
         quality_repair_flags: QualityRepairFeatureFlags | None = None,
+        admission_controller: ModelRequestAdmissionController | None = None,
+        scheduling_timeout_seconds: float = 120.0,
     ) -> _AgentHarness:
         package_root = Path(__file__).parents[1]
         prompt_directory = package_root / "prompts"
@@ -1578,6 +1830,8 @@ class TeacherForcedBenchmarkE2ERunner:
                 ),
             ),
             structured_max_retries=int(getattr(selected_endpoint, "max_retries", 0)),
+            admission_controller=admission_controller,
+            scheduling_timeout_seconds=scheduling_timeout_seconds,
         )
         all_specs = (*specs,) if not is_semantic else (*specs, controller_spec_base)
         runner = StructuredAgentRunner(
@@ -1616,6 +1870,7 @@ class TeacherForcedBenchmarkE2ERunner:
                     trace_id=(f"trace-controller-{req.request_id.root}-r{round_index}"),
                     prompt="replaced by StructuredAgentRunner",
                     timeout_seconds=60,
+                    scheduling_stage="memory_controller",
                 )
 
             policy = StructuredControllerPolicy(
@@ -1672,16 +1927,22 @@ class TeacherForcedBenchmarkE2ERunner:
             configuration_fingerprint=fingerprint,
             controller_mode=controller_mode,
             cases=results,
-            paired_results_count=len(results),
+            paired_results_count=sum(
+                item.agentic_execution_status is ArmExecutionStatus.COMPLETED for item in results
+            ),
             comparable_results_count=sum(item.comparable for item in results),
             future_leakage_count=sum(
                 item.deterministic_metrics.future_leakage_count
-                + item.agentic_metrics.future_leakage_count
+                + (
+                    item.agentic_metrics.future_leakage_count
+                    if item.agentic_metrics is not None
+                    else 0
+                )
                 for item in results
             ),
-            safety_regression_count=sum(item.safety_regression for item in results),
-            accuracy_gain_count=sum(item.accuracy_gain for item in results),
-            tool_call_reduction_count=sum(item.tool_call_reduction for item in results),
+            safety_regression_count=sum(item.safety_regression is True for item in results),
+            accuracy_gain_count=sum(item.accuracy_gain is True for item in results),
+            tool_call_reduction_count=sum(item.tool_call_reduction is True for item in results),
             delta_gain_count=sum(
                 1
                 for item in results
@@ -1702,6 +1963,17 @@ class TeacherForcedBenchmarkE2ERunner:
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _write_immutable(path: Path, payload: bytes) -> None:
+        if path.exists():
+            if path.read_bytes() != payload:
+                raise TeacherForcedBenchmarkError(
+                    f"refusing to overwrite different benchmark evidence: {path}"
+                )
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
     @staticmethod
     def _run_without_checkpoints(
@@ -1975,14 +2247,47 @@ class _TeacherForcedTransition:
         if self.harness.responses is None:
             return
         if mode in {AgentMode.REPLAY, AgentMode.CURATOR_REPAIR}:
+            candidates = EvidenceCandidateGenerator().generate(
+                self.text,
+                self._active_workflow_chapter or 0,
+            )
+            quote = next(
+                (
+                    candidate.text
+                    for candidate in candidates
+                    if len(EvidenceCandidateGenerator._semantic_span(candidate.text)) >= 8
+                ),
+                "scripted contract smoke",
+            )
+            subject = (
+                self.world.entities[0].entity_id
+                if self.world.entities
+                else StableId("entity.scripted-smoke")
+            )
             TeacherForcedBenchmarkE2ERunner._script(
                 self.harness,
                 request,
-                ChapterChangeDraft(
+                CuratorV2EvidenceDraft(
                     chapter_index=self._active_workflow_chapter or 0,
-                    coverage=0,
-                    unresolved=(
-                        "scripted contract smoke does not perform semantic chapter extraction",
+                    operations=(
+                        CuratorV2OperationDraft(
+                            operation=ChangeOperationType.CREATE,
+                            record_kind=WorldRecordKind.STATE,
+                            target_id=StableId(
+                                f"state.scripted-smoke.{self._active_workflow_chapter or 0}"
+                            ),
+                            record=CuratorStateRecord(
+                                subject_id=subject,
+                                predicate="scripted_smoke",
+                                value="verified",
+                                valid_time=CuratorStoryTime(
+                                    worldline="main",
+                                    start_ordinal=self._active_workflow_chapter or 0,
+                                ),
+                                truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                            ),
+                            evidence_quotes=(quote,),
+                        ),
                     ),
                 ),
             )
@@ -2405,14 +2710,42 @@ class _TeacherForcedTransition:
         request = TeacherForcedBenchmarkE2ERunner._request(
             f"curator.replay.{chapter}", AgentMode.REPLAY
         )
+        candidates = EvidenceCandidateGenerator().generate(self.text, chapter)
+        quote = next(
+            (
+                candidate.text
+                for candidate in candidates
+                if len(EvidenceCandidateGenerator._semantic_span(candidate.text)) >= 8
+            ),
+            "scripted contract smoke",
+        )
+        subject = (
+            self.world.entities[0].entity_id
+            if self.world.entities
+            else StableId("entity.scripted-smoke")
+        )
         TeacherForcedBenchmarkE2ERunner._script(
             self.harness,
             request,
-            ChapterChangeDraft(
+            CuratorV2EvidenceDraft(
                 chapter_index=chapter,
-                coverage=0,
-                unresolved=(
-                    "scripted contract smoke does not perform semantic chapter extraction",
+                operations=(
+                    CuratorV2OperationDraft(
+                        operation=ChangeOperationType.CREATE,
+                        record_kind=WorldRecordKind.STATE,
+                        target_id=StableId(f"state.scripted-smoke.{chapter}"),
+                        record=CuratorStateRecord(
+                            subject_id=subject,
+                            predicate="scripted_smoke",
+                            value="verified",
+                            valid_time=CuratorStoryTime(
+                                worldline="main",
+                                start_ordinal=chapter,
+                            ),
+                            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                        ),
+                        evidence_quotes=(quote,),
+                    ),
                 ),
             ),
         )
@@ -2500,6 +2833,11 @@ class _E2EContextFreezer:
         support_gateway: ModelGateway | None = None,
         support_progress_writer: Callable[[Mapping[str, object]], None] | None = None,
         support_pre_proposal_trace: bool = False,
+        support_max_concurrent_needs: int = 1,
+        support_max_inflight_kv_tokens: int | None = None,
+        support_admission_controller: ModelRequestAdmissionController | None = None,
+        frozen_planner_artifact: PlannerInvocationArtifact | None = None,
+        support_transport_config: ClaimSupportTransportConfig | None = None,
     ) -> None:
         self.config = config
         self.transition = transition
@@ -2510,6 +2848,11 @@ class _E2EContextFreezer:
         self.support_gateway = support_gateway
         self.support_progress_writer = support_progress_writer
         self.support_pre_proposal_trace = support_pre_proposal_trace
+        self.support_max_concurrent_needs = support_max_concurrent_needs
+        self.support_max_inflight_kv_tokens = support_max_inflight_kv_tokens
+        self.support_admission_controller = support_admission_controller
+        self.frozen_planner_artifact = frozen_planner_artifact
+        self.support_transport_config = support_transport_config
         self.comparisons: dict[StableId, PairedContextComparison] = {}
         self._latest_attestation: ProjectionAttestation | None = None
 
@@ -2523,13 +2866,22 @@ class _E2EContextFreezer:
             item for item in self.transition.bundle.case_manifests if item.case_id == case_id
         )
         state = self.transition.states[case.case_id]
-        plan_bytes = state.plan.model_dump_json().encode("utf-8")
+        author_plan = (
+            next(
+                root
+                for root in self.transition.bundle.plan_roots
+                if root.root_hash == case.input_plan_root
+            )
+            if self.transition.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+            else state.plan
+        )
+        plan_bytes = author_plan.model_dump_json().encode("utf-8")
         plan_ref = (
             PlanRootRef(
-                artifact_id=state.plan.root_hash,
+                artifact_id=author_plan.root_hash,
                 media_type="application/vnd.novel-agent.plan-root+json",
                 byte_length=len(plan_bytes),
-                schema_version=state.plan.schema_version,
+                schema_version=author_plan.schema_version,
             )
             if self.transition.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
             else None
@@ -2541,6 +2893,25 @@ class _E2EContextFreezer:
             history_range=case.history_range,
             information_profile=self.transition.profile,
             plan_root_ref=plan_ref,
+            task_intent=(
+                case.task_intent
+                if self.transition.profile
+                in {
+                    BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+                    BenchmarkInformationProfile.TASK_INTENT_ONLY,
+                }
+                else ""
+            ),
+            planning_context_ref=(
+                case.planning_context_ref
+                if self.transition.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+                else None
+            ),
+            planning_context_hash=(
+                case.planning_context_hash
+                if self.transition.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+                else None
+            ),
         )
         retrieval_backend = None
         snapshot_capability = None
@@ -2570,13 +2941,25 @@ class _E2EContextFreezer:
             self.transition.profile,
             history=state.text,
             world=state.world,
-            plan=state.plan,
+            plan=author_plan,
             base_commit=state.commit,
             controller_policy_factory=self.controller_policy_factory,
             retrieval_backend=retrieval_backend,
             snapshot_capability=snapshot_capability,
             reranker=reranker,
             support_gateway=self.support_gateway,
+            support_max_concurrent_needs=self.support_max_concurrent_needs,
+            support_max_inflight_kv_tokens=self.support_max_inflight_kv_tokens,
+            support_admission_controller=self.support_admission_controller,
+            support_transport_config=self.support_transport_config,
+            planning_context=next(
+                (
+                    context
+                    for context in self.transition.bundle.planning_contexts
+                    if context.source_hash == case.planning_context_hash
+                ),
+                None,
+            ),
             support_artifact_writer=lambda payload, media_type: self.artifacts.put(
                 payload,
                 media_type,
@@ -2584,6 +2967,7 @@ class _E2EContextFreezer:
             ),
             support_progress_writer=self.support_progress_writer,
             support_pre_proposal_trace=self.support_pre_proposal_trace,
+            frozen_planner_artifact=self.frozen_planner_artifact,
         )
         if self.support_progress_writer is not None:
             self.support_progress_writer(
@@ -2617,6 +3001,7 @@ class _E2EEvaluator:
         *,
         semantic_gateway: ModelGateway | None = None,
         model_semantic_verifier_enabled: bool = False,
+        max_concurrent_batches: int = 4,
     ) -> None:
         self.bundle = bundle
         self.profile = profile
@@ -2625,16 +3010,20 @@ class _E2EEvaluator:
         self.paired = paired
         self.semantic_gateway = semantic_gateway
         self.model_semantic_verifier_enabled = model_semantic_verifier_enabled
+        self.max_concurrent_batches = max_concurrent_batches
         self._results: list[PairedPilotCaseResult] = []
         self._stage2m_results: list[MemoryBenchmarkCaseArmReport] = []
+        self._results_lock = threading.Lock()
 
     @property
     def results(self) -> tuple[PairedPilotCaseResult, ...]:
-        return tuple(self._results)
+        with self._results_lock:
+            return tuple(self._results)
 
     @property
     def stage2m_results(self) -> tuple[MemoryBenchmarkCaseArmReport, ...]:
-        return tuple(self._stage2m_results)
+        with self._results_lock:
+            return tuple(self._stage2m_results)
 
     def score(self, freeze: Any, evaluator_sources: tuple[Any, ...]) -> EvaluatorDisposition:
         if {item.source_class for item in evaluator_sources} != {
@@ -2648,7 +3037,8 @@ class _E2EEvaluator:
             self.profile,
             self.freezer.comparisons[case.case_id],
         )
-        self._results.append(result)
+        with self._results_lock:
+            self._results.append(result)
         artifact = self.artifacts.put(
             canonical_json_bytes(result.model_dump(mode="json")),
             "application/vnd.novel-agent.e2e-case-score+json",
@@ -2743,28 +3133,31 @@ class _E2EEvaluator:
                     "application/vnd.novel-agent.evaluator-writer-evidence-ledger+json",
                     VERSION,
                 )
-                self._stage2m_results.append(
-                    MemoryBenchmarkCaseArmReport(
-                        case_id=case.case_id,
-                        checkpoint_chapter=case.history_range[1],
-                        arm="A",
-                        code_version=comparison.freeze_receipt.code_version,
-                        run_config_hash=comparison.freeze_receipt.run_config_hash,
-                        benchmark_contract_hash=self.bundle.content_hash,
-                        matcher_version=GoldEvidenceMatcher.version,
-                        writer_token_budget=(
-                            writer_context.budget_report.configured_writer_token_budget
-                        ),
-                        evidence_ledger_token_budget=12_000,
-                        assembly_status=writer_context.budget_report.final_status,
-                        writer_tokens=(writer_context.budget_report.actual_rendered_writer_tokens),
-                        evidence_tokens=writer_context.budget_report.evidence_ledger_tokens,
-                        selected_unit_count=writer_context.lineage.normalized_unit_count,
-                        comparable=False,
-                        writer_evidence_ledger_ref=ledger_ref,
-                        evaluation=per_gold,
+                with self._results_lock:
+                    self._stage2m_results.append(
+                        MemoryBenchmarkCaseArmReport(
+                            case_id=case.case_id,
+                            checkpoint_chapter=case.history_range[1],
+                            arm="A",
+                            code_version=comparison.freeze_receipt.code_version,
+                            run_config_hash=comparison.freeze_receipt.run_config_hash,
+                            benchmark_contract_hash=self.bundle.content_hash,
+                            matcher_version=GoldEvidenceMatcher.version,
+                            writer_token_budget=(
+                                writer_context.budget_report.configured_writer_token_budget
+                            ),
+                            evidence_ledger_token_budget=12_000,
+                            assembly_status=writer_context.budget_report.final_status,
+                            writer_tokens=(
+                                writer_context.budget_report.actual_rendered_writer_tokens
+                            ),
+                            evidence_tokens=writer_context.budget_report.evidence_ledger_tokens,
+                            selected_unit_count=writer_context.lineage.normalized_unit_count,
+                            comparable=False,
+                            writer_evidence_ledger_ref=ledger_ref,
+                            evaluation=per_gold,
+                        )
                     )
-                )
                 score_artifacts.append(
                     self.artifacts.put(
                         canonical_json_bytes(per_gold.model_dump(mode="json")),
@@ -2792,7 +3185,10 @@ class _E2EEvaluator:
                     evidence_ledger,
                     comparison.freeze_receipt,
                 )
-                verifier = ModelSemanticSupportVerifier(self.semantic_gateway)
+                verifier = ModelSemanticSupportVerifier(
+                    self.semantic_gateway,
+                    max_concurrent_batches=self.max_concurrent_batches,
+                )
                 batch, calls = asyncio.run(
                     verifier.verify(
                         gold_items=applicable_gold,
@@ -2814,6 +3210,7 @@ class _E2EEvaluator:
                             prompt="replaced by Stage 2M semantic verifier",
                             timeout_seconds=300,
                             enable_thinking=False,
+                            scheduling_stage="evaluation",
                         ),
                     )
                 )
@@ -2847,33 +3244,72 @@ class _E2EEvaluator:
                 verifier_receipt_ref=verifier_receipt_ref,
                 stage_loss_diagnostics=stage_loss_diagnostics,
             )
+            plan = next(
+                (root for root in self.bundle.plan_roots if root.root_hash == case.input_plan_root),
+                None,
+            )
+            world = next(
+                (
+                    root
+                    for root in self.bundle.world_roots
+                    if root.root_hash == case.input_world_root_verified
+                ),
+                None,
+            )
+            plan_goals = tuple(
+                goal
+                for goal in (plan.chapter_goals if plan is not None else ())
+                if case.target_range[0] <= goal.chapter_index <= case.target_range[1]
+            )
+            five_segments = benchmark_evaluator.evaluate_five_segments(
+                needs=comparison.generated_needs,
+                gold_need_specs=case.gold_need_specs,
+                plan_goals=plan_goals,
+                gold_items=gold_items,
+                evidence_ledger=evidence_ledger,
+                completion_accuracy=per_gold.weighted_coverage,
+                per_gold_comparisons=per_gold.comparisons,
+                future_leakage_count=comparison.deterministic.future_leakage_count,
+                entity_id_by_label=(
+                    {entity.internal_label: entity.entity_id for entity in world.entities}
+                    if world is not None
+                    else None
+                ),
+                planner_fallback_used=comparison.planner_fallback_used,
+                planner_fallback_reason=comparison.planner_fallback_reason,
+                planner_artifact_ref=comparison.planner_artifact_ref,
+                grounded_status_counts=comparison.grounded_status_counts,
+                profile=self.profile,
+            )
+            per_gold = per_gold.model_copy(update={"five_segments": five_segments})
             ledger_ref = self.artifacts.put(
                 canonical_json_bytes(evidence_ledger.model_dump(mode="json")),
                 "application/vnd.novel-agent.evaluator-writer-evidence-ledger+json",
                 VERSION,
             )
-            self._stage2m_results.append(
-                MemoryBenchmarkCaseArmReport(
-                    case_id=case.case_id,
-                    checkpoint_chapter=case.history_range[1],
-                    arm=writer_context.arm,
-                    code_version=comparison.freeze_receipt.code_version,
-                    run_config_hash=comparison.freeze_receipt.run_config_hash,
-                    benchmark_contract_hash=self.bundle.content_hash,
-                    matcher_version=GoldEvidenceMatcher.version,
-                    writer_token_budget=(
-                        writer_context.budget_report.configured_writer_token_budget
-                    ),
-                    evidence_ledger_token_budget=12_000,
-                    assembly_status=writer_context.budget_report.final_status,
-                    writer_tokens=(writer_context.budget_report.actual_rendered_writer_tokens),
-                    evidence_tokens=writer_context.budget_report.evidence_ledger_tokens,
-                    selected_unit_count=writer_context.lineage.normalized_unit_count,
-                    comparable=comparison.comparable,
-                    writer_evidence_ledger_ref=ledger_ref,
-                    evaluation=per_gold,
+            with self._results_lock:
+                self._stage2m_results.append(
+                    MemoryBenchmarkCaseArmReport(
+                        case_id=case.case_id,
+                        checkpoint_chapter=case.history_range[1],
+                        arm=writer_context.arm,
+                        code_version=comparison.freeze_receipt.code_version,
+                        run_config_hash=comparison.freeze_receipt.run_config_hash,
+                        benchmark_contract_hash=self.bundle.content_hash,
+                        matcher_version=GoldEvidenceMatcher.version,
+                        writer_token_budget=(
+                            writer_context.budget_report.configured_writer_token_budget
+                        ),
+                        evidence_ledger_token_budget=12_000,
+                        assembly_status=writer_context.budget_report.final_status,
+                        writer_tokens=(writer_context.budget_report.actual_rendered_writer_tokens),
+                        evidence_tokens=writer_context.budget_report.evidence_ledger_tokens,
+                        selected_unit_count=writer_context.lineage.normalized_unit_count,
+                        comparable=comparison.comparable,
+                        writer_evidence_ledger_ref=ledger_ref,
+                        evaluation=per_gold,
+                    )
                 )
-            )
             score_artifacts.append(
                 self.artifacts.put(
                     canonical_json_bytes(per_gold.model_dump(mode="json")),

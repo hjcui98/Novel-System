@@ -30,7 +30,10 @@ def _need_is_accessible(
 
     if need.access_scope != access_scope:
         return False
-    return not ((need.query_intent in PLAN_INTENTS or need.allow_plan) and not allow_future_plan)
+    return not (
+        (need.query_intent in PLAN_INTENTS or need.retrieval_may_return_plan)
+        and not allow_future_plan
+    )
 
 
 class LegalActionProvider:

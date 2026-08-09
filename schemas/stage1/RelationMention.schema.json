@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "One natural-language relation reference in a draft (no graph id).",
+  "properties": {
+    "object_label": {
+      "minLength": 1,
+      "title": "Object Label",
+      "type": "string"
+    },
+    "relation_label": {
+      "minLength": 1,
+      "title": "Relation Label",
+      "type": "string"
+    },
+    "subject_label": {
+      "minLength": 1,
+      "title": "Subject Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_label",
+    "relation_label",
+    "object_label"
+  ],
+  "title": "RelationMention",
+  "type": "object"
+}

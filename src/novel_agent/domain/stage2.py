@@ -714,11 +714,24 @@ class PublicCheckpointCase(DomainModel):
             self.task_contract.target_chapter_end,
         ) != self.target_range:
             raise ValueError("public task target range does not match checkpoint case")
+        profile = self.task_contract.information_profile
         if (
-            self.task_contract.information_profile is BenchmarkInformationProfile.VISIBLE_AT_CUTOFF
+            profile
+            in {
+                BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+                BenchmarkInformationProfile.TASK_INTENT_ONLY,
+            }
             and self.plan_root_ref is not None
         ):
-            raise ValueError("visible_at_cutoff public case cannot expose a PlanRoot")
+            raise ValueError(f"{profile.value} public case cannot expose a PlanRoot")
+        if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
+            if self.plan_root_ref is None:
+                raise ValueError("APC public case requires a verified PlanRoot")
+            if (
+                self.task_contract.planning_context_ref is None
+                or self.task_contract.planning_context_hash is None
+            ):
+                raise ValueError("APC public case requires a bound planning context")
         return self
 
 
@@ -1175,9 +1188,22 @@ class PairedContextComparison(DomainModel):
     arm_c_execution_status: ArmExecutionStatus = ArmExecutionStatus.SKIPPED
     arm_c_failure_category: str | None = "NOT_RUN"
     freeze_receipt: FreezeReceipt | None = None
+    # Generated needs used by the five-segment evaluation (public-safe).
+    generated_needs: tuple[Stage1MemoryNeed, ...] = ()
+    # Durable, replay-complete Planner invocation.  This is the document ref,
+    # not merely the compact metadata hash copied onto individual Needs.
+    planner_artifact_ref: ArtifactRef | None = None
+    # Gate 1 planner diagnostics: whether the LLM Need Planner fell back to
+    # the deterministic templates, and (GROUNDED, AMBIGUOUS, UNRESOLVED)
+    # grounding counts across the accepted drafts.
+    planner_fallback_used: bool = False
+    planner_fallback_reason: str | None = None
+    grounded_status_counts: tuple[int, int, int] = (0, 0, 0)
 
     @model_validator(mode="after")
     def validate_comparability(self) -> PairedContextComparison:
+        if self.planner_fallback_used != (self.planner_fallback_reason is not None):
+            raise ValueError("Planner fallback flag/reason must appear together")
         if self.deterministic.arm is not ControllerArm.DETERMINISTIC:
             raise ValueError("deterministic paired arm has the wrong controller type")
         if self.agentic.arm is not ControllerArm.BOUNDED_R2:
@@ -1241,15 +1267,37 @@ class PairedPilotCaseResult(DomainModel):
     comparison_basis_fingerprint: ArtifactId
     comparable: bool
     blockers: tuple[str, ...] = ()
+    deterministic_execution_status: ArmExecutionStatus = ArmExecutionStatus.COMPLETED
+    agentic_execution_status: ArmExecutionStatus = ArmExecutionStatus.COMPLETED
+    paired_comparison_status: str = "COMPARABLE"
     deterministic_metrics: PairedPilotArmMetrics
-    agentic_metrics: PairedPilotArmMetrics
+    agentic_metrics: PairedPilotArmMetrics | None = None
     delta_metrics: PairedPilotArmMetrics | None = None
-    accuracy_gain: bool
-    tool_call_reduction: bool
-    safety_regression: bool
+    accuracy_gain: bool | None = None
+    tool_call_reduction: bool | None = None
+    safety_regression: bool | None = None
 
     @model_validator(mode="after")
     def validate_case_summary(self) -> PairedPilotCaseResult:
+        if self.deterministic_execution_status is not ArmExecutionStatus.COMPLETED:
+            raise ValueError("deterministic metrics require a completed deterministic arm")
+        if self.agentic_execution_status is not ArmExecutionStatus.COMPLETED:
+            if any(
+                item is not None
+                for item in (
+                    self.agentic_metrics,
+                    self.delta_metrics,
+                    self.accuracy_gain,
+                    self.tool_call_reduction,
+                    self.safety_regression,
+                )
+            ):
+                raise ValueError("skipped or failed Agentic arm cannot expose metrics or deltas")
+            if self.comparable or self.paired_comparison_status == "COMPARABLE":
+                raise ValueError("unexecuted Agentic arm cannot be a paired comparison")
+            return self
+        if self.agentic_metrics is None:
+            raise ValueError("completed Agentic arm requires metrics")
         expected_comparable = not self.blockers and not (
             self.deterministic_metrics.future_leakage_count
             or self.agentic_metrics.future_leakage_count
@@ -1287,6 +1335,8 @@ class PairedPilotCaseResult(DomainModel):
             raise ValueError("paired Pilot tool reduction flag is inconsistent")
         if self.safety_regression != expected_regression:
             raise ValueError("paired Pilot safety regression flag is inconsistent")
+        if self.paired_comparison_status != ("COMPARABLE" if self.comparable else "NOT_COMPARABLE"):
+            raise ValueError("paired comparison status is inconsistent")
         return self
 
 
@@ -1311,16 +1361,24 @@ class Stage2PairedPilotReport(DomainModel):
         if len(identities) != len(set(identities)):
             raise ValueError("paired Pilot case/profile identities must be unique")
         expected = {
-            "paired_results_count": len(self.cases),
+            "paired_results_count": sum(
+                item.agentic_execution_status is ArmExecutionStatus.COMPLETED for item in self.cases
+            ),
             "comparable_results_count": sum(item.comparable for item in self.cases),
             "future_leakage_count": sum(
                 item.deterministic_metrics.future_leakage_count
-                + item.agentic_metrics.future_leakage_count
+                + (
+                    item.agentic_metrics.future_leakage_count
+                    if item.agentic_metrics is not None
+                    else 0
+                )
                 for item in self.cases
             ),
-            "safety_regression_count": sum(item.safety_regression for item in self.cases),
-            "accuracy_gain_count": sum(item.accuracy_gain for item in self.cases),
-            "tool_call_reduction_count": sum(item.tool_call_reduction for item in self.cases),
+            "safety_regression_count": sum(item.safety_regression is True for item in self.cases),
+            "accuracy_gain_count": sum(item.accuracy_gain is True for item in self.cases),
+            "tool_call_reduction_count": sum(
+                item.tool_call_reduction is True for item in self.cases
+            ),
         }
         for field, value in expected.items():
             if getattr(self, field) != value:

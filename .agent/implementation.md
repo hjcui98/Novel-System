@@ -817,3 +817,778 @@ workset 只发 1 次 multi 请求）、失败事件 `failed_call`/`failed_input_
   缺口在结论规格与问题对齐。
 - 未运行：C95（准入未满足）、P3、A/B/C、正式 Gate、Stage 3；未 commit、未 merge；
   未触碰 review/plan/task 文档。
+
+---
+
+## 16. 新执行周期：Need 管道审计 Phase 0A/0B（2026-08-07）
+
+- 依据：`.agent/need_pipeline_audit_and_semantics.md`（Codex 批准版 v2，状态
+  "Approved with implementation prerequisites（Phase 0A 可立即执行，其余需补齐前置条件）"）。
+  本周期执行 **Phase 0A（语义与输入链路）全部 8 项 + P0-1（allow_plan 拆分）+ P0-2
+  （AuthorPlanningContext 窄通道）**，并完成 **Phase 0B（APC 模板链路冒烟）** 验收。
+  Phase 0C（predicates/EVENT query/query_hints 三个独立 patch）与 Phase 1（LLM Planner）
+  未包含——按文档要求需前置条件（R1 predicates 语义审计 / LLM Planner 数据契约）。
+- 代码基线：commit `420e163`（工作树 dirty，未 commit）；代码指纹
+  `sha256:08ed9a35812f1a26dba1a379819c244153ebc127634bb1f258a6739bbb06bc52`
+  （`_code_source_fingerprint` 算法，含全部 dirty 改动）。
+- 质量门：`make quality` **1527 passed, 9 deselected, 100% 语句/分支覆盖**，
+  strict mypy/ruff 全绿（`Success: no issues found in 284 source files`）。
+
+### 16.1 改动清单（42 文件，+1980/-217）
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| domain | `benchmark.py` | 新增 `VisibleOutlineNode`、`AuthorPlanningContext`；`BenchmarkCaseManifest` 新增 `information_profile/task_intent/planning_context_ref/planning_context_hash`；`BenchmarkBundle` 新增 `planning_contexts` + source_hash 唯一性校验 |
+| domain | `writer_context.py` | `BenchmarkTaskContract` 新增 `task_intent/planning_context_ref/planning_context_hash` |
+| domain | `memory.py` | `Stage1MemoryNeed` 新增 `planner_may_read_plan/retrieval_may_return_plan/claim_may_cite_plan/legacy_allow_plan`；`allow_plan` 标记 deprecated（校验强制等于 retrieval 策略）；plan-derived facet 校验迁移到 `claim_may_cite_plan` |
+| 编译 | `human_benchmark_compiler.py` | 新增 `_compile_planning_context()`（task/mode/visible_outline/target_plan → 类型化 `AuthorPlanningContext`，`source_hash` 绑定原始 YAML 字段）；`compile()` 填充 manifest 与 bundle |
+| 契约 | `memory_benchmark_contract.py` | `build_safe_task_contract` 组合式构造：固定安全契约（task_text 不变）+ 规范化 `task_intent` 字段；VAC 拒绝非空 task_intent（fail-closed）；`assert_safe_public_payload` 覆盖 task_intent；`build_public_checkpoint_case` 透传 refs；`_PRIVATE_FIELD_FRAGMENTS`/taint/hash 全部保留 |
+| 导入 | `benchmark_importer.py` | `_validate_case` 新增 planning context ref↔bundle 绑定校验（ref 哈希、profile 一致性、孤儿 task_intent 拒绝） |
+| 检索/claim 门 | `search_retrieval.py:565`、`claim_support.py:3125`、`controller_legal_actions.py:33`、`runtime/memory_controller.py:460`、`tools/retrieval.py:104` | `allow_plan` 消费点全部迁移到分层策略（检索→`retrieval_may_return_plan`；claim→`claim_may_cite_plan`；工具/controller→intent OR `retrieval_may_return_plan`） |
+| 生产者 | `task_conditioned_need_generation.py`（add() 填充 4 字段，版本 v21→v22）、`stage1_benchmark.py`（两处 plan 需要）、`stage2_paired_pilot.py`（`_plan_needs` + `_scope_needs` 重写 + 版本 v0.4→v0.5） | plan 通道需要（`plan_obligation`/`plan_conditioned_history`）显式获得三层 True；历史需要全 False |
+| 运行 | `teacher_forced_benchmark_e2e.py` `freeze()` | APC 时透传 manifest 的 task_intent/planning refs 到 `build_public_checkpoint_case` |
+| CLI | `run_stage2_teacher_forced_e2e.py` | `--information-profile` 默认改为 None，编译后从 `AuthorPlanningContext.profile` 解析（`_default_information_profile`）；显式传参仍可覆盖（VAC 对照合法） |
+| schemas | stage1/stage2 重导出（13 个 schema JSON 变更，0A.7） | — |
+| 数据 | P001-P005 input.yaml（0A.8） | 审计结论：5 个 case 的 `task/mode/visible_outline/target_plan` 字段**全部齐全**（均为 `mode: plan_conditioned`）；编译期 fail-closed 校验 + 5/5 context 编译测试覆盖 |
+
+### 16.2 Phase 0A 验收（Gate 0）逐条证据
+
+1. **APC PlanningContext 正确进入 Planner 上游**：编译器产出 5 个类型化 context（P003 例：
+   task_intent=「输出写 61-65 章所需的长距记忆…」、2 outline nodes、5 chapter goals）；
+   manifest 保存 `information_profile=author_plan_conditioned` + refs；`freeze()` →
+   `build_public_checkpoint_case` → `BenchmarkTaskContract.task_intent` 全程透传（0B 冒烟实测
+   public.task_contract.task_intent 非空）。
+2. **三层策略注入**：`_scope_needs` 在 APC 注入 `planner_may_read_plan=True` 于全部 Need，
+   `retrieval_may_return_plan=False`/`claim_may_cite_plan=False` 于历史走廊；显式 plan 通道
+   Need（按 need_type 确定性判定，`plan_obligation`/`plan_conditioned_history`）保留三层
+   True——与旧 `allow_plan=True` 行为逐位等价（Gate 0「暂不改变 Need 生成结果」）。
+3. **observed-only evidence、零 leakage**：0B 冒烟实测 P003 APC：plan-labeled 候选单元
+   **仅**出现在 `need.stage2m.plan.*` 通道 Need 的 trace 中（7 个 goal + 2 个 outline Need，
+   共 47 个 plan 单元）；历史 Need 零 plan 单元；`future_leakage_count=0`；
+   plan_node_ids 仅出现在 plan 通道的 ledger entry 与 support group。
+4. **hash/profile 正确**：VAC 路径 task_text/task_contract 与旧行为逐字节一致（task_intent
+   为空时不进入 task_text，模板哈希不变）；`verify_public_checkpoint_case` 通过；
+   VAC + task_intent → `PublicBenchmarkTaintError`（盲式档位 fail-closed）。
+5. **Need 生成结果不变**：模板链路产出的 Need 集合与策略字段与旧 `allow_plan` 语义一致
+   （旧 1525→新 1527 测试全部通过，其中仅 3 处测试因字段新增而更新构造方式）。
+
+### 16.3 Phase 0B 验收（APC 模板链路冒烟）
+
+确定性冒烟（scripted_smoke、无模型调用、真实 P003 数据）：compile → planning context →
+public case（含 task_intent）→ `resolve_state_case(APC)` → 29 条 retrieval trace、
+assembly **READY**、`quality_eligible=True`、`future_leakage_count=0`。
+
+- 0B.1 plan 可见 ✓（plan-related Need 生成：`need.stage2m.plan.goal.ZTJ-P003.6X` +
+  outline 2 个）
+- 0B.2 historical retrieval observed-only ✓（plan 单元只进 plan 通道 trace）
+- 0B.3 claim 不引用 plan ✓（plan_node_ids 只在 plan-obligation support group/ledger）
+- 0B.4 leakage=0 ✓
+- 0B.5 VAC 不见 plan ✓（`_scope_needs` 强制全 False + `plan_root_ref=None` +
+  `build_safe_task_contract` 拒绝 task_intent）
+
+该冒烟固化为契约测试
+`tests/contract/test_memory_benchmark_information_profiles.py::test_apc_template_chain_keeps_plan_to_plan_channel_only`
+（真实 PILOT 数据，~5s）。
+
+### 16.4 新增回归测试（license-free，无 Gold/实体/章节号硬编码）
+
+| 测试 | 覆盖 |
+|---|---|
+| `test_human_benchmark_compiler.py::test_planning_contexts_are_compiled_bound_and_typed` | 5/5 context 编译、ref/hash 绑定、outline/goal 与 PlanRoot 一致 |
+| `...::test_planning_context_compilation_is_fail_closed_on_raw_yaml_fields` | 非法 mode / 空 task / 非 list target_plan → 编译错误 |
+| `...::test_planning_context_rejects_invalid_ranges_and_duplicate_ids` | 范围、重复 goal/outline id、node_type 校验 |
+| `test_memory_benchmark_taint_boundary.py::test_task_contract_composes_safe_contract_with_normalized_task_intent` | 组合契约、VAC 拒绝、固定计数 taint、模板版本不变 |
+| `...::test_public_checkpoint_case_forwards_planning_context_refs` | APC 透传 + VAC 剥离 + hash 绑定 |
+| `test_domain_remaining_edges.py::test_memory_need_enforces_layered_plan_policies` | 4 字段一致性、retrieval⇒planner 蕴含、facet⇒claim 蕴含 |
+| `test_stage2_paired_pilot.py::test_scope_needs_injects_run_level_plan_policy` | APC/VAC 注入矩阵 |
+| `test_stage1_importer_negative_paths.py::test_planning_context_ref_is_bound_to_bundle_and_profile` + `test_bundle_rejects_duplicate_planning_context_source_hashes` | 导入层 fail-closed 绑定 |
+| `test_stage2_experiment_manifest.py::test_default_information_profile_resolves_from_planning_contexts` | CLI 档位默认解析 |
+| 契约测试（0B） | plan 通道隔离 |
+
+### 16.5 安全/预算与非目标
+
+- Writer 4000 / Ledger 12000 / ADR-0004 / Gate 公式 / evaluator / Stage 3 未触碰。
+- `_PRIVATE_FIELD_FRAGMENTS` 未删除；taint/hash 逻辑全部保留；plan 原文从不进入
+  public payload（仅类型化 `AuthorPlanningContext` + 字段名 `planning_context_ref/hash`
+  不触发 taint，且 VAC 侧显式拒绝）。
+- 未运行任何模型调用（Phase 0A/0B 全确定性；LLM 端点 8002 未使用）。
+- 未 commit、未 merge；未触碰 `.agent/task.md`/`.agent/plan.md`/`.agent/review.md` 与
+  架构/设计/ADR/状态文档。
+
+### 16.6 遗留与下阶段前置条件（供 Codex 决策）
+
+- **Phase 0C-1（predicates）**：按文档需先审计 R1 对 `predicates` 的语义（AND/OR/联合/
+  eligibility）再按 need_type 填充——本周期未实施。
+- **Phase 0C-2（EVENT query）/ 0C-3（query_hints）**：legacy template path 修复，独立
+  patch。
+- **Phase 1（LLM Planner）**：数据契约（`domain/planning_memory.py`：
+  `PlannedNeedDraft/GroundedNeedDraft/PlannerWorldSummary/PlannerArtifactMetadata`）、
+  `semantic_question` 等 Stage1MemoryNeed 新字段、planner/grounder/validator/query_compiler
+  四个新文件。`AuthorPlanningContext`（含 `planner_may_read_plan`）已就绪作为 Planner 输入。
+- **Phase 3 评测拆分（gold_need_spec）与 Phase 4 全量重跑**：依赖 Phase 1 完成。
+- P004/P005 input.yaml 字段审计完成（0A.8），可按文档冻结。
+
+### 16.7 关键命令与产物
+
+```bash
+make quality            # 1527 passed, 9 deselected, 100% 语句/分支覆盖
+.conda-env/bin/mypy     # Success: no issues found in 284 source files
+.conda-env/bin/ruff check . && .conda-env/bin/ruff format --check .   # clean
+.conda-env/bin/pytest tests/contract/test_memory_benchmark_information_profiles.py --no-cov -q  # 0B 冒烟
+```
+
+Phase 0A 验收状态：**Gate 0 全部通过（确定性证据）**；Phase 0B 验收状态：**全部通过**。
+手over 状态：等待 Codex 审查 Phase 0A/0B 证据并决定 Phase 0C/1 前置条件与放行。
+
+---
+
+## 17. 继续执行：Phase 0C + Phase 1 + Phase 2 + Phase 3（2026-08-07 续）
+
+在 §16（Phase 0A/0B）基础上继续按 `need_pipeline_audit_and_semantics.md` 执行。
+质量门：`make quality` **1566 passed, 9 deselected, 100% 语句/分支覆盖**，strict mypy/ruff 全绿
+（291 个源文件）。代码指纹随改动变化，以最终 git 记录为准（未 commit）。
+
+### 17.1 Phase 0C：三个独立 patch（全部完成）
+
+| Patch | 内容 | 验收 |
+|---|---|---|
+| 0C-1 predicates | **R1 predicates 语义审计结论**：SQL `predicate IN (...)` = **OR 语义**、与 entity_ids **AND 组合**、单次联合过滤（`r1.py:161-162`）、eligibility+过滤双重角色（`_r1_eligible`）；按 §3.4 分 need_type 填充：`current_state`→实体状态谓词[:16]、`capability_boundary`→能力关键词谓词、`knowledge_boundary`→knowledge 白名单谓词、`relationship_emotion`→关系谓词（非状态谓词）、`long_range_callback`→空 | OR 语义天然不引入过约束（仅收紧到相关谓词集合） |
+| 0C-2 EVENT query | fallback 模板：`query = event_type + participant_labels + effect_refs→state values 表面词`（`task_conditioned_need_generation.py` EVENT 分支） | EVENT Need 查询不再退化为裸 `event_type` |
+| 0C-3 query_hints | Arm A 消费激活：`search_retrieval.py` BM25 把 `query_hints`（去重、排除与主查询相同项）编译为辅助 multi_match 子句（主 ^1.0/^1.2/^3.0，hint ^0.6/^0.7/^1.8） | 辅助 BM25 查询生效（测试断言 3-clause vs 1-clause） |
+
+新增测试：`test_entity_need_predicates_are_filled_by_need_type`、`test_event_need_query_is_enriched_with_participants_and_effects`、
+`test_predicates_by_keywords_helper_filters_and_limits`、`test_bm25_consumes_query_hints_as_auxiliary_clauses`。
+
+### 17.2 Phase 1：LLM Need Planner + Grounder + Validator（全部完成）
+
+**新文件**：
+- `domain/planning_memory.py`：`PlannedNeedDraft`（无图谱 ID）、`EntityMention/RelationMention`、`GroundedEntityMention/GroundedRelationMention/GroundedNeedDraft`、`GroundingStatus`、`PlannerWorldSummary`（确定性有界世界投影）、`PlannerArtifactMetadata`（run 级 lineage：model/revision/prompt_version+hash/output_schema_version/temperature/seed/planning_context_hash/world_summary_hash/raw_response_hash/validated_need_set_hash/fallback_used/usage）、`PlannerRunResult`（含 `PLANNER_FALLBACK` 显式标记）
+- `services/plan_conditioned_need_planner.py`：LLM Planner（backward chaining prompt、json_object 输出、`PlannedNeedDraft` 解析、重试+fallback、`PlannerWorldSummaryBuilder`）
+- `services/need_draft_grounder.py`：确定性 grounding（exact alias → fuzzy → relation-context 消歧 → AMBIGUOUS/UNRESOLVED 显式标记）
+- `services/need_validator.py`：时间边界（trigger chapters ⊆ target range）、事实化检查（plan_goal_as_fact）、grounding 验收（无锚点拒绝）、去重、预算、facet→need_type 映射、draft_id 消毒
+
+**既有文件**：
+- `domain/memory.py`：`Stage1MemoryNeed` 新增 `semantic_question/trigger_plan_chapters/planner_artifact_ref/planned_draft_id/validated_need_set_hash` + 完整 lineage 校验
+- `task_conditioned_need_generation.py`：APC+plan 非空 + gateway 存在时走 Planner→Grounder→Validator 链；失败回退模板并显式标记 `PLANNER_FALLBACK`；`NeedGenerationResult` 新增 `planner_metadata/fallback_used/planner_fallback_reason`；生成器版本 v22
+- `task_focus.py`：`extend()` 接口（grounded 实体回填 FocusSet，有界）
+- `stage2_paired_pilot.resolve_state_case` + `teacher_forced_benchmark_e2e.freeze`：透传 planner gateway 与编译后的 `AuthorPlanningContext`
+- schemas 重导出（13 个 planning_memory schema）
+
+**Phase 1 真实 LLM 验收（Gate 1，P003，qwen36-27b-nvfp4@8002）**：
+- 实验目录 `/tmp/ns-stage2m-phase1-planner-p003-20260807/`（planner_run_v3.json、demo_world_p003.json、world_summary.json、prompt.txt）
+- 运行 113.2s、**status READY、fallback False**、input 1157 + output 2834 tokens
+- **8 条 planner need** 全部 grounding 成功（陈长生/徐有容/秋山君/莫雨/黑龙 等实体），目标章节 61-65 **全覆盖**：
+  - `d_61_01` long_range_callback（黑龙敌意来源）、`d_61_02` capability_boundary（伤势）、`d_62_01/02` capability_boundary + relationship_emotion（桐宫/莫雨）、`d_63_01/02` unresolved_obligation（提亲/婚约见证）、`d_64_01/d_65_01` knowledge_boundary（知情边界）
+- 完整 lineage：metadata 17 字段 + 每 need 的 `planner_artifact_ref == content_id(metadata)`、`planned_draft_id`、`validated_need_set_hash` 一致
+- 诊断驱动的两轮 prompt 修复：(1) 防照抄章节目标 + 强制实体锚点（空世界时模型正确拒答空 drafts——约束生效证据）；(2) 强制简洁输出（模型过度冗长导致 4096+ tokens 截断 → 加 60/40/30 字限制，max_output_tokens 8192→4096 + timeout 420s）
+- **防过拟合合规**：planner prompt 无任何 Gold ID/章节号/角色特化（§10.8）；演示 world 由 gold facts 构建（实验数据，非生产代码）
+
+### 17.3 Phase 2：Per-channel Query Compilation（全部完成）
+
+- `domain/planning_memory.py`：`RetrievalQueryBundle`（semantic_query/lexical_queries/exact_entity_ids/exact_predicates/graph_seeds/graph_relations/time_scope/excluded_information_labels + 唯一性校验）
+- `services/need_query_compiler.py`：`NeedQueryCompiler.compile(need)`——`semantic_query = semantic_question or query_text`；`lexical_queries = (query_text, *query_hints) 去重`；`excluded_information_labels = ("plan",) unless retrieval_may_return_plan`；`graph_seeds = entity_ids`
+- **路由集成（取交集）**：`ROUTES[query_intent]` 定通道集；bundle 供各通道查询——`search_retrieval.py` Dense→`semantic_query`（knn 向量）、BM25→`lexical_queries`（不再裸用 query_text）、observed 过滤取自 bundle；`retrieval.py` RerankService→`semantic_query`；`r1.py` TYPED_GRAPH→`graph_seeds + exact_predicates`（R1 exact 与 bundle.exact_* 同源）
+- **2.4 检索 trace 分层**：`RetrievalTrace.direct_unit_ids`（direct 检索选中单元）与 corridor 扩张单元（raw_evidence_spans/style_or_reference_optional）可区分
+- 测试：`test_query_compiler_builds_per_channel_bundle`、`test_dense_uses_semantic_question_from_query_bundle`、`test_exact_current_state...` 断言 direct_unit_ids
+
+### 17.4 Phase 3：评测拆分（全部完成）
+
+- **3.2 gold_need_spec 数据**：P001-P005 各新增 `gold_need_spec.yaml`（47 条 gold 的 required_need_scopes/required_entities/required_facets，类型→scope/facet 确定性映射；P003 G06/G09 按 §5.5 标为 `plan_dependent`，其余 `blind_recoverable`）；compiler `_gold_need_specs()` 读取并存入 manifest（fail-closed：未知 gold/非法 blindness/非法结构均报错）
+- **3.1/3.3/3.4/3.5 五段指标**：`MemoryBenchmarkEvaluator.evaluate_five_segments()` 新方法（**不动现有 evaluate 逻辑**，§10.3）：
+  1. Plan Goal Coverage（trigger_plan_chapters + plan 通道 query/semantic_question == goal summary）
+  2. Need Recall（needs 的 scope/entity/facet 覆盖 gold_need_spec 组件，确定性计算）
+  3. Evidence Recall（复用 GoldEvidenceMatcher）
+  4. Completion/Claim Accuracy（复用 weighted_coverage）
+  5. **Leakage 独立**（future_leakage_count + `information_label=="plan"` 引用计数：plan_citation_count / plan_leakage_count——非 plan 通道 need 引用的 plan 条目）
+- `GoldBlindness` 分类（blind_recoverable/plan_dependent/hindsight_only）；`MemoryBenchmarkEvaluationReport.five_segments` 可选字段；`PairedContextComparison.generated_needs`（冻结产物携带 needs）；E2E evaluate 调用点接线
+
+**Phase 3 端到端验证（P003 模板链路 + scripted backend）**：`plan_goals_total=5, plan_goals_covered=5 (1.0)`、`need_recall=18/32 (0.5625)`、`evidence_recall=0.357`、`future_leakage=0`、`plan_citation_count=7`（全为 plan 通道）、`plan_leakage=0`。
+
+### 17.5 遗留与 Phase 4 状态
+
+- **Phase 4（P001-P005 全量重跑）未启动**：需要真实基础设施长时运行（teacher-forced replay + real_hybrid 走廊 + LLM，单 case 约 1-1.5h，5 case 预计数小时）。新架构三层 Gate 0-3 已全部具备确定性验收证据；正式重跑建议由 Codex 批准后作为独立长时任务执行（可在本会话继续或单独安排）。
+- 新增数据文件 `gold_need_spec.yaml`（P004/P005 为 Phase 0A 类数据补全，非按运行结果修改；如 Codex 认为违反冻结语义，可回退为评估时人工标注）。
+- 关键命令：`make quality`（1566 passed / 100%）；真实 LLM 验收产物见 §17.2。
+
+---
+
+## 16. 并发调度改造 C0-C3（2026-08-07，依据 `.agent/concurrent_scheduling_plan.md` 最终决策版）
+
+### 16.1 准入与 C0（调用 DAG 审计）
+
+- 准入：语义改造质量门全绿（1566 passed 100% 覆盖）后开始。
+- C0 结论（新架构调用 DAG）：LLM Need Planner 1 次/run（sync asyncio.run，420s/4096 输出，
+  max_retries=1）；走廊 proposal+verify 为 need 级独立（数量取决于 Planner 输出，旧 C60 为
+  55+24）；评估器语义验证 batch_size=2 串行。主并发单位 = 独立 Need pipeline。
+
+### 16.2 C2（Evaluator batch 间并发，已完成）
+
+- `ModelSemanticSupportVerifier` 新增 `max_concurrent_batches=4`（1-8 校验）：batch 循环体提取为
+  `_verify_batch`，`asyncio.Semaphore` + `asyncio.gather` 并发，按 batch 序归并 judgments/calls。
+- 语义不变：prompt 内容/重试策略/fail-closed 行为/request_id 完全保持。
+- 测试：并发 vs 串行结果与调用顺序全等 + in-flight 计数验证（+3）。
+
+### 16.3 C1（真实 workload 服务基准，已完成）
+
+`/tmp/opencode/bench_c1_workload.py`（b11 真实分布 8K/16K/25K/verify 混合，8002 端点
+max-num-seqs=8 + MTP=2 + prefix caching，输出 /tmp/opencode/bench_c1_c1_round1.json）：
+
+| 并发 | wall | decode tok/s | peak KV | TTFT mean | errors |
+|---|---|---|---|---|---|
+| 1 | 996.5s | 24.2 | 20% | 6.8s | 0 |
+| 2 | 601.7s | 45.6 | 38% | 8.8s | 0 |
+| 4 | 366.8s | 75.7 | 64% | 9.1s | 0 |
+| 6 | 340.2s | 87.1 | 92% | 13.5s | 0 |
+| 8 | 238.0s | 97.1 | 98% | 36.9s | 0 |
+
+结论：串行→8 并发 **4.2x**；8×25K 极端请求 KV 达 98%（验证了 KV-token 双限流必要性）；
+真实走廊均值 16K → 8 并发约 60-70% KV。应用层推荐：`max_concurrent_needs=4`（保守，
+2.7x/KV 64%）至 6（激进）；KV budget ≈ 200K 序列 token + 20% reserve。
+
+### 16.4 C3（走廊独立 Need 并发 + KV-token 双限流，已完成）
+
+`TrustedClaimSupportProducer` 新增：
+- `max_concurrent_needs`（默认 1=串行，1-8 校验）：`for entry in public_needs` 循环提取为
+  `_produce_need_pipeline` worker；`ThreadPoolExecutor` 并发；**按 need 顺序确定性归并**
+  （funnel 字段级求和、groups/variants/receipts/attestations 顺序拼接、进度事件按 need 序
+  重放并重写全局 batch_index、诊断码合并去重）。
+- `max_inflight_kv_tokens`（默认 None=关闭）：`_acquire_kv_capacity`/`_release_kv_capacity`
+  双限流接入 proposal×2 + verifier 三个模型调用点；等待语义 WAITING_FOR_CAPACITY；
+  超预算单请求放行（防死锁，计数不裁剪，vLLM 自身容量调度兜底）。
+- 线程安全：`_verification_cache` 加锁；`_record_progress`/诊断码经线程局部收集（worker 内
+  不直接写共享状态）；`_emit_verified_claim` 的 groups 按 need 隔离已确认（covered_facets
+  只读本 need 组）→ need 间零数据依赖。
+- 测试（+5）：并发 vs 串行全等（funnel/group/receipt/事件序/诊断，时间戳与内容寻址 hash
+  归一化）、串行路径 max_inflight==1、并发 max_inflight≥2、KV 限流等待/释放/防死锁、
+  budget 校验。
+- 质量门：**1576 passed, 9 deselected, 100% 覆盖**，mypy/ruff/format 全绿（每次改动后跑）。
+
+### 16.5 未完成（留给后续）
+
+- C4（多 case 并行）、C5（可选 async 化）：按计划文档在 C3 稳定后启动。
+- 真实走廊端到端并发验证（b12 单 case，APC 档）：需用户授权一次真实运行，
+  验证 funnel/verdict 与串行基线语义一致 + wall time 提升（C1 预期 4.2x 上限）。
+
+---
+
+## 18. Phase 4 前置与启动：TASK_INTENT_ONLY 档位 + 冻结 + 传输修复（2026-08-07 续）
+
+### 18.1 TASK_INTENT_ONLY 消融档位（文档 §5.2/D2，已实现）
+
+- `BenchmarkInformationProfile` 新增 `TASK_INTENT_ONLY = "task_intent_only"`
+- `build_safe_task_contract`：TASK_INTENT_ONLY 接受 task_intent，profile_rule = "不得使用作者计划节点或任何未来材料; 但可以使用任务意图作为检索方向。"；VAC 仍拒绝 task_intent
+- `TaskPlanConditionedNeedGenerator`：TASK_INTENT_ONLY 与 VAC 同规则拒绝 PlanRoot（"cannot receive a future PlanRoot"）
+- `TaskFocusExtractor`：TASK_INTENT_ONLY/APC 把 `task_intent` 折入 TASK 源焦点匹配（命名实体可锚定；消融目的：分离"任务意图增益"与"章节计划增益"）
+- `stage2_paired_pilot`：TASK_INTENT_ONLY 无 plan、WRITER_SAFE、三层策略全 False（走既有非 APC 分支，无需改动）
+- `freeze()`：TASK_INTENT_ONLY 传递 task_intent，不传 plan refs
+- `memory_benchmark_reporting`：冻结分母契约仅覆盖 VAC/APC 两个正式档位；消融档位聚合不虚构分母
+- `human_benchmark_compiler._PROFILE_BY_MODE` 增加 `task_intent_only` 模式映射
+- 测试：`test_task_intent_only_profile_uses_intent_but_never_plan`（契约）+ 既有 profile 计数测试更新（2→3）
+
+### 18.2 P004/P005 冻结（文档 §10.7，已生成）
+
+`benchmarks/private/ztj_memory_pilot_v0.1/frozen_inputs.json`：P001-P005 各 case 的
+`input.yaml / gold.yaml / gold_need_spec.yaml / manifest.json` SHA-256 逐文件哈希 +
+bundle content hash（`f359d151...`）。冻结后不再按运行结果修改输入或 Gold。
+
+### 18.3 Teacher-forced agent 传输配置修复（证据驱动，全量重跑前置）
+
+首次全量重跑（非 resume）暴露：genesis 的 bootstrap planner 走 `generate_structured`
+（grammar 模式）+ `timeout_seconds=300` + thinking 默认开 → qwen 本地端点 300s 内无法
+完成（TimeoutError；与 b11 走廊发现的 grammar/thinking 问题同类）。修复
+`TeacherForcedBenchmarkE2ERunner._request()`：`max_output_tokens=4096`、
+`timeout_seconds=420`、`enable_thinking=False`——与走廊已验证配置一致，影响全部
+teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）。
+
+### 18.4 并发优化（C3 接线 + C4 走廊异步化）
+
+- **C3 接线（重大发现）**：`TrustedClaimSupportProducer` 的
+  `max_concurrent_needs/max_inflight_kv_tokens` 机制此前已实现但**生产 E2E 路径未接线**
+  （`stage2_paired_pilot.py` 构造 producer 时用默认值 1=串行）。本轮接通：CLI
+  `--support-max-concurrent-needs(4) / --support-kv-token-budget(200000) /
+  --endpoint-request-limit(8)` → runner → freezer → resolve_state_case → producer。
+- **共享 admission controller**：新 `services/model_request_admission.py`
+  `ModelRequestAdmissionController`（request-count + KV-token 双限流，跨走廊共享），
+  producer 注入后委托 acquire/release；`_kv_scheduler_lock` 保留为无注入时 fallback。
+- **C4 走廊异步化**：`TeacherForcedScenarioRunner` 的 checkpoint 走廊
+  （freeze→score→reveal）在 `ThreadPoolExecutor(checkpoint_workers=2)` 后台执行，replay
+  不再停等走廊；builder 变更加锁；`record_support_progress`/evaluator 结果列表加锁；
+  走廊结果按 checkpoint 顺序收集；`ScenarioStateError` 原样传播。
+- 测试：`test_model_request_admission.py`（6 个并发/预算用例）、
+  `test_runner_runs_corridor_concurrently_with_replay`（阻塞走廊 + replay 继续推进）、
+  `test_producer_delegates_capacity_to_shared_controller` 等。
+- 服务端 batched-tokens 复测结论已记录于 `concurrent_scheduling_plan.md` §0.1
+  （2048 维持不动；16384 在 15K prompt 下 CUDA OOM）。
+
+### 18.5 Phase 4 全量重跑（APC 主运行，进行中）
+
+- 实验：`stage2m-phase4-apc-20260807`，输出 `/tmp/ns-stage2m-phase4-apc-20260807`
+- 数据库：新库 `na_s2m_phase4_v1`（旧库 genesis 与新 bundle 冲突 → 干净库 + alembic 0007 head）
+- 配方：APC + arms A + real_hybrid + qwen36-27b-nvfp4@8002 + 并发参数
+  （needs=4, kv=200K, endpoint=8, checkpoint-workers=2）
+- 状态：genesis 成功，replay ch0-4 进行中（约 2 分钟/章，预计数小时完成 95 章 + 5 走廊）
+
+### 18.6 Phase 4 重跑运行期修复（证据驱动，三连修复）
+
+首次从零全量 replay 暴露三个问题（均已在代码修复，make quality 1589 passed/100%）：
+
+1. **genesis/agent 传输配置**（`TeacherForcedBenchmarkE2ERunner._request`）：原 `timeout=300s` +
+   thinking 默认开 → genesis planner 300s 超时。改为 `enable_thinking=False` + `max_output_tokens=12288`
+   + `timeout_seconds=600`（域上限）。
+2. **curator grammar 模式无界输出**（ch5 卡死）：strict grammar 下模型对 ch5 输出 >12288 tokens 仍
+   未终止（b11 走廊同型问题）。修复：`ModelGateway.generate_structured(json_object_framing=True)` +
+   curator `extract_reported_v2` 走 json_object framing（host pydantic 校验 + 契约反馈重试兜底，
+   与走廊 framing 决策同型）。
+3. **curator 枚举字面值**（ch5 3 次 schema 拒绝）：模型输出大写 `CREATE`，`ChangeOperationType`
+   枚举为小写 `create`。修复：prompt 契约明确小写枚举字面值
+   （`create/replace/retire`、`entity/event/state/relation/obligation`，通用契约说明，非 case 特化）。
+   ch5 在修复后通过（progress ch0-6）。
+
+### 18.7 Phase 4 重跑状态（APC 主运行进行中）
+
+- 实验 `stage2m-phase4-apc-20260807`，干净库 `na_s2m_phase4_v1`（alembic 0007）
+- genesis 成功；ch0-6 已提交；ch7-95 继续（~2 分钟/章，预计 3-4 小时）+ 5 个 checkpoint 走廊
+  （ch20/40/60/80/95）经 `checkpoint-workers=2` 与 replay 异步并行
+- 走廊并发已接线（needs=4 / kv=200K / endpoint=8）
+
+## 19. Stage 2M Plan-Conditioned 语义闭环与全局调度修复（2026-08-08）
+
+### 19.1 实施前证据隔离与审计基线
+
+- Git HEAD：`420e16303c18354e72fa6486eb8968707842ef71`；本轮在既有 dirty Stage 2M
+  工作树上续作，不 reset、不覆盖用户修改、不提交或合并。
+- 初始 tracked binary diff 指纹：
+  `sha256:e3bb4ec44d569f2d57cd98668ed9bc6fe64de10eced608be2897ef88b5743718`；
+  初始完整 porcelain（含 untracked）指纹：
+  `sha256:766d130aa25318fdeaad55612eadf6b2c4607aac507df1c6ed42b8092a1b7290`。
+  初始差异为 83 个 tracked 文件、`+8465/-1277`，另保留既有未跟踪 Stage 2M
+  领域/服务/测试/schema 文件与 `agentmemory_lab/`。
+- 旧运行 `/tmp/ns-stage2m-phase4-apc-20260807` 保持只读诊断身份，不复用输出目录或数据库
+  `na_s2m_phase4_v1`。Manifest 固定 commit `420e163`、dirty code fingerprint
+  `sha256:4a3f33263c27f01c5177d7ad9ca513086e842c2ed5fcb884269cefb5fe7610ef`、
+  APC、Arm A、`real_hybrid`、Qwen3.6/8002、Writer `4000`、Ledger `12000`；运行最终 replay
+  到 chapter 81，现存 C20/C40/C60/C80 四个 checkpoint 输出。
+- 该运行的五段指标、Planner health 与并发结论统一标记
+  `DIAGNOSTIC_ONLY_INVALIDATED`：旧公式存在跨 Need/global-union 绑定错误，Planner lineage/call
+  计数被丢弃，调度器不是 endpoint-global。原始 prompts/responses/receipts/progress/transport
+  timing、四个 case 报告及零 leakage 信号仍保留为诊断证据。
+- 六个 surviving content-addressed paired summary（对象 hash）为：
+  C20 `a9b892f...`（早期，recall 0.731）与 `fe15a25...`（意图最终，0.654）；
+  C40 `0d61e86...`（早期，0.690）与 `819fa03...`（意图最终，0.793）；
+  C60 `ada6b4a...`（意图最终，0.552）；C80 `89d6a88...`（意图最终，0.545）。
+  当前 top-level `e2e_paired_report.json` 仅指向 C80；C20/C40/C60 的 top-level 文件已被覆盖，
+  不重建或冒充原始文件。
+- 四个独立 Stage 2M case 报告 SHA-256：C20 `25f7aeb...`、C40 `acb89c3...`、
+  C60 `35f940f...`、C80 `b585795...`。其 Per-Gold Writer 端到端零覆盖保留为独立下游基线，
+  不与 paired retrieval 指标合并。
+- P004/P005 与 `frozen_inputs.json` 不修改；旧公式 P005 不运行；在本计划语义、调度、质量门
+  闭合前不启动新的 Phase 4 实验。
+
+### 19.2 架构到代码闭环（SUPERSEDED_BY_REVIEW_2026-08-08）
+
+- **APC 真值源与 Planner lineage**：新增并接通严格绑定的 planning context、world-summary
+  root、plan root 与 artifact reference；Planner 多 facet 输出不再被压成单一 Need。Planner 每次
+  invocation（包括模型返回空 drafts 后的 deterministic fallback）均持久化 model/prompt/world/raw
+  response/token/validated/fallback 元数据；冻结重放校验全部 basis，任何 context 改动 fail-closed。
+- **TIO / D9 / 可执行查询边界**：Task-Intent-Only 只消费任务意图，绝不读取 plan；D9 无 planned
+  evidence 时严格无 `PLAN_NODE`。查询集合按 Need、许可 evidence 与 profile 做交集，R1 在执行前再次
+  拒绝越界查询。
+- **Per-Gold 五段评估**：每个 Gold 使用 typed availability、唯一 Need binding、Need-bound ledger，
+  分段损失与总分采用版本化 formula/hash；case report 通过不可变 manifest 聚合。单臂运行显式标为
+  single-arm，不再伪造 Agentic/paired 指标。
+- **endpoint-global 调度**：request-count 与 KV-token 双预算在 `ModelGateway` 入口统一准入，覆盖所有
+  真实模型调用；Condition 队列提供公平等待、typed timeout/unsatisfiable/context 错误、lease 与完整
+  telemetry。异步入口通过 daemon-thread/Future bridge 获取同步 lease，避免 `asyncio.to_thread` 在线程池
+  等待导致 event-loop shutdown 卡死；取消路径会释放迟到 lease。
+- **Claim Support 并发一致性**：语义相同的验证 single-flight；并发协调器只按确定性顺序写 artifact，
+  串行/并行得到相同 descriptor 与 semantic hash。对应 domain、service、adapter、CLI、schema exporter、
+  versioned JSON schema 与 unit/contract/golden/regression 测试已同步。
+
+### 19.3 Planner 空输出回归与冻结重放证据（SUPERSEDED_BY_REVIEW_2026-08-08）
+
+- 首次真实 P001 探针 `/tmp/ns-stage2m-focused-final-20260808-v1` 使模型连续两次返回空 drafts，暴露
+  fallback invocation 未携带 replay 元数据；原 artifact
+  `sha256:8c0f29ba345e7cbfc4b54fa06ebef50c91eb559bdac1ec59b6813d9c3c5344db`
+  原样保留为失败诊断。修复后增加 metadata-bearing fallback replay 回归覆盖；无 gateway 的模板 fallback
+  仍保持合法且有分支覆盖。
+- 成功探针 `/tmp/ns-stage2m-focused-final-20260808-v2/focused_planner_evidence.json`，文件 SHA-256
+  `43f5fd8a4e894f0a77c742ccf1bd109a1eed77a60fdbcd11af74808db848e60d`。Planner artifact
+  `sha256:d1608fe3e05eebde9573065d7c75cf4255e9f378b1e05de0b9e38eff732fd2fb`
+  （7997 bytes），context hash `sha256:831662a5ac5feacb9b9632ef10f566ab1d796daa9139bdd4787c11461fcb7c6e`，
+  world root `sha256:bdb09b005bb86a20dbeb060e3c049e882ee525c83ba6387825e6cda6af01b92e`，
+  plan root `sha256:49651a7891085a94e8a61bffcd8e02c3e7e11d89c1c75136719fa7e090353864`。
+- 模型两次空 drafts 均被如实记录（每次 883 input / 90 output tokens），生成状态为
+  `PLANNER_FALLBACK`；冻结 replay endpoint call delta 为 0。改动 context 被拒绝为
+  `Planner artifact replay basis mismatch: planning_context`；D9/no-planned/no-`PLAN_NODE` 断言通过。
+  调度账本 acquired/released requests `2/2`、KV `10932/10932`、inflight `0/0`，无 timeout、
+  unsatisfiable 或 context reduction。
+
+### 19.4 endpoint-global 串并行真实负载证据（SUPERSEDED_BY_REVIEW_2026-08-08）
+
+- 证据 `/tmp/ns-stage2m-scheduler-parity-final-20260808-v1/scheduler_parity_evidence.json`，文件
+  SHA-256 `67b8c6a812ecac256f431a97e2e5662c91de8d0c6ef82ce3cca9c2558de8f39d`；复用冻结
+  Planner artifact，不触发 Planner endpoint。
+- 两个相同语义输入在 serial 与 concurrent 模式的 descriptor hashes 完全一致：
+  `sha256:4372532dc210d42c73d0c3f04b47d13f7166b5533f86f36d260f1d27fa5d0768`、
+  `sha256:88c165f1ccb08e882c226a817073b13599b686689792bf877b553f5d7849bd74`；共同 semantic hash
+  `sha256:8f70e81e6e472e0cd3dcb83d0d0434cd184742c2d289612441cc44089fe7f4e8`。
+- endpoint request limit=1 下，serial 8.275s；concurrent 8.232s 且记录 4.116s 合法排队等待。
+  两种模式均 acquired/released requests `2/2`、KV `10932/10932`、peak requests `1`、peak KV
+  `5466`、最终 inflight `0/0`；无 OOM、timeout、unsatisfiable 或 context reduction。
+- 真实端点模型为 `qwen36-27b-nvfp4`（max model length 131072）；OpenSearch 单节点 yellow，
+  `timed_out=false`、pending tasks 0、active primaries 878，yellow 来自 704 个未分配 replica。
+
+### 19.5 最终质量门
+
+- `make quality`：Ruff lint/format、strict MyPy 全通过；Pytest `1631 passed, 9 deselected`
+  （248.14s），22031 statements / 6250 branches，100.00% branch coverage。
+- `.conda-env/bin/pre-commit run --all-files`：ruff check、ruff format、mypy、deterministic pytest
+  全通过。首次 sandbox 执行仅因用户级 pre-commit cache 只读失败；获准在 sandbox 外重跑后通过，
+  不属于代码失败。
+- 最终 executable-source 指纹：HEAD `420e16303c18354e72fa6486eb8968707842ef71`；
+  `git diff --binary -- src scripts schemas Makefile pyproject.toml` SHA-256
+  `3f706c3dd137be2dfe62284a631106fdcfaaf879741f251b363598da4b11e3b0`；对应 porcelain
+  SHA-256 `49b22e3688272f5d6f7cf852b5860ae524cd018c6166ba466c8437b6da3e8796`。
+  当前 executable scope 为 83 条 status，tracked diff 61 files、`+7258/-843`；整个工作树 131 条
+  status。未 reset、未覆盖既有修改、未提交、未合并。
+
+### 19.6 正式 Phase 4 门禁结果与交回状态
+
+- 使用新 experiment/output 身份启动正式 APC 探针时，runner 在任何 output、数据库或网络写入前正确
+  fail-closed：`formal Stage 2M run requires a clean executable source tree`。本轮实现本身仍在 dirty
+  executable tree 中，而工作流明确规定 OpenCode 不提交/合并，因此不能合法产生正式 clean-source
+  fingerprint；`--allow-dirty-diagnostic` 也不能冒充 Gate 证据。
+- 未启动或复用新的 APC/TIO P001-P005 正式矩阵；旧 `/tmp/ns-stage2m-phase4-apc-20260807`、旧数据库、
+  P004/P005 frozen inputs 与 held-out Gold 均未修改。没有依据 held-out 结果调代码。
+- **状态：`RETURN_TO_CODEX`**。Codex 下一步应审查并接受本实现，在授权边界内形成干净 executable
+  source fingerprint；随后用全新数据库、output directory 与 experiment id 跑 APC 与 TIO 的
+  P001-P005 正式 Phase 4，并由 immutable manifest 汇总。只有该 clean-source 矩阵通过后才可宣告
+  Stage 2M 完成或合并。
+
+## 20. Codex REPAIR：D9、正式 RoutePlan、Planner final lineage 与 bounded checkpoint（2026-08-08）
+
+### 20.1 本轮边界与旧结论失效标记
+
+- 本轮严格沿用 `.agent/plan.md` 与 `.agent/review.md` 的 repair direction；没有修改 plan、review、
+  architecture、ADR、project status、P004/P005 或 frozen inputs，没有提交、合并或运行正式 Phase 4。
+- §19.2-§19.4 已显式标记 `SUPERSEDED_BY_REVIEW_2026-08-08`；原始产物和陈述保留为历史，不能再作为
+  D9、final-Need replay 或 bounded checkpoint 验收结论。
+
+### 20.2 四个阻塞项的代码修复
+
+- **统一 APC D9**：删除 `plan_obligation` / `plan_conditioned_history` 的 Plan channel 例外。
+  `Stage2PairedPilotRunner` 对每个 APC Memory Need 统一固定
+  `(planner_may_read_plan=True, retrieval_may_return_plan=False, claim_may_cite_plan=False)`，并固定
+  `legacy_allow_plan=False`、`allow_plan=False`、`access_scope=writer_safe`；author Plan 只保留为
+  Planner guidance，不进入 observed retrieval / Claim Support / Ledger。
+- **唯一正式 query eligibility owner**：`NeedQueryCompiler.eligible_channels()` 成为 Stage 1 与
+  Stage 2M 共用规则；`DeterministicChannelPlanner` 在 `RoutePlan` 边界计算
+  `ROUTES ∩ allowed pools ∩ snapshot capability ∩ compiled-query eligibility`。`RoutePlan`、direct/fair
+  paired traces 现持久化 compiled bundle、effective channels 和 typed exclusion reasons；空交集以
+  `NOT_EXECUTED_NO_EXECUTABLE_QUERY` / `NO_EXECUTABLE_QUERY`、calls=0 fail closed。回归从
+  `resolve_state_case()` real-hybrid 主路径进入，而不是只测 Stage 1 旁路。
+- **Planner final lineage**：Planner artifact v2 记录唯一 attempt IDs、每次 raw response/hash、usage、
+  status/error，以及每个最终 Need 的 stable source identity、Need payload hash、completion contract
+  hash、query bundle hash。fallback artifact 延后到实际 deterministic Needs 完成后持久化，所有实际
+  fallback Needs 引用同一 artifact；validated-set hash 绑定 final manifests，不再绑定空 drafts。
+  frozen replay 在现有 generator owner 内免模型重走 Grounder→Validator→Need builder，并逐项比较
+  Need/completion/query/final-set；basis、grounding、validation 或 final-set 任一变化均 fail closed。
+- **Planner 可用 state surface**：只扩展现有 `PlannerWorldSummaryBuilder`，按 task/plan relevance
+  确定性选择 cutoff-safe state records 并记录截断数，没有新增 ontology、规则引擎或摘要系统。
+- **bounded evidence wiring**：现有 teacher-forced 主路径可注入 frozen Planner artifact，并可分别设置
+  Need/evaluator concurrency；shared admission controller snapshot 现在保留每个 admitted scheduling
+  descriptor，flow summary 保留 scheduler telemetry 和 model call records。没有新 scheduler service、
+  DAG runtime、检索器、评测器或 artifact store。
+
+### 20.3 回归与质量门
+
+- 增加/改写 D9 三类 Need、retrieval/Claim Support observed-only、paired 主路径无可执行 query、
+  RoutePlan validator、fallback final manifests、冻结 final replay、changed basis、unique attempt IDs、
+  world state surface、shared scheduler descriptor/ordering/lease/single-flight 等回归；schema exporters 已
+  同步 Stage 1 planner artifact 与 Stage 2 RoutePlan contracts。
+- 定向主路径回归：`70 passed`（model admission、Stage2 paired pilot、teacher-forced contract）。
+- 最终 `make quality`：Ruff、format、strict MyPy 全通过；Pytest `1633 passed, 9 deselected`，
+  22190 statements / 6310 branches，`100.00%` branch coverage。
+- 最终 `PRE_COMMIT_HOME=/tmp/ns-precommit-cache .conda-env/bin/pre-commit run --all-files`：ruff check、
+  ruff format、mypy、deterministic pytest 全通过。
+
+### 20.4 P001 focused final-Need replay 真实证据
+
+- 新 identity：`/tmp/ns-stage2m-repair-focused-20260808-v2/focused_planner_evidence.json`；文件
+  SHA-256 `c429175207118bfed0c84cf35cff6ae657d869137eda1e92a7cdd16edbb67f10`；旧 focused v1/v2
+  均未覆盖。
+- P001 本次端点两次 invocation 均明确记录为 `OpenAIChatEndpointError`，因此合法进入 deterministic
+  fallback；artifact `sha256:225d903fefc591caf9e375ff57e814ba4dcdc6d66b2120a25e3a53665ff95195`
+  绑定实际 20 个 final Need manifests。20 个 Need、completion、query hashes 与 frozen generator replay
+  逐项完全一致，endpoint call delta=0，所有 Needs 只有一个 artifact identity；changed planning context
+  被 `basis mismatch` 拒绝，D9/no-PLAN_NODE 全通过。
+- 该证据只证明合法 transport-fallback 与 final lineage/replay；不把失败的 provider 调用冒充成功模型
+  ledger receipt。
+
+### 20.5 同一 bounded APC checkpoint 串/并行主路径证据
+
+- 冻结 basis：P001 chapter 20 commit
+  `sha256:d530bb2a3900df89cd0f8c59297e1d848572dce91b75a4ddc82ddc6fef391ea6`；两次均使用同一
+  Planner artifact `sha256:f860237c56e1c4859ed784fb5dbd71bdeed98f031538d56985f72a7c409ab6e4`、
+  real-hybrid snapshot、Writer budget 4000、Ledger budget 12000、Arm A 和同一模型策略。
+- 串行 output：`/tmp/ns-stage2m-repair-checkpoint-serial-20260808-v1`；flow SHA-256
+  `542af9332ea766b8034b4a62bc786ba7d440bea2a8dc8ea7c9fc32309b67e3af`。32/32 leases
+  acquired/released，peak request=1，peak KV=31230/160000，inflight=0/0，timeout=0。
+- 并行 output：`/tmp/ns-stage2m-repair-checkpoint-concurrent-20260808-v1`；flow SHA-256
+  `7f23d52b11d732ff7e6ab254c6a8089377fbc687ec39d4790cc2aa7a7803539d`。5 个 Need proposal 与
+  evaluator batches 真实重叠，peak request=4，peak KV=124677/160000，28/28 admitted leases 均释放，
+  最终 inflight=0/0，wait 821.366s，无 unsatisfiable、OOM 或 context reduction。
+- 两次 frozen replay 都没有 Planner endpoint 调用；65 条 deterministic handle/workset audits 完全相同，
+  canonical hash 均为 `e574355141c598a678b97f6eb36fc31969d9fb6a15b825f645bc7609699254d7`；
+  Writer/Ledger budgets、READY 状态、selected units=34、writer tokens=4000、evidence tokens=11997
+  完全相同。两次共同 admitted 的 28 个请求，其完整 scheduling descriptors/context hashes 完全相同；
+  persisted report child identity/order 均为 `(P001, checkpoint=20, arm=A)`。
+- 必须如实保留的负载观察：并行 4 路长请求在 120s scheduling deadline 下有 4 个 multi-slice proposal
+  以 typed `SchedulingTimeoutError` 停止，因此并行 run 只有 28 个 admitted descriptors，而串行为 32；
+  它们没有被误分类、没有泄漏 lease，checkpoint 与 single-arm evaluation 仍 `COMPLETED`。按用户要求
+  未继续做调参重跑；该事实交由 Codex 判断是否仍需更低并发/更长 deadline 的补充 evidence。
+- equal-key verification single-flight 的 owner/waiter/failure-unblock/retry 由确定性回归覆盖；本次 P001
+  真实 workset 未产生可证明的 equal-key provider duplicate，未伪造命中计数。
+
+### 20.6 交回状态
+
+- 正式 APC/TIO P001-P005 继续由 clean-source gate 阻止；未放宽 gate、未复用正式 output identity、未提交
+  或合并。
+- **状态：`RETURN_TO_CODEX`**。四个 review 阻塞项的代码方向、contracts、100% coverage 与 focused
+  final-lineage 证据已完成；bounded checkpoint 同时保留成功的 shared-budget/ordering/workset 证据和
+  4 个 typed scheduling timeouts，不隐瞒、不包装为完全无失败的 parity。
+
+## 21. Claim Support compact transport and reasoning telemetry repair (2026-08-09)
+
+### 21.1 Scope and decision
+
+- Implemented directly at the user's request from
+  `.agent/claim_support_runtime_bottleneck_analysis_20260809.md`; no formal Phase 4, full P002
+  parity, or APC/TIO P001-P005 run was started.
+- Repository inspection found only Claim Support multi-slice proposals explicitly enabled model
+  thinking. Planner, single-slice proposal, whole verification, and teacher-forced agent requests
+  already disable it. Therefore the repair is stage-specific rather than a global thinking-policy
+  change.
+- The existing owners remain authoritative: `ModelRequest`/OpenAI adapter for request and usage
+  telemetry, `TrustedClaimSupportProducer` for Claim Support transport policy/progress, and the
+  teacher-forced CLI/experiment manifest for explicit replay identity. No dynamic tuner, DAG,
+  cache service, telemetry service, or report family was added.
+
+### 21.2 Frozen real-endpoint calibration
+
+- Frozen input: content-addressed P002/C40 prompt
+  `sha256:484b2fa4fb4a28d6746ecd348519f86e18a9c7ae6a9ef71d4eaa206cd5cdf4f5`
+  from the preserved diagnostic run; prompt length 48,985 characters, reported endpoint input usage
+  25,448 tokens. Model and endpoint remained `qwen36-27b-nvfp4` at the local OpenAI-compatible
+  endpoint; prompt/evidence/workset/typed JSON contract were unchanged.
+- Calibration setting: `enable_thinking=false`, `max_output_tokens=1024`, timeout 600 seconds.
+- Result: valid `MultiSliceProposalBatch` JSON, 283 output tokens, approximately 19.36 seconds,
+  with one complete claim and no `insufficient_need_ids`. This replaces the failing nominal
+  `thinking_token_budget=500`, `max_output_tokens=4096` transport default for this stage.
+- This was a bounded non-formal transport calibration only. It did not assert Gate quality and did
+  not execute the complete P002 request set.
+
+### 21.3 Implementation
+
+- `ClaimSupportTransportConfig` now provides one fixed validated policy. Defaults are multi-slice
+  thinking disabled, zero thinking budget, and 1024 total output tokens; optional explicit values
+  must keep the thinking budget within the total output cap.
+- `run_stage2_teacher_forced_e2e.py` exposes `--support-multi-thinking` /
+  `--no-support-multi-thinking`, `--support-multi-thinking-token-budget`, and
+  `--support-multi-max-output-tokens`. These values flow through the teacher-forced runner and
+  paired pilot into Claim Support, and are included in `execution_config` and its content hash.
+- Successful model usage now preserves `reasoning_tokens`. Successful proposal progress records
+  latency, `finish_reason=stop`, input/output/reasoning usage, and the fixed transport settings.
+- OpenAI-compatible length/unexpected/empty-content failures retain finish reason, available token
+  usage including reasoning tokens, latency, and partial raw content. Claim Support persists that
+  partial output through the existing content-addressed artifact writer and records its reference
+  in the existing failed proposal event; no invalid raw output is silently discarded.
+- Stage 0/1/2 checked-in schemas were regenerated through the existing export scripts after the
+  `ModelUsage` extension.
+
+### 21.4 Verification and remaining boundary
+
+- Focused Claim Support/OpenAI/manifest regressions: `199 passed`.
+- Final `make quality`: Ruff clean, format clean, strict MyPy clean for 293 source files;
+  `1641 passed, 9 deselected`; 100% statement and branch coverage.
+- `git diff --check`: PASS after implementation.
+- A successful non-fallback P002 Planner artifact, bounded complete serial/concurrent parity, and a
+  real proposal -> whole verifier -> persisted receipt checkpoint run remain later admission steps.
+  They were not inferred from the single-chunk calibration and remain prerequisites before any
+  formal/full execution.
+
+## 22. Codex REPAIR continuation: invalid JSON, frozen Planner, and serial stop (2026-08-09)
+
+### 22.1 Invalid-JSON telemetry closure
+
+- The provider-success/Pydantic-failure branches now retain the exact raw response through the
+  existing content-addressed artifact writer and record failed output ref/hash, input/output/
+  reasoning usage, latency, and `finish_reason=stop` while preserving the typed
+  `invalid_structured_content` classification. No telemetry service, ledger type, or report format
+  was added.
+- Regression
+  `test_invalid_multi_json_retains_output_usage_latency_and_resolvable_artifact` proves that an
+  invalid multi-slice JSON response remains dereferenceable and carries complete usage/timing.
+  Focused P2 and Planner replay tests pass (`2 passed` with `--no-cov`).
+
+### 22.2 Non-fallback P002 Planner artifact and replay
+
+- Real P002 Planner artifact:
+  `/tmp/ns-stage2m-phase4-apc-20260807/objects/sha256/a1/`
+  `a1231b1d4bf4022295b06b44034d2ee8e953fdba70711327490f2db70c3e3ee2`
+  (41,651 bytes). It records `fallback_used=false`, one successful attempt, 6 parsed drafts,
+  2 accepted final Needs, and validated final-set hash
+  `sha256:676696a92fcea1d6247092b7c950e9536f93b68281c63c00fc76fe6ebf57ba31`.
+- Frozen raw Planner prompt calibration is durable at
+  `/tmp/ns-stage2m-planner-calibration-p002-off8192-20260809/planner_calibration.json`:
+  `thinking=false`, 1,962 input / 1,559 output / 0 reasoning tokens, 7 parsed drafts,
+  129.63 seconds. The existing 4096 Planner output guard was therefore retained.
+- Model-disabled replay output/log:
+  `/tmp/ns-stage2m-repair-planner-p002-replay-20260809-v1` and
+  `/tmp/ns-stage2m-repair-planner-p002-replay-20260809-v1.run.log`. The first endpoint request is
+  Claim Support (18,360-character prompt); no 4,247-character Planner request occurs, so Planner
+  endpoint delta is zero. A changed P001/C20 basis fails closed in
+  `/tmp/ns-stage2m-repair-planner-p002-changed-basis-20260809-v1.run.log` with
+  `Planner artifact replay basis mismatch: planning_context,world_summary,prompt`.
+- Frozen replay originally rebuilt the exact Need/completion/query set but omitted
+  `planner_artifact_document_ref` from `NeedGenerationResult`. The existing generator owner now
+  persists the replayed artifact and returns that ref; the replay regression asserts ref identity
+  on every regenerated Need. Serial v3 then reports the same artifact in manifest hash, flow
+  `need_planner_artifact_refs`, and five-segment `planner_artifact_ref`, with
+  `need_planner_fallback_count=0` and no Planner endpoint call.
+
+### 22.3 Final-policy serial evidence and mandatory stop
+
+- Final serial output:
+  `/tmp/ns-stage2m-repair-serial-p002-finalpolicy-20260809-v3`; run log:
+  `/tmp/ns-stage2m-repair-serial-p002-finalpolicy-20260809-v3.run.log`. Manifest fixes
+  Need/evaluator/checkpoint concurrency to 1, endpoint limit 1, KV budget 200,000,
+  `support_multi_enable_thinking=false`, thinking budget 0, output guard 1024, and frozen Planner
+  hash `a1231...ee2`.
+- Planner lineage is complete, and scheduler leases are balanced: acquired/released requests
+  `18/18`, final inflight request/KV `0/0`, timeout 0, unsatisfiable 0, peak request 1. No OOM,
+  context reduction, or lease leak occurred.
+- The run nevertheless terminates Claim Support as `failed`. Two legal multi-slice requests for
+  `need.stage2m.planner.mem_42_01` hit the accepted 1024 output guard with
+  `finish_reason=length`: request `bcf3f9...` used 28,714 input / 1,024 output / 0 reasoning tokens
+  at 45,485 ms; request `d9a2b3...` used 31,010 / 1,024 / 0 at 54,351 ms. Their raw partial outputs
+  are independently resolvable as artifacts `sha256:cb31aa...e0da` (2,376 bytes) and
+  `sha256:a76627...85b0` (1,574 bytes); both byte lengths and hashes verify.
+- Funnel terminal facts: 9 proposal requests, 2 proposal transport failures, 2 whole-verifier
+  rejections, `multi_slice_verified=0`, one insufficient Need, terminal state `failed`. Therefore
+  this fingerprint does **not** establish the required real
+  `proposal -> whole verifier -> persisted receipt` success chain.
+- The prior serial v1 did form real whole-verifier calls and receipt-bound writer entries, but it
+  predates the frozen-replay document-ref fix and cannot replace v3 as the final executable
+  fingerprint. It is retained only as variance/diagnostic evidence.
+- Per `.agent/review.md` stop condition, concurrent parity was not started. The implementation did
+  not raise the 1024 guard, restore thinking, introduce dynamic policy, or start formal Phase 4.
+  Status is `RETURN_TO_CODEX / REPAIR_STOP_OUTPUT_LENGTH_TRUNCATION`.
+
+### 22.4 Final verification
+
+- `make quality`: Ruff and format clean, strict MyPy clean for 293 source files; Pytest
+  `1642 passed, 9 deselected` in 248.77 seconds with 22,253 statements / 6,318 branches and
+  100.00% coverage.
+- `PRE_COMMIT_HOME=/tmp/ns-precommit-cache .conda-env/bin/pre-commit run --all-files`: Ruff check,
+  Ruff format, MyPy, and deterministic Pytest all passed.
+- `git diff --check`: passed. No commit or merge was created.
+
+## 23. Human-authorized 2048 guard calibration and bounded parity (2026-08-09)
+
+### 23.1 Evidence-based guard expansion
+
+- After §22 returned the required 1024 length-truncation evidence, the human explicitly authorized
+  another larger-budget trial. The minimum next guard, 2048, was tested with thinking still
+  disabled and thinking budget still zero; the frozen Planner artifact, prompts, evidence,
+  worksets, typed contracts, Writer/Ledger budgets, model, and all non-scheduling settings remained
+  unchanged.
+- Serial output:
+  `/tmp/ns-stage2m-repair-serial-p002-output2048-20260809-v1`; log:
+  `/tmp/ns-stage2m-repair-serial-p002-output2048-20260809-v1.run.log`. Both Needs completed the real
+  multi proposal and whole verifier chain. Funnel: 5 proposal requests, 3 valid multi proposals,
+  2 verified multi claims, 0 transport failures, 0 whole-verifier rejections, 0 insufficient
+  Needs, and 0 unclosed facets. The frozen paired artifact
+  `sha256:54b62bdcee1a29be7acdd2f0de994e31b356c5935b1f092e3a4278432093cfc6`
+  contains 28 receipt-bound groups, including two model-produced verified receipts with the exact
+  proposal and whole-verifier call records.
+- Serial scheduler: acquired/released `14/14`, peak request 1, peak KV 31,106, final inflight
+  request/KV `0/0`, timeout 0, unsatisfiable 0. Planner ref is the non-fallback `a1231...ee2` in
+  manifest/flow/five-segment and Planner endpoint calls remain zero.
+
+### 23.2 Unsafe endpoint concurrency result
+
+- A first concurrent diagnostic used Need concurrency 2 and endpoint request limit 2:
+  `/tmp/ns-stage2m-repair-concurrent-p002-output2048-20260809-v1`. It failed and is retained as
+  negative evidence, not parity evidence.
+- The exact `dd858...` input produced 243 output tokens in serial but ran to 2,048 tokens with
+  `finish_reason=length` under two simultaneous endpoint requests; latency rose from 20.849s to
+  116.791s. A second concurrent request also truncated at 2,048. Scheduler leases still balanced
+  `18/18`, peak request 2 / KV 62,190, final inflight `0/0`, timeout 0.
+- This isolates the remaining runaway behavior to simultaneous generation at this local endpoint,
+  rather than showing that legal typed payloads intrinsically require more than 2,048 tokens.
+  Therefore the guard was not blindly raised to 4,096.
+
+### 23.3 Safe concurrent parity
+
+- Safe concurrent output:
+  `/tmp/ns-stage2m-repair-concurrent-safe-p002-output2048-20260809-v1`; log:
+  `/tmp/ns-stage2m-repair-concurrent-safe-p002-output2048-20260809-v1.run.log`. Need orchestration
+  concurrency is 2 while the endpoint request limit remains 1; Evaluator and checkpoint workers
+  remain 1. This changes only bounded support scheduling and prevents simultaneous model
+  generation.
+- Serial and safe-concurrent have the same complete set of 14 scheduling descriptors, including
+  request ID, Need, stage, dependency, endpoint, context hash, prompt estimate, output reservation,
+  sequence reservation, safety allowance, priority, and scheduling timeout. All 7 proposal/
+  verifier progress call identities and hashes match; all 18 pre-model handle/workset audits match.
+- Both funnels are identical: 5 requests, 3 valid multi proposals, 2 verified multi claims,
+  0 transport/verifier failures, 0 insufficient Needs, and 0 unclosed facets. Both select 31 units,
+  render 1,061 Writer tokens and 11,981 Ledger tokens, have 107 semantically identical Ledger
+  entries, and produce identical five-segment evaluation. Different Ledger artifact hashes are
+  expected because receipt call records retain actual timestamps/latencies.
+- Safe-concurrent scheduler acquired/released `14/14`, peak request 1 / KV 31,106, final inflight
+  `0/0`, timeout 0, unsatisfiable 0, with 78.423 seconds of legitimate capacity waiting recorded
+  across the two Need pipelines. No duplicate equal-key verification, OOM, context reduction, or
+  lease leak occurred.
+
+### 23.4 Final implementation policy
+
+- The evidence-backed Claim Support multi output guard is now 2048 in the existing transport
+  config and CLI default/fallback. Thinking remains disabled with zero reasoning budget. The
+  producer identity is bumped `v31 -> v32`; no other model stage or semantic budget changes.
+- Focused transport/telemetry/manifest regressions pass (`13 passed`), and Ruff/format checks pass.
+  Final `make quality` also passes: Ruff/format, strict MyPy for 293 source files, and Pytest
+  `1642 passed, 9 deselected` in 251.53 seconds with 22,253 statements / 6,318 branches and 100%
+  coverage. Full pre-commit (Ruff check/format, MyPy, deterministic Pytest) passes. Formal Phase 4
+  and clean-source P6 remain unrun pending Codex review; no commit or merge was created.
+
+## 24. Current-v32 bounded evidence identity replay (2026-08-09)
+
+- Scope was evidence-only per Codex review: no source/schema/test/config changes, no Planner rerun,
+  no endpoint-limit-2 probe, no full test rerun, and no formal Phase 4. Both runs used the current
+  `trusted_claim_support_producer.v32` executable fingerprint
+  `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`,
+  frozen non-fallback Planner artifact `sha256:a1231b1d...e3ee2`, and fixed
+  `thinking=false / thinking_budget=0 / multi_output=2048`.
+- Serial (`Need concurrency=1`, endpoint limit 1):
+  `/tmp/ns-stage2m-repair-v32-serial-p002-20260809-v1`; log alongside as `.run.log`.
+  Manifest SHA-256 `f0755c567e8dd5fc95f5434693cda4de054230c99fb8b44f19db0f522b3e215f`;
+  flow SHA-256 `e02c94cf5ce4a548bcc681ad6fa72708778ac3f1428b65294d6d50d0ab0cd52e`.
+- Safe concurrent (`Need concurrency=2`, endpoint limit 1):
+  `/tmp/ns-stage2m-repair-v32-concurrent-safe-p002-20260809-v1`; log alongside as `.run.log`.
+  Manifest SHA-256 `245d6193c86c2484fc7e95aa41ca57a49cb75880b05d8e38e2e1609b9899f88e`;
+  flow SHA-256 `e6e9fcaba8143866b9668471cf047ddc7c9c8113285559e0fe347eb0438758db`.
+- Both funnels are identical: 5 proposal requests, 3 valid multi proposals, 2 verified multi
+  claims, zero proposal/verifier transport failures, zero whole-verifier rejection, zero
+  insufficient Need, and zero unclosed facet. The frozen paired artifacts
+  `sha256:f364daff...7c02` (serial) and `sha256:7afe7fdb...54aa` (safe concurrent) each retain
+  28 receipts and the same two model-produced verified chains; their producer field is explicitly
+  `trusted_claim_support_producer.v32.synthesized`.
+- Exact parity holds for the complete 14 scheduling descriptors, all 7 proposal/verifier call
+  identities and hashes, all 18 pre-model audits, 31 selected units, Writer 1,061 / Ledger 11,981
+  tokens, 107 semantically identical Ledger entries, and the complete five-segment evaluation.
+  Serial scheduler acquired/released `14/14` with no wait; safe concurrent acquired/released
+  `14/14` with 78.474s legitimate endpoint-capacity waiting. Both finish with inflight request/KV
+  `0/0`, timeout 0, unsatisfiable 0, no OOM/context reduction/lease leak.
+- Status: `RETURN_TO_CODEX_REVIEW`. These artifacts replace the v31/old-fingerprint evidence only;
+  previously accepted implementation and test evidence is unchanged. No commit or merge was made.

@@ -47,6 +47,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",
@@ -68,6 +69,28 @@
           "title": "Output Contract Version",
           "type": "string"
         },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_chapter_end": {
           "minimum": 1,
           "title": "Target Chapter End",
@@ -80,6 +103,11 @@
         },
         "task_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
         },
         "task_kind": {
           "const": "memory_context_for_target_range",
@@ -110,6 +138,18 @@
       ],
       "title": "BenchmarkTaskContract",
       "type": "object"
+    },
+    "CandidatePool": {
+      "enum": [
+        "r0",
+        "r1",
+        "anchor",
+        "grounded",
+        "hierarchy",
+        "graph"
+      ],
+      "title": "CandidatePool",
+      "type": "string"
     },
     "CanonicalAliasReceipt": {
       "additionalProperties": false,
@@ -1280,6 +1320,7 @@
       "title": "FusedCandidate",
       "type": "object"
     },
+    "JsonValue": {},
     "ModelCallPurpose": {
       "enum": [
         "development",
@@ -1410,6 +1451,12 @@
           "minimum": 0,
           "title": "Output Tokens",
           "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
         }
       },
       "required": [
@@ -1506,7 +1553,8 @@
         "executed_empty",
         "not_executed_budget_exhausted",
         "not_executed_freshness_blocked",
-        "not_executed_scope_blocked"
+        "not_executed_scope_blocked",
+        "not_executed_no_executable_query"
       ],
       "title": "NeedExecutionStatus",
       "type": "string"
@@ -1584,6 +1632,15 @@
         "fail_mandatory"
       ],
       "title": "NeedGapPolicy",
+      "type": "string"
+    },
+    "NeedRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "NeedRisk",
       "type": "string"
     },
     "NeedUncertaintyPolicy": {
@@ -1891,8 +1948,66 @@
           ],
           "default": null
         },
+        "generated_needs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Stage1MemoryNeed"
+          },
+          "title": "Generated Needs",
+          "type": "array"
+        },
+        "grounded_status_counts": {
+          "default": [
+            0,
+            0,
+            0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Grounded Status Counts",
+          "type": "array"
+        },
         "pair_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "planner_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_fallback_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planner Fallback Reason"
+        },
+        "planner_fallback_used": {
+          "default": false,
+          "title": "Planner Fallback Used",
+          "type": "boolean"
         },
         "request_id": {
           "$ref": "#/$defs/StableId"
@@ -1920,6 +2035,25 @@
       "title": "RangeUnit",
       "type": "string"
     },
+    "RequirementLevel": {
+      "enum": [
+        "mandatory",
+        "optional"
+      ],
+      "title": "RequirementLevel",
+      "type": "string"
+    },
+    "ResolutionPath": {
+      "enum": [
+        "exact_temporal",
+        "anchor_first",
+        "hierarchy",
+        "grounded_direct",
+        "typed_graph"
+      ],
+      "title": "ResolutionPath",
+      "type": "string"
+    },
     "RetrievalChannel": {
       "enum": [
         "r0",
@@ -1941,7 +2075,8 @@
         "exact_satisfied",
         "budget_satisfied",
         "candidates_exhausted",
-        "fallback_exhausted"
+        "fallback_exhausted",
+        "no_executable_query"
       ],
       "title": "RetrievalStopReason",
       "type": "string"
@@ -2003,6 +2138,29 @@
           "title": "Closed Need Facet Ids",
           "type": "array"
         },
+        "compiled_query_bundle": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Compiled Query Bundle",
+          "type": "object"
+        },
+        "direct_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Direct Unit Ids",
+          "type": "array"
+        },
+        "effective_channels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Effective Channels",
+          "type": "array"
+        },
         "fallback_reason": {
           "anyOf": [
             {
@@ -2053,6 +2211,16 @@
         },
         "need_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "query_unavailable_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Query Unavailable Reasons",
+          "type": "object"
         },
         "required_need_facet_ids": {
           "default": [],
@@ -2511,6 +2679,321 @@
       "title": "Stage1ContextPackage",
       "type": "object"
     },
+    "Stage1MemoryNeed": {
+      "additionalProperties": false,
+      "properties": {
+        "access_scope": {
+          "default": "writer_safe",
+          "minLength": 1,
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "allow_plan": {
+          "default": false,
+          "title": "Allow Plan",
+          "type": "boolean"
+        },
+        "allowed_candidate_pools": {
+          "items": {
+            "$ref": "#/$defs/CandidatePool"
+          },
+          "minItems": 1,
+          "title": "Allowed Candidate Pools",
+          "type": "array"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "chapter_target": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Target"
+        },
+        "claim_may_cite_plan": {
+          "default": false,
+          "title": "Claim May Cite Plan",
+          "type": "boolean"
+        },
+        "completion_criteria": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Criteria"
+        },
+        "completion_spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NeedCompletionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "expected_evidence_types": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Evidence Types",
+          "type": "array"
+        },
+        "expected_section": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriterContextSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "focus_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Focus Ids",
+          "type": "array"
+        },
+        "hierarchy_parent_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Hierarchy Parent Unit Ids",
+          "type": "array"
+        },
+        "horizon_target": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Target"
+        },
+        "legacy_allow_plan": {
+          "default": false,
+          "title": "Legacy Allow Plan",
+          "type": "boolean"
+        },
+        "need_facets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NeedFacet"
+          },
+          "title": "Need Facets",
+          "type": "array"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_type": {
+          "minLength": 1,
+          "title": "Need Type",
+          "type": "string"
+        },
+        "planned_draft_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planned Draft Id"
+        },
+        "planner_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_may_read_plan": {
+          "default": false,
+          "title": "Planner May Read Plan",
+          "type": "boolean"
+        },
+        "predicates": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Predicates",
+          "type": "array"
+        },
+        "preferred_resolution_path": {
+          "$ref": "#/$defs/ResolutionPath"
+        },
+        "priority": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purpose"
+        },
+        "query_hints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Query Hints",
+          "type": "array"
+        },
+        "query_intent": {
+          "$ref": "#/$defs/Stage1QueryIntent"
+        },
+        "query_text": {
+          "minLength": 1,
+          "title": "Query Text",
+          "type": "string"
+        },
+        "requirement": {
+          "$ref": "#/$defs/RequirementLevel"
+        },
+        "retrieval_may_return_plan": {
+          "default": false,
+          "title": "Retrieval May Return Plan",
+          "type": "boolean"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/NeedRisk"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "semantic_question": {
+          "default": "",
+          "title": "Semantic Question",
+          "type": "string"
+        },
+        "stop_condition": {
+          "minLength": 1,
+          "title": "Stop Condition",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "time_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "trigger_plan_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Trigger Plan Chapters",
+          "type": "array"
+        },
+        "trigger_plan_goal": {
+          "default": "",
+          "title": "Trigger Plan Goal",
+          "type": "string"
+        },
+        "validated_need_set_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "why_needed": {
+          "minLength": 1,
+          "title": "Why Needed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "need_id",
+        "run_id",
+        "task_id",
+        "base_commit",
+        "need_type",
+        "query_intent",
+        "query_text",
+        "why_needed",
+        "risk_level",
+        "requirement",
+        "preferred_resolution_path",
+        "allowed_candidate_pools",
+        "stop_condition"
+      ],
+      "title": "Stage1MemoryNeed",
+      "type": "object"
+    },
     "Stage1QueryIntent": {
       "enum": [
         "current_state",
@@ -2533,6 +3016,57 @@
       ],
       "title": "Stage1QueryIntent",
       "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
     },
     "TaskId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",

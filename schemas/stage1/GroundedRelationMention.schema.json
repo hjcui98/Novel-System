@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "GroundingStatus": {
+      "enum": [
+        "grounded",
+        "ambiguous",
+        "unresolved"
+      ],
+      "title": "GroundingStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Grounding result for one relation mention.",
+  "properties": {
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "grounding_method": {
+      "default": "",
+      "title": "Grounding Method",
+      "type": "string"
+    },
+    "grounding_status": {
+      "$ref": "#/$defs/GroundingStatus"
+    },
+    "object_label": {
+      "minLength": 1,
+      "title": "Object Label",
+      "type": "string"
+    },
+    "relation_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "relation_label": {
+      "minLength": 1,
+      "title": "Relation Label",
+      "type": "string"
+    },
+    "subject_label": {
+      "minLength": 1,
+      "title": "Subject Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_label",
+    "relation_label",
+    "object_label",
+    "grounding_status",
+    "confidence"
+  ],
+  "title": "GroundedRelationMention",
+  "type": "object"
+}

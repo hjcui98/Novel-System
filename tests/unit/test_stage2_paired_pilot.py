@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
+from novel_agent.domain.artifacts import PlanRootRef
 from novel_agent.domain.benchmark import PlanEvidenceRef
-from novel_agent.domain.ids import ArtifactId, CommitId, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
+    CandidatePool,
     ChannelHit,
     ContextBudgetReport,
     FusedCandidate,
+    NeedExecutionStatus,
     RetrievalChannel,
     RetrievalStopReason,
     RetrievalTrace,
@@ -46,6 +50,7 @@ from novel_agent.services.benchmark_importer import (
     content_id,
     world_root_content_id,
 )
+from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.memory_benchmark_contract import build_public_checkpoint_case
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
 from novel_agent.services.retrieval import RetrievalBackend
@@ -69,17 +74,20 @@ def _report() -> Stage2PairedPilotReport:
 def test_paired_pilot_runs_both_arms_on_one_audited_basis() -> None:
     report = _report()
 
-    assert report.paired_results_count == 2
-    assert report.comparable_results_count == 2
+    assert report.paired_results_count == 3
+    assert report.comparable_results_count == 3
     assert report.future_leakage_count == 0
-    assert report.safety_regression_count == 0
+    # The legacy paired smoke can expose an Agentic regression; strict D9 no
+    # longer injects author-plan evidence to mask it.
+    assert report.safety_regression_count == 1
     assert report.accuracy_gain_count == 0
-    assert report.tool_call_reduction_count == 2
+    assert report.tool_call_reduction_count == 3
     assert report.held_out_complex_gain_proven is False
     result = report.cases[0]
     assert result.checkpoint_chapter == 20
     assert result.comparison_basis_fingerprint == report.configuration_fingerprint
     assert result.deterministic_metrics.gold_evidence_recall == 1.0
+    assert result.agentic_metrics is not None
     assert result.agentic_metrics.gold_evidence_recall == 1.0
     assert result.deterministic_metrics.evidence_traceability == 1.0
     assert Stage2PairedPilotRunner().run(make_synthetic_bundle()) == report
@@ -145,6 +153,88 @@ def test_public_resolution_rejects_requested_profile_mismatch() -> None:
             plan=bundle.plan_roots[0],
             base_commit=bundle.world_roots[0].source_commit,
         )
+
+
+def test_scope_needs_injects_run_level_plan_policy() -> None:
+    from novel_agent.domain.ids import RunId, TaskId
+    from novel_agent.domain.memory import (
+        CandidatePool,
+        NeedRisk,
+        RequirementLevel,
+        ResolutionPath,
+        Stage1MemoryNeed,
+    )
+
+    def make_need(
+        need_id: str,
+        need_type: str,
+        intent: Stage1QueryIntent,
+        *,
+        plan_channel: bool,
+    ) -> Stage1MemoryNeed:
+        return Stage1MemoryNeed(
+            need_id=StableId(need_id),
+            run_id=RunId("run.policy"),
+            task_id=TaskId("task.policy"),
+            base_commit=CommitId("sha256:" + "c" * 64),
+            chapter_target=1,
+            need_type=need_type,
+            query_intent=intent,
+            query_text="query",
+            access_scope="author_planning" if plan_channel else "writer_safe",
+            allow_plan=plan_channel,
+            planner_may_read_plan=plan_channel,
+            retrieval_may_return_plan=plan_channel,
+            claim_may_cite_plan=plan_channel,
+            legacy_allow_plan=plan_channel,
+            why_needed="test",
+            risk_level=NeedRisk.HIGH,
+            requirement=RequirementLevel.MANDATORY,
+            preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
+            allowed_candidate_pools=(CandidatePool.ANCHOR,),
+            stop_condition="done",
+        )
+
+    plan_obligation = make_need(
+        "need.policy.plan",
+        "plan_obligation",
+        Stage1QueryIntent.PLAN_OBLIGATION,
+        plan_channel=True,
+    )
+    historical = make_need(
+        "need.policy.history",
+        "entity_history",
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        plan_channel=False,
+    )
+    plan_conditioned_history = make_need(
+        "need.policy.plan-history",
+        "plan_conditioned_history",
+        Stage1QueryIntent.RELATED_EVENT,
+        plan_channel=True,
+    )
+    needs = (plan_obligation, plan_conditioned_history, historical)
+
+    apc = Stage2PairedPilotRunner._scope_needs(
+        needs,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    assert all(need.planner_may_read_plan for need in apc)
+    assert all(need.access_scope == "writer_safe" for need in apc)
+    assert all(not need.retrieval_may_return_plan for need in apc)
+    assert all(not need.claim_may_cite_plan for need in apc)
+    assert all(not need.legacy_allow_plan for need in apc)
+    assert all(not need.allow_plan for need in apc)
+
+    vac = Stage2PairedPilotRunner._scope_needs(
+        needs,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    assert all(need.access_scope == "writer_safe" for need in vac)
+    assert all(not need.planner_may_read_plan for need in vac)
+    assert all(not need.retrieval_may_return_plan for need in vac)
+    assert all(not need.claim_may_cite_plan for need in vac)
+    assert all(not need.allow_plan for need in vac)
 
 
 def test_deterministic_only_resolution_does_not_execute_b_or_c() -> None:
@@ -527,6 +617,85 @@ def test_state_resolution_rejects_empty_needs_and_routes_exact_capability() -> N
     assert Stage2PairedPilotRunner._allowed_tools(routes)
 
 
+def test_real_hybrid_main_path_skips_need_without_executable_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, private_case, public_case, _runner, _comparison = resolved_public_comparison()
+    history = next(
+        root for root in bundle.text_roots if root.root_hash == private_case.input_text_root
+    )
+    world = bundle.world_roots[0]
+    plan = bundle.plan_roots[0]
+    generated = TaskPlanConditionedNeedGenerator().generate_with_lineage(
+        public_case.task_contract,
+        world,
+        None,
+    )
+    adversarial = generated.needs[0].model_copy(
+        update={
+            "query_intent": Stage1QueryIntent.RELATION_CHAIN,
+            "entity_ids": (),
+            "predicates": (),
+            "hierarchy_parent_unit_ids": (),
+            "allowed_candidate_pools": (CandidatePool.GRAPH,),
+        }
+    )
+    patched_generation = generated.model_copy(update={"needs": (adversarial,)})
+    monkeypatch.setattr(
+        TaskPlanConditionedNeedGenerator,
+        "generate_with_lineage",
+        lambda *_args, **_kwargs: patched_generation,
+    )
+
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[StableId, RetrievalChannel]] = []
+
+        def search(
+            self,
+            need: Any,
+            channel: RetrievalChannel,
+            limit: int,
+        ) -> tuple[ChannelHit, ...]:
+            self.calls.append((need.need_id, channel))
+            return ()
+
+    backend = RecordingBackend()
+    config = PublicBenchmarkConfig(
+        schema_version=bundle.bundle_schema_version,
+        configuration_fingerprint=content_id({"main-path-query-intersection": True}),
+        expected_profiles=tuple(item.value for item in BenchmarkInformationProfile),
+    )
+    capability = SnapshotCapability(
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.main-path-query-intersection"),
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(RetrievalChannel.TYPED_GRAPH,),
+    )
+    comparison = Stage2PairedPilotRunner(
+        arms=("A",),
+        retrieval_backend_profile=RetrievalBackendProfile.REAL_HYBRID,
+    ).resolve_state_case(
+        config,
+        public_case,
+        BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        history=history,
+        world=world,
+        plan=plan,
+        base_commit=world.source_commit,
+        retrieval_backend=cast(RetrievalBackend, backend),
+        snapshot_capability=capability,
+    )
+
+    assert backend.calls == []
+    trace = comparison.deterministic.context.retrieval_traces[0]
+    assert trace.need_execution_status is NeedExecutionStatus.NOT_EXECUTED_NO_EXECUTABLE_QUERY
+    assert trace.stop_reason is RetrievalStopReason.NO_EXECUTABLE_QUERY
+    assert trace.calls_allocated == 0
+    assert trace.effective_channels == ()
+    assert trace.query_unavailable_reasons == {RetrievalChannel.TYPED_GRAPH: "missing_graph_seed"}
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     (
@@ -544,6 +713,40 @@ def test_paired_pilot_case_contract_rejects_inconsistent_flags(
     payload[field] = not payload[field]
     with pytest.raises(ValidationError, match=message):
         PairedPilotCaseResult.model_validate(payload)
+
+
+def test_paired_pilot_case_contract_rejects_execution_status_inconsistencies() -> None:
+    base = _report().cases[0].model_dump()
+    with pytest.raises(ValidationError, match="completed deterministic arm"):
+        PairedPilotCaseResult.model_validate(
+            base | {"deterministic_execution_status": ArmExecutionStatus.SKIPPED}
+        )
+    with pytest.raises(ValidationError, match="cannot expose metrics"):
+        PairedPilotCaseResult.model_validate(
+            base | {"agentic_execution_status": ArmExecutionStatus.SKIPPED}
+        )
+    skipped = base | {
+        "agentic_execution_status": ArmExecutionStatus.SKIPPED,
+        "agentic_metrics": None,
+        "delta_metrics": None,
+        "accuracy_gain": None,
+        "tool_call_reduction": None,
+        "safety_regression": None,
+    }
+    with pytest.raises(ValidationError, match="cannot be a paired comparison"):
+        PairedPilotCaseResult.model_validate(skipped)
+    with pytest.raises(ValidationError, match="completed Agentic arm requires metrics"):
+        PairedPilotCaseResult.model_validate(base | {"agentic_metrics": None})
+    with pytest.raises(ValidationError, match="comparison status"):
+        PairedPilotCaseResult.model_validate(base | {"paired_comparison_status": "NOT_COMPARABLE"})
+
+
+def test_paired_context_fallback_flag_and_reason_are_atomic() -> None:
+    _bundle, _private, _public, _runner, comparison = resolved_public_comparison()
+    with pytest.raises(ValidationError, match="fallback flag/reason"):
+        PairedContextComparison.model_validate(
+            comparison.model_dump() | {"planner_fallback_used": True}
+        )
 
 
 @pytest.mark.parametrize(
@@ -730,6 +933,114 @@ def test_paired_pilot_matches_content_addressed_r1_plan_records_only_by_exact_go
         update={"text": json.dumps(goal.model_dump(mode="json") | {"summary": "wrong"})}
     )
     assert Stage2PairedPilotRunner._matches_plan(wrong, expected) is False
+    assert (
+        Stage2PairedPilotRunner._matches_plan(
+            unit.model_copy(update={"information_label": "observed"}), expected
+        )
+        is False
+    )
+    assert (
+        Stage2PairedPilotRunner._matches_plan(
+            unit.model_copy(update={"text": "not-json"}), expected
+        )
+        is False
+    )
+
+
+def test_runtime_planning_context_binding_edges() -> None:
+    pilot = Path(__file__).parents[2] / "benchmarks/private/ztj_memory_pilot_v0.1"
+    bundle = HumanBenchmarkCompiler().compile(pilot)
+    private = bundle.case_manifests[0]
+    plan = next(item for item in bundle.plan_roots if item.root_hash == private.input_plan_root)
+    context = next(
+        item
+        for item in bundle.planning_contexts
+        if item.source_hash == private.planning_context_hash
+    )
+    visible = build_public_checkpoint_case(
+        case_id=private.case_id,
+        project_id=private.project_id,
+        target_range=private.target_range,
+        history_range=private.history_range,
+        information_profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    )
+    with pytest.raises(ValueError, match="cannot receive planning context"):
+        Stage2PairedPilotRunner._validate_runtime_planning_context(
+            visible, BenchmarkInformationProfile.VISIBLE_AT_CUTOFF, plan, context
+        )
+
+    def public_for(bound_context: Any) -> PublicCheckpointCase:
+        return cast(
+            PublicCheckpointCase,
+            build_public_checkpoint_case(
+                case_id=private.case_id,
+                project_id=private.project_id,
+                target_range=private.target_range,
+                history_range=private.history_range,
+                information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+                task_intent=bound_context.task_intent,
+                planning_context_ref=content_id(bound_context.model_dump(mode="json")),
+                planning_context_hash=bound_context.source_hash,
+                plan_root_ref=PlanRootRef(
+                    artifact_id=plan.root_hash,
+                    media_type="application/vnd.novel-agent.plan-root+json",
+                    byte_length=1,
+                    schema_version=SchemaVersion("1.0.0"),
+                ),
+            ),
+        )
+
+    public = public_for(context)
+    with pytest.raises(ValueError, match="requires a verified PlanRoot"):
+        cast(Any, public.model_copy(update={"plan_root_ref": None}).validate_public_contract)()
+    unbound_task = public.task_contract.model_copy(
+        update={"planning_context_ref": None, "planning_context_hash": None}
+    )
+    with pytest.raises(ValueError, match="requires a bound planning context"):
+        cast(
+            Any,
+            public.model_copy(update={"task_contract": unbound_task}).validate_public_contract,
+        )()
+    with pytest.raises(ValueError, match="requires the bound"):
+        Stage2PairedPilotRunner._validate_runtime_planning_context(
+            public, BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED, plan, None
+        )
+    with pytest.raises(ValueError, match="does not match its public binding"):
+        Stage2PairedPilotRunner._validate_runtime_planning_context(
+            public,
+            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+            plan,
+            context.model_copy(update={"task_intent": "drift"}),
+        )
+
+    altered = context.model_copy(
+        update={"visible_outline_nodes": context.visible_outline_nodes[:-1]}
+    )
+    altered = altered.model_copy(
+        update={
+            "source_hash": content_id(
+                {
+                    "profile": altered.profile.value,
+                    "task_intent": altered.task_intent,
+                    "target_range": altered.target_range,
+                    "visible_outline_nodes": [
+                        node.model_dump(mode="json") for node in altered.visible_outline_nodes
+                    ],
+                    "chapter_goals": [
+                        goal.model_dump(mode="json") for goal in altered.chapter_goals
+                    ],
+                    "planner_may_read_plan": altered.planner_may_read_plan,
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="disagrees with the verified PlanRoot"):
+        Stage2PairedPilotRunner._validate_runtime_planning_context(
+            public_for(altered),
+            BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+            plan,
+            altered,
+        )
 
 
 _ARM_C_COMMIT = CommitId("sha256:" + "b" * 64)

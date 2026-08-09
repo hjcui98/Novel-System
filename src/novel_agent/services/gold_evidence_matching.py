@@ -23,7 +23,7 @@ class GoldEvidenceMatch(DomainModel):
 class GoldEvidenceMatcher:
     """Require a content-addressed evidence identity/span match."""
 
-    version = "gold_evidence_matcher.v3"
+    version = "gold_evidence_matcher.v4"
 
     def __init__(self, *, minimum_span_coverage: float = 0.5) -> None:
         if not 0.0 < minimum_span_coverage <= 1.0:
@@ -146,6 +146,11 @@ class GoldEvidenceMatcher:
         return tuple(dict.fromkeys(matched_entry_ids)), complete
 
     def _ref_matches(self, expected: EvidenceRef, actual: EvidenceRef) -> bool:
+        # Evidence credit never crosses an unproven TextRoot ancestry.  Equal
+        # object bytes/coordinates may be deduplicated only after the importer
+        # has bound both references to the same canonical observed root.
+        if expected.root_hash != actual.root_hash:
+            return False
         if expected.evidence_id == actual.evidence_id:
             return True
         if expected.object_hash != actual.object_hash:
@@ -154,9 +159,8 @@ class GoldEvidenceMatcher:
         # references have precise spans. This forbids whole-chapter coincidence.
         if expected.span is None or actual.span is None:
             return False
-        # The same canonical text is imported into independently namespaced
-        # benchmark cases and projects, so block ids are not portable. Exact
-        # object content plus coordinates are portable and collision-resistant.
+        # Block ids may be independently namespaced inside one proven root, so
+        # exact object content plus coordinates remain the portable child key.
         overlap = max(
             0,
             min(expected.span.end, actual.span.end) - max(expected.span.start, actual.span.start),

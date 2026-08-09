@@ -8,7 +8,9 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 
 from novel_agent.agents import seal_tool_policy
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
+    AuthorPlanningContext,
     BenchmarkBundle,
     BenchmarkCaseManifest,
     GoldItem,
@@ -16,17 +18,13 @@ from novel_agent.domain.benchmark import (
     PlanRootDocument,
     TextRootDocument,
 )
-from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, StableId
 from novel_agent.domain.memory import (
-    CandidatePool,
     FusedCandidate,
-    NeedRisk,
     RequirementLevel,
-    ResolutionPath,
     RetrievalUnit,
     Stage1ContextPackage,
     Stage1MemoryNeed,
-    Stage1QueryIntent,
     WorldRootDocument,
 )
 from novel_agent.domain.memory_benchmark import (
@@ -35,6 +33,7 @@ from novel_agent.domain.memory_benchmark import (
     FreezeReceipt,
     WriterContextPackage,
 )
+from novel_agent.domain.planning_memory import PlannerInvocationArtifact
 from novel_agent.domain.retrieval_routing import (
     RetrievalBackendProfile,
     RoutePlan,
@@ -64,6 +63,7 @@ from novel_agent.domain.text import EvidenceRef
 from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
 from novel_agent.services.benchmark_importer import BenchmarkBundleImporter, content_id
 from novel_agent.services.claim_support import (
+    ClaimSupportTransportConfig,
     ControllerSupportSelector,
     SupportArtifactWriter,
     SupportProgressWriter,
@@ -72,6 +72,7 @@ from novel_agent.services.claim_support import (
 from novel_agent.services.memory_benchmark_contract import verify_public_checkpoint_case
 from novel_agent.services.memory_pipeline import AnchorBuilder, ContextCompiler, EvidenceExpander
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 from novel_agent.services.need_completion import NeedCompletionStatus
 from novel_agent.services.paired_controller import (
     DETERMINISTIC_ROUTE_SCHEDULER_VERSION,
@@ -100,7 +101,7 @@ class Stage2PairedPilotRunner:
     silently receive this synthetic backend.
     """
 
-    version = "stage2-paired-pilot-v0.4"
+    version = "stage2-paired-pilot-v0.5"
 
     def __init__(
         self,
@@ -169,16 +170,22 @@ class Stage2PairedPilotRunner:
             configuration_fingerprint=fingerprint,
             controller_mode=self._controller_mode,
             cases=cases,
-            paired_results_count=len(cases),
+            paired_results_count=sum(
+                item.agentic_execution_status is ArmExecutionStatus.COMPLETED for item in cases
+            ),
             comparable_results_count=sum(item.comparable for item in cases),
             future_leakage_count=sum(
                 item.deterministic_metrics.future_leakage_count
-                + item.agentic_metrics.future_leakage_count
+                + (
+                    item.agentic_metrics.future_leakage_count
+                    if item.agentic_metrics is not None
+                    else 0
+                )
                 for item in cases
             ),
-            safety_regression_count=sum(item.safety_regression for item in cases),
-            accuracy_gain_count=sum(item.accuracy_gain for item in cases),
-            tool_call_reduction_count=sum(item.tool_call_reduction for item in cases),
+            safety_regression_count=sum(item.safety_regression is True for item in cases),
+            accuracy_gain_count=sum(item.accuracy_gain is True for item in cases),
+            tool_call_reduction_count=sum(item.tool_call_reduction is True for item in cases),
             delta_gain_count=sum(
                 1
                 for item in cases
@@ -216,20 +223,9 @@ class Stage2PairedPilotRunner:
         snapshot_id = StableId(f"snapshot.{case.case_id.root}.stage2-paired")
         backend = self._scripted_smoke_backend(world, history, plan, snapshot_id=snapshot_id)
         world_needs = Stage1NeedGenerator().generate(world, case)
-        needs = (
-            (
-                *world_needs,
-                *self._plan_needs(
-                    case,
-                    plan,
-                    world.source_commit,
-                    world_needs,
-                ),
-            )
-            if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
-            else world_needs
-        )
-        needs = self._scope_needs(needs, profile)
+        # Author plan is Planner guidance only.  It never becomes a historical
+        # Memory Need or retrieval/citation source under strict D9.
+        needs = self._scope_needs(world_needs, profile)
         if not needs:
             raise ValueError(f"paired Pilot case has no generated needs: {case.case_id.root}")
         max_calls = self._max_tool_calls
@@ -294,10 +290,14 @@ class Stage2PairedPilotRunner:
             evaluator_only_artifacts=(case.future_text_root_private,),
         )
         deterministic = self._metrics(case, comparison.deterministic)
-        agentic = self._metrics(case, comparison.agentic)
+        agentic = (
+            self._metrics(case, comparison.agentic)
+            if comparison.agentic.execution_status is ArmExecutionStatus.COMPLETED
+            else None
+        )
         delta_metrics: PairedPilotArmMetrics | None = None
         arm_c_safety_regression = False
-        if comparison.arm_c_writer_context is not None:
+        if comparison.arm_c_writer_context is not None and agentic is not None:
             if comparison.arm_c_evidence_ledger is None:
                 raise ValueError("Arm C Writer Context requires an Evidence Ledger")
             delta_metrics = self._writer_metrics(
@@ -319,7 +319,10 @@ class Stage2PairedPilotRunner:
                 or delta_metrics.mandatory_constraint_coverage
                 < deterministic.mandatory_constraint_coverage
             )
-        elif self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA:
+        elif (
+            self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+            and agentic is not None
+        ):
             _arm_c_result, delta_metrics = self._build_arm_c(
                 case, comparison.deterministic, comparison.agentic
             )
@@ -339,13 +342,34 @@ class Stage2PairedPilotRunner:
             comparison_basis_fingerprint=fingerprint,
             comparable=comparison.comparable,
             blockers=comparison.blockers,
+            deterministic_execution_status=comparison.deterministic.execution_status,
+            agentic_execution_status=comparison.agentic.execution_status,
+            paired_comparison_status=(
+                "COMPARABLE"
+                if comparison.comparable
+                else "NOT_RUN"
+                if comparison.agentic.execution_status is ArmExecutionStatus.SKIPPED
+                else "FAILED"
+                if comparison.agentic.execution_status is ArmExecutionStatus.FAILED
+                else "NOT_COMPARABLE"
+            ),
             deterministic_metrics=deterministic,
             agentic_metrics=agentic,
             delta_metrics=delta_metrics,
-            accuracy_gain=(agentic.gold_evidence_recall > deterministic.gold_evidence_recall),
-            tool_call_reduction=(agentic.retrieval_call_count < deterministic.retrieval_call_count),
+            accuracy_gain=(
+                agentic.gold_evidence_recall > deterministic.gold_evidence_recall
+                if agentic is not None
+                else None
+            ),
+            tool_call_reduction=(
+                agentic.retrieval_call_count < deterministic.retrieval_call_count
+                if agentic is not None
+                else None
+            ),
             safety_regression=(
-                arm_c_safety_regression
+                None
+                if agentic is None
+                else arm_c_safety_regression
                 if delta_metrics is not None
                 else (
                     agentic.future_leakage_count > deterministic.future_leakage_count
@@ -481,6 +505,13 @@ class Stage2PairedPilotRunner:
         support_artifact_writer: SupportArtifactWriter | None = None,
         support_progress_writer: SupportProgressWriter | None = None,
         support_pre_proposal_trace: bool = False,
+        planner_gateway: ModelGateway | None = None,
+        planning_context: AuthorPlanningContext | None = None,
+        support_max_concurrent_needs: int = 1,
+        support_max_inflight_kv_tokens: int | None = None,
+        support_admission_controller: ModelRequestAdmissionController | None = None,
+        frozen_planner_artifact: PlannerInvocationArtifact | None = None,
+        support_transport_config: ClaimSupportTransportConfig | None = None,
     ) -> PairedContextComparison:
         """Resolve both arms on E2E state without consulting private Gold.
 
@@ -516,11 +547,18 @@ class Stage2PairedPilotRunner:
             )
         if case.task_contract.information_profile is not profile:
             raise ValueError("public task profile does not match requested information profile")
-        needs = TaskPlanConditionedNeedGenerator().generate(
+        self._validate_runtime_planning_context(case, profile, plan, planning_context)
+        generation = TaskPlanConditionedNeedGenerator(
+            planner_gateway=(planner_gateway if planner_gateway is not None else support_gateway),
+            planner_artifact_writer=support_artifact_writer,
+        ).generate_with_lineage(
             case.task_contract,
             world,
             (plan if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED else None),
+            planning_context=planning_context,
+            frozen_planner_artifact=frozen_planner_artifact,
         )
+        needs = generation.needs
         needs = self._scope_needs(needs, profile)
         if not needs:
             raise ValueError(f"E2E state produced no memory needs: {case.case_id.root}")
@@ -626,11 +664,19 @@ class Stage2PairedPilotRunner:
             comparison,
             case=case,
             needs=needs,
+            planner_artifact_ref=generation.planner_artifact_document_ref,
+            planner_fallback_used=generation.fallback_used,
+            planner_fallback_reason=generation.planner_fallback_reason,
+            grounded_status_counts=generation.grounding_status_counts,
             fingerprint=fingerprint,
             support_gateway=support_gateway,
             support_artifact_writer=support_artifact_writer,
             support_progress_writer=support_progress_writer,
             support_pre_proposal_trace=support_pre_proposal_trace,
+            support_max_concurrent_needs=support_max_concurrent_needs,
+            support_max_inflight_kv_tokens=support_max_inflight_kv_tokens,
+            support_admission_controller=support_admission_controller,
+            support_transport_config=support_transport_config,
         )
 
     def _assemble_stage2m_comparison(
@@ -640,10 +686,18 @@ class Stage2PairedPilotRunner:
         case: PublicCheckpointCase,
         needs: tuple[Stage1MemoryNeed, ...],
         fingerprint: ArtifactId,
+        planner_artifact_ref: ArtifactRef | None = None,
+        planner_fallback_used: bool = False,
+        planner_fallback_reason: str | None = None,
+        grounded_status_counts: tuple[int, int, int] = (0, 0, 0),
         support_gateway: ModelGateway | None = None,
         support_artifact_writer: SupportArtifactWriter | None = None,
         support_progress_writer: SupportProgressWriter | None = None,
         support_pre_proposal_trace: bool = False,
+        support_max_concurrent_needs: int = 1,
+        support_max_inflight_kv_tokens: int | None = None,
+        support_admission_controller: ModelRequestAdmissionController | None = None,
+        support_transport_config: ClaimSupportTransportConfig | None = None,
     ) -> PairedContextComparison:
         """Create real A/B/C Writer Contexts from frozen selected retrieval units."""
 
@@ -733,6 +787,15 @@ class Stage2PairedPilotRunner:
                 artifact_writer=support_artifact_writer,
                 progress_writer=support_progress_writer,
                 pre_proposal_trace=support_pre_proposal_trace,
+                max_concurrent_needs=support_max_concurrent_needs,
+                max_inflight_kv_tokens=support_max_inflight_kv_tokens,
+                admission_controller=(
+                    None
+                    if support_gateway is not None
+                    and support_gateway.admission_controller is support_admission_controller
+                    else support_admission_controller
+                ),
+                transport_config=support_transport_config,
             )
         )
         selection_a = selector.select(
@@ -883,6 +946,11 @@ class Stage2PairedPilotRunner:
                     "arm_c_execution_status": ArmExecutionStatus.SKIPPED,
                     "arm_c_failure_category": "NOT_RUN_DETERMINISTIC_GATE",
                     "freeze_receipt": receipt,
+                    "generated_needs": needs,
+                    "planner_artifact_ref": planner_artifact_ref,
+                    "planner_fallback_used": planner_fallback_used,
+                    "planner_fallback_reason": planner_fallback_reason,
+                    "grounded_status_counts": grounded_status_counts,
                 }
             )
 
@@ -970,6 +1038,11 @@ class Stage2PairedPilotRunner:
                     "arm_c_execution_status": ArmExecutionStatus.SKIPPED,
                     "arm_c_failure_category": "SKIPPED_AGENTIC_FAILURE",
                     "freeze_receipt": receipt,
+                    "generated_needs": needs,
+                    "planner_artifact_ref": planner_artifact_ref,
+                    "planner_fallback_used": planner_fallback_used,
+                    "planner_fallback_reason": planner_fallback_reason,
+                    "grounded_status_counts": grounded_status_counts,
                 }
             )
 
@@ -1060,7 +1133,43 @@ class Stage2PairedPilotRunner:
             arm_c_execution_status=ArmExecutionStatus.COMPLETED,
             arm_c_failure_category=None,
             freeze_receipt=receipt,
+            generated_needs=needs,
+            planner_artifact_ref=planner_artifact_ref,
+            planner_fallback_used=planner_fallback_used,
+            planner_fallback_reason=planner_fallback_reason,
+            grounded_status_counts=grounded_status_counts,
         )
+
+    @staticmethod
+    def _validate_runtime_planning_context(
+        case: PublicCheckpointCase,
+        profile: BenchmarkInformationProfile,
+        plan: PlanRootDocument,
+        context: AuthorPlanningContext | None,
+    ) -> None:
+        """Fail closed at the public boundary on APC truth-source drift."""
+
+        task = case.task_contract
+        if profile is not BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
+            if context is not None:
+                raise ValueError(f"{profile.value} execution cannot receive planning context")
+            return
+        if context is None:
+            raise ValueError("APC execution requires the bound AuthorPlanningContext")
+        if (
+            context.profile is not profile
+            or context.target_range != case.target_range
+            or context.task_intent != task.task_intent
+            or context.source_hash != task.planning_context_hash
+            or content_id(context.model_dump(mode="json")) != task.planning_context_ref
+        ):
+            raise ValueError("APC runtime planning context does not match its public binding")
+        context_outline = tuple(
+            (node.node_id, node.title, node.summary) for node in context.visible_outline_nodes
+        )
+        plan_outline = tuple((node.plan_node_id, node.title, node.summary) for node in plan.nodes)
+        if context_outline != plan_outline or context.chapter_goals != plan.chapter_goals:
+            raise ValueError("APC runtime planning context disagrees with the verified PlanRoot")
 
     @staticmethod
     def _allowed_tools(route_plans: tuple[RoutePlan, ...]) -> tuple[str, ...]:
@@ -1192,10 +1301,14 @@ class Stage2PairedPilotRunner:
         """Evaluator-only conversion of a frozen comparison into private-Gold metrics."""
 
         deterministic = self._metrics(case, comparison.deterministic)
-        agentic = self._metrics(case, comparison.agentic)
+        agentic = (
+            self._metrics(case, comparison.agentic)
+            if comparison.agentic.execution_status is ArmExecutionStatus.COMPLETED
+            else None
+        )
         delta_metrics: PairedPilotArmMetrics | None = None
         arm_c_safety_regression = False
-        if comparison.arm_c_writer_context is not None:
+        if comparison.arm_c_writer_context is not None and agentic is not None:
             if comparison.arm_c_evidence_ledger is None:
                 raise ValueError("Arm C Writer Context requires an Evidence Ledger")
             delta_metrics = self._writer_metrics(
@@ -1217,7 +1330,10 @@ class Stage2PairedPilotRunner:
                 or delta_metrics.mandatory_constraint_coverage
                 < deterministic.mandatory_constraint_coverage
             )
-        elif self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA:
+        elif (
+            self._controller_mode is ControllerMode.DETERMINISTIC_PLUS_AGENTIC_DELTA
+            and agentic is not None
+        ):
             _arm_c_result, delta_metrics = self._build_arm_c(
                 case,
                 comparison.deterministic,
@@ -1237,13 +1353,34 @@ class Stage2PairedPilotRunner:
             comparison_basis_fingerprint=(comparison.deterministic.comparison_basis_fingerprint),
             comparable=comparison.comparable,
             blockers=comparison.blockers,
+            deterministic_execution_status=comparison.deterministic.execution_status,
+            agentic_execution_status=comparison.agentic.execution_status,
+            paired_comparison_status=(
+                "COMPARABLE"
+                if comparison.comparable
+                else "NOT_RUN"
+                if comparison.agentic.execution_status is ArmExecutionStatus.SKIPPED
+                else "FAILED"
+                if comparison.agentic.execution_status is ArmExecutionStatus.FAILED
+                else "NOT_COMPARABLE"
+            ),
             deterministic_metrics=deterministic,
             agentic_metrics=agentic,
             delta_metrics=delta_metrics,
-            accuracy_gain=(agentic.gold_evidence_recall > deterministic.gold_evidence_recall),
-            tool_call_reduction=(agentic.retrieval_call_count < deterministic.retrieval_call_count),
+            accuracy_gain=(
+                agentic.gold_evidence_recall > deterministic.gold_evidence_recall
+                if agentic is not None
+                else None
+            ),
+            tool_call_reduction=(
+                agentic.retrieval_call_count < deterministic.retrieval_call_count
+                if agentic is not None
+                else None
+            ),
             safety_regression=(
-                arm_c_safety_regression
+                None
+                if agentic is None
+                else arm_c_safety_regression
                 if delta_metrics is not None
                 else (
                     agentic.future_leakage_count > deterministic.future_leakage_count
@@ -1348,59 +1485,45 @@ class Stage2PairedPilotRunner:
             for item in gold
         ) / len(gold)
 
-    @staticmethod
-    def _plan_needs(
-        case: Any,
-        plan: PlanRootDocument,
-        base_commit: CommitId,
-        world_needs: tuple[Stage1MemoryNeed, ...],
-    ) -> tuple[Stage1MemoryNeed, ...]:
-        """Generate plan-based needs from public case fields (case_id, target_range)."""
-        if world_needs:
-            run_id = world_needs[0].run_id
-            task_id = world_needs[0].task_id
-        else:
-            run_id = RunId(f"run.{case.case_id.root}")
-            task_id = TaskId(f"task.{case.case_id.root}")
-        goals = tuple(
-            goal
-            for goal in plan.chapter_goals
-            if case.target_range[0] <= goal.chapter_index <= case.target_range[1]
-        )
-        return tuple(
-            Stage1MemoryNeed(
-                need_id=StableId(f"need.{goal.goal_id.root}"),
-                run_id=run_id,
-                task_id=task_id,
-                base_commit=base_commit,
-                horizon_target=case.target_range,
-                need_type="plan_obligation",
-                query_intent=Stage1QueryIntent.PLAN_NODE,
-                query_text=goal.summary,
-                predicates=("chapter_goal",),
-                access_scope="author_planning",
-                allow_plan=True,
-                why_needed="author-visible chapter goal constrains the target horizon",
-                risk_level=NeedRisk.HIGH,
-                requirement=RequirementLevel.MANDATORY,
-                preferred_resolution_path=ResolutionPath.EXACT_TEMPORAL,
-                allowed_candidate_pools=(CandidatePool.R1,),
-                stop_condition="author-visible Plan goal found",
-            )
-            for goal in goals
-        )
-
-    @staticmethod
+    @classmethod
     def _scope_needs(
+        cls,
         needs: tuple[Stage1MemoryNeed, ...],
         profile: BenchmarkInformationProfile,
     ) -> tuple[Stage1MemoryNeed, ...]:
-        """Enforce the profile ceiling without promoting world Needs to plan scope."""
+        """Enforce the run-level plan policy without promoting world Needs.
 
+        AUTHOR_PLAN_CONDITIONED injects planner_may_read_plan=True for every
+        need (the planner may consult the author plan) while the historical
+        corridor keeps retrieval_may_return_plan=False and
+        claim_may_cite_plan=False for every Need.  Need type is a routing hint
+        and cannot widen the run-level evidence policy.
+        """
         if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
-            return needs
+            return tuple(
+                need.model_copy(
+                    update={
+                        "access_scope": "writer_safe",
+                        "planner_may_read_plan": True,
+                        "retrieval_may_return_plan": False,
+                        "claim_may_cite_plan": False,
+                        "legacy_allow_plan": False,
+                        "allow_plan": False,
+                    }
+                )
+                for need in needs
+            )
         return tuple(
-            need.model_copy(update={"access_scope": "writer_safe", "allow_plan": False})
+            need.model_copy(
+                update={
+                    "access_scope": "writer_safe",
+                    "planner_may_read_plan": False,
+                    "retrieval_may_return_plan": False,
+                    "claim_may_cite_plan": False,
+                    "legacy_allow_plan": False,
+                    "allow_plan": False,
+                }
+            )
             for need in needs
         )
 

@@ -55,6 +55,9 @@
 3. **正确性路径与召回路径分离**：阻断级 Constraint Index 不依赖可降级的 RAG top-k。
 4. **先简单实现，保留替换端口**：MVP 只部署能形成完整闭环的最少基础设施，但所有主要服务均通过 Port / Adapter 隔离。
 5. **先建立 benchmark，再优化算法**：Sparse Neural、Neo4j、Qdrant、Temporal 和学习型 Memory Policy 的引入必须有可量化收益。
+6. **最小充分工程**：先扩展当前 owner 和已选技术栈；没有已证明需求、负责层和验收证据，不新增并行框架、数据库、消息系统、工作流 Runtime、规则 DSL、控制面、通用插件层或第二套报告/Artifact 体系。
+7. **抽象必须降低总复杂度**：Port、Adapter、领域类型和配置项只在保护真实替换边界、权限/事务不变量或多个当前调用方的共同契约时新增；不为单一调用包装空接口，也不为假设性复用提前做平台化。
+8. **简单不等于降级保证**：严格类型、Schema/迁移、权限、证据链、错误与恢复语义、必要 Trace、回归测试、可复现实验和阶段 Gate 不能以“避免过度工程”为由删减。
 
 ---
 
@@ -2193,3 +2196,9 @@ Neo4j、Qdrant、Temporal、学习型 Memory / Skill
 ```
 
 该方案完整覆盖总体架构的能力边界，同时避免在尚未建立 benchmark 前，把复杂度锁死在五六种数据库和多个 Agent 框架中。
+
+后续技术晋升继续遵守最小充分工程：现有 PostgreSQL、OpenSearch、Object Store、Model
+Gateway、LangGraph 和 typed ports/adapters 能关闭问题时，不增加同职责产品；只有真实负载、
+失败证据或 benchmark 证明现有机制不足，且收益覆盖迁移、运维、观测和恢复成本时，才把
+`candidate/deferred` 能力升级。局部需求不得顺带触发全系统 async 化、微服务化、平台化或可配置
+DSL；若确有必要，先形成独立架构决定和验收基线。

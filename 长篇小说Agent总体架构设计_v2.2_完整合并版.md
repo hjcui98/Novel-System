@@ -322,6 +322,9 @@ RunEventLog → RunCheckpoint / RunState / TaskGraph State → Context/Working M
 16. **运行状态与项目资产分离。** Operational Run 可恢复但不因此获得项目 Canonical Authority。
 17. **任何 Agent 都不是真值 Oracle。** Writer、Extractor、Validator、Evaluator 和 Planner 的输出默认具有不确定性；权威只来自证据、规则、受控裁定与 Commit，而不来自角色名称或模型自信。
 18. **保证强度按风险提升。** 高风险事实与变更必须要求更强的独立证据或审批路径，但高层架构不规定具体模型族、阈值或调用组合。
+19. **最小充分工程。** 每项能力只实现关闭已证明需求或失败所需的最小机制；优先删除、合并、复用、配置或扩展现有责任主体，不因“以后可能有用”新增第二真源、平行管线、稳定 Agent、Service、存储、队列、状态机、规则 DSL、控制面或文档体系。
+
+“最小充分”约束的是机制复杂度，不是正确性保证。任何简化都不得省略 Truth/Plan/Evidence、权限与泄漏边界、类型校验、失败语义、可恢复性、必要可观测性、迁移、回归测试、可复现证据或阶段 Gate。新增抽象必须同时说明当前用例、唯一责任层、所保护的不变量、为何现有扩展点不足及可观察验收；只有未来用途而没有当前证据的能力保持 `deferred`。若两个机制表达同一语义，应保留一个权威 owner 和一条默认路径，而不是以“可扩展”为由长期双轨运行。
 
 ---
 
@@ -2908,6 +2911,10 @@ Artifact
 ```
 
 Agent 不因“拥有一个 Tool”而获得该 Tool 背后数据库的任意权限。Tool Server 必须按 Agent Contract、项目 Scope、Commit、Worldline、故事时间与 Audience View 执行访问控制。
+
+### 1.4 控制平面的最小充分边界
+
+稳定 Agent、Service、Tool、Skill 和 Artifact 不是越多越完整。新增稳定角色或控制组件前，必须证明现有 owner 无法在不混淆主目标的前提下承担该职责，并由当前场景、基准或失败证据给出准入信号。优先使用已有 Agent 的 Profile/Mode、已有 Service 的窄接口和已有 Artifact 的版本化扩展；不预建通用插件平台、动态规则引擎、分布式调度面或第二套工作流 Runtime。必要的安全、事务、审计和恢复契约不能因追求“轻量”而下沉为隐式约定。
 
 ---
 

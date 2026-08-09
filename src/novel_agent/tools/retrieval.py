@@ -101,7 +101,7 @@ class RetrievalToolAdapter:
             if need.access_scope != context.access_scope.value:
                 return self._failure(context, ToolFailureCode.ACCESS_DENIED, channel)
             if (
-                need.query_intent in PLAN_INTENTS or need.allow_plan
+                need.query_intent in PLAN_INTENTS or need.retrieval_may_return_plan
             ) and not context.plan_permission:
                 return self._failure(context, ToolFailureCode.ACCESS_DENIED, channel)
             allowed_channels = self._allowed_channels_by_need.get(need.need_id)

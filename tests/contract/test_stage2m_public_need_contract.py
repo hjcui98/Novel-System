@@ -98,6 +98,37 @@ def test_vac_need_facets_are_public_and_never_plan_or_gold_derived() -> None:
         generator.generate_with_lineage(task, bundle.world_roots[0], bundle.plan_roots[0])
 
 
+def test_task_intent_only_profile_uses_intent_but_never_plan() -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    task = build_safe_task_contract(
+        case_id=case.case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.TASK_INTENT_ONLY,
+        task_intent="准备 林澈 的历史记忆与伤势状态",
+    )
+    assert task.task_intent == "准备 林澈 的历史记忆与伤势状态"
+    assert "任务意图" in task.task_text or "任务意图" in task.task_text
+    assert "不得使用作者计划节点" in task.task_text
+
+    with pytest.raises(ValueError, match="cannot receive a future PlanRoot"):
+        TaskPlanConditionedNeedGenerator().generate(
+            task,
+            bundle.world_roots[0],
+            bundle.plan_roots[0],
+        )
+
+    needs = TaskPlanConditionedNeedGenerator().generate(task, bundle.world_roots[0], None)
+    assert needs
+    entity = bundle.world_roots[0].entities[0]
+    task_focus_needs = tuple(need for need in needs if entity.entity_id in need.entity_ids)
+    assert task_focus_needs
+    assert all(not need.retrieval_may_return_plan for need in needs)
+    assert all(not need.claim_may_cite_plan for need in needs)
+    assert all(not need.planner_may_read_plan for need in needs)
+
+
 def test_mandatory_irreducible_facets_require_complete_public_closure() -> None:
     bundle = make_synthetic_bundle()
     case = bundle.case_manifests[0]

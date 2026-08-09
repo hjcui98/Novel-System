@@ -9,6 +9,11 @@
       "title": "AccessScope",
       "type": "string"
     },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
     "CandidatePool": {
       "enum": [
         "r0",
@@ -374,6 +379,11 @@
           "default": null,
           "title": "Chapter Target"
         },
+        "claim_may_cite_plan": {
+          "default": false,
+          "title": "Claim May Cite Plan",
+          "type": "boolean"
+        },
         "completion_criteria": {
           "anyOf": [
             {
@@ -463,6 +473,11 @@
           "default": null,
           "title": "Horizon Target"
         },
+        "legacy_allow_plan": {
+          "default": false,
+          "title": "Legacy Allow Plan",
+          "type": "boolean"
+        },
         "need_facets": {
           "default": [],
           "items": {
@@ -478,6 +493,35 @@
           "minLength": 1,
           "title": "Need Type",
           "type": "string"
+        },
+        "planned_draft_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planned Draft Id"
+        },
+        "planner_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_may_read_plan": {
+          "default": false,
+          "title": "Planner May Read Plan",
+          "type": "boolean"
         },
         "predicates": {
           "default": [],
@@ -529,11 +573,21 @@
         "requirement": {
           "$ref": "#/$defs/RequirementLevel"
         },
+        "retrieval_may_return_plan": {
+          "default": false,
+          "title": "Retrieval May Return Plan",
+          "type": "boolean"
+        },
         "risk_level": {
           "$ref": "#/$defs/NeedRisk"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "semantic_question": {
+          "default": "",
+          "title": "Semantic Question",
+          "type": "string"
         },
         "stop_condition": {
           "minLength": 1,
@@ -547,6 +601,30 @@
           "anyOf": [
             {
               "$ref": "#/$defs/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "trigger_plan_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Trigger Plan Chapters",
+          "type": "array"
+        },
+        "trigger_plan_goal": {
+          "default": "",
+          "title": "Trigger Plan Goal",
+          "type": "string"
+        },
+        "validated_need_set_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
             },
             {
               "type": "null"

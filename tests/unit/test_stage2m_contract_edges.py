@@ -202,6 +202,10 @@ def test_public_need_retrieval_and_lineage_contract_edges() -> None:
         (
             {
                 "allow_plan": False,
+                "planner_may_read_plan": False,
+                "retrieval_may_return_plan": False,
+                "claim_may_cite_plan": False,
+                "legacy_allow_plan": False,
                 "need_facets": tuple(
                     item.model_copy(update={"information_scope": "author_plan"})
                     if item.need_facet_id == facet.need_facet_id

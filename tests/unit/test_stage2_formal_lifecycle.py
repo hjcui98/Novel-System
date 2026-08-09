@@ -21,7 +21,7 @@ def _write_manifest(path: Path, **updates: object) -> None:
         "experiment_id": "stage2m-test",
         "information_profile": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
         "code_source_dirty": False,
-        "code_version": "stage2-paired-pilot-v0.4",
+        "code_version": "stage2-paired-pilot-v0.5",
         "run_config_hash": "sha256:" + "b" * 64,
         "benchmark_contract_hash": "sha256:" + "c" * 64,
         "matcher_version": "gold-evidence-matcher-v3",

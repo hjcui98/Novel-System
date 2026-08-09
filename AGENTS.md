@@ -39,6 +39,23 @@ infrastructure tests `integration` and endpoint-dependent tests `model_required`
 tests must not call model endpoints. Add regression coverage for every bug fix and contract tests
 when changing schemas or public boundaries.
 
+## Minimum-Sufficient Engineering
+
+Do not overengineer. Implement the smallest mechanism that closes a demonstrated requirement or
+failure while preserving the repository's existing invariants. Prefer removing, merging, reusing,
+configuring, or extending the current owner before adding another abstraction, service, state
+machine, storage system, queue, configuration language, control plane, report family, or document.
+
+Every new component or contract must name its current caller, responsible layer, protected
+invariant, and acceptance evidence. “It may be useful later” is not sufficient; speculative
+generality stays deferred until a real use case or benchmark proves it necessary. Keep one source of
+truth, one owner per responsibility, and one implementation path for the same semantics.
+
+Minimum-sufficient engineering applies to mechanism size, not evidence strength. It never permits
+skipping strict typing, validation, permission and leakage boundaries, failure semantics,
+observability required for diagnosis, migrations, regression tests, reproducibility, or the active
+Stage gate. A smaller change that weakens those properties is incomplete, not simpler.
+
 ## Commit & Pull Request Guidelines
 
 History follows concise Conventional Commit subjects, commonly `fix(curator): ...`,
@@ -69,6 +86,9 @@ direction for the current substantial task.
 - Use one shared worktree for the serial flow. Create separate worktrees only for genuinely
   independent tasks with distinct owners and file boundaries.
 - Stage boundaries are fail-closed: a Stage 2M task must not modify or merge Stage 3 implementation.
+- The implementation must follow the minimum-sufficient engineering rule above. If satisfying the
+  plan appears to require a parallel framework, speculative platform, or unrelated cross-stage
+  expansion, OpenCode returns evidence to Codex instead of building it opportunistically.
 
 The normal interaction is deliberately short:
 

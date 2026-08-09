@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "Bounded open-obligation row in the deterministic world summary.",
+  "properties": {
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "owner_labels": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Owner Labels",
+      "type": "array"
+    },
+    "status": {
+      "default": "",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description"
+  ],
+  "title": "PlannerObligationSummary",
+  "type": "object"
+}

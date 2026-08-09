@@ -16,6 +16,7 @@ from novel_agent.domain.stage2 import (
     EvaluatorDisposition,
     ScenarioChapterTransition,
     ScenarioCheckpointArtifacts,
+    ScenarioRunResult,
     SourceClass,
 )
 from novel_agent.services.scenario import ScenarioStateError
@@ -183,3 +184,88 @@ def test_runner_requires_evaluator_context_destruction() -> None:
 def test_runner_requires_evaluator_resume_permission() -> None:
     with pytest.raises(ScenarioStateError, match="rejected teacher-forced resume"):
         runner(resume=False).run(declared_scenario(), GENESIS)
+
+
+def test_runner_rejects_invalid_worker_count() -> None:
+    with pytest.raises(ValueError, match="checkpoint workers"):
+        TeacherForcedScenarioRunner(
+            TransitionPort(),
+            Freezer(),
+            Evaluator(),
+            checkpoint_workers=0,
+        )
+
+
+def test_runner_runs_corridor_concurrently_with_replay() -> None:
+    import threading
+    import time
+
+    release = threading.Event()
+    corridor_entered = threading.Event()
+
+    class BlockingFreezer(Freezer):
+        def freeze(self, basis: BenchmarkCheckpointBasis) -> ArtifactRef:
+            corridor_entered.set()
+            release.wait(timeout=10)
+            return super().freeze(basis)
+
+    replay_advanced: list[bool] = []
+
+    class TrackingTransition(TransitionPort):
+        def apply(
+            self,
+            source: BootstrapSource,
+            parent_commit: CommitId,
+        ) -> ScenarioChapterTransition:
+            result = super().apply(source, parent_commit)
+            if source.chapter_index != 1:
+                replay_advanced.append(corridor_entered.is_set())
+            return result
+
+    result = TeacherForcedScenarioRunner(
+        TrackingTransition(),
+        BlockingFreezer(),
+        Evaluator(),
+        checkpoint_workers=1,
+    )
+    outcome: list[ScenarioRunResult | BaseException] = []
+
+    def run_in_thread() -> None:
+        try:
+            outcome.append(result.run(declared_scenario(), GENESIS))
+        except BaseException as error:  # pragma: no cover - assertion path
+            outcome.append(error)
+
+    thread = threading.Thread(target=run_in_thread)
+    thread.start()
+    assert corridor_entered.wait(timeout=10), "corridor must start while replay continues"
+    # While the corridor is blocked, the replay must already have advanced to
+    # the second chapter.
+    deadline = time.monotonic() + 10
+    while not replay_advanced and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert replay_advanced == [True], "replay must continue past the checkpoint"
+    release.set()
+    thread.join(timeout=15)
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], ScenarioRunResult)
+    assert outcome[0].completed is True
+    assert len(outcome[0].freezes) == 1
+    assert len(outcome[0].evaluator_reveals) == 1
+
+
+def test_runner_propagates_corridor_failures_in_checkpoint_order() -> None:
+    class FailingEvaluator(Evaluator):
+        def score(
+            self,
+            freeze: ContextFreezeReceipt,
+            evaluator_sources: tuple[BootstrapSource, ...],
+        ) -> EvaluatorDisposition:
+            raise RuntimeError("corridor exploded")
+
+    with pytest.raises(ScenarioStateError, match="corridor failed"):
+        TeacherForcedScenarioRunner(
+            TransitionPort(),
+            Freezer(),
+            FailingEvaluator(),
+        ).run(declared_scenario(), GENESIS)

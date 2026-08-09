@@ -4,6 +4,7 @@ import pytest
 
 from novel_agent.domain.ids import CommitId, StableId
 from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
+from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.human_benchmark_compiler import (
     HumanBenchmarkCompileError,
     HumanBenchmarkCompiler,
@@ -307,3 +308,129 @@ def test_packaging_frontmatter_is_excluded_but_narrative_prelude_is_preserved() 
     assert HumanBenchmarkCompiler._strip_packaging_frontmatter(narrative_only) == narrative_only
     no_volume_marker = "序章正文,没有卷标记"
     assert HumanBenchmarkCompiler._strip_packaging_frontmatter(no_volume_marker) == no_volume_marker
+
+
+def test_planning_contexts_are_compiled_bound_and_typed() -> None:
+    compiler = HumanBenchmarkCompiler()
+    bundle = compiler.compile(PILOT)
+
+    assert len(bundle.planning_contexts) == len(bundle.case_manifests)
+    for case in bundle.case_manifests:
+        assert case.information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+        context = next(
+            item
+            for item in bundle.planning_contexts
+            if item.source_hash == case.planning_context_hash
+        )
+        assert case.task_intent == context.task_intent
+        assert content_id(context.model_dump(mode="json")) == case.planning_context_ref
+        assert context.profile is case.information_profile
+        assert context.target_range == case.target_range
+        assert context.visible_outline_nodes
+        assert context.chapter_goals
+        assert context.planner_may_read_plan is True
+        plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+        assert [goal.goal_id for goal in context.chapter_goals] == [
+            goal.goal_id for goal in plan.chapter_goals
+        ]
+        assert [node.node_id for node in context.visible_outline_nodes] == [
+            node.plan_node_id for node in plan.nodes
+        ]
+
+
+def test_planning_context_compilation_is_fail_closed_on_raw_yaml_fields() -> None:
+    compiler = HumanBenchmarkCompiler()
+    with pytest.raises(HumanBenchmarkCompileError, match="unsupported input mode"):
+        compiler._compile_planning_context(
+            StableId("case.bad-mode"),
+            {"mode": "some_future_mode"},
+            (21, 25),
+        )
+    with pytest.raises(HumanBenchmarkCompileError, match="non-empty string"):
+        compiler._compile_planning_context(
+            StableId("case.no-task"),
+            {"mode": "plan_conditioned", "task": ""},
+            (21, 25),
+        )
+    with pytest.raises(HumanBenchmarkCompileError, match="target_plan must be a list"):
+        compiler._compile_planning_context(
+            StableId("case.bad-plan"),
+            {
+                "mode": "plan_conditioned",
+                "task": "任务",
+                "visible_outline": ["大纲"],
+                "target_plan": {},
+            },
+            (21, 25),
+        )
+
+
+def test_planning_context_rejects_invalid_ranges_and_duplicate_ids() -> None:
+    from novel_agent.domain.benchmark import (
+        AuthorPlanningContext,
+        ChapterGoal,
+        VisibleOutlineNode,
+    )
+
+    outline_nodes = (
+        VisibleOutlineNode(
+            node_id=StableId("plan.outline.1"),
+            title="Visible outline 1",
+            summary="粗粒度大纲。",
+        ),
+    )
+    base = {
+        "profile": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        "task_intent": "为写作准备历史记忆。",
+        "target_range": (21, 23),
+        "visible_outline_nodes": outline_nodes,
+        "chapter_goals": (),
+        "source_hash": content_id({"source": "test"}),
+    }
+    with pytest.raises(ValueError, match="target range is invalid"):
+        AuthorPlanningContext.model_validate(base | {"target_range": (21, 19)})
+    duplicated_goal = ChapterGoal(
+        goal_id=StableId("goal.outline.1"),
+        chapter_index=21,
+        summary="重复目标。",
+    )
+    with pytest.raises(ValueError, match="chapter goal ids must be unique"):
+        AuthorPlanningContext.model_validate(
+            base
+            | {
+                "chapter_goals": (duplicated_goal, duplicated_goal),
+            }
+        )
+    with pytest.raises(ValueError, match="outline node ids must be unique"):
+        AuthorPlanningContext.model_validate(
+            base
+            | {
+                "visible_outline_nodes": (
+                    outline_nodes[0],
+                    outline_nodes[0],
+                )
+            }
+        )
+    with pytest.raises(ValueError, match="node type must be visible_outline"):
+        VisibleOutlineNode.model_validate(
+            {
+                "node_id": StableId("plan.outline.1"),
+                "node_type": "chapter_goal",
+                "title": "Visible outline 1",
+                "summary": "粗粒度大纲。",
+            }
+        )
+
+
+def test_gate_subset_requires_bound_and_present_planning_context() -> None:
+    compiler = HumanBenchmarkCompiler()
+    bundle = compiler.compile(PILOT)
+    first = bundle.case_manifests[0]
+    unbound = first.model_copy(update={"planning_context_hash": None, "planning_context_ref": None})
+    with pytest.raises(HumanBenchmarkCompileError, match="requires a bound planning context"):
+        compiler.derive_gate_subset(
+            bundle.model_copy(update={"case_manifests": (unbound, *bundle.case_manifests[1:])})
+        )
+
+    with pytest.raises(HumanBenchmarkCompileError, match="planning context is missing"):
+        compiler.derive_gate_subset(bundle.model_copy(update={"planning_contexts": ()}))

@@ -1,5 +1,14 @@
 {
   "$defs": {
+    "ArmExecutionStatus": {
+      "enum": [
+        "COMPLETED",
+        "SKIPPED",
+        "FAILED"
+      ],
+      "title": "ArmExecutionStatus",
+      "type": "string"
+    },
     "ArtifactId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "ArtifactId",
@@ -8,6 +17,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",
@@ -114,11 +124,31 @@
       "additionalProperties": false,
       "properties": {
         "accuracy_gain": {
-          "title": "Accuracy Gain",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accuracy Gain"
+        },
+        "agentic_execution_status": {
+          "$ref": "#/$defs/ArmExecutionStatus",
+          "default": "COMPLETED"
         },
         "agentic_metrics": {
-          "$ref": "#/$defs/PairedPilotArmMetrics"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairedPilotArmMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "blockers": {
           "default": [],
@@ -154,6 +184,10 @@
           ],
           "default": null
         },
+        "deterministic_execution_status": {
+          "$ref": "#/$defs/ArmExecutionStatus",
+          "default": "COMPLETED"
+        },
         "deterministic_metrics": {
           "$ref": "#/$defs/PairedPilotArmMetrics"
         },
@@ -163,16 +197,37 @@
         "pair_id": {
           "$ref": "#/$defs/StableId"
         },
+        "paired_comparison_status": {
+          "default": "COMPARABLE",
+          "title": "Paired Comparison Status",
+          "type": "string"
+        },
         "request_id": {
           "$ref": "#/$defs/StableId"
         },
         "safety_regression": {
-          "title": "Safety Regression",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Regression"
         },
         "tool_call_reduction": {
-          "title": "Tool Call Reduction",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Reduction"
         }
       },
       "required": [
@@ -183,11 +238,7 @@
         "request_id",
         "comparison_basis_fingerprint",
         "comparable",
-        "deterministic_metrics",
-        "agentic_metrics",
-        "accuracy_gain",
-        "tool_call_reduction",
-        "safety_regression"
+        "deterministic_metrics"
       ],
       "title": "PairedPilotCaseResult",
       "type": "object"

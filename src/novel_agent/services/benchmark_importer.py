@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from novel_agent.domain.benchmark import (
+    AuthorPlanningContext,
     BenchmarkBundle,
     BenchmarkCaseManifest,
     ChapterSummaryRootDocument,
@@ -102,8 +103,39 @@ class BenchmarkBundleImporter:
                 raise BenchmarkImportError(
                     f"world root content hash mismatch: {world_root.root_hash.root}"
                 )
+        context_hashes: set[ArtifactId] = set()
+        context_refs: set[ArtifactId] = set()
+        for context in bundle.planning_contexts:
+            expected_source_hash = content_id(
+                {
+                    "profile": context.profile.value,
+                    "task_intent": context.task_intent,
+                    "target_range": context.target_range,
+                    "visible_outline_nodes": [
+                        node.model_dump(mode="json") for node in context.visible_outline_nodes
+                    ],
+                    "chapter_goals": [
+                        goal.model_dump(mode="json") for goal in context.chapter_goals
+                    ],
+                    "planner_may_read_plan": context.planner_may_read_plan,
+                }
+            )
+            if expected_source_hash != context.source_hash:
+                raise BenchmarkImportError("planning context source hash mismatch")
+            context_ref = content_id(context.model_dump(mode="json"))
+            if context.source_hash in context_hashes or context_ref in context_refs:
+                raise BenchmarkImportError("duplicate normalized planning context identity")
+            context_hashes.add(context.source_hash)
+            context_refs.add(context_ref)
         for case in bundle.case_manifests:
-            self._validate_case(case, text_roots, summaries, plans, worlds)
+            self._validate_case(
+                case,
+                text_roots,
+                summaries,
+                plans,
+                worlds,
+                bundle.planning_contexts,
+            )
         for replay in bundle.replay_manifests:
             self._validate_replay(replay, text_roots, worlds)
 
@@ -136,6 +168,7 @@ class BenchmarkBundleImporter:
         summaries: dict[ArtifactId, ChapterSummaryRootDocument],
         plans: dict[ArtifactId, PlanRootDocument],
         worlds: dict[ArtifactId, WorldRootDocument],
+        planning_contexts: tuple[AuthorPlanningContext, ...],
     ) -> None:
         history = text_roots.get(case.input_text_root)
         future = text_roots.get(case.future_text_root_private)
@@ -204,6 +237,68 @@ class BenchmarkBundleImporter:
             and case.input_world_root_verified not in worlds
         ):
             raise BenchmarkImportError(f"case {case.case_id.root} references a missing world root")
+        if (case.planning_context_ref is None) != (case.planning_context_hash is None):
+            raise BenchmarkImportError("planning context ref/hash must appear as a pair")
+        if case.planning_context_ref is not None:
+            context = next(
+                (
+                    item
+                    for item in planning_contexts
+                    if item.source_hash == case.planning_context_hash
+                ),
+                None,
+            )
+            if context is None:
+                raise BenchmarkImportError(
+                    f"case {case.case_id.root} references a missing planning context"
+                )
+            if content_id(context.model_dump(mode="json")) != case.planning_context_ref:
+                raise BenchmarkImportError(
+                    f"case {case.case_id.root} planning context ref mismatch"
+                )
+            if case.information_profile is not None and (
+                context.profile is not case.information_profile
+            ):
+                raise BenchmarkImportError(
+                    f"case {case.case_id.root} planning context profile mismatch"
+                )
+            if context.target_range != case.target_range:
+                raise BenchmarkImportError(
+                    f"case {case.case_id.root} planning context target range mismatch"
+                )
+            if context.task_intent != case.task_intent:
+                raise BenchmarkImportError(
+                    f"case {case.case_id.root} planning context task intent mismatch"
+                )
+            if case.task_contract is not None:
+                task = case.task_contract
+                if (
+                    task.information_profile is not context.profile
+                    or task.task_intent != context.task_intent
+                    or (task.target_chapter_start, task.target_chapter_end) != context.target_range
+                    or task.planning_context_ref != case.planning_context_ref
+                    or task.planning_context_hash != case.planning_context_hash
+                ):
+                    raise BenchmarkImportError(
+                        f"case {case.case_id.root} task/planning context mismatch"
+                    )
+            plan = plans.get(case.input_plan_root) if case.input_plan_root is not None else None
+            if context.profile.value == "author_plan_conditioned":
+                if plan is None:
+                    raise BenchmarkImportError("APC planning context requires a PlanRoot")
+                context_outline = tuple(
+                    (node.node_id, node.title, node.summary)
+                    for node in context.visible_outline_nodes
+                )
+                plan_outline = tuple(
+                    (node.plan_node_id, node.title, node.summary) for node in plan.nodes
+                )
+                if context_outline != plan_outline or context.chapter_goals != plan.chapter_goals:
+                    raise BenchmarkImportError("planning context and PlanRoot content mismatch")
+        elif case.task_intent:
+            raise BenchmarkImportError(
+                f"case {case.case_id.root} task intent lacks a planning context ref"
+            )
         history_blocks = self._blocks_by_id(history)
         future_blocks = self._blocks_by_id(future)
         for item in (

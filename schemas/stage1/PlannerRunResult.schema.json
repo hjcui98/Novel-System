@@ -1,0 +1,820 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "AuthorPlanningContext": {
+      "additionalProperties": false,
+      "description": "Typed, validated projection of the raw input.yaml planning fields.\n\nThis is the single source of truth for the author-visible planning\ninputs (task intent, profile, visible outline, and chapter goals).  It\nnever carries Gold, future prose, or preparation material; the compiler\nnormalizes the raw YAML before it can enter any runtime payload.",
+      "properties": {
+        "chapter_goals": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChapterGoal"
+          },
+          "title": "Chapter Goals",
+          "type": "array"
+        },
+        "planner_may_read_plan": {
+          "default": true,
+          "title": "Planner May Read Plan",
+          "type": "boolean"
+        },
+        "profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "source_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "target_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Target Range",
+          "type": "array"
+        },
+        "task_intent": {
+          "minLength": 1,
+          "title": "Task Intent",
+          "type": "string"
+        },
+        "visible_outline_nodes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/VisibleOutlineNode"
+          },
+          "title": "Visible Outline Nodes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "profile",
+        "task_intent",
+        "target_range",
+        "source_hash"
+      ],
+      "title": "AuthorPlanningContext",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "ChapterGoal": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "obligation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Obligation Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "chapter_index",
+        "summary"
+      ],
+      "title": "ChapterGoal",
+      "type": "object"
+    },
+    "EntityMention": {
+      "additionalProperties": false,
+      "description": "One natural-language entity reference in a draft (no graph id).",
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "role_in_need": {
+          "default": "",
+          "minLength": 0,
+          "title": "Role In Need",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "EntityMention",
+      "type": "object"
+    },
+    "PlannedNeedDraft": {
+      "additionalProperties": false,
+      "description": "LLM Planner output: semantic question plus mention-level anchors.\n\nContains no graph ids.  ``draft_id`` is a short, non-empty identifier the\nLLM assigns; the validator sanitizes it into the final need id.",
+      "properties": {
+        "draft_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "entity_mentions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EntityMention"
+          },
+          "title": "Entity Mentions",
+          "type": "array"
+        },
+        "historical_time_scope": {
+          "default": "",
+          "title": "Historical Time Scope",
+          "type": "string"
+        },
+        "query_hints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Query Hints",
+          "type": "array"
+        },
+        "relation_mentions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RelationMention"
+          },
+          "title": "Relation Mentions",
+          "type": "array"
+        },
+        "required_claim_scopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Claim Scopes",
+          "type": "array"
+        },
+        "semantic_question": {
+          "minLength": 1,
+          "title": "Semantic Question",
+          "type": "string"
+        },
+        "suggested_facets": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Suggested Facets",
+          "type": "array"
+        },
+        "trigger_plan_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Trigger Plan Chapters",
+          "type": "array"
+        },
+        "trigger_plan_goal": {
+          "default": "",
+          "title": "Trigger Plan Goal",
+          "type": "string"
+        },
+        "why_needed": {
+          "default": "",
+          "title": "Why Needed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "draft_id",
+        "semantic_question"
+      ],
+      "title": "PlannedNeedDraft",
+      "type": "object"
+    },
+    "PlannerArtifactMetadata": {
+      "additionalProperties": false,
+      "description": "Run-level lineage for one Planner invocation.\n\nThe full model/prompt/world/raw-response fingerprint lives here once per\nrun; every emitted ``Stage1MemoryNeed`` references it by\n``planner_artifact_ref`` plus its own ``planned_draft_id`` and\n``validated_need_set_hash``.",
+      "properties": {
+        "effective_seed_supported": {
+          "title": "Effective Seed Supported",
+          "type": "boolean"
+        },
+        "fallback_used": {
+          "title": "Fallback Used",
+          "type": "boolean"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "planner_model": {
+          "minLength": 1,
+          "title": "Planner Model",
+          "type": "string"
+        },
+        "planner_model_revision": {
+          "minLength": 1,
+          "title": "Planner Model Revision",
+          "type": "string"
+        },
+        "planner_output_schema_version": {
+          "minLength": 1,
+          "title": "Planner Output Schema Version",
+          "type": "string"
+        },
+        "planner_prompt_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "planner_prompt_version": {
+          "minLength": 1,
+          "title": "Planner Prompt Version",
+          "type": "string"
+        },
+        "planning_context_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "raw_response_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "requested_seed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Seed"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "temperature": {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "validated_need_set_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "world_summary_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "run_id",
+        "planner_model",
+        "planner_model_revision",
+        "planner_prompt_version",
+        "planner_prompt_hash",
+        "planner_output_schema_version",
+        "temperature",
+        "effective_seed_supported",
+        "planning_context_hash",
+        "world_summary_hash",
+        "raw_response_hash",
+        "validated_need_set_hash",
+        "fallback_used",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "PlannerArtifactMetadata",
+      "type": "object"
+    },
+    "PlannerEntitySummary": {
+      "additionalProperties": false,
+      "description": "Bounded entity row in the deterministic world summary.",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "entity_type": {
+          "default": "",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "PlannerEntitySummary",
+      "type": "object"
+    },
+    "PlannerEventSummary": {
+      "additionalProperties": false,
+      "description": "Bounded recent-event row in the deterministic world summary.",
+      "properties": {
+        "chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter"
+        },
+        "event_type": {
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "participant_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Participant Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_type"
+      ],
+      "title": "PlannerEventSummary",
+      "type": "object"
+    },
+    "PlannerFallbackStatus": {
+      "enum": [
+        "planner",
+        "planner_fallback"
+      ],
+      "title": "PlannerFallbackStatus",
+      "type": "string"
+    },
+    "PlannerInvocationAttempt": {
+      "additionalProperties": false,
+      "description": "One provider call, reconciled one-to-one with the Gateway ledger.",
+      "properties": {
+        "error_category": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Category"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "raw_response": {
+          "default": "",
+          "title": "Raw Response",
+          "type": "string"
+        },
+        "raw_response_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/PlannerInvocationAttemptStatus"
+        }
+      },
+      "required": [
+        "request_id",
+        "status",
+        "raw_response_hash",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "PlannerInvocationAttempt",
+      "type": "object"
+    },
+    "PlannerInvocationAttemptStatus": {
+      "enum": [
+        "succeeded",
+        "empty_drafts",
+        "error"
+      ],
+      "title": "PlannerInvocationAttemptStatus",
+      "type": "string"
+    },
+    "PlannerObligationSummary": {
+      "additionalProperties": false,
+      "description": "Bounded open-obligation row in the deterministic world summary.",
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "owner_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Owner Labels",
+          "type": "array"
+        },
+        "status": {
+          "default": "",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "title": "PlannerObligationSummary",
+      "type": "object"
+    },
+    "PlannerRelationSummary": {
+      "additionalProperties": false,
+      "description": "Bounded relation row in the deterministic world summary.",
+      "properties": {
+        "object_label": {
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "predicate",
+        "object_label"
+      ],
+      "title": "PlannerRelationSummary",
+      "type": "object"
+    },
+    "PlannerStateSummary": {
+      "additionalProperties": false,
+      "description": "Cutoff-safe state surface needed for plan-to-history backward chaining.",
+      "properties": {
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "predicate",
+        "value"
+      ],
+      "title": "PlannerStateSummary",
+      "type": "object"
+    },
+    "PlannerWorldSummary": {
+      "additionalProperties": false,
+      "description": "Deterministic, bounded world projection shown to the LLM Planner.\n\nAll collections are capped and every string is length-bounded so the\nprompt stays within the serialized request budget; truncation is explicit\nin the field names.",
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "entities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerEntitySummary"
+          },
+          "title": "Entities",
+          "type": "array"
+        },
+        "entity_count": {
+          "minimum": 0,
+          "title": "Entity Count",
+          "type": "integer"
+        },
+        "event_count": {
+          "minimum": 0,
+          "title": "Event Count",
+          "type": "integer"
+        },
+        "key_relations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerRelationSummary"
+          },
+          "title": "Key Relations",
+          "type": "array"
+        },
+        "obligation_count": {
+          "minimum": 0,
+          "title": "Obligation Count",
+          "type": "integer"
+        },
+        "open_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerObligationSummary"
+          },
+          "title": "Open Obligations",
+          "type": "array"
+        },
+        "plan_intent": {
+          "default": "",
+          "title": "Plan Intent",
+          "type": "string"
+        },
+        "recent_events": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerEventSummary"
+          },
+          "title": "Recent Events",
+          "type": "array"
+        },
+        "relation_count": {
+          "minimum": 0,
+          "title": "Relation Count",
+          "type": "integer"
+        },
+        "state_count": {
+          "minimum": 0,
+          "title": "State Count",
+          "type": "integer"
+        },
+        "states": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerStateSummary"
+          },
+          "title": "States",
+          "type": "array"
+        },
+        "target_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Target Range",
+          "type": "array"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
+        },
+        "truncated_entity_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Entity Count",
+          "type": "integer"
+        },
+        "truncated_event_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Event Count",
+          "type": "integer"
+        },
+        "truncated_obligation_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Obligation Count",
+          "type": "integer"
+        },
+        "truncated_relation_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Relation Count",
+          "type": "integer"
+        },
+        "truncated_state_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated State Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "checkpoint_chapter",
+        "target_range",
+        "entity_count",
+        "state_count",
+        "event_count",
+        "relation_count",
+        "obligation_count"
+      ],
+      "title": "PlannerWorldSummary",
+      "type": "object"
+    },
+    "RelationMention": {
+      "additionalProperties": false,
+      "description": "One natural-language relation reference in a draft (no graph id).",
+      "properties": {
+        "object_label": {
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "relation_label": {
+          "minLength": 1,
+          "title": "Relation Label",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "relation_label",
+        "object_label"
+      ],
+      "title": "RelationMention",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "VisibleOutlineNode": {
+      "additionalProperties": false,
+      "description": "One normalized entry of the author's coarse visible outline.",
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "node_type": {
+          "default": "visible_outline",
+          "minLength": 1,
+          "title": "Node Type",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "title",
+        "summary"
+      ],
+      "title": "VisibleOutlineNode",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One planner invocation outcome, including the fallback signal.",
+  "properties": {
+    "attempts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerInvocationAttempt"
+      },
+      "title": "Attempts",
+      "type": "array"
+    },
+    "drafts": {
+      "items": {
+        "$ref": "#/$defs/PlannedNeedDraft"
+      },
+      "title": "Drafts",
+      "type": "array"
+    },
+    "error_category": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Category"
+    },
+    "exact_prompt": {
+      "title": "Exact Prompt",
+      "type": "string"
+    },
+    "fallback_status": {
+      "$ref": "#/$defs/PlannerFallbackStatus"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlannerArtifactMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planning_context": {
+      "$ref": "#/$defs/AuthorPlanningContext"
+    },
+    "raw_response": {
+      "default": "",
+      "title": "Raw Response",
+      "type": "string"
+    },
+    "world_summary": {
+      "$ref": "#/$defs/PlannerWorldSummary"
+    }
+  },
+  "required": [
+    "drafts",
+    "fallback_status",
+    "planning_context",
+    "world_summary",
+    "exact_prompt"
+  ],
+  "title": "PlannerRunResult",
+  "type": "object"
+}

@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import yaml
 
 from novel_agent.domain.benchmark import (
+    AuthorPlanningContext,
     BenchmarkBundle,
     BenchmarkCaseManifest,
     ChapterDocument,
@@ -21,12 +22,15 @@ from novel_agent.domain.benchmark import (
     PreludeDocument,
     SceneDocument,
     TextRootDocument,
+    VisibleOutlineNode,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, SchemaVersion, StableId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.memory_benchmark import (
     BenchmarkInformationProfile,
     EvidenceSet,
+    GoldBlindness,
+    GoldNeedSpec,
     GoldType,
 )
 from novel_agent.domain.text import (
@@ -55,6 +59,12 @@ class HumanBenchmarkCompiler:
     """Deterministic compiler for the reviewed directory/YAML pilot representation."""
 
     version = SchemaVersion("0.1.0")
+
+    _PROFILE_BY_MODE: ClassVar[dict[str, BenchmarkInformationProfile]] = {
+        "plan_conditioned": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        "task_intent_only": BenchmarkInformationProfile.TASK_INTENT_ONLY,
+        "visible_at_cutoff": BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+    }
 
     _GOLD_TYPE_MAP: ClassVar[dict[str, GoldType]] = {
         "CURRENT_STATE": GoldType.CURRENT_STATE,
@@ -91,6 +101,7 @@ class HumanBenchmarkCompiler:
         text_roots: list[TextRootDocument] = []
         plan_roots: list[PlanRootDocument] = []
         world_roots: list[WorldRootDocument] = []
+        planning_contexts: list[AuthorPlanningContext] = []
         cases: list[BenchmarkCaseManifest] = []
         for relative in bundle_manifest.get("case_manifests", []):
             raw_case = self._json(root / self._string(relative))
@@ -104,6 +115,13 @@ class HumanBenchmarkCompiler:
             input_data = self._yaml(root / self._string(raw_case["input_plan_root"]))
             gold_data = self._yaml(root / self._string(raw_case["gold_file_private"]))
             plan = self._plan_root(case_id, input_data)
+            history_range = self._range(raw_case["history_range"])
+            target_range = self._range(raw_case["target_range"])
+            planning_context = self._compile_planning_context(
+                case_id,
+                input_data,
+                target_range,
+            )
             historical_evidence, accepted_evidence = self._historical_evidence(
                 raw_case,
                 gold_data,
@@ -119,13 +137,16 @@ class HumanBenchmarkCompiler:
                 future_evidence,
             )
             plan_gold = self._plan_gold(raw_case, plan, future, source_commit)
+            gold_need_specs = self._gold_need_specs(
+                raw_case,
+                gold_data,
+                root,
+            )
             world = self._world_root(
                 case_id,
                 source_commit,
                 (*observed, *operational),
             )
-            history_range = self._range(raw_case["history_range"])
-            target_range = self._range(raw_case["target_range"])
             cases.append(
                 BenchmarkCaseManifest(
                     case_id=case_id,
@@ -137,9 +158,14 @@ class HumanBenchmarkCompiler:
                     input_plan_root=plan.root_hash,
                     input_world_root_verified=world.root_hash,
                     chapter_goal_ids=tuple(goal.goal_id for goal in plan.chapter_goals),
+                    information_profile=planning_context.profile,
+                    task_intent=planning_context.task_intent,
+                    planning_context_ref=content_id(planning_context.model_dump(mode="json")),
+                    planning_context_hash=planning_context.source_hash,
                     observed_use_gold=observed,
                     operational_constraint_gold=operational,
                     plan_obligation_gold=plan_gold,
+                    gold_need_specs=gold_need_specs,
                     annotation_version=self.version,
                     expected_tracks=(),
                     gate_eligible=False,
@@ -148,6 +174,7 @@ class HumanBenchmarkCompiler:
             text_roots.extend((history, future))
             plan_roots.append(plan)
             world_roots.append(world)
+            planning_contexts.append(planning_context)
         provisional = BenchmarkBundle(
             bundle_id=StableId(f"{self._string(bundle_manifest['bundle_id'])}.canonical"),
             bundle_schema_version=self.version,
@@ -155,6 +182,7 @@ class HumanBenchmarkCompiler:
             text_roots=tuple(text_roots),
             plan_roots=tuple(plan_roots),
             world_roots=tuple(world_roots),
+            planning_contexts=tuple(planning_contexts),
             case_manifests=tuple(cases),
             expected_profiles=("visible_at_cutoff", "author_plan_conditioned"),
         )
@@ -170,12 +198,14 @@ class HumanBenchmarkCompiler:
             raise HumanBenchmarkCompileError("gate target width must be positive")
         text_by_hash = {root.root_hash: root for root in pilot.text_roots}
         plan_by_hash = {root.root_hash: root for root in pilot.plan_roots}
+        context_by_hash = {item.source_hash: item for item in pilot.planning_contexts}
         retained_text = {
             case.input_text_root: text_by_hash[case.input_text_root]
             for case in pilot.case_manifests
         }
         derived_text: list[TextRootDocument] = []
         derived_plan: list[PlanRootDocument] = []
+        derived_contexts: list[AuthorPlanningContext] = []
         derived_cases: list[BenchmarkCaseManifest] = []
         for case in pilot.case_manifests:
             target_start = case.target_range[0]
@@ -209,6 +239,20 @@ class HumanBenchmarkCompiler:
             )
             plan = plan_provisional.model_copy(
                 update={"root_hash": plan_root_content_id(plan_provisional)}
+            )
+            if case.planning_context_hash is None or case.planning_context_ref is None:
+                raise HumanBenchmarkCompileError("gate subset requires a bound planning context")
+            original_context = context_by_hash.get(case.planning_context_hash)
+            if original_context is None:
+                raise HumanBenchmarkCompileError("gate subset planning context is missing")
+            context_provisional = original_context.model_copy(
+                update={
+                    "target_range": (target_start, target_end),
+                    "chapter_goals": plan.chapter_goals,
+                }
+            )
+            derived_context = context_provisional.model_copy(
+                update={"source_hash": self._planning_context_source_hash(context_provisional)}
             )
             allowed_chapter_ids = {chapter.chapter_id for chapter in future.chapters}
             allowed_goal_ids = {goal.goal_id for goal in plan.chapter_goals}
@@ -255,6 +299,7 @@ class HumanBenchmarkCompiler:
 
             derived_text.append(future)
             derived_plan.append(plan)
+            derived_contexts.append(derived_context)
             derived_cases.append(
                 case.model_copy(
                     update={
@@ -262,6 +307,8 @@ class HumanBenchmarkCompiler:
                         "future_text_root_private": future.root_hash,
                         "input_plan_root": plan.root_hash,
                         "chapter_goal_ids": tuple(goal.goal_id for goal in plan.chapter_goals),
+                        "planning_context_ref": content_id(derived_context.model_dump(mode="json")),
+                        "planning_context_hash": derived_context.source_hash,
                         "observed_use_gold": trim_gold(
                             case.observed_use_gold,
                             lower_bound=target_start,
@@ -298,6 +345,7 @@ class HumanBenchmarkCompiler:
                 "content_hash": ArtifactId("sha256:" + "0" * 64),
                 "text_roots": (*retained_text.values(), *derived_text),
                 "plan_roots": tuple(derived_plan),
+                "planning_contexts": tuple(derived_contexts),
                 "case_manifests": tuple(derived_cases),
             }
         )
@@ -376,6 +424,58 @@ class HumanBenchmarkCompiler:
         )
         return provisional.model_copy(update={"root_hash": text_root_content_id(provisional)})
 
+    def _gold_need_specs(
+        self,
+        raw_case: dict[str, Any],
+        gold_data: dict[str, Any],
+        root: Path,
+    ) -> tuple[GoldNeedSpec, ...]:
+        """Compile evaluator-only GoldNeedSpec from the sibling spec YAML.
+
+        The spec file is optional: cases without it contribute no Need Recall
+        components and are not scored on that segment.
+        """
+
+        gold_path = root / self._string(raw_case["gold_file_private"])
+        spec_path = gold_path.with_name("gold_need_spec.yaml")
+        if not spec_path.exists():
+            return ()
+        raw_spec = self._yaml(spec_path)
+        items = raw_spec.get("items", [])
+        if not isinstance(items, list):
+            raise HumanBenchmarkCompileError("gold_need_spec items must be a list")
+        by_id = {
+            self._string(item["id"]): item
+            for item in gold_data.get("items", [])
+            if isinstance(item, dict)
+        }
+        compiled: list[GoldNeedSpec] = []
+        for raw_item in items:
+            if not isinstance(raw_item, dict):
+                raise HumanBenchmarkCompileError("gold_need_spec item must be an object")
+            gold_id = self._string(raw_item["id"])
+            if gold_id not in by_id:
+                raise HumanBenchmarkCompileError(
+                    f"gold_need_spec references unknown Gold: {gold_id}"
+                )
+            raw_blindness = raw_item.get("blindness", "blind_recoverable")
+            try:
+                blindness = GoldBlindness(str(raw_blindness))
+            except ValueError as error:
+                raise HumanBenchmarkCompileError(
+                    f"gold_need_spec blindness is invalid: {gold_id}/{raw_blindness}"
+                ) from error
+            compiled.append(
+                GoldNeedSpec(
+                    gold_id=StableId(gold_id),
+                    blindness=blindness,
+                    required_need_scopes=self._strings(raw_item.get("required_need_scopes", [])),
+                    required_entities=self._strings(raw_item.get("required_entities", [])),
+                    required_facets=self._strings(raw_item.get("required_facets", [])),
+                )
+            )
+        return tuple(compiled)
+
     @staticmethod
     def _strip_packaging_frontmatter(value: str) -> str:
         """Exclude distributor metadata and synopsis before the first volume."""
@@ -391,6 +491,73 @@ class HumanBenchmarkCompiler:
         if not any(item in prefix for item in packaging_markers):
             return value
         return value[marker.start() :]
+
+    def _compile_planning_context(
+        self,
+        case_id: StableId,
+        raw: dict[str, Any],
+        target_range: tuple[int, int],
+    ) -> AuthorPlanningContext:
+        """Compile the typed AuthorPlanningContext from the raw input.yaml.
+
+        This is the single compile-time reader of the author-visible planning
+        fields (task / mode / visible_outline / target_plan).  Raw YAML never
+        enters any public payload; only the normalized context does.
+        """
+
+        mode = self._string(raw.get("mode", ""))
+        try:
+            profile = self._PROFILE_BY_MODE[mode]
+        except KeyError as error:
+            raise HumanBenchmarkCompileError(f"unsupported input mode: {mode}") from error
+        task_intent = self._string(raw.get("task", ""))
+        outlines = self._strings(raw.get("visible_outline", []))
+        goals_raw = raw.get("target_plan", [])
+        if not isinstance(goals_raw, list):
+            raise HumanBenchmarkCompileError("target_plan must be a list")
+        nodes = tuple(
+            VisibleOutlineNode(
+                node_id=StableId(f"plan.{case_id.root}.outline.{index}"),
+                title=f"Visible outline {index}",
+                summary=summary,
+            )
+            for index, summary in enumerate(outlines, start=1)
+        )
+        goals = tuple(
+            ChapterGoal(
+                goal_id=StableId(f"goal.{case_id.root}.{self._integer(raw_goal['chapter'])}"),
+                chapter_index=self._integer(raw_goal["chapter"]),
+                summary=self._string(raw_goal["goal"]),
+            )
+            for raw_goal in goals_raw
+            if isinstance(raw_goal, dict)
+        )
+        provisional = AuthorPlanningContext(
+            profile=profile,
+            task_intent=task_intent,
+            target_range=target_range,
+            visible_outline_nodes=nodes,
+            chapter_goals=goals,
+            source_hash=ArtifactId("sha256:" + "0" * 64),
+        )
+        return provisional.model_copy(
+            update={"source_hash": self._planning_context_source_hash(provisional)}
+        )
+
+    @staticmethod
+    def _planning_context_source_hash(context: AuthorPlanningContext) -> ArtifactId:
+        return content_id(
+            {
+                "profile": context.profile.value,
+                "task_intent": context.task_intent,
+                "target_range": context.target_range,
+                "visible_outline_nodes": [
+                    node.model_dump(mode="json") for node in context.visible_outline_nodes
+                ],
+                "chapter_goals": [goal.model_dump(mode="json") for goal in context.chapter_goals],
+                "planner_may_read_plan": context.planner_may_read_plan,
+            }
+        )
 
     def _plan_root(self, case_id: StableId, raw: dict[str, Any]) -> PlanRootDocument:
         outlines = tuple(self._strings(raw.get("visible_outline", [])))

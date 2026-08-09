@@ -263,7 +263,7 @@ def test_unified_reporting_preserves_arms_and_rejects_profile_mixing(tmp_path: P
         code_version="golden-test.v1",
         run_config_hash=receipt.run_config_hash,
         benchmark_contract_hash=content_id({"golden": "benchmark-contract"}),
-        matcher_version="gold_evidence_matcher.v3",
+        matcher_version="gold_evidence_matcher.v4",
         writer_token_budget=package.budget_report.configured_writer_token_budget,
         evidence_ledger_token_budget=12_000,
         assembly_status=ContextAssemblyStatus.READY,

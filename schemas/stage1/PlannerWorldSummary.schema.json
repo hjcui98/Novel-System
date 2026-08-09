@@ -1,0 +1,294 @@
+{
+  "$defs": {
+    "PlannerEntitySummary": {
+      "additionalProperties": false,
+      "description": "Bounded entity row in the deterministic world summary.",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "entity_type": {
+          "default": "",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "PlannerEntitySummary",
+      "type": "object"
+    },
+    "PlannerEventSummary": {
+      "additionalProperties": false,
+      "description": "Bounded recent-event row in the deterministic world summary.",
+      "properties": {
+        "chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter"
+        },
+        "event_type": {
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "participant_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Participant Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_type"
+      ],
+      "title": "PlannerEventSummary",
+      "type": "object"
+    },
+    "PlannerObligationSummary": {
+      "additionalProperties": false,
+      "description": "Bounded open-obligation row in the deterministic world summary.",
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "owner_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Owner Labels",
+          "type": "array"
+        },
+        "status": {
+          "default": "",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "title": "PlannerObligationSummary",
+      "type": "object"
+    },
+    "PlannerRelationSummary": {
+      "additionalProperties": false,
+      "description": "Bounded relation row in the deterministic world summary.",
+      "properties": {
+        "object_label": {
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "predicate",
+        "object_label"
+      ],
+      "title": "PlannerRelationSummary",
+      "type": "object"
+    },
+    "PlannerStateSummary": {
+      "additionalProperties": false,
+      "description": "Cutoff-safe state surface needed for plan-to-history backward chaining.",
+      "properties": {
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_label": {
+          "minLength": 1,
+          "title": "Subject Label",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_label",
+        "predicate",
+        "value"
+      ],
+      "title": "PlannerStateSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Deterministic, bounded world projection shown to the LLM Planner.\n\nAll collections are capped and every string is length-bounded so the\nprompt stays within the serialized request budget; truncation is explicit\nin the field names.",
+  "properties": {
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "entities": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerEntitySummary"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "entity_count": {
+      "minimum": 0,
+      "title": "Entity Count",
+      "type": "integer"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "key_relations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerRelationSummary"
+      },
+      "title": "Key Relations",
+      "type": "array"
+    },
+    "obligation_count": {
+      "minimum": 0,
+      "title": "Obligation Count",
+      "type": "integer"
+    },
+    "open_obligations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerObligationSummary"
+      },
+      "title": "Open Obligations",
+      "type": "array"
+    },
+    "plan_intent": {
+      "default": "",
+      "title": "Plan Intent",
+      "type": "string"
+    },
+    "recent_events": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerEventSummary"
+      },
+      "title": "Recent Events",
+      "type": "array"
+    },
+    "relation_count": {
+      "minimum": 0,
+      "title": "Relation Count",
+      "type": "integer"
+    },
+    "state_count": {
+      "minimum": 0,
+      "title": "State Count",
+      "type": "integer"
+    },
+    "states": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerStateSummary"
+      },
+      "title": "States",
+      "type": "array"
+    },
+    "target_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Target Range",
+      "type": "array"
+    },
+    "task_intent": {
+      "default": "",
+      "title": "Task Intent",
+      "type": "string"
+    },
+    "truncated_entity_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Truncated Entity Count",
+      "type": "integer"
+    },
+    "truncated_event_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Truncated Event Count",
+      "type": "integer"
+    },
+    "truncated_obligation_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Truncated Obligation Count",
+      "type": "integer"
+    },
+    "truncated_relation_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Truncated Relation Count",
+      "type": "integer"
+    },
+    "truncated_state_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Truncated State Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "checkpoint_chapter",
+    "target_range",
+    "entity_count",
+    "state_count",
+    "event_count",
+    "relation_count",
+    "obligation_count"
+  ],
+  "title": "PlannerWorldSummary",
+  "type": "object"
+}

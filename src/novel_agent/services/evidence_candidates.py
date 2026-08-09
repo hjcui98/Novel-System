@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from difflib import SequenceMatcher
+from itertools import pairwise
 
 from novel_agent.domain.benchmark import ChapterDocument, TextRootDocument
 from novel_agent.domain.changes import (
@@ -21,7 +23,14 @@ _DIALOGUE_SPLIT = re.compile(r'(?<=[\u201d"\u300f])')
 DEFAULT_MAX_CANDIDATE_CHARS = 240
 DEFAULT_TARGET_MIN = 40
 DEFAULT_TARGET_MAX = 160
-DEFAULT_MAX_CHAPTER_CANDIDATES = 128
+# The semantic-quote contract (Grounder principle: the model copies natural
+# language fragments and the host binds them to content-addressed ids) makes
+# catalog size independent of model memorization, so the catalog must cover
+# the whole chapter: a small catalog leaves later spans unbindable and the
+# model's legitimate quotes get rejected.  512 covers a full-length chapter
+# (measured: a 19.6k-character chapter yields ~180 candidates; 128 covered
+# only a quarter and dropped legitimate quotes).
+DEFAULT_MAX_CHAPTER_CANDIDATES = 512
 
 
 class EvidenceCandidateGenerator:
@@ -84,6 +93,147 @@ class EvidenceCandidateGenerator:
         if len(indexed) != len(candidates):
             raise ValueError("evidence candidate ids must be unique")
         return indexed
+
+    @staticmethod
+    def resolve_evidence_quotes(
+        quotes: tuple[str, ...],
+        candidates: tuple[EvidenceCandidate, ...],
+    ) -> tuple[EvidenceCandidate, ...]:
+        """Deterministically bind model-emitted semantic quotes to candidates.
+
+        Grounder principle: the model copies natural-language fragments; this
+        host-side resolver finds the single candidate whose text contains the
+        fragment.  A quote with no match is unresolved, a quote matching
+        several candidates is ambiguous; both are rejections the model can
+        repair by quoting a longer fragment.
+        """
+
+        resolved: list[EvidenceCandidate] = []
+        for quote in quotes:
+            normalized = EvidenceCandidateGenerator._semantic_span(quote)
+            if len(normalized) < 2:
+                raise ValueError(f"evidence quote too short to resolve: {quote[:40]!r}")
+            # A dialogue quote spans the split boundary exactly (cue + content
+            # candidates joined reproduce the quote); bind to the content
+            # candidate before falling back to substring matching, otherwise
+            # both cue and content candidates match as substrings and the
+            # quote looks ambiguous.
+            joined_pairs = tuple(
+                (first, second)
+                for first, second in pairwise(candidates)
+                if (
+                    EvidenceCandidateGenerator._semantic_span(first.text)
+                    + EvidenceCandidateGenerator._semantic_span(second.text)
+                )
+                == normalized
+            )
+            if len(joined_pairs) > 1:
+                raise ValueError(
+                    f"evidence quote ambiguous ({len(joined_pairs)} candidate pairs): "
+                    f"{quote[:60]!r}"
+                )
+            if len(joined_pairs) == 1:
+                resolved.append(joined_pairs[0][1])
+                continue
+            exact = tuple(
+                candidate
+                for candidate in candidates
+                if normalized in EvidenceCandidateGenerator._semantic_span(candidate.text)
+            )
+            if len(exact) > 1:
+                raise ValueError(
+                    f"evidence quote ambiguous ({len(exact)} candidates): {quote[:60]!r}"
+                )
+            if len(exact) == 1:
+                resolved.append(exact[0])
+                continue
+            # The model may quote a longer original span that contains the
+            # pre-split candidate (e.g. dialogue cues that the splitter cut
+            # at a quote boundary, or a trailing/leading quote mark dropped by
+            # the model).  Punctuation-insensitive matching binds the quote to
+            # the single candidate fully contained in it; this stays
+            # fail-closed because a quote containing several candidates
+            # remains ambiguous.
+            contained = tuple(
+                candidate
+                for candidate in candidates
+                if EvidenceCandidateGenerator._semantic_span(candidate.text) in normalized
+            )
+            if len(contained) > 1:
+                raise ValueError(
+                    f"evidence quote ambiguous ({len(contained)} candidates): {quote[:60]!r}"
+                )
+            if len(contained) == 1:
+                resolved.append(contained[0])
+                continue
+            # Quote spans two candidates without reproducing either exactly
+            # (e.g. slight model paraphrasing); bind to the single adjacent
+            # pair whose joined span contains the quote.
+            pair_bound = tuple(
+                second
+                for first, second in pairwise(candidates)
+                if (
+                    EvidenceCandidateGenerator._semantic_span(first.text)
+                    + EvidenceCandidateGenerator._semantic_span(second.text)
+                )
+                in normalized
+                or normalized
+                in (
+                    EvidenceCandidateGenerator._semantic_span(first.text)
+                    + EvidenceCandidateGenerator._semantic_span(second.text)
+                )
+            )
+            # Adjacent pairs share only the boundary span, so more than one
+            # match cannot occur for a quote of at least 8 characters.
+            assert len(pair_bound) <= 1
+            if len(pair_bound) == 1:
+                resolved.append(pair_bound[0])
+                continue
+            raise ValueError(
+                f"evidence quote unresolved against the chapter catalog: {quote[:60]!r}"
+            )
+        return tuple(resolved)
+
+    @staticmethod
+    def _semantic_span(text: str) -> str:
+        """Punctuation-insensitive semantic span for quote binding."""
+        return "".join(char for char in text.casefold() if char.isalnum())
+
+    @staticmethod
+    def closest_candidate(
+        quote: str,
+        candidates: tuple[EvidenceCandidate, ...],
+        *,
+        ratio_threshold: float = 0.6,
+    ) -> EvidenceCandidate | None:
+        """Best-effort nearest candidate for rejection feedback.
+
+        The model sometimes paraphrases a dialogue cue while keeping the
+        content; the bound quote then fails exact binding.  This similarity
+        match is used only to tell the model which catalog text to copy
+        verbatim on the repair round; it never auto-binds evidence.
+        """
+
+        normalized = EvidenceCandidateGenerator._semantic_span(quote)
+        best: tuple[float, EvidenceCandidate | None] = (0.0, None)
+        for candidate in candidates:
+            span = EvidenceCandidateGenerator._semantic_span(candidate.text)
+            if not span:
+                continue
+            ratio = max(
+                SequenceMatcher(None, normalized, span).ratio(),
+                SequenceMatcher(None, normalized, span[: len(normalized)]).ratio()
+                if len(span) >= len(normalized)
+                else 0.0,
+                SequenceMatcher(None, normalized[: len(span)], span).ratio()
+                if len(normalized) >= len(span)
+                else 0.0,
+            )
+            if ratio > best[0]:
+                best = (ratio, candidate)
+        if best[0] >= ratio_threshold and best[1] is not None:
+            return best[1]
+        return None
 
     def resolve_quote(
         self,

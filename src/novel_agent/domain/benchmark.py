@@ -14,6 +14,7 @@ from novel_agent.domain.memory_benchmark import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
     EvidenceSet,
+    GoldNeedSpec,
     GoldType,
 )
 from novel_agent.domain.model_calls import RetrievalInferenceCallRecord
@@ -133,6 +134,52 @@ class ChapterGoal(DomainModel):
     obligation_ids: tuple[StableId, ...] = ()
 
 
+class VisibleOutlineNode(DomainModel):
+    """One normalized entry of the author's coarse visible outline."""
+
+    node_id: StableId
+    node_type: str = Field(default="visible_outline", min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_outline_node(self) -> VisibleOutlineNode:
+        if self.node_type != "visible_outline":
+            raise ValueError("visible outline node type must be visible_outline")
+        return self
+
+
+class AuthorPlanningContext(DomainModel):
+    """Typed, validated projection of the raw input.yaml planning fields.
+
+    This is the single source of truth for the author-visible planning
+    inputs (task intent, profile, visible outline, and chapter goals).  It
+    never carries Gold, future prose, or preparation material; the compiler
+    normalizes the raw YAML before it can enter any runtime payload.
+    """
+
+    profile: BenchmarkInformationProfile
+    task_intent: str = Field(min_length=1)
+    target_range: tuple[int, int]
+    visible_outline_nodes: tuple[VisibleOutlineNode, ...] = ()
+    chapter_goals: tuple[ChapterGoal, ...] = ()
+    source_hash: ArtifactId
+    planner_may_read_plan: bool = True
+
+    @model_validator(mode="after")
+    def validate_planning_context(self) -> AuthorPlanningContext:
+        start, end = self.target_range
+        if start < 1 or end < start:
+            raise ValueError("planning context target range is invalid")
+        if len({goal.goal_id for goal in self.chapter_goals}) != len(self.chapter_goals):
+            raise ValueError("planning context chapter goal ids must be unique")
+        if len({node.node_id for node in self.visible_outline_nodes}) != len(
+            self.visible_outline_nodes
+        ):
+            raise ValueError("planning context outline node ids must be unique")
+        return self
+
+
 class PlanRootDocument(DomainModel):
     root_hash: ArtifactId
     schema_version: SchemaVersion
@@ -194,6 +241,7 @@ class GoldItem(DomainModel):
     weight: float = Field(default=1.0, gt=0)
     applicable_profiles: tuple[BenchmarkInformationProfile, ...] = (
         BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        BenchmarkInformationProfile.TASK_INTENT_ONLY,
         BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
     )
     accepted_evidence_sets: tuple[EvidenceSet, ...] = ()
@@ -235,9 +283,14 @@ class BenchmarkCaseManifest(DomainModel):
     input_plan_root: ArtifactId | None = None
     input_world_root_verified: ArtifactId | None = None
     chapter_goal_ids: tuple[StableId, ...] = ()
+    information_profile: BenchmarkInformationProfile | None = None
+    task_intent: str = ""
+    planning_context_ref: ArtifactId | None = None
+    planning_context_hash: ArtifactId | None = None
     observed_use_gold: tuple[GoldItem, ...]
     operational_constraint_gold: tuple[GoldItem, ...]
     plan_obligation_gold: tuple[GoldItem, ...]
+    gold_need_specs: tuple[GoldNeedSpec, ...] = ()
     annotation_version: SchemaVersion
     expected_tracks: tuple[BenchmarkTrack, ...] = (
         BenchmarkTrack.ORACLE,
@@ -253,6 +306,8 @@ class BenchmarkCaseManifest(DomainModel):
             raise ValueError("history range is invalid")
         if target_start <= history_end or target_end < target_start:
             raise ValueError("target range must follow history without overlap")
+        if (self.planning_context_ref is None) != (self.planning_context_hash is None):
+            raise ValueError("planning context ref/hash must appear as a pair")
         typed_gold = (
             (self.observed_use_gold, GoldKind.OBSERVED_USE),
             (self.operational_constraint_gold, GoldKind.OPERATIONAL_CONSTRAINT),
@@ -537,6 +592,7 @@ class BenchmarkBundle(DomainModel):
     summary_roots: tuple[ChapterSummaryRootDocument, ...] = ()
     plan_roots: tuple[PlanRootDocument, ...] = ()
     world_roots: tuple[WorldRootDocument, ...] = ()
+    planning_contexts: tuple[AuthorPlanningContext, ...] = ()
     case_manifests: tuple[BenchmarkCaseManifest, ...]
     replay_manifests: tuple[ReplayCaseManifest, ...] = ()
     history_access_policy: HistoryAccessPolicy = HistoryAccessPolicy.HISTORY_ONLY
@@ -557,6 +613,9 @@ class BenchmarkBundle(DomainModel):
             raise ValueError("plan root hashes must be unique")
         if len(world_hashes) != len(self.world_roots):
             raise ValueError("world root hashes must be unique")
+        planning_source_hashes = {context.source_hash for context in self.planning_contexts}
+        if len(planning_source_hashes) != len(self.planning_contexts):
+            raise ValueError("planning context source hashes must be unique")
         if len({case.case_id for case in self.case_manifests}) != len(self.case_manifests):
             raise ValueError("benchmark case ids must be unique")
         if len({case.replay_case_id for case in self.replay_manifests}) != len(

@@ -88,11 +88,11 @@ def test_controller_prompt_prefers_registered_batch_plan() -> None:
 def test_quality_repair_memory_write_budget_allows_progressive_feedback_retries() -> None:
     budget = _quality_repair_memory_write_budget()
 
-    assert budget.max_curator_proposal_attempts == 3
-    assert budget.max_curator_proposal_rejections == 3
-    assert budget.max_total_model_calls == 6
+    assert budget.max_curator_proposal_attempts == 5
+    assert budget.max_curator_proposal_rejections == 5
+    assert budget.max_total_model_calls == 10
     assert budget.token_budget == 96_000
-    assert budget.wall_clock_budget_ms == 540_000
+    assert budget.wall_clock_budget_ms == 900_000
     assert budget.same_content_hash_limit == 3
     assert budget.same_finding_signature_limit == 3
 
@@ -100,7 +100,16 @@ def test_quality_repair_memory_write_budget_allows_progressive_feedback_retries(
 def test_teacher_forced_model_request_leaves_time_for_narrow_verifier() -> None:
     request = TeacherForcedBenchmarkE2ERunner._request("curator", AgentMode.REPLAY)
 
-    assert request.timeout_seconds == 300
+    assert request.timeout_seconds == 600
+    assert request.max_output_tokens == 12288
+    assert request.enable_thinking is False
+    assert request.thinking_token_budget is None
+
+    bootstrap = TeacherForcedBenchmarkE2ERunner._request(
+        "planner.bootstrap", AgentMode.PROJECT_BOOTSTRAP
+    )
+    assert bootstrap.enable_thinking is False
+    assert bootstrap.thinking_token_budget is None
 
 
 def test_response_book_rejects_missing_and_unused_scripted_responses() -> None:
@@ -119,6 +128,8 @@ def test_response_book_rejects_missing_and_unused_scripted_responses() -> None:
 def test_resume_requires_bound_progress_manifest(tmp_path: Path) -> None:
     bundle = make_synthetic_bundle()
     runner = TeacherForcedBenchmarkE2ERunner()
+    with pytest.raises(ValueError, match="checkpoint workers"):
+        TeacherForcedBenchmarkE2ERunner(checkpoint_workers=0)
     with pytest.raises(
         TeacherForcedBenchmarkError,
         match="explicit resume commit and chapter must be supplied together",
@@ -1162,3 +1173,57 @@ def test_support_terminal_state_legacy_fallback() -> None:
         )
         == "completed_with_failures"
     )
+
+
+def test_execution_lifecycle_statuses_reconcile_scheduling_failure() -> None:
+    statuses = TeacherForcedBenchmarkE2ERunner._execution_lifecycle_statuses(
+        {"scheduling_timeouts": 3},
+        scenario_completed=True,
+        single_arm_result_count=1,
+        checkpoint_count=1,
+        generation_quality_eligible=True,
+        retrieval_quality_eligible=True,
+    )
+    assert statuses["scheduling_failure_count"] == 3
+    assert statuses["checkpoint_scenario_status"] == "COMPLETED_WITH_EXECUTION_FAILURE"
+    assert statuses["single_arm_evaluation_status"] == "COMPLETED_WITH_EXECUTION_FAILURE"
+    assert statuses["semantic_quality_eligible"] is False
+    assert statuses["quality_blocker"] == "SCHEDULING_INFRASTRUCTURE_FAILURE"
+
+
+def test_execution_lifecycle_statuses_keep_model_outcome_out_of_blocker() -> None:
+    statuses = TeacherForcedBenchmarkE2ERunner._execution_lifecycle_statuses(
+        {"scheduling_timeouts": 0},
+        scenario_completed=True,
+        single_arm_result_count=1,
+        checkpoint_count=1,
+        generation_quality_eligible=True,
+        retrieval_quality_eligible=True,
+    )
+    assert statuses["checkpoint_scenario_status"] == "COMPLETED"
+    assert statuses["single_arm_evaluation_status"] == "COMPLETED"
+    assert statuses["semantic_quality_eligible"] is True
+    assert statuses["quality_blocker"] == ""
+
+
+def test_execution_lifecycle_statuses_keep_partial_and_absent_states_typed() -> None:
+    statuses = TeacherForcedBenchmarkE2ERunner._execution_lifecycle_statuses(
+        {"scheduling_timeouts": 0},
+        scenario_completed=False,
+        single_arm_result_count=0,
+        checkpoint_count=1,
+        generation_quality_eligible=False,
+        retrieval_quality_eligible=False,
+    )
+    assert statuses["checkpoint_scenario_status"] == "INCOMPLETE"
+    assert statuses["single_arm_evaluation_status"] == "NOT_RUN"
+    assert statuses["semantic_quality_eligible"] is False
+    assert statuses["quality_blocker"]
+
+
+def test_immutable_evidence_writer_rejects_conflicting_existing_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "immutable.json"
+    TeacherForcedBenchmarkE2ERunner._write_immutable(path, b"first")
+    TeacherForcedBenchmarkE2ERunner._write_immutable(path, b"first")
+    with pytest.raises(TeacherForcedBenchmarkError, match="refusing to overwrite different"):
+        TeacherForcedBenchmarkE2ERunner._write_immutable(path, b"second")

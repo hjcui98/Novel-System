@@ -8,6 +8,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",
@@ -29,6 +30,28 @@
           "title": "Output Contract Version",
           "type": "string"
         },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_chapter_end": {
           "minimum": 1,
           "title": "Target Chapter End",
@@ -41,6 +64,11 @@
         },
         "task_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
         },
         "task_kind": {
           "const": "memory_context_for_target_range",

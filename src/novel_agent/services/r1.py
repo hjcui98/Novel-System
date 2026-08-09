@@ -27,6 +27,7 @@ from novel_agent.domain.memory import (
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.world import StoryTime, TruthClass
 from novel_agent.services.canonical_alias_registry import CanonicalAliasRegistry
+from novel_agent.services.need_query_compiler import compile_need_query
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +151,12 @@ class R1WorldRepository:
     ) -> tuple[R1RecordView, ...]:
         if limit < 1:
             raise ValueError("R1 limit must be positive")
+        if need.query_intent in {
+            Stage1QueryIntent.CURRENT_STATE,
+            Stage1QueryIntent.KNOWN_ID,
+            Stage1QueryIntent.MANDATORY_CONSTRAINT,
+        } and not (need.entity_ids or need.predicates):
+            raise ValueError("unfiltered factual exact retrieval is forbidden")
         self._validate_access_scopes(access_scopes)
         statement: Select[tuple[R1RecordRow]] = select(R1RecordRow).where(
             R1RecordRow.source_commit == need.base_commit.root,
@@ -653,17 +660,21 @@ class R1RetrievalBackend:
     def search(
         self, need: Stage1MemoryNeed, channel: RetrievalChannel, limit: int
     ) -> tuple[ChannelHit, ...]:
+        bundle = compile_need_query(need)
         if channel is RetrievalChannel.TYPED_GRAPH:
             records = self._repository.typed_graph(
                 need.base_commit,
-                need.entity_ids,
+                bundle.graph_seeds,
                 max_depth=self._graph_depth,
                 limit=limit,
-                allowed_predicates=need.predicates,
-                time_scope=need.time_scope,
+                allowed_predicates=bundle.exact_predicates,
+                time_scope=bundle.time_scope,
                 access_scopes=self._visible_access_scopes(need),
             )
         elif channel in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}:
+            # The R1 repository derives its exact query from the same fields
+            # the bundle compiles (exact_entity_ids / exact_predicates), so
+            # the two stay identical by construction.
             records = self._repository.exact(
                 need,
                 temporal=channel is RetrievalChannel.R1_TEMPORAL,

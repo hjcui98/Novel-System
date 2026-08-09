@@ -17,7 +17,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.retrieval_routing import L2IndexKind, L2IndexManifest
 from novel_agent.domain.world import StoryTime
-from novel_agent.services.embedding_cache import InMemoryEmbeddingCache
+from novel_agent.services.embedding_cache import CachedEmbeddingService, InMemoryEmbeddingCache
 from novel_agent.services.search_retrieval import (
     CompositeRetrievalBackend,
     DeterministicHashEmbedder,
@@ -433,6 +433,90 @@ def test_opensearch_lexical_query_uses_phrase_matching_and_pre_score_scope_filte
     assert "narrative_start" in serialized and "narrative_end" in serialized
 
 
+def test_dense_uses_semantic_question_from_query_bundle() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = Stage1OpenSearchBackend(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+    )
+    adapter.search_with_total.return_value = ((), 0)
+    semantic_need = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "主查询文本",
+        (CandidatePool.ANCHOR,),
+    ).model_copy(
+        update={
+            "semantic_question": "截止点前 林澈 的伤势是否痊愈?",
+            "query_hints": ("能力边界 前置条件",),
+            "planner_may_read_plan": True,
+            "claim_may_cite_plan": False,
+            "legacy_allow_plan": False,
+            "allow_plan": False,
+        }
+    )
+    backend.search(semantic_need, RetrievalChannel.ANCHOR_DENSE, 5)
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    embedder = DeterministicHashEmbedder(dimension=4)
+    expected_vector = tuple(
+        CachedEmbeddingService._normalize(
+            embedder.embed(("截止点前 林澈 的伤势是否痊愈?",))[0],
+            embedder.dimension,
+        )
+    )
+    assert str(expected_vector) in serialized
+    wrong_vector = tuple(
+        CachedEmbeddingService._normalize(
+            embedder.embed(("主查询文本",))[0],
+            embedder.dimension,
+        )
+    )
+    assert str(wrong_vector) not in serialized
+
+
+def test_bm25_consumes_query_hints_as_auxiliary_clauses() -> None:
+    adapter = MagicMock(spec=OpenSearchIndex)
+    backend = Stage1OpenSearchBackend(
+        cast(OpenSearchIndex, adapter),
+        DeterministicHashEmbedder(dimension=4),
+        project_id=PROJECT,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+    )
+    adapter.search_with_total.return_value = ((), 0)
+    hinted = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "主体查询",
+        (CandidatePool.ANCHOR,),
+    ).model_copy(
+        update={
+            "query_hints": ("主体查询", "能力边界 前置条件 学习经验 来源", "目标 动机 承诺 去向"),
+        }
+    )
+
+    backend.search(hinted, RetrievalChannel.ANCHOR_BM25, 5)
+
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert "能力边界 前置条件 学习经验 来源" in serialized
+    assert "目标 动机 承诺 去向" in serialized
+    assert serialized.count("multi_match") == 3
+
+    plain = need(
+        Stage1QueryIntent.SEMANTIC_HISTORY,
+        "主体查询",
+        (CandidatePool.ANCHOR,),
+    )
+    backend.search(plain, RetrievalChannel.ANCHOR_BM25, 5)
+    _, query = adapter.search_with_total.call_args.args[:2]
+    serialized = str(query)
+    assert serialized.count("multi_match") == 1
+    assert "能力边界 前置条件 学习经验 来源" not in serialized
+
+
 def test_author_plan_query_expands_access_without_observed_only_filter() -> None:
     adapter = MagicMock(spec=OpenSearchIndex)
     backend = Stage1OpenSearchBackend(
@@ -448,7 +532,16 @@ def test_author_plan_query_expands_access_without_observed_only_filter() -> None
         Stage1QueryIntent.PLAN_OBLIGATION,
         "未决承诺",
         (CandidatePool.ANCHOR,),
-    ).model_copy(update={"access_scope": "author_planning", "allow_plan": True})
+    ).model_copy(
+        update={
+            "access_scope": "author_planning",
+            "allow_plan": True,
+            "planner_may_read_plan": True,
+            "retrieval_may_return_plan": True,
+            "claim_may_cite_plan": True,
+            "legacy_allow_plan": True,
+        }
+    )
 
     backend.search(plan_need, RetrievalChannel.ANCHOR_BM25, 5)
 

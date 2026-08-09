@@ -208,6 +208,38 @@ class CuratedOperationDraftV2(DomainModel):
         return self
 
 
+class CuratorV2OperationDraft(DomainModel):
+    """Model-output curator operation: evidence is semantic quotes, never ids.
+
+    The Grounder principle (planning semantics, §8.5 of the Stage 2M audit):
+    the model copies natural-language fragments from the chapter, and the
+    host resolves them deterministically to content-addressed candidate ids.
+    """
+
+    operation: ChangeOperationType
+    record_kind: WorldRecordKind
+    target_id: StableId
+    record: CuratorTypedRecord
+    evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_record_kind(self) -> CuratorV2OperationDraft:
+        expected = {
+            WorldRecordKind.ENTITY: CuratorEntityRecord,
+            WorldRecordKind.EVENT: CuratorEventRecord,
+            WorldRecordKind.STATE: CuratorStateRecord,
+            WorldRecordKind.RELATION: CuratorRelationRecord,
+            WorldRecordKind.OBLIGATION: CuratorObligationRecord,
+        }[self.record_kind]
+        if not isinstance(self.record, expected):
+            raise ValueError("Curator record_kind does not match typed record")
+        if any(not quote.strip() for quote in self.evidence_quotes):
+            raise ValueError("evidence quotes must not be blank")
+        if len(self.evidence_quotes) != len(set(self.evidence_quotes)):
+            raise ValueError("evidence quotes must be unique")
+        return self
+
+
 class ChapterChangeDraftV2(DomainModel):
     """V2 Curator draft: no model-emitted character offsets."""
 
@@ -228,6 +260,34 @@ class ChapterChangeDraftV2(DomainModel):
             self.no_durable_delta_reason is not None or self.no_op_evidence_candidate_ids
         ):
             raise ValueError("non-empty Curator draft cannot include no-op proof")
+        return self
+
+
+class CuratorV2EvidenceDraft(DomainModel):
+    """Model-output curator draft: evidence is semantic quotes, never ids.
+
+    The host resolves every quote to a content-addressed candidate id
+    (Grounder principle: LLM emits semantics, deterministic code binds ids).
+    """
+
+    chapter_index: int = Field(ge=1)
+    operations: tuple[CuratorV2OperationDraft, ...] = Field(max_length=4)
+    coverage: float = Field(default=1.0, ge=0, le=1)
+    unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+    declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+    no_durable_delta_reason: CuratorShortText | None = None
+    no_op_evidence_quotes: tuple[str, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="after")
+    def validate_explicit_no_op(self) -> CuratorV2EvidenceDraft:
+        if self.operations and (
+            self.no_durable_delta_reason is not None or self.no_op_evidence_quotes
+        ):
+            raise ValueError("non-empty Curator draft cannot include no-op proof")
+        if not self.operations and not self.no_durable_delta_reason:
+            raise ValueError("empty Curator draft requires a no-durable-delta reason")
+        if any(not quote.strip() for quote in self.no_op_evidence_quotes):
+            raise ValueError("no-op evidence quotes must not be blank")
         return self
 
 

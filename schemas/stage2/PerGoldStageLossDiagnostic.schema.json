@@ -42,7 +42,8 @@
         "COMPLETE",
         "F-ASSEMBLY",
         "F-RANK",
-        "F-NEED_ROUTE_RETRIEVE"
+        "F-NEED_ROUTE_RETRIEVE",
+        "F-CLAIM-EVALUATOR"
       ],
       "title": "EvidenceStageFailure",
       "type": "string"

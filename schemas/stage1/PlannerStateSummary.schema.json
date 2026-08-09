@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Cutoff-safe state surface needed for plan-to-history backward chaining.",
+  "properties": {
+    "predicate": {
+      "minLength": 1,
+      "title": "Predicate",
+      "type": "string"
+    },
+    "subject_label": {
+      "minLength": 1,
+      "title": "Subject Label",
+      "type": "string"
+    },
+    "value": {
+      "minLength": 1,
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_label",
+    "predicate",
+    "value"
+  ],
+  "title": "PlannerStateSummary",
+  "type": "object"
+}

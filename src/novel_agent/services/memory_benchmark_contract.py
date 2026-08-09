@@ -50,13 +50,25 @@ def build_safe_task_contract(
     checkpoint_chapter: int,
     target_range: tuple[int, int],
     information_profile: BenchmarkInformationProfile,
+    task_intent: str = "",
+    planning_context_ref: ArtifactId | None = None,
+    planning_context_hash: ArtifactId | None = None,
 ) -> BenchmarkTaskContract:
-    """Build the only task text accepted by formal Stage 2M execution."""
+    """Build the only task text accepted by formal Stage 2M execution.
 
+    The fixed safety contract is combined with (never replaced by) the
+    normalized task intent derived from the case AuthorPlanningContext.
+    Blind profiles must not receive any task intent.
+    """
+
+    if information_profile is BenchmarkInformationProfile.VISIBLE_AT_CUTOFF and task_intent:
+        raise PublicBenchmarkTaintError("blind profile cannot receive a task intent")
     start, end = target_range
     profile_rule = (
         "可以使用经过验证的作者粗粒度计划, 但必须把计划标为意图或义务, 不能当作已发生事实。"
         if information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+        else "不得使用作者计划节点或任何未来材料; 但可以使用任务意图作为检索方向。"
+        if information_profile is BenchmarkInformationProfile.TASK_INTENT_ONLY
         else "不得使用截止点之后的作者粗纲、计划节点或任何未来材料。"
     )
     task_text = (
@@ -66,7 +78,7 @@ def build_safe_task_contract(
         "评测 Gold、精确目标计划或准备材料; 每条确定性结论必须引用合法历史证据。"
         f"{profile_rule}"
     )
-    assert_safe_public_payload({"task_text": task_text})
+    assert_safe_public_payload({"task_text": task_text, "task_intent": task_intent})
     return BenchmarkTaskContract(
         task_id=StableId(
             f"task.stage2m.{case_id.root}.{information_profile.value.replace('_', '-')}"
@@ -78,6 +90,9 @@ def build_safe_task_contract(
         information_profile=information_profile,
         task_template_version=TASK_TEMPLATE_VERSION,
         output_contract_version=OUTPUT_CONTRACT_VERSION,
+        task_intent=task_intent,
+        planning_context_ref=planning_context_ref,
+        planning_context_hash=planning_context_hash,
     )
 
 
@@ -98,6 +113,9 @@ def build_public_checkpoint_case(
     target_range: tuple[int, int],
     information_profile: BenchmarkInformationProfile,
     plan_root_ref: PlanRootRef | None = None,
+    task_intent: str = "",
+    planning_context_ref: ArtifactId | None = None,
+    planning_context_hash: ArtifactId | None = None,
 ) -> Any:
     """Construct a hash-bound ``PublicCheckpointCase`` without importing private data."""
 
@@ -108,9 +126,19 @@ def build_public_checkpoint_case(
         checkpoint_chapter=history_range[1],
         target_range=target_range,
         information_profile=information_profile,
+        task_intent=task_intent,
+        planning_context_ref=planning_context_ref,
+        planning_context_hash=planning_context_hash,
     )
-    if information_profile is BenchmarkInformationProfile.VISIBLE_AT_CUTOFF:
-        plan_root_ref = None
+    if (
+        information_profile
+        in {
+            BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+            BenchmarkInformationProfile.TASK_INTENT_ONLY,
+        }
+        and plan_root_ref is not None
+    ):
+        raise ValueError(f"{information_profile.value} public case rejects PlanRoot")
     provisional = {
         "case_id": case_id,
         "project_id": project_id,

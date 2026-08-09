@@ -47,6 +47,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",
@@ -68,6 +69,28 @@
           "title": "Output Contract Version",
           "type": "string"
         },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_chapter_end": {
           "minimum": 1,
           "title": "Target Chapter End",
@@ -80,6 +103,11 @@
         },
         "task_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
         },
         "task_kind": {
           "const": "memory_context_for_target_range",
@@ -1233,6 +1261,7 @@
       "title": "FusedCandidate",
       "type": "object"
     },
+    "JsonValue": {},
     "ModelCallPurpose": {
       "enum": [
         "development",
@@ -1363,6 +1392,12 @@
           "minimum": 0,
           "title": "Output Tokens",
           "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
         }
       },
       "required": [
@@ -1459,7 +1494,8 @@
         "executed_empty",
         "not_executed_budget_exhausted",
         "not_executed_freshness_blocked",
-        "not_executed_scope_blocked"
+        "not_executed_scope_blocked",
+        "not_executed_no_executable_query"
       ],
       "title": "NeedExecutionStatus",
       "type": "string"
@@ -1580,7 +1616,8 @@
         "exact_satisfied",
         "budget_satisfied",
         "candidates_exhausted",
-        "fallback_exhausted"
+        "fallback_exhausted",
+        "no_executable_query"
       ],
       "title": "RetrievalStopReason",
       "type": "string"
@@ -1642,6 +1679,29 @@
           "title": "Closed Need Facet Ids",
           "type": "array"
         },
+        "compiled_query_bundle": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Compiled Query Bundle",
+          "type": "object"
+        },
+        "direct_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Direct Unit Ids",
+          "type": "array"
+        },
+        "effective_channels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Effective Channels",
+          "type": "array"
+        },
         "fallback_reason": {
           "anyOf": [
             {
@@ -1692,6 +1752,16 @@
         },
         "need_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "query_unavailable_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/RetrievalChannel"
+          },
+          "title": "Query Unavailable Reasons",
+          "type": "object"
         },
         "required_need_facet_ids": {
           "default": [],

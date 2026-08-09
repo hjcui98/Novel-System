@@ -2,7 +2,7 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-08-03
+> Updated: 2026-08-08
 >
 > Current progress source: `docs/project_status.md`
 >
@@ -20,6 +20,14 @@ Use the following precedence when documents disagree:
 
 Passing tests proves the implemented contract, not automatically the product-quality objective.
 Stage acceptance requires the stage-specific gate and evidence named in the current status page.
+
+All current architecture, technical, execution, and task documents inherit the repository's
+**minimum-sufficient engineering** principle: use the smallest mechanism that satisfies a proven
+current requirement and all applicable invariants; reuse the existing owner and document hierarchy;
+do not create a second truth source, parallel pipeline, speculative platform, or duplicate document
+for possible future use. This constrains implementation complexity, not correctness evidence:
+typing, validation, security, leakage controls, failure semantics, required observability, tests,
+reproducibility, and active Gates remain mandatory.
 
 ## 2. Canonical stage names
 
@@ -146,6 +154,9 @@ Document ownership in the Codex–OpenCode implementation loop:
 - After review, Codex integrates accepted evidence into existing project documents. A new design,
   remediation, or execution document is created only for a materially new decision that the current
   hierarchy cannot represent.
+- Do not create a separate “simplicity”, “governance”, or “platform” document for a rule that fits an
+  existing authority. Add the minimum local clarification and link upward instead of copying a new
+  documentation system.
 
 When a gate or work package changes:
 

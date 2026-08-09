@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -28,6 +30,10 @@ from novel_agent.services.model_gateway import (
     ModelRoutingError,
     RegisteredModelEndpoint,
     StructuredGenerationExhausted,
+)
+from novel_agent.services.model_request_admission import (
+    ModelRequestAdmissionController,
+    SchedulingBudgetUnsatisfiableError,
 )
 
 
@@ -135,6 +141,90 @@ def test_duplicate_role_configuration_is_rejected() -> None:
 
     with pytest.raises(ModelRoutingError, match="at most one"):
         ModelGateway((first, second))
+
+
+def test_gateway_scheduler_configuration_and_endpoint_policy_identity() -> None:
+    with pytest.raises(ValueError, match="scheduling timeout"):
+        ModelGateway((), scheduling_timeout_seconds=0)
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("ok")),))
+    policy = dict(gateway.endpoint_policy_identity(ModelRole.BATCH_TEST))
+    assert policy["endpoint_name"] == "batch_test_model-endpoint"
+    assert policy["registered_model"] == "fake-model"
+    with pytest.raises(ModelRoutingError, match="no endpoint configured"):
+        gateway.endpoint_policy_identity(ModelRole.IMPLEMENTATION)
+
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    scheduled = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("scheduled")),),
+        admission_controller=controller,
+    )
+    assert scheduled.admission_controller is controller
+    assert asyncio.run(scheduled.generate_text(request())).text == "scheduled"
+    assert controller.snapshot()["released_requests"] == 1
+
+    unsatisfiable = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("never")),),
+        admission_controller=ModelRequestAdmissionController(
+            endpoint_request_limit=1,
+            kv_token_budget=100,
+            kv_safety_reserve_ratio=0.0,
+        ),
+    )
+    with pytest.raises(SchedulingBudgetUnsatisfiableError):
+        asyncio.run(unsatisfiable.generate_text(request()))
+
+
+def test_gateway_cancelled_admission_releases_eventual_lease() -> None:
+    async def exercise() -> None:
+        controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+        blocker = controller.acquire(1)
+        gateway = ModelGateway(
+            (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("never")),),
+            admission_controller=controller,
+        )
+        task = asyncio.create_task(gateway.generate_text(request()))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        blocker.release()
+        for _ in range(100):
+            snapshot = controller.snapshot()
+            if snapshot["acquired_requests"] == 2 and controller.inflight_requests == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert controller.snapshot()["acquired_requests"] == 2
+        assert controller.inflight_requests == 0
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            await ModelGateway(())._acquire_scheduled_lease(
+                ModelGateway(())._scheduling_info(request(), "endpoint")
+            )
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_gateway_drops_late_admission_error() -> None:
+    async def exercise() -> None:
+        controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+
+        def delayed_failure(*_args: object, **_kwargs: object) -> None:
+            time.sleep(0.03)
+            raise RuntimeError("late scheduling failure")
+
+        cast(Any, controller).acquire = delayed_failure
+        gateway = ModelGateway(
+            (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("never")),),
+            admission_controller=controller,
+        )
+        task = asyncio.create_task(gateway.generate_text(request()))
+        await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.05)
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("retry_count", [-1, 3])

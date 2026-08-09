@@ -8,6 +8,7 @@
     "BenchmarkInformationProfile": {
       "enum": [
         "visible_at_cutoff",
+        "task_intent_only",
         "author_plan_conditioned"
       ],
       "title": "BenchmarkInformationProfile",
@@ -29,6 +30,28 @@
           "title": "Output Contract Version",
           "type": "string"
         },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_chapter_end": {
           "minimum": 1,
           "title": "Target Chapter End",
@@ -41,6 +64,11 @@
         },
         "task_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
         },
         "task_kind": {
           "const": "memory_context_for_target_range",
@@ -207,6 +235,16 @@
       "title": "EvidenceSupportStatus",
       "type": "string"
     },
+    "GoldBlindness": {
+      "description": "Gold recoverability classification (semantic evaluation §5.7).",
+      "enum": [
+        "blind_recoverable",
+        "plan_dependent",
+        "hindsight_only"
+      ],
+      "title": "GoldBlindness",
+      "type": "string"
+    },
     "GoldItem": {
       "additionalProperties": false,
       "properties": {
@@ -221,6 +259,7 @@
         "applicable_profiles": {
           "default": [
             "visible_at_cutoff",
+            "task_intent_only",
             "author_plan_conditioned"
           ],
           "items": {
@@ -339,6 +378,48 @@
       ],
       "title": "GoldKind",
       "type": "string"
+    },
+    "GoldNeedSpec": {
+      "additionalProperties": false,
+      "description": "Evaluator-side specification of the needs a Gold conclusion requires.\n\nNeed Recall is computed deterministically against these components\n(scope / entity labels / facet kinds), never by another LLM judgment.",
+      "properties": {
+        "blindness": {
+          "$ref": "#/$defs/GoldBlindness",
+          "default": "blind_recoverable"
+        },
+        "gold_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "required_entities": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Entities",
+          "type": "array"
+        },
+        "required_facets": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Facets",
+          "type": "array"
+        },
+        "required_need_scopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Need Scopes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gold_id"
+      ],
+      "title": "GoldNeedSpec",
+      "type": "object"
     },
     "GoldType": {
       "enum": [
@@ -471,6 +552,14 @@
       "title": "Gate Eligible",
       "type": "boolean"
     },
+    "gold_need_specs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GoldNeedSpec"
+      },
+      "title": "Gold Need Specs",
+      "type": "array"
+    },
     "history_range": {
       "maxItems": 2,
       "minItems": 2,
@@ -484,6 +573,17 @@
       ],
       "title": "History Range",
       "type": "array"
+    },
+    "information_profile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "input_plan_root": {
       "anyOf": [
@@ -542,6 +642,28 @@
       "title": "Plan Obligation Gold",
       "type": "array"
     },
+    "planning_context_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planning_context_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "project_id": {
       "$ref": "#/$defs/ProjectId"
     },
@@ -569,6 +691,11 @@
         }
       ],
       "default": null
+    },
+    "task_intent": {
+      "default": "",
+      "title": "Task Intent",
+      "type": "string"
     }
   },
   "required": [
