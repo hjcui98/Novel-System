@@ -51,6 +51,10 @@ class ModelCurationContractError(ValueError):
     pass
 
 
+_QUOTE_HINT_TOTAL_CHARS = 240
+_QUOTE_HINT_PREFIX_CHARS = 32
+
+
 class CuratorProposalSemanticRejected(ModelCurationContractError):
     def __init__(
         self,
@@ -867,21 +871,24 @@ class ModelCurator:
             quotes: tuple[str, ...],
             pointer_prefix: str,
         ) -> tuple[StableId, ...]:
-            try:
-                resolved = self._evidence_generator.resolve_evidence_quotes(
-                    quotes,
-                    candidates,
-                )
-            except ValueError as error:
-                hint = self._closest_quote_hint(quotes, error, candidates)
-                raise CuratorProposalSemanticRejected(
-                    "CURATOR_PROPOSAL_INVALID_EVIDENCE",
-                    (),
-                    safe_feedback=(hint,),
-                    json_pointers=(*(f"{pointer_prefix}/{index}" for index in range(len(quotes))),),
-                    violation_rule="evidence_quote_must_match_chapter_catalog",
-                ) from error
-            return tuple(dict.fromkeys(candidate.candidate_id for candidate in resolved))
+            resolved_ids: list[StableId] = []
+            for index, quote in enumerate(quotes):
+                try:
+                    bound = self._evidence_generator.resolve_evidence_quotes(
+                        (quote,),
+                        candidates,
+                    )
+                except ValueError as error:
+                    hint = self._evidence_quote_feedback(quote, error, candidates)
+                    raise CuratorProposalSemanticRejected(
+                        "CURATOR_PROPOSAL_INVALID_EVIDENCE",
+                        (),
+                        safe_feedback=(hint,),
+                        json_pointers=(f"{pointer_prefix}/{index}",),
+                        violation_rule="evidence_quote_must_match_chapter_catalog",
+                    ) from error
+                resolved_ids.append(bound[0].candidate_id)
+            return tuple(dict.fromkeys(resolved_ids))
 
         operation_ids: list[tuple[StableId, ...]] = []
         for op_index, operation in enumerate(evidence_draft.operations):
@@ -914,41 +921,48 @@ class ModelCurator:
             no_op_evidence_candidate_ids=no_op_ids,
         )
 
-    def _closest_quote_hint(
+    def _evidence_quote_feedback(
         self,
-        quotes: tuple[str, ...],
+        quote: str,
         error: ValueError,
         candidates: tuple[EvidenceCandidate, ...],
     ) -> str:
-        """Rejection feedback pointing the model at the nearest catalog text.
+        """Truthful rejection feedback for one failing evidence quote.
 
-        The model sometimes paraphrases a dialogue cue while keeping the
-        content; exact quote binding then fails.  The hint names the closest
-        catalog candidate so the repair round copies it verbatim; evidence is
-        never auto-bound from similarity.
+        The strict resolver stays fail-closed: ambiguity and unresolved quotes
+        are still rejections.  This builder only decides what the model is told
+        next.  A catalog literal is advertised as an exact copyable repair only
+        when the exact bounded literal, exactly as emitted in this feedback,
+        passes ``resolve_evidence_quotes`` and binds to exactly one candidate.
+        The literal is never truncated after validation; only the reason prefix
+        is sized to fit the 240-character feedback budget.  When no bounded
+        resolver-valid literal exists, only truthful generic longer-fragment
+        guidance is returned and no unverified nearest literal is named.
         """
 
-        closest = next(
-            (
-                candidate
-                for quote in quotes
-                for candidate in (self._evidence_generator.closest_candidate(quote, candidates),)
-                if candidate is not None
-            ),
-            None,
+        marker = "; copy this exact catalog text verbatim as the evidence quote: "
+        literal_budget = _QUOTE_HINT_TOTAL_CHARS - len(marker) - _QUOTE_HINT_PREFIX_CHARS
+        literal = self._evidence_generator.copyable_literal_for(
+            quote,
+            candidates,
+            max_chars=literal_budget,
         )
-        if closest is not None:
-            return (
-                f"{str(error)[:100]}; the closest catalog text is {closest.text[:100]} "
-                "- copy it verbatim as the evidence quote"
-            )[:240]
+        if literal is not None:
+            prefix_budget = max(
+                0,
+                _QUOTE_HINT_TOTAL_CHARS - len(marker) - len(literal),
+            )
+            prefix = f"{str(error)[:100]}"[:prefix_budget]
+            return f"{prefix}{marker}{literal}"
         if "too short" in str(error):
             return (
-                str(error)[:140]
-                + " - quote a longer verbatim fragment (at least 8 characters, "
-                + "preferably a full sentence)"
-            )[:240]
-        return str(error)[:240]
+                f"{str(error)[:140]} - quote a longer verbatim fragment "
+                "(at least 8 characters, preferably a full sentence)"
+            )[:_QUOTE_HINT_TOTAL_CHARS]
+        return (
+            f"{str(error)[:160]} - quote a longer verbatim/full-sentence fragment "
+            "from the chapter text"
+        )[:_QUOTE_HINT_TOTAL_CHARS]
 
     @staticmethod
     def _normalize_entity_reference_aliases(

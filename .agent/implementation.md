@@ -1,6 +1,220 @@
 # OpenCode implementation and evidence
 
-- State: `RETURN_TO_CODEX`（§15：人工授权 thinking 重测 b11 完成——模型合成层被证明**机械上能**
+- State: `RETURN_TO_CODEX_REVIEW`（§26：ch32 Curator 反馈修复实现 + 全量质量 + 全新身份真实
+  ch32 诊断已闭合；等待 Codex review）
+
+## 26. ch32 Curator 反馈死锁修复（2026-08-10，Codex REPAIR）
+
+### 26.1 修复实现（最小机制，仅两个既有 owner）
+
+- 严格 `resolve_evidence_quotes()` 未改动：歧义/未解析引用继续 fail-closed。
+- `EvidenceCandidateGenerator`（`evidence_candidates.py`）：
+  - 提取 `_similarity_ratio()` 共享相似度计算（`closest_candidate` 行为不变）；
+  - 新增 `copyable_literal_for(quote, candidates, *, max_chars)`：按相似度排序候选，只返回
+    **精确字符串经同一 `resolve_evidence_quotes((literal,), candidates)` 唯一解析**且长度
+    ≤ max_chars 的 catalog 文本；找不到则返回 None。相似度仅用于反馈，不自动绑定证据。
+- `ModelCurator`（`model_curation.py`）：
+  - `resolve_quotes` 改为逐 quote 独立解析：反馈与 JSON pointer 绑定到**实际失败的
+    quote/index**（多 quote 操作不再把全部 index 当失败、不再用别的 quote 的相似候选）；
+  - `_closest_quote_hint` 替换为 `_evidence_quote_feedback(quote, error, candidates)`：
+    仅在 `copyable_literal_for` 找到可解析字面量时以 `"copy this exact catalog text verbatim
+    as the evidence quote: <literal>"` 广告之；**字面量校验后绝不被 100/240 截断**
+    （前缀按 240 预算收紧，literal 完整保留）；无可解析字面量时只返回诚实的
+    longer-verbatim/full-sentence 通用指导，不再谎称最近文本可复制。
+- 常量：`_QUOTE_HINT_TOTAL_CHARS=240`、`_QUOTE_HINT_PREFIX_CHARS=32`（literal 预算
+  240-32-marker，保证完整字面量 + 前缀 ≤ 240）。
+
+### 26.2 回归测试（license-free，全部新增/更新）
+
+- `test_evidence_candidate_generation.py`：
+  - `test_copyable_literal_skips_ambiguous_nearest_for_resolver_valid_lower`：最近候选歧义、
+    较低排序候选唯一可解析时返回后者；
+  - `test_copyable_literal_every_advertised_literal_is_resolver_valid`：每个被广告的字面量都
+    是 catalog 原文且被同一 resolver 唯一接受；
+  - `test_copyable_literal_never_truncates_validated_literal`：max_chars 只做选择、绝不截断已
+    校验字面量（超长唯一字面量返回 None 而非截断前缀）；
+  - `test_copyable_literal_none_when_no_literal_resolves`、`..._rejects_non_positive_max_chars`。
+- `test_curator_evidence_contract_v2.py`：
+  - 更新 `test_closest_quote_hint_advertises_copyable_literal_when_resolvable` 与
+    `test_v2_rejection_feedback_advertises_resolver_valid_copyable_literal`：断言广告字面量经
+    同一 resolver 唯一解析（取代旧的 "closest catalog text/copy it verbatim" 措辞断言）；
+  - `test_v2_multi_quote_rejection_points_at_failing_quote_only`：多 quote 操作的
+    `json_pointers == ("/operations/0/evidence_quotes/1",)` 且反馈点名失败 quote；
+  - `test_v2_no_resolvable_literal_falls_back_to_generic_guidance`：无可解析字面量时反馈不含
+    "copy this exact catalog text"，含 longer verbatim/full-sentence 通用指导；
+  - `test_too_short_quote_without_copyable_literal_uses_generic_guidance`。
+- 歧义 fail-closed 既有测试（`test_evidence_quote_resolver_ambiguity_fails_closed` 等）全部
+  保持通过；`closest_candidate` 相似度测试保持通过。
+
+### 26.3 全量质量与 pre-commit（修复后最终树）
+
+- `make quality`：Ruff lint/format 通过、strict MyPy 通过、Pytest `1650 passed, 9 deselected`
+  （252.28s）、`22279 stmts / 6326 branches`、`100.00%` branch coverage（153 files skipped due
+  to complete coverage）。
+- `PRE_COMMIT_HOME=/tmp/ns-precommit-cache .conda-env/bin/pre-commit run --all-files`：ruff
+  check、ruff format、mypy、deterministic pytest 全部通过。
+- `git diff --check`：无输出。
+- 修复后 executable-source fingerprint（`_code_source_fingerprint` 算法）：
+  `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`（dirty，未提交；
+  `git status` 仅 src/novel_agent/services/evidence_candidates.py 与 model_curation.py 及两个
+  test 文件改动）。
+
+### 26.4 冻结 ch32 离线复验（修复后，不调模型）
+
+- 用 frozen bundle ch32 文本 + 115 个 catalog 候选复验：
+  - `先生，你就收了我吧。` → 广告字面量 `第32章 先生，你就收了我吧\n　　我知道昨夜是我行事
+    不妥，我向大家再次道歉，但他对我真的很重要…`，经同一 resolver 唯一解析到
+    `78786a855267`，反馈总长 169 ≤ 240；
+  - `“拜师礼。` → 广告字面量 `”\n　　落落指着地板上那些事物，说道：“这些是拜师礼。`，唯一解析
+    到 `0a068ce8c6d5`，反馈总长 116 ≤ 240；
+  - 旧反馈建议的最近文本（`"先生，你就收了我吧。` / `"拜师礼。`）本身仍被同一 resolver 拒绝
+    ——证明修复前的死锁确实源于反馈广告了不可解析字面量。
+
+### 26.5 全新身份真实 ch32 诊断（冻结 base context + 真实端点）
+
+- 全新诊断身份（不续跑/不复用正式身份）：experiment `stage2m-repair-ch32-diag-20260810`、
+  DB `na_s2m_repair_ch32_diag_v1`（`CREATE DATABASE ... TEMPLATE` 自冻结库复制，正式库
+  `na_s2m_phase4_final_apc_v1` 未动）、输出根 `/tmp/ns-stage2m-repair-ch32-diag-20260810`
+  （含 `project/` 为冻结 canonical 项目复制，正式输出根未动）。`--resume-project` +
+  `--resume-commit sha256:b0061432…（ch31 head）--resume-chapter 31 --max-chapter 32`，
+  仅重放 ch32；语义/传输配置与 §25.3 完全一致；修复后 dirty fingerprint
+  `1e7d1f4f…ba2de` 经 `--allow-dirty-diagnostic` 如实记录（诊断，非正式）。
+- 结果（ch32 提交成功闭合）：
+  - 3 次 curator proposal、2 次 rejection、第 3 次 accepted；`poison_loops=0`（旧运行 5 个
+    隔离周期 26 次同签名拒绝；本次拒绝签名各不相同，且反馈均广告可解析字面量）；
+  - `accepted_candidate_id = candidate.memory-write.teacher-forced.chapter.32.1.63ddcb2a87cb9889`，
+    `base_commit = sha256:b00614329469d4c8806bb9a353ab51b47e6aabb6a88445c0046c214fda2848`
+    （冻结 base）；
+  - `canonical_commit_accepted=true`，`continuation_decision=safe_to_continue`，commit receipt
+    artifact `sha256:f985b75669c4736df831eeeef9e8e1b7a103a7a36d737fe43137c53ea0ffe105`，
+    checkpoint ref `sha256:72578a45c9512fcdb2a4d1ecdac648ee4f13e28a0c668a8bbaec4d6e56ed9d06`；
+  - 进度 manifest：`last_accepted_chapter=32`，commit `sha256:3504a57278d2101515c331d43776d750d4151a117d8b1d47a294a9e56140d011`；
+  - accepted change：`changes.model.42ba20081b620bbf34f01a4d`（1 个 obligation operation +
+    精确 evidence ref/quote hash）。
+- 诊断 run 结束时的 `TeacherForcedBenchmarkError: scenario lifecycle incomplete` 仅因
+  `--max-chapter 32` 声明了 C20 但本诊断不重放 ch20（单章走廊语义）；ch32 提交本身成功，
+  不构成修复失败。未修改正式实验/DB/output；TIO 未启动。
+
+### 26.6 交回状态（`RETURN_TO_CODEX_REVIEW`）
+
+- 未 commit、未 merge、未 resume 正式身份、未复用正式 DB/output root；未启动 TIO 或新正式
+  矩阵。formal §6.3 重跑须等 Codex 接受并形成新 clean executable commit（用户授权）后从 ch0
+  以全新身份执行。
+
+## 25. 正式 Phase 4 全量运行（2026-08-09，§6.3 全新身份）
+
+### 25.1 只读身份核查（§6.3 前置）
+
+- HEAD `5ef295fe6a5fedfcef4b02af620dbb988244a58f` 与已接受 manifest 一致；`git diff --check`
+  无输出；executable scope（src/scripts/schemas/Makefile/pyproject.toml）`git status` 为空。
+- `_code_source_fingerprint()` = `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`
+  与 review 接受的 v32 身份逐字节一致；运行只读身份核查不矛盾已接受 manifest，按 §6.3
+  不重复 §§5.1-5.5、§6.1、§6.2。
+- 冻结 bundle 编译/导入复验：`HumanBenchmarkCompiler().compile()` + `BenchmarkBundleImporter()
+  .validate()` 通过；`content_hash = sha256:794b6a91f0b8fb441b5ec5b4af743654411eed7be486c8b6caf0d46e08d5b352`
+  与 accepted v32 manifest 的 `benchmark_content_hash` 一致；五个 case（ZTJ-P001..P005，
+  history (1,20)/(1,40)/(1,60)/(1,80)/(1,95) → target (21,25)/(41,45)/(61,65)/(81,85)/(96,100)）
+  均为 `author_plan_conditioned`，派生 context 编译/绑定通过（§4.1 修复生效）。
+- 基础设施：8002 `qwen36-27b-nvfp4`（`--max-num-batched-tokens 2048`、MTP=2、max-model-len
+  131072，与接受基线一致）；embedding/reranker 以 accepted v32 manifest 相同的
+  `http://127.0.0.1:8281/v1/embeddings` / `http://127.0.0.1:8282/rerank` 启动并通过
+  `native_models.py up` 健康校验（本仓 PID 记录缺失，为另一 worktree 启动；已用本仓 native
+  infra 在 8281/8282 重新拉起，runtime fingerprint `1d737b51...` 与接受 manifest 一致）；
+  OpenSearch 200、PostgreSQL 5432 可达。
+
+### 25.2 证据隔离（§4.0，先于代码变更完成）
+
+- 旧运行 `/tmp/ns-stage2m-phase4-apc-20260807` 及其数据库 `na_s2m_phase4_v1` 保持只读，不
+  复用/不覆盖/不升级为正式身份。其五段/Planner-health/并发结论维持
+  `DIAGNOSTIC_ONLY_INVALIDATED`（旧公式 global-union + 非 endpoint-global scheduler + 旧
+  fingerprint `4a3f3326...`）。原始 prompts/responses/receipts/progress/transport timing、
+  六个 content-addressed paired summary（C20 `a9b892f`/`fe15a25`、C40 `0d61e86`/`819fa03`、
+  C60 `ada6b4a`、C80 `89d6a88`）、四个 Stage 2M case 报告（C20 `25f7aeb`、C40 `acb89c3`、
+  C60 `35f940f`、C80 `b585795`）与旧 top-level 覆盖事实（C20/C40/C60 `e2e_paired_report.json`
+  曾被覆盖，不重建）全部保留为诊断证据。
+- P004/P005 frozen inputs / Gold / GoldNeedSpec / `frozen_inputs.json` 未修改；未运行旧公式
+  P005；未提交、未合并。
+
+### 25.3 全新正式身份（APC 主运行）
+
+- 实验：`stage2m-phase4-final-apc-20260809`
+- 输出：`/tmp/ns-stage2m-phase4-final-apc-20260809`（全新，无旧产物）
+- 数据库：`na_s2m_phase4_final_apc_v1`（全新创建 + `alembic upgrade head` 到 0007）
+- 配方（与 accepted v32 bounded 身份对齐，仅换全新 identity + §6.3.5 固定并发）：
+  `--source benchmarks/private/ztj_memory_pilot_v0.1 --arms A --semantic-backend local_openai
+  --retrieval-backend real_hybrid --model-base-url http://127.0.0.1:8002/v1 --model
+  qwen36-27b-nvfp4 --model-max-output-tokens 8192 --model-max-retries 1
+  --support-max-concurrent-needs 2 --support-kv-token-budget 200000 --endpoint-request-limit 1
+  --checkpoint-workers 1 --evaluator-max-concurrent-batches 1 --no-support-multi-thinking
+  --support-multi-thinking-token-budget 0 --support-multi-max-output-tokens 2048
+  --model-scheduling-timeout-seconds 900`
+- Manifest 证据：`code_source_dirty=false`、`code_commit=5ef295f`、`code_source_fingerprint
+  =20daa...881`、`run_config_hash=sha256:03f0e5be...`（与 accepted v32 serial/concurrent
+  完全一致）、`execution_config`（needs=2, endpoint=1, evaluator=1, checkpoint=1, KV
+  configured 200000/effective 160000, reserve 0.2, multi thinking=false/0/2048,
+  scheduling timeout 900）、Writer 4000、Ledger 12000、`gate_metric_formula.v2`、
+  `benchmark_content_hash=794b6a91...`。
+- 启动时间：2026-08-09 ~22:19 +08:00；进程 3569131（setsid/nohup，日志
+  `/tmp/ns-stage2m-phase4-final-apc-20260809.run.log`）。
+
+### 25.4 运行进程记录（2026-08-09 晚至 2026-08-10）
+
+- 全量 replay 从 ch0 前进，ch9/ch29/ch32 多次触发设计的 `TeacherForcedControlledPause`
+  （curator 证据门 fail-closed 隔离 + `--resume` 重试，与旧运行 ch64 同型机制）。每次隔离都
+  持久化完整 quarantine package、proposal attempt/rejection/feedback receipts。
+- ch9 与 ch29 的重试成功（隔离后重跑提交）；ch32 连续 5 个隔离周期均失败，共 26 次
+  `CURATOR_PROPOSAL_INVALID_EVIDENCE` 拒绝，且全部为同一失败模式（见 §25.5）。
+- 运行期间基础设施事件：
+  1. 首个 `--resume` 段在 ch32 投影构建时触发 OpenSearch `max_shards_per_node` 瞬时上限
+     （1600/1600 LOCAL_ONLY shards）。本地单节点 dev cluster 已积累 895 个历史 index
+     （1599 shards，来自历次实验；projection 本身按设计 primary-only，见
+     `search_retrieval.py:284-291`）。已把瞬时上限提升到 3200（`PUT /_cluster/settings`
+     transient，可逆、不删任何旧证据），随后 replay 正常继续。该上限不属于 repo 管理配置，
+     不影响 benchmark 语义/预算/身份。
+  2. 8002 endpoint 健康全程 200；本仓 embedding/reranker 服务在 8281/8282 拉起后健康稳定。
+
+### 25.5 ch32 阻断根因：curator 反馈提示自相矛盾（首现实现缺陷）
+
+- 章 32 原文同时包含「第32章 先生，你就收了我吧」（章节标题）与对话「"先生，你就收了我吧。」，
+  且「拜师礼。」以 `"这些是拜师礼。"` 和独立 `"拜师礼。"` 两种形式出现。`resolve_evidence_quotes`
+  （`evidence_candidates.py:98-195`，accepted v32 代码）对任一短引用都判定为 ambiguous
+  （2 candidates）——这是正确的 fail-closed 行为。
+- 问题在 `_closest_quote_hint`（`model_curation.py:917-943`）：反馈让模型「把最近 catalog 文本
+  逐字复制为引用」。但最近候选本身就是不可解析的文本：对 `先生，你就收了我吧。`，`closest_candidate`
+  返回对话候选 `"先生，你就收了我吧。`（ratio 1.0），其逐字复制仍触发同一 ambiguous 拒绝；
+  对 `"拜师礼。` 同理。模型照提示逐字复制 → 再次被拒 → 同一提示，形成确定性死锁。
+- 离线复验（accepted 代码、frozen 原文）：可解析的合法引用确实存在——`第32章 先生，你就收了我吧`
+  与 `我知道昨夜是我行事不妥，我向大家再次道歉，但他对我真的很重要` 均唯一解析到 candidate
+  `78786a855267`。因此章 32 在原理上可过；但反馈循环从未把模型引向这些形式。
+- 回归证据：旧运行（`420e163` / fingerprint `4a3f3326`）在宽松旧解析器下提交过 ch32
+  （completed_chapters 含 32）。严格 `resolve_evidence_quotes`（151 行新增）只在最终接受代码
+  `5ef295f`（fingerprint `20daa...`）中引入；bounded 准入证据使用冻结 Planner artifact + C40
+  单点评估，从未真实 replay ch0-31，因此该严格解析器在完整 replay 走廊上是首现运行。ch32 的
+  反馈死锁属于正式运行才暴露的第一实现缺陷。
+- 计数证据：5 个 ch32 quarantine package（`9346a70...` ×5）+ 1 个 ch9（`30cd1b...`）；
+  26 条 `invalid_evidence` 拒绝；唯一反馈消息 3 条（全部指向不可解析的短引用）。ch32 自
+  `last_accepted_chapter=31` 起无法继续提交，canonical chain 中断 → C40/C60/C80/C95 走廊
+  全部不可达 → P002-P005 无法评估，正式矩阵无法完成。
+
+### 25.6 停止与交回（§6.3.11 / §0.1）
+
+- 按 `.agent/plan.md` §0.1 与 §6.3.11：正式矩阵的有效执行需要改动代码（`_closest_quote_hint`
+  必须只建议可解析引用，或解析器需要返回能唯一解析的较长 span），而正式运行身份绑定接受代码
+  fingerprint；在运行中修复会改变实验身份，属明确禁止的「repair in place」。因此停止，交回
+  Codex 决定技术方向。
+- 未修复代码、未改 prompt/公式/预算/Gold/阈值；未重用旧身份；未启动 TIO ablation（同一 replay
+  走廊会在 ch32 遭遇同一死锁，不重复无效运行）。manifest 的 `code_source_fingerprint` 保持
+  `20daa...881` 不变。
+- 实验身份保留：`stage2m-phase4-final-apc-20260809` / `na_s2m_phase4_final_apc_v1` /
+  `/tmp/ns-stage2m-phase4-final-apc-20260809`；ch0-31 canonical commits 已持久化（32 章完成）。
+- 建议给 Codex 的技术方向（仅证据，不替 Codex 决策）：
+  1. `_closest_quote_hint` 只返回「逐字复制后可解析」的 catalog span（先对候选做
+     `resolve_evidence_quotes` 自检，失败则提升到更长窗口/标题前缀），消除反馈死锁；
+  2. 或允许 curator 在 N 次同因隔离后按 typed reason 显式跳过该 operation（不改变 evidence
+     合同，只改变走廊重试语义——属语义设计变更，须 Codex 定）；
+  3. 修复后以新的 experiment/DB/output 身份重跑正式矩阵（§6.3.6/7：不得复用本身份）。
+
+- State（旧行保留为历史）：`RETURN_TO_CODEX`（§15：人工授权 thinking 重测 b11 完成——模型合成层被证明**机械上能**
   跨章合成（b11 的 verified claim 均为真实多章合成），但**不产出** G06/G09 所需的完整结论：
   verdict 层 G06 **UNTRACEABLE**、G09 **MISS**、weighted=0.0；结论-targeting/问题对齐成为
   残余首层损失，需 Codex 架构决策）

@@ -496,7 +496,7 @@ def test_evidence_quote_resolver_rejects_single_char_and_unresolved() -> None:
     assert gen.resolve_evidence_quotes(("我反对",), (cand,)) == (cand,)
 
 
-def test_closest_quote_hint_suggests_longer_fragment_when_unresolvable() -> None:
+def test_closest_quote_hint_advertises_copyable_literal_when_resolvable() -> None:
     text = "陈长生在客栈整理道藏笔记。"
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
@@ -508,8 +508,34 @@ def test_closest_quote_hint_suggests_longer_fragment_when_unresolvable() -> None
                 root, 21, _COMMIT, _world(), _request("req.v2.too-short-hint")
             )
         )
-    assert "longer verbatim fragment" in exc.value.safe_feedback[0]
-    assert "too short" in exc.value.safe_feedback[0]
+    feedback = exc.value.safe_feedback[0]
+    assert "copy this exact catalog text verbatim" in feedback
+    literal = feedback.split("copy this exact catalog text verbatim as the evidence quote: ", 1)[1]
+    resolved = gen.resolve_evidence_quotes((literal,), gen.generate(root, 21))
+    assert len(resolved) == 1
+
+
+def test_too_short_quote_without_copyable_literal_uses_generic_guidance() -> None:
+    """A too-short quote with no bounded resolver-valid literal must get
+    truthful longer-fragment guidance, never an unverified nearest literal."""
+
+    text = "\u9648\u957f\u751f\u62ac\u8d77\u5934\u3002\u9648\u957f\u751f\u62ac\u8d77\u5934\u3002"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert gen.copyable_literal_for("\u77ed", candidates, max_chars=160) is None
+    draft = _v2_state_draft("\u77ed")
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(CuratorProposalSemanticRejected, match="INVALID_EVIDENCE") as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.too-short-generic")
+            )
+        )
+    feedback = exc.value.safe_feedback[0]
+    assert "copy this exact catalog text verbatim" not in feedback
+    assert "too short" in feedback
+    assert "longer verbatim fragment" in feedback
 
 
 def test_closest_candidate_skips_punctuation_only_spans() -> None:
@@ -1012,13 +1038,18 @@ def test_v2_explicit_no_op_can_pass_when_support_gate_disabled() -> None:
     assert curator.last_no_op_verification is None
 
 
-def test_v2_rejection_feedback_names_closest_catalog_candidate() -> None:
-    text = "宁婆婆面无表情说道\uff1a我只能进国教学院。"
+def test_v2_rejection_feedback_advertises_resolver_valid_copyable_literal() -> None:
+    text = "\u5b81\u5a46\u5a46\u9762\u65e0\u8868\u60c5\u8bf4\u9053\uff1a"
+    text += "\u6211\u53ea\u80fd\u8fdb\u56fd\u6559\u5b66\u9662\u3002"
     root = _root_with(text)
     gen = EvidenceCandidateGenerator()
     candidates = gen.generate(root, 21)
     assert candidates
-    draft = _v2_state_draft("宁婆婆看着他面无表情说道\uff1a但你只能进国教学院。")
+    failing_quote = (
+        "\u5b81\u5a46\u5a46\u770b\u7740\u4ed6\u9762\u65e0\u8868\u60c5\u8bf4\u9053\uff1a"
+        "\u4f46\u4f60\u53ea\u80fd\u8fdb\u56fd\u6559\u5b66\u9662\u3002"
+    )
+    draft = _v2_state_draft(failing_quote)
     curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
     with pytest.raises(
         CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
@@ -1028,8 +1059,11 @@ def test_v2_rejection_feedback_names_closest_catalog_candidate() -> None:
                 root, 21, _COMMIT, _world(), _request("req.v2.closest-hint")
             )
         )
-    assert "closest catalog text" in exc.value.safe_feedback[0]
-    assert "copy it verbatim" in exc.value.safe_feedback[0]
+    feedback = exc.value.safe_feedback[0]
+    assert "copy this exact catalog text verbatim" in feedback
+    literal = feedback.split("copy this exact catalog text verbatim as the evidence quote: ", 1)[1]
+    resolved = gen.resolve_evidence_quotes((literal,), candidates)
+    assert len(resolved) == 1
 
 
 def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
@@ -1057,6 +1091,88 @@ def test_v2_rejects_unknown_no_op_evidence_candidate_id() -> None:
         )
     assert exc.value.json_pointers == ("/no_op_evidence_quotes/0",)
     assert "evidence quote unresolved" in exc.value.safe_feedback[0]
+
+
+def test_v2_multi_quote_rejection_points_at_failing_quote_only() -> None:
+    """A multi-quote operation must bind feedback and the JSON pointer to the
+    actual failing quote/index, not to an unrelated quote with a similarity
+    candidate."""
+
+    text = "\u5b81\u5a46\u5a46\u9762\u65e0\u8868\u60c5\u8bf4\u9053\uff1a"
+    text += "\u6211\u53ea\u80fd\u8fdb\u56fd\u6559\u5b66\u9662\u3002"
+    text += "\u53e6\u4e00\u4e2a\u5b8c\u5168\u4e0d\u540c\u7684\u539f\u6587\u7247\u6bb5\u3002"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    assert candidates
+    good = next(item for item in candidates if "\u56fd\u6559\u5b66\u9662" in item.text)
+    fake_quote = (
+        "\u5b8c\u5168\u4e0d\u5728\u76ee\u5f55\u4e2d\u7684\u4f2a\u9020\u5f15\u7528\u5185\u5bb9"
+    )
+    draft = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.attitude"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="cultivation-attitude",
+                    value="extreme_confidence",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_quotes=(good.text, fake_quote),
+            ),
+        ),
+    )
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.multi-quote-fail")
+            )
+        )
+    assert exc.value.json_pointers == ("/operations/0/evidence_quotes/1",)
+    assert fake_quote in exc.value.safe_feedback[0]
+
+
+def test_v2_no_resolvable_literal_falls_back_to_generic_guidance() -> None:
+    """When no bounded catalog literal is resolver-valid, feedback must not
+    name an unverified nearest literal and must not claim copying works."""
+
+    text = (
+        "\u540c\u4e00\u4e2a\u8db3\u591f\u957f\u7684\u539f\u6587\u7247\u6bb5\u51fa\u73b0\u4e24\u6b21\u3002"
+        "\u540c\u4e00\u4e2a\u8db3\u591f\u957f\u7684\u539f\u6587\u7247\u6bb5\u51fa\u73b0\u4e24\u6b21\u3002"
+    )
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+
+    def _resolves_uniquely(candidate_text: str) -> bool:
+        try:
+            return len(gen.resolve_evidence_quotes((candidate_text,), candidates)) == 1
+        except ValueError:
+            return False
+
+    # Ensure every candidate text is ambiguous so no copyable literal exists.
+    assert all(not _resolves_uniquely(candidate.text) for candidate in candidates)
+    draft = _v2_state_draft("\u540c\u4e00\u4e2a\u8db3\u591f\u957f\u7684\u539f\u6587\u7247\u6bb5")
+    curator = ModelCurator(_FakeGateway(draft), evidence_generator=gen, enforce_support_gate=True)
+    with pytest.raises(
+        CuratorProposalSemanticRejected, match="CURATOR_PROPOSAL_INVALID_EVIDENCE"
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root, 21, _COMMIT, _world(), _request("req.v2.no-copyable-literal")
+            )
+        )
+    feedback = exc.value.safe_feedback[0]
+    assert "copy this exact catalog text verbatim" not in feedback
+    assert "longer verbatim/full-sentence fragment" in feedback
 
 
 def _v2_parent_changes(

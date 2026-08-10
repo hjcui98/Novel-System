@@ -1,19 +1,47 @@
-# Stage 2M Plan-Conditioned 语义闭环与全局调度修复执行计划
+# Stage 2M 新架构正式 Benchmark 执行计划（含历史修复依据）
 
 - Lifecycle: `ACTIVE_TASK_SUPPLEMENT`
-- State: `READY_FOR_IMPLEMENTATION`
-- Updated: `2026-08-08 +08:00`
+- State: `READY_FOR_FORMAL_BENCHMARK`
+- Updated: `2026-08-09 +08:00`
 - Stage: `Stage 2M`
-- Current gate: `Gate 0-3 implementation evidence invalidated by audit / M4 HOLD`
-- Git baseline: `420e163` plus the current dirty Stage 2M worktree
+- Current gate: `chapter-32 repair committed / formal APC-TIO benchmark pending / M4 HOLD`
+- Clean executable implementation commit: `5ef295f`; source fingerprint
+  `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`
+- Clean executable fingerprint after accepted repair:
+  `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
 - Working tree: preserve all current user changes, frozen inputs, implementation evidence, and
   Phase 4 artifacts; do not reset, discard, overwrite, or silently reclassify them
 - Architect and final reviewer: Codex
-- Implementation, tests, real API execution, monitoring, artifact analysis, and in-direction repair:
-  OpenCode default `build`
+- Formal benchmark execution, monitoring, artifact analysis, and evidence reporting:
+  OpenCode default `build`; code/config repair is outside the current run
 - Commit and merge owner: Codex
 
 ## 0. Authority, purpose, and precedence
+
+### 0.1 Current OpenCode assignment (supersedes earlier implementation sequencing)
+
+The current task is measurement, not another development or calibration cycle. Run the completed
+architecture over the fixed P001-P005 benchmark cases. All five cases are peer benchmark inputs;
+they are not divided into development, validation, or test sets, and none may be used to tune the
+same run. Earlier sections describing implementation and bounded admission remain provenance and
+acceptance context, not work that must be repeated.
+
+Use the already accepted configuration and execute §6.3. If valid execution would require any code,
+prompt, formula, budget, Gold, or runtime-policy change, stop and return to Codex. Do not repair and
+resume under the same experiment identity. A poor metric is a benchmark result, not by itself an
+execution failure or authorization to tune.
+
+### 0.2 Current repair assignment (2026-08-10; temporarily supersedes §0.1 execution)
+
+The first formal APC identity correctly stopped at chapter 32 because the strict evidence resolver
+rejected ambiguous quotes while `_closest_quote_hint()` repeatedly recommended another literal that
+the same resolver could not bind. OpenCode's next action is `.agent/review.md` and §12, not §6.3.
+Repair and prove the feedback invariant, then return to Codex review. Do not resume the stopped APC
+identity or start TIO/formal replacement runs before a new clean executable commit is accepted.
+
+Codex accepted the completed repair in `.agent/review.md` on 2026-08-10 and formed the authorized
+local clean commit. No further OpenCode repair or diagnostic run is required. The next action is
+§6.3: restart the formal APC matrix from ch0 under wholly new identities, then run TIO separately.
 
 This file is the task-local implementation handoff. It does not replace the repository document
 hierarchy or create a third architecture. OpenCode must read the following authorities before
@@ -668,7 +696,7 @@ Real execution is staged. Do not jump directly to another 95-chapter run.
 
 ### 6.1 Focused Planner/artifact run
 
-Using the configured real local endpoint and a development case (P001 or P002):
+Using the configured real local endpoint and one bounded benchmark case (P001 or P002):
 
 1. execute one APC Planner invocation under final code;
 2. persist the complete Planner artifact;
@@ -677,12 +705,12 @@ Using the configured real local endpoint and a development case (P001 or P002):
 5. prove a changed context/world/prompt hash refuses reuse;
 6. show no planned/PLAN_NODE Need entered observed retrieval.
 
-P003 may be used once as validation after P001/P002 behavior is stable; it must not be used to tune a
-case-specific prompt. P004/P005 remain frozen test cases.
+This bounded admission evidence is already complete. The P001-P005 formal run has no
+development/validation/test role split and must not tune a case-specific prompt.
 
 ### 6.2 Serial/concurrent parity and scheduler load run
 
-Run the same bounded APC development checkpoint twice from the same canonical commit and frozen
+Run the same bounded APC checkpoint twice from the same canonical commit and frozen
 Planner artifact:
 
 - serial scheduling (`need concurrency=1`, evaluator concurrency=1);
@@ -704,26 +732,39 @@ Model output may vary; semantic input parity must not.
 
 ### 6.3 Fresh Phase 4 identity
 
-Only after §§5.1-5.5 and §§6.1-6.2 pass:
+§§5.1-5.5 and §§6.1-6.2 have already passed under the accepted v32 executable identity; do not
+repeat them unless the initial read-only identity check contradicts the accepted manifest. Execute:
 
 1. compile/import the unchanged frozen source inputs with the corrected derived contexts;
 2. create a fresh experiment/database/output identity and final code/config/formula hashes;
 3. run the APC main profile through P001-P005;
 4. run TASK_INTENT_ONLY as the defined ablation under the same fixed semantic budgets and final
    formula;
-5. persist and verify each checkpoint-scoped report and manifest child ref before starting the next
+5. fix support Need concurrency at `2`, endpoint request limit at `1`, Evaluator concurrency at `1`,
+   and checkpoint worker concurrency at `1`; fix Claim Support multi at
+   `thinking=false / reasoning budget=0 / max output=2048`, Writer at `4000`, and Ledger at `12000`;
+6. give APC and TASK_INTENT_ONLY separate fresh experiment IDs and state namespaces; neither may
+   reuse an old database, output root, attempt directory, or mutable artifact from an earlier run;
+7. persist and verify each checkpoint-scoped report and manifest child ref before starting the next
    checkpoint; never reuse an attempt directory after a code/config/formula change;
-6. retain the old history/VAC artifacts as a labelled legacy baseline; do not silently aggregate
+8. retain the old history/VAC artifacts as a labelled legacy baseline; do not silently aggregate
    old-formula scores with the new report;
-7. monitor endpoint health, scheduler telemetry, checkpoint progress, projection freshness, artifact
+9. monitor endpoint health, scheduler telemetry, checkpoint progress, projection freshness, artifact
    retention, and leakage throughout;
-8. if a corridor or replay fails, diagnose and repair only within this plan, then use a new run
-   identity when code/config/formula changes.
+10. continue through all five cases even when a quality metric is low; stop only when an integrity,
+   safety, infrastructure, or artifact failure makes the evidence invalid;
+11. if valid execution requires a code, prompt, formula, budget, Gold, or runtime-policy change, stop
+   and return to Codex; do not repair in place or reuse the experiment identity.
 
-The fresh run reports Gate 0-3 measurements but does not choose new thresholds. P001/P002 calibration
-evidence is returned to Codex for threshold freezing; P004/P005 are held-out evidence and must not
-drive code, prompt, or threshold edits. Agentic need not run for this single-arm semantic matrix;
-if it is not run, the report must state that no paired claim exists without invalidating Arm A.
+The fresh run reports raw Gate 0-3 measurements but does not choose or tune thresholds. P001-P005
+are one fixed peer benchmark matrix: there is no development/validation/test split and no held-out
+claim. Agentic need not run for this APC/TIO benchmark; if it is not run, the report must state that
+no Agentic paired claim exists without invalidating the completed matrix.
+
+On completion, append the command/config identities, per-checkpoint report/manifest refs, lifecycle
+and resource telemetry, raw metrics, and any typed failures to `.agent/implementation.md`, then set
+the handoff state to `RETURN_TO_CODEX_REVIEW`. Do not commit, merge, push, or rewrite the governing
+documents.
 
 ## 7. Acceptance signals
 
@@ -892,3 +933,31 @@ Obtain and freeze one successful non-fallback P002 Planner artifact with replay/
 before fan-out or bounded concurrency work. Only if the accepted compact output path remains too
 slow may the existing Validator perform evidence-backed compatible-facet deduplication; any change
 to irreducible completion facets, query corridor, or workset semantic budget returns to Codex.
+
+## 12. 2026-08-10 chapter-32 Curator feedback repair
+
+The immutable formal-run evidence in `.agent/implementation.md` §25 and `.agent/review.md` establishes
+one local contract failure: similarity-only rejection feedback can recommend a catalog literal that
+the strict evidence resolver will reject again. The resolver's fail-closed ambiguity behavior remains
+correct and must not be relaxed.
+
+OpenCode must implement exactly the bounded repair in `.agent/review.md`:
+
+1. identify the actual failing quote/index in a multi-quote operation;
+2. advertise a catalog literal as exact/copyable only if the exact bounded emitted literal resolves
+   uniquely through the same `resolve_evidence_quotes()` implementation;
+3. never truncate a literal after validation; use truthful generic longer-fragment feedback when no
+   bounded resolver-valid literal exists;
+4. preserve strict ambiguity rejection, feedback-only similarity, evidence provenance, typed
+   quarantine, retries, budgets, prompts, Gold and all Stage/Gate boundaries;
+5. add license-free regressions, run final quality/pre-commit, and obtain one fresh focused real
+   chapter-32 diagnostic proof using the frozen base context.
+
+Stop with `RETURN_TO_CODEX_REVIEW` after the focused proof. OpenCode must not commit/merge, resume the
+blocked formal identity, start TIO, or launch the replacement full matrix. Formal §6.3 execution is
+re-enabled only after Codex accepts this repair and a new clean executable commit is formed with user
+authorization.
+
+Codex review outcome on 2026-08-10: `PASS`. The focused repair and diagnostic evidence are complete,
+and the authorized clean local commit has been formed. Do not perform more repair work or real
+diagnostics; restart the formal matrix from ch0 with wholly new APC and TIO identities under §6.3.

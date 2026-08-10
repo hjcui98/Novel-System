@@ -2501,11 +2501,38 @@ deselected、100% branch coverage 和全量 pre-commit 通过。完整验收和 
 下一动作是 `.agent/plan.md` §6.3：先形成 clean executable-source identity，再以新 DB、output root
 和 experiment ID 运行 APC P001-P005 主矩阵与 TASK_INTENT_ONLY ablation；每个 checkpoint 独立保存
 report/manifest child ref。本文旧称 formal WP7/P3 的下一次正式矩阵，以本次 APC/TIO Phase 4 合同为
-准，不再运行旧 VAC/APC 双 profile 配置。P004/P005、Writer 4000、Ledger 12000、D9 和 leakage
-零容忍保持冻结。
+准，不再运行旧 VAC/APC 双 profile 配置。P001-P005 是同级固定 benchmark case，不划分开发集、
+验证集或测试集；全部输入/Gold、Writer 4000、Ledger 12000、D9 和 leakage 零容忍保持冻结。
 
-此验收只解除正式运行前置阻塞，不宣告 M4、Gate 0-3 或 Stage 2M PASS；最终质量、阈值和 held-out
-判断必须由新矩阵产生。Agentic、C4 多 Case 并行、动态调参和额外平台继续 deferred。
+此验收只解除正式运行前置阻塞，不宣告 M4、Gate 0-3 或 Stage 2M PASS。新矩阵只负责测量；本轮不
+设置或调整阈值，也不产生 held-out 结论。Agentic、C4 多 Case 并行、动态调参和额外平台继续
+deferred。
+
+### 21.5 2026-08-10 首次正式 APC 运行在 chapter 32 fail-closed
+
+首次 clean-identity 正式 APC 运行已在全新实验、数据库和输出根中提交 ch0-31，随后于 ch32
+正确停止。quarantine 工件确认严格 `resolve_evidence_quotes()` 对歧义引用的拒绝符合证据边界；缺陷
+位于 `_closest_quote_hint()`：它要求模型复制 similarity 最近文本，却未先证明该文本经同一 resolver
+可唯一绑定，形成重复 `CURATOR_PROPOSAL_INVALID_EVIDENCE` 的确定性 poison loop。
+
+本缺陷不改变上位架构，不授权放宽 resolver、相似度自动绑定、跳过 operation/chapter、增加重试或
+修改预算/Gold。下一动作改为 `.agent/review.md` 与 `.agent/plan.md` §12 的最小反馈修复：只有 exact
+emitted literal 经同一 resolver 唯一解析后才能被称为可复制提示；否则只返回诚实的 longer-fragment
+通用反馈。完成 license-free 回归、全量质量和 fresh ch32 real diagnostic 后先返回 Codex review。
+
+已停止的 `stage2m-phase4-final-apc-20260809` 及其 DB/output 不得续跑或复用；TIO 仍未启动。修复经
+Codex 接受并形成新 clean executable commit 后，APC P001-P005 与 TIO 才能从 ch0 以全新身份重跑。
+
+Codex 于 2026-08-10 只读验收通过该修复。接受的 dirty candidate fingerprint 为
+`sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`；严格 resolver、相似度
+仅反馈、逐 quote pointer、完整不截断字面量与 generic fallback 均由回归覆盖。fresh ch32 诊断的
+权威 checkpoint `sha256:72578a45...` 经两次 quote-specific rejection 后在第三次 proposal 提交
+commit `sha256:3504a572...`，`poison_loops=0`。
+
+诊断输出根的顶层 `flow_summary.json` 属于同一诊断身份下较早的 budget-exhausted invocation，不能
+作为成功证据；成功归属于后写入的 `scenario_run.json`、`project/progress_manifest.json` 和上述
+checkpoint。该归属修正不要求重跑。Codex 已按用户授权形成 clean local commit；下一步按 §21.4
+从 ch0 启动全新 APC/TIO 正式矩阵。
 
 ---
 

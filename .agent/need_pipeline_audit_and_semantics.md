@@ -259,20 +259,20 @@ DeterministicChannelPlanner → legal_actions。两套机制并行存在。
 | G09 academy_protective_effect | ch56 事实 | ✅ 盲式可恢复 | 纯历史事实 |
 | G09 **impact_is_risk** | 风险边界判断 | ⚠️ plan-dependent | why_needed 引用未来决策 |
 
-### 5.6 [Codex 新增] 全部 5 个 Case Gold 概览与数据划分
+### 5.6 [Codex 更新] 全部 5 个固定 Benchmark Case 概览
 
-| Case | Target | Gold 数 | 类型 | 关键观察 | 数据角色 |
-|---|---|---|---|---|---|
-| P001 | [21,25] | 8 + 5 plan | G04=PLAN_PATH | 仅 APC 可评 | **开发集** |
-| P002 | [41,45] | 9 + 5 plan | — | 无 plan-only 类型 | **开发集** |
-| P003 | [61,65] | 9 + 0 plan | G06/G09=operational_constraint | 计划暗示但 applicable 含 VAC | **验证集** |
-| P004 | [81,85] | 待审计 | 待审计 | 待补字段完整性检查 | **测试集（冻结）** |
-| P005 | [96,100] | 待审计 | 待审计 | 待补字段完整性检查 | **测试集（冻结）** |
+| Case | Target | Gold 数 | 类型 | 关键观察 |
+|---|---|---|---|---|
+| P001 | [21,25] | 8 + 5 plan | G04=PLAN_PATH | 仅 APC 可评 |
+| P002 | [41,45] | 9 + 5 plan | — | 无 plan-only 类型 |
+| P003 | [61,65] | 9 + 0 plan | G06/G09=operational_constraint | 计划暗示但 applicable 含 VAC |
+| P004 | [81,85] | 待审计 | 待审计 | 字段完整性已纳入冻结输入审计 |
+| P005 | [96,100] | 待审计 | 待审计 | 字段完整性已纳入冻结输入审计 |
 
-**数据划分原则**（[Codex 决策]）：P001/P002=开发集；P003=验证集；P004/P005=冻结测试集。
-允许根据 P003 暴露的问题调整 Planner prompt 和 Need 生成规则，但调整必须针对**可泛化的
-失败机制**（如加强知情边界识别、加强跨实体组合 Need），不得针对具体 Gold 答案进行特化。
-具体防过拟合规则见 §10.8。
+**统一 Benchmark 原则**（[Codex 决策]）：P001-P005 是同一固定正式矩阵中的同级 case，不再划分
+开发集、验证集或测试集。本轮用途是用已完成的新架构重新测量 benchmark；任何 case 的结果都不
+用于在同一轮中修改 Planner、prompt、Need 规则、预算、Gold、公式或阈值。需要优化时另开开发任务，
+形成新的 executable/config identity 后重新运行完整矩阵。
 
 ### 5.7 [Codex 决策] plan-dependent 操作性判据
 
@@ -358,7 +358,7 @@ G09 要求"保护效应+风险"组合 → Need 从未问过 → MISS
 | D8 | 并发调度 | 独立进行，与语义修复正交 |
 | D9 | 三层 plan 权限 | `allow_plan` 拆为 `planner_may_read_plan` / `retrieval_may_return_plan` / `claim_may_cite_plan` |
 | D10 | P004/P005 | Phase 0 前置审计，与 P001-P003 同步维护 |
-| D11 | 数据划分 | P001/P002=开发集，P003=验证集，P004/P005=测试集（冻结） |
+| D11 | Benchmark 角色 | P001-P005 为同级固定 case；不划分开发/验证/测试集，本轮只测量不调参 |
 | D12 | Planner 输出 | 三层：LLM→PlannedNeedDraft（语义，无图谱ID）→Grounder→GroundedNeedDraft→Validator→Stage1MemoryNeed |
 | D13 | 单一事实来源 | `AuthorPlanningContext` 为 task_intent/profile/target_range/outline/goals 的唯一权威来源。Manifest、Task Contract 等只保存 `planning_context_ref` + `planning_context_hash` + 必要派生字段 |
 | D14 | `allow_plan` 迁移 | 新增三个分层策略；`allow_plan` 标记 deprecated；过渡期 `legacy_allow_plan = retrieval_may_return_plan`（APC 下保持 False）；完成迁移后删除 |
@@ -565,7 +565,7 @@ Fallback 运行须显式标记 `PLANNER_FALLBACK`，不与正常 APC Planner run
 - 无未来事实化
 - Grounding 成功率达标（AMBIGUOUS/UNRESOLVED 有显式处理）
 - fallback 率受控
-- P003 失败分析驱动通用能力改进（非特化）；遵守 §10.8 防过拟合规则
+- P001-P005 均只产出测量与诊断证据；本轮不依据任一 case 就地修改实现或 prompt
 
 #### Phase 2：Per-channel Query Compilation
 
@@ -655,7 +655,7 @@ required_facets:
 
 #### Phase 4：P001-P005 全量重跑
 
-- P004/P005：Phase 0A 完成数据审计后立即**冻结**（生成 hash），之后不根据运行结果修改输入或 Gold
+- P001-P005：使用已审计并由 manifest/hash 绑定的固定输入，不根据运行结果修改输入或 Gold
 - 主要运行：`AUTHOR_PLAN_CONDITIONED`
 - 消融一：`TASK_INTENT_ONLY`
 - 旧基线：`HISTORY_ONLY`
@@ -680,9 +680,10 @@ required_facets:
 | **Gate 0** | 输入语义正确 | APC PlanningContext 可见；planner_may_read=True, retrieval/claim=False；observed-only evidence；零 leakage；hash/profile 正确 | — |
 | **Gate 1** | Need 规划正确 | goal_coverage 达标；semantic question 可由历史回答；无未来事实化；grounding_success_rate 达标；planner_fallback_rate 受控 | `goal_coverage_min`、`grounding_success_rate_min`、`planner_fallback_rate_max` |
 | **Gate 2** | 检索编译正确 | direct evidence recall 提升；BM25 不再由内部谓词主导；R1 predicates 语义正确；检索 trace 可分层；candidate_pollution 不恶化 | `evidence_recall_min`、`candidate_pollution_delta_max` |
-| **Gate 3** | 端到端正确 | Claim Correctness 提升；Completion Coverage 提升；P004/P005 held-out 不回退；plan/future leakage=0；legacy baseline 和 APC 结果独立可比 | `need_recall_min`、`claim_accuracy_min` |
+| **Gate 3** | 端到端正确 | 逐 case 报告 Claim Correctness 与 Completion Coverage；plan/future leakage=0；legacy baseline 和 APC 结果独立可比；不得选择性排除低分 case | `need_recall_min`、`claim_accuracy_min` |
 
-待标定阈值由 P001/P002 基线确定，冻结于 Gate 配置文件（建议 `benchmarks/gate_config.yaml`）。
+本次正式重跑不标定或调整阈值，只保存逐 case 与聚合原始指标。阈值判断由 Codex 在完整矩阵产出后
+另行处理，不要求 OpenCode 为本轮新增 Gate 配置文件。
 
 ---
 
@@ -691,16 +692,18 @@ required_facets:
 1. 不改 Writer 4000 / Ledger 12000 / ADR-0004 / Gate 公式
 2. 不改走廊语义（R4-R7 已修复）
 3. 不改评估器 Gold Matcher（Phase 3 新增指标，不动现有逻辑）
-4. 每 Phase 独立可回退（git baseline `420e163`）
+4. 每 Phase 独立可回退（开发基线 `420e163`；已验收 clean executable commit `5ef295f`）
 5. Stage 3 冻结
 6. hash 校验**全部保留**；`_PRIVATE_FIELD_FRAGMENTS` 不做删除；plan 通道走类型化 `AuthorPlanningContext`
-7. P004/P005：Phase 0A 完成数据审计后**立即冻结**（生成 hash），之后不根据运行结果修改输入或 Gold
-8. **防过拟合规则**（[Codex 决策]）：
-   - 允许基于 P003/G06/G09 暴露的问题改进通用能力（如加强知情边界识别、反向推导、跨实体组合 Need），但 Planner prompt 和生产代码中**不得出现** Gold ID、Gold claim 原文、accepted evidence、或为命中特定 Gold 而加入的特定章节号/角色组合
-   - 每次 prompt 调整必须记录：version + hash、修改原因、所针对的通用失败类型、P001-P005 整体结果变化
-   - P003 可继续作为验证案例，不要求自动降级
-   - P003/G06/G09 不得成为唯一优化目标；修改后必须检查其他 case 是否同步改善或至少不回退
-   - 若某项调整只能提高单个 Gold 命中率而无法说明通用机制，或导致其他 case 退化，视为疑似过拟合，不予合并
+7. P001-P005：正式矩阵开始前均由 manifest/hash 固定，之后不根据运行结果修改输入或 Gold
+8. **本轮禁止边跑边优化**（[Codex 决策]）：
+   - P001-P005 全部是测量对象，不使用任何单个 case 作为开发或验证反馈环；
+   - Planner prompt 和生产代码中不得出现 Gold ID、Gold claim 原文、accepted evidence、或为命中
+     特定 Gold 而加入的特定章节号/角色组合；
+   - 低分、MISS 或 case 间差异应原样记录为 benchmark 结果，不触发同一实验中的 prompt、代码、
+     配置、预算、公式或阈值调整；
+   - 后续若需优化，必须由 Codex 另行确定通用失败机制并创建新任务，修改后以新 identity 重跑完整
+     P001-P005，不能续用本轮实验身份。
 9. 旧实验保留为 legacy baseline，不横向汇总
 10. **最小充分工程**：
    - 先修正现有 owner 的语义和接线，不建立平行 Planner、检索、评测或 artifact/report 体系
@@ -725,9 +728,9 @@ required_facets:
 | O8 | Planner 可复现性 | 完整 lineage 存入 `PlannerArtifactMetadata`（run 级）；Need 只存 ref + hash |
 | O9 | allow_plan 拆分 | 拆为三个独立字段 + deprecated 标记 + 过渡派生方案 |
 | O10 | LLM 输出 | 三层：PlannedNeedDraft（无图谱ID）→ Grounder → Stage1MemoryNeed |
-| O11 | 数据划分 | P001/P002=开发集，P003=验证集，P004/P005=冻结测试集 |
-| O12 | 验收门槛 | 从单 C60 改为分层 Gate 0-3（含 machine-checkable 阈值，Gate config 文件） |
-| O13 | P004/P005 冻结 | Phase 0A 完成数据审计→生成 hash→冻结；Phase 1 调 prompt 前完成，之后不变 |
+| O11 | Benchmark 角色 | P001-P005 同级固定，不划分开发/验证/测试集；本轮只测量不调参 |
+| O12 | 验收输出 | 分层 Gate 0-3 原始测量；本轮不新增或调节阈值 |
+| O13 | 全矩阵冻结 | P001-P005 输入、Gold 和 hash 在运行前固定，运行期间不变 |
 | O14 | query_hints 修复 | 标记为 legacy template path 修复；新 Planner 路径由 Query Bundle 取代 |
 | O15 | 单一事实来源 | `AuthorPlanningContext` 为权威来源；Manifest/TaskContract 只存 ref + hash + 派生字段 |
 | O16 | 评测分段 | Leakage 独立为第 5 段（零容忍）；Need Recall 依赖新增 `gold_need_spec` |
@@ -757,7 +760,7 @@ required_facets:
 ## 13. 2026-08-09 实现验收与正式运行边界
 
 Codex 已按当前最终源码和真实工件接受 Phase 0A-3、endpoint-global scheduler、Planner 冻结重放和
-bounded serial/safe-concurrent 准入机制。接受的 executable identity 为 HEAD `420e163`、producer
+bounded serial/safe-concurrent 准入机制。接受的实现已落于 clean commit `5ef295f`、producer
 `trusted_claim_support_producer.v32`、source fingerprint
 `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`；工程证据为
 `1642 passed, 9 deselected`、100% branch coverage 和全量 pre-commit 通过。
@@ -773,7 +776,10 @@ proposal→whole-verifier→verified-receipt 链，语义输入、workset、Ledg
 future/plan leakage、timeout、OOM、context reduction 和 lease leak 均为 0。完整决定与正确 paired
 artifact 映射见 `.agent/review.md`。
 
-因此 Phase 4 的**工程准入前置条件**已经满足；下一步按 `.agent/plan.md` §6.3 先形成 clean
-executable-source identity，再用新 DB、output root 和 experiment ID 运行 APC P001-P005 与 TIO
-ablation。此状态不等于 Gate 0-3 或 Stage 2M PASS；阈值、held-out 结果和最终 Gate 决定仍由正式矩阵
-产生。不得在正式运行中临时调整 prompt、2048 guard、Writer/Ledger budget、P004/P005 或 Gate 阈值。
+因此 Phase 4 的**工程准入前置条件**已经满足，且 2026-08-10 ch32 反馈修复已验收并形成 clean
+executable-source identity。下一步按 `.agent/plan.md` §6.3 用新 DB、output root 和 experiment ID
+运行 APC P001-P005 与 TIO
+ablation。P001-P005 是同级固定 benchmark case，不再划分开发/验证/测试集，也没有 held-out 结论。
+此状态不等于 Gate 0-3 或 Stage 2M PASS；正式矩阵只产出测量证据，最终判断由 Codex 后续完成。
+不得在正式运行中临时调整 prompt、2048 guard、Writer/Ledger budget、任一 case 输入/Gold 或 Gate
+阈值。

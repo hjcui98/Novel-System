@@ -1,85 +1,99 @@
 # Codex acceptance review
 
 - Outcome: `PASS`
-- Reviewed: `2026-08-09 +08:00`
-- Scope: current-v32 P002/C40 bounded serial/safe-concurrent evidence、2048 Claim Support
-  transport policy、frozen Planner lineage，以及 `.agent/plan.md` §§6.1-6.2 的正式运行准入
-- Review mode: read-only；未重跑测试、quality、pre-commit、benchmark、模型/API 或正式 Phase 4
+- Reviewed: `2026-08-10 +08:00`
+- Scope: chapter-32 Curator resolver-valid feedback repair, license-free regressions, final quality
+  evidence, and frozen-context real diagnostic
+- Review mode: read-only; Codex did not rerun tests, quality, pre-commit, services, replay,
+  benchmark, model, or real API calls
 - Accepted executable identity:
-  - HEAD `420e16303c18354e72fa6486eb8968707842ef71`
-  - `_code_source_fingerprint()`：
-    `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`
-  - producer `trusted_claim_support_producer.v32`
-  - `git diff --check` 无输出
+  - base HEAD `5ef295fe6a5fedfcef4b02af620dbb988244a58f`
+  - clean local commit containing this accepted repair and review
+  - executable-source fingerprint
+    `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
 
 ## Decision
 
-本次实现与最终源码身份证据通过验收。上一轮唯一缺口——成功 bounded 工件仍属于 producer v31 / 旧
-source fingerprint——已经关闭：serial 与 safe-concurrent manifest 均绑定当前 producer v32 和相同
-源码指纹 `20daa...881`；运行后没有 executable source 变化，只追加了 implementation 证据。
+The chapter-32 repair passes. It closes the demonstrated poison-loop mechanism at the correct
+existing owners without changing the upper architecture: `EvidenceCandidateGenerator` owns
+resolver-valid catalog-literal selection and `ModelCurator` owns quote-specific typed feedback. The
+strict resolver, provenance binding, ambiguity rejection, retry/budget semantics, Gold, prompts and
+Stage boundaries remain unchanged.
 
-`.agent/plan.md` §§5.1-5.5、§6.1 和 §6.2 的实现/准入工作现已接受。允许进入 §6.3，但本次
-`PASS` 不是 Stage 2M、M4 或 Gate 0-3 PASS，也不代表当前 dirty diagnostic 工件可以直接升级为正式
-矩阵结果。正式 Phase 4 仍须先形成 clean executable-source identity，再使用全新 DB、output root、
-experiment ID 和 checkpoint-scoped report 运行 APC P001-P005 与 TIO ablation。
+This `PASS` accepts the repair mechanism and focused admission evidence only. It is not a Stage 2M,
+M4, Gate 0-3, APC/TIO matrix or benchmark-quality pass. The authorized clean local commit is now
+formed, so formal execution may proceed under `.agent/plan.md` §6.3.
 
 ## Evidence accepted
 
-1. 两侧 manifest 均为 producer v32、源码指纹 `20daa...881`、同一非 fallback Planner artifact
-   `sha256:a1231b1d4bf4022295b06b44034d2ee8e953fdba70711327490f2db70c3e3ee2`，并固定
-   `thinking=false / reasoning budget=0 / multi output=2048`。
-2. serial 使用 Need/endpoint `1/1`；safe-concurrent 使用 `2/1`。两侧均有 14 个 scheduler
-   descriptors。除每次运行按实际开始时间生成、预期不同的绝对 `scheduling_deadline` 外，request ID、
-   Need、stage、dependency、endpoint、context hash、prompt/output/sequence reservation、safety、priority
-   和 timeout 全部一致。
-3. 去除真实时间、latency 和 sequence 后，33 个 support progress event 全量一致：23 个
-   handle-audit、5 个 proposal、2 个 verification、funnel/terminal/freeze 各 1 个；其中所有 proposal
-   与 verification 的 input/output hash、workset 和调用身份一致。
-4. 两侧 scheduler 均 acquired/released `14/14`，peak request `1`、peak KV `31,106`，结束时
-   request/KV `0/0`，scheduling timeout 和 unsatisfiable 均为 0。safe-concurrent 的 78.474 秒等待被
-   正确记录为 endpoint capacity wait，没有 OOM、context reduction、duplicate equal-key verification
-   或 lease leak。
-5. 两份 paired artifact 均可按内容哈希解引用，各含 28 个 verified receipts；其中两个 receipt 的
-   `producer` 为 `trusted_claim_support_producer.v32.synthesized`，同时保留 multi proposal 和 whole
-   verifier call record，并分别闭合两个最终 Need。
-6. 两侧 Writer 输出完全相同：31 个 selected units、Writer 1,061/4,000 tokens、Ledger
-   11,981/12,000 tokens、107 个语义相同 Ledger entries、相同 rendered context 和相同 assembly spec。
-   `e2e_paired_report.json` 字节级相同，five-segment 结构完全相同；future leakage、future-isolation
-   failure 和 plan leakage 均为 0。
-7. `support_terminal_state=completed_with_failures` 保持如实：两侧各有一个模型质量层 proposal
-   rejection，但两个最终 Need 均形成 verified receipt，且无 transport/verifier failure、insufficient
-   Need 或 unclosed facet。该状态不阻塞本次调度/链路准入，也不得改写成纯 `completed`。
-8. 当前 handoff 声明的 `make quality`（1642 passed、9 deselected、100% branch coverage）、全量
-   pre-commit、Ruff/MyPy 与 `git diff --check` 证据被接受；Codex 本轮没有代为重跑。
+1. `copyable_literal_for()` reuses the same `resolve_evidence_quotes()` implementation and considers
+   only complete catalog strings within the caller's bounded literal budget. Similarity determines
+   order only; it never creates an evidence binding. When no string passes, it returns `None`.
+2. `ModelCurator` now resolves each quote independently. The first actual failure produces one
+   matching JSON pointer and feedback for that quote; successful quote bindings retain their stable
+   order and duplicate removal.
+3. A feedback string advertises a literal only after the exact bounded string passes the strict
+   resolver. The 240-character cap is applied by shrinking the reason prefix; the validated literal
+   is not truncated. The no-literal path makes only a generic longer/full-sentence request.
+4. The submitted license-free regressions cover an ambiguous nearest candidate with a lower-ranked
+   resolvable candidate, resolver validity of every advertised literal, no post-validation
+   truncation, generic fallback, exact multi-quote pointer attribution, invalid max length and the
+   continuing fail-closed ambiguity/no-auto-binding behavior.
+5. OpenCode's final-tree evidence reports `1650 passed, 9 deselected`, 100% branch coverage, strict
+   MyPy/Ruff cleanliness, full pre-commit success and clean `git diff --check`. Codex accepted these
+   existing results without rerunning them.
+6. The diagnostic manifest binds the repair fingerprint `1e7d...a2de`, frozen benchmark hash,
+   chapter-31 base commit, new diagnostic DB/output root, endpoint limit 1, and unchanged semantic,
+   Claim Support, Writer and Ledger budgets.
+7. The successful chapter-32 checkpoint
+   `sha256:72578a45c9512fcdb2a4d1ecdac648ee4f13e28a0c668a8bbaec4d6e56ed9d06`
+   records three proposals and two rejections. The rejection receipts point precisely to quote
+   indexes `/2` and `/0`, contain complete resolver-valid catalog literals, and lead to proposal 3
+   being accepted rather than repeating one poison signature.
+8. The successful checkpoint commits from frozen base `b0061432...` to `3504a572...`, with commit
+   receipt `sha256:f985b75669c4736df831eeeef9e8e1b7a103a7a36d737fe43137c53ea0ffe105`.
+   `scenario_run.json` and `project/progress_manifest.json` independently bind chapter 32 to that
+   resulting commit and show the accepted observed change/evidence reference.
 
 ## Artifact attribution correction
 
-`.agent/implementation.md` §24 将两份 paired artifact 的 serial/safe 归属写反。运行态
-`scenario_run.json` 是权威证据，正确映射为：
+The diagnostic output root contains two sequential invocations under the same diagnostic identity:
 
-- serial：`sha256:7afe7fdb60cd09f9bebb774050966eb7fb79662db681021c0f217948a5aa54aa`；
-- safe-concurrent：`sha256:f364daffcad5436a2f9e17ede3f9f3d4c61788b119c30676deb82a73d9247c02`。
+- the top-level `memory_write_pause_trace.json` and `flow_summary.json`, written around 10:00 +08:00,
+  belong to an earlier invocation that exhausted five proposal attempts with five rejections; it had
+  `poison_loops=0` but did not commit chapter 32;
+- `scenario_run.json`, `project/progress_manifest.json` and checkpoint `72578a45...`, written around
+  10:06 +08:00, belong to the subsequent invocation that accepted proposal 3 and committed chapter
+  32.
 
-两者内容、长度和 receipt 结论均已独立核验，路径归属笔误不影响验收，不要求重跑。
+`.agent/implementation.md` §26 reports the successful invocation but does not mention the earlier
+budget-exhausted invocation. The immutable timestamps and checkpoint refs make the two attempts
+independently attributable, so this omission does not invalidate the mechanism or require another
+real run. It does mean the top-level stale `flow_summary.json` must not be cited as success evidence.
+The formal matrix must continue to persist and address each attempt/checkpoint independently.
 
-## Accepted operational boundary
+## Accepted scope and next action
 
-本地 `qwen36-27b-nvfp4` 的当前正式配置必须保持 endpoint request limit 1。endpoint limit 2 已证明
-会使同一 multi prompt 从 serial 243 output tokens 异常增长到 2048 并截断；因此 Need concurrency 2
-只用于准备、排队与非 endpoint 工作重叠，不得制造两路同时生成。这是当前 endpoint/model/workload 的
-实测部署约束，不是把 endpoint-global scheduler 简化为普通信号量，也不是全局禁止未来其他端点并发。
+The accepted executable repair scope is limited to:
 
-不再增加动态调参、第二 scheduler、并发控制面或额外报告体系。若未来要提高本地 endpoint 生成并发，
-必须以独立服务端根因修复和相同 prompt parity 实测重新取得准入，不能在正式 Phase 4 中边跑边调。
+- `src/novel_agent/services/evidence_candidates.py`;
+- `src/novel_agent/services/model_curation.py`;
+- `tests/unit/test_evidence_candidate_generation.py`;
+- `tests/unit/test_curator_evidence_contract_v2.py`.
 
-## Next permitted action
+Codex-owned review/plan/status updates and `.agent/implementation.md` evidence may accompany that
+scope. Unrelated `.gitignore` changes, handover/draft files, `agentmemory_lab/`, and unrelated
+technical-reference documents are not accepted by this review and must not enter the repair commit.
 
-1. 保持当前 accepted executable tree 不变并形成 clean executable-source identity；
-2. 按 `.agent/plan.md` §6.3 使用全新 DB/output/experiment identities 运行正式 APC P001-P005；
-3. 使用同一固定语义预算运行 TASK_INTENT_ONLY ablation；
-4. 每个 checkpoint 独立归档 report/manifest child ref，禁止覆盖式保存；
-5. 由新矩阵报告 Gate 0-3 指标、leakage 和 held-out 结果，再交回 Codex 做 Gate 判断。
+Next sequence:
 
-P004/P005 继续冻结，不得根据运行结果修改输入、Gold、prompt、预算或阈值。未运行 Agentic 时必须明确
-报告“无 paired claim”，但不因此否定 Arm A。未经用户授权，本次 review 不 commit、不 merge，也不
-启动正式 Phase 4。
+1. OpenCode verifies the committed executable fingerprint and clean executable scope;
+2. OpenCode starts APC P001-P005 from ch0 with a new experiment ID, database and output root, then
+   runs TIO under its own new identity;
+3. do not resume or reuse either `stage2m-phase4-final-apc-20260809` or
+   `stage2m-repair-ch32-diag-20260810`; preserve both as diagnostic evidence;
+4. keep the fixed concurrency, `false/0/2048`, Writer/Ledger budgets, independent checkpoint reports,
+   no in-run tuning and no Agentic paired claim exactly as specified by `.agent/plan.md` §6.3.
+
+Codex formed the authorized clean local commit containing this review. It did not merge, push or
+launch the formal matrix.

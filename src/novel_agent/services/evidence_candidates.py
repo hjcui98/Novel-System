@@ -200,6 +200,24 @@ class EvidenceCandidateGenerator:
         return "".join(char for char in text.casefold() if char.isalnum())
 
     @staticmethod
+    def _similarity_ratio(quote: str, candidate: EvidenceCandidate) -> float:
+        """Deterministic similarity between a quote and one catalog candidate."""
+
+        normalized = EvidenceCandidateGenerator._semantic_span(quote)
+        span = EvidenceCandidateGenerator._semantic_span(candidate.text)
+        if not span:
+            return 0.0
+        return max(
+            SequenceMatcher(None, normalized, span).ratio(),
+            SequenceMatcher(None, normalized, span[: len(normalized)]).ratio()
+            if len(span) >= len(normalized)
+            else 0.0,
+            SequenceMatcher(None, normalized[: len(span)], span).ratio()
+            if len(normalized) >= len(span)
+            else 0.0,
+        )
+
+    @staticmethod
     def closest_candidate(
         quote: str,
         candidates: tuple[EvidenceCandidate, ...],
@@ -214,25 +232,53 @@ class EvidenceCandidateGenerator:
         verbatim on the repair round; it never auto-binds evidence.
         """
 
-        normalized = EvidenceCandidateGenerator._semantic_span(quote)
         best: tuple[float, EvidenceCandidate | None] = (0.0, None)
         for candidate in candidates:
-            span = EvidenceCandidateGenerator._semantic_span(candidate.text)
-            if not span:
-                continue
-            ratio = max(
-                SequenceMatcher(None, normalized, span).ratio(),
-                SequenceMatcher(None, normalized, span[: len(normalized)]).ratio()
-                if len(span) >= len(normalized)
-                else 0.0,
-                SequenceMatcher(None, normalized[: len(span)], span).ratio()
-                if len(normalized) >= len(span)
-                else 0.0,
-            )
+            ratio = EvidenceCandidateGenerator._similarity_ratio(quote, candidate)
             if ratio > best[0]:
                 best = (ratio, candidate)
         if best[0] >= ratio_threshold and best[1] is not None:
             return best[1]
+        return None
+
+    def copyable_literal_for(
+        self,
+        quote: str,
+        candidates: tuple[EvidenceCandidate, ...],
+        *,
+        max_chars: int,
+    ) -> str | None:
+        """Best similarity-ranked catalog literal the strict resolver accepts.
+
+        Similarity is feedback-only: the returned string is advertised to the
+        model only after the exact literal, as emitted, passes
+        ``resolve_evidence_quotes`` and binds to exactly one candidate.  Only
+        literals no longer than ``max_chars`` are considered so callers can
+        format feedback without ever truncating a validated literal.  Returns
+        ``None`` when no bounded catalog literal resolves, so callers must fall
+        back to truthful generic longer-fragment guidance.
+        """
+
+        if max_chars < 1:
+            raise ValueError("max_chars must be positive")
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: EvidenceCandidateGenerator._similarity_ratio(quote, candidate),
+            reverse=True,
+        )
+        for candidate in ranked:
+            literal = candidate.text
+            if len(literal) > max_chars:
+                continue
+            try:
+                # The strict resolver either raises (unresolved/ambiguous) or
+                # binds the quote to exactly one candidate; a successful return
+                # is the resolver-valid proof required before this literal is
+                # advertised as copyable.
+                self.resolve_evidence_quotes((literal,), candidates)
+            except ValueError:
+                continue
+            return literal
         return None
 
     def resolve_quote(

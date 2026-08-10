@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
-from novel_agent.domain.changes import EvidenceQuoteSelection
+from novel_agent.domain.changes import EvidenceCandidate, EvidenceQuoteSelection
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.text import TextBlock
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
@@ -287,3 +289,113 @@ def test_bind_candidate_selection_succeeds_for_valid_ids() -> None:
     catalog = {cand.candidate_id: cand}
     result = bind_candidate_selection((cand.candidate_id,), catalog)
     assert result == (cand,)
+
+
+def _candidate(text: str, suffix: str, chapter_index: int = 1) -> EvidenceCandidate:
+    return EvidenceCandidate(
+        candidate_id=StableId(f"evidence-candidate.{suffix}"),
+        block_id=StableId(f"block.{chapter_index}.{suffix}"),
+        chapter_index=chapter_index,
+        scene_index=0,
+        text=text,
+        start=0,
+        end=len(text),
+        content_hash=ArtifactId("sha256:" + "c" * 64),
+    )
+
+
+def test_copyable_literal_skips_ambiguous_nearest_for_resolver_valid_lower() -> None:
+    """The nearest literal may be ambiguous; a lower-ranked literal wins only
+    when it is accepted by the strict resolver exactly as emitted."""
+
+    gen = EvidenceCandidateGenerator()
+    title_text = (
+        "\u7b2c32\u7ae0 \u5148\u751f\uff0c\u4f60\u5c31\u6536\u4e86\u6211\u5427\u3002"
+        "\u4ed6\u5411\u4ed6\u89e3\u91ca\u3002"
+    )
+    title = _candidate(title_text, "title")
+    dialogue_text = "\u201c\u5148\u751f\uff0c\u4f60\u5c31\u6536\u4e86\u6211\u5427\u3002\u201d"
+    dialogue = _candidate(dialogue_text, "dialogue")
+    unrelated = _candidate("\u4eca\u5929\u5929\u6c14\u6674\u6717\u3002", "weather")
+    candidates = (title, dialogue, unrelated)
+    # The failing quote is most similar to the dialogue, which is ambiguous
+    # (its span is contained in the title candidate too), so the advertised
+    # literal must be the resolvable title instead.
+    literal = gen.copyable_literal_for(
+        "\u5148\u751f\uff0c\u4f60\u5c31\u6536\u4e86\u6211\u5427\u3002",
+        candidates,
+        max_chars=120,
+    )
+    assert literal is not None
+    resolved = gen.resolve_evidence_quotes((literal,), candidates)
+    assert len(resolved) == 1
+    assert resolved[0].candidate_id == title.candidate_id
+
+
+def test_copyable_literal_every_advertised_literal_is_resolver_valid() -> None:
+    """A literal is advertised only after the same resolver accepts it."""
+
+    gen = EvidenceCandidateGenerator()
+    first = _candidate(
+        "\u5b81\u5a46\u5a46\u770b\u7740\u4ed6\u9762\u65e0\u8868\u60c5\u8bf4\u9053\uff1a"
+        "\u6211\u53ea\u80fd\u8fdb\u56fd\u6559\u5b66\u9662\u3002",
+        "cue-content",
+    )
+    second = _candidate(
+        "\u53e6\u4e00\u4e2a\u5b8c\u5168\u4e0d\u540c\u7684\u539f\u6587\u7247\u6bb5\u3002",
+        "other",
+    )
+    candidates = (first, second)
+    literal = gen.copyable_literal_for(
+        "\u5b81\u5a46\u5a46\u770b\u7740\u4ed6\u9762\u65e0\u8868\u60c5\u8bf4\u9053\uff1a"
+        "\u4f46\u4f60\u53ea\u80fd\u8fdb\u56fd\u6559\u5b66\u9662\u3002",
+        candidates,
+        max_chars=160,
+    )
+    assert literal is not None
+    assert len(gen.resolve_evidence_quotes((literal,), candidates)) == 1
+    # The advertised literal must be one of the catalog literals, never a
+    # similarity-invented or truncated string.
+    assert any(candidate.text == literal for candidate in candidates)
+
+
+def test_copyable_literal_never_truncates_validated_literal() -> None:
+    """Size limiting selects a bounded resolver-valid literal; it never
+    truncates a literal that was validated at a longer length."""
+
+    gen = EvidenceCandidateGenerator()
+    long_text = (
+        "\u9648\u957f\u751f\u5728\u5ba2\u6808\u6574\u7406\u9053\u85cf\u7b14\u8bb0\uff0c"
+        "\u628a\u6bcf\u4e00\u9875\u90fd\u8bfb\u5b8c\u3002"
+    )
+    long_unique = _candidate(long_text, "long")
+    candidates = (long_unique,)
+    # A max_chars shorter than the only resolvable literal must yield None
+    # (skip), not a truncated prefix that was never validated.
+    assert gen.copyable_literal_for("\u77ed", candidates, max_chars=8) is None
+    full = gen.copyable_literal_for("\u77ed", candidates, max_chars=120)
+    assert full == long_unique.text
+    assert len(full) <= 120
+    assert len(gen.resolve_evidence_quotes((full,), candidates)) == 1
+
+
+def test_copyable_literal_none_when_no_literal_resolves() -> None:
+    """When every bounded catalog literal fails the strict resolver, feedback
+    must fall back to generic guidance instead of naming a literal."""
+
+    gen = EvidenceCandidateGenerator()
+    # Both candidates contain the same long span, so neither literal is unique.
+    shared = (
+        "\u540c\u4e00\u4e2a\u8db3\u591f\u957f\u7684\u539f\u6587\u7247\u6bb5\u51fa\u73b0\u4e24\u6b21"
+    )
+    first = _candidate(shared, "ambig-1")
+    second = _candidate(shared, "ambig-2")
+    candidates = (first, second)
+    assert gen.copyable_literal_for(shared, candidates, max_chars=160) is None
+
+
+def test_copyable_literal_rejects_non_positive_max_chars() -> None:
+    gen = EvidenceCandidateGenerator()
+    candidate = _candidate("\u9648\u957f\u751f\u62ac\u8d77\u5934\u3002", "c21")
+    with pytest.raises(ValueError, match="max_chars"):
+        gen.copyable_literal_for("\u9648\u957f\u751f", (candidate,), max_chars=0)

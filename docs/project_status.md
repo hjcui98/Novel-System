@@ -6,7 +6,7 @@
 >
 > Cross-cutting engineering constraint clarified: 2026-08-08 +08:00
 >
-> Code baseline: HEAD `420e163` plus accepted dirty executable fingerprint `sha256:20daa522...b089b881`
+> Clean executable implementation: commit `5ef295f`, fingerprint `sha256:20daa522...b089b881`
 >
 > Canonical naming: `docs/adr/0005-stage-numbering-and-document-lifecycle.md`
 
@@ -269,7 +269,26 @@ Codex accepted the stable implementation handoff without rerunning tests, benchm
 
 This closes implementation and bounded scheduling admission only. Formal APC/TIO Phase 4 must use a
 clean executable-source identity, new DB/output/experiment identities and one immutable child report per
-checkpoint. P004/P005 remain frozen, leakage remains zero-tolerance, and no Stage/Gate PASS is inferred.
+checkpoint. P001-P005 are one fixed peer benchmark matrix with no development/validation/test split;
+leakage remains zero-tolerance, and no Stage/Gate PASS is inferred.
+
+### 4.10 2026-08-10 formal APC chapter-32 block
+
+The first clean-identity formal APC run committed chapters 0-31 and then stopped fail-closed at
+chapter 32. Immutable quarantine evidence shows a deterministic Curator poison loop: the strict
+evidence resolver correctly rejects an ambiguous quote, but similarity-only rejection feedback tells
+the model to copy another catalog literal that the same resolver also rejects. The stopped experiment,
+database and output root remain diagnostic-only and must not be resumed.
+
+Codex accepted the bounded repair on 2026-08-10. The final candidate fingerprint is
+`sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`; quality evidence reports
+1650 passed, 9 deselected, 100% branch coverage and full pre-commit success. A fresh frozen-context
+diagnostic produced resolver-valid quote-specific feedback and committed chapter 32 without a poison
+loop. The repair preserves the strict resolver and all semantic/budget boundaries.
+
+Codex has formed the authorized clean local commit of the accepted repair scope. The replacement
+formal APC/TIO matrix is now permitted and must restart from ch0 with new experiment, DB and output
+identities.
 
 ## 5. Stage 3 preparation status
 
@@ -311,13 +330,14 @@ Stage 2M may:
 - use the smallest change at the demonstrated responsible layer and reuse existing contracts and
   infrastructure; defer unrelated generalization and return to Codex before adding a parallel
   framework or new platform;
-- preserve the accepted APC/TIO implementation and fixed semantic/transport budgets without further
-  tuning before the formal matrix;
-- form a clean executable-source identity, then run `.agent/plan.md` §6.3 with new DB, output root and
+- preserve the accepted APC/TIO architecture, strict evidence resolver and fixed semantic/transport
+  budgets;
+- preserve the accepted chapter-32 Curator feedback repair and do not run further focused diagnostics;
+- run `.agent/plan.md` §6.3 from the accepted clean executable commit with new DB, output root and
   experiment identities;
-- run APC P001-P005 as the main profile and TASK_INTENT_ONLY as the defined ablation, keeping P004/P005
-  frozen and checkpoint reports independently addressable;
-- report Gate 0-3 and M4 measurements without choosing thresholds from held-out results;
+- then run APC P001-P005 as the main profile and TASK_INTENT_ONLY as the defined ablation, treating all
+  five as fixed peer benchmark cases and keeping checkpoint reports independently addressable;
+- report Gate 0-3 and M4 measurements without a development/validation/test split or in-run tuning;
 - leave Agentic comparison and any higher-concurrency service work deferred until the formal Arm A
   evidence establishes a new need.
 
