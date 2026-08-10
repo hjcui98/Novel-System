@@ -474,10 +474,19 @@
     "manifest_id": {
       "$ref": "#/$defs/StableId"
     },
+    "pilot_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "rubric_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
     "schema_version": {
       "minLength": 1,
       "title": "Schema Version",
       "type": "string"
+    },
+    "threshold_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
     }
   },
   "required": [
@@ -485,7 +494,10 @@
     "schema_version",
     "cases",
     "configuration_fingerprint",
-    "corpus_fingerprint"
+    "corpus_fingerprint",
+    "pilot_fingerprint",
+    "rubric_fingerprint",
+    "threshold_fingerprint"
   ],
   "title": "PlanningEvaluationManifest",
   "type": "object"

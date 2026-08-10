@@ -1831,3 +1831,46 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   configured plus ablation arms. No formal real-model seven-mode manifest, model endpoint adapter,
   or blind-review artifact was supplied or executed in this implementation run; semantic Gate
   evidence therefore remains `CONDITIONAL_PASS`, while the engineering Gate is complete.
+
+## 26. Stage 4 final-Gate hardening continuation (2026-08-10)
+
+- The evaluation CLI now loads exactly the seven frozen case identities, accepts either an
+  application-supplied configured runtime factory or deterministic fake results, runs selectable
+  configured/ablation arms, writes immutable content-addressed evidence, and refuses to present a
+  fake report as Gate-eligible. Formal manifests bind the pilot, corpus, configuration, rubric, and
+  threshold fingerprints before evaluator access.
+- A formal configured run now requires a post-freeze blind evaluator and eight declared semantic
+  metric families: author-intent coverage, accepted Plan/Canon contradiction, continuity,
+  alternative quality, reviewer issue recall, future leakage, provenance error, and unsupported
+  factualization. Every configured and ablation result is exported to the evaluator under an
+  opaque candidate identity; the arm mapping remains in the report, so semantic ablation is
+  possible without revealing the treatment to the evaluator. Fake reports remain explicitly
+  `deterministic_fake` and non-Gate-eligible.
+- Planner, Reviewer, model routing/transport, and shared Context Runtime owner failures now settle
+  to typed Planner terminals. Failure results retain any inquiry/checkpoint/context artifacts that
+  were already produced. `OpenAIChatEndpointError` now implements the provider-neutral
+  `ModelEndpointError` port boundary, allowing exhausted provider failures to become
+  `MODEL_UNAVAILABLE` without catching unrelated programming errors.
+- Focused verification passed: Stage 4 domain/service/schema tests (`24 passed`), Planner loop and
+  evaluation tests (`13 passed`), OpenAI/ModelGateway regression (`72 passed`), Ruff, formatting,
+  and strict MyPy. The final deterministic selector
+  `NOVEL_AGENT_FORBID_MODEL_CALLS=true PYTHONPATH=src pytest -m "not model_required and not integration"`
+  reports `1683 passed, 9 deselected`, 24,082 statements / 6,784 branches, and 100% statement and
+  branch coverage. `pre-commit run --all-files` passed all hooks. Real native infrastructure
+  verification reports `5 passed, 1687 deselected` across PostgreSQL, MinIO, OpenSearch, durable
+  workflow/outbox projection, and Stage 2 freeze/reveal behavior.
+- The first unrestricted `pytest` attempt was invalid as evidence: the isolated worktree lacked the
+  ignored private benchmark mount, included live model/integration markers, and the sandbox denied
+  loopback sockets. The private benchmark was mounted read-only for the deterministic rerun and
+  removed afterwards; integration was rerun separately outside the socket sandbox. No private
+  benchmark or runtime data was added to Git.
+- Topology audit remains correct for the Stage boundary: `0ec1eb4` and shared Context contract
+  `1b926f5` are ancestors of the Stage 4 branch, while Stage 3 implementation `bab4451` is not.
+  `21cc3c3` is the isolated shared Planner-consumer extension before the Stage 4 implementation
+  commits; the Stage 4 diff contains no Writer/Editor/Observer/evaluation implementation from
+  Stage 3.
+- The real seven-mode semantic Gate has not run. `http://127.0.0.1:8002/v1/models` is unreachable,
+  the local GPU driver is unavailable, no alternative configured LLM endpoint exists in `.env`,
+  and native model health reports no running model PID. Therefore no formal case manifest,
+  configured runtime-factory invocation, or blind semantic report is claimed. Engineering evidence
+  is green, but §11.5/§12.2 remains pending and cannot be replaced by the deterministic fake path.

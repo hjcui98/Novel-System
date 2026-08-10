@@ -24,6 +24,7 @@ from novel_agent.domain.planning import (
     PlannerContextSection,
 )
 from novel_agent.domain.runtime import RunEventType
+from novel_agent.ports.planning_context import PlannerContextRuntimeFailure
 from novel_agent.services.agent_context import (
     CONTEXT_VIEW_MEDIA_TYPE,
     AgentContextProjector,
@@ -41,7 +42,7 @@ PLANNER_COMPACTION_RECEIPT_MEDIA_TYPE = (
 )
 
 
-class PlannerContextRuntimeError(RuntimeError):
+class PlannerContextRuntimeError(PlannerContextRuntimeFailure):
     """The shared Context Runtime cannot serve this Planner stream."""
 
 

@@ -524,6 +524,9 @@ class PlanningEvaluationManifest(DomainModel):
     cases: tuple[PlanningEvaluationCase, ...]
     configuration_fingerprint: ArtifactId
     corpus_fingerprint: ArtifactId
+    pilot_fingerprint: ArtifactId
+    rubric_fingerprint: ArtifactId
+    threshold_fingerprint: ArtifactId
     frozen_before_evaluator: bool = True
 
     @model_validator(mode="after")
@@ -545,11 +548,27 @@ class PlanningEvaluationManifest(DomainModel):
         return self
 
 
+class PlanningEvaluationProfile(StrEnum):
+    FORMAL_CONFIGURED = "formal_configured"
+    DETERMINISTIC_FAKE = "deterministic_fake"
+
+
 class PlanningEvaluationReport(DomainModel):
     manifest_id: StableId
+    evaluation_profile: PlanningEvaluationProfile
+    gate_eligible: bool
     results: tuple[PlanningLoopResult, ...]
     lineage_artifacts: tuple[ArtifactRef, ...]
     ablation_metrics: dict[str, JsonValue] = Field(default_factory=dict)
     reviewer_metrics: dict[str, JsonValue] = Field(default_factory=dict)
     leakage_count: int = Field(ge=0)
     provenance_error_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_gate_eligibility(self) -> PlanningEvaluationReport:
+        expected = self.evaluation_profile is PlanningEvaluationProfile.FORMAL_CONFIGURED
+        if self.gate_eligible != expected:
+            raise ValueError("only formal configured evaluation is Gate-eligible")
+        if self.gate_eligible and not self.reviewer_metrics:
+            raise ValueError("Gate-eligible evaluation requires post-freeze blind review metrics")
+        return self

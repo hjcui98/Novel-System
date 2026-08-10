@@ -7,8 +7,9 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from novel_agent.agents.plan_reviewer import PlanReviewerAgent
-from novel_agent.agents.planner import PlannerAgent
+from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
+from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
+from novel_agent.agents.runner import AgentExecutionError
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import SchemaVersion, StableId
@@ -40,10 +41,19 @@ from novel_agent.domain.stage2 import (
     PlanProposal,
     RequiredSnapshotPolicy,
 )
-from novel_agent.ports.planning_context import PlannerContextRuntimePort
+from novel_agent.ports.model_endpoint import ModelEndpointError
+from novel_agent.ports.planning_context import (
+    PlannerContextRuntimeFailure,
+    PlannerContextRuntimePort,
+)
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.memory_gateway import MemoryGateway, MemoryGatewayBlockedError
+from novel_agent.services.model_gateway import (
+    ModelCallForbiddenError,
+    ModelRoutingError,
+    StructuredGenerationExhausted,
+)
 from novel_agent.services.planner_context_assembler import (
     PlannerContextAssembler,
     PlannerContextAssemblyError,
@@ -93,6 +103,60 @@ class PlanningContextLoopService:
         resume_checkpoint_ref: ArtifactRef | None = None,
     ) -> PlanningLoopResult:
         event_refs: list[ArtifactRef] = []
+        try:
+            return await self._run(
+                request=request,
+                model_request=model_request,
+                world=world,
+                text_root=text_root,
+                resume_checkpoint_ref=resume_checkpoint_ref,
+                event_refs=event_refs,
+            )
+        except PlanReviewerInvocationError:
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.REVIEW_REQUIRED,
+                event_refs,
+                diagnostics=("REVIEWER_CONTRACT_FAILURE",),
+            )
+        except (PlannerInvocationError, AgentExecutionError):
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.BLOCKED,
+                event_refs,
+                diagnostics=("PLANNER_CONTRACT_FAILURE",),
+            )
+        except (
+            ModelRoutingError,
+            ModelCallForbiddenError,
+            StructuredGenerationExhausted,
+            ModelEndpointError,
+            TimeoutError,
+        ):
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.MODEL_UNAVAILABLE,
+                event_refs,
+                diagnostics=("MODEL_RUNTIME_UNAVAILABLE",),
+            )
+        except PlannerContextRuntimeFailure:
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.SUSPENDED,
+                event_refs,
+                diagnostics=("CONTEXT_RUNTIME_FAILURE",),
+            )
+
+    async def _run(
+        self,
+        *,
+        request: PlanningLoopRequest,
+        model_request: ModelRequestFactory,
+        world: WorldRootDocument | None = None,
+        text_root: TextRootDocument | None = None,
+        resume_checkpoint_ref: ArtifactRef | None = None,
+        event_refs: list[ArtifactRef],
+    ) -> PlanningLoopResult:
         source_payload = self._source_payload(request.author_intent_artifacts)
         if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
             if world is not None or text_root is not None:

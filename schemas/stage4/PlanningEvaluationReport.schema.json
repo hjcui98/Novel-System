@@ -450,6 +450,14 @@
       "title": "PlanProposal",
       "type": "object"
     },
+    "PlanningEvaluationProfile": {
+      "enum": [
+        "formal_configured",
+        "deterministic_fake"
+      ],
+      "title": "PlanningEvaluationProfile",
+      "type": "string"
+    },
     "PlanningLoopResult": {
       "additionalProperties": false,
       "properties": {
@@ -839,6 +847,13 @@
       "title": "Ablation Metrics",
       "type": "object"
     },
+    "evaluation_profile": {
+      "$ref": "#/$defs/PlanningEvaluationProfile"
+    },
+    "gate_eligible": {
+      "title": "Gate Eligible",
+      "type": "boolean"
+    },
     "leakage_count": {
       "minimum": 0,
       "title": "Leakage Count",
@@ -876,6 +891,8 @@
   },
   "required": [
     "manifest_id",
+    "evaluation_profile",
+    "gate_eligible",
     "results",
     "lineage_artifacts",
     "leakage_count",

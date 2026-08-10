@@ -767,6 +767,9 @@ def test_formal_manifest_requires_seven_unique_same_corpus_cases(tmp_path: Path)
         cases=cases,
         configuration_fingerprint=HASH,
         corpus_fingerprint=HASH,
+        pilot_fingerprint=HASH,
+        rubric_fingerprint=HASH,
+        threshold_fingerprint=HASH,
     )
     with pytest.raises(ValidationError, match="exactly one"):
         PlanningEvaluationManifest.model_validate(manifest.model_dump() | {"cases": cases[:-1]})

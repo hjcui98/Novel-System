@@ -1,49 +1,80 @@
 #!/usr/bin/env python3
-"""Validate frozen Stage 4 manifests and assemble deterministic fake-run reports."""
+"""Run a frozen seven-mode Stage 4 evaluation through a configured runtime."""
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.domain.ids import SchemaVersion
 from novel_agent.domain.planning import PlanningEvaluationManifest, PlanningLoopResult
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.planning_evaluation import (
+    BlindEvaluator,
     FakePlanningEvaluationAdapter,
+    PlanningEvaluationAdapter,
+    PlanningEvaluationArm,
     PlanningEvaluationRunner,
+    load_planning_evaluation_case,
 )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case-directory", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--fake-results", type=Path, required=True)
+    runtime = parser.add_mutually_exclusive_group(required=True)
+    runtime.add_argument(
+        "--runtime-factory",
+        help="dotted callable returning (configured_adapter, post_freeze_blind_evaluator)",
+    )
+    runtime.add_argument(
+        "--fake-results",
+        type=Path,
+        help="deterministic contract evidence only; the report is never Gate-eligible",
+    )
     parser.add_argument("--output-store", type=Path, required=True)
-    return parser.parse_args()
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--arms",
+        default=",".join(arm.value for arm in PlanningEvaluationArm),
+        help="comma-separated PlanningEvaluationArm values",
+    )
+    return parser
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     manifest = PlanningEvaluationManifest.model_validate_json(args.manifest.read_bytes())
-    raw_results = json.loads(args.fake_results.read_text(encoding="utf-8"))
-    if not isinstance(raw_results, dict):
-        raise ValueError("fake Stage 4 result file must be an object")
-    results: dict[tuple[str, str], PlanningLoopResult] = {}
-    for identity, raw in raw_results.items():
-        if not isinstance(identity, str) or "/" not in identity:
-            raise ValueError("fake result key must be '<case-id>/<arm>'")
-        case_id, arm = identity.rsplit("/", 1)
-        results[(case_id, arm)] = PlanningLoopResult.model_validate(raw)
+    loaded_cases = tuple(
+        load_planning_evaluation_case(path)
+        for path in sorted(args.case_directory.glob("*/case.json"))
+    )
+    if not loaded_cases:
+        raise ValueError("formal Stage 4 evaluation requires seven case files")
+    loaded_by_id = {case.case_id: case for case in loaded_cases}
+    manifest_by_id = {case.case_id: case for case in manifest.cases}
+    if len(loaded_by_id) != len(loaded_cases) or loaded_by_id != manifest_by_id:
+        raise ValueError("Stage 4 case files differ from the frozen manifest")
+    adapter, evaluator = (
+        _load_runtime(args.runtime_factory)
+        if args.runtime_factory is not None
+        else (_load_fake(args.fake_results), None)
+    )
+    arms = _parse_arms(args.arms)
     artifacts = ArtifactRepository(FilesystemObjectStore(args.output_store))
     report, report_ref = PlanningEvaluationRunner(
-        adapter=FakePlanningEvaluationAdapter(results),
+        adapter=adapter,
         artifacts=artifacts,
         schema_version=SchemaVersion("1.0.0"),
-    ).run(manifest)
-    print(
+        blind_evaluator=evaluator,
+    ).run(manifest, arms=arms)
+    payload = (
         json.dumps(
             {
                 "report_ref": report_ref.model_dump(mode="json"),
@@ -53,8 +84,46 @@ def main() -> None:
             indent=2,
             sort_keys=True,
         )
+        + "\n"
     )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if args.output.exists() and args.output.read_text(encoding="utf-8") != payload:
+        raise RuntimeError("refusing to overwrite different formal Stage 4 evidence")
+    args.output.write_text(payload, encoding="utf-8")
+    return 0
+
+
+def _load_runtime(dotted: str) -> tuple[PlanningEvaluationAdapter, BlindEvaluator]:
+    module_name, separator, attribute = dotted.partition(":")
+    if not separator or not module_name or not attribute:
+        raise ValueError("--runtime-factory must use module.path:callable")
+    module = importlib.import_module(module_name)
+    factory = getattr(module, attribute)
+    adapter, evaluator = factory()
+    if evaluator is None:
+        raise ValueError("formal Stage 4 runtime factory must return a blind evaluator")
+    return cast(PlanningEvaluationAdapter, adapter), cast(BlindEvaluator, evaluator)
+
+
+def _load_fake(path: Path) -> FakePlanningEvaluationAdapter:
+    raw_results = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw_results, dict):
+        raise ValueError("fake Stage 4 result file must be an object")
+    results: dict[tuple[str, str], PlanningLoopResult] = {}
+    for identity, raw in raw_results.items():
+        if not isinstance(identity, str) or "/" not in identity:
+            raise ValueError("fake result key must be '<case-id>/<arm>'")
+        case_id, arm = identity.rsplit("/", 1)
+        results[(case_id, arm)] = PlanningLoopResult.model_validate(raw)
+    return FakePlanningEvaluationAdapter(results)
+
+
+def _parse_arms(raw: str) -> tuple[PlanningEvaluationArm, ...]:
+    values = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not values:
+        raise ValueError("Stage 4 evaluation requires at least one arm")
+    return tuple(PlanningEvaluationArm(value) for value in values)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

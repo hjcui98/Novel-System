@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import create_engine
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
@@ -30,6 +31,7 @@ from novel_agent.domain.planning import (
     PlannerContextSection,
     PlanningEvaluationCase,
     PlanningEvaluationManifest,
+    PlanningEvaluationProfile,
     PlanningInquiryDraft,
     PlanningLoopCheckpoint,
     PlanningLoopRequest,
@@ -54,7 +56,11 @@ from novel_agent.domain.stage2 import (
     ProposalProvenance,
     ProposedItem,
 )
-from novel_agent.ports.planning_context import PlannerContextRuntimePort
+from novel_agent.ports.model_endpoint import ModelEndpointError
+from novel_agent.ports.planning_context import (
+    PlannerContextRuntimeFailure,
+    PlannerContextRuntimePort,
+)
 from novel_agent.services.agent_context import (
     AgentContextProjector,
     AgentContextRuntime,
@@ -64,6 +70,7 @@ from novel_agent.services.agent_context import (
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
 from novel_agent.services.memory_gateway import MemoryGateway, MemoryGatewayBlockedError
+from novel_agent.services.model_gateway import ModelRoutingError
 from novel_agent.services.planner_context_assembler import (
     PlannerContextAssembler,
     PlannerContextAssemblyError,
@@ -74,11 +81,15 @@ from novel_agent.services.planner_context_runtime import (
 )
 from novel_agent.services.planning_context_loop import PlanningContextLoopService
 from novel_agent.services.planning_evaluation import (
+    REQUIRED_BLIND_REVIEW_METRICS,
     ConfiguredPlanningEvaluationAdapter,
     FakePlanningEvaluationAdapter,
+    PlanningCaseLoadError,
     PlanningEvaluationArm,
+    PlanningEvaluationError,
     PlanningEvaluationRunner,
     evaluation_identity,
+    load_planning_evaluation_case,
 )
 from novel_agent.services.planning_inquiry_need_generation import (
     PlanningInquiryConditionedNeedGenerator,
@@ -406,6 +417,28 @@ class _SuspendedContextRuntime(_FixtureContextRuntime):
             update={"suspended": True, "suspension_reason": "pressure"}
         )
         return self._projection
+
+
+class _FailingPlanner(_ModePlanner):
+    def __init__(self, artifacts: ArtifactRepository, error: Exception) -> None:
+        super().__init__(artifacts, AgentMode.PROJECT_BOOTSTRAP)
+        self._error = error
+
+    async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
+        del kwargs
+        raise self._error
+
+
+class _FailingReviewer(_AcceptingReviewer):
+    async def review(self, **kwargs: object) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
+        del kwargs
+        raise PlanReviewerInvocationError("invalid reviewer output")
+
+
+class _FailingContextRuntime(_FixtureContextRuntime):
+    def start(self, **kwargs: object) -> PlannerContextProjection:
+        del kwargs
+        raise PlannerContextRuntimeFailure("runtime unavailable")
 
 
 def _shared_context_runtime(
@@ -1014,6 +1047,73 @@ def test_bootstrap_full_loop_never_calls_memory_and_returns_reviewed_candidate(
     assert result.event_artifacts
 
 
+@pytest.mark.parametrize(
+    ("planner_error", "reviewer_fails", "runtime_fails", "expected"),
+    (
+        (
+            PlannerInvocationError("invalid planner output"),
+            False,
+            False,
+            PlanningLoopTerminal.BLOCKED,
+        ),
+        (
+            ModelRoutingError("endpoint missing"),
+            False,
+            False,
+            PlanningLoopTerminal.MODEL_UNAVAILABLE,
+        ),
+        (
+            ModelEndpointError("transport exhausted"),
+            False,
+            False,
+            PlanningLoopTerminal.MODEL_UNAVAILABLE,
+        ),
+        (None, True, False, PlanningLoopTerminal.REVIEW_REQUIRED),
+        (None, False, True, PlanningLoopTerminal.SUSPENDED),
+    ),
+)
+def test_loop_maps_owner_failures_to_typed_terminals(
+    tmp_path: Path,
+    planner_error: Exception | None,
+    reviewer_fails: bool,
+    runtime_fails: bool,
+    expected: PlanningLoopTerminal,
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / expected.value))
+    source = _put(artifacts, "author-approved source")
+    planner = (
+        _FailingPlanner(artifacts, planner_error)
+        if planner_error is not None
+        else _ModePlanner(artifacts, AgentMode.PROJECT_BOOTSTRAP)
+    )
+    reviewer = _FailingReviewer(artifacts) if reviewer_fails else _AcceptingReviewer(artifacts)
+    runtime = (
+        _FailingContextRuntime(artifacts) if runtime_fails else _FixtureContextRuntime(artifacts)
+    )
+    service = PlanningContextLoopService(
+        planner=cast(PlannerAgent, planner),
+        reviewer=cast(PlanReviewerAgent, reviewer),
+        need_generator=PlanningInquiryConditionedNeedGenerator(),
+        memory_gateway=cast(MemoryGateway, _ForbiddenMemory()),
+        context_assembler=PlannerContextAssembler(artifacts, schema_version=VERSION),
+        context_runtime=cast(PlannerContextRuntimePort, runtime),
+        artifacts=artifacts,
+        schema_version=VERSION,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=_request(AgentMode.PROJECT_BOOTSTRAP, source),
+            model_request=_model_request,
+        )
+    )
+
+    assert result.terminal is expected
+    assert result.diagnostic_codes
+    if reviewer_fails or runtime_fails:
+        assert result.event_artifacts
+
+
 def _post_genesis_service(
     artifacts: ArtifactRepository,
     *,
@@ -1470,12 +1570,15 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
         cases=tuple(cases),
         configuration_fingerprint=HASH,
         corpus_fingerprint=HASH,
+        pilot_fingerprint=HASH,
+        rubric_fingerprint=HASH,
+        threshold_fingerprint=HASH,
     )
     observed_blind: list[ArtifactRef] = []
 
     def evaluate(ref: ArtifactRef) -> dict[str, JsonValue]:
         observed_blind.append(ref)
-        return {"independent_review": "complete"}
+        return {metric: 0 for metric in REQUIRED_BLIND_REVIEW_METRICS}
 
     report, report_ref = PlanningEvaluationRunner(
         adapter=FakePlanningEvaluationAdapter(results),
@@ -1491,7 +1594,12 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
     )
 
     assert len(report.results) == 7
+    assert report.evaluation_profile is PlanningEvaluationProfile.DETERMINISTIC_FAKE
+    assert not report.gate_eligible
     assert observed_blind and artifacts.read_verified(observed_blind[0])
+    blind_payload = json.loads(artifacts.read_verified(observed_blind[0]))
+    assert len(blind_payload["candidates"]) == 14
+    assert all("arm" not in candidate for candidate in blind_payload["candidates"])
     assert artifacts.read_verified(report_ref)
     configured_metrics = report.ablation_metrics["configured"]
     assert isinstance(configured_metrics, dict)
@@ -1504,6 +1612,31 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
         configured_adapter.run_case(cases[0], PlanningEvaluationArm.CONFIGURED).request_id
         == cases[0].request.request_id
     )
+    with pytest.raises(PlanningEvaluationError, match="blind evaluator"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+        )
+    formal_report, _ = PlanningEvaluationRunner(
+        adapter=configured_adapter,
+        artifacts=artifacts,
+        schema_version=VERSION,
+        blind_evaluator=evaluate,
+    ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    assert formal_report.evaluation_profile is PlanningEvaluationProfile.FORMAL_CONFIGURED
+    assert formal_report.gate_eligible
+    with pytest.raises(PlanningEvaluationError, match="omitted required metrics"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=lambda ref: {"partial": ref.media_type},
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    with pytest.raises(ValidationError, match="only formal configured"):
+        type(formal_report).model_validate(formal_report.model_dump() | {"gate_eligible": False})
+    with pytest.raises(ValidationError, match="post-freeze blind review"):
+        type(formal_report).model_validate(formal_report.model_dump() | {"reviewer_metrics": {}})
     with pytest.raises(ValueError, match="not predeclared"):
         FakePlanningEvaluationAdapter({}).run_case(cases[0], PlanningEvaluationArm.CONFIGURED)
     replan_case = next(case for case in cases if case.mode is AgentMode.REPLAN)
@@ -1544,3 +1677,12 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
             artifacts=artifacts,
             schema_version=VERSION,
         ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+
+    case_path = tmp_path / "case.json"
+    case_path.write_text(cases[0].model_dump_json(), encoding="utf-8")
+    assert load_planning_evaluation_case(case_path) == cases[0]
+    case_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(PlanningCaseLoadError, match="invalid"):
+        load_planning_evaluation_case(case_path)
+    with pytest.raises(PlanningCaseLoadError, match="cannot read"):
+        load_planning_evaluation_case(tmp_path / "missing.json")

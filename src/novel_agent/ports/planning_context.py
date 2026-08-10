@@ -9,6 +9,10 @@ from novel_agent.domain.ids import RunId, TaskId
 from novel_agent.domain.planning import PlannerContextPackage, PlannerContextProjection
 
 
+class PlannerContextRuntimeFailure(RuntimeError):
+    """A shared Context runtime operation cannot settle the Planner stream."""
+
+
 class PlannerContextRuntimePort(Protocol):
     def start(
         self,

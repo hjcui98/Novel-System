@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from enum import StrEnum
+from pathlib import Path
 from typing import Protocol
 
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import SchemaVersion, StableId
 from novel_agent.domain.planning import (
     PlanningEvaluationCase,
     PlanningEvaluationManifest,
+    PlanningEvaluationProfile,
     PlanningEvaluationReport,
     PlanningLoopResult,
     PlanningLoopTerminal,
@@ -31,6 +33,25 @@ class PlanningEvaluationArm(StrEnum):
     GRAPH_ONLY = "graph_only"
     ANCHOR_GRAPH_CONDITIONAL = "anchor_graph_conditional"
     LEGACY_REGISTERED_TRIPLE_DIAGNOSTIC = "legacy_registered_triple_diagnostic"
+
+
+class PlanningEvaluationError(ValueError):
+    """A frozen Stage 4 evaluation input or runtime boundary is invalid."""
+
+
+class PlanningCaseLoadError(PlanningEvaluationError):
+    """A formal Stage 4 case file cannot be read or validated."""
+
+
+def load_planning_evaluation_case(path: Path) -> PlanningEvaluationCase:
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise PlanningCaseLoadError(f"cannot read Stage 4 case: {path}") from error
+    try:
+        return PlanningEvaluationCase.model_validate_json(payload)
+    except ValidationError as error:
+        raise PlanningCaseLoadError(f"invalid Stage 4 case: {path}") from error
 
 
 class PlanningEvaluationAdapter(Protocol):
@@ -75,6 +96,19 @@ class FakePlanningEvaluationAdapter:
 
 BlindEvaluator = Callable[[ArtifactRef], Mapping[str, JsonValue]]
 
+REQUIRED_BLIND_REVIEW_METRICS = frozenset(
+    {
+        "accepted_plan_canon_contradiction_count",
+        "alternative_quality_score",
+        "author_intent_coverage_rate",
+        "continuity_score",
+        "future_leakage_count",
+        "provenance_error_count",
+        "reviewer_issue_recall",
+        "unsupported_factualization_count",
+    }
+)
+
 
 class PlanningEvaluationRunner:
     version = "stage4_planning_evaluation.v1"
@@ -91,6 +125,15 @@ class PlanningEvaluationRunner:
         self._artifacts = artifacts
         self._schema_version = schema_version
         self._blind_evaluator = blind_evaluator
+        self._profile = (
+            PlanningEvaluationProfile.DETERMINISTIC_FAKE
+            if isinstance(adapter, FakePlanningEvaluationAdapter)
+            else PlanningEvaluationProfile.FORMAL_CONFIGURED
+        )
+        if self._profile is PlanningEvaluationProfile.FORMAL_CONFIGURED and blind_evaluator is None:
+            raise PlanningEvaluationError(
+                "formal Stage 4 evaluation requires a post-freeze blind evaluator"
+            )
 
     def run(
         self,
@@ -133,16 +176,26 @@ class PlanningEvaluationRunner:
         configured = arm_results.get(PlanningEvaluationArm.CONFIGURED.value, {})
         if set(configured) != {case.case_id.root for case in manifest.cases}:
             raise ValueError("configured Stage 4 arm must cover every Planner mode")
+        blind_candidates = tuple(
+            {
+                "candidate_id": content_id(
+                    {
+                        "manifest_id": manifest.manifest_id.root,
+                        "case_id": case.case_id.root,
+                        "arm": arm_name,
+                    }
+                ).root,
+                "case_id": case.case_id.root,
+                "mode": case.mode.value,
+                "result": results[case.case_id.root].model_dump(mode="json"),
+            }
+            for arm_name, results in arm_results.items()
+            for case in manifest.cases
+            if case.case_id.root in results
+        )
         blind_payload = {
             "manifest_ref": manifest_ref.model_dump(mode="json"),
-            "cases": tuple(
-                {
-                    "case_id": case.case_id.root,
-                    "mode": case.mode.value,
-                    "result": configured[case.case_id.root].model_dump(mode="json"),
-                }
-                for case in manifest.cases
-            ),
+            "candidates": blind_candidates,
         }
         blind_ref = self._artifacts.put(
             canonical_json_bytes(blind_payload),
@@ -152,6 +205,12 @@ class PlanningEvaluationRunner:
         reviewer_metrics: dict[str, JsonValue] = {}
         if self._blind_evaluator is not None:
             reviewer_metrics = dict(self._blind_evaluator(blind_ref))
+            missing_metrics = REQUIRED_BLIND_REVIEW_METRICS.difference(reviewer_metrics)
+            if missing_metrics:
+                missing = ", ".join(sorted(missing_metrics))
+                raise PlanningEvaluationError(
+                    f"blind Stage 4 evaluator omitted required metrics: {missing}"
+                )
         ablation_metrics: dict[str, JsonValue] = {}
         for arm_name, results in arm_results.items():
             total = len(results)
@@ -168,23 +227,35 @@ class PlanningEvaluationRunner:
                 "ready_count": ready,
                 "ready_rate": 0.0 if total == 0 else ready / total,
                 "human_required_count": human,
+                "blind_candidate_ids": [
+                    content_id(
+                        {
+                            "manifest_id": manifest.manifest_id.root,
+                            "case_id": case.case_id.root,
+                            "arm": arm_name,
+                        }
+                    ).root
+                    for case in manifest.cases
+                    if case.case_id.root in results
+                ],
             }
         configured_results = tuple(configured[case.case_id.root] for case in manifest.cases)
+        all_results = tuple(
+            result for results in arm_results.values() for result in results.values()
+        )
         lineage = tuple(
             dict.fromkeys(
                 (
                     manifest_ref,
                     blind_ref,
-                    *(
-                        artifact
-                        for result in configured_results
-                        for artifact in result.event_artifacts
-                    ),
+                    *(artifact for result in all_results for artifact in result.event_artifacts),
                 )
             )
         )
         report = PlanningEvaluationReport(
             manifest_id=manifest.manifest_id,
+            evaluation_profile=self._profile,
+            gate_eligible=self._profile is PlanningEvaluationProfile.FORMAL_CONFIGURED,
             results=configured_results,
             lineage_artifacts=lineage,
             ablation_metrics=ablation_metrics,
