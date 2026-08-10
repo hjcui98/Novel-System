@@ -9,6 +9,7 @@ from novel_agent.adapters.model.http_inference import (
 )
 from novel_agent.adapters.model.openai_chat import (
     OpenAIChatEndpointError,
+    OpenAIChatOutputLengthError,
     OpenAICompatibleChatEndpoint,
 )
 from novel_agent.adapters.model.scripted import ScriptedModelEndpoint
@@ -18,6 +19,7 @@ __all__ = [
     "HttpEmbeddingProvider",
     "HttpPassageReranker",
     "OpenAIChatEndpointError",
+    "OpenAIChatOutputLengthError",
     "OpenAICompatibleChatEndpoint",
     "RetrievalInferenceError",
     "RetrievalModelRoute",

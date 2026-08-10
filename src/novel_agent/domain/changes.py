@@ -50,6 +50,7 @@ class CuratorEvidenceSelection(TextSpanRef):
 
 
 CuratorShortText = Annotated[str, StringConstraints(min_length=1, max_length=160)]
+CuratorEvidenceQuote = Annotated[str, StringConstraints(min_length=1, max_length=240)]
 CuratorScalar = CuratorShortText | int | float | bool | None
 
 
@@ -220,7 +221,7 @@ class CuratorV2OperationDraft(DomainModel):
     record_kind: WorldRecordKind
     target_id: StableId
     record: CuratorTypedRecord
-    evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
+    evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(min_length=1, max_length=4)
 
     @model_validator(mode="after")
     def validate_record_kind(self) -> CuratorV2OperationDraft:
@@ -276,7 +277,7 @@ class CuratorV2EvidenceDraft(DomainModel):
     unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     no_durable_delta_reason: CuratorShortText | None = None
-    no_op_evidence_quotes: tuple[str, ...] = Field(default=(), max_length=4)
+    no_op_evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(default=(), max_length=4)
 
     @model_validator(mode="after")
     def validate_explicit_no_op(self) -> CuratorV2EvidenceDraft:

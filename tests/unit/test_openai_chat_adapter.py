@@ -11,6 +11,7 @@ from pydantic import JsonValue
 
 from novel_agent.adapters.model.openai_chat import (
     OpenAIChatEndpointError,
+    OpenAIChatOutputLengthError,
     OpenAICompatibleChatEndpoint,
 )
 from novel_agent.domain.ids import RunId, StableId, TaskId
@@ -475,19 +476,14 @@ def test_generate_retries_on_transport_error() -> None:
     assert result.text == "{}"
 
 
-def test_generate_retries_once_on_output_length_error() -> None:
+def test_generate_does_not_retry_output_length_error() -> None:
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        if len(calls) == 1:
-            return httpx.Response(
-                200,
-                json={"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]},
-            )
         return httpx.Response(
             200,
-            json={"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]},
+            json={"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]},
         )
 
     endpoint = OpenAICompatibleChatEndpoint(
@@ -496,10 +492,12 @@ def test_generate_retries_once_on_output_length_error() -> None:
         max_retries=1,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    result = asyncio.run(endpoint.generate(_request()))
+    with pytest.raises(OpenAIChatOutputLengthError) as raised:
+        asyncio.run(endpoint.generate(_request()))
 
-    assert result.text == "{}"
-    assert len(calls) == 2
+    assert raised.value.finish_reason == "length"
+    assert raised.value.raw_content == "partial"
+    assert len(calls) == 1
     assert endpoint.attempts[0].error_type == "OutputLengthError"
 
 

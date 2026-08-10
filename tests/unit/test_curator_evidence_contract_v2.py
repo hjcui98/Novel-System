@@ -474,6 +474,13 @@ def test_v2_evidence_draft_domain_edges() -> None:
         CuratorV2EvidenceDraft.model_validate(base | {"no_durable_delta_reason": None})
     with pytest.raises(ValidationError, match="must not be blank"):
         CuratorV2EvidenceDraft.model_validate(base | {"no_op_evidence_quotes": ("  ",)})
+    with pytest.raises(ValidationError, match="at most 240 characters"):
+        CuratorV2EvidenceDraft.model_validate(base | {"no_op_evidence_quotes": ("证" * 241,)})
+    operation = _v2_state_draft("有效引用").operations[0]
+    with pytest.raises(ValidationError, match="at most 240 characters"):
+        CuratorV2OperationDraft.model_validate(
+            operation.model_dump() | {"evidence_quotes": ("证" * 241,)}
+        )
 
 
 def test_evidence_quote_resolver_rejects_single_char_and_unresolved() -> None:

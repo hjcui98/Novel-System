@@ -1829,7 +1829,10 @@ class TeacherForcedBenchmarkE2ERunner:
                     adapter=selected_endpoint,
                 ),
             ),
-            structured_max_retries=int(getattr(selected_endpoint, "max_retries", 0)),
+            # Strict schema generation and workflow-level repair own semantic
+            # correction. Transport retry policy must not silently enable an
+            # additional full-prompt structured-output retry.
+            structured_max_retries=0,
             admission_controller=admission_controller,
             scheduling_timeout_seconds=scheduling_timeout_seconds,
         )

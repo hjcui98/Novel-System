@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +29,7 @@ from novel_agent.domain.memory_write import (
     MemoryWriteWorkflowResult,
     MemoryWriteWorkflowStatus,
 )
+from novel_agent.domain.model_calls import ModelRole
 from novel_agent.domain.retrieval_routing import (
     RetrievalBackendProfile,
     SnapshotCapabilityStatus,
@@ -437,12 +438,21 @@ sources:
 
 def test_semantic_harness_builds_structured_controller_policy() -> None:
     endpoint = FakeModelEndpoint("{}")
+    cast(Any, endpoint).max_retries = 1
     harness = TeacherForcedBenchmarkE2ERunner._agent_harness(endpoint)
 
     assert harness.responses is None
     assert harness.endpoint is endpoint
     assert harness.controller_spec is not None
     assert harness.controller_request_factory is not None
+    assert dict(harness.gateway.endpoint_policy_identity(ModelRole.BATCH_TEST)) == {
+        "endpoint_name": "local-openai-chat",
+        "registered_model": "local-model",
+        "adapter_model": "local-model",
+        "adapter_revision": "unknown",
+        "adapter_max_retries": "1",
+        "structured_max_retries": "0",
+    }
     policy = harness.controller_request_factory(harness.controller_spec.tool_policy)
     assert policy.tool_policy_hash == harness.controller_spec.tool_policy.content_hash
     state_request = MagicMock(

@@ -42,6 +42,10 @@ class OpenAIChatEndpointError(RuntimeError):
         self.latency_ms = latency_ms
 
 
+class OpenAIChatOutputLengthError(OpenAIChatEndpointError):
+    """A complete provider response exhausted its output-token allowance."""
+
+
 @dataclass(frozen=True, slots=True)
 class _AttemptRecord:
     attempt: int
@@ -113,12 +117,7 @@ class OpenAICompatibleChatEndpoint:
         for attempt in range(self.max_retries + 1):
             try:
                 return await self._generate_once(request, client)
-            except OpenAIChatEndpointError as error:
-                if (
-                    "truncated by output length limit" not in str(error)
-                    or attempt >= self.max_retries
-                ):
-                    raise
+            except OpenAIChatOutputLengthError as error:
                 self.attempts.append(
                     _AttemptRecord(
                         attempt=attempt + 1,
@@ -126,7 +125,13 @@ class OpenAICompatibleChatEndpoint:
                         error_detail=str(error),
                     )
                 )
-                last_error = error
+                # An identical retry cannot make a length-constrained,
+                # temperature-zero response shorter. Preserve the first
+                # response telemetry instead of masking it with a later
+                # request-level timeout.
+                raise
+            except OpenAIChatEndpointError:
+                raise
             except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
                 self.attempts.append(
                     _AttemptRecord(
@@ -187,7 +192,7 @@ class OpenAICompatibleChatEndpoint:
         failure_latency_ms = max(0, round((monotonic() - started_clock) * 1000))
 
         if finish_reason == "length":
-            raise OpenAIChatEndpointError(
+            raise OpenAIChatOutputLengthError(
                 "chat completion was truncated by output length limit",
                 finish_reason=failure_finish_reason,
                 input_tokens=failure_input_tokens,
