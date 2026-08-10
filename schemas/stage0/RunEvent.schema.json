@@ -405,7 +405,19 @@
         "projection.waiting",
         "freshness.passed",
         "information_boundary.verified",
-        "root_update.materialized"
+        "root_update.materialized",
+        "writer.work_plan_settled",
+        "context.memory_requested",
+        "context.memory_resolved",
+        "context.delta_applied",
+        "context.pressure_detected",
+        "context.compacted",
+        "writer.turn_settled",
+        "draft.candidate_settled",
+        "editor.review_settled",
+        "editor.repair_settled",
+        "candidate.observation_settled",
+        "candidate.reconciliation_settled"
       ],
       "title": "RunEventType",
       "type": "string"

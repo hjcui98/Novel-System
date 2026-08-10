@@ -69,6 +69,18 @@ class RunEventType(StrEnum):
     FRESHNESS_PASSED = "freshness.passed"
     INFORMATION_BOUNDARY_VERIFIED = "information_boundary.verified"
     ROOT_UPDATE_MATERIALIZED = "root_update.materialized"
+    WRITER_WORK_PLAN_SETTLED = "writer.work_plan_settled"
+    CONTEXT_MEMORY_REQUESTED = "context.memory_requested"
+    CONTEXT_MEMORY_RESOLVED = "context.memory_resolved"
+    CONTEXT_DELTA_APPLIED = "context.delta_applied"
+    CONTEXT_PRESSURE_DETECTED = "context.pressure_detected"
+    CONTEXT_COMPACTED = "context.compacted"
+    WRITER_TURN_SETTLED = "writer.turn_settled"
+    DRAFT_CANDIDATE_SETTLED = "draft.candidate_settled"
+    EDITOR_REVIEW_SETTLED = "editor.review_settled"
+    EDITOR_REPAIR_SETTLED = "editor.repair_settled"
+    CANDIDATE_OBSERVATION_SETTLED = "candidate.observation_settled"
+    CANDIDATE_RECONCILIATION_SETTLED = "candidate.reconciliation_settled"
 
 
 class RunEvent(DomainModel):
@@ -96,6 +108,7 @@ class RunEvent(DomainModel):
         if self.event_type is RunEventType.MODEL_COMPLETED and record is None:
             raise ValueError("model.completed requires a complete model_call_record")
         if record is None:
+            self._validate_active_payload()
             return self
         if self.event_type not in {
             RunEventType.MODEL_REQUESTED,
@@ -107,7 +120,17 @@ class RunEvent(DomainModel):
             raise ValueError("model_call_record must belong to the event run and task")
         if record.trace_id != self.trace_id or record.span_id != self.span_id:
             raise ValueError("model_call_record must use the event trace and span")
+        self._validate_active_payload()
         return self
+
+    def _validate_active_payload(self) -> None:
+        from novel_agent.domain.agent_context import validate_stage3_event_payload
+
+        validate_stage3_event_payload(
+            self.event_type.value,
+            self.payload_schema_version,
+            self.payload,
+        )
 
 
 class ResumabilityStatus(StrEnum):

@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ContextDeltaStatus": {
+      "enum": [
+        "RESOLVED",
+        "PARTIAL",
+        "INSUFFICIENT",
+        "DENIED",
+        "BUDGET_EXHAUSTED"
+      ],
+      "title": "ContextDeltaStatus",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "resolution_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "status": {
+      "$ref": "#/$defs/ContextDeltaStatus"
+    }
+  },
+  "required": [
+    "request_ref",
+    "resolution_ref",
+    "status"
+  ],
+  "title": "ContextMemoryResolvedPayload",
+  "type": "object"
+}
