@@ -290,6 +290,27 @@ Codex has formed the authorized clean local commit of the accepted repair scope.
 formal APC/TIO matrix is now permitted and must restart from ch0 with new experiment, DB and output
 identities.
 
+### 4.11 2026-08-10 v33 chapter-9 relevant-literal repair
+
+The clean v33 APC replacement run stopped at chapter 9 after repeated model attempts emitted the
+near-miss quote `他又没有任何意外地落榜。`. The correct source clause
+`然后又没有任何意外地落榜。` was present in the visible candidate catalog, but the containing
+candidate exceeded the feedback-size budget. The current selector considered only complete candidate
+texts, skipped the relevant candidate, and repeatedly advertised an unrelated but resolver-valid anger
+sentence. This was actionable-feedback selection failure, not missing context or a reason to weaken
+the strict evidence gate.
+
+Codex implemented a minimum local repair at `EvidenceCandidateGenerator`: resolver-checked feedback
+may now select bounded verbatim sentence/clause spans from a candidate, ranked against the failing
+quote. No fuzzy evidence binding, skipped operation, no-op conversion, budget change or case-specific
+rule was added. Frozen ch9 input now selects the correct 13-character clause and uniquely resolves it.
+`make quality` reports 1652 passed, 9 deselected and 100% branch coverage; the candidate fingerprint is
+`sha256:7bea7d597b01251b641ff93d3d1c854b3953dce77a777abcddb92c40b535342a`.
+
+The v33 run and its DB/output remain diagnostic-only and may not be resumed after this source change.
+Current next action is a user-authorized clean commit of the focused repair, followed by another wholly
+new APC/TIO matrix from ch0.
+
 ## 5. Stage 3 preparation status
 
 The current Stage 3 scope, minimal generation loop, four development workstreams, and restrained
@@ -332,9 +353,10 @@ Stage 2M may:
   framework or new platform;
 - preserve the accepted APC/TIO architecture, strict evidence resolver and fixed semantic/transport
   budgets;
-- preserve the accepted chapter-32 Curator feedback repair and do not run further focused diagnostics;
-- run `.agent/plan.md` §6.3 from the accepted clean executable commit with new DB, output root and
-  experiment identities;
+- preserve the accepted chapter-32 repair and the focused chapter-9 relevant-literal repair; do not
+  weaken strict evidence binding or resume the invalidated v33 identity;
+- after forming a user-authorized clean commit for the chapter-9 repair, run `.agent/plan.md` §6.3
+  from ch0 with new DB, output root and experiment identities;
 - then run APC P001-P005 as the main profile and TASK_INTENT_ONLY as the defined ablation, treating all
   five as fixed peer benchmark cases and keeping checkpoint reports independently addressable;
 - report Gate 0-3 and M4 measurements without a development/validation/test split or in-run tuning;

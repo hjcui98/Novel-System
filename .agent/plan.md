@@ -1,14 +1,14 @@
 # Stage 2M 新架构正式 Benchmark 执行计划（含历史修复依据）
 
 - Lifecycle: `ACTIVE_TASK_SUPPLEMENT`
-- State: `READY_FOR_FORMAL_BENCHMARK`
-- Updated: `2026-08-09 +08:00`
+- State: `CH9_RELEVANT_LITERAL_REPAIR_IMPLEMENTED_AWAITING_COMMIT`
+- Updated: `2026-08-10 +08:00`
 - Stage: `Stage 2M`
-- Current gate: `chapter-32 repair committed / formal APC-TIO benchmark pending / M4 HOLD`
-- Clean executable implementation commit: `5ef295f`; source fingerprint
-  `sha256:20daa522f815c88c5ab823d2b03ff896b6751264dd6edac2777a4d93b089b881`
-- Clean executable fingerprint after accepted repair:
+- Current gate: `v33 stopped at chapter 9 / relevant-literal repair implemented / clean commit required`
+- Clean executable implementation commit before the current ch9 repair: `660abf8`; source fingerprint
   `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
+- Current uncommitted ch9 repair fingerprint:
+  `sha256:7bea7d597b01251b641ff93d3d1c854b3953dce77a777abcddb92c40b535342a`
 - Working tree: preserve all current user changes, frozen inputs, implementation evidence, and
   Phase 4 artifacts; do not reset, discard, overwrite, or silently reclassify them
 - Architect and final reviewer: Codex
@@ -42,6 +42,26 @@ identity or start TIO/formal replacement runs before a new clean executable comm
 Codex accepted the completed repair in `.agent/review.md` on 2026-08-10 and formed the authorized
 local clean commit. No further OpenCode repair or diagnostic run is required. The next action is
 §6.3: restart the formal APC matrix from ch0 under wholly new identities, then run TIO separately.
+
+### 0.3 Current ch9 repair state (2026-08-10; supersedes §0.2 next action)
+
+The clean v33 APC run reached chapter 9 but repeatedly rejected the model typo
+`他又没有任何意外地落榜。`. The correct catalog candidate was visible and contained
+`然后又没有任何意外地落榜。`, but its complete candidate text exceeded the feedback literal budget.
+`copyable_literal_for()` therefore skipped it and advertised a shorter resolver-valid but semantically
+unrelated anger sentence. Repeated resume cycles could not give the model an actionable correction.
+
+At the user's explicit request, Codex implemented the minimum repair in the existing
+`EvidenceCandidateGenerator`: feedback ranking now includes bounded verbatim sentence/clause spans
+derived from catalog candidates, and still advertises a span only after the unchanged strict resolver
+accepts it uniquely. It does not fuzzy-bind the typo, drop the operation, turn it into a no-op, weaken
+provenance, or add a chapter/entity special case. Frozen ch9 input now selects
+`然后又没有任何意外地落榜。` (13 characters) and resolves it uniquely.
+
+`make quality` passes with 1652 tests, 9 deselected, strict MyPy/Ruff cleanliness and 100% branch
+coverage. The stopped v33 identity is diagnostic-only and must not be resumed after this source
+change. The next action is a user-authorized clean commit of the two-file repair scope, followed by a
+new APC run from ch0 and a separately identified TIO run under §6.3.
 
 This file is the task-local implementation handoff. It does not replace the repository document
 hierarchy or create a third architecture. OpenCode must read the following authorities before

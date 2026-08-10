@@ -354,9 +354,42 @@ def test_copyable_literal_every_advertised_literal_is_resolver_valid() -> None:
     )
     assert literal is not None
     assert len(gen.resolve_evidence_quotes((literal,), candidates)) == 1
-    # The advertised literal must be one of the catalog literals, never a
+    # The advertised literal must be a verbatim span from the catalog, never a
     # similarity-invented or truncated string.
-    assert any(candidate.text == literal for candidate in candidates)
+    assert any(literal in candidate.text for candidate in candidates)
+
+
+def test_copyable_literal_uses_relevant_clause_from_overlong_candidate() -> None:
+    """An overlong nearest candidate must contribute a bounded exact clause
+    instead of being skipped in favour of a semantically unrelated candidate."""
+
+    gen = EvidenceCandidateGenerator()
+    exam = _candidate(
+        "昨日的遭遇没有影响他\uff0c他认真准备\uff0c谨慎应试\uff0c"
+        "成功通过了两间学院的考试\u2014\u2014然后又没有任何意外地落榜\u3002",
+        "exam-result",
+    )
+    anger = _candidate(
+        "当他看到石壁上依然没有自己名字的时候\uff0c他真的很愤怒\u3002",
+        "anger",
+    )
+    candidates = (exam, anger)
+    literal = gen.copyable_literal_for(
+        "他又没有任何意外地落榜。",
+        candidates,
+        max_chars=32,
+    )
+    assert literal == "然后又没有任何意外地落榜\u3002"
+    assert gen.resolve_evidence_quotes((literal,), candidates) == (exam,)
+
+
+def test_copyable_literal_variants_ignore_short_derived_fragments() -> None:
+    variants = EvidenceCandidateGenerator._copyable_literal_variants(
+        "短句\uff0c足够长并且可以作为反馈的原文分句\u3002",
+        max_chars=20,
+    )
+    assert "短句\uff0c" not in variants
+    assert "足够长并且可以作为反馈的原文分句\u3002" in variants
 
 
 def test_copyable_literal_never_truncates_validated_literal() -> None:

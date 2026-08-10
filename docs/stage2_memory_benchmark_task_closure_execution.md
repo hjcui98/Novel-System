@@ -2534,6 +2534,23 @@ commit `sha256:3504a572...`，`poison_loops=0`。
 checkpoint。该归属修正不要求重跑。Codex 已按用户授权形成 clean local commit；下一步按 §21.4
 从 ch0 启动全新 APC/TIO 正式矩阵。
 
+### 21.6 2026-08-10 v33 ch9 feedback relevance 修复
+
+clean v33 APC 在 ch9 多周期输出近似但不存在的引用 `他又没有任何意外地落榜。`。正确原文
+`然后又没有任何意外地落榜。` 位于模型可见的 69 个 candidates 中，但所在完整 candidate 超过
+feedback literal 字数预算；既有 `copyable_literal_for()` 只检查完整 candidate，因而跳过正确候选并
+退到较短、可解析但语义不相关的“愤怒”句。模型据此修好愤怒 operation，却得不到落榜 operation 的
+可执行纠正信息。继续 resume 只增加随机成本，不能修复反馈内容。
+
+本轮最小修复仍位于既有 `EvidenceCandidateGenerator`：完整 candidate 之外，只增加从 candidate
+逐字派生的 bounded sentence/clause spans，再按失败 quote 相似度排序，并逐条经过同一严格 resolver
+唯一验证后才允许进入反馈。未模糊接受错字、未自动相似度绑定、未跳过 operation/chapter、未改 no-op、
+重试、预算、Gold 或 prompt。冻结 ch9 离线复验返回正确 13 字原句并唯一绑定；`make quality` 为
+1652 passed、9 deselected、100% branch coverage，候选 fingerprint 为 `sha256:7bea7d59...535342a`。
+
+v33 源码身份已因本修复失效，其 DB/output 仅保留诊断，不得续跑。形成新的 clean local commit 后，
+APC P001-P005 与 TIO 必须再次从 ch0 使用全新实验、DB 和输出身份执行。
+
 ---
 
 ## 22. 最终决策

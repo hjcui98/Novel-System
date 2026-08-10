@@ -20,6 +20,10 @@ from novel_agent.services.curation import Stage1Curator
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[\u3002\uff01\uff1f!?\uff1b;])\s*")
 _DIALOGUE_SPLIT = re.compile(r'(?<=[\u201d"\u300f])')
+_FEEDBACK_LITERAL_SPLIT = re.compile(
+    r"(?<=[\uff0c,\u3002\uff01\uff1f!?\uff1b;\uff1a:])\s*|(?<=\u2014\u2014)"
+)
+_MIN_DERIVED_LITERAL_SEMANTIC_CHARS = 8
 DEFAULT_MAX_CANDIDATE_CHARS = 240
 DEFAULT_TARGET_MIN = 40
 DEFAULT_TARGET_MAX = 160
@@ -203,8 +207,14 @@ class EvidenceCandidateGenerator:
     def _similarity_ratio(quote: str, candidate: EvidenceCandidate) -> float:
         """Deterministic similarity between a quote and one catalog candidate."""
 
+        return EvidenceCandidateGenerator._text_similarity_ratio(quote, candidate.text)
+
+    @staticmethod
+    def _text_similarity_ratio(quote: str, text: str) -> float:
+        """Deterministic similarity between a quote and verbatim catalog text."""
+
         normalized = EvidenceCandidateGenerator._semantic_span(quote)
-        span = EvidenceCandidateGenerator._semantic_span(candidate.text)
+        span = EvidenceCandidateGenerator._semantic_span(text)
         if not span:
             return 0.0
         return max(
@@ -261,15 +271,19 @@ class EvidenceCandidateGenerator:
 
         if max_chars < 1:
             raise ValueError("max_chars must be positive")
+        literals = tuple(
+            dict.fromkeys(
+                literal
+                for candidate in candidates
+                for literal in self._copyable_literal_variants(candidate.text, max_chars=max_chars)
+            )
+        )
         ranked = sorted(
-            candidates,
-            key=lambda candidate: EvidenceCandidateGenerator._similarity_ratio(quote, candidate),
+            literals,
+            key=lambda literal: self._text_similarity_ratio(quote, literal),
             reverse=True,
         )
-        for candidate in ranked:
-            literal = candidate.text
-            if len(literal) > max_chars:
-                continue
+        for literal in ranked:
             try:
                 # The strict resolver either raises (unresolved/ambiguous) or
                 # binds the quote to exactly one candidate; a successful return
@@ -280,6 +294,32 @@ class EvidenceCandidateGenerator:
                 continue
             return literal
         return None
+
+    @staticmethod
+    def _copyable_literal_variants(text: str, *, max_chars: int) -> tuple[str, ...]:
+        """Bounded verbatim strings suitable for resolver-checked feedback.
+
+        A generated catalog candidate may be longer than the feedback budget
+        even when it contains a short, highly relevant original clause.  Keep
+        the complete candidate when it fits and otherwise (or additionally)
+        consider only natural sentence/clause spans copied from that candidate.
+        Derived spans remain feedback-only and are never evidence until the
+        strict resolver accepts them against the full catalog.
+        """
+
+        variants: list[str] = []
+        if len(text) <= max_chars:
+            variants.append(text)
+        for part in _FEEDBACK_LITERAL_SPLIT.split(text):
+            literal = part.strip()
+            if (
+                literal
+                and len(literal) <= max_chars
+                and len(EvidenceCandidateGenerator._semantic_span(literal))
+                >= _MIN_DERIVED_LITERAL_SEMANTIC_CHARS
+            ):
+                variants.append(literal)
+        return tuple(dict.fromkeys(variants))
 
     def resolve_quote(
         self,
