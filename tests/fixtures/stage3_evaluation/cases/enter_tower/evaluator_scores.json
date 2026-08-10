@@ -1,0 +1,58 @@
+{
+  "case.stage3.eval.enter-tower": {
+    "recent_prose": {
+      "continuity_and_fact_conflict": {
+        "rationale": "左臂伤势约束被违背，与冻结世界状态冲突。",
+        "score": 0.4
+      },
+      "literary_quality_degradation": {
+        "rationale": "叙述略松散，但未明显退化。",
+        "score": 0.6
+      },
+      "plan_following": {
+        "rationale": "正文未使用任何计划锚点。",
+        "score": 0.2
+      },
+      "unplanned_leak_or_fabrication": {
+        "rationale": "出现北塔顶层秘密泄露与烛火细节编造。",
+        "score": 0.5
+      }
+    },
+    "simple_retrieval": {
+      "continuity_and_fact_conflict": {
+        "rationale": "未发现与检索事实的冲突。",
+        "score": 0.8
+      },
+      "literary_quality_degradation": {
+        "rationale": "正文可读，未明显退化。",
+        "score": 0.7
+      },
+      "plan_following": {
+        "rationale": "约束被使用，但计划推进不足。",
+        "score": 0.5
+      },
+      "unplanned_leak_or_fabrication": {
+        "rationale": "未发现泄露或明显编造。",
+        "score": 0.8
+      }
+    },
+    "writer_context_package": {
+      "continuity_and_fact_conflict": {
+        "rationale": "未发现连续性或事实冲突。",
+        "score": 0.9
+      },
+      "literary_quality_degradation": {
+        "rationale": "正文质量不低于简单基线。",
+        "score": 0.8
+      },
+      "plan_following": {
+        "rationale": "计划锚点被正文实际使用。",
+        "score": 0.9
+      },
+      "unplanned_leak_or_fabrication": {
+        "rationale": "未发现计划外泄露或编造。",
+        "score": 0.9
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "input_token_limit": {
+      "minimum": 1,
+      "title": "Input Token Limit",
+      "type": "integer"
+    },
+    "max_model_calls": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Max Model Calls",
+      "type": "integer"
+    },
+    "max_tool_calls": {
+      "default": 0,
+      "maximum": 0,
+      "minimum": 0,
+      "title": "Max Tool Calls",
+      "type": "integer"
+    },
+    "output_token_limit": {
+      "minimum": 1,
+      "title": "Output Token Limit",
+      "type": "integer"
+    },
+    "timeout_seconds": {
+      "default": 30.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 600.0,
+      "title": "Timeout Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "input_token_limit",
+    "output_token_limit"
+  ],
+  "title": "WriterBudget",
+  "type": "object"
+}

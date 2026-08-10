@@ -1,0 +1,213 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_plan_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "character_current_states": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Character Current States",
+      "type": "array"
+    },
+    "creative_proposals": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Creative Proposals",
+      "type": "array"
+    },
+    "dialogue_intents": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Dialogue Intents",
+      "type": "array"
+    },
+    "emotional_movement": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Emotional Movement",
+      "type": "array"
+    },
+    "expected_skill_checkpoints": {
+      "additionalProperties": {
+        "items": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Expected Skill Checkpoints",
+      "type": "object"
+    },
+    "hook_actions": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Hook Actions",
+      "type": "array"
+    },
+    "must_avoid": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Must Avoid",
+      "type": "array"
+    },
+    "must_keep": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Must Keep",
+      "type": "array"
+    },
+    "pacing_transitions": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Pacing Transitions",
+      "type": "array"
+    },
+    "participating_characters": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Participating Characters",
+      "type": "array"
+    },
+    "pov_boundary": {
+      "minLength": 1,
+      "title": "Pov Boundary",
+      "type": "string"
+    },
+    "reader_disclosure_boundary": {
+      "minLength": 1,
+      "title": "Reader Disclosure Boundary",
+      "type": "string"
+    },
+    "scene_beat_order": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Scene Beat Order",
+      "type": "array"
+    },
+    "selected_skill_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "minItems": 1,
+      "title": "Selected Skill Ids",
+      "type": "array"
+    },
+    "unresolved_risks": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unresolved Risks",
+      "type": "array"
+    },
+    "voice_checkpoints": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Voice Checkpoints",
+      "type": "array"
+    },
+    "work_plan_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "writer_context_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "writing_task_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "work_plan_id",
+    "writing_task_ref",
+    "accepted_plan_ref",
+    "writer_context_ref",
+    "scene_beat_order",
+    "pov_boundary",
+    "reader_disclosure_boundary",
+    "selected_skill_ids"
+  ],
+  "title": "WriterWorkPlan",
+  "type": "object"
+}

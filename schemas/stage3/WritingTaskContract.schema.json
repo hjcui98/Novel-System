@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WritingLengthPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_characters": {
+          "minimum": 1,
+          "title": "Maximum Characters",
+          "type": "integer"
+        },
+        "minimum_characters": {
+          "minimum": 1,
+          "title": "Minimum Characters",
+          "type": "integer"
+        },
+        "target_characters": {
+          "minimum": 1,
+          "title": "Target Characters",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_characters",
+        "target_characters",
+        "maximum_characters"
+      ],
+      "title": "WritingLengthPolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "active_plan_obligations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Active Plan Obligations",
+      "type": "array"
+    },
+    "blocking_gaps": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Blocking Gaps",
+      "type": "array"
+    },
+    "chapter_goal": {
+      "minLength": 1,
+      "title": "Chapter Goal",
+      "type": "string"
+    },
+    "contract_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "forbidden_reveals": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Forbidden Reveals",
+      "type": "array"
+    },
+    "length_policy": {
+      "$ref": "#/$defs/WritingLengthPolicy"
+    },
+    "mandatory_constraints": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Mandatory Constraints",
+      "type": "array"
+    },
+    "narrative_person": {
+      "minLength": 1,
+      "title": "Narrative Person",
+      "type": "string"
+    },
+    "pov": {
+      "minLength": 1,
+      "title": "Pov",
+      "type": "string"
+    },
+    "preserve_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Preserve Requirements",
+      "type": "array"
+    },
+    "required_beats": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Required Beats",
+      "type": "array"
+    },
+    "scene_goals": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Scene Goals",
+      "type": "array"
+    },
+    "style_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Style Requirements",
+      "type": "array"
+    },
+    "target_chapter": {
+      "minimum": 1,
+      "title": "Target Chapter",
+      "type": "integer"
+    },
+    "target_scenes": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "minItems": 1,
+      "title": "Target Scenes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract_id",
+    "target_chapter",
+    "target_scenes",
+    "pov",
+    "narrative_person",
+    "chapter_goal",
+    "length_policy"
+  ],
+  "title": "WritingTaskContract",
+  "type": "object"
+}

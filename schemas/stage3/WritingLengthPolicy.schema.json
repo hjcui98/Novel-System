@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "maximum_characters": {
+      "minimum": 1,
+      "title": "Maximum Characters",
+      "type": "integer"
+    },
+    "minimum_characters": {
+      "minimum": 1,
+      "title": "Minimum Characters",
+      "type": "integer"
+    },
+    "target_characters": {
+      "minimum": 1,
+      "title": "Target Characters",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "minimum_characters",
+    "target_characters",
+    "maximum_characters"
+  ],
+  "title": "WritingLengthPolicy",
+  "type": "object"
+}

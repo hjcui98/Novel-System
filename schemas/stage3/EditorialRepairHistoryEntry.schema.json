@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "EditorialVerdict": {
+      "description": "The only routing outcomes an Editor may produce.",
+      "enum": [
+        "PASS",
+        "LOCAL_REPAIR",
+        "MAJOR_REWRITE"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "draft_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "repaired_draft_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "report_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "verdict": {
+      "$ref": "#/$defs/EditorialVerdict"
+    }
+  },
+  "required": [
+    "report_id",
+    "draft_id",
+    "verdict"
+  ],
+  "title": "EditorialRepairHistoryEntry",
+  "type": "object"
+}

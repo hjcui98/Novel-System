@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "minLength": 1,
+      "title": "Code",
+      "type": "string"
+    },
+    "evidence_quote": {
+      "minLength": 1,
+      "title": "Evidence Quote",
+      "type": "string"
+    },
+    "hint_index": {
+      "minimum": 0,
+      "title": "Hint Index",
+      "type": "integer"
+    },
+    "message": {
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    },
+    "occurrence_count": {
+      "minimum": 0,
+      "title": "Occurrence Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "hint_index",
+    "evidence_quote",
+    "occurrence_count",
+    "code",
+    "message"
+  ],
+  "title": "WriterAdvisoryFinding",
+  "type": "object"
+}

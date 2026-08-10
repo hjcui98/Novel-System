@@ -1,0 +1,593 @@
+{
+  "$defs": {
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "WriterWorkPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_plan_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "character_current_states": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Character Current States",
+          "type": "array"
+        },
+        "creative_proposals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Creative Proposals",
+          "type": "array"
+        },
+        "dialogue_intents": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Dialogue Intents",
+          "type": "array"
+        },
+        "emotional_movement": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Emotional Movement",
+          "type": "array"
+        },
+        "expected_skill_checkpoints": {
+          "additionalProperties": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Expected Skill Checkpoints",
+          "type": "object"
+        },
+        "hook_actions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Hook Actions",
+          "type": "array"
+        },
+        "must_avoid": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Must Avoid",
+          "type": "array"
+        },
+        "must_keep": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Must Keep",
+          "type": "array"
+        },
+        "pacing_transitions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Pacing Transitions",
+          "type": "array"
+        },
+        "participating_characters": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Participating Characters",
+          "type": "array"
+        },
+        "pov_boundary": {
+          "minLength": 1,
+          "title": "Pov Boundary",
+          "type": "string"
+        },
+        "reader_disclosure_boundary": {
+          "minLength": 1,
+          "title": "Reader Disclosure Boundary",
+          "type": "string"
+        },
+        "scene_beat_order": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Scene Beat Order",
+          "type": "array"
+        },
+        "selected_skill_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Selected Skill Ids",
+          "type": "array"
+        },
+        "unresolved_risks": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Unresolved Risks",
+          "type": "array"
+        },
+        "voice_checkpoints": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Voice Checkpoints",
+          "type": "array"
+        },
+        "work_plan_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "writer_context_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "writing_task_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "work_plan_id",
+        "writing_task_ref",
+        "accepted_plan_ref",
+        "writer_context_ref",
+        "scene_beat_order",
+        "pov_boundary",
+        "reader_disclosure_boundary",
+        "selected_skill_ids"
+      ],
+      "title": "WriterWorkPlan",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "model_call_record": {
+      "$ref": "#/$defs/ModelCallRecord"
+    },
+    "skill_receipts": {
+      "items": {
+        "$ref": "#/$defs/SkillExecutionReceipt"
+      },
+      "title": "Skill Receipts",
+      "type": "array"
+    },
+    "work_plan": {
+      "$ref": "#/$defs/WriterWorkPlan"
+    },
+    "work_plan_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "work_plan",
+    "work_plan_artifact",
+    "skill_receipts",
+    "model_call_record"
+  ],
+  "title": "WriterWorkPlanResult",
+  "type": "object"
+}

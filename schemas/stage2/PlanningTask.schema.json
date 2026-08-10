@@ -12,7 +12,14 @@
         "replay",
         "curator_repair",
         "bounded_r2",
-        "risk_review"
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
       ],
       "title": "AgentMode",
       "type": "string"

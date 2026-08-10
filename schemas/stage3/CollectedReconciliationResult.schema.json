@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "CollectedReconciliationItem": {
+      "additionalProperties": true,
+      "properties": {
+        "curator_observation": {
+          "default": "",
+          "title": "Curator Observation",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "subject": {
+          "default": "",
+          "title": "Subject",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/ReconciliationVerdict"
+        },
+        "writer_hint": {
+          "default": "",
+          "title": "Writer Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict"
+      ],
+      "title": "CollectedReconciliationItem",
+      "type": "object"
+    },
+    "ReconciliationVerdict": {
+      "enum": [
+        "matched",
+        "declared_only",
+        "observed_only",
+        "mismatched"
+      ],
+      "title": "ReconciliationVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Minimal reconciliation collection contract; tolerant of future fields.",
+  "properties": {
+    "draft_id": {
+      "minLength": 1,
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CollectedReconciliationItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "result_id": {
+      "minLength": 1,
+      "title": "Result Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "result_id",
+    "draft_id"
+  ],
+  "title": "CollectedReconciliationResult",
+  "type": "object"
+}

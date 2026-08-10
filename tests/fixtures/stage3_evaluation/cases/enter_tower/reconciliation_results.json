@@ -1,0 +1,69 @@
+{
+  "recent_prose": {
+    "draft_id": "draft.stage3.eval.enter-tower.recent-prose",
+    "items": [
+      {
+        "curator_observation": "正文中石门向里退开",
+        "subject": "北塔石门",
+        "verdict": "matched",
+        "writer_hint": "open_state=opened"
+      },
+      {
+        "curator_observation": "正文中林澈已进入塔内",
+        "subject": "林澈",
+        "verdict": "observed_only",
+        "writer_hint": "无"
+      },
+      {
+        "curator_observation": "正文中石门并未关闭",
+        "subject": "北塔石门",
+        "verdict": "declared_only",
+        "writer_hint": "close_state=closed"
+      }
+    ],
+    "result_id": "reconciliation.stage3.eval.enter-tower.recent-prose"
+  },
+  "simple_retrieval": {
+    "draft_id": "draft.stage3.eval.enter-tower.simple-retrieval",
+    "items": [
+      {
+        "curator_observation": "正文中石门向里退开",
+        "subject": "北塔石门",
+        "verdict": "matched",
+        "writer_hint": "open_state=opened"
+      },
+      {
+        "curator_observation": "正文中林澈跨过门槛",
+        "subject": "林澈",
+        "verdict": "matched",
+        "writer_hint": "location=北塔入口内侧"
+      }
+    ],
+    "result_id": "reconciliation.stage3.eval.enter-tower.simple-retrieval"
+  },
+  "writer_context_package": {
+    "draft_id": "draft.stage3.eval.enter-tower.writer-context-package",
+    "items": [
+      {
+        "curator_observation": "正文中石门向里退开",
+        "subject": "北塔石门",
+        "verdict": "matched",
+        "writer_hint": "open_state=opened"
+      },
+      {
+        "curator_observation": "正文中林澈跨过门槛",
+        "subject": "林澈",
+        "verdict": "matched",
+        "writer_hint": "location=北塔入口内侧"
+      },
+      {
+        "curator_observation": "正文改变的是光路而非铜镜本身",
+        "detail": "对象判断不一致",
+        "subject": "铜镜",
+        "verdict": "mismatched",
+        "writer_hint": "light_path=redirected"
+      }
+    ],
+    "result_id": "reconciliation.stage3.eval.enter-tower.writer-context-package"
+  }
+}

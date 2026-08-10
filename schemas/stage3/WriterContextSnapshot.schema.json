@@ -1,0 +1,223 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WriterContextItem": {
+      "additionalProperties": false,
+      "description": "A single writer-safe context item in the Stage 3 frozen handoff.",
+      "properties": {
+        "access_scope": {
+          "const": "writer_safe",
+          "default": "writer_safe",
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "category": {
+          "minLength": 1,
+          "title": "Category",
+          "type": "string"
+        },
+        "derivation_taint": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Derivation Taint",
+          "type": "array"
+        },
+        "entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "information_label": {
+          "default": "writer_safe",
+          "minLength": 1,
+          "title": "Information Label",
+          "type": "string"
+        },
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "narrative_end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative End"
+        },
+        "narrative_start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative Start"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predicate"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "story_time_end": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Time End"
+        },
+        "story_time_start": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Time Start"
+        },
+        "support_status": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Support Status"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "truth_class": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Truth Class"
+        }
+      },
+      "required": [
+        "item_id",
+        "category",
+        "text",
+        "source_commit",
+        "snapshot_id"
+      ],
+      "title": "WriterContextItem",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Frozen Writer-visible context used by Stage 3 Writing Core before formal handoff.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget_report": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Budget Report",
+      "type": "object"
+    },
+    "context_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WriterContextItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "task_contract": {
+      "minLength": 1,
+      "title": "Task Contract",
+      "type": "string"
+    },
+    "unresolved_gaps": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unresolved Gaps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "context_id",
+    "base_commit",
+    "snapshot_id",
+    "task_contract"
+  ],
+  "title": "WriterContextSnapshot",
+  "type": "object"
+}

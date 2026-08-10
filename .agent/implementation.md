@@ -1806,3 +1806,39 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   `0/0`, timeout 0, unsatisfiable 0, no OOM/context reduction/lease leak.
 - Status: `RETURN_TO_CODEX_REVIEW`. These artifacts replace the v31/old-fingerprint evidence only;
   previously accepted implementation and test evidence is unchanged. No commit or merge was made.
+
+## 25. Stage 3 Writer Context Loop direct implementation (2026-08-10)
+
+- Worktree: `/home/cuihengjia/agent/novel/NS-stage3-context-loop`; branch:
+  `codex/stage3-writer-context-loop`; executable Stage 2 base:
+  `0ec1eb492a9a3b0dc4b39b060f98778dbd63994d`; selective candidate source:
+  `3db41e686ffe01936ccc541ed60f6ea12552c8fc`. The old candidate branch was not merged or
+  cherry-picked wholesale.
+- S3-A through S3-D are implemented as one candidate-only path: typed Writer/Editor/Observer
+  agents and content-addressed Prompt/Skill contracts; `WriterWorkPlan`; bounded
+  `REQUEST_MEMORY`; `ContextDelta` and event-derived `AgentContextView`; safe soft/hard compaction,
+  provider-valid dispatch, checkpoint replay/recovery; finite PASS/local-repair/major-rewrite
+  review routes; read-only observation and declaration reconciliation; versioned Stage 3 schemas;
+  and offline plus real-full-chain evaluation runners.
+- The loop produces immutable draft candidates and receipts only. It does not write Canon,
+  `TextRoot`, `WorldRoot`, `PlanRoot`, `MemoryPatch`, or invoke `CommitService`. Shared Stage 2
+  owners remain authoritative; the implementation adds no second Memory Gateway, Model Gateway,
+  event store, artifact store, context store, scheduler, or general DAG.
+- Unified deterministic command:
+  `PYTHONPATH=src /home/cuihengjia/agent/novel/NS/.conda-env/bin/pytest -m "not integration and not model_required"`.
+  Result: `1893 passed, 9 deselected` in 285.95 seconds, 26,054 statements and 7,330 branches,
+  100% coverage. This includes the required Stage 2 Memory Gateway, WriterContext assembler, and
+  model-admission regressions.
+- Full repository pre-commit passes with `PYTHONPATH=src`: Ruff check, Ruff format, strict MyPy
+  across 324 source/test files, and deterministic Pytest. Independent Ruff, format, strict MyPy
+  over 173 production files, and `git diff --check` also pass.
+- Direct integration selection ran 5 tests: the Stage 2 benchmark freeze/reveal integration test
+  passed; 4 pre-existing real-infrastructure tests stopped at fixture setup because the available
+  Conda environment lacks the PostgreSQL `initdb` binary. No product assertion failed, but the
+  infrastructure integration gate is not claimed as passed.
+- The formal runner requires a real runtime factory and refuses fixture/scripted verdicts. No
+  Writer/Editor/Observer/evaluator endpoint configuration or credentials were available, so the
+  real three-scheme semantic experiment was not run and no semantic `PASS` is issued. Engineering
+  implementation is complete; the Stage 3 gate remains `CONDITIONAL_PASS` until the final accepted
+  Stage 2 executable identity is integrated and both infrastructure and formal model gates run.
+- No commit or merge was created.

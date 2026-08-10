@@ -1,0 +1,40 @@
+{
+  "contract_id": "writing-contract.stage3.shadow.c21",
+  "target_chapter": 21,
+  "target_scenes": [
+    "scene.stage3.shadow.21.1"
+  ],
+  "pov": "林澈",
+  "narrative_person": "第三人称限知",
+  "chapter_goal": "让林澈在不违背伤势约束的情况下找到进入北塔的方法。",
+  "scene_goals": [
+    "观察石门与月影的关系并完成开门动作。"
+  ],
+  "required_beats": [
+    "确认左臂伤势仍限制行动",
+    "发现月影是开启石门的条件",
+    "使用铜镜改变光路"
+  ],
+  "active_plan_obligations": [
+    "obligation.stage3.enter-tower"
+  ],
+  "mandatory_constraints": [
+    "不得让林澈用左臂强行推门"
+  ],
+  "forbidden_reveals": [
+    "不得解释北塔顶层的秘密"
+  ],
+  "preserve_requirements": [
+    "保持林澈谨慎、先观察后行动的习惯"
+  ],
+  "style_requirements": [
+    "克制叙述",
+    "以可见动作承载判断"
+  ],
+  "length_policy": {
+    "minimum_characters": 120,
+    "target_characters": 220,
+    "maximum_characters": 420
+  },
+  "blocking_gaps": []
+}

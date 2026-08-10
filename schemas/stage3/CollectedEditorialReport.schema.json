@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "CollectedEditorialIssue": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "issue_type": {
+          "default": "",
+          "title": "Issue Type",
+          "type": "string"
+        },
+        "location": {
+          "default": "",
+          "title": "Location",
+          "type": "string"
+        },
+        "severity": {
+          "default": "",
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "title": "CollectedEditorialIssue",
+      "type": "object"
+    },
+    "EditorialVerdict": {
+      "enum": [
+        "pass",
+        "local_repair",
+        "major_rewrite"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Minimal Editor collection contract; tolerant of future Editor fields.",
+  "properties": {
+    "draft_id": {
+      "minLength": 1,
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "issues": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CollectedEditorialIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "repair_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Repair Count",
+      "type": "integer"
+    },
+    "report_id": {
+      "minLength": 1,
+      "title": "Report Id",
+      "type": "string"
+    },
+    "rewrite_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rewrite Count",
+      "type": "integer"
+    },
+    "unresolved_issues": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unresolved Issues",
+      "type": "array"
+    },
+    "verdict": {
+      "$ref": "#/$defs/EditorialVerdict"
+    }
+  },
+  "required": [
+    "report_id",
+    "draft_id",
+    "verdict"
+  ],
+  "title": "CollectedEditorialReport",
+  "type": "object"
+}

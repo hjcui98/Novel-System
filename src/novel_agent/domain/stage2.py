@@ -50,6 +50,10 @@ class AgentType(StrEnum):
     MEMORY_CURATOR = "memory_curator"
     MEMORY_CONTROLLER = "memory_controller"
     MEMORY_GUARDIAN = "memory_guardian"
+    WRITER = "writer"
+    EDITOR = "editor"
+    CANDIDATE_OBSERVER = "candidate_observer"
+    PLAN_REVIEWER = "plan_reviewer"
 
 
 class AgentMode(StrEnum):
@@ -64,6 +68,13 @@ class AgentMode(StrEnum):
     CURATOR_REPAIR = "curator_repair"
     BOUNDED_R2 = "bounded_r2"
     RISK_REVIEW = "risk_review"
+    DRAFT = "draft"
+    CONTINUE = "continue"
+    MAJOR_REWRITE = "major_rewrite"
+    REVIEW = "review"
+    LOCAL_REPAIR = "local_repair"
+    OBSERVE = "observe"
+    CHAPTER_SET = "chapter_set"
 
 
 class ContractRef(DomainModel):

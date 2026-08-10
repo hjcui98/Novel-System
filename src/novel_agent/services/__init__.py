@@ -26,6 +26,7 @@ __all__ = [
     "RegisteredModelEndpoint",
     "RunCheckpointRepository",
     "RunEventLogRepository",
+    "WriterContextLoopService",
     "manifest_commit_id",
     "object_key",
     "sha256_id",
@@ -45,4 +46,8 @@ def __getattr__(name: str) -> Any:
             "AgentContextRuntime": AgentContextRuntime,
             "ContextCompactor": ContextCompactor,
         }[name]
+    if name == "WriterContextLoopService":
+        from novel_agent.services.writer_context_loop import WriterContextLoopService
+
+        return WriterContextLoopService
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

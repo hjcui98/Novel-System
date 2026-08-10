@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "MemoryHintChangeKind": {
+      "enum": [
+        "ADD",
+        "CHANGE",
+        "END",
+        "UNCERTAIN"
+      ],
+      "title": "MemoryHintChangeKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "change_kind": {
+      "$ref": "#/$defs/MemoryHintChangeKind"
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "evidence_quote": {
+      "minLength": 1,
+      "title": "Evidence Quote",
+      "type": "string"
+    },
+    "predicate_hint": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Predicate Hint"
+    },
+    "subject_hint": {
+      "minLength": 1,
+      "title": "Subject Hint",
+      "type": "string"
+    },
+    "value_hint": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Value Hint"
+    }
+  },
+  "required": [
+    "subject_hint",
+    "change_kind",
+    "evidence_quote",
+    "confidence"
+  ],
+  "title": "DeclaredMemoryHint",
+  "type": "object"
+}

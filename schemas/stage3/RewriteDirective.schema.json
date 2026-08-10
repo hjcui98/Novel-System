@@ -1,0 +1,99 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "RewriteScope": {
+      "enum": [
+        "major_rewrite",
+        "local_repair"
+      ],
+      "title": "RewriteScope",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "directive_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "directive_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "instructions": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Instructions",
+      "type": "array"
+    },
+    "parent_draft_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "preserve_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Preserve Requirements",
+      "type": "array"
+    },
+    "scope": {
+      "$ref": "#/$defs/RewriteScope"
+    }
+  },
+  "required": [
+    "directive_id",
+    "parent_draft_id",
+    "scope",
+    "directive_artifact",
+    "instructions"
+  ],
+  "title": "RewriteDirective",
+  "type": "object"
+}

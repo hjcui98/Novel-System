@@ -1,0 +1,27 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "issue_type": {
+      "default": "",
+      "title": "Issue Type",
+      "type": "string"
+    },
+    "location": {
+      "default": "",
+      "title": "Location",
+      "type": "string"
+    },
+    "severity": {
+      "default": "",
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "title": "CollectedEditorialIssue",
+  "type": "object"
+}

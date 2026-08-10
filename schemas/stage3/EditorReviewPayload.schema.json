@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "EditorialIssueDraft": {
+      "additionalProperties": false,
+      "description": "Untrusted model issue output; offsets and IDs are bound by the service.",
+      "properties": {
+        "block_hint": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Hint"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Quote"
+        },
+        "issue_type": {
+          "$ref": "#/$defs/EditorialIssueType"
+        },
+        "occurrence": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "repairable": {
+          "default": false,
+          "title": "Repairable",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/EditorialSeverity"
+        },
+        "structural": {
+          "default": false,
+          "title": "Structural",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "issue_type",
+        "severity",
+        "description"
+      ],
+      "title": "EditorialIssueDraft",
+      "type": "object"
+    },
+    "EditorialIssueType": {
+      "enum": [
+        "constraint_violation",
+        "continuity",
+        "pov",
+        "disclosure",
+        "plan",
+        "style",
+        "context_gap",
+        "unsupported_change",
+        "structure"
+      ],
+      "title": "EditorialIssueType",
+      "type": "string"
+    },
+    "EditorialSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "EditorialSeverity",
+      "type": "string"
+    },
+    "EditorialVerdict": {
+      "description": "The only routing outcomes an Editor may produce.",
+      "enum": [
+        "PASS",
+        "LOCAL_REPAIR",
+        "MAJOR_REWRITE"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Structured response accepted from the Editor REVIEW model call.",
+  "properties": {
+    "issues": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EditorialIssueDraft"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "planner_replan_required": {
+      "default": false,
+      "title": "Planner Replan Required",
+      "type": "boolean"
+    },
+    "preserve_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Preserve Requirements",
+      "type": "array"
+    },
+    "repair_instructions": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Repair Instructions",
+      "type": "array"
+    },
+    "rewrite_preserve_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Rewrite Preserve Requirements",
+      "type": "array"
+    },
+    "rewrite_targets": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Rewrite Targets",
+      "type": "array"
+    },
+    "unresolved_needs": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unresolved Needs",
+      "type": "array"
+    },
+    "verdict": {
+      "$ref": "#/$defs/EditorialVerdict"
+    }
+  },
+  "required": [
+    "verdict"
+  ],
+  "title": "EditorReviewPayload",
+  "type": "object"
+}

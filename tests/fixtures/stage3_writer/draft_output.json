@@ -1,0 +1,28 @@
+{
+  "draft_text": "暮色沿青石坡缓缓沉下，林澈停在北塔石门前，没有立刻伸手。他的左臂仍被布带紧紧束着，稍一抬高便牵出钝痛；靠蛮力推门并不可行。林澈退后半步，看见门槛上一道浅槽正被逐渐拉长的月影填满。旧刻痕在冷光里显出完整的一句：石门只会在月影抵达门槛时开启。可云层移动太快，月影偏在最后一寸之外。他取下腰间铜镜，用右手抵住镜背，慢慢调整角度。银白的反光越过缺口，恰好补进浅槽。门内传来低沉的机括声，石门向里退开。林澈收起铜镜，先侧身听了片刻，才跨过门槛；塔内的黑暗仍未交代它守着什么。",
+  "declared_memory_hints": [
+    {
+      "subject_hint": "北塔石门",
+      "change_kind": "CHANGE",
+      "predicate_hint": "open_state",
+      "value_hint": "opened",
+      "evidence_quote": "石门向里退开",
+      "confidence": 0.91
+    },
+    {
+      "subject_hint": "林澈",
+      "change_kind": "UNCERTAIN",
+      "predicate_hint": "location",
+      "value_hint": "北塔入口内侧",
+      "evidence_quote": "跨过门槛",
+      "confidence": 0.72
+    }
+  ],
+  "unresolved_questions": [
+    "塔内的守卫状态尚未由冻结上下文给出。"
+  ],
+  "self_observations": [
+    "已保留左臂伤势限制。",
+    "未揭示北塔顶层秘密。"
+  ]
+}

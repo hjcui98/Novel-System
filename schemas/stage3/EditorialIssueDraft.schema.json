@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "EditorialIssueType": {
+      "enum": [
+        "constraint_violation",
+        "continuity",
+        "pov",
+        "disclosure",
+        "plan",
+        "style",
+        "context_gap",
+        "unsupported_change",
+        "structure"
+      ],
+      "title": "EditorialIssueType",
+      "type": "string"
+    },
+    "EditorialSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "EditorialSeverity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Untrusted model issue output; offsets and IDs are bound by the service.",
+  "properties": {
+    "block_hint": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Block Hint"
+    },
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "evidence_quote": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Quote"
+    },
+    "issue_type": {
+      "$ref": "#/$defs/EditorialIssueType"
+    },
+    "occurrence": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Occurrence",
+      "type": "integer"
+    },
+    "repairable": {
+      "default": false,
+      "title": "Repairable",
+      "type": "boolean"
+    },
+    "severity": {
+      "$ref": "#/$defs/EditorialSeverity"
+    },
+    "structural": {
+      "default": false,
+      "title": "Structural",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "issue_type",
+    "severity",
+    "description"
+  ],
+  "title": "EditorialIssueDraft",
+  "type": "object"
+}
