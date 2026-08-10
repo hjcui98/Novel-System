@@ -372,6 +372,39 @@ class RetrievalChannel(StrEnum):
     RERANK = "rerank"
 
 
+class TypedGraphPathReceipt(DomainModel):
+    """Versioned path provenance retained before graph rows become ordinary hits."""
+
+    receipt_id: ArtifactId
+    contract_version: str = Field(default="typed_graph_path.v1", min_length=1)
+    base_commit: CommitId
+    snapshot_id: StableId
+    access_scope: str = Field(min_length=1)
+    seed_entity_ids: tuple[StableId, ...] = Field(min_length=1)
+    relation_row_ids: tuple[StableId, ...] = Field(min_length=1)
+    relation_ids: tuple[StableId, ...] = Field(min_length=1)
+    entity_path: tuple[StableId, ...] = Field(min_length=2)
+    directions: tuple[str, ...] = Field(min_length=1)
+    edge_semantics: tuple[str, ...] = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    depth: int = Field(ge=1, le=3)
+
+    @model_validator(mode="after")
+    def validate_path(self) -> TypedGraphPathReceipt:
+        edge_count = len(self.relation_row_ids)
+        if len(self.relation_ids) != edge_count:
+            raise ValueError("graph receipt relation ids do not match relation rows")
+        if len(self.entity_path) != edge_count + 1:
+            raise ValueError("graph receipt entity path does not match edge count")
+        if len(self.directions) != edge_count or len(self.edge_semantics) != edge_count:
+            raise ValueError("graph receipt direction/semantic counts do not match edges")
+        if self.depth != edge_count:
+            raise ValueError("graph receipt depth differs from edge count")
+        if any(item not in {"canonical", "evidence"} for item in self.edge_semantics):
+            raise ValueError("graph receipt may only contain canonical/evidence edges")
+        return self
+
+
 class RetrievalUnit(DomainModel):
     unit_id: StableId
     unit_kind: RetrievalUnitKind
@@ -399,6 +432,9 @@ class RetrievalUnit(DomainModel):
     information_label: str = Field(default="observed", min_length=1)
     derivation_taint: tuple[str, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
+    graph_path_receipt: TypedGraphPathReceipt | None = None
+    compact_handle: StableId | None = None
+    expanded_from_handle: StableId | None = None
     mandatory: bool = False
 
     @model_validator(mode="after")
@@ -423,6 +459,13 @@ class RetrievalUnit(DomainModel):
             raise ValueError("retrieval unit parent ids must be unique")
         if len(self.source_refs) != len(set(self.source_refs)):
             raise ValueError("retrieval unit source refs must be unique")
+        if self.graph_path_receipt is not None and (
+            self.graph_path_receipt.base_commit != self.source_commit
+            or self.graph_path_receipt.snapshot_id != self.snapshot_id
+        ):
+            raise ValueError("graph path receipt basis differs from retrieval unit")
+        if self.expanded_from_handle is not None and self.parent_unit_id is None:
+            raise ValueError("expanded compact result requires a parent retrieval unit")
         return self
 
 
@@ -433,6 +476,16 @@ class ChannelHit(DomainModel):
     raw_score: float
     candidate_count: int = Field(ge=1)
     hit_reason: str = Field(min_length=1)
+    graph_path_receipt: TypedGraphPathReceipt | None = None
+
+    @model_validator(mode="after")
+    def validate_graph_receipt(self) -> ChannelHit:
+        if self.graph_path_receipt is not None and (
+            self.channel is not RetrievalChannel.TYPED_GRAPH
+            or self.unit.graph_path_receipt != self.graph_path_receipt
+        ):
+            raise ValueError("graph receipt must be bound to its typed graph unit")
+        return self
 
 
 class FusedCandidate(DomainModel):

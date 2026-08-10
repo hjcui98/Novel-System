@@ -5,6 +5,7 @@
         "project_bootstrap",
         "story",
         "arc_volume",
+        "chapter_set",
         "chapter",
         "scene",
         "replan",

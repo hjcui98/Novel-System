@@ -144,6 +144,7 @@
         "project_bootstrap",
         "story",
         "arc_volume",
+        "chapter_set",
         "chapter",
         "scene",
         "replan",
@@ -159,6 +160,7 @@
     "AgentType": {
       "enum": [
         "planner",
+        "plan_reviewer",
         "memory_curator",
         "memory_controller",
         "memory_guardian"

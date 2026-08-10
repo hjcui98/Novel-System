@@ -311,6 +311,9 @@ class EvidenceExpander:
                         entity_ids=candidate.unit.entity_ids,
                         parent_unit_id=candidate.unit.unit_id,
                         parent_unit_ids=(candidate.unit.unit_id,),
+                        expanded_from_handle=(
+                            candidate.unit.compact_handle or candidate.unit.unit_id
+                        ),
                         worldline=candidate.unit.worldline,
                         narrative_start=candidate.unit.narrative_start,
                         narrative_end=candidate.unit.narrative_end,

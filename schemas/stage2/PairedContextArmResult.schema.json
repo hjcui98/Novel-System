@@ -206,6 +206,17 @@
           "title": "Channel Rank",
           "type": "integer"
         },
+        "graph_path_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedGraphPathReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "hit_reason": {
           "minLength": 1,
           "title": "Hit Reason",
@@ -1848,6 +1859,17 @@
           "default": null,
           "title": "Canonicalizer Version"
         },
+        "compact_handle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "content_hash": {
           "anyOf": [
             {
@@ -1882,6 +1904,28 @@
           },
           "title": "Evidence Refs",
           "type": "array"
+        },
+        "expanded_from_handle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "graph_path_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedGraphPathReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "information_label": {
           "default": "observed",
@@ -2293,6 +2337,109 @@
       ],
       "title": "TruthClass",
       "type": "string"
+    },
+    "TypedGraphPathReceipt": {
+      "additionalProperties": false,
+      "description": "Versioned path provenance retained before graph rows become ordinary hits.",
+      "properties": {
+        "access_scope": {
+          "minLength": 1,
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "contract_version": {
+          "default": "typed_graph_path.v1",
+          "minLength": 1,
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "depth": {
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "directions": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Directions",
+          "type": "array"
+        },
+        "edge_semantics": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Edge Semantics",
+          "type": "array"
+        },
+        "entity_path": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 2,
+          "title": "Entity Path",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "relation_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Relation Ids",
+          "type": "array"
+        },
+        "relation_row_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Relation Row Ids",
+          "type": "array"
+        },
+        "seed_entity_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Seed Entity Ids",
+          "type": "array"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "base_commit",
+        "snapshot_id",
+        "access_scope",
+        "seed_entity_ids",
+        "relation_row_ids",
+        "relation_ids",
+        "entity_path",
+        "directions",
+        "edge_semantics",
+        "depth"
+      ],
+      "title": "TypedGraphPathReceipt",
+      "type": "object"
     },
     "WriterContextBudgetReport": {
       "additionalProperties": false,

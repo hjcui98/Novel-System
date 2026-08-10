@@ -601,22 +601,20 @@ def _r2_registration(
             None,
         )
     if intent in {Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP}:
-        group = _parallel_group(
-            intent,
-            (
-                RetrievalChannel.TYPED_GRAPH,
-                RetrievalChannel.ANCHOR_BM25,
-                RetrievalChannel.ANCHOR_DENSE,
-            ),
-        )
         return (
             (
                 RetrievalChannel.TYPED_GRAPH,
                 RetrievalChannel.ANCHOR_BM25,
                 RetrievalChannel.ANCHOR_DENSE,
             ),
-            (group,),
-            (),
+            (anchor,),
+            (
+                _fallback(
+                    intent,
+                    "relation_or_causal_facets_unclosed",
+                    (RetrievalChannel.TYPED_GRAPH,),
+                ),
+            ),
             GraphTraversalPolicy(),
         )
     if intent in {

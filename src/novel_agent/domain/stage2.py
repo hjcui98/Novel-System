@@ -47,6 +47,7 @@ from novel_agent.domain.writer_context import (
 
 class AgentType(StrEnum):
     PLANNER = "planner"
+    PLAN_REVIEWER = "plan_reviewer"
     MEMORY_CURATOR = "memory_curator"
     MEMORY_CONTROLLER = "memory_controller"
     MEMORY_GUARDIAN = "memory_guardian"
@@ -56,6 +57,7 @@ class AgentMode(StrEnum):
     PROJECT_BOOTSTRAP = "project_bootstrap"
     STORY = "story"
     ARC_VOLUME = "arc_volume"
+    CHAPTER_SET = "chapter_set"
     CHAPTER = "chapter"
     SCENE = "scene"
     REPLAN = "replan"
@@ -348,6 +350,7 @@ class PlanningTask(DomainModel):
             AgentMode.PROJECT_BOOTSTRAP,
             AgentMode.STORY,
             AgentMode.ARC_VOLUME,
+            AgentMode.CHAPTER_SET,
             AgentMode.CHAPTER,
             AgentMode.SCENE,
             AgentMode.REPLAN,
@@ -408,6 +411,7 @@ class PlannerProposalDraft(DomainModel):
             AgentMode.PROJECT_BOOTSTRAP,
             AgentMode.STORY,
             AgentMode.ARC_VOLUME,
+            AgentMode.CHAPTER_SET,
             AgentMode.CHAPTER,
             AgentMode.SCENE,
             AgentMode.REPLAN,
@@ -479,6 +483,12 @@ class PlanProposal(DomainModel):
     unresolved: tuple[str, ...] = ()
     coverage: float = Field(ge=0, le=1)
     receipt: AgentExecutionReceipt
+    reviewed_inquiry_ref: ArtifactRef | None = None
+    memory_need_ids: tuple[StableId, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    graph_path_receipt_refs: tuple[ArtifactRef, ...] = ()
+    parent_proposal_id: StableId | None = None
+    reviewer_receipt_ref: ArtifactRef | None = None
 
 
 class PlannerExecutionResult(DomainModel):

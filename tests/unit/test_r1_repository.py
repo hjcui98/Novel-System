@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 from sqlalchemy import Engine, create_engine, func, select
@@ -21,7 +22,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.world import Entity, RelationRecord, StoryTime, TruthClass
 from novel_agent.services.commits import CommitService
-from novel_agent.services.r1 import R1RetrievalBackend, R1WorldRepository
+from novel_agent.services.r1 import GraphPath, R1RetrievalBackend, R1WorldRepository
 from tests.factories import make_manifest
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
@@ -202,6 +203,33 @@ def test_r1_backend_returns_typed_traceable_units(
         backend.search(need, RetrievalChannel.ANCHOR_BM25, 5)
     with pytest.raises(ValueError, match="graph depth"):
         R1RetrievalBackend(repository, snapshot_id=StableId("snapshot.r1"), graph_depth=0)
+    with pytest.raises(ValueError, match="hard limit"):
+        R1RetrievalBackend(repository, snapshot_id=StableId("snapshot.r1"), graph_depth=4)
+    assert repository.records_for_rows(commit_id, ()) == ()
+
+    class MissingRows:
+        def records_for_rows(self, *args: object, **kwargs: object) -> tuple[()]:
+            del args, kwargs
+            return ()
+
+    missing_backend = R1RetrievalBackend(
+        cast(R1WorldRepository, MissingRows()),
+        snapshot_id=StableId("snapshot.r1"),
+    )
+    with pytest.raises(ValueError, match="resolved exactly"):
+        missing_backend._graph_hit(
+            need,
+            GraphPath(
+                relation_row_ids=(StableId("row.missing"),),
+                relation_ids=(StableId("relation.missing"),),
+                entity_path=(StableId("entity.a"), StableId("entity.b")),
+                directions=("outgoing",),
+                edge_semantics=("canonical",),
+                evidence_refs=(),
+            ),
+            rank=1,
+            candidate_count=1,
+        )
     with pytest.raises(ValueError, match="non-empty access scope"):
         R1RetrievalBackend(
             repository,
@@ -396,6 +424,11 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
     )
     assert len(hits) == 2
     assert {hit.hit_reason for hit in hits} == {"bounded_typed_graph_path"}
+    assert all(hit.graph_path_receipt is not None for hit in hits)
+    assert all(hit.unit.graph_path_receipt == hit.graph_path_receipt for hit in hits)
+    assert all(
+        hit.graph_path_receipt.depth <= 2 for hit in hits if hit.graph_path_receipt is not None
+    )
     paths = repository.typed_graph_paths(
         commit_id,
         (base.entities[0].entity_id,),

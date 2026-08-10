@@ -8,7 +8,13 @@ from novel_agent.agents.curator_bootstrap import (
 )
 from novel_agent.agents.curator_repair import CuratorRepairAgent, CuratorRepairContractError
 from novel_agent.agents.guardian import GuardianInvocationError, GuardianRiskReviewAgent
-from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
+from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
+from novel_agent.agents.planner import (
+    PlannerAgent,
+    PlannerContractBundle,
+    PlannerInvocationError,
+    build_planner_contract_bundle,
+)
 from novel_agent.agents.registry import (
     AgentRegistry,
     RegistryError,
@@ -35,13 +41,17 @@ __all__ = [
     "CuratorReplayAgent",
     "GuardianInvocationError",
     "GuardianRiskReviewAgent",
+    "PlanReviewerAgent",
+    "PlanReviewerInvocationError",
     "PlannerAgent",
+    "PlannerContractBundle",
     "PlannerInvocationError",
     "PreparedAgentRun",
     "RegistryError",
     "StructuredAgentRunner",
     "StructuredControllerPolicy",
     "agent_spec_content_id",
+    "build_planner_contract_bundle",
     "seal_agent_spec",
     "seal_tool_policy",
     "tool_policy_content_id",

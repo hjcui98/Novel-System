@@ -418,7 +418,10 @@
         "editor.review_settled",
         "editor.repair_settled",
         "candidate.observation_settled",
-        "candidate.reconciliation_settled"
+        "candidate.reconciliation_settled",
+        "context.request_memory",
+        "planning.plan_review_settled",
+        "context.pressure"
       ],
       "title": "RunEventType",
       "type": "string"

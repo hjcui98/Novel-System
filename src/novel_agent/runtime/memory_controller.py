@@ -424,7 +424,11 @@ class RouteBoundControllerPolicy:
 
     @staticmethod
     def _fallback_applies(condition: str, primary_succeeded: bool) -> bool:
-        if condition in {"anchor_evidence_insufficient", "plan_anchor_insufficient"}:
+        if condition in {
+            "anchor_evidence_insufficient",
+            "plan_anchor_insufficient",
+            "relation_or_causal_facets_unclosed",
+        }:
             return not primary_succeeded
         if condition == "hierarchy_scope_resolved":
             return primary_succeeded

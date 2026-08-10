@@ -91,8 +91,16 @@ ROUTES: dict[Stage1QueryIntent, RouteDefinition] = {
     Stage1QueryIntent.DIALOGUE_SAMPLE: RouteDefinition(
         (RetrievalChannel.GROUNDED_BM25, RetrievalChannel.GROUNDED_DENSE), True
     ),
-    Stage1QueryIntent.CAUSAL_MULTI_HOP: RouteDefinition((RetrievalChannel.TYPED_GRAPH,), False),
-    Stage1QueryIntent.RELATION_CHAIN: RouteDefinition((RetrievalChannel.TYPED_GRAPH,), False),
+    Stage1QueryIntent.CAUSAL_MULTI_HOP: RouteDefinition(
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+        True,
+        (RetrievalChannel.TYPED_GRAPH,),
+    ),
+    Stage1QueryIntent.RELATION_CHAIN: RouteDefinition(
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+        True,
+        (RetrievalChannel.TYPED_GRAPH,),
+    ),
     Stage1QueryIntent.ANCHOR_INSUFFICIENT: RouteDefinition(
         (RetrievalChannel.GROUNDED_BM25, RetrievalChannel.GROUNDED_DENSE), True
     ),

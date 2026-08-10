@@ -22,11 +22,13 @@ from novel_agent.domain.memory import (
     RetrievalUnitKind,
     Stage1MemoryNeed,
     Stage1QueryIntent,
+    TypedGraphPathReceipt,
     WorldRootDocument,
 )
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.world import StoryTime, TruthClass
 from novel_agent.services.canonical_alias_registry import CanonicalAliasRegistry
+from novel_agent.services.content_addressing import content_id
 from novel_agent.services.need_query_compiler import compile_need_query
 
 
@@ -420,6 +422,32 @@ class R1WorldRepository:
                 frontier.append((next_node, next_rows, next_entities, next_directions))
         return tuple(paths)
 
+    def records_for_rows(
+        self,
+        source_commit: CommitId,
+        row_ids: tuple[StableId, ...],
+        *,
+        access_scopes: tuple[str, ...] = ("writer_safe",),
+    ) -> tuple[R1RecordView, ...]:
+        """Resolve exact graph receipt rows without changing their path order."""
+
+        if not row_ids:
+            return ()
+        self._validate_access_scopes(access_scopes)
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(R1RecordRow).where(
+                        R1RecordRow.source_commit == source_commit.root,
+                        R1RecordRow.row_id.in_(tuple(item.root for item in row_ids)),
+                        R1RecordRow.access_scope.in_(access_scopes),
+                    )
+                )
+            )
+            by_id = {row.row_id: row for row in rows}
+            ordered = tuple(by_id[item.root] for item in row_ids if item.root in by_id)
+            return self._views(session, ordered)
+
     @staticmethod
     def _views(session: Session, rows: tuple[R1RecordRow, ...]) -> tuple[R1RecordView, ...]:
         if not rows:
@@ -651,6 +679,8 @@ class R1RetrievalBackend:
     ) -> None:
         if graph_depth < 1:
             raise ValueError("graph depth must be positive")
+        if graph_depth > 3:
+            raise ValueError("graph depth exceeds the hard limit")
         R1WorldRepository._validate_access_scopes(access_scopes)
         self._repository = repository
         self._snapshot_id = snapshot_id
@@ -662,7 +692,7 @@ class R1RetrievalBackend:
     ) -> tuple[ChannelHit, ...]:
         bundle = compile_need_query(need)
         if channel is RetrievalChannel.TYPED_GRAPH:
-            records = self._repository.typed_graph(
+            paths = self._repository.typed_graph_paths(
                 need.base_commit,
                 bundle.graph_seeds,
                 max_depth=self._graph_depth,
@@ -670,6 +700,10 @@ class R1RetrievalBackend:
                 allowed_predicates=bundle.exact_predicates,
                 time_scope=bundle.time_scope,
                 access_scopes=self._visible_access_scopes(need),
+            )
+            return tuple(
+                self._graph_hit(need, path, rank=rank, candidate_count=len(paths))
+                for rank, path in enumerate(paths, start=1)
             )
         elif channel in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}:
             # The R1 repository derives its exact query from the same fields
@@ -692,14 +726,79 @@ class R1RetrievalBackend:
                 raw_score=float(count - rank + 1),
                 candidate_count=count,
                 hit_reason=(
-                    "bounded_typed_graph_path"
-                    if channel is RetrievalChannel.TYPED_GRAPH
-                    else "postgresql_versioned_temporal_match"
+                    "postgresql_versioned_temporal_match"
                     if channel is RetrievalChannel.R1_TEMPORAL
                     else "postgresql_versioned_exact_match"
                 ),
             )
             for rank, record in enumerate(records, start=1)
+        )
+
+    def _graph_hit(
+        self,
+        need: Stage1MemoryNeed,
+        path: GraphPath,
+        *,
+        rank: int,
+        candidate_count: int,
+    ) -> ChannelHit:
+        records = self._repository.records_for_rows(
+            need.base_commit,
+            path.relation_row_ids,
+            access_scopes=self._visible_access_scopes(need),
+        )
+        if len(records) != len(path.relation_row_ids):
+            raise ValueError("typed graph receipt rows could not be resolved exactly")
+        receipt_identity_payload = {
+            "contract_version": "typed_graph_path.v1",
+            "base_commit": need.base_commit.root,
+            "snapshot_id": self._snapshot_id.root,
+            "access_scope": need.access_scope,
+            "seed_entity_ids": tuple(item.root for item in path.entity_path[:1]),
+            "relation_row_ids": tuple(item.root for item in path.relation_row_ids),
+            "relation_ids": tuple(item.root for item in path.relation_ids),
+            "entity_path": tuple(item.root for item in path.entity_path),
+            "directions": path.directions,
+            "edge_semantics": path.edge_semantics,
+            "evidence_refs": tuple(item.model_dump(mode="json") for item in path.evidence_refs),
+            "depth": len(path.relation_row_ids),
+        }
+        receipt = TypedGraphPathReceipt(
+            receipt_id=content_id(receipt_identity_payload),
+            base_commit=need.base_commit,
+            snapshot_id=self._snapshot_id,
+            access_scope=need.access_scope,
+            seed_entity_ids=tuple(path.entity_path[:1]),
+            relation_row_ids=path.relation_row_ids,
+            relation_ids=path.relation_ids,
+            entity_path=path.entity_path,
+            directions=path.directions,
+            edge_semantics=path.edge_semantics,
+            evidence_refs=path.evidence_refs,
+            depth=len(path.relation_row_ids),
+        )
+        final_record = records[-1]
+        unit = self._unit(final_record).model_copy(
+            update={
+                "unit_id": StableId(
+                    f"graph-unit.{receipt.receipt_id.root.removeprefix('sha256:')[:24]}"
+                ),
+                "entity_ids": path.entity_path,
+                "evidence_refs": path.evidence_refs,
+                "graph_path_receipt": receipt,
+                "compact_handle": StableId(
+                    f"compact.graph.{receipt.receipt_id.root.removeprefix('sha256:')[:24]}"
+                ),
+            }
+        )
+        return ChannelHit(
+            unit=unit,
+            channel=RetrievalChannel.TYPED_GRAPH,
+            channel_rank=rank,
+            raw_score=float(candidate_count - rank + 1),
+            candidate_count=candidate_count,
+            hit_reason="bounded_typed_graph_path",
+            graph_path_receipt=receipt,
         )
 
     def _visible_access_scopes(self, need: Stage1MemoryNeed) -> tuple[str, ...]:

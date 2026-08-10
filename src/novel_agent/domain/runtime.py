@@ -82,6 +82,9 @@ class RunEventType(StrEnum):
     EDITOR_REPAIR_SETTLED = "editor.repair_settled"
     CANDIDATE_OBSERVATION_SETTLED = "candidate.observation_settled"
     CANDIDATE_RECONCILIATION_SETTLED = "candidate.reconciliation_settled"
+    REQUEST_MEMORY = "context.request_memory"
+    PLAN_REVIEW_SETTLED = "planning.plan_review_settled"
+    CONTEXT_PRESSURE = "context.pressure"
 
 
 class RunEvent(DomainModel):
