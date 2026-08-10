@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_plan_canon_contradiction_count_max": {
+      "minimum": 0,
+      "title": "Accepted Plan Canon Contradiction Count Max",
+      "type": "integer"
+    },
+    "alternative_quality_score_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Alternative Quality Score Min",
+      "type": "number"
+    },
+    "author_intent_coverage_rate_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Author Intent Coverage Rate Min",
+      "type": "number"
+    },
+    "chapter_feasibility_score_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Chapter Feasibility Score Min",
+      "type": "number"
+    },
+    "decision_rationale_score_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Decision Rationale Score Min",
+      "type": "number"
+    },
+    "future_leakage_count_max": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Future Leakage Count Max",
+      "type": "integer"
+    },
+    "human_required_rate_max": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Human Required Rate Max",
+      "type": "number"
+    },
+    "obligation_arc_hook_continuity_score_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Obligation Arc Hook Continuity Score Min",
+      "type": "number"
+    },
+    "provenance_error_count_max": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Provenance Error Count Max",
+      "type": "integer"
+    },
+    "reviewer_issue_recall_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Reviewer Issue Recall Min",
+      "type": "number"
+    },
+    "rolling_hierarchy_consistency_score_min": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Rolling Hierarchy Consistency Score Min",
+      "type": "number"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "threshold_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "unsupported_factualization_count_max": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Unsupported Factualization Count Max",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "threshold_id",
+    "schema_version",
+    "author_intent_coverage_rate_min",
+    "accepted_plan_canon_contradiction_count_max",
+    "obligation_arc_hook_continuity_score_min",
+    "rolling_hierarchy_consistency_score_min",
+    "chapter_feasibility_score_min",
+    "alternative_quality_score_min",
+    "decision_rationale_score_min",
+    "reviewer_issue_recall_min",
+    "human_required_rate_max"
+  ],
+  "title": "PlanningEvaluationThresholds",
+  "type": "object"
+}

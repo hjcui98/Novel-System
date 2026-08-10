@@ -38,7 +38,10 @@ from novel_agent.domain.planning import (
     PlannerContextSection,
     PlanningBudgets,
     PlanningEvaluationCase,
+    PlanningEvaluationCriterion,
     PlanningEvaluationManifest,
+    PlanningEvaluationMetric,
+    PlanningEvaluationRubric,
     PlanningInquiry,
     PlanningLoopRequest,
     PlanningLoopResult,
@@ -766,10 +769,12 @@ def test_formal_manifest_requires_seven_unique_same_corpus_cases(tmp_path: Path)
         schema_version="v1",
         cases=cases,
         configuration_fingerprint=HASH,
+        model_fingerprint=HASH,
         corpus_fingerprint=HASH,
         pilot_fingerprint=HASH,
         rubric_fingerprint=HASH,
         threshold_fingerprint=HASH,
+        frozen_before_evaluator=True,
     )
     with pytest.raises(ValidationError, match="exactly one"):
         PlanningEvaluationManifest.model_validate(manifest.model_dump() | {"cases": cases[:-1]})
@@ -777,6 +782,31 @@ def test_formal_manifest_requires_seven_unique_same_corpus_cases(tmp_path: Path)
     with pytest.raises(ValidationError, match="same frozen corpus"):
         PlanningEvaluationManifest.model_validate(
             manifest.model_dump() | {"cases": (*cases[:-1], bad_case)}
+        )
+
+
+def test_planning_evaluation_rubric_requires_each_metric_exactly_once() -> None:
+    criteria = tuple(
+        PlanningEvaluationCriterion(
+            metric=metric,
+            description=metric.value,
+            higher_is_better=not metric.value.endswith("_count"),
+        )
+        for metric in PlanningEvaluationMetric
+    )
+    rubric = PlanningEvaluationRubric(
+        rubric_id=StableId("rubric.stage4"),
+        schema_version="v1",
+        criteria=criteria,
+    )
+    with pytest.raises(ValidationError, match="every semantic metric exactly once"):
+        PlanningEvaluationRubric.model_validate(rubric.model_dump() | {"criteria": criteria[:-1]})
+    reversed_criterion = criteria[0].model_copy(
+        update={"higher_is_better": not criteria[0].higher_is_better}
+    )
+    with pytest.raises(ValidationError, match="metric direction"):
+        PlanningEvaluationRubric.model_validate(
+            rubric.model_dump() | {"criteria": (reversed_criterion, *criteria[1:])}
         )
 
 

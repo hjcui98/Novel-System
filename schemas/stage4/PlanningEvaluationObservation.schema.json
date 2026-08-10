@@ -450,14 +450,6 @@
       "title": "PlanProposal",
       "type": "object"
     },
-    "PlanningEvaluationProfile": {
-      "enum": [
-        "formal_configured",
-        "deterministic_fake"
-      ],
-      "title": "PlanningEvaluationProfile",
-      "type": "string"
-    },
     "PlanningLoopResult": {
       "additionalProperties": false,
       "properties": {
@@ -840,76 +832,68 @@
   },
   "additionalProperties": false,
   "properties": {
-    "ablation_metrics": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Ablation Metrics",
-      "type": "object"
+    "channel_failure_count": {
+      "minimum": 0,
+      "title": "Channel Failure Count",
+      "type": "integer"
     },
-    "evaluation_profile": {
-      "$ref": "#/$defs/PlanningEvaluationProfile"
+    "completion_tokens": {
+      "minimum": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
     },
-    "gate_eligible": {
-      "title": "Gate Eligible",
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "degraded": {
+      "default": false,
+      "title": "Degraded",
       "type": "boolean"
     },
-    "leakage_count": {
+    "exposed_evidence_count": {
       "minimum": 0,
-      "title": "Leakage Count",
+      "title": "Exposed Evidence Count",
       "type": "integer"
     },
-    "lineage_artifacts": {
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Lineage Artifacts",
-      "type": "array"
-    },
-    "manifest_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "provenance_error_count": {
+    "latency_ms": {
       "minimum": 0,
-      "title": "Provenance Error Count",
+      "title": "Latency Ms",
       "type": "integer"
     },
-    "results": {
-      "items": {
-        "$ref": "#/$defs/PlanningLoopResult"
-      },
-      "title": "Results",
-      "type": "array"
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
     },
-    "reviewer_metrics": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Reviewer Metrics",
-      "type": "object"
+    "model_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
     },
-    "semantic_gate_passed": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Semantic Gate Passed"
+    "prompt_tokens": {
+      "minimum": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "result": {
+      "$ref": "#/$defs/PlanningLoopResult"
+    },
+    "used_evidence_count": {
+      "minimum": 0,
+      "title": "Used Evidence Count",
+      "type": "integer"
     }
   },
   "required": [
-    "manifest_id",
-    "evaluation_profile",
-    "gate_eligible",
-    "semantic_gate_passed",
-    "results",
-    "lineage_artifacts",
-    "leakage_count",
-    "provenance_error_count"
+    "result",
+    "configuration_fingerprint",
+    "model_fingerprint",
+    "prompt_tokens",
+    "completion_tokens",
+    "latency_ms",
+    "model_call_count",
+    "exposed_evidence_count",
+    "used_evidence_count",
+    "channel_failure_count"
   ],
-  "title": "PlanningEvaluationReport",
+  "title": "PlanningEvaluationObservation",
   "type": "object"
 }

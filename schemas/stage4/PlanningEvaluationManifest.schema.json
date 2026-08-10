@@ -467,12 +467,14 @@
       "$ref": "#/$defs/ArtifactId"
     },
     "frozen_before_evaluator": {
-      "default": true,
       "title": "Frozen Before Evaluator",
       "type": "boolean"
     },
     "manifest_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "model_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
     },
     "pilot_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
@@ -494,10 +496,12 @@
     "schema_version",
     "cases",
     "configuration_fingerprint",
+    "model_fingerprint",
     "corpus_fingerprint",
     "pilot_fingerprint",
     "rubric_fingerprint",
-    "threshold_fingerprint"
+    "threshold_fingerprint",
+    "frozen_before_evaluator"
   ],
   "title": "PlanningEvaluationManifest",
   "type": "object"

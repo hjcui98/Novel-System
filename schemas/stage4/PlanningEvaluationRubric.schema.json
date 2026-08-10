@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "PlanningEvaluationCriterion": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "higher_is_better": {
+          "title": "Higher Is Better",
+          "type": "boolean"
+        },
+        "metric": {
+          "$ref": "#/$defs/PlanningEvaluationMetric"
+        }
+      },
+      "required": [
+        "metric",
+        "description",
+        "higher_is_better"
+      ],
+      "title": "PlanningEvaluationCriterion",
+      "type": "object"
+    },
+    "PlanningEvaluationMetric": {
+      "enum": [
+        "author_intent_coverage_rate",
+        "accepted_plan_canon_contradiction_count",
+        "obligation_arc_hook_continuity_score",
+        "rolling_hierarchy_consistency_score",
+        "chapter_feasibility_score",
+        "alternative_quality_score",
+        "decision_rationale_score",
+        "reviewer_issue_recall",
+        "future_leakage_count",
+        "provenance_error_count",
+        "unsupported_factualization_count"
+      ],
+      "title": "PlanningEvaluationMetric",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "criteria": {
+      "items": {
+        "$ref": "#/$defs/PlanningEvaluationCriterion"
+      },
+      "title": "Criteria",
+      "type": "array"
+    },
+    "rubric_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rubric_id",
+    "schema_version",
+    "criteria"
+  ],
+  "title": "PlanningEvaluationRubric",
+  "type": "object"
+}

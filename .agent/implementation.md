@@ -1874,3 +1874,44 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   and native model health reports no running model PID. Therefore no formal case manifest,
   configured runtime-factory invocation, or blind semantic report is claimed. Engineering evidence
   is green, but §11.5/§12.2 remains pending and cannot be replaced by the deterministic fake path.
+
+## 27. Stage 4 formal semantic-Gate contract completion (2026-08-10)
+
+- Completion audit found that the manifest fingerprints added in §26 were not yet sufficient:
+  the runner did not load the frozen pilot/rubric/threshold artifacts, did not bind their exact
+  content identities, and an aggregate evaluator mapping could not prove per-arm blind quality.
+  This continuation closes those engineering gaps without inventing semantic results.
+- New versioned `PlanningEvaluationCriterion`, `PlanningEvaluationRubric`, and
+  `PlanningEvaluationThresholds` contracts require every declared semantic metric exactly once,
+  enforce metric direction, and freeze explicit minima/maxima for author-intent coverage,
+  Plan/Canon contradiction, obligation/arc/hook continuity, rolling hierarchy consistency,
+  chapter feasibility, alternative quality, decision rationale, reviewer issue recall,
+  HUMAN_REQUIRED rate, future leakage, provenance error, and unsupported factualization.
+- A formal run now requires the pilot, rubric, and threshold files in addition to the manifest.
+  `load_frozen_planning_evaluation_gate()` canonicalizes and persists them; the runner verifies
+  their content-addressed refs against the manifest before exposing any candidate to the evaluator.
+  Fake runs do not obtain a frozen Gate or a semantic verdict.
+- The evaluator receives every configured/ablation result under opaque candidate identities and
+  must return the exact rubric score set for every identity. The runner rejects missing/extra
+  candidates, malformed score objects, metric drift, and non-numeric scores, then unblinds and
+  aggregates scores per arm. The report now includes per-arm semantic metrics and a typed
+  `semantic_gate_passed`; internal diagnostic leakage/provenance and the configured
+  HUMAN_REQUIRED rate remain independent fail-closed checks even if blind scores are favorable.
+- Each evaluation adapter result is now a typed `PlanningEvaluationObservation` bound to the
+  manifest configuration and model fingerprints. Per-arm reports aggregate prompt/completion
+  tokens, latency, model-call count, exposed/used evidence, channel failures, and degraded runs;
+  evidence use that was not first exposed is invalid. This makes the required token/latency/model
+  and exposed/used audit explicit instead of relying on unparsed lineage artifacts.
+- Focused Stage 4 domain/service/schema verification reports `26 passed`; strict MyPy and Ruff pass.
+  Final deterministic verification reports `1684 passed, 9 deselected`, 24,233 statements / 6,826
+  branches, and 100% statement/branch coverage. Final real native infrastructure verification
+  reports `5 passed, 1688 deselected` across PostgreSQL, MinIO, OpenSearch, durable workflow/outbox,
+  and the Stage 2 integration surface.
+- The branch basis remains the accepted Stage 2 commit `0ec1eb4`; shared Context commit `1b926f5`
+  remains an ancestor and Stage 3 implementation `bab4451` remains excluded. A read-only three-way
+  merge audit shows `21cc3c3` can be merged into the Stage 3 branch without code conflicts, but this
+  run does not rewrite or merge the already accepted Stage 3 history.
+- The external semantic evidence is still unavailable: the configured local LLM endpoint remains
+  unreachable and no alternative credentialed endpoint is configured. Consequently the formal
+  seven-case pilot/manifest, real configured/ablation outputs, and independent blind scores have
+  not been generated, and no §12.2 semantic PASS is claimed.

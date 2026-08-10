@@ -30,8 +30,13 @@ from novel_agent.domain.planning import (
     PlannerContextProjection,
     PlannerContextSection,
     PlanningEvaluationCase,
+    PlanningEvaluationCriterion,
     PlanningEvaluationManifest,
+    PlanningEvaluationMetric,
+    PlanningEvaluationObservation,
     PlanningEvaluationProfile,
+    PlanningEvaluationRubric,
+    PlanningEvaluationThresholds,
     PlanningInquiryDraft,
     PlanningLoopCheckpoint,
     PlanningLoopRequest,
@@ -84,11 +89,14 @@ from novel_agent.services.planning_evaluation import (
     REQUIRED_BLIND_REVIEW_METRICS,
     ConfiguredPlanningEvaluationAdapter,
     FakePlanningEvaluationAdapter,
+    FrozenPlanningEvaluationGate,
     PlanningCaseLoadError,
     PlanningEvaluationArm,
     PlanningEvaluationError,
     PlanningEvaluationRunner,
+    PlanningGateLoadError,
     evaluation_identity,
+    load_frozen_planning_evaluation_gate,
     load_planning_evaluation_case,
 )
 from novel_agent.services.planning_inquiry_need_generation import (
@@ -117,6 +125,26 @@ from tests.unit.test_stage4_planning_contracts import (
     _receipt,
     _request,
 )
+
+
+def _evaluation_observation(
+    result: PlanningLoopResult,
+    *,
+    configuration_fingerprint: ArtifactId = HASH,
+    model_fingerprint: ArtifactId = HASH,
+) -> PlanningEvaluationObservation:
+    return PlanningEvaluationObservation(
+        result=result,
+        configuration_fingerprint=configuration_fingerprint,
+        model_fingerprint=model_fingerprint,
+        prompt_tokens=10,
+        completion_tokens=2,
+        latency_ms=5,
+        model_call_count=1,
+        exposed_evidence_count=2,
+        used_evidence_count=1,
+        channel_failure_count=0,
+    )
 
 
 class _BootstrapPlanner:
@@ -1564,24 +1592,80 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
             PlanningEvaluationArm.ANCHOR_GRAPH_CONDITIONAL,
         ):
             results[(case.case_id.root, arm.value)] = result
+    rubric = PlanningEvaluationRubric(
+        rubric_id=StableId("rubric.stage4.formal"),
+        schema_version="v1",
+        criteria=tuple(
+            PlanningEvaluationCriterion(
+                metric=metric,
+                description=f"Blind score for {metric.value}",
+                higher_is_better=not metric.value.endswith("_count"),
+            )
+            for metric in PlanningEvaluationMetric
+        ),
+    )
+    thresholds = PlanningEvaluationThresholds(
+        threshold_id=StableId("thresholds.stage4.formal"),
+        schema_version="v1",
+        author_intent_coverage_rate_min=0.8,
+        accepted_plan_canon_contradiction_count_max=0,
+        obligation_arc_hook_continuity_score_min=0.8,
+        rolling_hierarchy_consistency_score_min=0.8,
+        chapter_feasibility_score_min=0.8,
+        alternative_quality_score_min=0.8,
+        decision_rationale_score_min=0.8,
+        reviewer_issue_recall_min=0.8,
+        human_required_rate_max=0.0,
+    )
+    pilot_path = tmp_path / "pilot.json"
+    rubric_path = tmp_path / "rubric.json"
+    threshold_path = tmp_path / "thresholds.json"
+    pilot_path.write_text('{"pilot":"frozen"}', encoding="utf-8")
+    rubric_path.write_text(rubric.model_dump_json(), encoding="utf-8")
+    threshold_path.write_text(thresholds.model_dump_json(), encoding="utf-8")
+    frozen_gate = load_frozen_planning_evaluation_gate(
+        pilot_path=pilot_path,
+        rubric_path=rubric_path,
+        threshold_path=threshold_path,
+        artifacts=artifacts,
+        schema_version=VERSION,
+    )
+    pilot_ref = frozen_gate.pilot_ref
+    rubric_ref = frozen_gate.rubric_ref
+    threshold_ref = frozen_gate.threshold_ref
     manifest = PlanningEvaluationManifest(
         manifest_id=StableId("manifest.stage4.formal"),
         schema_version="stage4-evaluation.v1",
         cases=tuple(cases),
         configuration_fingerprint=HASH,
+        model_fingerprint=HASH,
         corpus_fingerprint=HASH,
-        pilot_fingerprint=HASH,
-        rubric_fingerprint=HASH,
-        threshold_fingerprint=HASH,
+        pilot_fingerprint=pilot_ref.artifact_id,
+        rubric_fingerprint=rubric_ref.artifact_id,
+        threshold_fingerprint=threshold_ref.artifact_id,
+        frozen_before_evaluator=True,
     )
     observed_blind: list[ArtifactRef] = []
 
     def evaluate(ref: ArtifactRef) -> dict[str, JsonValue]:
         observed_blind.append(ref)
-        return {metric: 0 for metric in REQUIRED_BLIND_REVIEW_METRICS}
+        payload = json.loads(artifacts.read_verified(ref))
+        per_candidate: dict[str, JsonValue] = {
+            cast(str, candidate["candidate_id"]): cast(
+                JsonValue,
+                {
+                    metric: 0 if metric.endswith("_count") else 1.0
+                    for metric in REQUIRED_BLIND_REVIEW_METRICS
+                },
+            )
+            for candidate in payload["candidates"]
+        }
+        return {"candidate_scores": per_candidate}
 
     report, report_ref = PlanningEvaluationRunner(
-        adapter=FakePlanningEvaluationAdapter(results),
+        adapter=FakePlanningEvaluationAdapter(
+            {identity: _evaluation_observation(result) for identity, result in results.items()}
+        ),
         artifacts=artifacts,
         schema_version=SchemaVersion("1.0.0"),
         blind_evaluator=evaluate,
@@ -1596,6 +1680,7 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
     assert len(report.results) == 7
     assert report.evaluation_profile is PlanningEvaluationProfile.DETERMINISTIC_FAKE
     assert not report.gate_eligible
+    assert report.semantic_gate_passed is None
     assert observed_blind and artifacts.read_verified(observed_blind[0])
     blind_payload = json.loads(artifacts.read_verified(observed_blind[0]))
     assert len(blind_payload["candidates"]) == 14
@@ -1604,39 +1689,257 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
     configured_metrics = report.ablation_metrics["configured"]
     assert isinstance(configured_metrics, dict)
     assert configured_metrics["ready_rate"] == 1.0
+    assert configured_metrics["prompt_tokens"] == 70
+    assert configured_metrics["used_evidence_count"] == 7
     assert evaluation_identity(manifest).root.startswith("stage4-evaluation.")
     configured_adapter = ConfiguredPlanningEvaluationAdapter(
-        lambda case, arm: results[(case.case_id.root, arm.value)]
+        lambda case, arm: _evaluation_observation(results[(case.case_id.root, arm.value)])
     )
     assert (
-        configured_adapter.run_case(cases[0], PlanningEvaluationArm.CONFIGURED).request_id
+        configured_adapter.run_case(cases[0], PlanningEvaluationArm.CONFIGURED).result.request_id
         == cases[0].request.request_id
     )
+    with pytest.raises(ValidationError, match="must have been exposed"):
+        PlanningEvaluationObservation.model_validate(
+            _evaluation_observation(results[(cases[0].case_id.root, "configured")]).model_dump()
+            | {"used_evidence_count": 3}
+        )
+    configured_observations = {
+        (case.case_id.root, PlanningEvaluationArm.CONFIGURED.value): _evaluation_observation(
+            results[(case.case_id.root, PlanningEvaluationArm.CONFIGURED.value)]
+        )
+        for case in cases
+    }
+    wrong_configuration = dict(configured_observations)
+    wrong_configuration[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)] = (
+        _evaluation_observation(
+            results[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)],
+            configuration_fingerprint=ArtifactId("sha256:" + "b" * 64),
+        )
+    )
+    with pytest.raises(PlanningEvaluationError, match="configuration differs"):
+        PlanningEvaluationRunner(
+            adapter=FakePlanningEvaluationAdapter(wrong_configuration),
+            artifacts=artifacts,
+            schema_version=VERSION,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    wrong_model = dict(configured_observations)
+    wrong_model[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)] = (
+        _evaluation_observation(
+            results[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)],
+            model_fingerprint=ArtifactId("sha256:" + "b" * 64),
+        )
+    )
+    with pytest.raises(PlanningEvaluationError, match="model differs"):
+        PlanningEvaluationRunner(
+            adapter=FakePlanningEvaluationAdapter(wrong_model),
+            artifacts=artifacts,
+            schema_version=VERSION,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
     with pytest.raises(PlanningEvaluationError, match="blind evaluator"):
         PlanningEvaluationRunner(
             adapter=configured_adapter,
             artifacts=artifacts,
             schema_version=VERSION,
         )
+    with pytest.raises(PlanningEvaluationError, match="frozen pilot"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate,
+        )
     formal_report, _ = PlanningEvaluationRunner(
         adapter=configured_adapter,
         artifacts=artifacts,
         schema_version=VERSION,
         blind_evaluator=evaluate,
-    ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+        frozen_gate=frozen_gate,
+    ).run(
+        manifest,
+        arms=(
+            PlanningEvaluationArm.CONFIGURED,
+            PlanningEvaluationArm.ANCHOR_GRAPH_CONDITIONAL,
+        ),
+    )
     assert formal_report.evaluation_profile is PlanningEvaluationProfile.FORMAL_CONFIGURED
     assert formal_report.gate_eligible
-    with pytest.raises(PlanningEvaluationError, match="omitted required metrics"):
+    assert formal_report.semantic_gate_passed
+    formal_ablation = formal_report.ablation_metrics["anchor_graph_conditional"]
+    assert isinstance(formal_ablation, dict)
+    assert "semantic_metrics" in formal_ablation
+
+    def evaluate_failing(ref: ArtifactRef) -> dict[str, JsonValue]:
+        output = evaluate(ref)
+        raw_scores = output["candidate_scores"]
+        assert isinstance(raw_scores, dict)
+        for score in raw_scores.values():
+            assert isinstance(score, dict)
+            score.update(
+                {
+                    metric: 1 if metric.endswith("_count") else 0.0
+                    for metric in REQUIRED_BLIND_REVIEW_METRICS
+                }
+            )
+        return output
+
+    failed_report, _ = PlanningEvaluationRunner(
+        adapter=configured_adapter,
+        artifacts=artifacts,
+        schema_version=VERSION,
+        blind_evaluator=evaluate_failing,
+        frozen_gate=frozen_gate,
+    ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    assert failed_report.semantic_gate_passed is False
+    leaky_results = dict(results)
+    leaky_results[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)] = results[
+        (cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)
+    ].model_copy(update={"diagnostic_codes": ("FUTURE_LEAK", "PROVENANCE_ERROR")})
+    leaky_report, _ = PlanningEvaluationRunner(
+        adapter=ConfiguredPlanningEvaluationAdapter(
+            lambda case, arm: _evaluation_observation(leaky_results[(case.case_id.root, arm.value)])
+        ),
+        artifacts=artifacts,
+        schema_version=VERSION,
+        blind_evaluator=evaluate,
+        frozen_gate=frozen_gate,
+    ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    assert leaky_report.semantic_gate_passed is False
+    assert leaky_report.leakage_count == leaky_report.provenance_error_count == 1
+    human_results = dict(results)
+    human_results[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)] = (
+        PlanningLoopResult(
+            request_id=cases[0].request.request_id,
+            terminal=PlanningLoopTerminal.HUMAN_REQUIRED,
+        )
+    )
+    human_report, _ = PlanningEvaluationRunner(
+        adapter=ConfiguredPlanningEvaluationAdapter(
+            lambda case, arm: _evaluation_observation(human_results[(case.case_id.root, arm.value)])
+        ),
+        artifacts=artifacts,
+        schema_version=VERSION,
+        blind_evaluator=evaluate,
+        frozen_gate=frozen_gate,
+    ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    assert human_report.semantic_gate_passed is False
+
+    def evaluate_non_numeric(ref: ArtifactRef) -> dict[str, JsonValue]:
+        output = evaluate(ref)
+        raw_scores = output["candidate_scores"]
+        assert isinstance(raw_scores, dict)
+        first = next(iter(raw_scores.values()))
+        assert isinstance(first, dict)
+        first["obligation_arc_hook_continuity_score"] = "invalid"
+        return output
+
+    with pytest.raises(PlanningEvaluationError, match="must be numeric"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate_non_numeric,
+            frozen_gate=frozen_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    with pytest.raises(PlanningEvaluationError, match="pilot artifact"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate,
+            frozen_gate=frozen_gate,
+        ).run(
+            manifest.model_copy(update={"pilot_fingerprint": HASH}),
+            arms=(PlanningEvaluationArm.CONFIGURED,),
+        )
+    changed_rubric_gate = FrozenPlanningEvaluationGate(
+        pilot_ref=pilot_ref,
+        rubric_ref=rubric_ref,
+        threshold_ref=threshold_ref,
+        rubric=rubric.model_copy(update={"rubric_id": StableId("rubric.changed")}),
+        thresholds=thresholds,
+    )
+    with pytest.raises(PlanningEvaluationError, match="rubric content"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate,
+            frozen_gate=changed_rubric_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    changed_threshold_gate = FrozenPlanningEvaluationGate(
+        pilot_ref=pilot_ref,
+        rubric_ref=rubric_ref,
+        threshold_ref=threshold_ref,
+        rubric=rubric,
+        thresholds=thresholds.model_copy(update={"threshold_id": StableId("thresholds.changed")}),
+    )
+    with pytest.raises(PlanningEvaluationError, match="thresholds content"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate,
+            frozen_gate=changed_threshold_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    with pytest.raises(PlanningEvaluationError, match="omitted candidate_scores"):
         PlanningEvaluationRunner(
             adapter=configured_adapter,
             artifacts=artifacts,
             schema_version=VERSION,
             blind_evaluator=lambda ref: {"partial": ref.media_type},
+            frozen_gate=frozen_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+    with pytest.raises(PlanningEvaluationError, match="candidate identities"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=lambda ref: {"candidate_scores": {}, "blind_ref": ref.media_type},
+            frozen_gate=frozen_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+
+    def evaluate_invalid_score_shape(ref: ArtifactRef) -> dict[str, JsonValue]:
+        payload = json.loads(artifacts.read_verified(ref))
+        return {
+            "candidate_scores": {
+                candidate["candidate_id"]: "invalid" for candidate in payload["candidates"]
+            }
+        }
+
+    with pytest.raises(PlanningEvaluationError, match="score must be an object"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate_invalid_score_shape,
+            frozen_gate=frozen_gate,
+        ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
+
+    def evaluate_incomplete_score(ref: ArtifactRef) -> dict[str, JsonValue]:
+        payload = json.loads(artifacts.read_verified(ref))
+        return {
+            "candidate_scores": {
+                candidate["candidate_id"]: {} for candidate in payload["candidates"]
+            }
+        }
+
+    with pytest.raises(PlanningEvaluationError, match="rubric metrics differ"):
+        PlanningEvaluationRunner(
+            adapter=configured_adapter,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            blind_evaluator=evaluate_incomplete_score,
+            frozen_gate=frozen_gate,
         ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
     with pytest.raises(ValidationError, match="only formal configured"):
         type(formal_report).model_validate(formal_report.model_dump() | {"gate_eligible": False})
     with pytest.raises(ValidationError, match="post-freeze blind review"):
         type(formal_report).model_validate(formal_report.model_dump() | {"reviewer_metrics": {}})
+    with pytest.raises(ValidationError, match="settle the semantic Gate"):
+        type(formal_report).model_validate(
+            formal_report.model_dump() | {"semantic_gate_passed": None}
+        )
     with pytest.raises(ValueError, match="not predeclared"):
         FakePlanningEvaluationAdapter({}).run_case(cases[0], PlanningEvaluationArm.CONFIGURED)
     replan_case = next(case for case in cases if case.mode is AgentMode.REPLAN)
@@ -1644,7 +1947,9 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
         (replan_case.case_id.root, PlanningEvaluationArm.CONFIGURED.value)
     ]
     edge_runner = PlanningEvaluationRunner(
-        adapter=FakePlanningEvaluationAdapter(results),
+        adapter=FakePlanningEvaluationAdapter(
+            {identity: _evaluation_observation(result) for identity, result in results.items()}
+        ),
         artifacts=artifacts,
         schema_version=VERSION,
     )
@@ -1666,6 +1971,19 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
     )
     graph_metrics = empty_graph_report.ablation_metrics["graph_only"]
     assert isinstance(graph_metrics, dict) and graph_metrics["ready_rate"] == 0.0
+    empty_formal_report, _ = PlanningEvaluationRunner(
+        adapter=configured_adapter,
+        artifacts=artifacts,
+        schema_version=VERSION,
+        blind_evaluator=evaluate,
+        frozen_gate=frozen_gate,
+    ).run(
+        no_graph_manifest,
+        arms=(PlanningEvaluationArm.CONFIGURED, PlanningEvaluationArm.GRAPH_ONLY),
+    )
+    empty_formal_graph = empty_formal_report.ablation_metrics["graph_only"]
+    assert isinstance(empty_formal_graph, dict)
+    assert empty_formal_graph["semantic_metrics"] == {}
 
     wrong_results = dict(results)
     wrong_results[(cases[0].case_id.root, PlanningEvaluationArm.CONFIGURED.value)] = results[
@@ -1673,7 +1991,12 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
     ]
     with pytest.raises(ValueError, match="another request"):
         PlanningEvaluationRunner(
-            adapter=FakePlanningEvaluationAdapter(wrong_results),
+            adapter=FakePlanningEvaluationAdapter(
+                {
+                    identity: _evaluation_observation(result)
+                    for identity, result in wrong_results.items()
+                }
+            ),
             artifacts=artifacts,
             schema_version=VERSION,
         ).run(manifest, arms=(PlanningEvaluationArm.CONFIGURED,))
@@ -1686,3 +2009,11 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
         load_planning_evaluation_case(case_path)
     with pytest.raises(PlanningCaseLoadError, match="cannot read"):
         load_planning_evaluation_case(tmp_path / "missing.json")
+    with pytest.raises(PlanningGateLoadError, match="cannot load"):
+        load_frozen_planning_evaluation_gate(
+            pilot_path=tmp_path / "missing-pilot.json",
+            rubric_path=rubric_path,
+            threshold_path=threshold_path,
+            artifacts=artifacts,
+            schema_version=VERSION,
+        )

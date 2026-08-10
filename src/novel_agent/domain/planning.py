@@ -518,16 +518,92 @@ class PlanningEvaluationCase(DomainModel):
     expected_issue_tags: tuple[str, ...] = ()
 
 
+class PlanningEvaluationObservation(DomainModel):
+    result: PlanningLoopResult
+    configuration_fingerprint: ArtifactId
+    model_fingerprint: ArtifactId
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    latency_ms: int = Field(ge=0)
+    model_call_count: int = Field(ge=0)
+    exposed_evidence_count: int = Field(ge=0)
+    used_evidence_count: int = Field(ge=0)
+    channel_failure_count: int = Field(ge=0)
+    degraded: bool = False
+
+    @model_validator(mode="after")
+    def validate_evidence_use(self) -> PlanningEvaluationObservation:
+        if self.used_evidence_count > self.exposed_evidence_count:
+            raise ValueError("used evaluation evidence must have been exposed")
+        return self
+
+
+class PlanningEvaluationMetric(StrEnum):
+    AUTHOR_INTENT_COVERAGE_RATE = "author_intent_coverage_rate"
+    ACCEPTED_PLAN_CANON_CONTRADICTION_COUNT = "accepted_plan_canon_contradiction_count"
+    OBLIGATION_ARC_HOOK_CONTINUITY_SCORE = "obligation_arc_hook_continuity_score"
+    ROLLING_HIERARCHY_CONSISTENCY_SCORE = "rolling_hierarchy_consistency_score"
+    CHAPTER_FEASIBILITY_SCORE = "chapter_feasibility_score"
+    ALTERNATIVE_QUALITY_SCORE = "alternative_quality_score"
+    DECISION_RATIONALE_SCORE = "decision_rationale_score"
+    REVIEWER_ISSUE_RECALL = "reviewer_issue_recall"
+    FUTURE_LEAKAGE_COUNT = "future_leakage_count"
+    PROVENANCE_ERROR_COUNT = "provenance_error_count"
+    UNSUPPORTED_FACTUALIZATION_COUNT = "unsupported_factualization_count"
+
+
+class PlanningEvaluationCriterion(DomainModel):
+    metric: PlanningEvaluationMetric
+    description: str = Field(min_length=1)
+    higher_is_better: bool
+
+
+class PlanningEvaluationRubric(DomainModel):
+    rubric_id: StableId
+    schema_version: str = Field(min_length=1)
+    criteria: tuple[PlanningEvaluationCriterion, ...]
+
+    @model_validator(mode="after")
+    def validate_criteria(self) -> PlanningEvaluationRubric:
+        metrics = tuple(criterion.metric for criterion in self.criteria)
+        if len(metrics) != len(set(metrics)) or set(metrics) != set(PlanningEvaluationMetric):
+            raise ValueError("Stage 4 rubric requires every semantic metric exactly once")
+        if any(
+            criterion.higher_is_better != (not criterion.metric.value.endswith("_count"))
+            for criterion in self.criteria
+        ):
+            raise ValueError("Stage 4 rubric metric direction differs from Gate semantics")
+        return self
+
+
+class PlanningEvaluationThresholds(DomainModel):
+    threshold_id: StableId
+    schema_version: str = Field(min_length=1)
+    author_intent_coverage_rate_min: float = Field(ge=0.0, le=1.0)
+    accepted_plan_canon_contradiction_count_max: int = Field(ge=0)
+    obligation_arc_hook_continuity_score_min: float = Field(ge=0.0, le=1.0)
+    rolling_hierarchy_consistency_score_min: float = Field(ge=0.0, le=1.0)
+    chapter_feasibility_score_min: float = Field(ge=0.0, le=1.0)
+    alternative_quality_score_min: float = Field(ge=0.0, le=1.0)
+    decision_rationale_score_min: float = Field(ge=0.0, le=1.0)
+    reviewer_issue_recall_min: float = Field(ge=0.0, le=1.0)
+    human_required_rate_max: float = Field(ge=0.0, le=1.0)
+    future_leakage_count_max: int = Field(default=0, ge=0)
+    provenance_error_count_max: int = Field(default=0, ge=0)
+    unsupported_factualization_count_max: int = Field(default=0, ge=0)
+
+
 class PlanningEvaluationManifest(DomainModel):
     manifest_id: StableId
     schema_version: str = Field(min_length=1)
     cases: tuple[PlanningEvaluationCase, ...]
     configuration_fingerprint: ArtifactId
+    model_fingerprint: ArtifactId
     corpus_fingerprint: ArtifactId
     pilot_fingerprint: ArtifactId
     rubric_fingerprint: ArtifactId
     threshold_fingerprint: ArtifactId
-    frozen_before_evaluator: bool = True
+    frozen_before_evaluator: bool
 
     @model_validator(mode="after")
     def validate_modes(self) -> PlanningEvaluationManifest:
@@ -557,6 +633,7 @@ class PlanningEvaluationReport(DomainModel):
     manifest_id: StableId
     evaluation_profile: PlanningEvaluationProfile
     gate_eligible: bool
+    semantic_gate_passed: bool | None
     results: tuple[PlanningLoopResult, ...]
     lineage_artifacts: tuple[ArtifactRef, ...]
     ablation_metrics: dict[str, JsonValue] = Field(default_factory=dict)
@@ -571,4 +648,6 @@ class PlanningEvaluationReport(DomainModel):
             raise ValueError("only formal configured evaluation is Gate-eligible")
         if self.gate_eligible and not self.reviewer_metrics:
             raise ValueError("Gate-eligible evaluation requires post-freeze blind review metrics")
+        if self.gate_eligible != (self.semantic_gate_passed is not None):
+            raise ValueError("only Gate-eligible evaluation can settle the semantic Gate")
         return self
