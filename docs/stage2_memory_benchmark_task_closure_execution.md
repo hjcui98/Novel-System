@@ -2548,8 +2548,12 @@ feedback literal 字数预算；既有 `copyable_literal_for()` 只检查完整 
 重试、预算、Gold 或 prompt。冻结 ch9 离线复验返回正确 13 字原句并唯一绑定；`make quality` 为
 1652 passed、9 deselected、100% branch coverage，候选 fingerprint 为 `sha256:7bea7d59...535342a`。
 
-v33 源码身份已因本修复失效，其 DB/output 仅保留诊断，不得续跑。形成新的 clean local commit 后，
-APC P001-P005 与 TIO 必须再次从 ch0 使用全新实验、DB 和输出身份执行。
+修复已形成 clean local commit `b06b8de`。用户随后明确授权 bounded checkpoint continuation：该改动
+只作用于 rejected draft 的反馈选择，不改写既有 accepted commit/projection，也不改 Planner、预算、
+Gold、公式或检索语义，因此 APC 不从 ch0 重跑。已有 writer 继续时不得启动竞争写者；若必须让新进程
+加载修复，则创建新的 continuation experiment/output manifest，引用既有 v33 project/DB 和最新接受
+checkpoint，并记录 `660abf8 -> b06b8de` 执行边界，不覆盖旧 manifest。TIO 仍须独立从 ch0 使用全新
+身份运行；该例外不得扩展到后续代码、prompt、预算、Gold、公式或 runtime-policy 变更。
 
 ---
 

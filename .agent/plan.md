@@ -1,13 +1,13 @@
 # Stage 2M 新架构正式 Benchmark 执行计划（含历史修复依据）
 
 - Lifecycle: `ACTIVE_TASK_SUPPLEMENT`
-- State: `CH9_RELEVANT_LITERAL_REPAIR_IMPLEMENTED_AWAITING_COMMIT`
+- State: `FORMAL_APC_CHECKPOINT_RESUME_AUTHORIZED`
 - Updated: `2026-08-10 +08:00`
 - Stage: `Stage 2M`
-- Current gate: `v33 stopped at chapter 9 / relevant-literal repair implemented / clean commit required`
+- Current gate: `v33 APC continuing from accepted checkpoint / TIO pending / M4 HOLD`
 - Clean executable implementation commit before the current ch9 repair: `660abf8`; source fingerprint
   `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
-- Current uncommitted ch9 repair fingerprint:
+- Clean executable ch9 repair commit: `b06b8de`; source fingerprint
   `sha256:7bea7d597b01251b641ff93d3d1c854b3953dce77a777abcddb92c40b535342a`
 - Working tree: preserve all current user changes, frozen inputs, implementation evidence, and
   Phase 4 artifacts; do not reset, discard, overwrite, or silently reclassify them
@@ -59,9 +59,16 @@ provenance, or add a chapter/entity special case. Frozen ch9 input now selects
 `然后又没有任何意外地落榜。` (13 characters) and resolves it uniquely.
 
 `make quality` passes with 1652 tests, 9 deselected, strict MyPy/Ruff cleanliness and 100% branch
-coverage. The stopped v33 identity is diagnostic-only and must not be resumed after this source
-change. The next action is a user-authorized clean commit of the two-file repair scope, followed by a
-new APC run from ch0 and a separately identified TIO run under §6.3.
+coverage. Codex formed clean local commit `b06b8de` for the repair.
+
+The user subsequently authorized checkpoint continuation because this bounded change only improves
+retry feedback selection and does not mutate already accepted commits, projections, Planner inputs,
+budgets, Gold, formulas, or retrieval semantics. Do not restart APC from ch0. Let an already-running
+v33 process continue without a competing writer. If a new process must load `b06b8de`, create a new
+continuation experiment/output manifest that points at the existing v33 project directory, database,
+and latest accepted checkpoint; do not overwrite the original v33 manifest. Record the executable
+boundary from `660abf8` to `b06b8de` in final evidence. TIO still starts separately from ch0 under a
+fresh identity.
 
 This file is the task-local implementation handoff. It does not replace the repository document
 hierarchy or create a third architecture. OpenCode must read the following authorities before
@@ -763,18 +770,22 @@ repeat them unless the initial read-only identity check contradicts the accepted
 5. fix support Need concurrency at `2`, endpoint request limit at `1`, Evaluator concurrency at `1`,
    and checkpoint worker concurrency at `1`; fix Claim Support multi at
    `thinking=false / reasoning budget=0 / max output=2048`, Writer at `4000`, and Ledger at `12000`;
-6. give APC and TASK_INTENT_ONLY separate fresh experiment IDs and state namespaces; neither may
-   reuse an old database, output root, attempt directory, or mutable artifact from an earlier run;
+6. give APC and TASK_INTENT_ONLY separate experiment IDs and state namespaces. The current APC v33
+   campaign has one explicitly authorized exception: it may resume its existing project/database and
+   accepted checkpoint after the bounded ch9 feedback repair. TIO may not reuse that state and must
+   start from ch0 with a fresh database and output root;
 7. persist and verify each checkpoint-scoped report and manifest child ref before starting the next
-   checkpoint; never reuse an attempt directory after a code/config/formula change;
+   checkpoint. If APC needs a new process after the repair, use a new continuation output/experiment
+   manifest referencing the v33 project; never overwrite the old manifest or reuse an attempt output;
 8. retain the old history/VAC artifacts as a labelled legacy baseline; do not silently aggregate
    old-formula scores with the new report;
 9. monitor endpoint health, scheduler telemetry, checkpoint progress, projection freshness, artifact
    retention, and leakage throughout;
 10. continue through all five cases even when a quality metric is low; stop only when an integrity,
    safety, infrastructure, or artifact failure makes the evidence invalid;
-11. if valid execution requires a code, prompt, formula, budget, Gold, or runtime-policy change, stop
-   and return to Codex; do not repair in place or reuse the experiment identity.
+11. if valid execution requires another code, prompt, formula, budget, Gold, or runtime-policy
+   change, stop and return to Codex. The only current exception is the human-authorized `b06b8de`
+   feedback-only checkpoint continuation described above; do not generalize it to later repairs.
 
 The fresh run reports raw Gate 0-3 measurements but does not choose or tune thresholds. P001-P005
 are one fixed peer benchmark matrix: there is no development/validation/test split and no held-out

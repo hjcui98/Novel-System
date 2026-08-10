@@ -307,9 +307,13 @@ rule was added. Frozen ch9 input now selects the correct 13-character clause and
 `make quality` reports 1652 passed, 9 deselected and 100% branch coverage; the candidate fingerprint is
 `sha256:7bea7d597b01251b641ff93d3d1c854b3953dce77a777abcddb92c40b535342a`.
 
-The v33 run and its DB/output remain diagnostic-only and may not be resumed after this source change.
-Current next action is a user-authorized clean commit of the focused repair, followed by another wholly
-new APC/TIO matrix from ch0.
+The focused repair is committed locally as `b06b8de`. The user then explicitly authorized continuing
+the current APC campaign from its latest accepted checkpoint because the repair changes only rejected
+draft feedback and does not rewrite accepted chapter state. APC therefore does not restart from ch0.
+An already-running writer continues alone; if a new process is required, it uses a new continuation
+experiment/output manifest referencing the existing v33 project/database and records the
+`660abf8 -> b06b8de` executable boundary. TASK_INTENT_ONLY still starts separately from ch0 with a
+fresh identity.
 
 ## 5. Stage 3 preparation status
 
@@ -354,9 +358,10 @@ Stage 2M may:
 - preserve the accepted APC/TIO architecture, strict evidence resolver and fixed semantic/transport
   budgets;
 - preserve the accepted chapter-32 repair and the focused chapter-9 relevant-literal repair; do not
-  weaken strict evidence binding or resume the invalidated v33 identity;
-- after forming a user-authorized clean commit for the chapter-9 repair, run `.agent/plan.md` §6.3
-  from ch0 with new DB, output root and experiment identities;
+  weaken strict evidence binding;
+- continue the current APC campaign from its latest accepted v33 checkpoint under the explicit
+  bounded-repair exception in `.agent/plan.md` §0.3/§6.3, with no competing writer and a separate
+  continuation manifest if a new process loads `b06b8de`;
 - then run APC P001-P005 as the main profile and TASK_INTENT_ONLY as the defined ablation, treating all
   five as fixed peer benchmark cases and keeping checkpoint reports independently addressable;
 - report Gate 0-3 and M4 measurements without a development/validation/test split or in-run tuning;
