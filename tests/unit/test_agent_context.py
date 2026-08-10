@@ -617,6 +617,38 @@ def test_compactor_removes_only_safe_atomic_groups_and_hard_fails(tmp_path: Path
     )
     assert not compactor.provider_receipt(split_group, policy).atomic_groups_valid
 
+    two_groups = _view(
+        recent_settled_tail=(
+            _item(
+                "first-group",
+                layer=ContextLayer.RECENT_SETTLED,
+                kind=ContextItemKind.MODEL_BATCH,
+                content="f" * 40,
+            ),
+            _item(
+                "second-group",
+                layer=ContextLayer.RECENT_SETTLED,
+                kind=ContextItemKind.MODEL_BATCH,
+                content="s" * 40,
+            ),
+        )
+    )
+    two_group_policy = ContextWindowPolicy(
+        sequence_limit=180,
+        reserved_output_tokens=10,
+        safety_allowance_tokens=10,
+        soft_limit_tokens=150,
+        tokenizer="test",
+        tokenizer_version="v1",
+    )
+    twice_compacted, twice_receipt = compactor.compact(
+        two_groups,
+        two_group_policy,
+        hard=True,
+    )
+    assert twice_receipt is not None
+    assert not twice_compacted.recent_settled_tail
+
 
 def test_context_checkpoint_restores_view_and_replays_tail(
     tmp_path: Path,
@@ -664,3 +696,27 @@ def test_context_checkpoint_restores_view_and_replays_tail(
 
     with pytest.raises(ContextProjectionError, match="settle"):
         runtime.checkpoint(seed, StableId("checkpoint.unsettled"))
+
+    idempotent_seed = seed.model_copy(
+        update={
+            "run_id": RunId("run.context.idempotent"),
+            "task_id": TaskId("task.context.idempotent"),
+        }
+    )
+    first_projection = runtime.append_and_apply(
+        idempotent_seed,
+        event_type=RunEventType.TASK_STARTED,
+        payload={"started": True},
+        artifact_refs=(),
+        label="same-event",
+        trace_namespace="context-test",
+    )
+    replayed_projection = runtime.append_and_apply(
+        idempotent_seed,
+        event_type=RunEventType.TASK_STARTED,
+        payload={"started": True},
+        artifact_refs=(),
+        label="same-event",
+        trace_namespace="context-test",
+    )
+    assert replayed_projection == first_projection

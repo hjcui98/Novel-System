@@ -523,7 +523,12 @@ def test_shared_runtime_seeds_and_recovers_bootstrap_planner_context(tmp_path: P
 
     import novel_agent.services as services
 
+    assert services.AgentContextProjector is AgentContextProjector
+    assert services.AgentContextRuntime is AgentContextRuntime
+    assert services.ContextCompactor is ContextCompactor
     assert services.SharedPlannerContextRuntime is SharedPlannerContextRuntime
+    with pytest.raises(AttributeError, match="missing_service"):
+        services.__getattr__("missing_service")
 
 
 def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: Path) -> None:
