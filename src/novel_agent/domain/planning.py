@@ -390,7 +390,7 @@ class PlannerContextProjection(DomainModel):
     task_id: TaskId
     seed_ref: ArtifactRef
     view_ref: ArtifactRef
-    generation: int = Field(ge=1)
+    generation: int = Field(ge=0)
     basis_event_position: int = Field(ge=0)
     rendered_context: str
     token_count: int = Field(ge=0)

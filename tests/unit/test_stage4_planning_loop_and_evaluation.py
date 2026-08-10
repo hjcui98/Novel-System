@@ -7,21 +7,27 @@ from typing import Any, cast
 
 import pytest
 from pydantic import JsonValue
+from sqlalchemy import create_engine
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
+from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
 from novel_agent.agents.planner import (
     PlannerAgent,
     PlannerInvocationError,
 )
 from novel_agent.agents.runner import StructuredAgentRunner
+from novel_agent.domain.agent_context import ContextConsumer, ContextItemKind
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
+    PlannerContextBudgetReport,
+    PlannerContextItem,
     PlannerContextPackage,
     PlannerContextProjection,
+    PlannerContextSection,
     PlanningEvaluationCase,
     PlanningEvaluationManifest,
     PlanningInquiryDraft,
@@ -49,11 +55,22 @@ from novel_agent.domain.stage2 import (
     ProposedItem,
 )
 from novel_agent.ports.planning_context import PlannerContextRuntimePort
+from novel_agent.services.agent_context import (
+    AgentContextProjector,
+    AgentContextRuntime,
+    ContextCompactor,
+    ContextWindowPolicy,
+)
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
 from novel_agent.services.memory_gateway import MemoryGateway, MemoryGatewayBlockedError
 from novel_agent.services.planner_context_assembler import (
     PlannerContextAssembler,
     PlannerContextAssemblyError,
+)
+from novel_agent.services.planner_context_runtime import (
+    PlannerContextRuntimeError,
+    SharedPlannerContextRuntime,
 )
 from novel_agent.services.planning_context_loop import PlanningContextLoopService
 from novel_agent.services.planning_evaluation import (
@@ -391,6 +408,391 @@ class _SuspendedContextRuntime(_FixtureContextRuntime):
         return self._projection
 
 
+def _shared_context_runtime(
+    tmp_path: Path,
+    artifacts: ArtifactRepository,
+    *,
+    policy: ContextWindowPolicy | None = None,
+) -> tuple[SharedPlannerContextRuntime, AgentContextRuntime]:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    events = RunEventLogRepository(factory)
+    checkpoints = RunCheckpointRepository(factory)
+    projector = AgentContextProjector(lambda text: max(1, len(text)))
+    runtime = AgentContextRuntime(projector, artifacts, events, checkpoints, VERSION)
+    compactor = ContextCompactor(
+        projector,
+        artifacts,
+        VERSION,
+        lambda text: max(1, len(text)),
+    )
+    return (
+        SharedPlannerContextRuntime(
+            projector=projector,
+            runtime=runtime,
+            compactor=compactor,
+            artifacts=artifacts,
+            schema_version=VERSION,
+            policy=policy
+            or ContextWindowPolicy(
+                sequence_limit=100_000,
+                reserved_output_tokens=1_000,
+                safety_allowance_tokens=1_000,
+                soft_limit_tokens=90_000,
+                tokenizer="test",
+                tokenizer_version="v1",
+            ),
+        ),
+        runtime,
+    )
+
+
+def test_shared_runtime_seeds_and_recovers_bootstrap_planner_context(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "bootstrap-runtime"))
+    source = _put(artifacts, "author source")
+    request = _request(AgentMode.PROJECT_BOOTSTRAP, source)
+    inquiry = _inquiry(AgentMode.PROJECT_BOOTSTRAP, source)
+    inquiry_ref = artifacts.put(inquiry.model_dump_json().encode(), "application/json", VERSION)
+    package, package_ref = PlannerContextAssembler(
+        artifacts,
+        schema_version=VERSION,
+    ).assemble(request=request, inquiry=inquiry, inquiry_ref=inquiry_ref)
+    adapter, runtime = _shared_context_runtime(tmp_path, artifacts)
+
+    projection = adapter.start(
+        run_id=request.run_id,
+        task_id=request.task_id,
+        seed=package,
+        seed_ref=package_ref,
+    )
+
+    assert projection.generation == 0
+    assert projection.basis_event_position == 1
+    assert projection.seed_ref == package_ref
+    assert not projection.suspended
+    restored = runtime.restore_latest(request.run_id)
+    assert restored is not None
+    assert restored.consumer is ContextConsumer.PLANNER
+    assert restored.base_commit is None
+    assert restored.snapshot_id is None
+    assert {item.kind for item in restored.protected_items} >= {
+        ContextItemKind.AUTHOR_INTENT,
+        ContextItemKind.GOAL_PROPOSAL,
+    }
+    assert adapter.project(run_id=request.run_id, task_id=request.task_id).rendered_context == (
+        projection.rendered_context
+    )
+    with pytest.raises(PlannerContextRuntimeError, match="already exists"):
+        adapter.start(
+            run_id=request.run_id,
+            task_id=request.task_id,
+            seed=package,
+            seed_ref=package_ref,
+        )
+    bootstrap_memory = PlannerContextItem(
+        context_item_id=StableId("planner-context.bootstrap-memory"),
+        section=PlannerContextSection.CURRENT_STATE,
+        text="forbidden project memory",
+        token_count=24,
+    )
+    bootstrap_delta = package.model_copy(
+        update={
+            "package_id": StableId("planner-context.bootstrap-delta"),
+            "items": (*package.items, bootstrap_memory),
+            "budget_report": package.budget_report.model_copy(
+                update={
+                    "selected_tokens": package.budget_report.selected_tokens + 24,
+                }
+            ),
+        }
+    )
+    bootstrap_delta_ref = artifacts.put(
+        bootstrap_delta.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    with pytest.raises(PlannerContextRuntimeError, match="bootstrap"):
+        adapter.append_delta(
+            run_id=request.run_id,
+            task_id=request.task_id,
+            delta_ref=bootstrap_delta_ref,
+        )
+    with pytest.raises(PlannerContextRuntimeError, match="unavailable"):
+        adapter.project(run_id=RunId("run.missing"), task_id=request.task_id)
+
+    import novel_agent.services as services
+
+    assert services.SharedPlannerContextRuntime is SharedPlannerContextRuntime
+
+
+def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "compact-runtime"))
+    author_ref = _put(artifacts, "author")
+    inquiry_ref = _put(artifacts, "reviewed inquiry", "application/json")
+    stage1_ref = _put(artifacts, "memory context", "application/json")
+    profile_ref = _put(artifacts, "profile", "application/json")
+    author = PlannerContextItem(
+        context_item_id=StableId("planner-context.author"),
+        section=PlannerContextSection.AUTHOR_INTENT,
+        text="author intent",
+        protected=True,
+        mandatory=True,
+        token_count=13,
+        source_artifact_refs=(author_ref,),
+    )
+    retired = PlannerContextItem(
+        context_item_id=StableId("planner-context.retired"),
+        section=PlannerContextSection.CURRENT_STATE,
+        text="x" * 220,
+        token_count=220,
+        compact_handle=StableId("compact.handle.retired"),
+    )
+    package = PlannerContextPackage(
+        package_id=StableId("planner-context.initial"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=CommitId("sha256:" + "a" * 64),
+        snapshot_id=StableId("snapshot.stage4"),
+        profile_ref=profile_ref,
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=stage1_ref,
+        items=(author, retired),
+        budget_report=PlannerContextBudgetReport(
+            token_budget=300,
+            mandatory_tokens=13,
+            selected_tokens=233,
+        ),
+        rendered_context="seed",
+    )
+    package_ref = artifacts.put(
+        package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    adapter, runtime = _shared_context_runtime(
+        tmp_path,
+        artifacts,
+        policy=ContextWindowPolicy(
+            sequence_limit=300,
+            reserved_output_tokens=20,
+            safety_allowance_tokens=20,
+            soft_limit_tokens=180,
+            tokenizer="test",
+            tokenizer_version="v1",
+        ),
+    )
+
+    initial = adapter.start(
+        run_id=RunId("run.stage4.compact"),
+        task_id=TaskId("task.stage4.compact"),
+        seed=package,
+        seed_ref=package_ref,
+    )
+    assert initial.generation == 1
+    assert initial.compaction_receipt_ref is not None
+    view = runtime.restore_latest(initial.run_id)
+    assert view is not None
+    assert retired.context_item_id in view.compacted_item_ids
+
+    new_item = PlannerContextItem(
+        context_item_id=StableId("planner-context.new"),
+        section=PlannerContextSection.RELATION_CAUSAL,
+        text="new fact",
+        token_count=8,
+    )
+    delta_package = package.model_copy(
+        update={
+            "package_id": StableId("planner-context.delta"),
+            "items": (author, retired, new_item),
+            "budget_report": PlannerContextBudgetReport(
+                token_budget=300,
+                mandatory_tokens=13,
+                selected_tokens=241,
+            ),
+        }
+    )
+    delta_ref = artifacts.put(
+        delta_package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    updated = adapter.append_delta(
+        run_id=initial.run_id,
+        task_id=initial.task_id,
+        delta_ref=delta_ref,
+    )
+    assert new_item.context_item_id in updated.exposed_context_item_ids
+    assert retired.context_item_id not in updated.exposed_context_item_ids
+    final_view = runtime.restore_latest(initial.run_id)
+    assert final_view is not None
+    assert tuple(item.item_id for item in final_view.active_memory_items) == (
+        new_item.context_item_id,
+    )
+    assert (
+        adapter.append_delta(
+            run_id=initial.run_id,
+            task_id=initial.task_id,
+            delta_ref=delta_ref,
+        ).rendered_context
+        == updated.rendered_context
+    )
+
+    changed_item = new_item.model_copy(update={"text": "changed identity"})
+    changed_package = delta_package.model_copy(update={"items": (author, changed_item)})
+    changed_ref = artifacts.put(
+        changed_package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    with pytest.raises(PlannerContextRuntimeError, match="identity changed"):
+        adapter.append_delta(
+            run_id=initial.run_id,
+            task_id=initial.task_id,
+            delta_ref=changed_ref,
+        )
+
+    changed_basis = delta_package.model_copy(update={"base_commit": CommitId("sha256:" + "b" * 64)})
+    changed_basis_ref = artifacts.put(
+        changed_basis.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    with pytest.raises(PlannerContextRuntimeError, match="basis changed"):
+        adapter.append_delta(
+            run_id=initial.run_id,
+            task_id=initial.task_id,
+            delta_ref=changed_basis_ref,
+        )
+    with pytest.raises(PlannerContextRuntimeError, match="unavailable"):
+        adapter.project(run_id=initial.run_id, task_id=TaskId("task.wrong"))
+
+
+def test_shared_runtime_soft_pressure_hard_limit_and_provider_gate(tmp_path: Path) -> None:
+    def bootstrap_package(
+        name: str,
+        text: str,
+    ) -> tuple[ArtifactRepository, PlanningLoopRequest, PlannerContextPackage, ArtifactRef]:
+        artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / name))
+        source = _put(artifacts, text)
+        request = _request(AgentMode.PROJECT_BOOTSTRAP, source)
+        inquiry = _inquiry(AgentMode.PROJECT_BOOTSTRAP, source)
+        inquiry_ref = artifacts.put(
+            inquiry.model_dump_json().encode(),
+            "application/json",
+            VERSION,
+        )
+        package, package_ref = PlannerContextAssembler(
+            artifacts,
+            schema_version=VERSION,
+        ).assemble(request=request, inquiry=inquiry, inquiry_ref=inquiry_ref)
+        return artifacts, request, package, package_ref
+
+    artifacts, request, package, package_ref = bootstrap_package("soft", "s" * 80)
+    soft_adapter, _runtime = _shared_context_runtime(
+        tmp_path,
+        artifacts,
+        policy=ContextWindowPolicy(
+            sequence_limit=1_000,
+            reserved_output_tokens=10,
+            safety_allowance_tokens=10,
+            soft_limit_tokens=50,
+            tokenizer="test",
+            tokenizer_version="v1",
+        ),
+    )
+    soft = soft_adapter.start(
+        run_id=RunId("run.stage4.soft"),
+        task_id=request.task_id,
+        seed=package,
+        seed_ref=package_ref,
+    )
+    assert not soft.suspended
+    assert soft.compaction_receipt_ref is None
+    assert soft.basis_event_position == 2
+
+    hard_artifacts, hard_request, hard_package, hard_ref = bootstrap_package(
+        "hard",
+        "h" * 200,
+    )
+    hard_adapter, _runtime = _shared_context_runtime(
+        tmp_path,
+        hard_artifacts,
+        policy=ContextWindowPolicy(
+            sequence_limit=100,
+            reserved_output_tokens=10,
+            safety_allowance_tokens=10,
+            soft_limit_tokens=50,
+            tokenizer="test",
+            tokenizer_version="v1",
+        ),
+    )
+    hard = hard_adapter.start(
+        run_id=RunId("run.stage4.hard"),
+        task_id=hard_request.task_id,
+        seed=hard_package,
+        seed_ref=hard_ref,
+    )
+    assert hard.suspended
+    assert hard.suspension_reason == "CONTEXT_HARD_LIMIT"
+
+    invalid_artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "invalid"))
+    inquiry_ref = _put(invalid_artifacts, "inquiry", "application/json")
+    stage1_ref = _put(invalid_artifacts, "memory", "application/json")
+    grouped = tuple(
+        PlannerContextItem(
+            context_item_id=StableId(f"planner-context.group.{index}"),
+            section=PlannerContextSection.CURRENT_STATE,
+            text=f"fact {index}",
+            token_count=6,
+            compact_handle=(
+                StableId("compact.split") if index in {0, 2} else StableId("compact.other")
+            ),
+        )
+        for index in range(3)
+    )
+    invalid_package = PlannerContextPackage(
+        package_id=StableId("planner-context.invalid-provider"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=CommitId("sha256:" + "c" * 64),
+        snapshot_id=StableId("snapshot.invalid-provider"),
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=stage1_ref,
+        items=grouped,
+        budget_report=PlannerContextBudgetReport(
+            token_budget=100,
+            mandatory_tokens=0,
+            selected_tokens=18,
+        ),
+        rendered_context="invalid atomic order",
+    )
+    invalid_ref = invalid_artifacts.put(
+        invalid_package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    invalid_adapter, _runtime = _shared_context_runtime(tmp_path, invalid_artifacts)
+    invalid = invalid_adapter.start(
+        run_id=RunId("run.stage4.invalid-provider"),
+        task_id=TaskId("task.stage4.invalid-provider"),
+        seed=invalid_package,
+        seed_ref=invalid_ref,
+    )
+    assert invalid.suspension_reason == "PROVIDER_CONTEXT_INVALID"
+    assert (
+        invalid_adapter.project(
+            run_id=invalid.run_id,
+            task_id=invalid.task_id,
+        ).suspension_reason
+        == "PROVIDER_CONTEXT_INVALID"
+    )
+
+
 def _model_request(stage: str, mode: AgentMode, attempt: int) -> ModelRequest:
     del stage, mode, attempt
     return cast(ModelRequest, object())
@@ -580,13 +982,14 @@ def test_bootstrap_full_loop_never_calls_memory_and_returns_reviewed_candidate(
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
     source = _put(artifacts, "author-approved source")
+    shared_runtime, _runtime = _shared_context_runtime(tmp_path, artifacts)
     service = PlanningContextLoopService(
         planner=cast(PlannerAgent, _BootstrapPlanner(artifacts)),
         reviewer=cast(PlanReviewerAgent, _AcceptingReviewer(artifacts)),
         need_generator=PlanningInquiryConditionedNeedGenerator(),
         memory_gateway=cast(MemoryGateway, _ForbiddenMemory()),
         context_assembler=PlannerContextAssembler(artifacts, schema_version=VERSION),
-        context_runtime=cast(PlannerContextRuntimePort, _FixtureContextRuntime(artifacts)),
+        context_runtime=shared_runtime,
         artifacts=artifacts,
         schema_version=VERSION,
     )

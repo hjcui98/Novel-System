@@ -516,14 +516,14 @@ def test_full_outbox_projection_crosses_minio_postgres_and_opensearch(
             assert snapshot is not None and snapshot.source_commit == commit_id
             assert snapshot.embedding_profile == "deterministic-hash-test-only-8d"
             with factory() as session:
-                assert (
-                    session.scalar(
-                        select(func.count())
-                        .select_from(R1RecordRow)
+                record_counts = dict(
+                    session.execute(
+                        select(R1RecordRow.access_scope, func.count())
                         .where(R1RecordRow.source_commit == commit_id.root)
-                    )
-                    == 4
+                        .group_by(R1RecordRow.access_scope)
+                    ).all()
                 )
+                assert record_counts == {"author_planning": 4, "writer_safe": 4}
             backend = Stage1OpenSearchBackend(
                 search_index,
                 DeterministicHashEmbedder(dimension=8),
