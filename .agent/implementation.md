@@ -1806,3 +1806,28 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   `0/0`, timeout 0, unsatisfiable 0, no OOM/context reduction/lease leak.
 - Status: `RETURN_TO_CODEX_REVIEW`. These artifacts replace the v31/old-fingerprint evidence only;
   previously accepted implementation and test evidence is unchanged. No commit or merge was made.
+
+## 25. Stage 4 Planner Context Loop implementation (2026-08-10)
+
+- The corrected branch topology is `0ec1eb4 -> 1b926f5 -> 21cc3c3 -> 27bd5cf -> a76d059`,
+  followed by coverage and integration-test commits. `1b926f5` is the independently extracted
+  shared Context contract. The Stage 4 branch does not contain `bab4451` and does not import the
+  Stage 3 Writer, Editor, Candidate Observer, or Stage 3 evaluation implementation.
+- `21cc3c3` extends the shared projector/runtime contract for the already-declared Planner
+  consumer: bootstrap may have no commit/snapshot, accepted-basis Writer validation remains
+  fail-closed, Planner-safe deltas are typed, compacted item identities cannot be re-expanded,
+  and event append/checkpoint/recovery stay owned by the shared runtime.
+- Stage 4 implements all seven modes including `CHAPTER_SET`, typed `PlanningInquiry` and
+  `GoalProposal`, an independent `PlanReviewerAgent`, Planner-specific Need generation and
+  `PlannerContextPackage`, the no-base bootstrap path, typed graph path receipts, conditional
+  Anchor-to-Graph expansion, compact-to-expand behavior, and the candidate-only Planner loop.
+  It does not write Canon, PlanRoot, or Stage 5 scheduler state.
+- Final deterministic verification: Ruff, Ruff format, strict MyPy, schema contracts, and
+  pre-commit all pass. Pytest reports `1678 passed, 9 deselected`, 24,028 statements / 6,776
+  branches, and 100% statement/branch coverage. Real native infrastructure verification reports
+  `5 passed, 1682 deselected` across PostgreSQL, MinIO, OpenSearch, full outbox projection, and
+  Stage 2 freeze/reveal.
+- The checked-in evaluation contract enforces one frozen case for every Planner mode and supports
+  configured plus ablation arms. No formal real-model seven-mode manifest, model endpoint adapter,
+  or blind-review artifact was supplied or executed in this implementation run; semantic Gate
+  evidence therefore remains `CONDITIONAL_PASS`, while the engineering Gate is complete.
