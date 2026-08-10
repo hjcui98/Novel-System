@@ -52,7 +52,15 @@
           "type": "array"
         },
         "base_commit": {
-          "$ref": "#/$defs/CommitId"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "delta_id": {
           "$ref": "#/$defs/StableId"
@@ -66,8 +74,11 @@
           "type": "array"
         },
         "information_scope": {
-          "const": "writer_safe",
           "default": "writer_safe",
+          "enum": [
+            "writer_safe",
+            "planner_safe"
+          ],
           "title": "Information Scope",
           "type": "string"
         },
@@ -77,10 +88,26 @@
           "type": "integer"
         },
         "plan_ref": {
-          "$ref": "#/$defs/ArtifactRef"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "profile_ref": {
-          "$ref": "#/$defs/ArtifactRef"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "request_ref": {
           "$ref": "#/$defs/ArtifactRef"
@@ -97,7 +124,15 @@
           "type": "array"
         },
         "snapshot_id": {
-          "$ref": "#/$defs/StableId"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "status": {
           "$ref": "#/$defs/ContextDeltaStatus"
@@ -128,10 +163,6 @@
         "request_ref",
         "resolution_ref",
         "parent_view_revision",
-        "base_commit",
-        "snapshot_id",
-        "profile_ref",
-        "plan_ref",
         "token_impact",
         "status"
       ],
@@ -157,6 +188,8 @@
         "accepted_plan",
         "project_profile",
         "author_intent",
+        "planning_inquiry",
+        "goal_proposal",
         "memory_claim",
         "evidence_handle",
         "unresolved_need",

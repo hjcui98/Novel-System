@@ -177,9 +177,15 @@ def test_context_item_and_delta_contracts_fail_closed() -> None:
         "token_impact": 0,
         "status": ContextDeltaStatus.INSUFFICIENT,
     }
+    with pytest.raises(ValidationError, match="appear together"):
+        ContextDelta.model_validate(base | {"snapshot_id": None})
     with pytest.raises(ValidationError, match="only memory"):
         ContextDelta.model_validate(
             base | {"added_memory_items": (_item("working", layer=ContextLayer.WORKING),)}
+        )
+    with pytest.raises(ValidationError, match="scope"):
+        ContextDelta.model_validate(
+            base | {"added_memory_items": (_item("planner", scope="planner_safe"),)}
         )
     duplicate = _item("duplicate")
     with pytest.raises(ValidationError, match="unique"):
@@ -252,6 +258,14 @@ def test_provider_compaction_view_and_pressure_contracts() -> None:
 
     with pytest.raises(ValidationError, match="wrong layer"):
         _view(active_memory_items=(_item("wrong", layer=ContextLayer.WORKING),))
+    with pytest.raises(ValidationError, match="appear together"):
+        _view(snapshot_id=None)
+    with pytest.raises(ValidationError, match="complete accepted"):
+        _view(base_commit=None, snapshot_id=None)
+    with pytest.raises(ValidationError, match="writer-safe"):
+        _view(information_scope="planner_safe")
+    with pytest.raises(ValidationError, match="planner-safe"):
+        _view(consumer=ContextConsumer.PLANNER)
     duplicate = _item("same")
     duplicate_working = duplicate.model_copy(
         update={
@@ -261,6 +275,10 @@ def test_provider_compaction_view_and_pressure_contracts() -> None:
     )
     with pytest.raises(ValidationError, match="unique"):
         _view(active_memory_items=(duplicate,), working_items=(duplicate_working,))
+    with pytest.raises(ValidationError, match="compacted Context item ids must be unique"):
+        _view(compacted_item_ids=(duplicate.item_id, duplicate.item_id))
+    with pytest.raises(ValidationError, match="cannot overlap"):
+        _view(active_memory_items=(duplicate,), compacted_item_ids=(duplicate.item_id,))
     with pytest.raises(ValidationError, match="mandatory"):
         _view(
             protected_items=(
@@ -364,6 +382,8 @@ def test_projector_seed_delta_working_and_replay(tmp_path: Path) -> None:
     )
     assert view.active_memory_items
     assert view.token_report["rendered"] > 0
+    assert view.profile_ref is not None
+    assert view.plan_ref is not None
     with pytest.raises(ContextProjectionError, match="protected"):
         projector.seed_writer(
             run_id=view.run_id,

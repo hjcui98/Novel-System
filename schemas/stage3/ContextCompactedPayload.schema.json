@@ -161,6 +161,8 @@
         "accepted_plan",
         "project_profile",
         "author_intent",
+        "planning_inquiry",
+        "goal_proposal",
         "memory_claim",
         "evidence_handle",
         "unresolved_need",

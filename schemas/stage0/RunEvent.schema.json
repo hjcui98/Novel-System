@@ -406,6 +406,7 @@
         "freshness.passed",
         "information_boundary.verified",
         "root_update.materialized",
+        "context.view_started",
         "writer.work_plan_settled",
         "context.memory_requested",
         "context.memory_resolved",

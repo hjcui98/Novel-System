@@ -69,6 +69,7 @@ class RunEventType(StrEnum):
     FRESHNESS_PASSED = "freshness.passed"
     INFORMATION_BOUNDARY_VERIFIED = "information_boundary.verified"
     ROOT_UPDATE_MATERIALIZED = "root_update.materialized"
+    CONTEXT_VIEW_STARTED = "context.view_started"
     WRITER_WORK_PLAN_SETTLED = "writer.work_plan_settled"
     CONTEXT_MEMORY_REQUESTED = "context.memory_requested"
     CONTEXT_MEMORY_RESOLVED = "context.memory_resolved"
