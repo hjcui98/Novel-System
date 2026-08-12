@@ -490,6 +490,13 @@ class PlanProposal(DomainModel):
     unresolved: tuple[str, ...] = ()
     coverage: float = Field(ge=0, le=1)
     receipt: AgentExecutionReceipt
+    # Stage 4 lineage is optional so existing Stage 2 proposals keep identical behaviour.
+    reviewed_inquiry_ref: ArtifactRef | None = None
+    memory_need_ids: tuple[StableId, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    graph_path_receipt_refs: tuple[ArtifactRef, ...] = ()
+    parent_proposal_id: StableId | None = None
+    reviewer_receipt_ref: ArtifactRef | None = None
 
 
 class PlannerExecutionResult(DomainModel):

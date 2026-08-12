@@ -27,6 +27,7 @@ __all__ = [
     "RunCheckpointRepository",
     "RunEventLogRepository",
     "WriterContextLoopService",
+    "SharedPlannerContextRuntime",
     "manifest_commit_id",
     "object_key",
     "sha256_id",
@@ -50,4 +51,8 @@ def __getattr__(name: str) -> Any:
         from novel_agent.services.writer_context_loop import WriterContextLoopService
 
         return WriterContextLoopService
+    if name == "SharedPlannerContextRuntime":
+        from novel_agent.services.planner_context_runtime import SharedPlannerContextRuntime
+
+        return SharedPlannerContextRuntime
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

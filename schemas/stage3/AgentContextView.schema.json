@@ -56,6 +56,8 @@
         "accepted_plan",
         "project_profile",
         "author_intent",
+        "planning_inquiry",
+        "goal_proposal",
         "memory_claim",
         "evidence_handle",
         "unresolved_need",
@@ -288,12 +290,28 @@
       "type": "array"
     },
     "base_commit": {
-      "$ref": "#/$defs/CommitId"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "basis_event_position": {
       "minimum": 0,
       "title": "Basis Event Position",
       "type": "integer"
+    },
+    "compacted_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Compacted Item Ids",
+      "type": "array"
     },
     "compacted_prefix_items": {
       "default": [],
@@ -362,10 +380,26 @@
       "type": "integer"
     },
     "plan_ref": {
-      "$ref": "#/$defs/ArtifactRef"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "profile_ref": {
-      "$ref": "#/$defs/ArtifactRef"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "protected_items": {
       "items": {
@@ -405,7 +439,15 @@
       "$ref": "#/$defs/ArtifactRef"
     },
     "snapshot_id": {
-      "$ref": "#/$defs/StableId"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "task_id": {
       "$ref": "#/$defs/TaskId"
@@ -441,10 +483,6 @@
     "revision",
     "generation",
     "basis_event_position",
-    "base_commit",
-    "snapshot_id",
-    "profile_ref",
-    "plan_ref",
     "information_scope",
     "seed_package_ref",
     "protected_items",

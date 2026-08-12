@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "PlanningLoopPhase": {
+      "enum": [
+        "preflight",
+        "inquiry_accepted",
+        "memory_resolved",
+        "context_ready",
+        "plan_proposed",
+        "plan_reviewed",
+        "terminal"
+      ],
+      "title": "PlanningLoopPhase",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Artifact Refs",
+      "type": "array"
+    },
+    "event_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "event_kind": {
+      "minLength": 1,
+      "title": "Event Kind",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Payload",
+      "type": "object"
+    },
+    "phase": {
+      "$ref": "#/$defs/PlanningLoopPhase"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "event_id",
+    "request_id",
+    "phase",
+    "event_kind"
+  ],
+  "title": "PlanningLoopEventReceipt",
+  "type": "object"
+}

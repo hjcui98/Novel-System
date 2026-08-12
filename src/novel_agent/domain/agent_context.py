@@ -35,6 +35,8 @@ class ContextItemKind(StrEnum):
     ACCEPTED_PLAN = "accepted_plan"
     PROJECT_PROFILE = "project_profile"
     AUTHOR_INTENT = "author_intent"
+    PLANNING_INQUIRY = "planning_inquiry"
+    GOAL_PROPOSAL = "goal_proposal"
     MEMORY_CLAIM = "memory_claim"
     EVIDENCE_HANDLE = "evidence_handle"
     UNRESOLVED_NEED = "unresolved_need"
@@ -89,23 +91,30 @@ class ContextDelta(DomainModel):
     request_ref: ArtifactRef
     resolution_ref: ArtifactRef
     parent_view_revision: int = Field(ge=0)
-    base_commit: CommitId
-    snapshot_id: StableId
-    profile_ref: ArtifactRef
-    plan_ref: ArtifactRef
+    base_commit: CommitId | None = None
+    snapshot_id: StableId | None = None
+    profile_ref: ArtifactRef | None = None
+    plan_ref: ArtifactRef | None = None
     added_memory_items: tuple[ContextViewItem, ...] = ()
     superseded_item_ids: tuple[StableId, ...] = ()
     resolved_need_ids: tuple[StableId, ...] = ()
     unresolved_need_ids: tuple[StableId, ...] = ()
     evidence_refs: tuple[ArtifactRef, ...] = ()
     token_impact: int
-    information_scope: Literal["writer_safe"] = "writer_safe"
+    information_scope: Literal["writer_safe", "planner_safe"] = "writer_safe"
     status: ContextDeltaStatus
 
     @model_validator(mode="after")
     def validate_delta(self) -> ContextDelta:
+        if (self.base_commit is None) != (self.snapshot_id is None):
+            raise ValueError("ContextDelta commit and snapshot basis must appear together")
         if any(item.layer is not ContextLayer.MEMORY for item in self.added_memory_items):
             raise ValueError("ContextDelta can add only memory-layer items")
+        if any(
+            item.information_scope not in {self.information_scope, "runtime"}
+            for item in self.added_memory_items
+        ):
+            raise ValueError("ContextDelta item scope exceeds the declared information scope")
         ids = tuple(item.item_id for item in self.added_memory_items)
         if len(ids) != len(set(ids)):
             raise ValueError("ContextDelta item ids must be unique")
@@ -188,10 +197,10 @@ class AgentContextView(DomainModel):
     revision: int = Field(ge=0)
     generation: int = Field(ge=0)
     basis_event_position: int = Field(ge=0)
-    base_commit: CommitId
-    snapshot_id: StableId
-    profile_ref: ArtifactRef
-    plan_ref: ArtifactRef
+    base_commit: CommitId | None = None
+    snapshot_id: StableId | None = None
+    profile_ref: ArtifactRef | None = None
+    plan_ref: ArtifactRef | None = None
     information_scope: Literal["writer_safe", "planner_safe"]
     seed_package_ref: ArtifactRef
     protected_items: tuple[ContextViewItem, ...]
@@ -199,6 +208,7 @@ class AgentContextView(DomainModel):
     working_items: tuple[ContextViewItem, ...] = ()
     recent_settled_tail: tuple[ContextViewItem, ...] = ()
     compacted_prefix_items: tuple[ContextViewItem, ...] = ()
+    compacted_item_ids: tuple[StableId, ...] = ()
     unresolved_need_ids: tuple[StableId, ...] = ()
     compacted_prefix_ref: ArtifactRef | None = None
     covered_event_range: tuple[int, int] | None = None
@@ -209,6 +219,17 @@ class AgentContextView(DomainModel):
 
     @model_validator(mode="after")
     def validate_view(self) -> AgentContextView:
+        if (self.base_commit is None) != (self.snapshot_id is None):
+            raise ValueError("Context View commit and snapshot basis must appear together")
+        if self.consumer is ContextConsumer.WRITER and any(
+            item is None
+            for item in (self.base_commit, self.snapshot_id, self.profile_ref, self.plan_ref)
+        ):
+            raise ValueError("Writer Context View requires complete accepted project basis")
+        if self.consumer is ContextConsumer.WRITER and self.information_scope != "writer_safe":
+            raise ValueError("Writer Context View must use writer-safe information scope")
+        if self.consumer is ContextConsumer.PLANNER and self.information_scope != "planner_safe":
+            raise ValueError("Planner Context View must use planner-safe information scope")
         layers = (
             (self.protected_items, ContextLayer.PROTECTED),
             (self.active_memory_items, ContextLayer.MEMORY),
@@ -222,6 +243,10 @@ class AgentContextView(DomainModel):
         ids = tuple(item.item_id for item in all_items)
         if len(ids) != len(set(ids)):
             raise ValueError("AgentContextView item ids must be unique")
+        if len(self.compacted_item_ids) != len(set(self.compacted_item_ids)):
+            raise ValueError("compacted Context item ids must be unique")
+        if set(ids) & set(self.compacted_item_ids):
+            raise ValueError("active and compacted Context item ids cannot overlap")
         if any(not item.mandatory for item in self.protected_items):
             raise ValueError("protected context items must be mandatory")
         if self.information_scope == "writer_safe" and any(
@@ -288,6 +313,7 @@ class SettledArtifactPayload(DomainModel):
 
 
 _STAGE3_PAYLOADS: dict[str, type[DomainModel]] = {
+    "context.view_started": SettledArtifactPayload,
     "writer.work_plan_settled": WriterWorkPlanSettledPayload,
     "context.memory_requested": ContextMemoryRequestedPayload,
     "context.memory_resolved": ContextMemoryResolvedPayload,

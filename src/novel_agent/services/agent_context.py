@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal
+
+from pydantic import JsonValue
 
 from novel_agent.domain.agent_context import (
     AgentContextView,
@@ -20,7 +24,7 @@ from novel_agent.domain.agent_context import (
     WriterWorkPlanSettledPayload,
 )
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.runtime import ResumabilityStatus, RunCheckpoint, RunEvent, RunEventType
 from novel_agent.domain.writer_context import WriterContextPackage
 from novel_agent.services.artifacts import ArtifactRepository
@@ -77,6 +81,57 @@ class AgentContextProjector:
     def __init__(self, token_counter: TokenCounter) -> None:
         self._count_tokens = token_counter
 
+    def seed(
+        self,
+        *,
+        run_id: RunId,
+        task_id: TaskId,
+        consumer: ContextConsumer,
+        base_commit: CommitId | None,
+        snapshot_id: StableId | None,
+        profile_ref: ArtifactRef | None,
+        plan_ref: ArtifactRef | None,
+        information_scope: Literal["writer_safe", "planner_safe"],
+        seed_package_ref: ArtifactRef,
+        protected_items: tuple[ContextViewItem, ...],
+        active_memory_items: tuple[ContextViewItem, ...] = (),
+        working_items: tuple[ContextViewItem, ...] = (),
+        unresolved_need_ids: tuple[StableId, ...] = (),
+    ) -> AgentContextView:
+        """Create the common immutable seed without importing a consumer package type."""
+
+        expected_layers = (
+            (protected_items, ContextLayer.PROTECTED),
+            (active_memory_items, ContextLayer.MEMORY),
+            (working_items, ContextLayer.WORKING),
+        )
+        if any(item.layer is not layer for items, layer in expected_layers for item in items):
+            raise ContextProjectionError(
+                "seed protected/memory/working Context item uses the wrong layer"
+            )
+        empty_hash = ArtifactId("sha256:" + "0" * 64)
+        view = AgentContextView(
+            run_id=run_id,
+            task_id=task_id,
+            consumer=consumer,
+            revision=0,
+            generation=0,
+            basis_event_position=0,
+            base_commit=base_commit,
+            snapshot_id=snapshot_id,
+            profile_ref=profile_ref,
+            plan_ref=plan_ref,
+            information_scope=information_scope,
+            seed_package_ref=seed_package_ref,
+            protected_items=protected_items,
+            active_memory_items=active_memory_items,
+            working_items=working_items,
+            unresolved_need_ids=tuple(dict.fromkeys(unresolved_need_ids)),
+            token_report={},
+            context_hash=empty_hash,
+        )
+        return self.refresh_tokens(_with_hash(view))
+
     def seed_writer(
         self,
         *,
@@ -88,8 +143,6 @@ class AgentContextProjector:
         plan_ref: ArtifactRef,
         protected_items: tuple[ContextViewItem, ...],
     ) -> AgentContextView:
-        if any(item.layer is not ContextLayer.PROTECTED for item in protected_items):
-            raise ContextProjectionError("seed protected items must use the protected layer")
         sections = (
             package.continuity_constraints,
             package.current_world_state,
@@ -117,14 +170,10 @@ class AgentContextProjector:
             for item in section
         )
         unresolved = tuple(need_id for gap in package.gaps for need_id in gap.need_ids)
-        empty_hash = ArtifactId("sha256:" + "0" * 64)
-        view = AgentContextView(
+        return self.seed(
             run_id=run_id,
             task_id=task_id,
             consumer=ContextConsumer.WRITER,
-            revision=0,
-            generation=0,
-            basis_event_position=0,
             base_commit=package.basis_commit_id,
             snapshot_id=package.basis_snapshot_id,
             profile_ref=profile_ref,
@@ -134,10 +183,7 @@ class AgentContextProjector:
             protected_items=protected_items,
             active_memory_items=memory_items,
             unresolved_need_ids=tuple(dict.fromkeys(unresolved)),
-            token_report={},
-            context_hash=empty_hash,
         )
-        return self.refresh_tokens(_with_hash(view))
 
     def apply_delta(self, view: AgentContextView, delta: ContextDelta) -> AgentContextView:
         if delta.parent_view_revision != view.revision:
@@ -256,6 +302,9 @@ class AgentContextProjector:
                     item for item in view.recent_settled_tail if item.item_id not in removed
                 ),
                 "compacted_prefix_items": receipt.compacted_items,
+                "compacted_item_ids": tuple(
+                    dict.fromkeys((*view.compacted_item_ids, *receipt.removed_item_ids))
+                ),
                 "compacted_prefix_ref": receipt.summary_artifact,
                 "covered_event_range": receipt.covered_event_range,
                 "kept_boundary": receipt.kept_boundary,
@@ -444,6 +493,9 @@ class ContextCompactor:
                 "revision": view.revision + 1,
                 "generation": view.generation + 1,
                 "compacted_prefix_ref": summary_ref,
+                "compacted_item_ids": tuple(
+                    dict.fromkeys((*view.compacted_item_ids, *(item.item_id for item in removed)))
+                ),
                 "covered_event_range": covered,
                 "kept_boundary": covered[1],
                 "provider_validity_receipt": None,
@@ -575,6 +627,43 @@ class AgentContextRuntime:
         )
         return self._checkpoints.save(checkpoint)
 
+    def append_and_apply(
+        self,
+        view: AgentContextView,
+        *,
+        event_type: RunEventType,
+        payload: JsonValue,
+        artifact_refs: tuple[ArtifactRef, ...],
+        label: str,
+        trace_namespace: str,
+    ) -> AgentContextView:
+        """Append one idempotent typed event and project it through the single owner."""
+
+        identity = StableId(f"event.{trace_namespace}.{view.run_id.root}.{label}"[:128])
+        prior = self._events.replay(view.run_id)
+        existing = next(
+            (item for item in prior if item.idempotency_identity == identity),
+            None,
+        )
+        if existing is None:
+            event = RunEvent(
+                event_id=StableId(
+                    f"event-id.{trace_namespace}.{content_id((view.run_id.root, label)).root[-48:]}"
+                ),
+                run_id=view.run_id,
+                task_id=view.task_id,
+                sequence_no=(prior[-1].sequence_no + 1 if prior else 1),
+                event_type=event_type,
+                occurred_at=datetime.now(UTC),
+                idempotency_identity=identity,
+                payload_schema_version=self._schema_version,
+                trace_id=f"{trace_namespace}:{view.run_id.root}",
+                payload=payload,
+                artifact_refs=artifact_refs,
+            )
+            existing = self._events.append(event)
+        return self._projector.apply_event(view, existing)
+
     def restore(self, run_id: RunId, seed: AgentContextView) -> AgentContextView:
         checkpoint = self._checkpoints.latest(run_id)
         view = seed
@@ -585,6 +674,14 @@ class AgentContextRuntime:
             after = checkpoint.event_position
         events = self._events.replay(run_id, after_sequence=after)
         return self._projector.full_replay(view, events)
+
+    def restore_latest(self, run_id: RunId) -> AgentContextView | None:
+        checkpoint = self._checkpoints.latest(run_id)
+        if checkpoint is None or checkpoint.logical_stage != "stage3.context":
+            return None
+        raw = self._artifacts.read_verified(checkpoint.state_artifact_ref)
+        persisted = AgentContextView.model_validate_json(raw)
+        return self.restore(run_id, persisted)
 
 
 __all__ = [

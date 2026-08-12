@@ -177,9 +177,15 @@ def test_context_item_and_delta_contracts_fail_closed() -> None:
         "token_impact": 0,
         "status": ContextDeltaStatus.INSUFFICIENT,
     }
+    with pytest.raises(ValidationError, match="appear together"):
+        ContextDelta.model_validate(base | {"snapshot_id": None})
     with pytest.raises(ValidationError, match="only memory"):
         ContextDelta.model_validate(
             base | {"added_memory_items": (_item("working", layer=ContextLayer.WORKING),)}
+        )
+    with pytest.raises(ValidationError, match="scope"):
+        ContextDelta.model_validate(
+            base | {"added_memory_items": (_item("planner", scope="planner_safe"),)}
         )
     duplicate = _item("duplicate")
     with pytest.raises(ValidationError, match="unique"):
@@ -252,6 +258,14 @@ def test_provider_compaction_view_and_pressure_contracts() -> None:
 
     with pytest.raises(ValidationError, match="wrong layer"):
         _view(active_memory_items=(_item("wrong", layer=ContextLayer.WORKING),))
+    with pytest.raises(ValidationError, match="appear together"):
+        _view(snapshot_id=None)
+    with pytest.raises(ValidationError, match="complete accepted"):
+        _view(base_commit=None, snapshot_id=None)
+    with pytest.raises(ValidationError, match="writer-safe"):
+        _view(information_scope="planner_safe")
+    with pytest.raises(ValidationError, match="planner-safe"):
+        _view(consumer=ContextConsumer.PLANNER)
     duplicate = _item("same")
     duplicate_working = duplicate.model_copy(
         update={
@@ -261,6 +275,10 @@ def test_provider_compaction_view_and_pressure_contracts() -> None:
     )
     with pytest.raises(ValidationError, match="unique"):
         _view(active_memory_items=(duplicate,), working_items=(duplicate_working,))
+    with pytest.raises(ValidationError, match="compacted Context item ids must be unique"):
+        _view(compacted_item_ids=(duplicate.item_id, duplicate.item_id))
+    with pytest.raises(ValidationError, match="cannot overlap"):
+        _view(active_memory_items=(duplicate,), compacted_item_ids=(duplicate.item_id,))
     with pytest.raises(ValidationError, match="mandatory"):
         _view(
             protected_items=(
@@ -364,6 +382,8 @@ def test_projector_seed_delta_working_and_replay(tmp_path: Path) -> None:
     )
     assert view.active_memory_items
     assert view.token_report["rendered"] > 0
+    assert view.profile_ref is not None
+    assert view.plan_ref is not None
     with pytest.raises(ContextProjectionError, match="protected"):
         projector.seed_writer(
             run_id=view.run_id,
@@ -597,6 +617,38 @@ def test_compactor_removes_only_safe_atomic_groups_and_hard_fails(tmp_path: Path
     )
     assert not compactor.provider_receipt(split_group, policy).atomic_groups_valid
 
+    two_groups = _view(
+        recent_settled_tail=(
+            _item(
+                "first-group",
+                layer=ContextLayer.RECENT_SETTLED,
+                kind=ContextItemKind.MODEL_BATCH,
+                content="f" * 40,
+            ),
+            _item(
+                "second-group",
+                layer=ContextLayer.RECENT_SETTLED,
+                kind=ContextItemKind.MODEL_BATCH,
+                content="s" * 40,
+            ),
+        )
+    )
+    two_group_policy = ContextWindowPolicy(
+        sequence_limit=180,
+        reserved_output_tokens=10,
+        safety_allowance_tokens=10,
+        soft_limit_tokens=150,
+        tokenizer="test",
+        tokenizer_version="v1",
+    )
+    twice_compacted, twice_receipt = compactor.compact(
+        two_groups,
+        two_group_policy,
+        hard=True,
+    )
+    assert twice_receipt is not None
+    assert not twice_compacted.recent_settled_tail
+
 
 def test_context_checkpoint_restores_view_and_replays_tail(
     tmp_path: Path,
@@ -644,3 +696,27 @@ def test_context_checkpoint_restores_view_and_replays_tail(
 
     with pytest.raises(ContextProjectionError, match="settle"):
         runtime.checkpoint(seed, StableId("checkpoint.unsettled"))
+
+    idempotent_seed = seed.model_copy(
+        update={
+            "run_id": RunId("run.context.idempotent"),
+            "task_id": TaskId("task.context.idempotent"),
+        }
+    )
+    first_projection = runtime.append_and_apply(
+        idempotent_seed,
+        event_type=RunEventType.TASK_STARTED,
+        payload={"started": True},
+        artifact_refs=(),
+        label="same-event",
+        trace_namespace="context-test",
+    )
+    replayed_projection = runtime.append_and_apply(
+        idempotent_seed,
+        event_type=RunEventType.TASK_STARTED,
+        payload={"started": True},
+        artifact_refs=(),
+        label="same-event",
+        trace_namespace="context-test",
+    )
+    assert replayed_projection == first_projection
