@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Callable
 from typing import Literal, cast
 
-from pydantic import Field, create_model
+from pydantic import Field, ValidationError, create_model
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.base import DomainModel
@@ -468,6 +468,11 @@ class ModelCurator:
                     'exact shape: {"worldline":"main","start_ordinal":CHAPTER_INDEX,'
                     '"end_ordinal":null,"label":null}. Replace CHAPTER_INDEX with the current '
                     "integer chapter index; never emit a string or whitespace-only value. "
+                    "For record_kind=relation, the record object MUST contain exactly the "
+                    "typed fields predicate, subject_id, object_id, valid_time, and truth_class; "
+                    "it MUST NOT contain value. For record_kind=state, use predicate, "
+                    "subject_id, value, valid_time, and truth_class; never swap these two "
+                    "record shapes. "
                     "Entity records must use entity_type, internal_label, aliases, and "
                     "identity_invariants. Evidence is evidence_quotes (verbatim fragments), "
                     "never ids or evidence_refs. "
@@ -1058,17 +1063,21 @@ class ModelCurator:
             if decision.disposition is EvidenceSupportDisposition.PARTIAL
         )
         model_verifications: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
+        semantic_verifier_rejected = False
         if partial_decisions and self._enable_model_semantic_verifier:
-            model_verifications = await self._verify_partial_batch(
-                partial_decisions,
-                ChapterChangeDraftV2(
-                    chapter_index=chapter_index,
-                    operations=support_operations,
-                    coverage=1.0,
-                ),
-                catalog,
-                request,
-            )
+            try:
+                model_verifications = await self._verify_partial_batch(
+                    partial_decisions,
+                    ChapterChangeDraftV2(
+                        chapter_index=chapter_index,
+                        operations=support_operations,
+                        coverage=1.0,
+                    ),
+                    catalog,
+                    request,
+                )
+            except ValidationError:
+                semantic_verifier_rejected = True
         for operation_index, operation in enumerate(support_operations):
             candidate_index = support_targets[operation_index]
             decisions = tuple(
@@ -1122,7 +1131,11 @@ class ModelCurator:
             else:
                 support_by_candidate[candidate_index] = (
                     GraphCandidateSupportStatus.REJECTED,
-                    "graph_candidate_evidence_support_unresolved",
+                    (
+                        "graph_candidate_semantic_verifier_schema_rejected"
+                        if semantic_verifier_rejected
+                        else "graph_candidate_evidence_support_unresolved"
+                    ),
                 )
 
         entities = tuple(

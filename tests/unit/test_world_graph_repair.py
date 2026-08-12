@@ -547,6 +547,74 @@ def test_model_graph_profile_rejects_ambiguous_evidence_without_blocking_batch()
     assert extraction.receipt.candidates[-1].status is RelationBackfillStatus.REJECTED
 
 
+def test_model_graph_profile_fails_closed_on_invalid_semantic_verifier_response() -> None:
+    world, text, _, _ = _teacher_world()
+    quote = text.chapters[4].scenes[0].blocks[0].text
+    draft_response = json.dumps(
+        {
+            "entities": [],
+            "relations": [
+                {
+                    "subject_surface": "旧誓言",
+                    "predicate": "teacher_of",
+                    "object_surface": "林澈",
+                    "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "evidence_quotes": [quote],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    invalid_verifier_response = json.dumps(
+        {
+            "decisions": [
+                {
+                    "operation_index": 0,
+                    "disposition": "supports",
+                    "reason_code": "x" * 161,
+                }
+            ]
+        }
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.invalid-verifier",
+                model_name="fake.graph.invalid-verifier",
+                adapter=ScriptedModelEndpoint(
+                    lambda request: (
+                        invalid_verifier_response
+                        if "EVIDENCE_VERIFICATION_INPUT" in request.prompt
+                        else draft_response
+                    )
+                ),
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph.invalid-verifier"),
+        run_id=RunId("run.graph.invalid-verifier"),
+        task_id=TaskId("task.graph.invalid-verifier"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph.invalid-verifier",
+        prompt="",
+    )
+
+    batch, _ = asyncio.run(
+        ModelCurator(
+            gateway,
+            enable_model_semantic_verifier=True,
+        ).extract_graph_candidates(text, 5, world.source_commit, world, request)
+    )
+
+    assert batch.relations[0].support_status.value == "rejected"
+    assert batch.relations[0].support_reason == (
+        "graph_candidate_semantic_verifier_schema_rejected"
+    )
+
+
 def test_backfill_runner_uses_validation_commit_projection_and_l0_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

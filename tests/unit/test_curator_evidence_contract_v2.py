@@ -1638,6 +1638,8 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     assert prompt.index("</CURATOR_INPUT>") < prompt.index("<CURATOR_OUTPUT_CONTRACT")
     assert "MUST be copied verbatim" in prompt
     assert "Every operation MUST carry a non-empty evidence_quotes array" in prompt
+    assert "For record_kind=relation, the record object MUST contain exactly" in prompt
+    assert "it MUST NOT contain value" in prompt
     assert "composite method or process MUST cite" in prompt
     assert "half_shichen is not half_hour" in prompt
     assert "encoded as a belief/estimate/claim" in prompt
