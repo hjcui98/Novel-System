@@ -6,16 +6,18 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import CommitId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.model_calls import (
     ModelCallRecord,
     ModelRole,
     RetrievalInferenceCallRecord,
 )
+
+STAGE5_EVENT_SCHEMA_VERSION = SchemaVersion("1.0.0")
 
 
 class RunEventType(StrEnum):
@@ -81,6 +83,17 @@ class RunEventType(StrEnum):
     EDITOR_REPAIR_SETTLED = "editor.repair_settled"
     CANDIDATE_OBSERVATION_SETTLED = "candidate.observation_settled"
     CANDIDATE_RECONCILIATION_SETTLED = "candidate.reconciliation_settled"
+    RUNTIME_TASK_CREATED = "runtime.task.created"
+    RUNTIME_TASK_CLAIMED = "runtime.task.claimed"
+    RUNTIME_ATTEMPT_STARTED = "runtime.attempt.started"
+    RUNTIME_ATTEMPT_SETTLED = "runtime.attempt.settled"
+    RUNTIME_TASK_BLOCKED = "runtime.task.blocked"
+    RUNTIME_ACCEPTANCE_RECORDED = "runtime.acceptance.recorded"
+    RUNTIME_EFFECT_REQUESTED = "runtime.effect.requested"
+    RUNTIME_EFFECT_TERMINAL = "runtime.effect.terminal"
+    RUNTIME_CHECKPOINT_SAVED = "runtime.checkpoint.saved"
+    RUNTIME_CONTROL_RECORDED = "runtime.control.recorded"
+    RUNTIME_WRITER_CLAIMED = "runtime.writer.claimed"
 
 
 class RunEvent(DomainModel):
@@ -131,6 +144,339 @@ class RunEvent(DomainModel):
             self.payload_schema_version,
             self.payload,
         )
+        validate_stage5_event_payload(
+            self.event_type.value,
+            self.payload_schema_version,
+            self.payload,
+        )
+
+
+class TaskKind(StrEnum):
+    PLAN_CANDIDATE = "plan_candidate"
+    PLAN_ACCEPTANCE = "plan_acceptance"
+    PLAN_COMMIT = "plan_commit"
+    DRAFT_CANDIDATE = "draft_candidate"
+    DRAFT_ACCEPTANCE = "draft_acceptance"
+    DRAFT_COMMIT = "draft_commit"
+    PROJECTION_FRESHNESS = "projection_freshness"
+    MAINTENANCE = "maintenance"
+
+
+class TaskStatus(StrEnum):
+    PENDING = "pending"
+    READY = "ready"
+    RUNNING = "running"
+    WAITING_INPUT = "waiting_input"
+    WAITING_RETRY = "waiting_retry"
+    RECOVERY_PENDING = "recovery_pending"
+    BLOCKED = "blocked"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AttemptOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SUSPENDED = "suspended"
+    CANCELLED = "cancelled"
+
+
+class FailureClass(StrEnum):
+    WORKER_STARTUP = "worker_startup"
+    PROVIDER_TRANSIENT = "provider_transient"
+    LEAF_REVIEW_REQUIRED = "leaf_review_required"
+    BASIS_CHANGED = "basis_changed"
+    PERMISSION_DENIED = "permission_denied"
+    VALIDATION_REJECTED = "validation_rejected"
+    COMMIT_CONFLICT = "commit_conflict"
+    PROJECTION_FAILED = "projection_failed"
+    FRESHNESS_WAITING = "freshness_waiting"
+    FRESHNESS_BLOCKED = "freshness_blocked"
+    EFFECT_UNCERTAIN = "effect_uncertain"
+    POISON_LOOP = "poison_loop"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    CANCELLED = "cancelled"
+
+
+class RetryOwner(StrEnum):
+    MODEL_GATEWAY = "model_gateway"
+    LEAF = "leaf"
+    RUNTIME = "runtime"
+    RECONCILER = "reconciler"
+    ACCEPTANCE = "acceptance"
+    TRUSTED_COMMIT = "trusted_commit"
+    PROJECTION = "projection"
+    FRESHNESS = "freshness"
+    OPERATOR = "operator"
+    NONE = "none"
+
+
+class FailurePolicy(DomainModel):
+    retry_owner: RetryOwner
+    retryable: bool
+    consumes_task_budget: bool
+
+
+_FAILURE_POLICIES: dict[FailureClass, FailurePolicy] = {
+    FailureClass.WORKER_STARTUP: FailurePolicy(
+        retry_owner=RetryOwner.RUNTIME, retryable=True, consumes_task_budget=True
+    ),
+    FailureClass.PROVIDER_TRANSIENT: FailurePolicy(
+        retry_owner=RetryOwner.MODEL_GATEWAY, retryable=True, consumes_task_budget=False
+    ),
+    FailureClass.LEAF_REVIEW_REQUIRED: FailurePolicy(
+        retry_owner=RetryOwner.LEAF, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.BASIS_CHANGED: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.PERMISSION_DENIED: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.VALIDATION_REJECTED: FailurePolicy(
+        retry_owner=RetryOwner.TRUSTED_COMMIT, retryable=False, consumes_task_budget=True
+    ),
+    FailureClass.COMMIT_CONFLICT: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=True
+    ),
+    FailureClass.PROJECTION_FAILED: FailurePolicy(
+        retry_owner=RetryOwner.PROJECTION, retryable=True, consumes_task_budget=True
+    ),
+    FailureClass.FRESHNESS_WAITING: FailurePolicy(
+        retry_owner=RetryOwner.FRESHNESS, retryable=True, consumes_task_budget=False
+    ),
+    FailureClass.FRESHNESS_BLOCKED: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.EFFECT_UNCERTAIN: FailurePolicy(
+        retry_owner=RetryOwner.RECONCILER, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.POISON_LOOP: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=True
+    ),
+    FailureClass.BUDGET_EXHAUSTED: FailurePolicy(
+        retry_owner=RetryOwner.NONE, retryable=False, consumes_task_budget=False
+    ),
+    FailureClass.CANCELLED: FailurePolicy(
+        retry_owner=RetryOwner.NONE, retryable=False, consumes_task_budget=False
+    ),
+}
+
+
+def failure_policy(failure: FailureClass) -> FailurePolicy:
+    if set(_FAILURE_POLICIES) != set(FailureClass):  # pragma: no cover - import-time invariant
+        raise RuntimeError("FailureClass policy mapping is not exhaustive")
+    return _FAILURE_POLICIES[failure]
+
+
+class TaskEligibility(DomainModel):
+    eligible: bool
+    status: TaskStatus
+    reason_code: str = Field(min_length=1, max_length=128)
+
+
+class AttemptFence(DomainModel):
+    project_id: ProjectId
+    task_id: TaskId
+    attempt_id: StableId
+    claim_token: StableId
+    task_revision: int = Field(ge=1)
+    writer_generation: int = Field(ge=0)
+
+
+class TaskRecord(DomainModel):
+    task_id: TaskId
+    run_id: RunId
+    project_id: ProjectId
+    kind: TaskKind
+    task_revision: int = Field(ge=0)
+    status: TaskStatus
+    priority: int = 0
+    scheduled_for: datetime | None = None
+    basis_commit: CommitId
+    basis_snapshot: StableId | None = None
+    policy_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    permission_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    input_artifact_refs: tuple[ArtifactRef, ...] = ()
+    candidate_binding_ref: ArtifactRef | None = None
+    dependency_task_ids: tuple[TaskId, ...] = ()
+    current_attempt_id: StableId | None = None
+    terminal_artifact_refs: tuple[ArtifactRef, ...] = ()
+    block_cause: str | None = Field(default=None, max_length=512)
+    failure_budget: int = Field(default=3, ge=0)
+    writer_generation: int = Field(default=0, ge=0)
+    chapter_index: int = Field(default=0, ge=0)
+    target_chapters: int = Field(default=1, ge=1)
+    projection_after: str | None = Field(default=None, pattern=r"^(plan|draft)$")
+    paused: bool = False
+    cancel_requested: bool = False
+    superseded: bool = False
+
+
+class TaskAttempt(DomainModel):
+    attempt_id: StableId
+    task_id: TaskId
+    attempt_no: int = Field(ge=1)
+    worker_id: str = Field(min_length=1, max_length=128)
+    claim_token_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    fence_generation: int = Field(ge=1)
+    claimed_at: datetime
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    source_checkpoint_id: StableId | None = None
+    effect_frontier: tuple[StableId, ...] = ()
+    outcome: AttemptOutcome | None = None
+    failure_class: FailureClass | None = None
+
+
+def evaluate_task_eligibility(
+    task: TaskRecord,
+    *,
+    now: datetime,
+    current_commit: CommitId,
+    dependency_statuses: tuple[TaskStatus, ...],
+    permission_hash: str,
+    writer_generation: int,
+) -> TaskEligibility:
+    """Single pure eligibility definition shared by recompute, claim, and resume."""
+
+    if task.status is not TaskStatus.READY:
+        return TaskEligibility(
+            eligible=False, status=task.status, reason_code="status_not_claimable"
+        )
+    if task.current_attempt_id is not None:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.RECOVERY_PENDING, reason_code="attempt_active"
+        )
+    if task.paused or task.superseded:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.PENDING, reason_code="paused_or_superseded"
+        )
+    if task.failure_budget <= 0:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.FAILED, reason_code="failure_budget_exhausted"
+        )
+    if task.scheduled_for is not None and task.scheduled_for > now:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.PENDING, reason_code="scheduled_for_future"
+        )
+    if any(status is not TaskStatus.SUCCEEDED for status in dependency_statuses):
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.PENDING, reason_code="dependency_not_succeeded"
+        )
+    if task.basis_commit != current_commit:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.BLOCKED, reason_code="basis_changed"
+        )
+    if task.permission_hash != permission_hash:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.BLOCKED, reason_code="permission_changed"
+        )
+    if task.writer_generation != writer_generation:
+        return TaskEligibility(
+            eligible=False, status=TaskStatus.BLOCKED, reason_code="writer_generation_changed"
+        )
+    return TaskEligibility(eligible=True, status=TaskStatus.READY, reason_code="eligible")
+
+
+class TaskCreatedPayload(DomainModel):
+    task: TaskRecord
+
+
+class TaskClaimedPayload(DomainModel):
+    attempt: TaskAttempt
+    fence_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class TaskAttemptStartedPayload(DomainModel):
+    attempt_id: StableId
+    worker_id: str = Field(min_length=1, max_length=128)
+    started_at: datetime
+
+
+class TaskAttemptSettledPayload(DomainModel):
+    attempt_id: StableId
+    outcome: AttemptOutcome
+    task_status: TaskStatus
+    failure_class: FailureClass | None = None
+    block_cause: str | None = Field(default=None, max_length=512)
+    terminal_artifact_refs: tuple[ArtifactRef, ...] = ()
+    ended_at: datetime
+
+
+class TaskBlockedPayload(DomainModel):
+    failure_class: FailureClass
+    cause_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    sanitized_message: str = Field(min_length=1, max_length=512)
+    error_artifact_ref: ArtifactRef | None = None
+
+
+class EffectRequestedPayload(DomainModel):
+    effect: EffectReceipt
+    task_id: TaskId
+    attempt_id: StableId
+
+
+class EffectTerminalPayload(DomainModel):
+    effect: EffectReceipt
+    task_id: TaskId
+    attempt_id: StableId
+
+
+class CheckpointCreatedPayload(DomainModel):
+    checkpoint: RunCheckpoint
+    task_id: TaskId
+    attempt_id: StableId
+
+
+class ControlIntentPayload(DomainModel):
+    command_id: StableId
+    action: str = Field(min_length=1, max_length=64)
+    actor_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class AcceptanceRecordedPayload(DomainModel):
+    command_id: StableId
+    receipt_id: StableId
+    candidate_id: StableId
+    candidate_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    decision: str = Field(min_length=1, max_length=32)
+    actor_kind: str = Field(min_length=1, max_length=32)
+
+
+class WriterClaimedPayload(DomainModel):
+    attempt_id: StableId
+    writer_generation: int = Field(ge=1)
+
+
+_STAGE5_PAYLOADS: dict[str, type[DomainModel]] = {
+    RunEventType.RUNTIME_TASK_CREATED.value: TaskCreatedPayload,
+    RunEventType.RUNTIME_TASK_CLAIMED.value: TaskClaimedPayload,
+    RunEventType.RUNTIME_ATTEMPT_STARTED.value: TaskAttemptStartedPayload,
+    RunEventType.RUNTIME_ATTEMPT_SETTLED.value: TaskAttemptSettledPayload,
+    RunEventType.RUNTIME_TASK_BLOCKED.value: TaskBlockedPayload,
+    RunEventType.RUNTIME_EFFECT_REQUESTED.value: EffectRequestedPayload,
+    RunEventType.RUNTIME_EFFECT_TERMINAL.value: EffectTerminalPayload,
+    RunEventType.RUNTIME_CHECKPOINT_SAVED.value: CheckpointCreatedPayload,
+    RunEventType.RUNTIME_CONTROL_RECORDED.value: ControlIntentPayload,
+    RunEventType.RUNTIME_ACCEPTANCE_RECORDED.value: AcceptanceRecordedPayload,
+    RunEventType.RUNTIME_WRITER_CLAIMED.value: WriterClaimedPayload,
+}
+
+
+def validate_stage5_event_payload(
+    event_type: str,
+    schema_version: SchemaVersion,
+    payload: JsonValue,
+) -> None:
+    model = _STAGE5_PAYLOADS.get(event_type)
+    if model is None:
+        return
+    if schema_version != STAGE5_EVENT_SCHEMA_VERSION:
+        raise ValueError("unknown Stage 5 event payload version")
+    TypeAdapter(model).validate_python(payload, strict=False)
 
 
 class ResumabilityStatus(StrEnum):

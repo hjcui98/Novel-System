@@ -1,7 +1,105 @@
 # OpenCode implementation and evidence
 
-- State: `RETURN_TO_CODEX_REVIEW`（§26：ch32 Curator 反馈修复实现 + 全量质量 + 全新身份真实
-  ch32 诊断已闭合；等待 Codex review）
+- State: `RETURN_TO_CODEX_REVIEW`（§28：Stage 5 A 层第二轮返修已闭合——`runtime advance`
+  run-id 身份绑定 + 真实 Writer E2E 补 Draft acceptance → Commit → exact Freshness；
+  确定性套件 1969 passed、100% 覆盖、严格 MyPy、pre-commit 全绿；等待 Codex review）
+
+## 28. Stage 5 A 层第二轮返修（2026-08-11，Codex REPAIR）
+
+Codex 在 `.agent/review.md` 对 §27 返修验收仍为 `REPAIR`，指出两个实际缺口：`runtime
+advance --run-id` 只解析不参与查询；真实 Writer E2E 停在 `WAITING_DRAFT_ACCEPTANCE` 未走完
+Draft acceptance → Commit → exact Freshness。测试证据本身已接受，本次按 review 方向补全，
+未改变 runtime 架构。
+
+### 28.1 返修 1：`runtime advance` 绑定 project 与 run 双身份
+
+- `RuntimeTaskQueryRepository.next_ready()` 增加可选 `run_id` 过滤（与既有 project 过滤
+  并列，无第二 task-selection path）。
+- `CreativeDispatcher` 增加 `run_id` 参数并传入 `next_ready()`；CLI `advance` 传
+  `RunId(args.run_id)`。
+- 新增回归 `test_runtime_advance_binds_run_identity_under_same_project`：同项目下创建两个
+  ready run（identity-a / identity-b），advance 指定 identity-a 后断言 identity-a 的 plan
+  task 离开 READY、identity-b 仍 READY；advance 一个不存在的 run-id 不 claim 任何任务。
+- 同步更新 dispatcher 测试 stub（`_TaskSource`、`_EveryReady`）的 `next_ready` 签名以接收
+  `run_id`。
+
+### 28.2 返修 2：真实 Writer E2E 走完 Draft acceptance → Commit → exact Freshness
+
+- `test_real_writer_adapter_composes_through_draft_chain` 在
+  `WAITING_DRAFT_ACCEPTANCE` 后继续：提交持久化的 Draft candidate acceptance → 断言生成
+  `DRAFT_COMMIT` task → advance Draft Commit → advance Projection/Freshness。
+- 断言 exact freshness：`freshness.terminal is COMPLETED`（target_chapters=1）、
+  `current_commit == after_commit.current_commit`、Draft Commit task
+  `status is SUCCEEDED` 且 `terminal_artifact_refs` 长度为 1（immutable lineage）。
+- 该断言证明真实 Writer result → candidate acceptance → Commit → Projection/Freshness
+  在 adapter 层级完整组成，fake-writer 链路不可替代。
+
+### 28.3 验收证据
+
+- 受影响的 dispatcher/query/CLI/real-writer E2E 测试先跑：23 passed。
+- 统一 A 层确定性套件：`1969 passed, 9 deselected`，`100%` 分支覆盖（含偶发并发竞态重跑
+  稳定达标）。
+- 严格 MyPy（353 source files）、Ruff、格式检查、pre-commit `--all-files`、`git diff
+  --check` 全部通过。
+- 真实基础设施 integration：Stage 5 integration 全过；唯一失败
+  `test_real_infrastructure.py::test_full_outbox_projection...` 与基线上一致（8 vs 4），非
+  Stage 5 回归。
+- `objects/` 与 `benchmarks/` 为本地运行数据，未被 git 跟踪，不纳入交付。
+- 未生成 ISOLATED_KERNEL_PASS 之外的产品声明；`real_stage4_adapter=false`、
+  `creative_product_gate=NOT_RUN`、`production_activation=BLOCKED`。
+- 未提交、未合并。
+
+## 27. Stage 5 A 层返修（2026-08-11，Codex REPAIR）
+
+Codex 在 `.agent/review.md` 中对 Stage 5 A 层 isolated runtime kernel 验收为 `REPAIR`，测试
+证据已接受（1964 passed、100% 覆盖、严格 MyPy、Stage 5 PG 集成、迁移对称性、pre-commit），
+但指出两处 A 层接受要求缺失。本次返修按 review 方向补齐，未改变 runtime 架构。
+
+### 27.1 返修 1：`runtime advance` CLI 操作（执行文档 A9）
+
+- 新增 `runtime advance` 子命令：`--project-id --run-id --policy --manifest
+  --object-store-root --max-tasks`。
+- 实现走既有 `CreativeDispatcher`/`CreativeRuntimeService` owner（无第二编排路径）：从
+  `--policy` 加载 policy、`--manifest` 加载 Stage 5 manifest，装配 strict fake Planner +
+  确定性 Writer + 两个 `StrictDeterministicCandidateMaterializer` + `DerivedProjectionService`
+  + `DerivedSnapshotRepository`，用带 project 过滤的 dispatcher 有界推进 `max_tasks` 个 ready
+  task，输出 `{"progressed": N, "results": [...]}`；无 ready task 时输出 `progressed: 0`。
+- advance 用独立的 `RuntimeCommandService`（permission resolver 返回 policy.permission_hash），
+  使 dispatcher 的 claim 正常；其余 CLI 子命令保持不 claim。
+- CLI 测试新增：`test_runtime_advance_progresses_ready_tasks`（start → advance → accept-plan →
+  advance 走完 Commit/Projection/Draft）、`test_runtime_advance_no_ready_task_reports_progressed_zero`、
+  `test_runtime_advance_rejects_missing_identity`（缺 `--max-tasks` 触发 argparse 错误）。
+- 修复过程中发现并修正 CLI 顶层 `add_subparsers(dest="command")` 与子命令 `--command` 的
+  dest 冲突（改名为 `top_command`），该 bug 此前使 `maintenance`/`accept-*`/`unblock` 子命令
+  无法正确解析。
+
+### 27.2 返修 2：真实 `Stage3WritingLeafAdapter` isolated E2E（执行文档 §11.5）
+
+- 新增 `tests/integration/test_stage5_real_writer_e2e.py`：构造真实 `WriterContextLoopService`
+  （offline 确定性 SequenceEndpoint/BoundObserverEndpoint gateway + `WriterContextAssembler`
+  + `writer_context_inputs` fixtures），经真实 `Stage3WritingLeafAdapter` 接入
+  `CreativeRuntimeService`，`_writing_request_factory(task)` 基于 task 的 run/task/basis/snapshot
+  构造完整 `WritingLoopRequest`。
+- E2E 链路：Plan candidate → manual accept → Plan Commit → exact Projection/Freshness → Draft
+  candidate（真实 Writer loop 生成 DRAFT_CANDIDATE_READY 完整证据链）→ manual accept。
+- writer loop 使用独立 sqlite 事件流（不与 runtime 的 run 事件流共享），避免 RunEvent
+  sequence 冲突；保留了 fault-injection Writer 测试用于 terminal/failure 覆盖。
+- 验证证据：`test_real_writer_adapter_composes_through_draft_chain` 通过，证明 runtime →
+  request factory → Stage 3 公共边界 → Writer result 映射 → candidate acceptance → Commit →
+  Projection → Freshness 完整组成。
+
+### 27.3 验收证据
+
+- 受影响的 Stage 5 CLI/adapter/isolated-E2E 测试先跑：61 passed。
+- 统一 A 层确定性套件：`1968 passed, 9 deselected`，`100%` 分支覆盖。
+- 严格 MyPy（353 source files）、Ruff、格式检查、pre-commit `--all-files`、`git diff --check`
+  全部通过。
+- 真实基础设施 integration：Stage 5 integration 全过；唯一失败
+  `test_real_infrastructure.py::test_full_outbox_projection...` 与基线上一致（8 vs 4），非
+  Stage 5 回归。
+- 未生成 ISOLATED_KERNEL_PASS 之外的产品声明；`real_stage4_adapter=false`、
+  `creative_product_gate=NOT_RUN`、`production_activation=BLOCKED`。
+- 未提交、未合并。
 
 ## 26. ch32 Curator 反馈死锁修复（2026-08-10，Codex REPAIR）
 

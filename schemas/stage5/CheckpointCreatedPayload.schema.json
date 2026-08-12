@@ -1,0 +1,144 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ResumabilityStatus": {
+      "enum": [
+        "resumable",
+        "blocked",
+        "terminal"
+      ],
+      "title": "ResumabilityStatus",
+      "type": "string"
+    },
+    "RunCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "completed_effect_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Completed Effect Ids",
+          "type": "array"
+        },
+        "event_position": {
+          "minimum": 1,
+          "title": "Event Position",
+          "type": "integer"
+        },
+        "logical_stage": {
+          "minLength": 1,
+          "title": "Logical Stage",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "resumability_status": {
+          "$ref": "#/$defs/ResumabilityStatus"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "state_artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "run_id",
+        "event_position",
+        "logical_stage",
+        "state_artifact_ref",
+        "resumability_status"
+      ],
+      "title": "RunCheckpoint",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/RunCheckpoint"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "checkpoint",
+    "task_id",
+    "attempt_id"
+  ],
+  "title": "CheckpointCreatedPayload",
+  "type": "object"
+}

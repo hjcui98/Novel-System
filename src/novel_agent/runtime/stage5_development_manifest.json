@@ -1,0 +1,25 @@
+{
+  "artifact_runtime_fingerprint": "sha256:73ee678abcd9a1eb4d73d7895a8b7704e00ba4ea1e036e2b36a0dcff8eec075c",
+  "commit_projection_contract_version": "1.0.0",
+  "commit_projection_fingerprint": "sha256:94190b7c548792126323cd582f5bbf5871f55e1593bd9178f5b258e86ba87308",
+  "configuration_fingerprint": "sha256:013d685d9a1f3ff67dfbb5b3e92c2ad6eed1bbe36f83ed29f2f02c9407984f99",
+  "feature_admission": {
+    "external_hook_ingress": false,
+    "multi_worker_lease": false,
+    "real_stage4_adapter": false,
+    "scheduled_fire": false,
+    "skill_evolution": false,
+    "temporal_adapter": false
+  },
+  "runtime_contract_version": "1.0.0",
+  "model_admission_fingerprint": "sha256:d20e3c6cf24155328cd6e3665a9bd0b0029aace2bad440274d8430874dc21f45",
+  "projection_contract_fingerprint": "sha256:801a646baab683b87251b5aaa5ef8a3e3614d0552c333fe3d34ed506e7ce6b66",
+  "skill_registry_fingerprint": "sha256:c4e044d2eb2a0676eab4435d401f97035646bb484d9809d0e01f5effd7ce0f08",
+  "stage2_base_commit": "0ec1eb492a9a3b0dc4b39b060f98778dbd63994d",
+  "stage2_schema_fingerprint": "sha256:76f634815a0fc2db6a89f99b2117618f0734989bf159527b337442388ef811ad",
+  "stage3_commit": "bab4451b166c56c9cb7029c9af490aa31a146d53",
+  "stage3_contract_fingerprint": "sha256:890e5e1f7d0308d2b46aeffd27a6f4642980ee96f897cf624eac9d4f23290b3e",
+  "stage3_gate": "CONDITIONAL",
+  "stage4_implementation_status": "DEFERRED",
+  "stage4_port_fingerprint": "sha256:417e3cbbdfb718be1f86dd9fd0cae07c674e9aa57f9ebb85760775a58bd6d667"
+}

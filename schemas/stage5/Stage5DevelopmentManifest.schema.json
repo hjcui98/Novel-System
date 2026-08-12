@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "Stage5FeatureAdmission": {
+      "additionalProperties": false,
+      "properties": {
+        "external_hook_ingress": {
+          "default": false,
+          "title": "External Hook Ingress",
+          "type": "boolean"
+        },
+        "multi_worker_lease": {
+          "default": false,
+          "title": "Multi Worker Lease",
+          "type": "boolean"
+        },
+        "real_stage4_adapter": {
+          "default": false,
+          "title": "Real Stage4 Adapter",
+          "type": "boolean"
+        },
+        "scheduled_fire": {
+          "default": false,
+          "title": "Scheduled Fire",
+          "type": "boolean"
+        },
+        "skill_evolution": {
+          "default": false,
+          "title": "Skill Evolution",
+          "type": "boolean"
+        },
+        "temporal_adapter": {
+          "default": false,
+          "title": "Temporal Adapter",
+          "type": "boolean"
+        }
+      },
+      "title": "Stage5FeatureAdmission",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_runtime_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Artifact Runtime Fingerprint",
+      "type": "string"
+    },
+    "commit_projection_contract_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "commit_projection_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Commit Projection Fingerprint",
+      "type": "string"
+    },
+    "configuration_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Fingerprint",
+      "type": "string"
+    },
+    "feature_admission": {
+      "$ref": "#/$defs/Stage5FeatureAdmission"
+    },
+    "model_admission_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Model Admission Fingerprint",
+      "type": "string"
+    },
+    "projection_contract_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Projection Contract Fingerprint",
+      "type": "string"
+    },
+    "runtime_contract_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "skill_registry_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Skill Registry Fingerprint",
+      "type": "string"
+    },
+    "stage2_base_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Stage2 Base Commit",
+      "type": "string"
+    },
+    "stage2_schema_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Stage2 Schema Fingerprint",
+      "type": "string"
+    },
+    "stage3_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Stage3 Commit",
+      "type": "string"
+    },
+    "stage3_contract_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Stage3 Contract Fingerprint",
+      "type": "string"
+    },
+    "stage3_gate": {
+      "const": "CONDITIONAL",
+      "default": "CONDITIONAL",
+      "title": "Stage3 Gate",
+      "type": "string"
+    },
+    "stage4_implementation_status": {
+      "const": "DEFERRED",
+      "default": "DEFERRED",
+      "title": "Stage4 Implementation Status",
+      "type": "string"
+    },
+    "stage4_port_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Stage4 Port Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_contract_version",
+    "stage2_base_commit",
+    "stage2_schema_fingerprint",
+    "stage3_commit",
+    "stage3_contract_fingerprint",
+    "stage4_port_fingerprint",
+    "commit_projection_contract_version",
+    "commit_projection_fingerprint",
+    "artifact_runtime_fingerprint",
+    "configuration_fingerprint",
+    "model_admission_fingerprint",
+    "skill_registry_fingerprint",
+    "projection_contract_fingerprint",
+    "feature_admission"
+  ],
+  "title": "Stage5DevelopmentManifest",
+  "type": "object"
+}

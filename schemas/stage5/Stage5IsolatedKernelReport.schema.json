@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "IsolatedKernelStatus": {
+      "enum": [
+        "ISOLATED_KERNEL_IMPLEMENTED",
+        "ISOLATED_KERNEL_PASS",
+        "ISOLATED_KERNEL_FAILED"
+      ],
+      "title": "IsolatedKernelStatus",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "Stage5ScenarioEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "reason": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "scenario_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Scenario Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scenario_id",
+        "passed",
+        "evidence_hash",
+        "reason"
+      ],
+      "title": "Stage5ScenarioEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "creative_product_gate": {
+      "const": "NOT_RUN",
+      "default": "NOT_RUN",
+      "title": "Creative Product Gate",
+      "type": "string"
+    },
+    "executable_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Executable Commit",
+      "type": "string"
+    },
+    "manifest_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "production_activation": {
+      "const": "BLOCKED",
+      "default": "BLOCKED",
+      "title": "Production Activation",
+      "type": "string"
+    },
+    "real_stage4_adapter": {
+      "const": false,
+      "default": false,
+      "title": "Real Stage4 Adapter",
+      "type": "boolean"
+    },
+    "scenarios": {
+      "items": {
+        "$ref": "#/$defs/Stage5ScenarioEvidence"
+      },
+      "title": "Scenarios",
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": "1.0.0"
+    },
+    "status": {
+      "$ref": "#/$defs/IsolatedKernelStatus"
+    }
+  },
+  "required": [
+    "status",
+    "executable_commit",
+    "manifest_fingerprint",
+    "scenarios"
+  ],
+  "title": "Stage5IsolatedKernelReport",
+  "type": "object"
+}

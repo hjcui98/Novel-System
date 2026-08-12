@@ -1,0 +1,1197 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "AttemptOutcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "cancelled"
+      ],
+      "title": "AttemptOutcome",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EffectReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_no": {
+          "minimum": 1,
+          "title": "Attempt No",
+          "type": "integer"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "effect_identity": {
+          "$ref": "#/$defs/StableId"
+        },
+        "external_system": {
+          "minLength": 1,
+          "title": "External System",
+          "type": "string"
+        },
+        "provider_request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Request Id"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/StableId"
+        },
+        "result_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/EffectStatus"
+        }
+      },
+      "required": [
+        "effect_identity",
+        "external_system",
+        "request_identity",
+        "status",
+        "attempt_no"
+      ],
+      "title": "EffectReceipt",
+      "type": "object"
+    },
+    "EffectStatus": {
+      "enum": [
+        "requested",
+        "completed",
+        "uncertain",
+        "compensated"
+      ],
+      "title": "EffectStatus",
+      "type": "string"
+    },
+    "FailureClass": {
+      "enum": [
+        "worker_startup",
+        "provider_transient",
+        "leaf_review_required",
+        "basis_changed",
+        "permission_denied",
+        "validation_rejected",
+        "commit_conflict",
+        "projection_failed",
+        "freshness_waiting",
+        "freshness_blocked",
+        "effect_uncertain",
+        "poison_loop",
+        "budget_exhausted",
+        "cancelled"
+      ],
+      "title": "FailureClass",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RetrievalInferenceCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "error_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Type"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "operation": {
+          "$ref": "#/$defs/RetrievalInferenceOperation"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "runtime_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Fingerprint",
+          "type": "string"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RetrievalInferenceStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/RetrievalInferenceUsage"
+        }
+      },
+      "required": [
+        "call_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "revision",
+        "runtime_fingerprint",
+        "operation",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at",
+        "status"
+      ],
+      "title": "RetrievalInferenceCallRecord",
+      "type": "object"
+    },
+    "RetrievalInferenceOperation": {
+      "enum": [
+        "embedding",
+        "rerank"
+      ],
+      "title": "RetrievalInferenceOperation",
+      "type": "string"
+    },
+    "RetrievalInferenceStatus": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "title": "RetrievalInferenceStatus",
+      "type": "string"
+    },
+    "RetrievalInferenceUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_characters": {
+          "minimum": 0,
+          "title": "Input Characters",
+          "type": "integer"
+        },
+        "input_items": {
+          "minimum": 0,
+          "title": "Input Items",
+          "type": "integer"
+        },
+        "output_items": {
+          "minimum": 0,
+          "title": "Output Items",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_items",
+        "input_characters",
+        "output_items",
+        "cost_usd"
+      ],
+      "title": "RetrievalInferenceUsage",
+      "type": "object"
+    },
+    "RunEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_spec_hash": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Spec Hash"
+        },
+        "artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        },
+        "event_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "event_type": {
+          "$ref": "#/$defs/RunEventType"
+        },
+        "idempotency_identity": {
+          "$ref": "#/$defs/StableId"
+        },
+        "model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "$ref": "#/$defs/RetrievalInferenceCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Call Record"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "payload_schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "prompt_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Fingerprint"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "sequence_no": {
+          "minimum": 1,
+          "title": "Sequence No",
+          "type": "integer"
+        },
+        "skill_hashes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skill Hashes",
+          "type": "array"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_policy_hash": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Policy Hash"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "run_id",
+        "sequence_no",
+        "event_type",
+        "occurred_at",
+        "idempotency_identity",
+        "payload_schema_version",
+        "trace_id",
+        "payload"
+      ],
+      "title": "RunEvent",
+      "type": "object"
+    },
+    "RunEventType": {
+      "enum": [
+        "run.created",
+        "run.resumed",
+        "run.completed",
+        "run.failed",
+        "task.started",
+        "task.suspended",
+        "task.completed",
+        "task.failed",
+        "model.requested",
+        "model.completed",
+        "model.failed",
+        "agent.started",
+        "agent.completed",
+        "agent.failed",
+        "tool.requested",
+        "tool.completed",
+        "tool.failed",
+        "artifact.produced",
+        "artifact.superseded",
+        "commit.requested",
+        "commit.accepted",
+        "commit.rejected",
+        "effect.requested",
+        "effect.completed",
+        "effect.uncertain",
+        "checkpoint.created",
+        "candidate.proposed",
+        "candidate.normalized",
+        "candidate.repaired",
+        "candidate.validated",
+        "candidate.quarantined",
+        "curator_proposal.attempt_requested",
+        "curator_proposal.attempt_completed",
+        "curator_proposal.schema_rejected",
+        "curator_proposal.semantic_rejected",
+        "curator_proposal.deterministically_merged",
+        "curator_proposal.retry_scheduled",
+        "curator_proposal.poison_loop",
+        "curator_proposal.budget_exhausted",
+        "curator_proposal.human_required",
+        "repair.decided",
+        "repair.exhausted",
+        "guardian.requested",
+        "guardian.completed",
+        "workflow.suspended",
+        "workflow.resumed",
+        "projection.waiting",
+        "freshness.passed",
+        "information_boundary.verified",
+        "root_update.materialized",
+        "writer.work_plan_settled",
+        "context.memory_requested",
+        "context.memory_resolved",
+        "context.delta_applied",
+        "context.pressure_detected",
+        "context.compacted",
+        "writer.turn_settled",
+        "draft.candidate_settled",
+        "editor.review_settled",
+        "editor.repair_settled",
+        "candidate.observation_settled",
+        "candidate.reconciliation_settled",
+        "runtime.task.created",
+        "runtime.task.claimed",
+        "runtime.attempt.started",
+        "runtime.attempt.settled",
+        "runtime.task.blocked",
+        "runtime.acceptance.recorded",
+        "runtime.effect.requested",
+        "runtime.effect.terminal",
+        "runtime.checkpoint.saved",
+        "runtime.control.recorded",
+        "runtime.writer.claimed"
+      ],
+      "title": "RunEventType",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskAttempt": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "attempt_no": {
+          "minimum": 1,
+          "title": "Attempt No",
+          "type": "integer"
+        },
+        "claim_token_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Claim Token Digest",
+          "type": "string"
+        },
+        "claimed_at": {
+          "format": "date-time",
+          "title": "Claimed At",
+          "type": "string"
+        },
+        "effect_frontier": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Effect Frontier",
+          "type": "array"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "failure_class": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureClass"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fence_generation": {
+          "minimum": 1,
+          "title": "Fence Generation",
+          "type": "integer"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_checkpoint_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "worker_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Worker Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "task_id",
+        "attempt_no",
+        "worker_id",
+        "claim_token_digest",
+        "fence_generation",
+        "claimed_at"
+      ],
+      "title": "TaskAttempt",
+      "type": "object"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TaskKind": {
+      "enum": [
+        "plan_candidate",
+        "plan_acceptance",
+        "plan_commit",
+        "draft_candidate",
+        "draft_acceptance",
+        "draft_commit",
+        "projection_freshness",
+        "maintenance"
+      ],
+      "title": "TaskKind",
+      "type": "string"
+    },
+    "TaskRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "block_cause": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Cause"
+        },
+        "cancel_requested": {
+          "default": false,
+          "title": "Cancel Requested",
+          "type": "boolean"
+        },
+        "candidate_binding_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "chapter_index": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "current_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dependency_task_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "title": "Dependency Task Ids",
+          "type": "array"
+        },
+        "failure_budget": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Failure Budget",
+          "type": "integer"
+        },
+        "input_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifact Refs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskKind"
+        },
+        "paused": {
+          "default": false,
+          "title": "Paused",
+          "type": "boolean"
+        },
+        "permission_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Permission Hash",
+          "type": "string"
+        },
+        "policy_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "priority": {
+          "default": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "projection_after": {
+          "anyOf": [
+            {
+              "pattern": "^(plan|draft)$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Projection After"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "scheduled_for": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled For"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "superseded": {
+          "default": false,
+          "title": "Superseded",
+          "type": "boolean"
+        },
+        "target_chapters": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Target Chapters",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "minimum": 0,
+          "title": "Task Revision",
+          "type": "integer"
+        },
+        "terminal_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Terminal Artifact Refs",
+          "type": "array"
+        },
+        "writer_generation": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Writer Generation",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "run_id",
+        "project_id",
+        "kind",
+        "task_revision",
+        "status",
+        "basis_commit",
+        "policy_hash",
+        "permission_hash"
+      ],
+      "title": "TaskRecord",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "pending",
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_retry",
+        "recovery_pending",
+        "blocked",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Read-only report derived from durable truth, never a mutable runtime state.",
+  "properties": {
+    "active_feature_flags": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Active Feature Flags",
+      "type": "array"
+    },
+    "attempts": {
+      "items": {
+        "$ref": "#/$defs/TaskAttempt"
+      },
+      "title": "Attempts",
+      "type": "array"
+    },
+    "deferred_feature_flags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Deferred Feature Flags",
+      "type": "array"
+    },
+    "effects": {
+      "items": {
+        "$ref": "#/$defs/EffectReceipt"
+      },
+      "title": "Effects",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/RunEvent"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "executable_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Executable Commit",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "manifest_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "model_cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Model Cost Usd"
+    },
+    "model_request_count": {
+      "minimum": 0,
+      "title": "Model Request Count",
+      "type": "integer"
+    },
+    "production_activation": {
+      "const": "BLOCKED",
+      "default": "BLOCKED",
+      "title": "Production Activation",
+      "type": "string"
+    },
+    "real_stage4_adapter": {
+      "const": false,
+      "default": false,
+      "title": "Real Stage4 Adapter",
+      "type": "boolean"
+    },
+    "retry_owners": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Retry Owners",
+      "type": "object"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": "1.0.0"
+    },
+    "skill_hashes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Skill Hashes",
+      "type": "array"
+    },
+    "status": {
+      "const": "ISOLATED_KERNEL_IMPLEMENTED",
+      "default": "ISOLATED_KERNEL_IMPLEMENTED",
+      "title": "Status",
+      "type": "string"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/TaskRecord"
+      },
+      "title": "Tasks",
+      "type": "array"
+    },
+    "zero_direct_canon_bypass": {
+      "const": true,
+      "default": true,
+      "title": "Zero Direct Canon Bypass",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "run_id",
+    "generated_at",
+    "manifest_fingerprint",
+    "executable_commit",
+    "tasks",
+    "attempts",
+    "retry_owners",
+    "effects",
+    "events",
+    "model_request_count",
+    "model_cost_usd",
+    "deferred_feature_flags"
+  ],
+  "title": "Stage5RuntimeAuditReport",
+  "type": "object"
+}

@@ -1,99 +1,63 @@
 # Codex acceptance review
 
-- Outcome: `PASS`
-- Reviewed: `2026-08-10 +08:00`
-- Scope: chapter-32 Curator resolver-valid feedback repair, license-free regressions, final quality
-  evidence, and frozen-context real diagnostic
-- Review mode: read-only; Codex did not rerun tests, quality, pre-commit, services, replay,
-  benchmark, model, or real API calls
-- Accepted executable identity:
-  - base HEAD `5ef295fe6a5fedfcef4b02af620dbb988244a58f`
-  - clean local commit containing this accepted repair and review
-  - executable-source fingerprint
-    `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
+- Outcome: `REPAIR`
+- Reviewed: `2026-08-11 +08:00`
+- Scope: Stage 5 A-layer repair for `runtime advance` and the real Stage 3 Writer isolated E2E
+- Review mode: read-only acceptance; Codex did not rerun tests, quality, infrastructure,
+  migrations, pre-commit, benchmarks, model endpoints, or real APIs
 
 ## Decision
 
-The chapter-32 repair passes. It closes the demonstrated poison-loop mechanism at the correct
-existing owners without changing the upper architecture: `EvidenceCandidateGenerator` owns
-resolver-valid catalog-literal selection and `ModelCurator` owns quote-specific typed feedback. The
-strict resolver, provenance binding, ambiguity rejection, retry/budget semantics, Gold, prompts and
-Stage boundaries remain unchanged.
+The submitted verification evidence is accepted for the exercised final tree: the focused 61 tests,
+`1968 passed, 9 deselected`, 100% branch coverage, strict MyPy, Ruff/format, pre-commit, Stage 5
+integration, migration symmetry, and `git diff --check`. The known R1 count failure remains a
+base-reproduced non-regression. The fixed declarations remain correct:
+`real_stage4_adapter=false`, `creative_product_gate=NOT_RUN`, and
+`production_activation=BLOCKED`.
 
-This `PASS` accepts the repair mechanism and focused admission evidence only. It is not a Stage 2M,
-M4, Gate 0-3, APC/TIO matrix or benchmark-quality pass. The authorized clean local commit is now
-formed, so formal execution may proceed under `.agent/plan.md` §6.3.
+The repair is not yet accepted as `ISOLATED_KERNEL_PASS`. Static inspection found one target-binding
+bug in the new CLI path and one mismatch between the reported E2E chain and the assertions actually
+present in the test. These are bounded repairs within the existing design.
 
-## Evidence accepted
+## Required repair
 
-1. `copyable_literal_for()` reuses the same `resolve_evidence_quotes()` implementation and considers
-   only complete catalog strings within the caller's bounded literal budget. Similarity determines
-   order only; it never creates an evidence binding. When no string passes, it returns `None`.
-2. `ModelCurator` now resolves each quote independently. The first actual failure produces one
-   matching JSON pointer and feedback for that quote; successful quote bindings retain their stable
-   order and duplicate removal.
-3. A feedback string advertises a literal only after the exact bounded string passes the strict
-   resolver. The 240-character cap is applied by shrinking the reason prefix; the validated literal
-   is not truncated. The no-literal path makes only a generic longer/full-sentence request.
-4. The submitted license-free regressions cover an ambiguous nearest candidate with a lower-ranked
-   resolvable candidate, resolver validity of every advertised literal, no post-validation
-   truncation, generic fallback, exact multi-quote pointer attribution, invalid max length and the
-   continuing fail-closed ambiguity/no-auto-binding behavior.
-5. OpenCode's final-tree evidence reports `1650 passed, 9 deselected`, 100% branch coverage, strict
-   MyPy/Ruff cleanliness, full pre-commit success and clean `git diff --check`. Codex accepted these
-   existing results without rerunning them.
-6. The diagnostic manifest binds the repair fingerprint `1e7d...a2de`, frozen benchmark hash,
-   chapter-31 base commit, new diagnostic DB/output root, endpoint limit 1, and unchanged semantic,
-   Claim Support, Writer and Ledger budgets.
-7. The successful chapter-32 checkpoint
-   `sha256:72578a45c9512fcdb2a4d1ecdac648ee4f13e28a0c668a8bbaec4d6e56ed9d06`
-   records three proposals and two rejections. The rejection receipts point precisely to quote
-   indexes `/2` and `/0`, contain complete resolver-valid catalog literals, and lead to proposal 3
-   being accepted rather than repeating one poison signature.
-8. The successful checkpoint commits from frozen base `b0061432...` to `3504a572...`, with commit
-   receipt `sha256:f985b75669c4736df831eeeef9e8e1b7a103a7a36d737fe43137c53ea0ffe105`.
-   `scenario_run.json` and `project/progress_manifest.json` independently bind chapter 32 to that
-   resulting commit and show the accepted observed change/evidence reference.
+1. Bind `runtime advance` to both explicit identities. `--run-id` is currently parsed but never
+   used: `CreativeDispatcher` is constructed with only `project_id`, and
+   `RuntimeTaskQueryRepository.next_ready()` filters only by project. With two ready runs in the
+   same project, the command may advance the wrong run. Extend the existing query/dispatcher owner
+   with an optional `run_id` filter and pass `RunId(args.run_id)` from the CLI. Do not add a second
+   task-selection path. Add a regression containing two ready runs under one project; advancing one
+   run must leave the other unchanged. Also cover a project/run mismatch. The current
+   `test_runtime_advance_rejects_missing_identity` only proves argparse rejects omitted operational
+   arguments; it does not prove identity binding.
+2. Complete the real-writer E2E through the boundary claimed in the handoff. The new test correctly
+   constructs `WriterContextLoopService`, wraps it in `Stage3WritingLeafAdapter`, and reaches
+   `WAITING_DRAFT_ACCEPTANCE`. It then ends. Extend the same test to submit the persisted Draft
+   candidate acceptance, advance the resulting Draft Commit task, advance Projection/Freshness,
+   and assert exact freshness plus the expected terminal/current Commit and immutable lineage. This
+   is necessary to demonstrate the requested real-Writer result → candidate acceptance → Commit →
+   Projection/Freshness composition; the existing fake-writer chain cannot substitute for this
+   adapter-level composition proof.
 
-## Artifact attribution correction
+## Evidence anchors
 
-The diagnostic output root contains two sequential invocations under the same diagnostic identity:
+- `src/novel_agent/cli.py`: `args.run_id` is not referenced inside the `advance` branch; dispatcher
+  construction supplies only `project_id`.
+- `src/novel_agent/runtime/creative_dispatcher.py`: task polling passes only the optional project
+  filter.
+- `src/novel_agent/adapters/postgres/runtime.py`: `next_ready()` has no run filter.
+- `tests/unit/test_stage5_cli.py`: the new happy-path test uses one target ready run and has no
+  same-project/wrong-run regression.
+- `tests/integration/test_stage5_real_writer_e2e.py`: the final assertion is
+  `WAITING_DRAFT_ACCEPTANCE`; no Draft acceptance/Commit/Freshness operation follows it.
 
-- the top-level `memory_write_pause_trace.json` and `flow_summary.json`, written around 10:00 +08:00,
-  belong to an earlier invocation that exhausted five proposal attempts with five rejections; it had
-  `poison_loops=0` but did not commit chapter 32;
-- `scenario_run.json`, `project/progress_manifest.json` and checkpoint `72578a45...`, written around
-  10:06 +08:00, belong to the subsequent invocation that accepted proposal 3 and committed chapter
-  32.
+## Retest boundary
 
-`.agent/implementation.md` §26 reports the successful invocation but does not mention the earlier
-budget-exhausted invocation. The immutable timestamps and checkpoint refs make the two attempts
-independently attributable, so this omission does not invalidate the mechanism or require another
-real run. It does mean the top-level stale `flow_summary.json` must not be cited as success evidence.
-The formal matrix must continue to persist and address each attempt/checkpoint independently.
+After repair, run the affected dispatcher/query/CLI and real-writer E2E tests, then run the unified
+A-layer acceptance sequence once. The evidence must show the same-project run-selection regression
+and the completed real-adapter Draft acceptance/Commit/exact-Freshness chain. Do not rerun B-layer
+product/model gates.
 
-## Accepted scope and next action
-
-The accepted executable repair scope is limited to:
-
-- `src/novel_agent/services/evidence_candidates.py`;
-- `src/novel_agent/services/model_curation.py`;
-- `tests/unit/test_evidence_candidate_generation.py`;
-- `tests/unit/test_curator_evidence_contract_v2.py`.
-
-Codex-owned review/plan/status updates and `.agent/implementation.md` evidence may accompany that
-scope. Unrelated `.gitignore` changes, handover/draft files, `agentmemory_lab/`, and unrelated
-technical-reference documents are not accepted by this review and must not enter the repair commit.
-
-Next sequence:
-
-1. OpenCode verifies the committed executable fingerprint and clean executable scope;
-2. OpenCode starts APC P001-P005 from ch0 with a new experiment ID, database and output root, then
-   runs TIO under its own new identity;
-3. do not resume or reuse either `stage2m-phase4-final-apc-20260809` or
-   `stage2m-repair-ch32-diag-20260810`; preserve both as diagnostic evidence;
-4. keep the fixed concurrency, `false/0/2048`, Writer/Ledger budgets, independent checkpoint reports,
-   no in-run tuning and no Agentic paired claim exactly as specified by `.agent/plan.md` §6.3.
-
-Codex formed the authorized clean local commit containing this review. It did not merge, push or
-launch the formal matrix.
+The untracked `objects/` and `benchmarks/` directories are runtime/local data and are outside the
+accepted delivery; they must not enter a commit. No B-layer integration, product gate, production
+activation, merge, or commit is accepted by this review.

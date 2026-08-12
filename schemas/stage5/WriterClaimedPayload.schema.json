@@ -1,0 +1,26 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "writer_generation": {
+      "minimum": 1,
+      "title": "Writer Generation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "writer_generation"
+  ],
+  "title": "WriterClaimedPayload",
+  "type": "object"
+}

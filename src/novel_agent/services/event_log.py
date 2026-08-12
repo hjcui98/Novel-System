@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import RunCheckpointRow, RunEventRow, RunStreamRow
 from novel_agent.domain.ids import RunId
-from novel_agent.domain.runtime import RunCheckpoint, RunEvent
+from novel_agent.domain.runtime import ResumabilityStatus, RunCheckpoint, RunEvent
 
 
 class EventLogConflictError(RuntimeError):
@@ -29,67 +29,68 @@ class RunEventLogRepository:
 
     def append(self, event: RunEvent) -> RunEvent:
         with self._session_factory() as session, session.begin():
-            if session.get_bind().dialect.name == "postgresql":  # pragma: no cover
-                session.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtextextended(:run_id, 0))"),
-                    {"run_id": event.run_id.root},
-                )
-            existing_identity = session.scalar(
-                select(RunEventRow).where(
-                    RunEventRow.run_id == event.run_id.root,
-                    RunEventRow.idempotency_identity == event.idempotency_identity.root,
-                )
-            )
-            if existing_identity is not None:
-                existing = self._event_from_row(existing_identity)
-                comparable_event = event.model_copy(
-                    update={"occurred_at": existing.occurred_at, "span_id": existing.span_id}
-                )
-                if existing != comparable_event:
-                    raise EventLogConflictError("idempotency identity refers to another event")
-                return existing
+            return self._append_in_session(session, event)
 
-            existing_event = session.get(RunEventRow, event.event_id.root)
-            if existing_event is not None:
-                raise EventLogConflictError("event_id already exists")
+    def _append_in_session(self, session: Session, event: RunEvent) -> RunEvent:
+        """Append inside a caller-owned transaction for atomic runtime projections."""
 
-            stream = session.scalar(
-                select(RunStreamRow)
-                .where(RunStreamRow.run_id == event.run_id.root)
-                .with_for_update()
+        if session.get_bind().dialect.name == "postgresql":  # pragma: no cover
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:run_id, 0))"),
+                {"run_id": event.run_id.root},
             )
-            expected = 1 if stream is None else stream.last_sequence_no + 1
-            if event.sequence_no != expected:
-                raise EventSequenceError(
-                    f"run expects sequence {expected}, received {event.sequence_no}"
-                )
-            if stream is None:
-                stream = RunStreamRow(
-                    run_id=event.run_id.root,
-                    last_sequence_no=event.sequence_no,
-                    created_at=event.occurred_at,
-                )
-                session.add(stream)
-                # The rows have no ORM relationship, so force the referenced stream
-                # to exist before PostgreSQL checks the event foreign key.
-                session.flush()
-            else:
-                stream.last_sequence_no = event.sequence_no
-            session.add(
-                RunEventRow(
-                    event_id=event.event_id.root,
-                    run_id=event.run_id.root,
-                    task_id=event.task_id.root if event.task_id else None,
-                    sequence_no=event.sequence_no,
-                    event_type=event.event_type.value,
-                    occurred_at=event.occurred_at,
-                    idempotency_identity=event.idempotency_identity.root,
-                    payload_schema_version=event.payload_schema_version.root,
-                    trace_id=event.trace_id,
-                    event_json=event.model_dump(mode="json"),
-                )
+        existing_identity = session.scalar(
+            select(RunEventRow).where(
+                RunEventRow.run_id == event.run_id.root,
+                RunEventRow.idempotency_identity == event.idempotency_identity.root,
             )
-            return event
+        )
+        if existing_identity is not None:
+            existing = self._event_from_row(existing_identity)
+            comparable_event = event.model_copy(
+                update={"occurred_at": existing.occurred_at, "span_id": existing.span_id}
+            )
+            if existing != comparable_event:
+                raise EventLogConflictError("idempotency identity refers to another event")
+            return existing
+
+        existing_event = session.get(RunEventRow, event.event_id.root)
+        if existing_event is not None:
+            raise EventLogConflictError("event_id already exists")
+
+        stream = session.scalar(
+            select(RunStreamRow).where(RunStreamRow.run_id == event.run_id.root).with_for_update()
+        )
+        expected = 1 if stream is None else stream.last_sequence_no + 1
+        if event.sequence_no != expected:
+            raise EventSequenceError(
+                f"run expects sequence {expected}, received {event.sequence_no}"
+            )
+        if stream is None:
+            stream = RunStreamRow(
+                run_id=event.run_id.root,
+                last_sequence_no=event.sequence_no,
+                created_at=event.occurred_at,
+            )
+            session.add(stream)
+            session.flush()
+        else:
+            stream.last_sequence_no = event.sequence_no
+        session.add(
+            RunEventRow(
+                event_id=event.event_id.root,
+                run_id=event.run_id.root,
+                task_id=event.task_id.root if event.task_id else None,
+                sequence_no=event.sequence_no,
+                event_type=event.event_type.value,
+                occurred_at=event.occurred_at,
+                idempotency_identity=event.idempotency_identity.root,
+                payload_schema_version=event.payload_schema_version.root,
+                trace_id=event.trace_id,
+                event_json=event.model_dump(mode="json"),
+            )
+        )
+        return event
 
     def replay(self, run_id: RunId, *, after_sequence: int = 0) -> tuple[RunEvent, ...]:
         with self._session_factory() as session:
@@ -157,6 +158,19 @@ class RunCheckpointRepository:
                 .limit(1)
             )
             return None if row is None else self._checkpoint_from_row(row)
+
+    def latest_resumable(self, run_id: RunId) -> RunCheckpoint | None:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(RunCheckpointRow)
+                .where(RunCheckpointRow.run_id == run_id.root)
+                .order_by(RunCheckpointRow.event_position.desc())
+            )
+            for row in rows:
+                checkpoint = self._checkpoint_from_row(row)
+                if checkpoint.resumability_status is ResumabilityStatus.RESUMABLE:
+                    return checkpoint
+            return None
 
     @staticmethod
     def _checkpoint_from_row(row: RunCheckpointRow) -> RunCheckpoint:
