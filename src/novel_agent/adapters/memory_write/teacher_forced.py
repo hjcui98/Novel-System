@@ -65,6 +65,7 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
+from novel_agent.domain.world import WorldGraphCandidateBatch
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -606,16 +607,24 @@ class TeacherForcedCuratorPort:
             result, _ = await replay_call
             return _CuratorProposalExecution(result=result)
 
+        graph_curator = self._graph_curator
         replay_task = asyncio.create_task(replay_call)
-        graph_task = asyncio.create_task(
-            self._graph_curator.extract_graph_candidates(
-                text_root,
-                chapter_index,
-                base_commit,
-                current_world,
-                graph_request,
-            )
-        )
+
+        async def run_graph_profile() -> tuple[WorldGraphCandidateBatch, Any] | None:
+            try:
+                return await graph_curator.extract_graph_candidates(
+                    text_root,
+                    chapter_index,
+                    base_commit,
+                    current_world,
+                    graph_request,
+                )
+            except ValidationError:
+                # Graph extraction is an additive channel.  An invalid graph
+                # batch must not discard a valid ordinary Curator proposal.
+                return None
+
+        graph_task = asyncio.create_task(run_graph_profile())
         try:
             replay_output, graph_output = await asyncio.gather(replay_task, graph_task)
         except BaseException:
@@ -625,6 +634,8 @@ class TeacherForcedCuratorPort:
             raise
 
         result, _ = replay_output
+        if graph_output is None:
+            return _CuratorProposalExecution(result=result)
         graph_batch, _ = graph_output
         try:
             provisional_world = WorldOverlay().apply(

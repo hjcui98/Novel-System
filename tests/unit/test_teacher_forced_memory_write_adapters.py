@@ -50,7 +50,7 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
-from novel_agent.domain.world import WorldGraphCandidateBatch
+from novel_agent.domain.world import GraphCandidateBatchDraft, WorldGraphCandidateBatch
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -827,6 +827,66 @@ def test_curator_proposal_cancels_graph_profile_when_replay_fails() -> None:
             )
         )
     assert graph_cancelled is True
+
+
+def test_curator_proposal_skips_invalid_graph_batch_without_dropping_ordinary_result() -> None:
+    artifacts = InMemoryArtifactRepository()
+    world, text, _, _ = _teacher_world()
+    request = _request(profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC)
+    ordinary_changes = ObservedChangeSet(
+        change_set_id=StableId("changes.graph-schema-fallback.unit"),
+        base_commit=BASE,
+        source_artifact=_manifest().text_root,
+    )
+    receipt = agent_receipt().model_copy(
+        update={
+            "agent_type": AgentType.MEMORY_CURATOR,
+            "agent_mode": AgentMode.REPLAY,
+            "base_commit": BASE,
+        }
+    )
+    gateway = ModelGateway(())
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **_: object) -> tuple[CuratorReplayResult, None]:
+            return CuratorReplayResult(
+                observed_changes=ordinary_changes,
+                coverage=1.0,
+                receipt=receipt,
+            ), None
+
+    class GraphCurator:
+        def __init__(self) -> None:
+            self.gateway = gateway
+
+        async def extract_graph_candidates(self, *_: object) -> None:
+            GraphCandidateBatchDraft.model_validate(
+                {"entities": [{"surface": "超过上限", "entity_type": "character"}] * 5}
+            )
+            raise AssertionError("unreachable")
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.graph-schema-fallback"))),
+        graph_curator=cast(Any, GraphCurator()),
+    )
+
+    outcome = asyncio.run(
+        port.propose(
+            CuratorProposalRequest(
+                request=request,
+                basis=_basis_with_world(text, world),
+                source_artifacts=(),
+                source_visibility_receipts=(),
+            )
+        )
+    )
+
+    assert outcome.observed_changes == ordinary_changes
 
 
 def test_curator_proposal_maps_graph_basis_mismatch_to_contract_failure() -> None:
