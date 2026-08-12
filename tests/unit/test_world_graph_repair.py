@@ -41,6 +41,7 @@ from novel_agent.services.content_addressing import (
     quote_hash,
     world_root_content_id,
 )
+from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.evidence_support import EvidenceSupportGate
 from novel_agent.services.memory_pipeline import AnchorBuilder
 from novel_agent.services.model_curation import ModelCurator
@@ -472,6 +473,78 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
     candidate = verified_curator.last_evidence_candidates[0].model_copy(update={"text": "wrong"})
     with pytest.raises(ValueError, match="does not round-trip"):
         ModelCurator._graph_evidence_ref(text, 5, world.source_commit, candidate)
+
+
+def test_model_graph_profile_rejects_ambiguous_evidence_without_blocking_batch() -> None:
+    world, text, _, _ = _teacher_world()
+    block = text.chapters[4].scenes[0].blocks[0]
+    candidates = tuple(
+        EvidenceCandidate(
+            candidate_id=StableId(f"evidence.graph.ambiguous.{index}"),
+            block_id=block.block_id,
+            chapter_index=5,
+            scene_index=0,
+            text="国教学院",
+            start=index,
+            end=index + 4,
+            content_hash=sha256_id(block.text.encode("utf-8")),
+        )
+        for index in (0, 5, 10)
+    )
+
+    class AmbiguousGenerator(EvidenceCandidateGenerator):
+        def generate(
+            self, _text_root: TextRootDocument, _chapter_index: int
+        ) -> tuple[EvidenceCandidate, ...]:
+            return candidates
+
+    response = json.dumps(
+        {
+            "entities": [],
+            "relations": [
+                {
+                    "subject_surface": "林澈",
+                    "predicate": "member_of",
+                    "object_surface": "国教学院",
+                    "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "evidence_quotes": ["国教学院"],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.ambiguous",
+                model_name="fake.graph.ambiguous",
+                adapter=FakeModelEndpoint(response),
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph.ambiguous"),
+        run_id=RunId("run.graph.ambiguous"),
+        task_id=TaskId("task.graph.ambiguous"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph.ambiguous",
+        prompt="",
+    )
+
+    batch, _ = asyncio.run(
+        ModelCurator(
+            gateway,
+            evidence_generator=AmbiguousGenerator(),
+        ).extract_graph_candidates(text, 5, world.source_commit, world, request)
+    )
+
+    assert batch.relations[0].support_status.value == "rejected"
+    assert batch.relations[0].support_reason == "graph_candidate_evidence_ambiguous"
+    assert batch.relations[0].evidence_refs == ()
+    extraction = WorldGraphExtractionPass().run(world, text, candidate_batches=(batch,))
+    assert extraction.receipt.candidates[-1].status is RelationBackfillStatus.REJECTED
 
 
 def test_backfill_runner_uses_validation_commit_projection_and_l0_receipt(

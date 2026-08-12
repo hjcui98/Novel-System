@@ -952,21 +952,36 @@ class ModelCurator:
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         draft, call = await self._gateway.generate_structured(
-            safe_request,
-            GraphCandidateBatchDraft,
+            safe_request, GraphCandidateBatchDraft
+        )
+
+        def resolve_candidate_quotes(
+            quotes: tuple[str, ...],
+        ) -> tuple[tuple[EvidenceCandidate, ...], str | None]:
+            try:
+                return self._evidence_generator.resolve_evidence_quotes(quotes, candidates), None
+            except ValueError as error:
+                reason = str(error).casefold()
+                return (
+                    (),
+                    (
+                        "graph_candidate_evidence_ambiguous"
+                        if "ambiguous" in reason
+                        else "graph_candidate_evidence_unresolved"
+                    ),
+                )
+
+        entity_evidence = tuple(
+            resolve_candidate_quotes(entity.evidence_quotes) for entity in draft.entities
+        )
+        relation_evidence = tuple(
+            resolve_candidate_quotes(relation.evidence_quotes) for relation in draft.relations
         )
         resolved_evidence = tuple(
             candidate
-            for entity in draft.entities
-            for candidate in self._evidence_generator.resolve_evidence_quotes(
-                entity.evidence_quotes, candidates
-            )
-        ) + tuple(
-            candidate
-            for relation in draft.relations
-            for candidate in self._evidence_generator.resolve_evidence_quotes(
-                relation.evidence_quotes, candidates
-            )
+            for resolved, reason in (*entity_evidence, *relation_evidence)
+            if reason is None
+            for candidate in resolved
         )
         evidence_ids = tuple(dict.fromkeys(item.candidate_id for item in resolved_evidence))
         batch_id = StableId(
@@ -976,12 +991,12 @@ class ModelCurator:
                 base_commit.root.encode(),
                 str(chapter_index).encode(),
                 *(candidate_id.root.encode() for candidate_id in evidence_ids),
+                canonical_json_bytes(draft.model_dump(mode="json")),
                 b"stage2m-model-curator-graph.v1",
             )
         )
 
-        def bind(quotes: tuple[str, ...]) -> tuple[EvidenceRef, ...]:
-            resolved = self._evidence_generator.resolve_evidence_quotes(quotes, candidates)
+        def bind(resolved: tuple[EvidenceCandidate, ...]) -> tuple[EvidenceRef, ...]:
             return tuple(
                 self._graph_evidence_ref(
                     text_root,
@@ -992,46 +1007,51 @@ class ModelCurator:
                 for candidate in resolved
             )
 
-        support_operations = tuple(
-            CuratedOperationDraftV2(
-                operation=ChangeOperationType.CREATE,
-                record_kind=WorldRecordKind.ENTITY,
-                target_id=StableId(f"graph-support.entity.{index}"),
-                record=CuratorEntityRecord(
-                    entity_type=item.entity_type,
-                    internal_label=item.surface,
-                ),
-                evidence_candidate_ids=tuple(
-                    candidate.candidate_id
-                    for candidate in self._evidence_generator.resolve_evidence_quotes(
-                        item.evidence_quotes, candidates
-                    )
-                ),
+        support_operations_list: list[CuratedOperationDraftV2] = []
+        support_targets: list[int] = []
+        for index, entity_item in enumerate(draft.entities):
+            resolved, rejection_reason = entity_evidence[index]
+            if rejection_reason is not None:
+                continue
+            support_targets.append(index)
+            support_operations_list.append(
+                CuratedOperationDraftV2(
+                    operation=ChangeOperationType.CREATE,
+                    record_kind=WorldRecordKind.ENTITY,
+                    target_id=StableId(f"graph-support.entity.{index}"),
+                    record=CuratorEntityRecord(
+                        entity_type=entity_item.entity_type,
+                        internal_label=entity_item.surface,
+                    ),
+                    evidence_candidate_ids=tuple(candidate.candidate_id for candidate in resolved),
+                )
             )
-            for index, item in enumerate(draft.entities)
-        ) + tuple(
-            CuratedOperationDraftV2(
-                operation=ChangeOperationType.CREATE,
-                record_kind=WorldRecordKind.RELATION,
-                target_id=StableId(f"graph-support.relation.{index}"),
-                record=CuratorRelationRecord(
-                    predicate=item.predicate,
-                    subject_id=StableId("graph-support.subject"),
-                    object_id=StableId("graph-support.object"),
-                    valid_time=CuratorStoryTime.model_validate(item.valid_time.model_dump()),
-                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
-                ),
-                evidence_candidate_ids=tuple(
-                    candidate.candidate_id
-                    for candidate in self._evidence_generator.resolve_evidence_quotes(
-                        item.evidence_quotes, candidates
-                    )
-                ),
+        relation_offset = len(draft.entities)
+        for index, relation_item in enumerate(draft.relations):
+            resolved, rejection_reason = relation_evidence[index]
+            if rejection_reason is not None:
+                continue
+            support_targets.append(relation_offset + index)
+            support_operations_list.append(
+                CuratedOperationDraftV2(
+                    operation=ChangeOperationType.CREATE,
+                    record_kind=WorldRecordKind.RELATION,
+                    target_id=StableId(f"graph-support.relation.{index}"),
+                    record=CuratorRelationRecord(
+                        predicate=relation_item.predicate,
+                        subject_id=StableId("graph-support.subject"),
+                        object_id=StableId("graph-support.object"),
+                        valid_time=CuratorStoryTime.model_validate(
+                            relation_item.valid_time.model_dump()
+                        ),
+                        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                    ),
+                    evidence_candidate_ids=tuple(candidate.candidate_id for candidate in resolved),
+                )
             )
-            for index, item in enumerate(draft.relations)
-        )
+        support_operations = tuple(support_operations_list)
         support_decisions = self._support_gate.evaluate_draft(support_operations, catalog)
-        support_by_operation: dict[int, tuple[GraphCandidateSupportStatus, str]] = {}
+        support_by_candidate: dict[int, tuple[GraphCandidateSupportStatus, str]] = {}
         partial_decisions = tuple(
             decision
             for decision in support_decisions
@@ -1050,6 +1070,7 @@ class ModelCurator:
                 request,
             )
         for operation_index, operation in enumerate(support_operations):
+            candidate_index = support_targets[operation_index]
             decisions = tuple(
                 decision
                 for decision in support_decisions
@@ -1068,13 +1089,13 @@ class ModelCurator:
                 None,
             )
             if hard_rejection is not None:
-                support_by_operation[operation_index] = (
+                support_by_candidate[candidate_index] = (
                     GraphCandidateSupportStatus.REJECTED,
                     hard_rejection.reason_code,
                 )
                 continue
             if EvidenceSupportGate.all_lexical_support(decisions):
-                support_by_operation[operation_index] = (
+                support_by_candidate[candidate_index] = (
                     GraphCandidateSupportStatus.SUPPORTED,
                     "evidence_support_gate_lexical",
                 )
@@ -1094,12 +1115,12 @@ class ModelCurator:
             elif self._enable_model_semantic_verifier:
                 verified = model_verifications.get(operation_index)
             if verified is not None and verified[0] is EvidenceSupportDisposition.SUPPORTS:
-                support_by_operation[operation_index] = (
+                support_by_candidate[candidate_index] = (
                     GraphCandidateSupportStatus.SUPPORTED,
                     verified[1],
                 )
             else:
-                support_by_operation[operation_index] = (
+                support_by_candidate[candidate_index] = (
                     GraphCandidateSupportStatus.REJECTED,
                     "graph_candidate_evidence_support_unresolved",
                 )
@@ -1117,13 +1138,16 @@ class ModelCurator:
                 source_batch_id=batch_id,
                 surface=item.surface,
                 entity_type=item.entity_type,
-                evidence_refs=bind(item.evidence_quotes),
-                support_status=support_by_operation[index][0],
-                support_reason=support_by_operation[index][1],
+                evidence_refs=bind(entity_evidence[index][0]),
+                support_status=(
+                    GraphCandidateSupportStatus.REJECTED
+                    if entity_evidence[index][1] is not None
+                    else support_by_candidate[index][0]
+                ),
+                support_reason=(entity_evidence[index][1] or support_by_candidate[index][1]),
             )
             for index, item in enumerate(draft.entities)
         )
-        relation_offset = len(draft.entities)
         relations = tuple(
             WorldGraphRelationCandidate(
                 candidate_id=StableId(
@@ -1139,10 +1163,16 @@ class ModelCurator:
                 predicate=item.predicate,
                 object_surface=item.object_surface,
                 valid_time=item.valid_time,
-                evidence_refs=bind(item.evidence_quotes),
+                evidence_refs=bind(relation_evidence[index][0]),
                 source_truth_class=TruthClass.ACCEPTED_WORLD_FACT,
-                support_status=support_by_operation[relation_offset + index][0],
-                support_reason=support_by_operation[relation_offset + index][1],
+                support_status=(
+                    GraphCandidateSupportStatus.REJECTED
+                    if relation_evidence[index][1] is not None
+                    else support_by_candidate[relation_offset + index][0]
+                ),
+                support_reason=(
+                    relation_evidence[index][1] or support_by_candidate[relation_offset + index][1]
+                ),
             )
             for index, item in enumerate(draft.relations)
         )
