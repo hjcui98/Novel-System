@@ -16,6 +16,10 @@ from novel_agent.domain.runtime import EffectReceipt, TaskRecord
 from novel_agent.domain.writing_loop import WritingLoopResult
 
 
+class CandidateMaterializationError(ValueError):
+    """An accepted leaf candidate cannot be mapped to the five canonical roots."""
+
+
 class PlanningLeafPort(Protocol):
     async def run(self, request: PlanningLoopRequest) -> PlanningLoopResult: ...
 
@@ -43,6 +47,7 @@ class EffectStatusResolver(Protocol):
 
 
 __all__ = [
+    "CandidateMaterializationError",
     "CandidateMaterializer",
     "EffectStatusResolver",
     "PlanningLeafPort",

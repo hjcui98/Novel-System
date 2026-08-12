@@ -19,6 +19,7 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskProjectionRow,
 )
 from novel_agent.adapters.runtime.isolated import StrictDeterministicCandidateMaterializer
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.changes import CommitRequest, CommitStatus
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
@@ -47,6 +48,7 @@ from novel_agent.domain.runtime import (
 from novel_agent.ports.creative_runtime import EffectStatusResolver
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
+from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
 from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import (
@@ -119,6 +121,16 @@ def _effect(identity: str, *, attempt_no: int = 1) -> EffectReceipt:
         request_identity=StableId(f"request.{identity}"),
         status=EffectStatus.REQUESTED,
         attempt_no=attempt_no,
+    )
+
+
+def _binding_ref(
+    artifacts: ArtifactRepository, candidate: CandidateBinding
+) -> ArtifactRef:
+    return artifacts.put(
+        canonical_json_bytes(candidate.model_dump(mode="json")),
+        "application/vnd.novel-agent.stage5-candidate-binding+json",
+        SchemaVersion("1.0.0"),
     )
 
 
@@ -885,7 +897,6 @@ def test_acceptance_rejects_stale_commit_and_unpinned_auto_and_bad_lineage(
         input_artifact_refs=(candidate_ref,),
         dependency_task_ids=(task.task_id,),
     )
-    commands.create_task(waiting)
     candidate = CandidateBinding(
         candidate_id=StableId("candidate.acceptance-edges"),
         kind=CandidateKind.PLAN,
@@ -893,6 +904,10 @@ def test_acceptance_rejects_stale_commit_and_unpinned_auto_and_bad_lineage(
         candidate_hash=candidate_ref.artifact_id.root,
         basis_commit=base,
     )
+    waiting = waiting.model_copy(
+        update={"candidate_binding_ref": _binding_ref(artifacts, candidate)}
+    )
+    commands.create_task(waiting)
     command = AcceptanceCommand(
         command_id=StableId("accept.edges.command"),
         project_id=task.project_id,
@@ -923,6 +938,17 @@ def test_acceptance_rejects_stale_commit_and_unpinned_auto_and_bad_lineage(
             "auto_accept_draft": True,
         }
     )
+    with pytest.raises(RuntimeCommandConflictError, match="immutable candidate binding"):
+        service.submit(
+            command.model_copy(
+                update={
+                    "candidate": candidate.model_copy(
+                        update={"candidate_id": StableId("candidate.acceptance-swapped")}
+                    )
+                }
+            ),
+            policy=auto,
+        )
     receipt = service.submit(command, policy=auto)
     assert receipt.accepted_binding is not None
     # Rejected-candidate path covers the ACCEPT false branch on a fresh task.
@@ -988,7 +1014,6 @@ def test_acceptance_rejects_stale_expected_commit_and_invalid_settled_lineage(
         input_artifact_refs=(candidate_ref,),
         dependency_task_ids=(task.task_id,),
     )
-    commands.create_task(waiting)
     stale_candidate = CandidateBinding(
         candidate_id=StableId("candidate.acceptance-stale"),
         kind=CandidateKind.PLAN,
@@ -996,6 +1021,10 @@ def test_acceptance_rejects_stale_expected_commit_and_invalid_settled_lineage(
         candidate_hash=candidate_ref.artifact_id.root,
         basis_commit=base,
     )
+    waiting = waiting.model_copy(
+        update={"candidate_binding_ref": _binding_ref(artifacts, stale_candidate)}
+    )
+    commands.create_task(waiting)
     stale_command = AcceptanceCommand(
         command_id=StableId("accept.stale.command"),
         project_id=task.project_id,
@@ -1039,6 +1068,7 @@ def test_acceptance_rejects_stale_expected_commit_and_invalid_settled_lineage(
         permission_hash=PERMISSION_HASH,
         input_artifact_refs=(candidate_ref,),
         terminal_artifact_refs=(),
+        candidate_binding_ref=_binding_ref(artifacts, lineage_candidate),
         dependency_task_ids=(task.task_id,),
     )
     commands.create_task(bad_waiting)

@@ -1,6 +1,6 @@
 # OpenCode implementation and evidence
 
-- State: `STAGE345_INTEGRATION_CANDIDATE_READY`（2026-08-12；Codex 直接实现）
+- State: `STAGE345_ENGINEERING_CLOSED_LOOP_READY`（2026-08-12；Codex 直接实现）
 
 ## 33. Stage 3/4/5 整合与单卡两路有界并发（2026-08-12）
 
@@ -37,6 +37,14 @@ Stage 3/4/5 执行文档与 `.agent/plan.md`，再进入代码整合。
   replan；缺少影响信息则 fail closed 地 supersede 并重规划。所有 acceptance/Commit 仍串行。
 - 移除 Stage 5 schema hash golden 清单；Stage 3/4/5 schema 只做一次 typed export，Stage 2 schema
   保持 `408a46f` 原样。
+- 新增非 fixture `PlanCandidateMaterializer`：要求 immutable candidate、Stage 4 ACCEPT review、对应
+  Planner execution 和 current basis，按 proposal/deviation scope 合并既有 PlanRoot，再交给唯一
+  `CommitService`。
+- 新增非 fixture `DraftCandidateMaterializer`：Stage 5 持久化完整 `WritingLoopResult`，materializer
+  核对 accepted Plan/Profile、Editor PASS、Observer、reconciliation、impact 与连续章节位置后，通过
+  既有 `SequentialTextRootService` 产生 TextRoot ChangeBundle；弱提示不直接升级为 World truth。
+- Acceptance command 必须与 task 上持久化的 immutable candidate binding 完全相同，阻止同 basis
+  下替换候选；materialization rejection 进入 typed `VALIDATION_REJECTED/REVIEW_REQUIRED`。
 
 ### 33.3 本轮验证
 
@@ -50,12 +58,15 @@ Stage 3/4/5 执行文档与 `.agent/plan.md`，再进入代码整合。
 - 未进行源码哈希验证，未反复重跑已通过的 220 项。
 - 8002 端口的进程所有权在沙箱内无法可靠判定，因此没有发送 API 请求、没有重启或改配置；真实
   Stage 3/4/5 模型 Gate 记为 `DEFERRED_ENDPOINT_OWNERSHIP_AMBIGUOUS`。
+- 闭环补齐后只运行聚焦证据：真实 Stage 4 public adapter → accepted PlanRoot → real Stage 3
+  Writer/Editor/Observer → accepted TextRoot → exact Freshness：1 passed；既有 lookahead：1 passed；
+  immutable acceptance/stale lineage：2 passed。相关 Ruff 与 strict MyPy 通过，未重跑大套件。
 
 ### 33.4 尚未宣称
 
 - 本轮不是 Stage 3 三方案语义 Gate、Stage 4 七模式语义 Gate 或 Stage 5 多章真实模型产品 Gate；
-- production trusted PlanRoot/TextRoot materializer 的真实产品装配仍需下一轮以现有 Commit/validation
-  owner 为基础完成，隔离 CLI 仍使用显式 fixture materializer；
+- 隔离 CLI 仍刻意使用显式 fixture materializer；非 fixture materializer 已可由生产 assembly 注入，
+  但真实模型产品 Gate 未执行；
 - multi-worker lease、4/6/8 并发、Hook、Temporal、Skill evolution 均未实现，也没有必要在本轮加入。
 
 - State: `STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`

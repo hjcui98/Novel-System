@@ -25,10 +25,13 @@
 
 ## Current result
 
-- Code state: `STAGE345_INTEGRATION_CANDIDATE_READY` in the shared Stage 5 integration worktree.
+- Code state: `STAGE345_ENGINEERING_CLOSED_LOOP_READY` on main.
 - Implemented: real Stage 4 adapter, shared Stage 3/4 Context owner, two-task dispatcher, Writer +
-  Planner-lookahead overlap, post-Draft promote/replan/supersede, serial acceptance/Commit/Freshness.
+  Planner-lookahead overlap, post-Draft promote/replan/supersede, trusted PlanRoot/TextRoot
+  materializers, immutable acceptance binding, and serial acceptance/Commit/Freshness.
 - Evidence: 220 checks passed in the concentrated run; 9 merge-alignment failures were repaired and
   their exact selectors passed; changed code Ruff and strict MyPy pass.
+- Additional focused evidence: real Stage 4 adapter → PlanRoot → real Stage 3 Writer/Editor/Observer
+  → TextRoot closure 1 passed; lookahead 1 passed; acceptance guards 2 passed; Ruff/strict MyPy pass.
 - Deferred: 8002 real API because endpoint ownership could not be established; Stage 3/4 semantic
-  Gates, Stage 5 real multi-chapter Gate, and trusted production root materializers.
+  Gates and the Stage 5 real multi-chapter Gate.

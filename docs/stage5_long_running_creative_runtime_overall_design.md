@@ -4,15 +4,15 @@
 >
 > 设计状态：`DESIGN_BASELINE_2026-08-12 / BOUNDED_CONCURRENCY_INTEGRATION`
 >
-> 开发状态：`STAGE345_INTEGRATION_CANDIDATE_READY / REAL_MODEL_GATES_PENDING`
+> 开发状态：`STAGE345_ENGINEERING_CLOSED_LOOP_READY / REAL_MODEL_GATES_PENDING`
 >
 > 阶段：Stage 5 — Long-running Creative Runtime
 >
 > 上位决定：ADR-0006、ADR-0007
 >
 > 当前事实：Stage 2 `408a46f`、Stage 3 `bab4451`、Stage 4 `0dcf17a` 与 Stage 5 A 层已经收敛为
-> 一个隔离 integration candidate；真实 Stage 4 adapter、两路 dispatcher 和 Writer/Planner lookahead
-> revalidation 已实现。真实模型语义 Gate 仍按各阶段独立报告。
+> 一个工程闭环 candidate；真实 Stage 3/4 adapter、可信 PlanRoot/TextRoot materializer、两路 dispatcher
+> 和 Writer/Planner lookahead revalidation 已实现。真实模型语义 Gate 仍按各阶段独立报告。
 
 ## 1. 结论
 
@@ -35,7 +35,6 @@ Stage 5 可以现在开始隔离开发，但只能先开发具有当前真实调
 当前不得提前完成或启用的内容是：
 
 ```text
-未完成真实产品验证的 PlanRoot/TextRoot materializer 生产激活
 跨项目自动长期运行
 无真实多 Worker caller 的 heartbeat / lease / reclaim 平台
 通用 DAG、消息队列、第二套 event/session/step store
@@ -46,8 +45,8 @@ Temporal 或其他分布式 workflow 平台
 
 因此，Stage 5 的正确交付方式不是“等 Stage 4 完成后才思考”，也不是“现在把整个平台一次造完”，
 而是先在独立 worktree 建成可由严格 fake leaf 和现有 Commit 基础验证的 Runtime Kernel；Stage 4 Gate
-通过后只替换 Planner leaf adapter 的原计划已经完成；后续应在这个单一 integration candidate 上补
-trusted PlanRoot/TextRoot materializer 与真实模型 Gate，再按实际长期运行证据启用维护和受控演化工作包。
+通过后只替换 Planner leaf adapter 的原计划已经完成；可信 PlanRoot/TextRoot materializer 也已在同一
+integration candidate 中闭合。后续只补真实模型 Gate，再按实际长期运行证据启用维护和受控演化工作包。
 
 2026-08-12 的整合决定不降低上述产品 Gate：允许把当前 Stage 3/4 工程候选和 Stage 5 A 层收敛为
 一个 **integration candidate**，用真实 leaf adapter、确定性/离线 fixture 和有界并发证明组合正确性；
@@ -652,18 +651,21 @@ workflow execution adapter，不能成为业务真源。
 - strict `PlanningLeafPort` / `WritingLeafPort`，真实 Stage 3 adapter，以及用于故障注入的
   deterministic fake；
 - candidate acceptance、现有 CommitService、Projection/Freshness adapter；
+- 真实 Stage 4/Stage 3 leaf adapter 与可信 PlanRoot/TextRoot materializer；
 - settled checkpoint selector、effect reconciler port；
 - pause/resume/cancel/retry 和最小 maintenance command；
 - end-to-end fake Planner → real Runtime → real Stage 3 Writer adapter（离线/确定性合同路径）→ real
   Commit/Projection 测试链；故障矩阵可注入 strict fake Writer。
 
-### 14.2 必须等 Stage 4 后接入
+### 14.2 已完成的 Stage 4 / B 层接入
 
 - 真实 `PlanningContextLoopService` adapter；
 - Stage 4 candidate/basis/review receipt 到 Plan materializer 的最终映射；
 - real Plan candidate → accepted PlanRoot → Stage 3 Writer task 的完整 lineage；
-- Planner failure/revision/human-required 与 Stage 5 Task status 的最终转换表；
-- 真实 Planner/Writer 模型运行的完整 Stage 5 product Gate。
+- Stage 3 complete result/Editor/Observer/reconciliation 到 TextRoot materializer 的最终映射；
+- Planner failure/revision/human-required 与 Stage 5 Task status 的最终转换表。
+
+仍待执行的是使用真实 Planner/Writer 模型的完整 Stage 5 product Gate，不是新的工程 owner。
 
 ### 14.3 必须等运行证据触发
 

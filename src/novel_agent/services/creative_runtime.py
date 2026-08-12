@@ -36,8 +36,9 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
-from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
+from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
+    CandidateMaterializationError,
     CandidateMaterializer,
     PlanningLeafPort,
     RuntimeTaskReader,
@@ -55,6 +56,7 @@ from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import RuntimeCommandService
 
 CANDIDATE_BINDING_MEDIA_TYPE = "application/vnd.novel-agent.stage5-candidate-binding+json"
+WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
 
 
 class CreativeRuntimeService:
@@ -174,6 +176,17 @@ class CreativeRuntimeService:
             ):
                 raise ValueError("Writer request factory violated the durable task basis")
             writing_result = await self._writer.run(writing_request)
+            if isinstance(writing_result, WritingLoopResult):
+                result_ref = self._artifacts.put(
+                    canonical_json_bytes(writing_result.model_dump(mode="json")),
+                    WRITING_LOOP_RESULT_MEDIA_TYPE,
+                    SchemaVersion("1.0.0"),
+                )
+                result_artifacts = tuple(
+                    dict.fromkeys((*writing_result.artifacts, result_ref))
+                )
+            else:  # Backward-compatible isolated fault fixtures.
+                result_artifacts = writing_result.artifacts
             if writing_result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY:
                 assert writing_result.final_candidate_id is not None
                 assert writing_result.final_text_artifact is not None
@@ -188,7 +201,7 @@ class CreativeRuntimeService:
                     candidate_hash=writing_result.final_text_artifact.artifact_id.root,
                     basis_commit=task.basis_commit,
                     basis_snapshot=task.basis_snapshot,
-                    lineage_artifact_refs=writing_result.artifacts,
+                    lineage_artifact_refs=result_artifacts,
                     affects_future_plan=(
                         None
                         if observation is None
@@ -199,7 +212,7 @@ class CreativeRuntimeService:
                     fence,
                     outcome=AttemptOutcome.SUCCEEDED,
                     terminal_status=TaskStatus.SUCCEEDED,
-                    artifact_refs=writing_result.artifacts,
+                    artifact_refs=result_artifacts,
                 )
                 waiting = self._acceptance_task(settled, candidate)
                 self._commands.create_task(waiting)
@@ -216,7 +229,7 @@ class CreativeRuntimeService:
                 fence,
                 outcome=AttemptOutcome.SUSPENDED,
                 terminal_status=status,
-                artifact_refs=writing_result.artifacts,
+                artifact_refs=result_artifacts,
                 failure_class=failure,
             )
             return self._result(settled, terminal, writing_result.status.value.lower())
@@ -228,7 +241,20 @@ class CreativeRuntimeService:
                 if task.kind is TaskKind.PLAN_COMMIT
                 else self._draft_materializer
             )
-            bundle, report = materializer.materialize(accepted)
+            try:
+                bundle, report = materializer.materialize(accepted)
+            except CandidateMaterializationError:
+                settled = self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.FAILED,
+                    terminal_status=TaskStatus.BLOCKED,
+                    failure_class=FailureClass.VALIDATION_REJECTED,
+                )
+                return self._result(
+                    settled,
+                    CreativeRunTerminal.REVIEW_REQUIRED,
+                    "candidate_materialization_rejected",
+                )
             if report.status is not ValidationStatus.PASSED:
                 settled = self._commands.settle_attempt(
                     fence,

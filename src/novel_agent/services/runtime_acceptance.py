@@ -11,6 +11,7 @@ from novel_agent.domain.creative_runtime import (
     AcceptedCandidateBinding,
     ActorKind,
     AutomationMode,
+    CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
 )
@@ -58,6 +59,15 @@ class RuntimeAcceptanceService:
             raise RuntimeCommandConflictError("candidate is bound to another acceptance task")
         if task.project_id != command.project_id:
             raise RuntimeCommandConflictError("acceptance project mismatch")
+        if task.candidate_binding_ref is None:
+            raise RuntimeCommandConflictError("acceptance task is missing its candidate binding")
+        bound_candidate = CandidateBinding.model_validate_json(
+            self._artifacts.read_verified(task.candidate_binding_ref)
+        )
+        if command.candidate != bound_candidate:
+            raise RuntimeCommandConflictError(
+                "acceptance command differs from the immutable candidate binding"
+            )
         if command.acceptance_policy_hash != policy.policy_hash:
             raise RuntimeCommandConflictError("acceptance policy hash mismatch")
         if command.expected_project_commit != self._commits.current_commit(command.project_id):

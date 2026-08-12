@@ -56,7 +56,8 @@ Stage 5 now has an isolated Stage 3/4/5 integration candidate: fixed topology, T
 acceptance commands, existing Commit/Projection/Freshness integration, real Stage 3/4 leaf adapters,
 stable two-task ready batches and same-book Writer + Planner-lookahead overlap. Lookahead cannot be
 accepted until post-Draft exact Freshness promotes, replans or supersedes it. Product Plan→Write→Commit
-still waits for trusted production materializers and real semantic Gates.
+now crosses trusted PlanRoot/TextRoot materializers and the existing Commit/Projection/Freshness owner.
+The remaining condition is the real Stage 3/4 semantic and Stage 5 multi-chapter model Gate.
 Multi-worker lease/reclaim, scheduled fire, external Hook ingress, Skill evolution and Temporal remain
 evidence-triggered rather than pre-authorized platform work.
 
@@ -77,8 +78,8 @@ architecture decision. This does not relax any safety, quality, reproducibility,
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
 | Stage 2M | Evidence-first package/readiness and bounded World/KG/R1/L1/L2 repair accepted; v33 frozen source retained | Architecture-repair PASS; deterministic quality and unified real gate PASS | Keep external scoring post-freeze; maintain accepted contracts |
 | Stage 3 | Engineering implementation complete at `bab4451` and present in the integration candidate | Deterministic quality reported; real model/infrastructure Gate conditional | Run the real semantic Gate when endpoint capacity is available |
-| Stage 4 | Seven-mode Planner Context Loop `0dcf17a` integrated through the real public adapter | Deterministic quality reported; real seven-mode semantic Gate not run | Add final product materializer evidence, then run the real semantic Gate |
-| Stage 5 | Stage 3/4/5 integration candidate ready; two-lane Writer/lookahead orchestration implemented | 220 concentrated checks passed initially, 9 integration alignments fixed and passed; Ruff/strict MyPy clean; product Gate not run | Finish trusted production PlanRoot/TextRoot materializers, then run one final real multi-chapter Gate without disturbing Stage 2 benchmark |
+| Stage 4 | Seven-mode Planner Context Loop `0dcf17a` integrated through the real public adapter and trusted Plan materializer | Deterministic quality and focused root-commit closure reported; real seven-mode semantic Gate not run | Run the real semantic Gate when endpoint capacity is available |
+| Stage 5 | Stage 3/4/5 engineering closed loop ready; trusted Plan/Text roots and two-lane Writer/lookahead implemented | Earlier 220+9 integration evidence retained; focused real-adapter/root closure 1 passed, lookahead 1 passed, acceptance guards 2 passed; Ruff/strict MyPy clean; product Gate not run | Run one final real multi-chapter Gate without disturbing Stage 2 benchmark |
 
 ## 3. Accepted Stage 2A evidence
 

@@ -182,17 +182,28 @@ Stage 2 protected-boundary audit, endpoint decision and remaining formal Gates. 
 
 ## 10. 2026-08-12 implementation result
 
-The integration candidate now contains the frozen Stage 2 identity, Stage 3 `bab4451`, Stage 4
+The engineering closed-loop candidate now contains the frozen Stage 2 identity, Stage 3 `bab4451`, Stage 4
 `0dcf17a`, the Stage 5 kernel, `Stage4PlanningLeafAdapter`, bounded dispatcher parallelism 1/2 and
 post-Draft lookahead promotion/replan/supersede. Stage 2 versioned schemas and product owners remain
 frozen; only default-inactive shared Planner extensions were added.
+
+The remaining trusted-boundary gap is now closed. `PlanCandidateMaterializer` maps one accepted,
+independently reviewed Stage 4 proposal into the existing PlanRoot while preserving untouched scope.
+`DraftCandidateMaterializer` requires the complete Stage 3 WritingLoopResult, PASS editorial chain,
+Observer/reconciliation and exact accepted basis before appending one continuous TextRoot chapter.
+Both produce a normal five-Root ChangeBundle for the existing CommitService; no sixth Root or parallel
+Canon path was added. Runtime acceptance also requires the command candidate to equal the persisted
+immutable candidate binding.
 
 Evidence followed the user's minimum-test direction: one 220-check concentrated run, then only the
 9 exact failing selectors after contract-alignment repair; all 9 passed. Changed files pass Ruff and
 11 changed production modules pass strict MyPy. No source-hash verification or repeated suite rerun
 was used. 8002 remained unprobed because ownership could not be established.
 
-The next implementation reference is this plan §10 plus Stage 5 execution B4/B5 and §12.2.1. The next
-code owner is the existing trusted Commit/materialization boundary: finish real PlanRoot/TextRoot
-materializers, then run one final real multi-chapter Stage 3/4/5 Gate. Do not expand concurrency or
-add a scheduler platform first.
+Focused post-closure evidence is intentionally small: one real Stage 4 public-adapter → PlanRoot →
+real Stage 3 Writer/Editor/Observer → TextRoot → exact-freshness test passed; the existing two-lane
+lookahead test passed; two acceptance boundary tests passed. Changed production code passes Ruff and
+strict MyPy. Stage 2 schemas still equal `408a46f`; no Stage 2 owner file changed.
+
+The next reference is Stage 5 execution §12: run one final real multi-chapter Stage 3/4/5 Gate only
+when endpoint ownership/capacity is explicit. Do not expand concurrency or add a scheduler platform first.

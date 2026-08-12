@@ -2,7 +2,7 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 执行状态：`STAGE345_INTEGRATION_CANDIDATE_READY / REAL_MODEL_GATES_PENDING`
+> 执行状态：`STAGE345_ENGINEERING_CLOSED_LOOP_READY / REAL_MODEL_GATES_PENDING`
 >
 > 更新日期：2026-08-12
 >
@@ -31,8 +31,8 @@
 | B. Real Creative Loop Integration | Stage 3/4 工程候选与 Stage 5 A 层可审计，正式语义 Gate 可独立后补 | 是，形成非生产 integration candidate | 接真实 Planner/Writer，形成可执行 Plan→Write→Commit 闭环；Gate 未完成前保持 conditional |
 | C. Evidence-triggered Operations/Evolution | multi-worker、外部 surface、长期样本等真实 caller 成立 | 否，按触发项启用 | lease/schedule/Hook/Skill evolution/Temporal 等逐项进入生产 Gate |
 
-当前 A 层、Stage 3/4 和两路有界 dispatcher 已收敛成一个隔离 integration candidate；本轮只用
-确定性、离线和轻量集成测试证明组合机制，
+当前 A/B 层、Stage 3/4、可信 root materializer 和两路有界 dispatcher 已收敛成一个工程闭环
+candidate；本轮只用确定性、离线和轻量集成测试证明组合机制，
 不把缺失的 Stage 3/4 真实语义证据伪装成产品 PASS。若本地 `8002` 正被 Stage 2 benchmark 占用，
 不得抢占、重启或改变其配置，真实 API 检查直接记为 deferred。C 每个触发包仍只有真实 caller 和
 验收数据出现后才能授权。
@@ -51,7 +51,8 @@
 - Stage 4 在 `codex/stage4-planner-context-loop` / `0dcf17a` 已形成 Planner Context Loop candidate
   并接入共享 Context Runtime；尚未形成正式 Stage 4 语义 PASS；
 - 集成候选已接入 `Stage4PlanningLeafAdapter`、Stage 3 public Writer adapter、stable ready batch、
-  `parallelism=1|2` 和 lookahead promotion/replan/supersede；生产 materializer 与真实模型 Gate 待后续。
+  `parallelism=1|2`、lookahead promotion/replan/supersede，以及非 fixture 的
+  `PlanCandidateMaterializer`/`DraftCandidateMaterializer`；仅真实模型 Gate 待后续。
 
 ### 2.2 Isolated Kernel worktree
 
@@ -551,6 +552,10 @@ Creative PLAN task
 
 不得为 Stage 5 创建第六 Root、ChapterMemo Canon 或平行 Plan store。
 
+实施结果（2026-08-12）：`PlanCandidateMaterializer` 读取被接受的 `PlanProposal`、独立 ACCEPT review
+和对应 `PlannerExecutionResult`，按 item/deviation scope 合并既有 PlanRoot，保留未涉及节点并只生成
+五 Root `RootManifest`。过期 basis、未晋升 lookahead、缺 review/receipt 或未解决 proposal 均 fail closed。
+
 ### B3. 真实 Writer adapter 收敛与 Draft Commit
 
 把 A 层 Stage 3 adapter rebase 到最终共同 accepted identity，审计 request/result/schema 差异并删除
@@ -572,6 +577,12 @@ Writer task 的 accepted plan binding、base commit、snapshot、Profile 和 inf
 
 Draft materializer 只消费最终 accepted draft 和 observer/reconciliation output。它不得把 Writer declaration
 直接当 World truth；仍通过现有 trusted observed-change/Curator/validation 语义形成 ChangeBundle。
+
+实施结果（2026-08-12）：Stage 5 把完整 `WritingLoopResult` 纳入候选 lineage；
+`DraftCandidateMaterializer` 核对 accepted Plan/Profile/basis、最终 PASS、Observer、reconciliation 和
+future-Plan impact，再通过既有 `SequentialTextRootService` 追加连续章节。未能形成 canonical World
+operation 的弱提示不会被升级为事实；它们只作为 observation evidence 保留，TextRoot exact projection
+则继续由冻结 Stage 2 检索 owner 消费。
 
 ### B4. Rolling policy
 
@@ -1066,7 +1077,7 @@ state 被下一章 Planner/Writer 正确读取。
 
 - accepted Stage 3/4/Stage 2 clean integration identity；
 - real Planner adapter，以及 accepted identity 上的 Writer adapter 收敛；
-- real Plan/Draft materializers；
+- real Plan/Draft materializers（已完成工程闭环）；
 - rolling policy；
 - production assembly；
 - real model/multi-chapter/cross-process/failure matrix；
@@ -1084,6 +1095,7 @@ state 被下一章 Planner/Writer 正确读取。
   冻结 Stage 2 executable/product semantics，不修改 Stage 2 owners
   以 Stage 3 bab4451、Stage 4 0dcf17a 和 Stage 5 A 层工作树形成隔离 integration candidate
   收敛唯一 shared Context Runtime 和真实 Planner/Writer leaf adapter
+  完成可信 PlanRoot/TextRoot materializer 与 candidate-binding acceptance guard
   实现 B4 lookahead/background 两路有界并发与 basis revalidation
   运行 focused deterministic/offline full-chain tests；8002 忙时不抢占，真实 API deferred
 
