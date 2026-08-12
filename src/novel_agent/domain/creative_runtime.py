@@ -11,7 +11,7 @@ from pydantic import Field, StringConstraints, model_validator
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import CommitId, ProjectId, RunId, StableId, TaskId
-from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
+from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
 
 Hash = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 
@@ -66,6 +66,9 @@ class CreativeRunPolicy(DomainModel):
     auto_accept_draft: bool = False
     max_task_attempts: int = Field(default=3, ge=1, le=20)
     max_tasks_per_advance: int = Field(default=1, ge=1, le=10)
+    runtime_parallelism: Literal[1, 2] = 1
+    enable_planner_lookahead: bool = False
+    lookahead_horizon: int = Field(default=3, ge=1, le=12)
 
     @model_validator(mode="after")
     def validate_auto_policy(self) -> CreativeRunPolicy:
@@ -73,6 +76,8 @@ class CreativeRunPolicy(DomainModel):
             self.auto_accept_plan or self.auto_accept_draft
         ):
             raise ValueError("only auto mode may enable policy acceptance")
+        if self.enable_planner_lookahead and self.runtime_parallelism != 2:
+            raise ValueError("Planner lookahead requires runtime parallelism 2")
         return self
 
 
@@ -103,11 +108,26 @@ class CandidateBinding(DomainModel):
     basis_commit: CommitId
     basis_snapshot: StableId | None = None
     lineage_artifact_refs: tuple[ArtifactRef, ...] = ()
+    planning_purpose: TaskPurpose = TaskPurpose.NORMAL
+    horizon_start: int | None = Field(default=None, ge=1)
+    horizon_end: int | None = Field(default=None, ge=1)
+    protected_chapter_index: int | None = Field(default=None, ge=1)
+    affects_future_plan: bool | None = None
 
     @model_validator(mode="after")
     def validate_hash(self) -> CandidateBinding:
         if self.candidate_hash != self.artifact_ref.artifact_id.root:
             raise ValueError("candidate hash must match the immutable candidate artifact")
+        if self.planning_purpose is TaskPurpose.LOOKAHEAD and (
+            self.kind is not CandidateKind.PLAN
+            or self.horizon_start is None
+            or self.horizon_end is None
+            or self.protected_chapter_index is None
+            or self.horizon_start <= self.protected_chapter_index
+        ):
+            raise ValueError("lookahead candidate requires its protected future horizon")
+        if self.affects_future_plan is not None and self.kind is not CandidateKind.DRAFT:
+            raise ValueError("future-Plan impact belongs only to a Draft candidate")
         return self
 
 
@@ -118,6 +138,32 @@ class PlanningLoopRequest(DomainModel):
     basis_commit: CommitId
     basis_snapshot: StableId | None = None
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
+    purpose: TaskPurpose = TaskPurpose.NORMAL
+    chapter_index: int = Field(default=0, ge=0)
+    horizon_start: int | None = Field(default=None, ge=1)
+    horizon_end: int | None = Field(default=None, ge=1)
+    protected_chapter_index: int | None = Field(default=None, ge=1)
+
+
+class LookaheadRevalidationOutcome(StrEnum):
+    PROMOTED = "promoted"
+    REPLAN_REQUIRED = "replan_required"
+    SUPERSEDED = "superseded"
+
+
+class LookaheadRevalidationReceipt(DomainModel):
+    receipt_id: StableId
+    run_id: RunId
+    lookahead_task_id: TaskId
+    original_basis_commit: CommitId
+    current_commit: CommitId
+    current_snapshot: StableId
+    protected_chapter_index: int
+    horizon_start: int
+    horizon_end: int
+    affects_future_plan: bool | None = None
+    outcome: LookaheadRevalidationOutcome
+    reason: str = Field(min_length=1, max_length=256)
 
 
 class PlanningLoopResult(DomainModel):
@@ -323,6 +369,11 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
         failure_budget=previous.failure_budget,
         chapter_index=previous.chapter_index,
         target_chapters=previous.target_chapters,
+        purpose=previous.purpose,
+        horizon_start=previous.horizon_start,
+        horizon_end=previous.horizon_end,
+        protected_chapter_index=previous.protected_chapter_index,
+        affects_future_plan=receipt.candidate.affects_future_plan,
     )
 
 
@@ -340,6 +391,8 @@ __all__ = [
     "CreativeRunResult",
     "CreativeRunTerminal",
     "CreativeTaskSpec",
+    "LookaheadRevalidationOutcome",
+    "LookaheadRevalidationReceipt",
     "PlanningLoopRequest",
     "PlanningLoopResult",
     "PlanningTerminalStatus",

@@ -17,6 +17,10 @@ from novel_agent.adapters.runtime.isolated import (
     StrictFakePlanningLeaf,
 )
 from novel_agent.adapters.runtime.stage3_writer import Stage3WritingLeafAdapter
+from novel_agent.adapters.runtime.stage4_planner import (
+    Stage4PlanningInvocation,
+    Stage4PlanningLeafAdapter,
+)
 from novel_agent.domain.creative_runtime import (
     AcceptedCandidateBinding,
     ActorKind,
@@ -28,10 +32,21 @@ from novel_agent.domain.creative_runtime import (
 from novel_agent.domain.generation import WritingLoopRequest
 from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.planning import (
+    PlanningLoopRequest as Stage4PlanningLoopRequest,
+)
+from novel_agent.domain.planning import (
+    PlanningLoopResult as Stage4PlanningLoopResult,
+)
+from novel_agent.domain.planning import (
+    PlanningLoopTerminal as Stage4PlanningLoopTerminal,
+)
 from novel_agent.domain.runtime import EffectReceipt, EffectStatus
+from novel_agent.domain.stage2 import AgentMode, PlanningTask, PlanProposal
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
+from novel_agent.services.planning_context_loop import PlanningContextLoopService
 from novel_agent.services.writer_context_loop import WriterContextLoopService
 from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
 from tests.factories import make_manifest
@@ -108,6 +123,75 @@ def test_real_stage3_adapter_uses_only_public_request_and_result() -> None:
     )
     with pytest.raises(RuntimeError, match="cross-task lineage"):
         asyncio.run(bad_adapter.run(request))
+
+
+def test_real_stage4_adapter_preserves_candidate_and_review_lineage(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stage4"))
+    author_ref = artifacts.put(b"author intent", "text/plain", SchemaVersion("1.0.0"))
+    review_ref = artifacts.put(b"{}", "application/json", SchemaVersion("1.0.0"))
+    simple = PlanningLoopRequest(
+        run_id=RunId("run.stage4-adapter"),
+        task_id=TaskId("task.stage4-adapter"),
+        project_id=ProjectId("project.test"),
+        basis_commit=CommitId("sha256:" + "1" * 64),
+        basis_snapshot=StableId("snapshot.stage4-adapter"),
+        input_artifact_refs=(author_ref,),
+    )
+    task = PlanningTask.model_construct(
+        task_id=StableId(simple.task_id.root),
+        project_id=simple.project_id,
+        mode=AgentMode.CHAPTER,
+        base_commit=simple.basis_commit,
+        source_ids=(StableId("source.author"),),
+    )
+    detailed = Stage4PlanningLoopRequest.model_construct(
+        request_id=StableId("request.stage4-adapter"),
+        run_id=simple.run_id,
+        task_id=simple.task_id,
+        project_id=simple.project_id,
+        task=task,
+        author_intent_artifacts=(author_ref,),
+        snapshot_id=simple.basis_snapshot,
+    )
+    proposal = PlanProposal.model_construct(
+        proposal_id=StableId("proposal.stage4-adapter"),
+        project_id=simple.project_id,
+        mode=AgentMode.CHAPTER,
+        base_commit=simple.basis_commit,
+        items=(),
+        unresolved=(),
+        coverage=1.0,
+        receipt={},
+    )
+    stage4_result = Stage4PlanningLoopResult.model_construct(
+        request_id=detailed.request_id,
+        terminal=Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY,
+        proposal=proposal,
+        plan_review_ref=review_ref,
+        event_artifacts=(review_ref,),
+        diagnostic_codes=(),
+        degraded=False,
+    )
+
+    class _Stage4Loop:
+        async def run(self, **_: object) -> Stage4PlanningLoopResult:
+            return stage4_result
+
+    adapter = Stage4PlanningLeafAdapter(
+        cast(PlanningContextLoopService, _Stage4Loop()),
+        artifacts,
+        lambda _: Stage4PlanningInvocation(
+            request=detailed,
+            model_request=lambda _phase, _mode, _attempt: cast(ModelRequest, object()),
+        ),
+        schema_version=SchemaVersion("1.0.0"),
+    )
+    result = asyncio.run(adapter.run(simple))
+    assert result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY
+    assert result.candidate is not None
+    assert result.candidate.basis_commit == simple.basis_commit
+    assert review_ref in result.candidate.lineage_artifact_refs
+    assert artifacts.read_verified(result.candidate.artifact_ref)
 
 
 def test_fault_writer_refuses_cross_task_injection() -> None:

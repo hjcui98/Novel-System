@@ -111,8 +111,11 @@
       "type": "string"
     },
     "stage4_implementation_status": {
-      "const": "DEFERRED",
       "default": "DEFERRED",
+      "enum": [
+        "DEFERRED",
+        "INTEGRATED"
+      ],
       "title": "Stage4 Implementation Status",
       "type": "string"
     },

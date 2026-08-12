@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.changes import CommitRequest, CommitStatus, ValidationStatus
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
@@ -18,6 +19,8 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunRequest,
     CreativeRunResult,
     CreativeRunTerminal,
+    LookaheadRevalidationOutcome,
+    LookaheadRevalidationReceipt,
     PlanningLoopRequest,
     PlanningTerminalStatus,
     commit_task_from_acceptance,
@@ -29,6 +32,7 @@ from novel_agent.domain.runtime import (
     AttemptOutcome,
     FailureClass,
     TaskKind,
+    TaskPurpose,
     TaskRecord,
     TaskStatus,
 )
@@ -36,11 +40,12 @@ from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializer,
     PlanningLeafPort,
+    RuntimeTaskReader,
     WritingLeafPort,
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
-from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -67,6 +72,7 @@ class CreativeRuntimeService:
         projection: DerivedProjectionService,
         snapshots: DerivedSnapshotRepository,
         policy_resolver: Callable[[str], CreativeRunPolicy],
+        task_reader: RuntimeTaskReader | None = None,
     ) -> None:
         self._commands = commands
         self._acceptance = acceptance
@@ -80,6 +86,7 @@ class CreativeRuntimeService:
         self._projection = projection
         self._snapshots = snapshots
         self._policy_resolver = policy_resolver
+        self._task_reader = task_reader
 
     def start(self, request: CreativeRunRequest) -> CreativeRunResult:
         task = self._commands.create_run_and_initial_task(request)
@@ -112,19 +119,36 @@ class CreativeRuntimeService:
                 basis_commit=task.basis_commit,
                 basis_snapshot=task.basis_snapshot,
                 input_artifact_refs=task.input_artifact_refs,
+                purpose=task.purpose,
+                chapter_index=task.chapter_index,
+                horizon_start=task.horizon_start,
+                horizon_end=task.horizon_end,
+                protected_chapter_index=task.protected_chapter_index,
             )
             planning_result = await self._planner.run(planning_request)
             if planning_result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY:
                 assert planning_result.candidate is not None
+                candidate = planning_result.candidate.model_copy(
+                    update={
+                        "planning_purpose": task.purpose,
+                        "horizon_start": task.horizon_start,
+                        "horizon_end": task.horizon_end,
+                        "protected_chapter_index": task.protected_chapter_index,
+                    }
+                )
                 settled = self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.SUCCEEDED,
                     terminal_status=TaskStatus.SUCCEEDED,
                     artifact_refs=planning_result.artifact_refs,
                 )
-                waiting = self._acceptance_task(settled, planning_result.candidate)
+                waiting = self._acceptance_task(settled, candidate)
                 self._commands.create_task(waiting)
-                automatic = self._auto_accept(waiting, planning_result.candidate)
+                if task.purpose is TaskPurpose.LOOKAHEAD:
+                    revalidated = self._revalidate_lookahead(waiting)
+                    if revalidated is not None:
+                        return revalidated
+                automatic = self._auto_accept(waiting, candidate)
                 if automatic is not None:
                     return automatic
                 return self._result(
@@ -153,6 +177,7 @@ class CreativeRuntimeService:
             if writing_result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY:
                 assert writing_result.final_candidate_id is not None
                 assert writing_result.final_text_artifact is not None
+                observation = getattr(writing_result, "observation", None)
                 candidate = CandidateBinding(
                     candidate_id=StableId(
                         "draft-candidate."
@@ -164,6 +189,11 @@ class CreativeRuntimeService:
                     basis_commit=task.basis_commit,
                     basis_snapshot=task.basis_snapshot,
                     lineage_artifact_refs=writing_result.artifacts,
+                    affects_future_plan=(
+                        None
+                        if observation is None
+                        else bool(observation.changes)
+                    ),
                 )
                 settled = self._commands.settle_attempt(
                     fence,
@@ -276,9 +306,37 @@ class CreativeRuntimeService:
                 outcome=AttemptOutcome.SUCCEEDED,
                 terminal_status=TaskStatus.SUCCEEDED,
             )
-            if task.projection_after == "plan" or task.chapter_index < task.target_chapters:
-                next_chapter = 1 if task.projection_after == "plan" else task.chapter_index + 1
+            if task.projection_after == "plan":
+                next_chapter = task.chapter_index + 1
                 draft = self._draft_task(settled, snapshot.snapshot_id, next_chapter)
+                self._commands.create_task(draft)
+                policy = self._policy_resolver(task.policy_hash)
+                if policy.enable_planner_lookahead and next_chapter < task.target_chapters:
+                    lookahead = self._lookahead_task(
+                        settled,
+                        snapshot.snapshot_id,
+                        protected_chapter=next_chapter,
+                        policy=policy,
+                    )
+                    self._commands.create_task(lookahead)
+                    return self._result(
+                        draft,
+                        CreativeRunTerminal.PROGRESSED,
+                        "freshness_ready_with_lookahead",
+                    )
+                return self._result(draft, CreativeRunTerminal.PROGRESSED, "freshness_ready")
+            if task.chapter_index < task.target_chapters:
+                policy = self._policy_resolver(task.policy_hash)
+                if policy.enable_planner_lookahead:
+                    revalidated = self._revalidate_lookahead(settled)
+                    if revalidated is not None:
+                        return revalidated
+                    return self._result(
+                        settled, CreativeRunTerminal.PROGRESSED, "lookahead_pending"
+                    )
+                draft = self._draft_task(
+                    settled, snapshot.snapshot_id, task.chapter_index + 1
+                )
                 self._commands.create_task(draft)
                 return self._result(draft, CreativeRunTerminal.PROGRESSED, "freshness_ready")
             return self._result(settled, CreativeRunTerminal.COMPLETED, "target_completed")
@@ -290,6 +348,8 @@ class CreativeRuntimeService:
         *,
         policy: CreativeRunPolicy,
     ) -> CreativeRunResult:
+        if command.candidate.planning_purpose is TaskPurpose.LOOKAHEAD:
+            raise ValueError("lookahead candidate must pass post-Draft revalidation first")
         receipt = self._acceptance.submit(command, policy=policy)
         task = self._commands.get_task(command.task_id)
         if receipt.accepted_binding is None:
@@ -318,6 +378,8 @@ class CreativeRuntimeService:
             else policy.auto_accept_draft
         )
         if not enabled:
+            return None
+        if candidate.planning_purpose is TaskPurpose.LOOKAHEAD:
             return None
         identity = StableId(f"auto-accept.{candidate.candidate_id.root}"[:128])
         return self.submit_acceptance(
@@ -374,6 +436,11 @@ class CreativeRuntimeService:
             failure_budget=previous.failure_budget,
             chapter_index=previous.chapter_index,
             target_chapters=previous.target_chapters,
+            purpose=previous.purpose,
+            horizon_start=previous.horizon_start,
+            horizon_end=previous.horizon_end,
+            protected_chapter_index=previous.protected_chapter_index,
+            affects_future_plan=candidate.affects_future_plan,
         )
 
     @staticmethod
@@ -392,6 +459,11 @@ class CreativeRuntimeService:
             failure_budget=previous.failure_budget,
             chapter_index=previous.chapter_index,
             target_chapters=previous.target_chapters,
+            purpose=previous.purpose,
+            horizon_start=previous.horizon_start,
+            horizon_end=previous.horizon_end,
+            protected_chapter_index=previous.protected_chapter_index,
+            affects_future_plan=previous.affects_future_plan,
             projection_after=("plan" if previous.kind is TaskKind.PLAN_COMMIT else "draft"),
         )
 
@@ -414,6 +486,219 @@ class CreativeRuntimeService:
             target_chapters=previous.target_chapters,
         )
 
+    def _lookahead_task(
+        self,
+        previous: TaskRecord,
+        snapshot_id: StableId,
+        *,
+        protected_chapter: int,
+        policy: CreativeRunPolicy,
+    ) -> TaskRecord:
+        if self._task_reader is None:
+            raise RuntimeError("Planner lookahead requires the runtime task reader")
+        inputs = next(
+            (
+                task.input_artifact_refs
+                for task in self._task_reader.list_run(previous.run_id)
+                if task.kind is TaskKind.PLAN_CANDIDATE
+                and task.purpose is TaskPurpose.NORMAL
+                and task.chapter_index == 0
+            ),
+            (),
+        )
+        horizon_start = protected_chapter + 1
+        horizon_end = min(previous.target_chapters, horizon_start + policy.lookahead_horizon - 1)
+        return TaskRecord(
+            task_id=TaskId(f"{previous.run_id.root}.lookahead.after.{protected_chapter}"),
+            run_id=previous.run_id,
+            project_id=previous.project_id,
+            kind=TaskKind.PLAN_CANDIDATE,
+            purpose=TaskPurpose.LOOKAHEAD,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=previous.basis_commit,
+            basis_snapshot=snapshot_id,
+            policy_hash=previous.policy_hash,
+            permission_hash=previous.permission_hash,
+            input_artifact_refs=inputs,
+            dependency_task_ids=(previous.task_id,),
+            failure_budget=previous.failure_budget,
+            chapter_index=protected_chapter,
+            target_chapters=previous.target_chapters,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            protected_chapter_index=protected_chapter,
+        )
+
+    def _revalidate_lookahead(self, trigger: TaskRecord) -> CreativeRunResult | None:
+        if self._task_reader is None:
+            return None
+        tasks = self._task_reader.list_run(trigger.run_id)
+        current_commit = self._commits.current_commit(trigger.project_id)
+        waiting = next(
+            (
+                task
+                for task in reversed(tasks)
+                if task.kind is TaskKind.PLAN_ACCEPTANCE
+                and task.purpose is TaskPurpose.LOOKAHEAD
+                and task.status is TaskStatus.WAITING_INPUT
+                and not task.superseded
+            ),
+            None,
+        )
+        if waiting is None or waiting.basis_commit == current_commit:
+            return None
+        protected = waiting.protected_chapter_index
+        assert protected is not None
+        projection = next(
+            (
+                task
+                for task in reversed(tasks)
+                if task.kind is TaskKind.PROJECTION_FRESHNESS
+                and task.projection_after == "draft"
+                and task.chapter_index == protected
+                and task.status is TaskStatus.SUCCEEDED
+                and task.basis_commit == current_commit
+            ),
+            None,
+        )
+        if projection is None:
+            return None
+        snapshot = self._snapshots.get_for_commit(current_commit)
+        if snapshot is None or snapshot.build_status.value != "exact":
+            return None
+        candidate = self._candidate_for_task(waiting)
+        assert waiting.horizon_start is not None and waiting.horizon_end is not None
+        if projection.affects_future_plan is False:
+            outcome = LookaheadRevalidationOutcome.PROMOTED
+            reason = "accepted Draft reported no future-Plan-affecting change"
+        elif projection.affects_future_plan is True:
+            outcome = LookaheadRevalidationOutcome.REPLAN_REQUIRED
+            reason = "accepted Draft changed future-Plan-relevant state"
+        else:
+            outcome = LookaheadRevalidationOutcome.SUPERSEDED
+            reason = "Draft impact was unavailable; stale lookahead cannot be promoted"
+        receipt = LookaheadRevalidationReceipt(
+            receipt_id=StableId(
+                "lookahead-revalidation."
+                + content_id(
+                    {
+                        "task": waiting.task_id.root,
+                        "from": waiting.basis_commit.root,
+                        "to": current_commit.root,
+                        "outcome": outcome.value,
+                    }
+                ).root[-48:]
+            ),
+            run_id=waiting.run_id,
+            lookahead_task_id=waiting.task_id,
+            original_basis_commit=waiting.basis_commit,
+            current_commit=current_commit,
+            current_snapshot=snapshot.snapshot_id,
+            protected_chapter_index=protected,
+            horizon_start=waiting.horizon_start,
+            horizon_end=waiting.horizon_end,
+            affects_future_plan=projection.affects_future_plan,
+            outcome=outcome,
+            reason=reason,
+        )
+        receipt_ref = self._artifacts.put(
+            canonical_json_bytes(receipt.model_dump(mode="json")),
+            "application/vnd.novel-agent.lookahead-revalidation+json",
+            SchemaVersion("1.0.0"),
+        )
+        self._commands.supersede_task(waiting.task_id, reason=reason)
+        if outcome is LookaheadRevalidationOutcome.PROMOTED:
+            promoted = candidate.model_copy(
+                update={
+                    "candidate_id": StableId(
+                        f"{candidate.candidate_id.root}.promoted.{current_commit.root[-12:]}"[:128]
+                    ),
+                    "basis_commit": current_commit,
+                    "basis_snapshot": snapshot.snapshot_id,
+                    "lineage_artifact_refs": (
+                        *candidate.lineage_artifact_refs,
+                        receipt_ref,
+                    ),
+                    "planning_purpose": TaskPurpose.NORMAL,
+                }
+            )
+            promoted_task = self._promoted_acceptance_task(
+                waiting, projection, promoted, receipt_ref
+            )
+            self._commands.create_task(promoted_task)
+            automatic = self._auto_accept(promoted_task, promoted)
+            if automatic is not None:
+                return automatic
+            return self._result(
+                promoted_task,
+                CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE,
+                "lookahead_promoted",
+            )
+        parent_id = waiting.dependency_task_ids[0]
+        parent = next(task for task in tasks if task.task_id == parent_id)
+        replanned = TaskRecord(
+            task_id=TaskId(f"{waiting.run_id.root}.replan.after.{protected}"),
+            run_id=waiting.run_id,
+            project_id=waiting.project_id,
+            kind=TaskKind.PLAN_CANDIDATE,
+            purpose=TaskPurpose.REPLAN,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=current_commit,
+            basis_snapshot=snapshot.snapshot_id,
+            policy_hash=waiting.policy_hash,
+            permission_hash=waiting.permission_hash,
+            input_artifact_refs=(*parent.input_artifact_refs, receipt_ref),
+            dependency_task_ids=(projection.task_id,),
+            failure_budget=waiting.failure_budget,
+            chapter_index=protected,
+            target_chapters=waiting.target_chapters,
+            horizon_start=waiting.horizon_start,
+            horizon_end=waiting.horizon_end,
+            protected_chapter_index=protected,
+        )
+        self._commands.create_task(replanned)
+        return self._result(
+            replanned, CreativeRunTerminal.PROGRESSED, "lookahead_replan_required"
+        )
+
+    def _promoted_acceptance_task(
+        self,
+        waiting: TaskRecord,
+        projection: TaskRecord,
+        candidate: CandidateBinding,
+        receipt_ref: ArtifactRef,
+    ) -> TaskRecord:
+        binding_ref = self._artifacts.put(
+            canonical_json_bytes(candidate.model_dump(mode="json")),
+            CANDIDATE_BINDING_MEDIA_TYPE,
+            SchemaVersion("1.0.0"),
+        )
+        return TaskRecord(
+            task_id=TaskId(f"{waiting.task_id.root}.promoted"),
+            run_id=waiting.run_id,
+            project_id=waiting.project_id,
+            kind=TaskKind.PLAN_ACCEPTANCE,
+            purpose=TaskPurpose.NORMAL,
+            task_revision=0,
+            status=TaskStatus.WAITING_INPUT,
+            basis_commit=projection.basis_commit,
+            basis_snapshot=candidate.basis_snapshot,
+            policy_hash=waiting.policy_hash,
+            permission_hash=waiting.permission_hash,
+            input_artifact_refs=(candidate.artifact_ref,),
+            candidate_binding_ref=binding_ref,
+            dependency_task_ids=(projection.task_id,),
+            terminal_artifact_refs=(receipt_ref,),
+            failure_budget=waiting.failure_budget,
+            chapter_index=waiting.chapter_index,
+            target_chapters=waiting.target_chapters,
+            horizon_start=waiting.horizon_start,
+            horizon_end=waiting.horizon_end,
+            protected_chapter_index=waiting.protected_chapter_index,
+        )
+
     def _result(
         self, task: TaskRecord, terminal: CreativeRunTerminal, reason: str
     ) -> CreativeRunResult:
@@ -433,6 +718,8 @@ class CreativeRuntimeService:
     @staticmethod
     def _legal_commands(task: TaskRecord) -> tuple[str, ...]:
         if task.status is TaskStatus.WAITING_INPUT:
+            if task.purpose is TaskPurpose.LOOKAHEAD:
+                return ("wait_for_revalidation", "cancel")
             return ("accept", "reject", "cancel")
         if task.status is TaskStatus.WAITING_RETRY:
             return ("retry", "cancel")

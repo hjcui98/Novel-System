@@ -38,6 +38,18 @@
     "CandidateBinding": {
       "additionalProperties": false,
       "properties": {
+        "affects_future_plan": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affects Future Plan"
+        },
         "artifact_ref": {
           "$ref": "#/$defs/ArtifactRef"
         },
@@ -63,6 +75,32 @@
         "candidate_id": {
           "$ref": "#/$defs/StableId"
         },
+        "horizon_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon End"
+        },
+        "horizon_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Start"
+        },
         "kind": {
           "$ref": "#/$defs/CandidateKind"
         },
@@ -73,6 +111,23 @@
           },
           "title": "Lineage Artifact Refs",
           "type": "array"
+        },
+        "planning_purpose": {
+          "$ref": "#/$defs/TaskPurpose",
+          "default": "normal"
+        },
+        "protected_chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protected Chapter Index"
         }
       },
       "required": [
@@ -126,6 +181,16 @@
     "TaskId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "TaskId",
+      "type": "string"
+    },
+    "TaskPurpose": {
+      "enum": [
+        "normal",
+        "lookahead",
+        "replan",
+        "derived_maintenance"
+      ],
+      "title": "TaskPurpose",
       "type": "string"
     }
   },

@@ -232,6 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             writer = cast(WritingLeafPort, _DeterministicWriter(artifacts))
             planner = cast(PlanningLeafPort, StrictFakePlanningLeaf(artifacts))
+            task_reader = _Q(factory)
             validate_runtime_assembly(
                 manifest,
                 planner=planner,
@@ -267,13 +268,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lambda policy_hash: policy
                 if policy_hash == policy.policy_hash
                 else (_ for _ in ()).throw(KeyError(policy_hash)),
+                task_reader,
             )
             dispatcher = CreativeDispatcher(
-                _Q(factory),
+                task_reader,
                 runtime,
                 worker_id="cli-advance",
                 project_id=ProjectId(args.project_id),
                 run_id=RunId(args.run_id),
+                parallelism=policy.runtime_parallelism,
             )
             results = _run_async(dispatcher.run_bounded(max_tasks=args.max_tasks))
             if not results:

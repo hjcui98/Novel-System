@@ -35,9 +35,17 @@ from novel_agent.domain.ids import (
     RunId,
     SchemaVersion,
     StableId,
+    TaskId,
 )
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
-from novel_agent.domain.runtime import EffectReceipt, EffectStatus, TaskRecord
+from novel_agent.domain.runtime import (
+    EffectReceipt,
+    EffectStatus,
+    TaskKind,
+    TaskPurpose,
+    TaskRecord,
+    TaskStatus,
+)
 from novel_agent.domain.stage5_manifest import Stage5DevelopmentManifest, load_stage5_manifest
 from novel_agent.ports.creative_runtime import WritingLeafPort
 from novel_agent.runtime.creative_assembly import validate_runtime_assembly
@@ -154,6 +162,14 @@ def test_validate_runtime_assembly_rejects_bad_production_and_isolated_mixes() -
     from novel_agent.domain.stage5_manifest import Stage5FeatureAdmission
 
     manifest = _manifest()
+    deferred = manifest.model_copy(
+        update={
+            "stage4_implementation_status": "DEFERRED",
+            "feature_admission": manifest.feature_admission.model_copy(
+                update={"real_stage4_adapter": False}
+            ),
+        }
+    )
     admitted = Stage5DevelopmentManifest.model_construct(  # type: ignore[call-arg]
         feature_admission=Stage5FeatureAdmission(real_stage4_adapter=True)
     )
@@ -164,7 +180,7 @@ def test_validate_runtime_assembly_rejects_bad_production_and_isolated_mixes() -
 
     with pytest.raises(RuntimeError, match="real Stage 4"):
         validate_runtime_assembly(
-            manifest,
+            deferred,
             planner=real,
             writer=real,
             plan_materializer=real,
@@ -323,6 +339,82 @@ def test_dispatcher_run_bounded_consumes_full_budget_without_break() -> None:
         asyncio.run(dispatcher.run_bounded(max_tasks=0))
 
 
+def test_dispatcher_overlaps_only_current_draft_and_planner_lookahead() -> None:
+    basis = CommitId("sha256:" + "1" * 64)
+
+    def task(identity: str, kind: TaskKind, purpose: TaskPurpose) -> TaskRecord:
+        return TaskRecord(
+            task_id=TaskId(identity),
+            run_id=RunId("run.parallel"),
+            project_id=ProjectId("project.test"),
+            kind=kind,
+            purpose=purpose,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=basis,
+            basis_snapshot=StableId("snapshot.parallel"),
+            policy_hash=HASH,
+            permission_hash=PERMISSION_HASH,
+            chapter_index=1,
+            target_chapters=3,
+            horizon_start=(2 if purpose is TaskPurpose.LOOKAHEAD else None),
+            horizon_end=(3 if purpose is TaskPurpose.LOOKAHEAD else None),
+            protected_chapter_index=(1 if purpose is TaskPurpose.LOOKAHEAD else None),
+        )
+
+    ready = (
+        task("task.parallel.draft", TaskKind.DRAFT_CANDIDATE, TaskPurpose.NORMAL),
+        task("task.parallel.lookahead", TaskKind.PLAN_CANDIDATE, TaskPurpose.LOOKAHEAD),
+    )
+
+    class _Batch:
+        def __init__(self) -> None:
+            self.used = False
+
+        def ready_batch(self, **_: object) -> tuple[TaskRecord, ...]:
+            if self.used:
+                return ()
+            self.used = True
+            return ready
+
+    class _Overlap:
+        def __init__(self) -> None:
+            self.in_flight = 0
+            self.max_in_flight = 0
+            self.both_started = asyncio.Event()
+
+        async def advance(self, task_id: TaskId, *, worker_id: str) -> CreativeRunResult:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            if self.in_flight == 2:
+                self.both_started.set()
+            await self.both_started.wait()
+            self.in_flight -= 1
+            return CreativeRunResult(
+                run_id=RunId("run.parallel"),
+                project_id=ProjectId("project.test"),
+                terminal=CreativeRunTerminal.PROGRESSED,
+                current_task_id=task_id,
+                basis_commit=basis,
+                current_commit=basis,
+                reason_code=worker_id,
+            )
+
+    overlap = _Overlap()
+    dispatcher = CreativeDispatcher(
+        cast(RuntimeTaskQueryRepository, _Batch()),
+        cast(CreativeRuntimeService, overlap),
+        worker_id="parallel",
+        parallelism=2,
+    )
+    results = asyncio.run(dispatcher.run_bounded(max_tasks=2))
+    assert len(results) == 2
+    assert overlap.max_in_flight == 2
+
+    normal_plan = task("task.parallel.normal-plan", TaskKind.PLAN_CANDIDATE, TaskPurpose.NORMAL)
+    assert CreativeDispatcher._parallel_batch((ready[0], normal_plan)) == (ready[0],)
+
+
 def test_audit_report_derives_from_durable_truth(
     runner_kernel: tuple[
         sessionmaker[Session],
@@ -350,7 +442,7 @@ def test_audit_report_derives_from_durable_truth(
     assert report.manifest_fingerprint.root.startswith("sha256:")
     assert report.effects == ()
     assert report.skill_hashes == ()
-    assert report.active_feature_flags == ()
+    assert report.active_feature_flags == ("real_stage4_adapter",)
     assert report.model_request_count == 0
     with factory() as session, session.begin():
         from novel_agent.adapters.postgres.models import RuntimeEffectProjectionRow

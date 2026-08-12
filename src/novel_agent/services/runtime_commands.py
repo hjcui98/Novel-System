@@ -153,6 +153,46 @@ class RuntimeCommandService:
             self._insert_task(session, task, now)
             return task
 
+    def supersede_task(self, task_id: TaskId, *, reason: str) -> TaskRecord:
+        if not reason or len(reason) > 512:
+            raise ValueError("supersede reason must be non-empty and bounded")
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            if task.superseded:
+                return task
+            if task.status not in {
+                TaskStatus.PENDING,
+                TaskStatus.READY,
+                TaskStatus.WAITING_INPUT,
+                TaskStatus.WAITING_RETRY,
+                TaskStatus.BLOCKED,
+            }:
+                raise RuntimeCommandConflictError("only inactive work may be superseded")
+            updated = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.CANCELLED,
+                    "superseded": True,
+                    "block_cause": reason,
+                }
+            )
+            self._update_task(session, updated, now)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=StableId(f"supersede.{task.task_id.root}"[:128]),
+                    action="supersede",
+                    actor_id="creative-runtime",
+                    reason=reason,
+                ).model_dump(mode="json"),
+                StableId(f"{task.task_id.root}.superseded"[:128]),
+            )
+            return updated
+
     def complete_waiting_task(
         self,
         task_id: TaskId,

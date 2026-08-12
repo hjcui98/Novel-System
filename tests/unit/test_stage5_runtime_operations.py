@@ -333,28 +333,24 @@ def test_dispatcher_is_bounded_and_claim_conflicts_are_normal() -> None:
     assert asyncio.run(conflict.poll_one()) is None
 
 
-def test_manifest_fingerprints_and_formal_evaluator(tmp_path: Path) -> None:
+def test_manifest_versions_features_and_formal_evaluator(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
     manifest_path = root / "src/novel_agent/runtime/stage5_development_manifest.json"
     assert load_stage5_manifest(manifest_path).stage3_gate == "CONDITIONAL"
     broken = tmp_path / "a/b/c/manifest.json"
     broken.parent.mkdir(parents=True)
     broken.write_text(manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="source is missing"):
-        load_stage5_manifest(broken)
+    copied = load_stage5_manifest(broken)
+    assert copied.stage4_implementation_status == "INTEGRATED"
     mismatched = root / "src/novel_agent/runtime/stage5_development_manifest.json"
     payload = mismatched.read_text(encoding="utf-8").replace(
         '"stage2_schema_fingerprint": "sha256:7',
         '"stage2_schema_fingerprint": "sha256:0',
         1,
     )
-    mismatch_path = root / "src/novel_agent/runtime/stage5_mismatch_test.json"
+    mismatch_path = tmp_path / "stage5-provenance-only.json"
     mismatch_path.write_text(payload, encoding="utf-8")
-    try:
-        with pytest.raises(RuntimeError, match="fingerprint mismatch"):
-            load_stage5_manifest(mismatch_path)
-    finally:
-        mismatch_path.unlink()
+    assert load_stage5_manifest(mismatch_path).stage2_schema_fingerprint.startswith("sha256:0")
     invalid = tmp_path / "invalid.json"
     invalid.write_text("not-json", encoding="utf-8")
     with pytest.raises(RuntimeError, match="missing or invalid"):

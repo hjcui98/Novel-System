@@ -23,6 +23,18 @@ class RuntimeTaskQueryRepository:
         project_id: ProjectId | None = None,
         run_id: RunId | None = None,
     ) -> TaskId | None:
+        ready = self.ready_batch(limit=1, project_id=project_id, run_id=run_id)
+        return None if not ready else ready[0].task_id
+
+    def ready_batch(
+        self,
+        *,
+        limit: int,
+        project_id: ProjectId | None = None,
+        run_id: RunId | None = None,
+    ) -> tuple[TaskRecord, ...]:
+        if limit < 1:
+            raise ValueError("ready batch limit must be positive")
         now = datetime.now(UTC)
         with self._session_factory() as session:
             statement = select(RuntimeTaskProjectionRow).where(
@@ -36,14 +48,16 @@ class RuntimeTaskQueryRepository:
                 statement = statement.where(RuntimeTaskProjectionRow.project_id == project_id.root)
             if run_id is not None:
                 statement = statement.where(RuntimeTaskProjectionRow.run_id == run_id.root)
-            row = session.scalar(
+            rows = session.scalars(
                 statement.order_by(
                     RuntimeTaskProjectionRow.priority.desc(),
                     RuntimeTaskProjectionRow.scheduled_for,
                     RuntimeTaskProjectionRow.task_id,
-                ).limit(1)
+                ).limit(limit)
             )
-            return None if row is None else TaskId(row.task_id)
+            return tuple(
+                TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows
+            )
 
     def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
         with self._session_factory() as session:

@@ -166,6 +166,13 @@ class TaskKind(StrEnum):
     MAINTENANCE = "maintenance"
 
 
+class TaskPurpose(StrEnum):
+    NORMAL = "normal"
+    LOOKAHEAD = "lookahead"
+    REPLAN = "replan"
+    DERIVED_MAINTENANCE = "derived_maintenance"
+
+
 class TaskStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"
@@ -294,6 +301,7 @@ class TaskRecord(DomainModel):
     run_id: RunId
     project_id: ProjectId
     kind: TaskKind
+    purpose: TaskPurpose = TaskPurpose.NORMAL
     task_revision: int = Field(ge=0)
     status: TaskStatus
     priority: int = 0
@@ -312,10 +320,39 @@ class TaskRecord(DomainModel):
     writer_generation: int = Field(default=0, ge=0)
     chapter_index: int = Field(default=0, ge=0)
     target_chapters: int = Field(default=1, ge=1)
+    horizon_start: int | None = Field(default=None, ge=1)
+    horizon_end: int | None = Field(default=None, ge=1)
+    protected_chapter_index: int | None = Field(default=None, ge=1)
+    affects_future_plan: bool | None = None
     projection_after: str | None = Field(default=None, pattern=r"^(plan|draft)$")
     paused: bool = False
     cancel_requested: bool = False
     superseded: bool = False
+
+    @model_validator(mode="after")
+    def validate_purpose(self) -> TaskRecord:
+        if (self.horizon_start is None) != (self.horizon_end is None):
+            raise ValueError("task horizon bounds must appear together")
+        if (
+            self.horizon_start is not None
+            and self.horizon_end is not None
+            and self.horizon_end < self.horizon_start
+        ):
+            raise ValueError("task horizon end precedes start")
+        if self.purpose is TaskPurpose.LOOKAHEAD and (
+            self.kind not in {TaskKind.PLAN_CANDIDATE, TaskKind.PLAN_ACCEPTANCE}
+            or self.protected_chapter_index is None
+            or self.horizon_start is None
+            or self.horizon_start <= self.protected_chapter_index
+        ):
+            raise ValueError("lookahead requires a future Plan horizon and protected chapter")
+        if self.affects_future_plan is not None and self.kind not in {
+            TaskKind.DRAFT_ACCEPTANCE,
+            TaskKind.DRAFT_COMMIT,
+            TaskKind.PROJECTION_FRESHNESS,
+        }:
+            raise ValueError("future-Plan impact belongs only to the Draft commit chain")
+        return self
 
 
 class TaskAttempt(DomainModel):

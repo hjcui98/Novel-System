@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.adapters.runtime.isolated import (
     StrictDeterministicCandidateMaterializer,
     StrictFakePlanningLeaf,
@@ -38,9 +39,10 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
-from novel_agent.domain.runtime import TaskKind, TaskRecord
+from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import WritingLeafPort
+from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.creative_runtime import CreativeRuntimeService
@@ -72,6 +74,7 @@ class _WritingResult:
         self.final_candidate_id = ref.artifact_id
         self.final_text_artifact = ref
         self.artifacts = (ref,)
+        self.observation = type("Observation", (), {"changes": ()})()
 
 
 class _Writer:
@@ -254,3 +257,107 @@ def test_three_chapter_fixed_topology_uses_accept_commit_and_exact_freshness(
             assert commands.get_task(draft.current_task_id).kind is TaskKind.DRAFT_CANDIDATE
         else:
             assert draft.terminal is CreativeRunTerminal.COMPLETED
+
+
+def test_two_lane_lookahead_is_revalidated_before_plan_acceptance(tmp_path: Path) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory: sessionmaker[Session] = build_session_factory(engine)
+    commits = CommitService(factory)
+    base = commits.initialize_project(make_manifest())
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "lookahead-objects"))
+    policy = CreativeRunPolicy(
+        automation_mode=AutomationMode.AUTO,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        auto_accept_plan=True,
+        auto_accept_draft=True,
+        runtime_parallelism=2,
+        enable_planner_lookahead=True,
+        lookahead_horizon=2,
+        max_tasks_per_advance=2,
+    )
+    commands = RuntimeCommandService(
+        factory, RunEventLogRepository(factory), lambda _project_id: HASH
+    )
+    tasks = RuntimeTaskQueryRepository(factory)
+    runtime = CreativeRuntimeService(
+        commands,
+        RuntimeAcceptanceService(commands, commits, artifacts),
+        commits,
+        artifacts,
+        StrictFakePlanningLeaf(artifacts),
+        cast(WritingLeafPort, _Writer(artifacts)),
+        lambda task: cast(WritingLoopRequest, _WritingRequest(task)),
+        StrictDeterministicCandidateMaterializer(commits, candidate_kind=CandidateKind.PLAN),
+        StrictDeterministicCandidateMaterializer(commits, candidate_kind=CandidateKind.DRAFT),
+        DerivedProjectionService(ProjectionOutboxRepository(factory), _ProjectionBuilder()),
+        DerivedSnapshotRepository(factory),
+        lambda policy_hash: policy
+        if policy_hash == policy.policy_hash
+        else (_ for _ in ()).throw(KeyError(policy_hash)),
+        tasks,
+    )
+    start = runtime.start(
+        CreativeRunRequest(
+            run_id=RunId("run.lookahead"),
+            project_id=ProjectId("project.test"),
+            basis_commit=base,
+            policy=policy,
+            target_chapters=2,
+        )
+    )
+    assert start.current_task_id is not None
+    plan_commit = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    assert plan_commit.current_task_id is not None
+    plan_projection = asyncio.run(
+        runtime.advance(plan_commit.current_task_id, worker_id="plan-commit")
+    )
+    assert plan_projection.current_task_id is not None
+    draft_ready = asyncio.run(
+        runtime.advance(plan_projection.current_task_id, worker_id="plan-freshness")
+    )
+    assert draft_ready.reason_code == "freshness_ready_with_lookahead"
+
+    dispatcher = CreativeDispatcher(
+        tasks,
+        runtime,
+        worker_id="two-lane",
+        run_id=RunId("run.lookahead"),
+        parallelism=2,
+    )
+    overlapped = asyncio.run(dispatcher.run_bounded(max_tasks=2))
+    assert len(overlapped) == 2
+    run_tasks = tasks.list_run(RunId("run.lookahead"))
+    draft_commit = next(
+        task
+        for task in run_tasks
+        if task.kind is TaskKind.DRAFT_COMMIT and task.status is TaskStatus.READY
+    )
+    lookahead_waiting = next(
+        task
+        for task in run_tasks
+        if task.kind is TaskKind.PLAN_ACCEPTANCE
+        and task.purpose is TaskPurpose.LOOKAHEAD
+    )
+    assert lookahead_waiting.status is TaskStatus.WAITING_INPUT
+
+    draft_projection = asyncio.run(runtime.advance(draft_commit.task_id, worker_id="draft-commit"))
+    assert draft_projection.current_task_id is not None
+    promoted = asyncio.run(
+        runtime.advance(draft_projection.current_task_id, worker_id="draft-freshness")
+    )
+    assert promoted.current_task_id is not None
+    assert commands.get_task(promoted.current_task_id).kind is TaskKind.PLAN_COMMIT
+    superseded = commands.get_task(lookahead_waiting.task_id)
+    assert superseded.status is TaskStatus.CANCELLED
+    assert superseded.superseded
+    promoted_acceptance = next(
+        task
+        for task in tasks.list_run(RunId("run.lookahead"))
+        if task.kind is TaskKind.PLAN_ACCEPTANCE
+        and task.purpose is TaskPurpose.NORMAL
+        and task.task_id.root.endswith(".promoted")
+    )
+    assert promoted_acceptance.status is TaskStatus.SUCCEEDED
+    engine.dispose()

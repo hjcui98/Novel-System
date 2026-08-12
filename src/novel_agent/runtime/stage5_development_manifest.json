@@ -6,7 +6,7 @@
   "feature_admission": {
     "external_hook_ingress": false,
     "multi_worker_lease": false,
-    "real_stage4_adapter": false,
+    "real_stage4_adapter": true,
     "scheduled_fire": false,
     "skill_evolution": false,
     "temporal_adapter": false
@@ -20,6 +20,6 @@
   "stage3_commit": "bab4451b166c56c9cb7029c9af490aa31a146d53",
   "stage3_contract_fingerprint": "sha256:890e5e1f7d0308d2b46aeffd27a6f4642980ee96f897cf624eac9d4f23290b3e",
   "stage3_gate": "CONDITIONAL",
-  "stage4_implementation_status": "DEFERRED",
+  "stage4_implementation_status": "INTEGRATED",
   "stage4_port_fingerprint": "sha256:417e3cbbdfb718be1f86dd9fd0cae07c674e9aa57f9ebb85760775a58bd6d667"
 }

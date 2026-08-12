@@ -79,6 +79,16 @@
       "title": "TaskKind",
       "type": "string"
     },
+    "TaskPurpose": {
+      "enum": [
+        "normal",
+        "lookahead",
+        "replan",
+        "derived_maintenance"
+      ],
+      "title": "TaskPurpose",
+      "type": "string"
+    },
     "TaskStatus": {
       "enum": [
         "pending",
@@ -98,6 +108,18 @@
   },
   "additionalProperties": false,
   "properties": {
+    "affects_future_plan": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Affects Future Plan"
+    },
     "basis_commit": {
       "$ref": "#/$defs/CommitId"
     },
@@ -172,6 +194,32 @@
       "title": "Failure Budget",
       "type": "integer"
     },
+    "horizon_end": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Horizon End"
+    },
+    "horizon_start": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Horizon Start"
+    },
     "input_artifact_refs": {
       "default": [],
       "items": {
@@ -218,6 +266,23 @@
       ],
       "default": null,
       "title": "Projection After"
+    },
+    "protected_chapter_index": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Protected Chapter Index"
+    },
+    "purpose": {
+      "$ref": "#/$defs/TaskPurpose",
+      "default": "normal"
     },
     "run_id": {
       "$ref": "#/$defs/RunId"

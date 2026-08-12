@@ -25,6 +25,18 @@
     "automation_mode": {
       "$ref": "#/$defs/AutomationMode"
     },
+    "enable_planner_lookahead": {
+      "default": false,
+      "title": "Enable Planner Lookahead",
+      "type": "boolean"
+    },
+    "lookahead_horizon": {
+      "default": 3,
+      "maximum": 12,
+      "minimum": 1,
+      "title": "Lookahead Horizon",
+      "type": "integer"
+    },
     "max_task_attempts": {
       "default": 3,
       "maximum": 20,
@@ -48,6 +60,15 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Policy Hash",
       "type": "string"
+    },
+    "runtime_parallelism": {
+      "default": 1,
+      "enum": [
+        1,
+        2
+      ],
+      "title": "Runtime Parallelism",
+      "type": "integer"
     }
   },
   "required": [

@@ -21,13 +21,17 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory import (
     ChannelHit,
     ContextBudgetReport,
+    FusedCandidate,
+    GraphPathDereferenceStatus,
+    GraphPathReceipt,
     NeedFacetKind,
     RetrievalChannel,
+    RetrievalStopReason,
+    RetrievalTrace,
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1ContextPackage,
     Stage1QueryIntent,
-    TypedGraphPathReceipt,
 )
 from novel_agent.domain.planning import (
     GoalProposal,
@@ -73,7 +77,7 @@ from novel_agent.domain.stage2 import (
     PlanProposal,
     RetrievalBudget,
 )
-from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
+from novel_agent.domain.world import StoryTime
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.planner_context_assembler import PlannerContextAssembler
 from novel_agent.services.planning_inquiry_need_generation import (
@@ -490,21 +494,15 @@ def test_post_genesis_context_rejects_wrong_memory_basis(tmp_path: Path) -> None
         )
 
 
-def test_relation_and_causal_routes_are_anchor_first_then_conditional_graph() -> None:
+def test_relation_and_causal_routes_reuse_frozen_stage2_parallel_graph_profile() -> None:
     for intent in (Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP):
         profile = profile_for(intent, ResolutionTier.R2)
         assert tuple(step.channel for step in profile.primary_groups[0].steps) == (
+            RetrievalChannel.TYPED_GRAPH,
             RetrievalChannel.ANCHOR_BM25,
             RetrievalChannel.ANCHOR_DENSE,
         )
-        assert profile.conditional_fallbacks[0].condition == ("relation_or_causal_facets_unclosed")
-        assert tuple(step.channel for step in profile.conditional_fallbacks[0].steps) == (
-            RetrievalChannel.TYPED_GRAPH,
-        )
-    assert RouteBoundControllerPolicy._fallback_applies("relation_or_causal_facets_unclosed", False)
-    assert not RouteBoundControllerPolicy._fallback_applies(
-        "relation_or_causal_facets_unclosed", True
-    )
+        assert profile.conditional_fallbacks == ()
 
 
 def test_stage4_domain_validators_fail_closed(tmp_path: Path) -> None:
@@ -694,55 +692,46 @@ def test_graph_receipt_and_binding_validators(tmp_path: Path) -> None:
     del tmp_path
     evidence = make_synthetic_bundle().world_roots[0].states[0].evidence_refs[0]
     payload = {
-        "receipt_id": HASH,
-        "base_commit": BASE,
+        "path_id": StableId("graph-path.stage4.binding"),
+        "source_commit": BASE,
         "snapshot_id": StableId("snapshot.graph"),
-        "access_scope": "author_planning",
         "seed_entity_ids": (StableId("entity.a"),),
         "relation_row_ids": (StableId("row.a"),),
         "relation_ids": (StableId("relation.a"),),
         "entity_path": (StableId("entity.a"), StableId("entity.b")),
-        "directions": ("outgoing",),
+        "predicates": ("related_to",),
+        "directions": ("forward",),
+        "valid_time": (StoryTime(worldline="main", start_ordinal=1),),
         "edge_semantics": ("canonical",),
         "evidence_refs": (evidence,),
-        "depth": 1,
+        "dereference_status": GraphPathDereferenceStatus.L0_VERIFIED,
     }
     for update in (
         {"relation_ids": (StableId("relation.a"), StableId("relation.b"))},
         {"entity_path": (StableId("entity.a"), StableId("entity.b"), StableId("entity.c"))},
-        {"directions": ("outgoing", "incoming")},
-        {"depth": 2},
+        {"directions": ("forward", "reverse")},
         {"edge_semantics": ("inferred",)},
     ):
         with pytest.raises(ValidationError):
-            TypedGraphPathReceipt.model_validate(payload | update)
-    receipt = TypedGraphPathReceipt.model_validate(payload)
+            GraphPathReceipt.model_validate(payload | update)
+    receipt = GraphPathReceipt.model_validate(payload)
     unit = RetrievalUnit(
         unit_id=StableId("unit.graph"),
         unit_kind=RetrievalUnitKind.RELATION_ANCHOR,
         source_commit=BASE,
         snapshot_id=StableId("snapshot.graph"),
         text="A relates to B",
-        graph_path_receipt=receipt,
     )
-    with pytest.raises(ValidationError, match="basis differs"):
-        RetrievalUnit.model_validate(
-            unit.model_dump() | {"source_commit": CommitId("sha256:" + "2" * 64)}
-        )
-    with pytest.raises(ValidationError, match="requires a parent"):
-        RetrievalUnit.model_validate(
-            unit.model_dump() | {"expanded_from_handle": StableId("compact.a")}
-        )
-    with pytest.raises(ValidationError, match="bound"):
-        ChannelHit(
-            unit=unit,
-            channel=RetrievalChannel.ANCHOR_BM25,
-            channel_rank=1,
-            raw_score=1.0,
-            candidate_count=1,
-            hit_reason="bad channel",
-            graph_path_receipt=receipt,
-        )
+    hit = ChannelHit(
+        unit=unit,
+        channel=RetrievalChannel.TYPED_GRAPH,
+        channel_rank=1,
+        raw_score=1.0,
+        candidate_count=1,
+        hit_reason="verified graph path",
+        graph_path_receipts=(receipt,),
+    )
+    assert hit.graph_path_receipts == (receipt,)
 
 
 def test_formal_manifest_requires_seven_unique_same_corpus_cases(tmp_path: Path) -> None:
@@ -837,19 +826,20 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
     inquiry_ref = _put(repo, inquiry.model_dump_json(), "application/json")
     world = make_synthetic_bundle().world_roots[0]
     evidence = world.states[0].evidence_refs[0]
-    receipt = TypedGraphPathReceipt(
-        receipt_id=ArtifactId("sha256:" + "b" * 64),
-        base_commit=BASE,
+    receipt = GraphPathReceipt(
+        path_id=StableId("graph-path.stage4.rich"),
+        source_commit=BASE,
         snapshot_id=StableId("snapshot.stage4"),
-        access_scope="author_planning",
         seed_entity_ids=(StableId("entity.a"),),
         relation_row_ids=(StableId("row.a"),),
         relation_ids=(StableId("relation.a"),),
         entity_path=(StableId("entity.a"), StableId("entity.b")),
-        directions=("outgoing",),
-        edge_semantics=("evidence",),
+        predicates=("related_to",),
+        directions=("forward",),
+        valid_time=(StoryTime(worldline="main", start_ordinal=1),),
+        edge_semantics=("canonical",),
         evidence_refs=(evidence,),
-        depth=1,
+        dereference_status=GraphPathDereferenceStatus.L0_VERIFIED,
     )
 
     def unit(
@@ -873,13 +863,11 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
     compact = unit(
         "unit.compact",
         "compact state",
-        compact_handle=StableId("compact.handle"),
     )
     graph = unit(
         "unit.graph",
         "relation path",
         unit_kind=RetrievalUnitKind.RELATION_ANCHOR,
-        graph_path_receipt=receipt,
     )
     plan = unit("unit.plan", "accepted obligation", information_label="plan", mandatory=True)
     history = unit("unit.history", "historical event", narrative_start=20)
@@ -888,15 +876,12 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
         "full evidence span",
         unit_kind=RetrievalUnitKind.GROUNDED_SPAN,
         parent_unit_id=compact.unit_id,
-        expanded_from_handle=StableId("compact.handle"),
-        graph_path_receipt=receipt,
     )
     expanded_without_graph = unit(
         "unit.expanded-plain",
         "second full evidence span",
         unit_kind=RetrievalUnitKind.GROUNDED_SPAN,
         parent_unit_id=compact.unit_id,
-        expanded_from_handle=StableId("compact.handle"),
     )
     raw_unselected = unit("unit.raw-unselected", "raw without compact selection")
     context = Stage1ContextPackage(
@@ -908,6 +893,34 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
         active_plan_obligations=(plan,),
         relevant_historical_events=(history,),
         raw_evidence_spans=(expanded, expanded_without_graph, raw_unselected),
+        retrieval_traces=(
+            RetrievalTrace(
+                need_id=StableId("need.stage4.graph"),
+                intent=Stage1QueryIntent.RELATION_CHAIN,
+                allowed_channels=(RetrievalChannel.TYPED_GRAPH,),
+                channel_candidate_counts={RetrievalChannel.TYPED_GRAPH: 1},
+                candidates=(
+                    FusedCandidate(
+                        unit=graph,
+                        fused_rank=1,
+                        rrf_score=1.0,
+                        channel_hits=(
+                            ChannelHit(
+                                unit=graph,
+                                channel=RetrievalChannel.TYPED_GRAPH,
+                                channel_rank=1,
+                                raw_score=1.0,
+                                candidate_count=1,
+                                hit_reason="verified graph path",
+                                graph_path_receipts=(receipt,),
+                            ),
+                        ),
+                    ),
+                ),
+                fusion_applied=False,
+                stop_reason=RetrievalStopReason.BUDGET_SATISFIED,
+            ),
+        ),
         unresolved_gaps=("missing pacing fact",),
         budget_report=ContextBudgetReport(
             token_budget=8_000,

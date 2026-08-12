@@ -11,7 +11,8 @@ from novel_agent.domain.creative_runtime import (
     PlanningLoopResult,
 )
 from novel_agent.domain.generation import WritingLoopRequest
-from novel_agent.domain.runtime import EffectReceipt
+from novel_agent.domain.ids import RunId
+from novel_agent.domain.runtime import EffectReceipt, TaskRecord
 from novel_agent.domain.writing_loop import WritingLoopResult
 
 
@@ -29,6 +30,10 @@ class CandidateMaterializer(Protocol):
     ) -> tuple[CandidateChangeBundle, ValidationReport]: ...
 
 
+class RuntimeTaskReader(Protocol):
+    def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]: ...
+
+
 class EffectResolution(Protocol):
     receipt: EffectReceipt
 
@@ -41,5 +46,6 @@ __all__ = [
     "CandidateMaterializer",
     "EffectStatusResolver",
     "PlanningLeafPort",
+    "RuntimeTaskReader",
     "WritingLeafPort",
 ]

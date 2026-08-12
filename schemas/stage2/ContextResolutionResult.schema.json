@@ -151,14 +151,7 @@
         "replay",
         "curator_repair",
         "bounded_r2",
-        "risk_review",
-        "draft",
-        "continue",
-        "major_rewrite",
-        "review",
-        "local_repair",
-        "observe",
-        "chapter_set"
+        "risk_review"
       ],
       "title": "AgentMode",
       "type": "string"
@@ -168,11 +161,7 @@
         "planner",
         "memory_curator",
         "memory_controller",
-        "memory_guardian",
-        "writer",
-        "editor",
-        "candidate_observer",
-        "plan_reviewer"
+        "memory_guardian"
       ],
       "title": "AgentType",
       "type": "string"
