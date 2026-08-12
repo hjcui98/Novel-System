@@ -1,99 +1,106 @@
 # Codex acceptance review
 
+## Stage 2M architecture repair final acceptance (2026-08-12)
+
+- Outcome: `PASS / STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`
+- Scope: Round 1/2 Evidence-First integration plus Round 3 World/KG/R1/L1/L2 repair and the §24
+  same-basis real cross-round gate
+- Exclusion: the legacy claim-first semantic M4/WP8 campaign remains historical `HOLD` diagnostic
+  evidence; ADR-0008's external model/human scoring remains post-freeze and outside Agent READY
+
+### Decision
+
+The architecture repair is accepted. Round 1/2 and Round 3 now share one Writer-facing
+Evidence-First contract and one immutable repair basis; no parallel runner, graph truth store,
+mutation contract or new graph dependency was introduced.
+
+Final Round 3 evidence is
+`/tmp/ns-stage2m-round3-world-repair-20260812-v5`. Repair commit
+`sha256:b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` and snapshot
+`snapshot.b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` are bound to P005's
+exact checkpoint PlanRoot. The source C95 commit, source WorldRoot/TextRoot/PlanRoot, source head,
+frozen DB and source indexes remained unchanged.
+
+The real repair closed candidate accounting (28 candidates; 7 accepted operations, 21 rejected,
+0 deduped) and exercised generic evidence-backed missing-entity admission: the new canonical
+`entity.graph.ab64f02a66047f1e521ee8d7` is absent from the frozen source, present in the repair World,
+and consumed by an accepted `enrolled_in` relation. The accepted projection has 2 relation rows,
+2 graph edges, 169 R1 records, 165 entity associations, 265 anchor documents and 96 grounded
+documents. Its persisted attestation is exact across all 8 channels with zero failed/degraded units.
+The graph-path receipt resolves to an existing R1 relation row and is `l0_verified` against the exact
+TextRoot slice.
+
+Final joint evidence is
+`/tmp/ns-stage2m-evidence-first-joint-20260812-v4/output_index.json`: aggregate mechanical status
+`PASS`; P001-P005 all `READY`; zero gap, dereference, scope, cutoff and leakage failures; unchanged
+roots; all default Claim Support/Planner model/whole verifier/semantic evaluator calls zero. P005 is
+explicitly `joint_repair=true` and binds the v5 repair commit, snapshot, project, physical indexes,
+exact P005 PlanRoot and original C95 source checkpoint commit.
+
+### Verification
+
+- `make quality`: PASS — strict MyPy on 304 source files; 1843 passed, 9 deselected; 24,246
+  statements / 6,942 branches at 100% coverage.
+- `.conda-env/bin/pre-commit run --all-files`: PASS after final code and documentation changes.
+- Exact acceptance assertions: five READY cases, zero forbidden default semantic calls, closed repair
+  accounting, real missing-entity CREATE, relation-row/graph-edge equality, persisted derived
+  snapshot, L0-verified path-to-row, same P005 basis and unchanged source roots all PASS.
+- At acceptance time no commit, merge or push had been performed. After explicit human authorization,
+  Codex formed one focused local Stage 2M commit from the accepted scope; it remains unmerged and
+  unpushed. The pre-existing dirty worktree and unrelated Stage 3+ files were not included.
+
+---
+
+## Historical evaluator/provenance acceptance (2026-08-11)
+
 - Outcome: `PASS`
-- Reviewed: `2026-08-10 +08:00`
-- Scope: chapter-32 Curator resolver-valid feedback repair, license-free regressions, final quality
-  evidence, and frozen-context real diagnostic
-- Review mode: read-only; Codex did not rerun tests, quality, pre-commit, services, replay,
-  benchmark, model, or real API calls
-- Accepted executable identity:
-  - base HEAD `5ef295fe6a5fedfcef4b02af620dbb988244a58f`
-  - clean local commit containing this accepted repair and review
-  - executable-source fingerprint
-    `sha256:1e7d1f4f48ce86a63a9a808dd1bf8bbb13d2c75be4c437107f329382e7baa2de`
+- Reviewed: `2026-08-11 +08:00`
+- Scope: Stage 2M evaluator/provenance repair §29 and five v3 offline rescores
+- Review mode: read-only; Codex did not rerun tests, models, World replay or benchmark execution
 
 ## Decision
 
-The chapter-32 repair passes. It closes the demonstrated poison-loop mechanism at the correct
-existing owners without changing the upper architecture: `EvidenceCandidateGenerator` owns
-resolver-valid catalog-literal selection and `ModelCurator` owns quote-specific typed feedback. The
-strict resolver, provenance binding, ambiguity rejection, retry/budget semantics, Gold, prompts and
-Stage boundaries remain unchanged.
+`.agent/plan.md` 原 §R 的 evaluator/provenance/scoring 任务验收通过。五份 v3 产物证明：
 
-This `PASS` accepts the repair mechanism and focused admission evidence only. It is not a Stage 2M,
-M4, Gate 0-3, APC/TIO matrix or benchmark-quality pass. The authorized clean local commit is now
-formed, so formal execution may proceed under `.agent/plan.md` §6.3.
+- cross-root matcher 在 credit 前分别以 concrete compiled/canonical TextRoot 调用严格
+  `validate_evidence_ref()`；forged block/object/quote/span 均有 fail-closed regression；
+- ancestry 首项与 checkpoint commit/ArtifactRef/logical root 三重绑定，实际 chain length 为
+  22/42/62/82/97；
+- evaluator manifest v2 的 proof ref 非 null，五份 manifest/proof/derived semantic receipt 均在
+  现有 CAS 中存在，hash、byte length、media type 与 metadata 一致并可 verified read；
+- READY 与 typed-failure 使用同一 `GoldEligibility`，25 条 Plan Gold 从 observed Claim/Evidence
+  分母排除；five-segment Plan Goal Coverage、fallback 和 leakage 均已进入报告；
+- observed matcher 分母正确变为 P001 4/8、P002 8/9、P003 2/9、P004 8/10、P005 11/11，
+  plan/future leakage 均为 0。
 
-## Evidence accepted
+OpenCode 报告的质量门为 1714 passed、9 deselected、100% statement/branch coverage，strict
+MyPy/Ruff 与 full pre-commit 通过；Codex只接受现有证据，没有重跑。
 
-1. `copyable_literal_for()` reuses the same `resolve_evidence_quotes()` implementation and considers
-   only complete catalog strings within the caller's bounded literal budget. Similarity determines
-   order only; it never creates an evidence binding. When no string passes, it returns `None`.
-2. `ModelCurator` now resolves each quote independently. The first actual failure produces one
-   matching JSON pointer and feedback for that quote; successful quote bindings retain their stable
-   order and duplicate removal.
-3. A feedback string advertises a literal only after the exact bounded string passes the strict
-   resolver. The 240-character cap is applied by shrinking the reason prefix; the validated literal
-   is not truncated. The no-literal path makes only a generic longer/full-sentence request.
-4. The submitted license-free regressions cover an ambiguous nearest candidate with a lower-ranked
-   resolvable candidate, resolver validity of every advertised literal, no post-validation
-   truncation, generic fallback, exact multi-quote pointer attribution, invalid max length and the
-   continuing fail-closed ambiguity/no-auto-binding behavior.
-5. OpenCode's final-tree evidence reports `1650 passed, 9 deselected`, 100% branch coverage, strict
-   MyPy/Ruff cleanliness, full pre-commit success and clean `git diff --check`. Codex accepted these
-   existing results without rerunning them.
-6. The diagnostic manifest binds the repair fingerprint `1e7d...a2de`, frozen benchmark hash,
-   chapter-31 base commit, new diagnostic DB/output root, endpoint limit 1, and unchanged semantic,
-   Claim Support, Writer and Ledger budgets.
-7. The successful chapter-32 checkpoint
-   `sha256:72578a45c9512fcdb2a4d1ecdac648ee4f13e28a0c668a8bbaec4d6e56ed9d06`
-   records three proposals and two rejections. The rejection receipts point precisely to quote
-   indexes `/2` and `/0`, contain complete resolver-valid catalog literals, and lead to proposal 3
-   being accepted rather than repeating one poison signature.
-8. The successful checkpoint commits from frozen base `b0061432...` to `3504a572...`, with commit
-   receipt `sha256:f985b75669c4736df831eeeef9e8e1b7a103a7a36d737fe43137c53ea0ffe105`.
-   `scenario_run.json` and `project/progress_manifest.json` independently bind chapter 32 to that
-   resulting commit and show the accepted observed change/evidence reference.
+本结论只接受 evaluator/provenance repair，不宣告 M4、Gate 0-3 或 Stage 2M 通过。可读 v3 目录尚
+没有单独的 consolidated report-index 文件，production proof 当前也只在 APC 分支构造；这两项不
+推翻本次 APC frozen repair 的机制证据，但必须作为下一质量任务的运行前收尾，不能带入正式
+APC/TIO 矩阵。
 
-## Artifact attribution correction
+## Accepted identity and evidence
 
-The diagnostic output root contains two sequential invocations under the same diagnostic identity:
+- v3 root: `/tmp/ns-stage2m-frozen-checkpoint-evaluator-rescore-20260811-v3/`
+- P001 manifest/proof: `sha256:844cac19...d3a0fb` / `sha256:2fb75f86...b2d219`
+- P002 manifest/proof: `sha256:8a50002a...33ba2d` / `sha256:ed83439b...2b1e54`
+- P003 manifest/proof: `sha256:af3f8ec2...0d0110` / `sha256:31c78c48...a7ea0`
+- P004 manifest/proof: `sha256:21c5e425...95562` / `sha256:be44dc3c...6f267f`
+- P005 manifest/proof: `sha256:4a4d7858...66c39` / `sha256:3a87fad6...fbd0e`
 
-- the top-level `memory_write_pause_trace.json` and `flow_summary.json`, written around 10:00 +08:00,
-  belong to an earlier invocation that exhausted five proposal attempts with five rejections; it had
-  `poison_loops=0` but did not commit chapter 32;
-- `scenario_run.json`, `project/progress_manifest.json` and checkpoint `72578a45...`, written around
-  10:06 +08:00, belong to the subsequent invocation that accepted proposal 3 and committed chapter
-  32.
+## Next permitted task
 
-`.agent/implementation.md` §26 reports the successful invocation but does not mention the earlier
-budget-exhausted invocation. The immutable timestamps and checkpoint refs make the two attempts
-independently attributable, so this omission does not invalidate the mechanism or require another
-real run. It does mean the top-level stale `flow_summary.json` must not be cited as success evidence.
-The formal matrix must continue to persist and address each attempt/checkpoint independently.
+真实质量首损现已可解释，下一次 `/implement` 执行刷新后的 `.agent/plan.md`：
 
-## Accepted scope and next action
+1. 在既有 `NeedDraftGrounder`/Need generator 中做 deterministic entity-mention closure；
+2. 先离线证明 Planner/fallback 文本中已明确出现的唯一实体全部进入 canonical `entity_ids`；
+3. 再复用 C20/C40/C60/C80/C95 冻结 Commit/World/index 重跑 APC 五检查点的
+   Need→Retrieval→Claim→Evaluator，不重建 ch0-95；
+4. 只有新证据证明 full Need 与 accepted evidence 均已到位而 Claim 仍是首损时，才在现有 Claim
+   Support owner 内做最小 evidence/facet binding repair；
+5. 本轮不得按 Gold/章节/角色组合写规则，不得恢复 Plan evidence、修改 Gold/阈值/预算或建设新
+   Planner、Graph、检索器、evaluator。
 
-The accepted executable repair scope is limited to:
-
-- `src/novel_agent/services/evidence_candidates.py`;
-- `src/novel_agent/services/model_curation.py`;
-- `tests/unit/test_evidence_candidate_generation.py`;
-- `tests/unit/test_curator_evidence_contract_v2.py`.
-
-Codex-owned review/plan/status updates and `.agent/implementation.md` evidence may accompany that
-scope. Unrelated `.gitignore` changes, handover/draft files, `agentmemory_lab/`, and unrelated
-technical-reference documents are not accepted by this review and must not enter the repair commit.
-
-Next sequence:
-
-1. OpenCode verifies the committed executable fingerprint and clean executable scope;
-2. OpenCode starts APC P001-P005 from ch0 with a new experiment ID, database and output root, then
-   runs TIO under its own new identity;
-3. do not resume or reuse either `stage2m-phase4-final-apc-20260809` or
-   `stage2m-repair-ch32-diag-20260810`; preserve both as diagnostic evidence;
-4. keep the fixed concurrency, `false/0/2048`, Writer/Ledger budgets, independent checkpoint reports,
-   no in-run tuning and no Agentic paired claim exactly as specified by `.agent/plan.md` §6.3.
-
-Codex formed the authorized clean local commit containing this review. It did not merge, push or
-launch the formal matrix.
+该任务完成后返回 Codex；正式 clean APC/TIO 矩阵仍需 Codex接受并形成 clean executable identity。

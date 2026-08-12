@@ -16,6 +16,7 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
+*,cover
 build/
 dist/
 *.egg-info/
@@ -39,6 +40,7 @@ logs/
 reports/
 tmp/
 volumes/
+.worktrees/
 .minio/
 .opensearch/
 .postgres/
@@ -66,3 +68,6 @@ agentmemory_lab/*
 !agentmemory_lab/*.md
 !agentmemory_lab/*.sh
 !agentmemory_lab/env.example
+
+# External inkos source reference (managed as its own shallow sparse clone)
+inkos_lab/

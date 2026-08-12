@@ -353,6 +353,15 @@
       "title": "GoldBlindness",
       "type": "string"
     },
+    "GoldEligibility": {
+      "description": "Which scoring axis a Gold belongs to under strict D9.",
+      "enum": [
+        "observed_claim",
+        "plan_axis_only"
+      ],
+      "title": "GoldEligibility",
+      "type": "string"
+    },
     "GoldMatchStatus": {
       "enum": [
         "HIT",
@@ -552,10 +561,70 @@
           "title": "Gate Metric Formula Version",
           "type": "string"
         },
+        "legacy_72_gold_mandatory_hit_rate": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Legacy 72 Gold Mandatory Hit Rate"
+        },
+        "legacy_72_gold_weighted_coverage": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Legacy 72 Gold Weighted Coverage"
+        },
         "mandatory_hit_rate": {
           "maximum": 1.0,
           "minimum": 0.0,
           "title": "Mandatory Hit Rate",
+          "type": "number"
+        },
+        "observed_claim_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Observed Claim Count",
+          "type": "integer"
+        },
+        "observed_claim_weight": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Observed Claim Weight",
+          "type": "number"
+        },
+        "plan_axis_only_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Plan Axis Only Count",
+          "type": "integer"
+        },
+        "plan_axis_only_gold_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Plan Axis Only Gold Ids",
+          "type": "array"
+        },
+        "plan_axis_only_weight": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Plan Axis Only Weight",
           "type": "number"
         },
         "profile": {
@@ -607,6 +676,10 @@
     "PerGoldComparison": {
       "additionalProperties": false,
       "properties": {
+        "eligibility": {
+          "$ref": "#/$defs/GoldEligibility",
+          "default": "observed_claim"
+        },
         "explanation": {
           "minLength": 1,
           "title": "Explanation",

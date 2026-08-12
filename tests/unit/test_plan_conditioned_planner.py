@@ -8,9 +8,23 @@ import pytest
 from pydantic import ValidationError
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
-from novel_agent.domain.benchmark import AuthorPlanningContext, VisibleOutlineNode
-from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId
-from novel_agent.domain.memory import ObligationStatus, WorldRootDocument
+from novel_agent.domain.benchmark import (
+    AuthorPlanningContext,
+    PlanRootDocument,
+    VisibleOutlineNode,
+)
+from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.memory import (
+    CandidatePool,
+    NeedRisk,
+    ObligationStatus,
+    RequirementLevel,
+    ResolutionPath,
+    RetrievalChannel,
+    Stage1MemoryNeed,
+    Stage1QueryIntent,
+    WorldRootDocument,
+)
 from novel_agent.domain.memory_benchmark import BenchmarkInformationProfile
 from novel_agent.domain.model_calls import ModelRequest, ModelRole, ModelUsage, ProviderModelResult
 from novel_agent.domain.planning_memory import (
@@ -217,9 +231,39 @@ def _planner_payload() -> dict[str, object]:
                 "suggested_facets": ["KNOWLEDGE_BOUNDARY"],
                 "historical_time_scope": "main",
                 "query_hints": ["teacher 对 student 秘密的知情情况"],
-            }
+            },
+            {
+                "draft_id": "teacher-injury",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [
+                    {"label": "teacher", "role_in_need": "subject"},
+                ],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "第21章重申誓言依赖伤势状态",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": ["teacher 伤势当前状态"],
+            },
+            {
+                "draft_id": "north-tower-vow",
+                "semantic_question": "在截止点前 student 是否已承诺前往北塔?",
+                "entity_mentions": [
+                    {"label": "student", "role_in_need": "subject"},
+                ],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [23],
+                "trigger_plan_goal": "进入北塔",
+                "why_needed": "第23章进入北塔前需要恢复承诺来源",
+                "required_claim_scopes": ["historical"],
+                "suggested_facets": ["CAUSAL_HISTORY"],
+                "historical_time_scope": "main",
+                "query_hints": ["student 前往北塔的承诺"],
+            },
         ],
-        "meta": {"rationale": "backward chaining from chapter 22"},
+        "meta": {"rationale": "backward chaining from chapters 21-23"},
     }
 
 
@@ -321,12 +365,17 @@ def test_planner_parses_drafts_and_records_lineage() -> None:
     context = _planner_context(task)
     result = planner.plan(task=task, world=world, planning_context=context)
     assert result.fallback_status is PlannerFallbackStatus.PLANNER
-    assert len(result.drafts) == 1
+    assert len(result.drafts) == 3
     draft = result.drafts[0]
     assert draft.draft_id == "marriage-knowledge"
     assert "秘密" in draft.semantic_question
     assert draft.trigger_plan_chapters == (22,)
     assert draft.suggested_facets == ("KNOWLEDGE_BOUNDARY",)
+    assert {item.draft_id for item in result.drafts} == {
+        "marriage-knowledge",
+        "teacher-injury",
+        "north-tower-vow",
+    }
     assert result.metadata is not None
     assert result.metadata.planner_model == "planner-test-model"
     assert result.metadata.planner_prompt_version == PlanConditionedNeedPlanner.prompt_version
@@ -461,10 +510,11 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
     draft_unknown_facet = _draft("unknown-facet", "question?", facets=("UNKNOWN",))
     draft_missing_goal_binding = _draft("missing-goal", "question?", chapters=())
     draft_goal_mismatch = _draft("goal-mismatch", "question?", goal="not canonical")
-    draft_unanchored = PlannedNeedDraft(
-        draft_id="unanchored",
-        semantic_question="ghost 当前状态是什么?",
-        entity_mentions=(EntityMention(label="ghost", role_in_need="subject"),),
+    draft_no_mention = PlannedNeedDraft(
+        draft_id="no-mention",
+        semantic_question="历史状态与当前状态是否一致?",
+        entity_mentions=(),
+        relation_mentions=(),
         trigger_plan_chapters=(21,),
         trigger_plan_goal="重申旧誓言",
         required_claim_scopes=("current",),
@@ -482,7 +532,7 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
             draft_unknown_facet,
             draft_missing_goal_binding,
             draft_goal_mismatch,
-            draft_unanchored,
+            draft_no_mention,
         )
     )
     focus_set = TaskFocusExtractor().extract(task, world)
@@ -501,7 +551,7 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
         "unknown-facet",
         "missing-goal",
         "goal-mismatch",
-        "unanchored",
+        "no-mention",
     }
     assert result.rejected_reasons["out"] == "out_of_range_chapters"
     assert result.rejected_reasons["fact"] == "plan_goal_as_fact"
@@ -509,7 +559,7 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
     assert result.rejected_reasons["unknown-facet"] == "unknown_or_empty_scope_facet"
     assert result.rejected_reasons["missing-goal"] == "missing_trigger_goal_binding"
     assert result.rejected_reasons["goal-mismatch"] == "trigger_goal_mismatch"
-    assert result.rejected_reasons["unanchored"] == "no_grounded_anchor"
+    assert result.rejected_reasons["no-mention"] == "no_anchoring_mention"
     assert result.deduplicated_draft_ids == ("b",)
     assert result.grounded_entity_count >= 1
 
@@ -603,10 +653,25 @@ def test_generator_planner_chain_emits_lineaged_needs() -> None:
     assert need.need_facets
     assert need.completion_spec is not None
     assert need.query_hints
-    assert need.requirement.value == "optional"
+    assert need.requirement.value == "mandatory"
+    assert need.completion_spec is not None
+    assert (
+        need.completion_spec.irreducible_need_facet_ids
+        == need.completion_spec.required_need_facet_ids
+    )
     assert all(item is not None for item in (need.semantic_question,))
     # The plan-obligation channel remains explicit when the planner asks for it.
     assert all(item.claim_may_cite_plan is False for item in needs)
+    # Evidence-first default: no active "one current claim" stop condition and
+    # no current-claim gate in the default NeedCompletionSpec.
+    for item in needs:
+        assert item.completion_spec is not None
+        assert item.completion_spec.require_current_claim is False
+        assert "one current claim" not in item.stop_condition
+        assert "claim is supported" not in (item.completion_criteria or "")
+        assert item.stop_condition == (
+            "served by cutoff-safe exact evidence slices or an explicit typed gap"
+        )
 
 
 def test_planner_artifact_is_content_addressed_replayable_and_basis_checked(
@@ -1143,9 +1208,11 @@ def test_planner_invocation_artifact_consistency_edges() -> None:
         PlannerInvocationArtifact(**(base | {"final_need_manifests": (manifest, manifest)}))
 
 
-def test_grounder_fuzzy_and_ambiguous_fuzzy_mentions() -> None:
+def test_grounder_fuzzy_mentions_fail_closed_without_dense_inference() -> None:
     world = _entity_world()
     grounder = NeedDraftGrounder()
+    # 徒 is only a substring of the alias 小徒: without fuzzy/dense inference
+    # the mention stays unresolved (fail closed).
     fuzzy = grounder.ground(
         PlannedNeedDraft(
             draft_id="fuzzy",
@@ -1154,11 +1221,10 @@ def test_grounder_fuzzy_and_ambiguous_fuzzy_mentions() -> None:
         ),
         world,
     )
-    student = next(entity for entity in world.entities if entity.internal_label == "student")
-    assert fuzzy.entity_mentions[0].grounding_status is GroundingStatus.GROUNDED
-    assert fuzzy.entity_mentions[0].entity_id == student.entity_id
+    assert fuzzy.entity_mentions[0].grounding_status is GroundingStatus.UNRESOLVED
+    assert fuzzy.entity_mentions[0].grounding_method == "no_label_match"
 
-    student_b = student.model_copy(
+    student_b = world.entities[0].model_copy(
         update={
             "entity_id": StableId("entity.planner.student-b"),
             "internal_label": "student-b",
@@ -1174,10 +1240,11 @@ def test_grounder_fuzzy_and_ambiguous_fuzzy_mentions() -> None:
         ),
         ambiguous_world,
     )
-    assert fuzzy_ambiguous.entity_mentions[0].grounding_status is GroundingStatus.AMBIGUOUS
+    assert fuzzy_ambiguous.entity_mentions[0].grounding_status is GroundingStatus.UNRESOLVED
+    assert fuzzy_ambiguous.entity_mentions[0].grounding_method == "no_label_match"
 
 
-def test_grounder_relation_context_disambiguates_shared_labels() -> None:
+def test_grounder_shared_internal_label_fails_closed_without_relation_context() -> None:
     world = _entity_world()
     teacher = world.entities[0]
     student = next(entity for entity in world.entities if entity.internal_label == "student")
@@ -1230,9 +1297,9 @@ def test_grounder_relation_context_disambiguates_shared_labels() -> None:
         world,
     )
     shared_mention = next(item for item in grounded.entity_mentions if item.mention == "shared")
-    assert shared_mention.grounding_status is GroundingStatus.GROUNDED
-    assert shared_mention.entity_id == shared_a.entity_id
-    assert shared_mention.grounding_method == "relation_context_match"
+    assert shared_mention.grounding_status is GroundingStatus.AMBIGUOUS
+    assert shared_mention.entity_id is None
+    assert shared_mention.grounding_method == "ambiguous_label_match"
 
 
 def test_grounder_relation_edge_statuses() -> None:
@@ -1501,7 +1568,7 @@ def test_grounder_relation_context_requires_resolved_other_endpoint() -> None:
     assert shared_mention.grounding_method == "ambiguous_label_match"
 
 
-def test_grounder_relation_context_uses_resolved_other_endpoint() -> None:
+def test_grounder_shared_label_resolution_fails_closed_even_with_resolved_other() -> None:
     world = _entity_world()
     teacher = world.entities[0]
     student = next(entity for entity in world.entities if entity.internal_label == "student")
@@ -1548,8 +1615,8 @@ def test_grounder_relation_context_uses_resolved_other_endpoint() -> None:
         world,
     )
     shared_mention = next(item for item in grounded.entity_mentions if item.mention == "shared")
-    assert shared_mention.entity_id == shared_a.entity_id
-    assert shared_mention.grounding_method == "relation_context_match"
+    assert shared_mention.grounding_status is GroundingStatus.AMBIGUOUS
+    assert shared_mention.entity_id is None
 
 
 def test_planner_json_extraction_edge_paths() -> None:
@@ -1634,3 +1701,1236 @@ def test_planner_rejects_invalid_constructor_limits() -> None:
         PlanConditionedNeedPlanner(temperature=3.0)
     with pytest.raises(ValueError, match="max_total_needs"):
         NeedValidator(max_total_needs=0)
+
+
+def test_validator_canonicalizes_mismatched_scope_without_dropping_draft() -> None:
+    task = _task()
+    world = _entity_world()
+    validator = NeedValidator()
+    draft = _draft(
+        "multi-facet",
+        "在截止点前 teacher 的伤势与未决承诺的状态是什么?",
+        facets=("CAUSAL_HISTORY", "UNRESOLVED_STATUS"),
+        chapters=(21,),
+    )
+    draft = draft.model_copy(update={"required_claim_scopes": ("historical",)})
+    grounded = NeedDraftGrounder().ground(draft, world)
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = validator.validate(
+        drafts=(grounded,),
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert [item.draft_id for item in result.accepted_drafts] == ["multi-facet"]
+    assert result.scope_normalization_reasons["multi-facet"] == (
+        "mismatched_scope_canonicalized_from_facets"
+    )
+    canonical = result.canonical_scope_by_draft["multi-facet"]
+    assert set(canonical) == {"historical", "current"}
+
+
+def test_validator_canonicalizes_missing_scope_without_dropping_draft() -> None:
+    task = _task()
+    world = _entity_world()
+    validator = NeedValidator()
+    draft = _draft(
+        "no-scope",
+        "在截止点前 teacher 的知情边界是什么?",
+        facets=("KNOWLEDGE_BOUNDARY", "CURRENT_STATE"),
+        chapters=(21,),
+    )
+    draft = draft.model_copy(update={"required_claim_scopes": ()})
+    grounded = NeedDraftGrounder().ground(draft, world)
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = validator.validate(
+        drafts=(grounded,),
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert [item.draft_id for item in result.accepted_drafts] == ["no-scope"]
+    assert result.scope_normalization_reasons["no-scope"] == (
+        "missing_scope_canonicalized_from_facets"
+    )
+    assert set(result.canonical_scope_by_draft["no-scope"]) == {"knowledge", "current"}
+
+
+def test_validator_still_rejects_plan_scope_and_unknown_values() -> None:
+    task = _task()
+    world = _entity_world()
+    validator = NeedValidator()
+    draft_plan = _draft("plan-scope", "q?", facets=("PLAN_NODE",), chapters=(21,))
+    draft_unknown = _draft(
+        "unknown-scope", "q?", facets=("CURRENT_STATE",), chapters=(21,)
+    ).model_copy(update={"required_claim_scopes": ("future-line",)})
+    grounded = tuple(
+        NeedDraftGrounder().ground(draft, world) for draft in (draft_plan, draft_unknown)
+    )
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = validator.validate(
+        drafts=grounded,
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert not result.accepted_drafts
+    assert result.rejected_reasons["plan-scope"] == "plan_scope_not_historical_memory"
+    assert result.rejected_reasons["unknown-scope"] == "unknown_or_empty_scope_facet"
+
+
+def test_partial_goal_coverage_triggers_full_fallback_with_typed_missing_goals() -> None:
+    endpoint = _PlannerEndpoint(
+        (
+            {
+                "drafts": [
+                    {
+                        "draft_id": "only-21",
+                        "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                        "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [21],
+                        "trigger_plan_goal": "重申旧誓言",
+                        "why_needed": "plan the memory reload",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["CURRENT_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": ["teacher 伤势"],
+                    }
+                ],
+                "meta": {"rationale": "partial"},
+            },
+        )
+    )
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    assert result.planner_fallback_reason == "insufficient_target_goal_coverage"
+    assert result.planner_artifact is not None
+    assert result.planner_artifact.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK
+    assert result.planner_artifact.fallback_reason == "insufficient_target_goal_coverage"
+    assert set(result.planner_artifact.missing_goal_chapters) == {22, 23}
+
+
+def test_full_goal_coverage_does_not_fallback() -> None:
+    endpoint = _PlannerEndpoint((_planner_payload(),))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.READY
+    assert result.fallback_used is False
+    assert result.planner_artifact is not None
+    assert not result.planner_artifact.missing_goal_chapters
+
+
+def test_normal_planner_needs_are_mandatory() -> None:
+    endpoint = _PlannerEndpoint((_planner_payload(),))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.needs
+    for need in result.needs:
+        assert need.requirement.value == "mandatory"
+        assert need.completion_spec is not None
+        assert need.completion_spec.irreducible_need_facet_ids == (
+            need.completion_spec.required_need_facet_ids
+        )
+
+
+def _chinese_world() -> WorldRootDocument:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    chen = world.entities[0].model_copy(
+        update={
+            "entity_id": StableId("entity.planner.chen"),
+            "internal_label": "陈长生",
+            "aliases": ("长生",),
+        }
+    )
+    luo = chen.model_copy(
+        update={
+            "entity_id": StableId("entity.planner.luo"),
+            "internal_label": "落落",
+            "aliases": (),
+        }
+    )
+    hei = chen.model_copy(
+        update={
+            "entity_id": StableId("entity.planner.hei"),
+            "internal_label": "黑龙",
+            "aliases": (),
+        }
+    )
+    return world.model_copy(
+        update={
+            "entities": (chen, *world.entities[1:], luo, hei),
+        }
+    )
+
+
+def test_grounder_closure_binds_entities_from_question_text() -> None:
+    """P004-like: question names both entities but explicit mentions only one."""
+    world = _chinese_world()
+    draft = PlannedNeedDraft(
+        draft_id="closure-p004",
+        semantic_question="陈长生对落落的教学方式是什么?",
+        entity_mentions=(EntityMention(label="陈长生", role_in_need="subject"),),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="展开师徒教学",
+        why_needed="决定第81章教学方式",
+        required_claim_scopes=("current",),
+        suggested_facets=("RELATION_STATE",),
+        historical_time_scope="main",
+        query_hints=("陈长生如何教导落落",),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    ids = set(NeedDraftGrounder().grounded_entity_ids(grounded))
+    assert StableId("entity.planner.chen") in ids
+    assert StableId("entity.planner.luo") in ids
+    sources = {item.mention: item.mention_source for item in grounded.entity_mentions}
+    assert sources["落落"] == "exact_text_mention_closure"
+
+
+def test_grounder_closure_binds_fallback_goal_entities() -> None:
+    """P003-like: fallback goal text names both entities; entity_ids was empty."""
+    world = _chinese_world()
+    draft = PlannedNeedDraft(
+        draft_id="closure-p003",
+        semantic_question="黑龙与陈长生的关系现状是什么?",
+        entity_mentions=(),
+        trigger_plan_chapters=(61,),
+        trigger_plan_goal="黑龙与陈长生对峙",
+        why_needed="第61章需要恢复双方关系",
+        required_claim_scopes=("historical",),
+        suggested_facets=("CAUSAL_HISTORY",),
+        historical_time_scope="main",
+        query_hints=(),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    ids = set(NeedDraftGrounder().grounded_entity_ids(grounded))
+    assert StableId("entity.planner.chen") in ids
+    assert StableId("entity.planner.hei") in ids
+
+
+def test_grounder_closure_uses_longest_label_first() -> None:
+    world = _chinese_world()
+    draft = PlannedNeedDraft(
+        draft_id="closure-longest",
+        semantic_question="长生与落落的关系如何?",
+        entity_mentions=(),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="师徒重逢",
+        why_needed="need",
+        required_claim_scopes=("current",),
+        suggested_facets=("RELATION_STATE",),
+        historical_time_scope="main",
+        query_hints=(),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    ids = set(NeedDraftGrounder().grounded_entity_ids(grounded))
+    assert StableId("entity.planner.chen") in ids
+    assert StableId("entity.planner.luo") in ids
+
+
+def test_grounder_closure_skips_ambiguous_and_absent_labels() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    twin_a = world.entities[0].model_copy(
+        update={"entity_id": StableId("entity.planner.twin-a"), "internal_label": "同名人"}
+    )
+    twin_b = world.entities[0].model_copy(
+        update={"entity_id": StableId("entity.planner.twin-b"), "internal_label": "同名人"}
+    )
+    world = world.model_copy(update={"entities": (*world.entities, twin_a, twin_b)})
+    draft = PlannedNeedDraft(
+        draft_id="closure-ambiguous",
+        semantic_question="同名人 与 不存在之人 的关系如何?",
+        entity_mentions=(),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="test",
+        why_needed="need",
+        required_claim_scopes=("current",),
+        suggested_facets=("RELATION_STATE",),
+        historical_time_scope="main",
+        query_hints=(),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    ids = set(NeedDraftGrounder().grounded_entity_ids(grounded))
+    assert ids == set()
+
+
+def test_grounder_closure_records_source_fields() -> None:
+    world = _chinese_world()
+    draft = PlannedNeedDraft(
+        draft_id="closure-fields",
+        semantic_question="落落当前状态如何?",
+        entity_mentions=(),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="test",
+        why_needed="need",
+        required_claim_scopes=("current",),
+        suggested_facets=("CURRENT_STATE",),
+        historical_time_scope="main",
+        query_hints=(),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    luo = next(
+        item
+        for item in grounded.entity_mentions
+        if item.entity_id == StableId("entity.planner.luo")
+    )
+    assert luo.mention_source == "exact_text_mention_closure"
+    assert "semantic_question" in luo.mention_source_fields
+
+
+def test_goal_entity_coverage_repair_keeps_normal_path() -> None:
+    """A draft naming both goal entities in text is accepted without fallback."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-test"}),
+        planner_may_read_plan=True,
+    )
+    task = _task(task_intent="为写 81-85 章准备历史记忆")
+    task = task.model_copy(
+        update={
+            "target_chapter_start": 81,
+            "target_chapter_end": 85,
+        }
+    )
+    endpoint = _PlannerEndpoint(
+        (
+            {
+                "drafts": [
+                    {
+                        "draft_id": "d81-01",
+                        "semantic_question": "陈长生对落落的教学方式是什么?",
+                        "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [81],
+                        "trigger_plan_goal": "师徒教学与感情进展",
+                        "why_needed": "决定第81章教学方式",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["RELATION_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": ["陈长生如何教导落落"],
+                    },
+                    {
+                        "draft_id": "d82-01",
+                        "semantic_question": "落落当前对陈长生的态度是什么?",
+                        "entity_mentions": [{"label": "落落", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [82],
+                        "trigger_plan_goal": "感情升温",
+                        "why_needed": "第82章感情线",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["RELATION_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": [],
+                    },
+                    {
+                        "draft_id": "d83-01",
+                        "semantic_question": "落落修行进展如何?",
+                        "entity_mentions": [{"label": "落落", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [83],
+                        "trigger_plan_goal": "修行突破",
+                        "why_needed": "第83章修行",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["CURRENT_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": [],
+                    },
+                    {
+                        "draft_id": "d84-01",
+                        "semantic_question": "陈长生伤势当前状态如何?",
+                        "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [84],
+                        "trigger_plan_goal": "伤势稳定",
+                        "why_needed": "第84章伤势",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["CURRENT_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": [],
+                    },
+                    {
+                        "draft_id": "d85-01",
+                        "semantic_question": "黑龙与陈长生的恩怨如何?",
+                        "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [85],
+                        "trigger_plan_goal": "黑龙与陈长生恩怨了结",
+                        "why_needed": "第85章恩怨",
+                        "required_claim_scopes": ["historical"],
+                        "suggested_facets": ["CAUSAL_HISTORY"],
+                        "historical_time_scope": "main",
+                        "query_hints": [],
+                    },
+                ],
+                "meta": {"rationale": "test"},
+            },
+        )
+    )
+    gateway = _gateway(endpoint)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.READY
+    assert result.fallback_used is False
+    assert result.planner_artifact is not None
+    assert not result.planner_artifact.missing_goal_entities
+    needs = result.needs
+    d81 = next(item for item in needs if item.planned_draft_id == "d81-01")
+    assert StableId("entity.planner.luo") in d81.entity_ids
+    assert StableId("entity.planner.chen") in d81.entity_ids
+
+
+def _chinese_goals_plan(world: WorldRootDocument) -> PlanRootDocument:
+    from novel_agent.domain.benchmark import ChapterGoal
+    from novel_agent.services.benchmark_importer import plan_root_content_id
+
+    bundle = make_synthetic_bundle()
+    plan = bundle.plan_roots[0]
+    goals = tuple(
+        ChapterGoal(
+            goal_id=StableId(f"goal.chinese.{index}"),
+            chapter_index=index,
+            summary=summary,
+        )
+        for index, summary in (
+            (81, "师徒教学与感情进展"),
+            (82, "感情升温"),
+            (83, "修行突破"),
+            (84, "伤势稳定"),
+            (85, "黑龙与陈长生恩怨了结"),
+        )
+    )
+    plan = plan.model_copy(update={"chapter_goals": goals})
+    return plan.model_copy(update={"root_hash": plan_root_content_id(plan)})
+
+
+def test_goal_entity_missing_triggers_whole_fallback() -> None:
+    """A target goal naming an entity absent from all accepted Needs falls back."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-fallback"}),
+        planner_may_read_plan=True,
+    )
+    task = _task(task_intent="为写 81-85 章准备历史记忆")
+    task = task.model_copy(update={"target_chapter_start": 81, "target_chapter_end": 85})
+    # Only ch81 draft; ch82 goal names 落落 but the draft for 82 is missing.
+    endpoint = _PlannerEndpoint(
+        (
+            {
+                "drafts": [
+                    {
+                        "draft_id": "d81-only",
+                        "semantic_question": "陈长生对落落的教学方式是什么?",
+                        "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                        "relation_mentions": [],
+                        "trigger_plan_chapters": [81],
+                        "trigger_plan_goal": "师徒教学与感情进展",
+                        "why_needed": "决定第81章教学方式",
+                        "required_claim_scopes": ["current"],
+                        "suggested_facets": ["RELATION_STATE"],
+                        "historical_time_scope": "main",
+                        "query_hints": [],
+                    }
+                ],
+                "meta": {"rationale": "partial"},
+            },
+        )
+    )
+    gateway = _gateway(endpoint)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    assert result.planner_artifact is not None
+    assert result.planner_artifact.fallback_reason == "insufficient_target_goal_coverage"
+
+
+def test_query_compiler_keeps_natural_query_and_exact_filters() -> None:
+    """Closed entity_ids enter exact filters while the natural question stays."""
+    world = _chinese_world()
+    draft = PlannedNeedDraft(
+        draft_id="closure-query",
+        semantic_question="陈长生对落落的教导方式是什么?",
+        entity_mentions=(EntityMention(label="陈长生", role_in_need="subject"),),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="师徒教学",
+        why_needed="need",
+        required_claim_scopes=("current",),
+        suggested_facets=("RELATION_STATE",),
+        historical_time_scope="main",
+        query_hints=("陈长生如何教导落落",),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    entity_ids = NeedDraftGrounder().grounded_entity_ids(grounded)
+    assert StableId("entity.planner.luo") in entity_ids
+    compiler = NeedQueryCompiler()
+    need = Stage1MemoryNeed(
+        need_id=StableId("need.stage2m.closure-test.state"),
+        run_id=RunId("run.test"),
+        task_id=TaskId("task.test"),
+        base_commit=world.source_commit,
+        chapter_target=81,
+        need_type="relationship_emotion",
+        query_intent=Stage1QueryIntent.SEMANTIC_HISTORY,
+        query_text="陈长生对落落的教导方式是什么?",
+        entity_ids=entity_ids,
+        why_needed="need",
+        risk_level=NeedRisk.HIGH,
+        requirement=RequirementLevel.MANDATORY,
+        preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
+        allowed_candidate_pools=(CandidatePool.ANCHOR, CandidatePool.R1),
+        stop_condition="done",
+        trigger_plan_chapters=(81,),
+    )
+    bundle = compiler.compile(need)
+    assert StableId("entity.planner.luo") in bundle.exact_entity_ids
+    assert StableId("entity.planner.chen") in bundle.exact_entity_ids
+    assert any("陈长生" in query for query in bundle.lexical_queries)
+    assert any("落落" in query for query in bundle.lexical_queries)
+
+
+def test_missing_goal_entities_detects_uncovered_unique_entity() -> None:
+    """Direct unit test of the goal/entity coverage postcondition."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-entity-unit"}),
+        planner_may_read_plan=True,
+    )
+    from novel_agent.domain.planning_memory import GroundedEntityMention, GroundedNeedDraft
+
+    chen = GroundedEntityMention(
+        mention="陈长生",
+        canonical_label="陈长生",
+        entity_id=StableId("entity.planner.chen"),
+        confidence=1.0,
+        grounding_method="exact_label_match",
+        grounding_status=GroundingStatus.GROUNDED,
+    )
+    covered_draft = GroundedNeedDraft(
+        draft_id="d85-covered",
+        semantic_question="黑龙与陈长生恩怨如何?",
+        entity_mentions=(chen,),
+        trigger_plan_chapters=(85,),
+        trigger_plan_goal="黑龙与陈长生恩怨了结",
+        why_needed="need",
+        required_claim_scopes=("historical",),
+        suggested_facets=("CAUSAL_HISTORY",),
+        historical_time_scope="main",
+    )
+    generator = TaskPlanConditionedNeedGenerator()
+    missing = generator._missing_goal_entities(
+        context=context,
+        world=world,
+        accepted=(covered_draft,),
+        target_start=81,
+        target_end=85,
+    )
+    # ch85 goal names 黑龙 which is uniquely groundable and absent from the
+    # covered draft -> reported as missing.
+    assert any(label == "黑龙" for _chapter, _entity, label in missing)
+
+
+def test_missing_goal_entities_ignores_goals_outside_target() -> None:
+    """Goals outside the target range are not subject to entity coverage."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-outside"}),
+        planner_may_read_plan=True,
+    )
+    from novel_agent.domain.planning_memory import GroundedEntityMention, GroundedNeedDraft
+
+    chen = GroundedEntityMention(
+        mention="陈长生",
+        canonical_label="陈长生",
+        entity_id=StableId("entity.planner.chen"),
+        confidence=1.0,
+        grounding_method="exact_label_match",
+        grounding_status=GroundingStatus.GROUNDED,
+    )
+    empty_draft = GroundedNeedDraft(
+        draft_id="d81-empty",
+        semantic_question="陈长生状态如何?",
+        entity_mentions=(chen,),
+        trigger_plan_chapters=(81,),
+        trigger_plan_goal="师徒教学与感情进展",
+        why_needed="need",
+        required_claim_scopes=("current",),
+        suggested_facets=("CURRENT_STATE",),
+        historical_time_scope="main",
+    )
+    generator = TaskPlanConditionedNeedGenerator()
+    # context.target_range is 81-85 but the task passed below uses 21-23, so
+    # no goal falls in range -> no missing entities.
+    missing = generator._missing_goal_entities(
+        context=context,
+        world=world,
+        accepted=(empty_draft,),
+        target_start=21,
+        target_end=23,
+    )
+    assert missing == ()
+
+
+def test_unique_entities_in_text_handles_overlap_and_absent() -> None:
+    """Longest-first closure skips overlapping shorter labels and absent text."""
+    world = _chinese_world()
+    from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+    unique = NeedDraftGrounder._world_label_map(world)
+    generator = TaskPlanConditionedNeedGenerator()
+    # "长生" overlaps "陈长生" when both appear; longest-first keeps 陈长生.
+    found = generator._unique_entities_in_text("长生与陈长生", unique)
+    labels = {label for label, _entity in found}
+    assert "陈长生" in labels
+    found_absent = generator._unique_entities_in_text("无关文本", unique)
+    assert found_absent == ()
+
+
+def test_entity_coverage_fallback_branch_via_monkeypatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive coverage: force the entity-coverage fallback branch in
+    ``_run_planner_chain`` by making the goal-entity check report a miss."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-mock"}),
+        planner_may_read_plan=True,
+    )
+    task = _task(task_intent="为写 81-85 章准备历史记忆")
+    task = task.model_copy(update={"target_chapter_start": 81, "target_chapter_end": 85})
+    endpoint = _PlannerEndpoint((_planner_payload_chinese(),))
+    gateway = _gateway(endpoint)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    monkeypatch.setattr(
+        generator,
+        "_missing_goal_entities",
+        lambda **kwargs: ((85, StableId("entity.planner.chen"), "陈长生"),),
+    )
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    assert result.planner_artifact is not None
+    assert result.planner_artifact.fallback_reason == ("insufficient_target_goal_entity_coverage")
+    assert result.planner_artifact.missing_goal_entities
+
+
+def _planner_payload_chinese() -> dict[str, object]:
+    return {
+        "drafts": [
+            {
+                "draft_id": f"d{ch}-01",
+                "semantic_question": f"第{ch}章 陈长生 的状态?",
+                "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [ch],
+                "trigger_plan_goal": goal,
+                "why_needed": f"need for ch{ch}",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+            for ch, goal in (
+                (81, "师徒教学与感情进展"),
+                (82, "感情升温"),
+                (83, "修行突破"),
+                (84, "伤势稳定"),
+                (85, "黑龙与陈长生恩怨了结"),
+            )
+        ],
+        "meta": {"rationale": "mock entity fallback"},
+    }
+
+
+def test_fallback_path_closure_binds_goal_entities() -> None:
+    """The deterministic fallback adds entities that appear in the plan text."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "chinese-fallback-closure"}),
+        planner_may_read_plan=True,
+    )
+    task = _task(task_intent="为写 81-85 章准备历史记忆")
+    task = task.model_copy(update={"target_chapter_start": 81, "target_chapter_end": 85})
+    # Empty drafts -> whole fallback; the fallback Needs must still carry the
+    # entities named in their query/plan text.
+    endpoint = _PlannerEndpoint(({"drafts": [], "meta": {"rationale": "empty"}},))
+    gateway = _gateway(endpoint)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    # Fallback Needs exist and carry closed entities from their query text.
+    assert result.needs
+    chen_in = any(StableId("entity.planner.chen") in need.entity_ids for need in result.needs)
+    assert chen_in
+
+
+def test_closed_entity_ids_for_text_skips_ambiguous() -> None:
+    world = _chinese_world()
+    ids = TaskPlanConditionedNeedGenerator._closed_entity_ids_for_text(
+        world, ("陈长生与黑龙的恩怨",)
+    )
+    assert StableId("entity.planner.chen") in ids
+    assert StableId("entity.planner.hei") in ids
+    ambiguous_world = world.model_copy(
+        update={
+            "entities": (
+                *world.entities,
+                world.entities[0].model_copy(
+                    update={
+                        "entity_id": StableId("entity.planner.dup-a"),
+                        "internal_label": "重名者",
+                    }
+                ),
+                world.entities[0].model_copy(
+                    update={
+                        "entity_id": StableId("entity.planner.dup-b"),
+                        "internal_label": "重名者",
+                    }
+                ),
+            )
+        }
+    )
+    ids_ambiguous = TaskPlanConditionedNeedGenerator._closed_entity_ids_for_text(
+        ambiguous_world, ("重名者的状态",)
+    )
+    assert StableId("entity.planner.dup-a") not in ids_ambiguous
+    assert StableId("entity.planner.dup-b") not in ids_ambiguous
+
+
+def test_grounder_internal_label_beats_same_named_alias() -> None:
+    """P004-like: 落落 is the canonical internal label and another entity's alias."""
+    world = _chinese_world()
+    twin = world.entities[0].model_copy(
+        update={
+            "entity_id": StableId("entity.planner.luo-heng"),
+            "internal_label": "落衡",
+            "aliases": ("落落",),
+        }
+    )
+    world = world.model_copy(update={"entities": (*world.entities, twin)})
+    grounder = NeedDraftGrounder()
+    grounded = grounder.ground(
+        PlannedNeedDraft(
+            draft_id="p004-luo-luo",
+            semantic_question="落落当前的状态与教学关系是什么?",
+            entity_mentions=(EntityMention(label="落落", role_in_need="subject"),),
+        ),
+        world,
+    )
+    mention = grounded.entity_mentions[0]
+    assert mention.grounding_status is GroundingStatus.GROUNDED
+    assert mention.entity_id == StableId("entity.planner.luo")
+    assert mention.grounding_method == "exact_internal_label_match"
+
+
+def test_grounder_closure_resolves_internal_label_despite_alias_collision() -> None:
+    """P004-like: closure binds the canonical internal label even when another
+    entity carries the same label as an alias."""
+    world = _chinese_world()
+    twin = world.entities[0].model_copy(
+        update={
+            "entity_id": StableId("entity.planner.luo-heng"),
+            "internal_label": "落衡",
+            "aliases": ("落落",),
+        }
+    )
+    world = world.model_copy(update={"entities": (*world.entities, twin)})
+    grounded = NeedDraftGrounder().ground(
+        PlannedNeedDraft(
+            draft_id="closure-collision",
+            semantic_question="落落与陈长生的师徒关系现状如何?",
+            entity_mentions=(),
+        ),
+        world,
+    )
+    ids = {mention.entity_id for mention in grounded.entity_mentions}
+    assert StableId("entity.planner.luo") in ids
+    assert StableId("entity.planner.luo-heng") not in ids
+
+
+def test_grounder_alias_exact_match_uses_dedicated_method() -> None:
+    world = _chinese_world()
+    grounded = NeedDraftGrounder().ground(
+        PlannedNeedDraft(
+            draft_id="alias-method",
+            semantic_question="长生当前状态如何?",
+            entity_mentions=(EntityMention(label="长生", role_in_need="subject"),),
+        ),
+        world,
+    )
+    mention = grounded.entity_mentions[0]
+    assert mention.grounding_status is GroundingStatus.GROUNDED
+    assert mention.entity_id == StableId("entity.planner.chen")
+    assert mention.grounding_method == "exact_alias_match"
+
+
+def test_validator_keeps_unresolved_lexical_anchor_drafts() -> None:
+    """P005-like: an institution with no runtime id stays a lexical Need."""
+    task = _task()
+    world = _entity_world()
+    draft = PlannedNeedDraft(
+        draft_id="lexical-only",
+        semantic_question="国教学院在京都政治格局中的定位是什么?",
+        entity_mentions=(EntityMention(label="国教学院", role_in_need="institution"),),
+        trigger_plan_chapters=(21,),
+        trigger_plan_goal="重申旧誓言",
+        why_needed="第21章需要学院定位",
+        required_claim_scopes=("current",),
+        suggested_facets=("CURRENT_STATE",),
+        historical_time_scope="main",
+        query_hints=("国教学院 政治 定位",),
+    )
+    grounded = NeedDraftGrounder().ground(draft, world)
+    assert grounded.entity_mentions[0].grounding_status is GroundingStatus.UNRESOLVED
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = NeedValidator().validate(
+        drafts=(grounded,),
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert [item.draft_id for item in result.accepted_drafts] == ["lexical-only"]
+
+
+def test_query_compiler_keeps_lexical_query_and_fails_exact_graph_closed() -> None:
+    """P005-like: unresolved anchor preserves BM25+dense, R1/graph fail closed."""
+    task = _task()
+    world = _entity_world()
+    grounder = NeedDraftGrounder()
+    grounded = grounder.ground(
+        PlannedNeedDraft(
+            draft_id="lexical-query",
+            semantic_question="国教学院与教枢处的历史互动模式是怎样的?",
+            entity_mentions=(EntityMention(label="国教学院", role_in_need="institution"),),
+            trigger_plan_chapters=(21,),
+            trigger_plan_goal="重申旧誓言",
+            why_needed="第21章需要互动模式",
+            required_claim_scopes=("current",),
+            suggested_facets=("CURRENT_STATE",),
+            historical_time_scope="main",
+        ),
+        world,
+    )
+    focus_set = TaskFocusExtractor().extract(task, world)
+    NeedValidator().validate(
+        drafts=(grounded,),
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    need = TaskPlanConditionedNeedGenerator().generate_evidence_first(
+        task,
+        world,
+        make_synthetic_bundle().plan_roots[0],
+        _planner_context(task),
+        _frozen_lexical_artifact(grounded),
+    )
+    assert need is not None
+    lexical = next(item for item in need.needs if item.planned_draft_id == "lexical-query")
+    assert lexical.entity_ids == ()
+    assert "国教学院" in lexical.query_text
+    bundle = NeedQueryCompiler().compile(lexical)
+    eligible, unavailable = NeedQueryCompiler.eligible_channels(
+        lexical,
+        bundle,
+        (
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+            RetrievalChannel.R1_EXACT,
+            RetrievalChannel.R1_TEMPORAL,
+            RetrievalChannel.TYPED_GRAPH,
+        ),
+    )
+    assert {channel.value for channel in eligible} == {
+        "anchor_bm25",
+        "anchor_dense",
+        "grounded_bm25",
+        "grounded_dense",
+    }
+    assert unavailable[RetrievalChannel.R1_EXACT] == "missing_exact_entity_or_predicate"
+    assert unavailable[RetrievalChannel.TYPED_GRAPH] == "missing_graph_seed"
+
+
+def _frozen_lexical_artifact(
+    grounded: Any,
+) -> PlannerInvocationArtifact:
+    from novel_agent.domain.benchmark import AuthorPlanningContext
+    from novel_agent.domain.planning_memory import (
+        PLANNER_OUTPUT_SCHEMA_VERSION,
+        PlannerArtifactMetadata,
+        PlannerFallbackStatus,
+    )
+
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="test",
+        target_range=(21, 23),
+        visible_outline_nodes=(),
+        chapter_goals=(),
+        source_hash=content_id({"t": "lexical"}),
+        planner_may_read_plan=True,
+    )
+    world = _entity_world()
+    drafts = (
+        PlannedNeedDraft(
+            draft_id="lexical-query",
+            semantic_question="国教学院与教枢处的历史互动模式是怎样的?",
+            entity_mentions=(EntityMention(label="国教学院", role_in_need="institution"),),
+            trigger_plan_chapters=(21,),
+            trigger_plan_goal="重申旧誓言",
+            why_needed="第21章需要互动模式",
+            required_claim_scopes=("current",),
+            suggested_facets=("CURRENT_STATE",),
+            historical_time_scope="main",
+        ),
+        PlannedNeedDraft(
+            draft_id="injury-query",
+            semantic_question="teacher 的伤势是否仍未痊愈?",
+            entity_mentions=(EntityMention(label="teacher", role_in_need="subject"),),
+            trigger_plan_chapters=(22,),
+            trigger_plan_goal="保持受伤状态约束",
+            why_needed="第22章需要伤势状态",
+            required_claim_scopes=("current",),
+            suggested_facets=("CURRENT_STATE",),
+            historical_time_scope="main",
+        ),
+        PlannedNeedDraft(
+            draft_id="tower-query",
+            semantic_question="student 是否已承诺前往北塔?",
+            entity_mentions=(EntityMention(label="student", role_in_need="subject"),),
+            trigger_plan_chapters=(23,),
+            trigger_plan_goal="进入北塔",
+            why_needed="第23章需要承诺来源",
+            required_claim_scopes=("historical",),
+            suggested_facets=("CAUSAL_HISTORY",),
+            historical_time_scope="main",
+        ),
+    )
+    return PlannerInvocationArtifact(
+        planning_context=context,
+        world_summary=PlannerWorldSummaryBuilder.build(
+            _task(),
+            world,
+            context,
+        ),
+        exact_prompt="prompt",
+        metadata=PlannerArtifactMetadata(
+            run_id=RunId("run.lexical.test"),
+            planner_model="test-model",
+            planner_model_revision="test",
+            planner_prompt_version="v1",
+            planner_prompt_hash=content_id({"p": "lexical"}),
+            planner_output_schema_version=PLANNER_OUTPUT_SCHEMA_VERSION,
+            temperature=0.0,
+            requested_seed=None,
+            effective_seed_supported=False,
+            planning_context_hash=context.source_hash,
+            world_summary_hash=content_id({"w": "lexical"}),
+            raw_response_hash=content_id({"r": "lexical"}),
+            validated_need_set_hash=content_id({"v": "lexical"}),
+            fallback_used=False,
+            input_tokens=1,
+            output_tokens=1,
+        ),
+        raw_response='{"drafts": []}',
+        attempts=(),
+        parsed_drafts=drafts,
+        validated_need_set_hash=content_id({"v": "lexical"}),
+        fallback_status=PlannerFallbackStatus.PLANNER,
+    )
+
+
+def test_world_summary_target_aware_state_selection() -> None:
+    """Target entities receive representative states within the fixed budget."""
+    world = _entity_world()
+    task = _task(task_intent="关键人物0 关键人物1 关键人物2 的伤势 与 承诺 状态")
+    context = _planner_context(task)
+    source_entity = world.entities[0]
+    targets = tuple(
+        source_entity.model_copy(
+            update={
+                "entity_id": StableId(f"entity.target.{index}"),
+                "internal_label": f"关键人物{index}",
+                "aliases": (),
+            }
+        )
+        for index in range(3)
+    )
+    target_states: list[Any] = []
+    for target in targets:
+        for index in range(10):
+            target_states.append(
+                world.states[0].model_copy(
+                    update={
+                        "state_id": StableId(f"state.target.{target.entity_id.root}.{index}"),
+                        "subject_id": target.entity_id,
+                        "predicate": f"predicate{index}",
+                        "value": f"value{index}",
+                    }
+                )
+            )
+    expanded = world.model_copy(
+        update={"entities": (*world.entities, *targets), "states": (*world.states, *target_states)}
+    )
+    summary = PlannerWorldSummaryBuilder.build(task, expanded, context)
+    assert len(summary.states) == min(PlannerWorldSummaryBuilder._MAX_STATES, len(expanded.states))
+    assert summary.state_count == len(expanded.states)
+    assert summary.truncated_state_count == len(expanded.states) - len(summary.states)
+    coverage = {item.label: item for item in summary.target_state_coverage}
+    for target in targets:
+        item = coverage[target.internal_label]
+        assert item.available == 10
+        assert item.selected >= 1
+        assert item.truncated == 10 - item.selected
+    selected_subjects = {state.subject_label for state in summary.states}
+    for target in targets:
+        assert target.internal_label in selected_subjects
+    # relations are never fabricated: the summary only exposes real records
+    assert summary.relation_count == len(expanded.relations)
+    assert len(summary.key_relations) == min(
+        PlannerWorldSummaryBuilder._MAX_RELATIONS, len(expanded.relations)
+    )
+
+
+def test_world_summary_no_targets_keeps_bounded_first_selection() -> None:
+    world = _entity_world()
+    task = _task()
+    summary = PlannerWorldSummaryBuilder.build(task, world, _planner_context(task))
+    assert len(summary.states) <= PlannerWorldSummaryBuilder._MAX_STATES
+    assert summary.target_state_coverage == ()
+    assert summary.truncated_state_count == max(0, len(world.states) - len(summary.states))
+
+
+def test_generate_evidence_first_requires_metadata_and_context() -> None:
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    generator = TaskPlanConditionedNeedGenerator()
+    context = _planner_context(task)
+    artifact = _frozen_lexical_artifact(None)
+    with pytest.raises(ValueError, match="frozen Planner metadata"):
+        generator.generate_evidence_first(
+            task,
+            world,
+            plan,
+            context,
+            artifact.model_copy(update={"metadata": None}),
+        )
+    with pytest.raises(ValueError, match="AuthorPlanningContext"):
+        generator.generate_evidence_first(
+            task,
+            world,
+            plan,
+            None,
+            artifact,
+        )
+
+
+def test_generate_evidence_first_fallback_on_rejection_and_goal_gap() -> None:
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    generator = TaskPlanConditionedNeedGenerator()
+    context = _planner_context(task)
+    artifact = _frozen_lexical_artifact(None)
+    # a draft-only artifact whose single draft is rejected -> template path
+    rejected = artifact.model_copy(
+        update={
+            "parsed_drafts": (
+                PlannedNeedDraft(
+                    draft_id="bad-1",
+                    semantic_question="无法验证的问题",
+                    entity_mentions=(),
+                    relation_mentions=(),
+                    trigger_plan_chapters=(21,),
+                    trigger_plan_goal="not canonical goal text",
+                    required_claim_scopes=("current",),
+                    suggested_facets=("CURRENT_STATE",),
+                ),
+            )
+        }
+    )
+    assert generator.generate_evidence_first(task, world, plan, context, rejected) is None
+    # drafts accepted but target goals uncovered -> template path
+    partial = _frozen_lexical_artifact(None).model_copy(
+        update={
+            "parsed_drafts": (
+                PlannedNeedDraft(
+                    draft_id="only-21",
+                    semantic_question="teacher 的伤势是否仍未痊愈?",
+                    entity_mentions=(EntityMention(label="teacher", role_in_need="subject"),),
+                    trigger_plan_chapters=(21,),
+                    trigger_plan_goal="重申旧誓言",
+                    why_needed="need",
+                    required_claim_scopes=("current",),
+                    suggested_facets=("CURRENT_STATE",),
+                    historical_time_scope="main",
+                ),
+            )
+        }
+    )
+    assert generator.generate_evidence_first(task, world, plan, context, partial) is None
+
+
+def test_target_aware_selection_budget_breaks() -> None:
+    world = _entity_world()
+    task = _task(task_intent="关键人物0 关键人物1")
+    context = _planner_context(task)
+    source_entity = world.entities[0]
+    targets = tuple(
+        source_entity.model_copy(
+            update={
+                "entity_id": StableId(f"entity.target.{index}"),
+                "internal_label": f"关键人物{index}",
+                "aliases": (),
+            }
+        )
+        for index in range(2)
+    )
+    target_states: list[Any] = []
+    for target in targets:
+        for index in range(80):
+            target_states.append(
+                world.states[0].model_copy(
+                    update={
+                        "state_id": StableId(f"state.target.{target.entity_id.root}.{index}"),
+                        "subject_id": target.entity_id,
+                        "predicate": f"predicate{index}",
+                        "value": f"value{index}",
+                    }
+                )
+            )
+    expanded = world.model_copy(
+        update={"entities": (*world.entities, *targets), "states": (*world.states, *target_states)}
+    )
+    summary = PlannerWorldSummaryBuilder.build(task, expanded, context)
+    assert len(summary.states) == PlannerWorldSummaryBuilder._MAX_STATES
+    assert summary.truncated_state_count == len(expanded.states) - len(summary.states)
+    coverage = {item.label: item for item in summary.target_state_coverage}
+    assert coverage["关键人物0"].available == 80
+    assert coverage["关键人物0"].selected <= PlannerWorldSummaryBuilder._MAX_STATES
+    assert coverage["关键人物0"].truncated == 80 - coverage["关键人物0"].selected
+
+
+def test_grounder_ambiguous_alias_and_blank_labels() -> None:
+    world = _entity_world()
+    source = world.entities[0]
+    shared = source.model_copy(
+        update={
+            "entity_id": StableId("entity.planner.alias-a"),
+            "internal_label": "alias-a",
+            "aliases": ("共同别名",),
+        }
+    )
+    shared_b = source.model_copy(
+        update={
+            "entity_id": StableId("entity.planner.alias-b"),
+            "internal_label": "alias-b",
+            "aliases": ("共同别名",),
+        }
+    )
+    blank = source.model_copy(
+        update={
+            "entity_id": StableId("entity.planner.blank"),
+            "internal_label": "  ",
+            "aliases": ("", " "),
+        }
+    )
+    expanded = world.model_copy(update={"entities": (*world.entities, shared, shared_b, blank)})
+    grounder = NeedDraftGrounder()
+    grounded = grounder.ground(
+        PlannedNeedDraft(
+            draft_id="alias-ambiguous",
+            semantic_question="共同别名 当前状态是什么?",
+            entity_mentions=(EntityMention(label="共同别名", role_in_need="subject"),),
+        ),
+        expanded,
+    )
+    mention = grounded.entity_mentions[0]
+    assert mention.grounding_status is GroundingStatus.AMBIGUOUS
+    assert mention.grounding_method == "ambiguous_alias_match"
+    assert mention.entity_id is None
+    resolvable = grounder._resolvable_label_map(expanded)
+    assert "共同别名" not in resolvable
+
+
+def test_generate_evidence_first_fallback_artifact_returns_none() -> None:
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    generator = TaskPlanConditionedNeedGenerator()
+    artifact = _frozen_lexical_artifact(None).model_copy(
+        update={"fallback_status": PlannerFallbackStatus.PLANNER_FALLBACK}
+    )
+    assert (
+        generator.generate_evidence_first(
+            task,
+            world,
+            plan,
+            _planner_context(task),
+            artifact,
+        )
+        is None
+    )

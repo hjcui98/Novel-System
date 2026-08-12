@@ -11,11 +11,13 @@ from sqlalchemy import Select, delete, exists, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import R1RecordEntityRow, R1RecordRow
-from novel_agent.domain.benchmark import PlanRootDocument
+from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import WorldRecordKind
 from novel_agent.domain.ids import CommitId, ProjectId, StableId
 from novel_agent.domain.memory import (
     ChannelHit,
+    GraphPathDereferenceStatus,
+    GraphPathReceipt,
     R1RecordView,
     RetrievalChannel,
     RetrievalUnit,
@@ -24,9 +26,11 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
     WorldRootDocument,
 )
-from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.text import EvidenceRef, TextBlock
 from novel_agent.domain.world import StoryTime, TruthClass
+from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.canonical_alias_registry import CanonicalAliasRegistry
+from novel_agent.services.content_addressing import quote_hash
 from novel_agent.services.need_query_compiler import compile_need_query
 
 
@@ -46,16 +50,7 @@ class _RecordSpec:
     payload: dict[str, Any]
 
 
-@dataclass(frozen=True, slots=True)
-class GraphPath:
-    """Bounded canonical-relation path with evidence and direction receipts."""
-
-    relation_row_ids: tuple[StableId, ...]
-    relation_ids: tuple[StableId, ...]
-    entity_path: tuple[StableId, ...]
-    directions: tuple[str, ...]
-    edge_semantics: tuple[str, ...]
-    evidence_refs: tuple[EvidenceRef, ...]
+GraphPath = GraphPathReceipt
 
 
 class R1WorldRepository:
@@ -131,15 +126,20 @@ class R1WorldRepository:
                 .join(R1RecordRow, R1RecordEntityRow.row_id == R1RecordRow.row_id)
                 .where(R1RecordRow.source_commit == source_commit.root)
             )
-            relation_count = session.scalar(
-                select(func.count())
-                .select_from(R1RecordRow)
-                .where(
-                    R1RecordRow.source_commit == source_commit.root,
-                    R1RecordRow.record_kind == WorldRecordKind.RELATION.value,
+            relation_rows = tuple(
+                session.scalars(
+                    select(R1RecordRow).where(
+                        R1RecordRow.source_commit == source_commit.root,
+                        R1RecordRow.record_kind == WorldRecordKind.RELATION.value,
+                    )
                 )
             )
-        return int(record_count or 0), int(association_count or 0), int(relation_count or 0)
+        graph_edges = sum(
+            row.truth_class == TruthClass.ACCEPTED_WORLD_FACT.value
+            and bool(self._evidence_refs(row.record_json))
+            for row in relation_rows
+        )
+        return int(record_count or 0), int(association_count or 0), graph_edges
 
     def exact(
         self,
@@ -298,6 +298,7 @@ class R1WorldRepository:
         time_scope: StoryTime | None = None,
         allowed_edge_semantics: tuple[str, ...] = ("canonical", "evidence"),
         access_scopes: tuple[str, ...] = ("writer_safe",),
+        snapshot_id: StableId | None = None,
     ) -> tuple[R1RecordView, ...]:
         paths = self.typed_graph_paths(
             source_commit,
@@ -308,21 +309,9 @@ class R1WorldRepository:
             time_scope=time_scope,
             allowed_edge_semantics=allowed_edge_semantics,
             access_scopes=access_scopes,
+            snapshot_id=snapshot_id,
         )
-        row_ids = tuple(
-            dict.fromkeys(row_id for path in paths for row_id in path.relation_row_ids)
-        )[:limit]
-        if not row_ids:
-            return ()
-        with self._session_factory() as session:
-            rows = tuple(
-                session.scalars(
-                    select(R1RecordRow)
-                    .where(R1RecordRow.row_id.in_(tuple(item.root for item in row_ids)))
-                    .order_by(R1RecordRow.record_id)
-                )
-            )
-            return self._views(session, rows)
+        return self.records_for_graph_paths(paths, limit=limit)
 
     def typed_graph_paths(
         self,
@@ -335,7 +324,8 @@ class R1WorldRepository:
         time_scope: StoryTime | None = None,
         allowed_edge_semantics: tuple[str, ...] = ("canonical", "evidence"),
         access_scopes: tuple[str, ...] = ("writer_safe",),
-    ) -> tuple[GraphPath, ...]:
+        snapshot_id: StableId | None = None,
+    ) -> tuple[GraphPathReceipt, ...]:
         """Traverse accepted relation edges with fixed depth and explicit receipts."""
 
         if max_depth < 1 or limit < 1:
@@ -372,6 +362,8 @@ class R1WorldRepository:
                 continue
             if row.truth_class != TruthClass.ACCEPTED_WORLD_FACT.value:
                 continue
+            if not self._evidence_refs(row.record_json):
+                continue
             if allowed_predicates and row.predicate not in allowed_predicates:
                 continue
             if not self._edge_matches_time(row, time_scope):
@@ -382,7 +374,10 @@ class R1WorldRepository:
             raise ValueError("graph traversal only permits explicit canonical/evidence semantics")
         if "canonical" not in allowed:
             return ()
-        paths: list[GraphPath] = []
+        effective_snapshot = snapshot_id or StableId(
+            f"snapshot.r1.{source_commit.root.removeprefix('sha256:')}"
+        )
+        paths: list[GraphPathReceipt] = []
         frontier: list[tuple[str, tuple[R1RecordRow, ...], tuple[str, ...], tuple[str, ...]]] = [
             (entity.root, (), (entity.root,), ()) for entity in entity_ids
         ]
@@ -405,20 +400,139 @@ class R1WorldRepository:
                 evidence = tuple(
                     item for edge in next_rows for item in self._evidence_refs(edge.record_json)
                 )
+                predicates = tuple(str(edge.predicate) for edge in next_rows)
+                valid_time = tuple(
+                    StoryTime(
+                        worldline=edge.worldline or "main",
+                        start_ordinal=edge.valid_start,
+                        end_ordinal=edge.valid_end,
+                    )
+                    for edge in next_rows
+                )
+                row_ids = tuple(StableId(edge.row_id) for edge in next_rows)
+                relation_ids = tuple(StableId(edge.record_id) for edge in next_rows)
+                entity_path = tuple(StableId(item) for item in next_entities)
+                path_id = self._graph_path_id(
+                    source_commit,
+                    effective_snapshot,
+                    row_ids,
+                    entity_path,
+                    next_directions,
+                )
                 paths.append(
-                    GraphPath(
-                        relation_row_ids=tuple(StableId(edge.row_id) for edge in next_rows),
-                        relation_ids=tuple(StableId(edge.record_id) for edge in next_rows),
-                        entity_path=tuple(StableId(item) for item in next_entities),
+                    GraphPathReceipt(
+                        path_id=path_id,
+                        source_commit=source_commit,
+                        snapshot_id=effective_snapshot,
+                        seed_entity_ids=entity_ids,
+                        relation_row_ids=row_ids,
+                        relation_ids=relation_ids,
+                        entity_path=entity_path,
+                        predicates=predicates,
                         directions=next_directions,
+                        valid_time=valid_time,
                         edge_semantics=("canonical",) * len(next_rows),
                         evidence_refs=evidence,
+                        dereference_status=(GraphPathDereferenceStatus.RELATION_ROWS_VERIFIED),
                     )
                 )
                 if len(paths) == limit:
                     break
                 frontier.append((next_node, next_rows, next_entities, next_directions))
         return tuple(paths)
+
+    def validate_graph_path_receipts(
+        self,
+        receipts: tuple[GraphPathReceipt, ...],
+        text: TextRootDocument,
+    ) -> tuple[GraphPathReceipt, ...]:
+        """Verify every path against relation rows and concrete append-only L0 blocks."""
+
+        if not receipts:
+            return ()
+        row_ids = tuple(
+            dict.fromkeys(
+                row_id.root for receipt in receipts for row_id in receipt.relation_row_ids
+            )
+        )
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(select(R1RecordRow).where(R1RecordRow.row_id.in_(row_ids)))
+            )
+            associations = tuple(
+                session.scalars(
+                    select(R1RecordEntityRow).where(R1RecordEntityRow.row_id.in_(row_ids))
+                )
+            )
+        rows_by_id = {row.row_id: row for row in rows}
+        roles: dict[str, dict[str, str]] = {}
+        for association in associations:
+            roles.setdefault(association.row_id, {})[association.role] = association.entity_id
+        blocks = self._text_blocks(text)
+        verified: list[GraphPathReceipt] = []
+        for receipt in receipts:
+            if receipt.path_id != self._graph_path_id(
+                receipt.source_commit,
+                receipt.snapshot_id,
+                receipt.relation_row_ids,
+                receipt.entity_path,
+                receipt.directions,
+            ):
+                raise ValueError("graph path receipt identity does not match its path")
+            flattened_evidence: list[EvidenceRef] = []
+            for index, row_id in enumerate(receipt.relation_row_ids):
+                row = rows_by_id.get(row_id.root)
+                if (
+                    row is None
+                    or row.source_commit != receipt.source_commit.root
+                    or row.record_kind != WorldRecordKind.RELATION.value
+                    or row.record_id != receipt.relation_ids[index].root
+                    or row.predicate != receipt.predicates[index]
+                    or row.truth_class != TruthClass.ACCEPTED_WORLD_FACT.value
+                ):
+                    raise ValueError("graph path receipt does not dereference to its relation row")
+                endpoints = roles.get(row.row_id, {})
+                expected_source = receipt.entity_path[index].root
+                expected_target = receipt.entity_path[index + 1].root
+                if receipt.directions[index] == "reverse":
+                    expected_source, expected_target = expected_target, expected_source
+                if endpoints != {"subject": expected_source, "object": expected_target}:
+                    raise ValueError("graph path receipt endpoint roles do not match")
+                evidence_refs = self._evidence_refs(row.record_json)
+                if not evidence_refs:
+                    raise ValueError("graph path relation row has no evidence")
+                for evidence in evidence_refs:
+                    self._validate_l0_evidence(evidence, blocks)
+                flattened_evidence.extend(evidence_refs)
+            if tuple(flattened_evidence) != receipt.evidence_refs:
+                raise ValueError("graph path receipt evidence does not match relation rows")
+            verified.append(
+                receipt.model_copy(
+                    update={"dereference_status": GraphPathDereferenceStatus.L0_VERIFIED}
+                )
+            )
+        return tuple(verified)
+
+    def records_for_graph_paths(
+        self,
+        paths: tuple[GraphPathReceipt, ...],
+        *,
+        limit: int,
+    ) -> tuple[R1RecordView, ...]:
+        row_ids = tuple(
+            dict.fromkeys(row_id for path in paths for row_id in path.relation_row_ids)
+        )[:limit]
+        if not row_ids:
+            return ()
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(R1RecordRow)
+                    .where(R1RecordRow.row_id.in_(tuple(item.root for item in row_ids)))
+                    .order_by(R1RecordRow.record_id)
+                )
+            )
+            return self._views(session, rows)
 
     @staticmethod
     def _views(session: Session, rows: tuple[R1RecordRow, ...]) -> tuple[R1RecordView, ...]:
@@ -472,6 +586,25 @@ class R1WorldRepository:
     def _row_id(commit: CommitId, kind: str, record_id: StableId) -> StableId:
         digest = hashlib.sha256(f"{commit.root}\0{kind}\0{record_id.root}".encode()).hexdigest()
         return StableId(f"r1.{digest}")
+
+    @staticmethod
+    def _graph_path_id(
+        source_commit: CommitId,
+        snapshot_id: StableId,
+        row_ids: tuple[StableId, ...],
+        entity_path: tuple[StableId, ...],
+        directions: tuple[str, ...],
+    ) -> StableId:
+        payload = "\0".join(
+            (
+                source_commit.root,
+                snapshot_id.root,
+                *(row_id.root for row_id in row_ids),
+                *(entity_id.root for entity_id in entity_path),
+                *directions,
+            )
+        )
+        return StableId(f"graph-path.{hashlib.sha256(payload.encode()).hexdigest()}")
 
     @staticmethod
     def _specs(world: WorldRootDocument, plan: PlanRootDocument | None) -> tuple[_RecordSpec, ...]:
@@ -617,7 +750,42 @@ class R1WorldRepository:
         raw = payload.get("evidence_refs", [])
         if not isinstance(raw, list):
             return ()
-        return tuple(EvidenceRef.model_validate(item) for item in raw if isinstance(item, dict))
+        return tuple(
+            EvidenceRef.model_validate_json(json.dumps(item))
+            for item in raw
+            if isinstance(item, dict)
+        )
+
+    @staticmethod
+    def _text_blocks(text: TextRootDocument) -> dict[StableId, TextBlock]:
+        return {
+            block.block_id: block
+            for scene in (
+                *(text.prelude.scenes if text.prelude is not None else ()),
+                *(scene for chapter in text.chapters for scene in chapter.scenes),
+            )
+            for block in scene.blocks
+        }
+
+    @staticmethod
+    def _validate_l0_evidence(
+        evidence: EvidenceRef,
+        blocks: dict[StableId, TextBlock],
+    ) -> None:
+        if evidence.span is None:
+            raise ValueError("graph path evidence has no concrete span")
+        block = blocks.get(evidence.span.block_id)
+        if (
+            block is None
+            or evidence.span.end > len(block.text)
+            or evidence.chapter_id != block.chapter_id
+            or evidence.scene_id != block.scene_id
+            or evidence.object_hash != sha256_id(block.text.encode("utf-8"))
+        ):
+            raise ValueError("graph path evidence does not resolve to L0")
+        selected = block.text[evidence.span.start : evidence.span.end]
+        if evidence.quote_hash != quote_hash(selected):
+            raise ValueError("graph path evidence quote hash does not match L0")
 
     @staticmethod
     def _edge_matches_time(row: R1RecordRow, time_scope: StoryTime | None) -> bool:
@@ -661,8 +829,9 @@ class R1RetrievalBackend:
         self, need: Stage1MemoryNeed, channel: RetrievalChannel, limit: int
     ) -> tuple[ChannelHit, ...]:
         bundle = compile_need_query(need)
+        paths: tuple[GraphPathReceipt, ...] = ()
         if channel is RetrievalChannel.TYPED_GRAPH:
-            records = self._repository.typed_graph(
+            paths = self._repository.typed_graph_paths(
                 need.base_commit,
                 bundle.graph_seeds,
                 max_depth=self._graph_depth,
@@ -670,7 +839,9 @@ class R1RetrievalBackend:
                 allowed_predicates=bundle.exact_predicates,
                 time_scope=bundle.time_scope,
                 access_scopes=self._visible_access_scopes(need),
+                snapshot_id=self._snapshot_id,
             )
+            records = self._repository.records_for_graph_paths(paths, limit=limit)
         elif channel in {RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL}:
             # The R1 repository derives its exact query from the same fields
             # the bundle compiles (exact_entity_ids / exact_predicates), so
@@ -697,6 +868,11 @@ class R1RetrievalBackend:
                     else "postgresql_versioned_temporal_match"
                     if channel is RetrievalChannel.R1_TEMPORAL
                     else "postgresql_versioned_exact_match"
+                ),
+                graph_path_receipts=(
+                    tuple(path for path in paths if record.row_id in path.relation_row_ids)
+                    if channel is RetrievalChannel.TYPED_GRAPH
+                    else ()
                 ),
             )
             for rank, record in enumerate(records, start=1)

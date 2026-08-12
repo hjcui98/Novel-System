@@ -18,6 +18,7 @@ from novel_agent.domain.changes import (
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId
 from novel_agent.domain.memory import PlanObligation, WorldRootDocument
 from novel_agent.domain.world import Entity, Event, RelationRecord, StateRecord
+from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.content_addressing import canonical_json_bytes, world_root_content_id
 
 
@@ -124,7 +125,7 @@ def build_candidate_bundle(
 ) -> CandidateChangeBundle:
     world_bytes = canonical_json_bytes(proposed_world.model_dump(mode="json"))
     world_ref = WorldRootRef(
-        artifact_id=proposed_world.root_hash,
+        artifact_id=sha256_id(world_bytes),
         media_type="application/vnd.novel-agent.world-root+json",
         byte_length=len(world_bytes),
         schema_version=proposed_world.schema_version,

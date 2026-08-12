@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "UnresolvedLexicalAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "grounding_method": {
+          "default": "no_label_match",
+          "title": "Grounding Method",
+          "type": "string"
+        },
+        "mention": {
+          "minLength": 1,
+          "title": "Mention",
+          "type": "string"
+        },
+        "source_draft_id": {
+          "minLength": 1,
+          "title": "Source Draft Id",
+          "type": "string"
+        },
+        "source_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mention",
+        "source_draft_id"
+      ],
+      "title": "UnresolvedLexicalAnchor",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assembler_version": {
+      "minLength": 1,
+      "title": "Assembler Version",
+      "type": "string"
+    },
+    "generator_version": {
+      "default": "",
+      "title": "Generator Version",
+      "type": "string"
+    },
+    "grounder_version": {
+      "default": "",
+      "title": "Grounder Version",
+      "type": "string"
+    },
+    "need_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "planner_artifact_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planner_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planner_fallback_used": {
+      "default": false,
+      "title": "Planner Fallback Used",
+      "type": "boolean"
+    },
+    "query_compiler_version": {
+      "default": "",
+      "title": "Query Compiler Version",
+      "type": "string"
+    },
+    "resolver_version": {
+      "default": "",
+      "title": "Resolver Version",
+      "type": "string"
+    },
+    "route_plan_version": {
+      "default": "",
+      "title": "Route Plan Version",
+      "type": "string"
+    },
+    "unresolved_lexical_anchors": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/UnresolvedLexicalAnchor"
+      },
+      "title": "Unresolved Lexical Anchors",
+      "type": "array"
+    },
+    "validator_version": {
+      "default": "",
+      "title": "Validator Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assembler_version"
+  ],
+  "title": "EvidenceFirstLineage",
+  "type": "object"
+}

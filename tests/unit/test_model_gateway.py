@@ -311,6 +311,7 @@ def test_structured_output_retries_domain_validation_with_feedback() -> None:
     assert len(fake.requests) == 2
     assert fake.requests[0].request_id.root == "model.request.1"
     assert fake.requests[1].request_id.root == "model.request.1.schema-retry1"
+    assert fake.requests[1].response_schema == fake.requests[0].response_schema
     assert "STRUCTURED_OUTPUT_RETRY" in fake.requests[1].prompt
     assert "input_value" not in fake.requests[1].prompt
     assert record.request_id == fake.requests[1].request_id

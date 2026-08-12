@@ -1,0 +1,299 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Reproducible package/ledger freeze manifest for one checkpoint.\n\nThe manifest carries the source, contract, configuration, content hashes,\nartifact refs, budgets, call counts and immutable root identity so a\nWriter, human or external strong model can verify the package without\nscanning the object store.",
+  "properties": {
+    "assembler_version": {
+      "minLength": 1,
+      "title": "Assembler Version",
+      "type": "string"
+    },
+    "assembly_status": {
+      "minLength": 1,
+      "title": "Assembly Status",
+      "type": "string"
+    },
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "basis_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "budget_status": {
+      "minLength": 1,
+      "title": "Budget Status",
+      "type": "string"
+    },
+    "call_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Call Counts",
+      "type": "object"
+    },
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "contract_version": {
+      "const": "writer_context.v2",
+      "default": "writer_context.v2",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "cutoff_failure_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Cutoff Failure Count",
+      "type": "integer"
+    },
+    "dereference_failure_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Dereference Failure Count",
+      "type": "integer"
+    },
+    "embedding_call_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Embedding Call Count",
+      "type": "integer"
+    },
+    "evidence_ledger_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evidence_ledger_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "evidence_ledger_token_budget": {
+      "minimum": 1,
+      "title": "Evidence Ledger Token Budget",
+      "type": "integer"
+    },
+    "experiment_id": {
+      "minLength": 1,
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "future_leakage_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "gap_codes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Gap Codes",
+      "type": "array"
+    },
+    "gap_count": {
+      "minimum": 0,
+      "title": "Gap Count",
+      "type": "integer"
+    },
+    "generated_at": {
+      "minLength": 1,
+      "title": "Generated At",
+      "type": "string"
+    },
+    "graph_edge_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Graph Edge Count",
+      "type": "integer"
+    },
+    "graph_readiness_by_need": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Graph Readiness By Need",
+      "type": "object"
+    },
+    "immutable_root_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Immutable Root Hashes",
+      "type": "object"
+    },
+    "item_count": {
+      "minimum": 0,
+      "title": "Item Count",
+      "type": "integer"
+    },
+    "leakage_failure_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Leakage Failure Count",
+      "type": "integer"
+    },
+    "ledger_contract_version": {
+      "default": "evidence_ledger.v2",
+      "title": "Ledger Contract Version",
+      "type": "string"
+    },
+    "ledger_entry_count": {
+      "minimum": 0,
+      "title": "Ledger Entry Count",
+      "type": "integer"
+    },
+    "ledger_tokens": {
+      "minimum": 0,
+      "title": "Ledger Tokens",
+      "type": "integer"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "markdown_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "need_count": {
+      "minimum": 0,
+      "title": "Need Count",
+      "type": "integer"
+    },
+    "package_artifact_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "package_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "projection_attestation_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rerank_call_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rerank Call Count",
+      "type": "integer"
+    },
+    "root_hashes_unchanged": {
+      "default": true,
+      "title": "Root Hashes Unchanged",
+      "type": "boolean"
+    },
+    "run_config_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "scope_failure_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Scope Failure Count",
+      "type": "integer"
+    },
+    "verified_graph_path_receipt_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Verified Graph Path Receipt Ids",
+      "type": "array"
+    },
+    "writer_token_budget": {
+      "minimum": 1,
+      "title": "Writer Token Budget",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "manifest_id",
+    "experiment_id",
+    "case_id",
+    "checkpoint_chapter",
+    "basis_commit_id",
+    "basis_snapshot_id",
+    "assembler_version",
+    "run_config_hash",
+    "package_artifact_ref",
+    "evidence_ledger_ref",
+    "package_hash",
+    "evidence_ledger_hash",
+    "generated_at",
+    "writer_token_budget",
+    "evidence_ledger_token_budget",
+    "need_count",
+    "item_count",
+    "gap_count",
+    "ledger_entry_count",
+    "ledger_tokens",
+    "budget_status",
+    "assembly_status"
+  ],
+  "title": "EvidenceFirstPackageManifest",
+  "type": "object"
+}

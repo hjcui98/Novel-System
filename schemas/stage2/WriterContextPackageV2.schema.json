@@ -1,0 +1,599 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    },
+    "EvidenceFirstGap": {
+      "additionalProperties": false,
+      "properties": {
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceGapKind"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "need_ids",
+        "need_facet_ids",
+        "kind",
+        "reason"
+      ],
+      "title": "EvidenceFirstGap",
+      "type": "object"
+    },
+    "EvidenceFirstLineage": {
+      "additionalProperties": false,
+      "properties": {
+        "assembler_version": {
+          "minLength": 1,
+          "title": "Assembler Version",
+          "type": "string"
+        },
+        "generator_version": {
+          "default": "",
+          "title": "Generator Version",
+          "type": "string"
+        },
+        "grounder_version": {
+          "default": "",
+          "title": "Grounder Version",
+          "type": "string"
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "planner_artifact_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_fallback_used": {
+          "default": false,
+          "title": "Planner Fallback Used",
+          "type": "boolean"
+        },
+        "query_compiler_version": {
+          "default": "",
+          "title": "Query Compiler Version",
+          "type": "string"
+        },
+        "resolver_version": {
+          "default": "",
+          "title": "Resolver Version",
+          "type": "string"
+        },
+        "route_plan_version": {
+          "default": "",
+          "title": "Route Plan Version",
+          "type": "string"
+        },
+        "unresolved_lexical_anchors": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UnresolvedLexicalAnchor"
+          },
+          "title": "Unresolved Lexical Anchors",
+          "type": "array"
+        },
+        "validator_version": {
+          "default": "",
+          "title": "Validator Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assembler_version"
+      ],
+      "title": "EvidenceFirstLineage",
+      "type": "object"
+    },
+    "EvidenceGapKind": {
+      "enum": [
+        "no_selected_evidence",
+        "budget_exceeded",
+        "slice_oversized",
+        "cutoff_tainted",
+        "scope_tainted",
+        "dereference_failed",
+        "heading_source_role"
+      ],
+      "title": "EvidenceGapKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "UnresolvedLexicalAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "grounding_method": {
+          "default": "no_label_match",
+          "title": "Grounding Method",
+          "type": "string"
+        },
+        "mention": {
+          "minLength": 1,
+          "title": "Mention",
+          "type": "string"
+        },
+        "source_draft_id": {
+          "minLength": 1,
+          "title": "Source Draft Id",
+          "type": "string"
+        },
+        "source_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mention",
+        "source_draft_id"
+      ],
+      "title": "UnresolvedLexicalAnchor",
+      "type": "object"
+    },
+    "WriterContextBudgetReportV2": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_rendered_ledger_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Ledger Tokens",
+          "type": "integer"
+        },
+        "actual_rendered_writer_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Writer Tokens",
+          "type": "integer"
+        },
+        "configured_ledger_token_budget": {
+          "minimum": 1,
+          "title": "Configured Ledger Token Budget",
+          "type": "integer"
+        },
+        "configured_writer_token_budget": {
+          "minimum": 1,
+          "title": "Configured Writer Token Budget",
+          "type": "integer"
+        },
+        "dropped_slice_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Dropped Slice Reasons",
+          "type": "object"
+        },
+        "evidence_item_count": {
+          "minimum": 0,
+          "title": "Evidence Item Count",
+          "type": "integer"
+        },
+        "final_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "gap_item_count": {
+          "minimum": 0,
+          "title": "Gap Item Count",
+          "type": "integer"
+        },
+        "item_count": {
+          "minimum": 0,
+          "title": "Item Count",
+          "type": "integer"
+        },
+        "ledger_entry_count": {
+          "minimum": 0,
+          "title": "Ledger Entry Count",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "minLength": 1,
+          "title": "Tokenizer",
+          "type": "string"
+        },
+        "tokenizer_version": {
+          "minLength": 1,
+          "title": "Tokenizer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenizer",
+        "tokenizer_version",
+        "configured_writer_token_budget",
+        "actual_rendered_writer_tokens",
+        "configured_ledger_token_budget",
+        "actual_rendered_ledger_tokens",
+        "item_count",
+        "evidence_item_count",
+        "gap_item_count",
+        "ledger_entry_count",
+        "final_status"
+      ],
+      "title": "WriterContextBudgetReportV2",
+      "type": "object"
+    },
+    "WriterContextEvidenceItem": {
+      "additionalProperties": false,
+      "description": "Writer-visible evidence item: purpose plus ledger refs or a typed gap.\n\n``purpose`` is derived only from the public Need's semantic question /\nwhy-needed / facet metadata; it never rewrites material into a claim and\nnever reads Gold or future text.  ``raw_preview`` is a bounded prefix of\nthe exact Ledger text (never a model rewrite) with an explicit truncation\nflag.",
+      "properties": {
+        "evidence_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evidence Ledger Ids",
+          "type": "array"
+        },
+        "gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceFirstGap"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "purpose": {
+          "minLength": 1,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "raw_preview": {
+          "default": "",
+          "title": "Raw Preview",
+          "type": "string"
+        },
+        "section": {
+          "$ref": "#/$defs/WriterContextSection"
+        },
+        "selection_reason": {
+          "default": "",
+          "title": "Selection Reason",
+          "type": "string"
+        },
+        "source_kind": {
+          "default": "",
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "source_scope": {
+          "default": "",
+          "title": "Source Scope",
+          "type": "string"
+        },
+        "validity": {
+          "$ref": "#/$defs/WriterContextValidity",
+          "default": "uncertain"
+        }
+      },
+      "required": [
+        "item_id",
+        "section",
+        "need_ids",
+        "need_facet_ids",
+        "purpose"
+      ],
+      "title": "WriterContextEvidenceItem",
+      "type": "object"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
+      "type": "string"
+    },
+    "WriterContextValidity": {
+      "enum": [
+        "current",
+        "historical",
+        "planned",
+        "uncertain"
+      ],
+      "title": "WriterContextValidity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evidence-first Writer Context product (``writer_context.v2``).\n\nThe default Stage 2M read-side product (ADR-0008): public\nNeed/facet/scope-organized evidence items plus typed gaps, with a bound\nEvidenceLedger reference.  No claim groups, variants, receipts or semantic\nverdicts are required for READY.",
+  "properties": {
+    "arm": {
+      "enum": [
+        "A",
+        "B",
+        "C"
+      ],
+      "title": "Arm",
+      "type": "string"
+    },
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "basis_snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "budget_report": {
+      "$ref": "#/$defs/WriterContextBudgetReportV2"
+    },
+    "contract_version": {
+      "const": "writer_context.v2",
+      "default": "writer_context.v2",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "evidence_ledger_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "gaps": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceFirstGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/WriterContextEvidenceItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "lineage": {
+      "$ref": "#/$defs/EvidenceFirstLineage"
+    },
+    "rendered_context": {
+      "default": "",
+      "title": "Rendered Context",
+      "type": "string"
+    },
+    "task_contract": {
+      "$ref": "#/$defs/BenchmarkTaskContract"
+    }
+  },
+  "required": [
+    "task_contract",
+    "basis_commit_id",
+    "basis_snapshot_id",
+    "arm",
+    "items",
+    "budget_report",
+    "evidence_ledger_ref",
+    "lineage"
+  ],
+  "title": "WriterContextPackageV2",
+  "type": "object"
+}

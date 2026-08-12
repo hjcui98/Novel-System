@@ -182,8 +182,10 @@ def test_current_state_route_is_intersected_with_registered_query_channels() -> 
     assert active_channels(current) == {
         RetrievalChannel.R1_EXACT,
         RetrievalChannel.R1_TEMPORAL,
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
     }
-    assert current.conditional_fallbacks == ()
+    assert len(current.conditional_fallbacks) == 1
 
 
 def test_router_fails_closed_for_basis_mismatch_and_validator_rejects_policy_expansion() -> None:

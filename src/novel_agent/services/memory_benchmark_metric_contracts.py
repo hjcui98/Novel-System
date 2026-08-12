@@ -19,7 +19,7 @@ from novel_agent.services.content_addressing import canonical_json_bytes, conten
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 
 VERSION = SchemaVersion("1.0.0")
-GATE_METRIC_FORMULA_VERSION = "gate_metric_formula.v2"
+GATE_METRIC_FORMULA_VERSION = "gate_metric_formula.v3"
 GATE_METRIC_THRESHOLDS: dict[str, float] = {
     "current_state_accuracy": 0.95,
     "operational_plan_coverage": 0.95,
@@ -51,7 +51,8 @@ GATE_METRIC_FORMULA = {
     "five_segment_binding": "per-profile-per-gold-single-need-and-need-bound-ledger",
     "segment_availability": "nullable-with-typed-denominator-availability",
     "plan_policy": "strict-d9-plan-guides-planner-only",
-    "evidence_ancestry": "same-canonical-observed-text-root-required",
+    "evidence_ancestry": "role-paired-observed-text-root-ancestry-v2",
+    "plan_axis_separation": "plan-node-only-gold-excluded-from-claim-denominator",
     "terminal_stage_loss": "complete-only-when-final-verdict-hit",
     "thresholds": GATE_METRIC_THRESHOLDS,
 }
@@ -64,16 +65,18 @@ class GoldMetricContractBuilder:
     descriptor_version = "gold_metric_descriptor.v1"
     gold_contract_version = "gold_metric_contract.v1"
     accepted_evidence_contract_version = "accepted_evidence_contract.v1"
-    evaluator_manifest_version = "evaluator_manifest.v1"
+    evaluator_manifest_version = "evaluator_manifest.v2"
 
     def __init__(
         self,
         artifacts: ArtifactRepository,
         *,
         matcher: GoldEvidenceMatcher | None = None,
+        ancestry_proof_ref: ArtifactRef | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._matcher = matcher or GoldEvidenceMatcher()
+        self._ancestry_proof_ref = ancestry_proof_ref
 
     def build_manifest(
         self,
@@ -86,6 +89,7 @@ class GoldMetricContractBuilder:
             manifest_version=self.evaluator_manifest_version,
             evaluator_manifest_id=evaluator_manifest_id,
             gold_ids=gold_ids,
+            ancestry_proof_ref=self._ancestry_proof_ref,
         )
         ref = self._artifacts.put(
             canonical_json_bytes(manifest.model_dump(mode="json")),

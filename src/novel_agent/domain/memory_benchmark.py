@@ -63,6 +63,13 @@ class GoldMatchStatus(StrEnum):
     UNTRACEABLE = "UNTRACEABLE"
 
 
+class GoldEligibility(StrEnum):
+    """Which scoring axis a Gold belongs to under strict D9."""
+
+    OBSERVED_CLAIM = "observed_claim"
+    PLAN_AXIS_ONLY = "plan_axis_only"
+
+
 class AcceptedEvidenceContract(DomainModel):
     """Evaluator-only immutable alternatives used by the locked evidence matcher."""
 
@@ -140,6 +147,7 @@ class EvaluatorManifestContract(DomainModel):
     manifest_version: str = Field(min_length=1)
     evaluator_manifest_id: StableId
     gold_ids: tuple[StableId, ...]
+    ancestry_proof_ref: ArtifactRef | None = None
 
     @model_validator(mode="after")
     def validate_gold_ids(self) -> EvaluatorManifestContract:
@@ -175,6 +183,7 @@ class PerGoldComparison(DomainModel):
     missing_components: tuple[str, ...] = ()
     explanation: str = Field(min_length=1)
     verifier_receipt_ref: ArtifactRef | None = None
+    eligibility: GoldEligibility = GoldEligibility.OBSERVED_CLAIM
 
     @model_validator(mode="after")
     def validate_descriptor_ref(self) -> PerGoldComparison:
@@ -379,6 +388,13 @@ class MemoryBenchmarkEvaluationReport(DomainModel):
     stage_loss_diagnostics: tuple[PerGoldStageLossDiagnostic, ...] = ()
     five_segments: FiveSegmentReport | None = None
     schema_version: SchemaVersion = SchemaVersion("2.0.0")
+    observed_claim_count: int = Field(default=0, ge=0)
+    observed_claim_weight: float = Field(default=0.0, ge=0.0)
+    plan_axis_only_count: int = Field(default=0, ge=0)
+    plan_axis_only_weight: float = Field(default=0.0, ge=0.0)
+    plan_axis_only_gold_ids: tuple[StableId, ...] = ()
+    legacy_72_gold_weighted_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    legacy_72_gold_mandatory_hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_manifest_ref(self) -> MemoryBenchmarkEvaluationReport:

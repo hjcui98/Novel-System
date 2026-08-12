@@ -1,12 +1,12 @@
 # agentmemory 参考评审与 Memory 成熟化优化路线
 
-> Lifecycle: `DRAFT`
+> Lifecycle: `TECHNICAL_REFERENCE / NON_AUTHORITATIVE`
 >
 > Initial date: 2026-08-01 +08:00
 >
-> Updated: 2026-08-03 +08:00
+> Updated: 2026-08-10 +08:00
 >
-> Purpose: 供后续 Stage 3–7 设计评审、成熟化改进和验收规划使用
+> Purpose: 供 Stage 3 Writer、Stage 4 Planner 和 Stage 5 长期运行设计评审、成熟化改进和验收规划使用
 >
 > Local observation baseline: `ecd3bcad7e9ccca6ac8a857cf27fb72c35f8ebd3`
 >
@@ -18,7 +18,12 @@
 >
 > Authority boundary: 本文是比较研究与候选方案，不是 ADR、阶段状态或 Gate 通过证据；
 > 当前状态仍以 [project_status.md](project_status.md) 为准，阶段编号仍以
-> [ADR-0005](adr/0005-stage-numbering-and-document-lifecycle.md) 为准。
+> [ADR-0006](adr/0006-three-product-stage-topology.md) 为准。
+>
+> 2026-08-10 正式吸收映射：Writer 的 plan-conditioned Memory 留在 Stage 3；Planner inquiry-conditioned
+> Memory、graph path receipt、Anchor→Graph 条件扩展、compact→expand 和检索消融进入 Stage 4；外部
+> Hook ingress、Operational 异步派生、durable replay、retention 和受控 Experience/Skill 演化统一进入
+> Stage 5 的渐进工作包。旧的多阶段映射仅保留于 Git 历史，第 7 节是本文当前映射。
 
 ## 0. 一页结论
 
@@ -61,18 +66,16 @@ learned fusion 全部暂缓到正式 Stage 站位。
 | 时点 | 建议 | 结论 |
 |---|---|---|
 | 当前 Stage 2M | 大 Block → paragraph/window exact slices、token-bounded semantic-input/Ledger packing、未闭合 Need 按需 claim 与 terminal funnel | 先保 raw 信息，不改 Writer 公共合同，不设固定三条/全量 atom 链 |
-| Stage 4 | compact → expand、source/path diversity、Context use receipt | 在高级读取路径有实证需求后建设 |
-| Stage 5 | 外部 Hook ingress 与 Observation provenance | 只覆盖现有 Runtime 管不到的真实 surface |
-| Stage 6 | Operational/Derived retention、恢复、索引一致性 | 不作用于 Canon truth/evidence |
-| Stage 7 | consolidation candidate、长期记忆晋升、独立 observation graph、learned fusion | 必须经 held-out gate 和隔离消融 |
-| post-Stage 7 | Viewer | 可选运维界面，不是 Memory 产品或前置条件 |
+| Stage 3 | Writer reactive Need、ContextDelta、Context exposed/used 和安全窗口压缩 | 只扩展给定规划的 Writer Loop，不建外部 Hook/长期平台 |
+| Stage 4 | Planner Context、graph path receipt、Anchor→Graph、compact→expand、source/path diversity 和完整消融 | 由 Planner inquiry 条件触发，不把 triple 设为所有查询默认 |
+| Stage 5 | 外部 Hook ingress、Observation provenance、Operational/Derived retention、恢复、consolidation/Skill candidate 和可选 Viewer | 只覆盖真实长期 caller；Canon/Plan/active Skill 仍须受控晋升 |
 
 ### 0.3 对 BM25＋向量＋图检索和 Hooks 的直接结论
 
 | 机制 | 能否使用 | NS 中的正确位置 | 关键限制 |
 |---|---|---|---|
 | BM25＋向量＋图检索 | **可以，而且关系链/因果多跳路径已经存在** | Stage 4 把现有 `TYPED_GRAPH + ANCHOR_BM25 + ANCHOR_DENSE` 做成有 path receipt、可消融、可降级的正式能力 | 只按 Need 条件触发；Exact/quote 不走 triple；图只接受 typed canonical/evidence edge |
-| Hooks | **可以，但主要是未来的外部 ingress** | Stage 3–4 内部流程继续直接写 `RunEvent`；Stage 5 接外部 Agent/IDE/tool；Stage 6 做 durable replay | Hook 请求只校验、脱敏、限长、持久化；不做 LLM、embedding、图抽取、Context 注入或 Canon write |
+| Hooks | **可以，但主要是未来的外部 ingress** | Stage 3–4 内部流程继续直接写 `RunEvent`；Stage 5 接外部 Agent/IDE/tool 并按需增加 durable replay | Hook 请求只校验、脱敏、限长、持久化；不做 LLM、embedding、图抽取、Context 注入或 Canon write |
 
 换句话说，这不是两个需要整体移植的新子系统：检索侧是**成熟化现有三通道**，采集侧是**只补现有
 Runtime 管不到的外部边界**。
@@ -103,7 +106,7 @@ Runtime 管不到的外部边界**。
   `WriterContextPackage` 是 Memory read-side product；
 - [Stage 3 总设计](stage3_writer_core_overall_design.md)：Stage 3 只做最小生成质量闭环，
   不继续扩建 Memory 基础设施；
-- [正式开发执行规划](../长篇小说Agent正式开发执行规划_v0.1.md)：Stage 4–7 的正式职责；
+- [正式开发执行规划](../长篇小说Agent正式开发执行规划_v0.1.md)：Stage 3 Writer、Stage 4 Planner、Stage 5 长期运行的正式职责；
 - `domain/memory.py`、`domain/retrieval_routing.py`、`services/retrieval.py`、
   `services/search_retrieval.py`：类型化路由、混合检索、RRF、fallback 与 trace；
 - `domain/writer_context.py`、`services/writer_context_assembler.py`：
@@ -417,19 +420,19 @@ Stop / SessionEnd
 
 | 外部事件 | 进入 NS 的正式事件 | 首次使用阶段 | 后续动作 |
 |---|---|---|---|
-| external session/run start | `RUN_CREATED` / `RUN_RESUMED` | Stage 5；长驻运行在 Stage 6 强化 | 建立显式 project/run identity，不自动注入 Context |
+| external session/run start | `RUN_CREATED` / `RUN_RESUMED` | Stage 5；长驻运行工作包强化 | 建立显式 project/run identity，不自动注入 Context |
 | user task/prompt accepted | `TASK_STARTED` | Stage 5 | 只记录经过 allowlist 的 task artifact/ref |
 | external agent start/stop | `AGENT_STARTED/COMPLETED/FAILED` | Stage 5 | 形成运行 observation，不直接形成 Experience |
 | external tool success/failure | `TOOL_COMPLETED/FAILED` | Stage 5 | 复用 ToolAudit；payload 以 artifact ref/hash 为主 |
 | model success/failure | `MODEL_COMPLETED/FAILED` | 已有内部能力；外部边界 Stage 5 | 必须绑定 `ModelCallRecord` |
-| task/run stop | `TASK_COMPLETED/FAILED`、`RUN_COMPLETED/FAILED` | Stage 5–6 | 服务端异步 summary/observation worker |
-| pre-compact/暂停 | `CHECKPOINT_CREATED` 或 checkpoint request | Stage 6 | 保存 durable state；不隐式改变 Writer Context |
-| permission/notification | Operational audit event | Stage 6 按需 | 不参与小说事实检索 |
+| task/run stop | `TASK_COMPLETED/FAILED`、`RUN_COMPLETED/FAILED` | Stage 5 | 服务端异步 summary/observation worker |
+| pre-compact/暂停 | `CHECKPOINT_CREATED` 或 checkpoint request | Stage 5 durable work package | 保存 durable state；不隐式改变 Writer Context |
+| permission/notification | Operational audit event | Stage 5 按需 | 不参与小说事实检索 |
 
 Stage 3 不需要建设通用 Hook 平台。它只需在现有 Service 内补
 `Context exposed → Draft produced → Editor/Curator/Reconciliation` 的使用回执。Stage 4 继续记录
 Memory tool、ContextDelta 和 follow-up retrieval；Stage 5 完整创作循环形成后，外部 Hook ingress
-才有稳定的事件语义；Stage 6 再把它提升为 durable、可恢复的长期运行能力。
+才有稳定的事件语义；Stage 5 再按真实 caller 把它提升为 durable、可恢复的长期运行能力。
 
 #### 建议
 
@@ -606,8 +609,8 @@ rerank”：
 | 风格、声音、对话样本 | Grounded BM25+Dense | 已实现 | 与 Canon fact/Plan 通道分开 |
 | 因果多跳、关系链 | Typed Graph + Anchor BM25+Dense | Stage 2R 已注册；Stage 4 做正式增益验证 | depth≤3，只用 canonical/evidence edges |
 | Character Arc | Hierarchy first；Anchor fallback；关系 facet 未闭合时可条件触发 Typed Graph | Stage 4 | 不能把相似度边当因果证明 |
-| Hook 产生的 OperationalObservation | 独立 Operational BM25+Dense | Stage 5 shadow，Stage 6 才可能正式消费 | 不进入 Canon Typed Graph |
-| 跨运行 Experience/Skill 关系 | 独立 Operational/Experience graph candidate | Stage 7，held-out Gate 后 | 与 World/Plan graph 分 namespace、分 channel |
+| Hook 产生的 OperationalObservation | 独立 Operational BM25+Dense | Stage 5 先 shadow，证据成立后才正式消费 | 不进入 Canon Typed Graph |
+| 跨运行 Experience/Skill 关系 | 独立 Operational/Experience graph candidate | Stage 5 evolution work package，held-out Gate 后 | 与 World/Plan graph 分 namespace、分 channel |
 
 最值得从上游移植的组合不是“始终三路并发”，而是 **vector/lexical anchor → typed graph
 conditional expansion**。NS 的安全版本应是：
@@ -638,10 +641,10 @@ canonicalization receipt、Need 或已选 Anchor 的显式 `entity_ids`。
    `memory.expand_evidence` 只展开选中的 unit/path。
 3. **不先改成全局带权 RRF。** 以现有 unweighted `application-rrf-v1` 为基线；只对
    relation/causal strata 比较 unweighted、固定 per-intent weights 和 learned weights。
-   learned fusion 属于 Stage 7，必须 held-out。
+   learned fusion 属于 Stage 5 evolution work package，必须 held-out。
 4. **补 source/path diversity。** 在已有 kind/chapter/evidence quota 上，评估
    `max_per_source_artifact`、`max_per_graph_path_root`；mandatory 继续豁免。
-5. **Graph 存储先优化 PostgreSQL。** Stage 4 保持 depth≤3；Stage 6 若 scale benchmark 证明
+5. **Graph 存储先优化 PostgreSQL。** Stage 4 保持 depth≤3；Stage 5 若 scale benchmark 证明
    当前 relation row 枚举成为瓶颈，先做 indexed adjacency/recursive CTE。只有 CTE 的质量和
    p95/p99 无法达标时，才按正式规划评估 Neo4j。
 6. **新增完整 triple regression。** 至少覆盖 graph-only identity、某通道失败后的显式降级、
@@ -712,7 +715,7 @@ NS 的 `WriterContextAssembler` 已优于上游的字符估算和 whole-block gr
 需要借鉴的是注入时机纪律：
 
 1. 只有 Writer/Planner 明确发起 Context resolution 时注入；
-2. Stage 4 的 ContextDelta 只补局部缺口，不重复发送整个 Context；
+2. Stage 3/4 的 ContextDelta 只补局部缺口，不重复发送整个 Context；
 3. 不在每次 tool use 前隐式注入；
 4. session start/pre-compact 类机制只有在未来存在真正长驻交互 Agent 时评审；
 5. capture latency budget 与 model context token budget 分开；
@@ -789,7 +792,7 @@ Audit 是 P0/P1，Viewer 是 P3。推荐顺序：
 | Hook subprocess 的 fail-open、超时、stdout gate 测试 | 适配 | 外部 Hook adapter 与 contract tests |
 | observe 的校验、dedup、脱敏、per-session lock | 适配 | RunEvent ingress；项目身份改为 fail-closed |
 | synthetic compression 先于可选 LLM compression | 有限适配 | 只能生成独立 Derived preview；raw exact support 保持独立身份和可展开入口 |
-| summarize/consolidation | 仅产生候选 | Stage 7 Experience/Skill candidate |
+| summarize/consolidation | 仅产生候选 | Stage 5 Experience/Skill work package |
 | `sourceObservationIds` | 扩展采用 | ArtifactRef/hash/model-call/cutoff 完整 derivation receipt |
 | RRF `k=60` | 已存在，不算新增 | 保留本地单一 FusionService owner |
 | session diversity | 适配 | source/chapter/evidence-root diversity |
@@ -810,23 +813,17 @@ Audit 是 P0/P1，Viewer 是 P3。推荐顺序：
 “直接复用”若指源码复制，应单独记录来源、许可证和修改；默认实现应按 NS 的 typed ports/adapters
 原生编写。
 
-## 7. Stage 3–7 落点，以及用户所称 Stage 8
+## 7. Stage 3 Writer、Stage 4 Planner 与 Stage 5 长期运行映射
 
-当前权威编号只到 Stage 7。下面把“Stage 8”记为候选后续生产成熟阶段，不在本文中正式创建新
-阶段。很多看似 Stage 8 的生产事项已由现有 Stage 7 覆盖，最终是否需要 Stage 8 应由新 ADR 决定。
-
-| 阶段 | 现有正式目标 | 本报告建议吸收的细节 | 本阶段不要做 |
+| 阶段 | 正式目标 | 本报告建议吸收的细节 | 本阶段不要做 |
 |---|---|---|---|
-| Stage 3 Writer Core | 把 `WriterContextPackage` 变成可评估 Draft | 内部服务继续直接写 `RunEvent`；补 exact token、Context exposed/used 回执、Writer claim→ledger 使用漏斗和后端 typed failure | 通用/外部 Hook 平台、Retention、Viewer、Agentic retrieval |
-| Stage 4 Advanced Agentic Retrieval | Reactive Need、ContextDelta、复杂多跳和风险路径 | 正式成熟化现有 triple route：graph path receipt、Anchor→Graph 条件扩展、compact→expand、source/path diversity、通道消融、Planner Context | 所有查询默认 triple、替换 deterministic safe default、generic observation graph、无证据 query entity 作为 proof |
-| Stage 5 Full Chapter/Volume Loop | 动态规划、完整候选/修复/偏离闭环 | 只对 NS Runtime 外部 surface 建 Hook ingress；Writer/Editor/Curator/PlannerDeviation Observation 异步采集；独立 Operational BM25+Dense 仅 shadow | 内部事件再发重复 Hook、Hook 内同步压缩/索引、Operational 进入 Canon Typed Graph |
-| Stage 6 Long-Horizon Autonomy | 数百章恢复、维护、重建、跨天/跨机可靠性 | durable ingress/cursor/outbox、poison queue、replay、index reconciliation、scale/fault test、Operational retention；若证据要求再优化 PostgreSQL adjacency/CTE | 因图规模焦虑直接引入 Neo4j；对 Canon 做热度衰减或自动遗忘 |
-| Stage 7 Controlled Evolution/Production | Experience/Skill 候选、held-out gate、生产容量 | consolidation→ExperienceCandidate、独立 Operational/Experience graph candidate、per-intent/learned fusion 实验、immutable revisions、promotion、隐私/成本/HA | Observation graph 与 World/Plan graph 混库混通道；自动修改 active Skill 或绕过 held-out gate |
-| 候选 post-Stage 7（用户所称 Stage 8） | 待 ADR；可能是持续生产治理 | 多项目 SLO、备份恢复演练、容量预测、跨区域/灾备、长期成本治理；可选只读 Viewer | 为了编号而重复 Stage 7 的生产扩展职责 |
+| Stage 3 Writer Context Loop | 把已给定章节规划和 `WriterContextPackage` 变成 Draft candidate | 内部直接写 `RunEvent`；补 exact token、Context exposed/used、reactive Need、ContextDelta、compact/expand 和 typed failure | 通用外部 Hook、Retention、Viewer、Plan 生成、长期 Scheduler |
+| Stage 4 Planner Context Loop | 从作者意图和规划范围产生 inquiry-conditioned Plan candidate | PlannerContext、graph path receipt、Anchor→Graph 条件扩展、compact→expand、source/path diversity、通道消融和 Plan Review | 复用 Writer Need 生成、所有查询默认 triple、替换 deterministic safe default、直接写 PlanRoot |
+| Stage 5 Long-running Creative Runtime | 集成规划、写作、提交、长期恢复和维护 | 外部 Hook ingress、Operational provenance/index shadow、durable replay/retention、Task/Attempt/Supervisor、Experience/Skill candidate 与生产容量 | 内部事件再发重复 Hook、Hook 内同步 LLM/索引、Operational 进入 Canon graph、自动修改 active Skill |
 
 ### 7.1 当前只保留设计与证据，不启动成熟化平台
 
-2026-08-03 决定不在 Stage 2M/Stage 3 启动以下实现：Hook 平台、Observation shadow platform、
+2026-08-03 决定不在 Stage 2M/Stage 3/Stage 4 启动以下实现：外部 Hook 平台、Observation shadow platform、
 consolidation/长期晋升、retention/自动遗忘、通用 observation graph、Viewer 和 learned fusion。
 当前只允许：
 
@@ -834,7 +831,7 @@ consolidation/长期晋升、retention/自动遗忘、通用 observation graph�
 - 把 compact→exact expand、raw/derived 分离和 exposed/used 区分写入上位架构与技术合同；
 - 在 Stage 2M 使用现有 trace/artifact 能力完成 claim 支持漏斗，不创建通用平台。
 
-其余工作到第 7 节对应 Stage 再重新评审；本草案的 MM0–MM6 是未来工作包候选，不构成当前
+其余工作到第 7 节对应 Stage 再重新评审；本报告的 MM0–MM6 是未来 Stage 5 工作包候选，不构成当前
 `.agent/plan.md` 的授权。
 
 以下工作必须等待对应阶段 Gate/ADR：
@@ -859,7 +856,7 @@ consolidation/长期晋升、retention/自动遗忘、通用 observation graph�
 | Services | `services/observation_pipeline.py`、`services/observation_retrieval.py`、`services/context_usage.py` |
 | Runtime | `runtime/observation_worker.py`：cursor/outbox、retry、quarantine、checkpoint |
 | API/CLI | 最小 ingest、audit export、replay/reconcile；不先做 Viewer |
-| Schema | 由最终 ADR 确定 stage namespace，不能在本文中擅自新增官方 Stage 8 schema |
+| Schema | 由 Stage 5 正式执行 ADR 确定 namespace，不能在本文中擅自新增平行 stage schema |
 
 ### 8.2 存储责任
 
@@ -871,7 +868,7 @@ consolidation/长期晋升、retention/自动遗忘、通用 observation graph�
 | tracing/metrics/logs | OTel + 受控日志后端 | 可观测，不作为业务真源 |
 | Canon/Plan/World/Text | 现有 Root/Commit stores | 不改变 |
 
-不新增 vector DB、Neo4j、Temporal 或 iii，除非 Stage 4/6 benchmark 证明现有端口无法满足目标，
+不新增 vector DB、Neo4j、Temporal 或 iii，除非 Stage 4 检索或 Stage 5 长期规模 benchmark 证明现有端口无法满足目标，
 并通过独立 ADR。
 
 ### 8.3 消费策略
@@ -1163,7 +1160,7 @@ Stage 5 真正出现外部 surface 时，再让这组 contract/integration tests
 - regression and rollback；
 - promotion receipt。
 
-退出条件：与 Stage 7 正式 Gate 一致，任何自动演化都不能原地改 active Skill。
+退出条件：与 Stage 5 受控演化工作包 Gate 一致，任何自动演化都不能原地改 active Skill。
 
 ### MM6：可选运维界面
 
@@ -1205,8 +1202,8 @@ Stage 5 真正出现外部 surface 时，再让这组 contract/integration tests
 5. Operational index 的 retention、privacy、access scope；
 6. ContextUseReceipt 中 confirmed-use 的判定方法；
 7. Stage 4 哪些 query strata 值得 query expansion/graph；
-8. MM0–MM4 分别并入 Stage 3–7 的哪个正式执行文档；
-9. Stage 7 是否已经覆盖全部生产成熟职责；若没有，再用 ADR 决定是否正式设 Stage 8；
+8. MM0–MM4 分别进入 Stage 3/4 的 Context Loop 还是 Stage 5 长期运行工作包；
+9. Stage 5 哪些生产成熟职责已有真实 caller，哪些仍应 deferred；
 10. 是否已有真实运维任务证明需要 Viewer。若没有，保持延后。
 
 ## 13. 最终建议

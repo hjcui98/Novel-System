@@ -14,6 +14,7 @@ from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_engine, build_session_factory
 from novel_agent.agents import seal_agent_spec
 from novel_agent.domain.artifacts import (
+    ArtifactRef,
     PlanRootRef,
     ProjectProfileRootRef,
     ReferenceRootRef,
@@ -21,7 +22,15 @@ from novel_agent.domain.artifacts import (
     WorldRootRef,
 )
 from novel_agent.domain.changes import ValidationStatus
-from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
 from novel_agent.domain.memory_benchmark import ContextAssemblyStatus
 from novel_agent.domain.memory_write import (
     MemoryWriteBudgetUsage,
@@ -44,6 +53,7 @@ from novel_agent.domain.stage2 import (
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.bootstrap_workflow import BootstrapCrossRootValidator
 from novel_agent.services.commits import CommitService, ProjectNotFoundError
+from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.memory_benchmark_evaluation import (
     ModelSemanticSupportVerifier,
@@ -1237,3 +1247,434 @@ def test_immutable_evidence_writer_rejects_conflicting_existing_bytes(tmp_path: 
     TeacherForcedBenchmarkE2ERunner._write_immutable(path, b"first")
     with pytest.raises(TeacherForcedBenchmarkError, match="refusing to overwrite different"):
         TeacherForcedBenchmarkE2ERunner._write_immutable(path, b"second")
+
+
+def test_ancestry_proof_fails_closed_without_state(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects"))
+    paired = MagicMock()
+    transition = MagicMock(
+        bundle=bundle,
+        states={},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=MagicMock(),
+    )
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="checkpoint state missing"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_fails_closed_without_commit_service(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    state = _FrozenState(
+        text=bundle.text_roots[0],
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=TextRootRef(
+            artifact_id=bundle.text_roots[0].root_hash,
+            media_type="application/json",
+            byte_length=1,
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=None,
+    )
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-4"))
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="commit service unavailable"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_fails_closed_on_broken_chain(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    state = _FrozenState(
+        text=bundle.text_roots[0],
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=TextRootRef(
+            artifact_id=bundle.text_roots[0].root_hash,
+            media_type="application/json",
+            byte_length=1,
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    commits = MagicMock()
+    commits.load_manifest.side_effect = RuntimeError("chain broken")
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-2"))
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_typed_failure_on_multi_parent_chain(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    state = _FrozenState(
+        text=bundle.text_roots[0],
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=TextRootRef(
+            artifact_id=bundle.text_roots[0].root_hash,
+            media_type="application/json",
+            byte_length=1,
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    manifest = MagicMock(
+        text_root=MagicMock(artifact_id=bundle.text_roots[0].root_hash),
+        parent_commit_ids=(CommitId("sha256:" + "e" * 64), CommitId("sha256:" + "f" * 64)),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-5"))
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="single-parent"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_runtime_entity_label_map_unique_alias_and_ambiguous(tmp_path: Path) -> None:
+    from novel_agent.domain.memory import WorldRootDocument
+
+    bundle = make_synthetic_bundle()
+    oracle = bundle.world_roots[0]
+    entity = oracle.entities[0]
+    twin = entity.model_copy(update={"entity_id": StableId("entity.runtime.twin"), "aliases": ()})
+    aliased = entity.model_copy(
+        update={"entity_id": StableId("entity.runtime.aliased"), "aliases": ("别名",)}
+    )
+    runtime_world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "5" * 64),
+        schema_version=oracle.schema_version,
+        source_commit=oracle.source_commit,
+        entities=(entity, twin, aliased),
+    )
+    by_label, ambiguous = _E2EEvaluator._runtime_entity_label_map(runtime_world)
+    assert entity.internal_label in ambiguous
+    assert by_label.get("别名") == StableId("entity.runtime.aliased")
+
+
+def test_runtime_entity_label_map_skips_blank_labels(tmp_path: Path) -> None:
+    from novel_agent.domain.memory import WorldRootDocument
+
+    bundle = make_synthetic_bundle()
+    oracle = bundle.world_roots[0]
+    entity = oracle.entities[0]
+    blank = entity.model_copy(
+        update={
+            "entity_id": StableId("entity.runtime.blank"),
+            "internal_label": "",
+            "aliases": ("",),
+        }
+    )
+    runtime_world = WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "4" * 64),
+        schema_version=oracle.schema_version,
+        source_commit=oracle.source_commit,
+        entities=(blank,),
+    )
+    by_label, ambiguous = _E2EEvaluator._runtime_entity_label_map(runtime_world)
+    assert by_label == {}
+    assert ambiguous == set()
+
+
+def test_ancestry_proof_typed_failure_on_cycle(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    text = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-6"))
+    text_ref = artifacts.put(
+        canonical_json_bytes(text.model_dump(mode="json")),
+        "application/vnd.novel-agent.text-root+json",
+        SchemaVersion("1.0.0"),
+    )
+    state = _FrozenState(
+        text=text,
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=text_ref,
+    )
+    manifest = MagicMock(
+        text_root=text_ref,
+        parent_commit_ids=(world.source_commit,),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="cycle"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_typed_failure_on_missing_text_root_ref(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    text = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-7"))
+    text_ref = artifacts.put(
+        canonical_json_bytes(text.model_dump(mode="json")),
+        "application/vnd.novel-agent.text-root+json",
+        SchemaVersion("1.0.0"),
+    )
+    state = _FrozenState(
+        text=text,
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=None,
+    )
+    manifest = MagicMock(
+        text_root=text_ref,
+        parent_commit_ids=(),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="lacks its TextRoot artifact ref"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_typed_failure_on_missing_compiled_root(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    state = _FrozenState(
+        text=bundle.text_roots[0],
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=TextRootRef(
+            artifact_id=bundle.text_roots[0].root_hash,
+            media_type="application/json",
+            byte_length=1,
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+    )
+    text = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-8"))
+    text_ref = artifacts.put(
+        canonical_json_bytes(text.model_dump(mode="json")),
+        "application/vnd.novel-agent.text-root+json",
+        SchemaVersion("1.0.0"),
+    )
+    state = _FrozenState(
+        text=text,
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=text_ref,
+    )
+    manifest = MagicMock(
+        text_root=text_ref,
+        parent_commit_ids=(),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    case_missing = case.model_copy(update={"input_text_root": ArtifactId("sha256:" + "9" * 64)})
+    bundle_missing = bundle.model_copy(
+        update={
+            "case_manifests": tuple(
+                case_missing if item.case_id == case.case_id else item
+                for item in bundle.case_manifests
+            )
+        }
+    )
+    transition = MagicMock(
+        bundle=bundle_missing,
+        states={case_missing.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle_missing,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="compiled historical TextRoot missing"):
+        evaluator._build_ancestry_proof(case_missing, comparison)
+
+
+def test_ancestry_proof_typed_failure_on_unreadable_manifest_root(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    text = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-9"))
+    broken_ref = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "0" * 64),
+        media_type="application/json",
+        byte_length=1,
+        schema_version=SchemaVersion("1.0.0"),
+    )
+    state = _FrozenState(
+        text=text,
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=broken_ref,
+    )
+    manifest = MagicMock(
+        text_root=broken_ref,
+        parent_commit_ids=(),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    transition = MagicMock(
+        bundle=bundle,
+        states={case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="cannot resolve manifest TextRoot"):
+        evaluator._build_ancestry_proof(case, comparison)
+
+
+def test_ancestry_proof_typed_failure_on_missing_case_manifest(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    world = bundle.world_roots[0]
+    text = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "proof-objects-10"))
+    text_ref = artifacts.put(
+        canonical_json_bytes(text.model_dump(mode="json")),
+        "application/vnd.novel-agent.text-root+json",
+        SchemaVersion("1.0.0"),
+    )
+    state = _FrozenState(
+        text=text,
+        world=world,
+        plan=bundle.plan_roots[0],
+        commit=world.source_commit,
+        text_root_ref=text_ref,
+    )
+    manifest = MagicMock(
+        text_root=text_ref,
+        parent_commit_ids=(),
+    )
+    commits = MagicMock()
+    commits.load_manifest.return_value = manifest
+    ghost_case = case.model_copy(update={"case_id": StableId("case.ZTJ-GHOST")})
+    transition = MagicMock(
+        bundle=bundle,
+        states={ghost_case.case_id: state},
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        commits=commits,
+    )
+    paired = MagicMock()
+    freezer = _E2EContextFreezer(MagicMock(), transition, artifacts, paired)
+    evaluator = _E2EEvaluator(
+        bundle,
+        BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        freezer,
+        artifacts,
+        paired,
+    )
+    comparison = MagicMock(freeze_receipt=MagicMock(code_version="v1"))
+    with pytest.raises(TeacherForcedBenchmarkError, match="case manifest missing"):
+        evaluator._build_ancestry_proof(ghost_case, comparison)

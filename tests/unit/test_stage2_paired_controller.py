@@ -757,7 +757,7 @@ def test_registered_fallback_runs_after_a_capability_masked_primary() -> None:
     assert result.context.retrieval_traces[0].fallback_used is True
 
 
-def test_r1_current_state_executes_only_registered_exact_queries() -> None:
+def test_r1_current_state_executes_exact_then_registered_anchor_fallback() -> None:
     item = need(intent=Stage1QueryIntent.CURRENT_STATE).model_copy(
         update={
             "need_id": StableId("need.fair.current-state"),
@@ -792,16 +792,16 @@ def test_r1_current_state_executes_only_registered_exact_queries() -> None:
 
     result = paired.run_deterministic(request(item, max_calls=2), text_root())
 
+    # exact R1 queries run first; the registered anchor fallback stays
+    # executable for the lexical route when the exact record is absent.  The
+    # two-call budget admits R1_EXACT then the first fallback channel.
     assert [channel for _need_id, channel in backend.calls] == [
         RetrievalChannel.R1_EXACT,
-        RetrievalChannel.R1_TEMPORAL,
+        RetrievalChannel.ANCHOR_BM25,
     ]
     trace = result.context.retrieval_traces[0]
-    assert trace.fallback_used is False
-    assert trace.effective_channels == (
-        RetrievalChannel.R1_EXACT,
-        RetrievalChannel.R1_TEMPORAL,
-    )
+    assert trace.fallback_used is True
+    assert RetrievalChannel.ANCHOR_BM25 in trace.effective_channels
 
 
 def test_long_range_fallback_is_not_repeated_when_grounded_evidence_is_selected() -> None:

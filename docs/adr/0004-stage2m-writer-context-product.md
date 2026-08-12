@@ -1,6 +1,6 @@
 # ADR-0004: Stage 2M Writer Context is the Memory read-side product
 
-- Status: Accepted
+- Status: Superseded by ADR-0008 for the active Stage 2M read-side payload
 - Date: 2026-07-29
 - Depends on: ADR-0003 deterministic Memory Gateway freeze
 
@@ -37,3 +37,10 @@ only and never pools the two denominators.
   real-model results.
 - Legacy oversized contexts and coarse evidence-overlap scores cannot be used
   as Stage 2M quality evidence.
+
+## Supersession note
+
+This ADR remains the historical claim-first baseline. ADR-0008 keeps the public/private freeze,
+budget and provenance invariants but replaces the active read-side payload with an evidence-first
+`WriterContextPackage + EvidenceLedger`; Claim Support and semantic evaluation are no longer
+production readiness dependencies.

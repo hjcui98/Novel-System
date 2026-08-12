@@ -1,0 +1,370 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceLedgerEntryV2": {
+      "additionalProperties": false,
+      "description": "Evidence-first ledger entry: exact raw slice text plus full provenance.\n\nOne entry stores one deduplicated slice text; ``need_ids`` aggregates every\npublic Need that selected it.  ``dereference_receipt`` records whether the\nentry was re-read from its exact parent block text during assembly.",
+      "properties": {
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "cutoff_chapter": {
+          "minimum": 0,
+          "title": "Cutoff Chapter",
+          "type": "integer"
+        },
+        "dereference_receipt": {
+          "default": "verified_read",
+          "title": "Dereference Receipt",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_slices": {
+          "items": {
+            "$ref": "#/$defs/EvidenceSlice"
+          },
+          "title": "Evidence Slices",
+          "type": "array"
+        },
+        "evidence_text": {
+          "minLength": 1,
+          "title": "Evidence Text",
+          "type": "string"
+        },
+        "information_scope": {
+          "minLength": 1,
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "ledger_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "quote_hash": {
+          "$ref": "#/$defs/QuoteHash"
+        },
+        "retrieval_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "span_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "taint": {
+          "default": "none",
+          "title": "Taint",
+          "type": "string"
+        },
+        "text_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "ledger_id",
+        "evidence_slices",
+        "evidence_text",
+        "evidence_refs",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "cutoff_chapter",
+        "information_scope",
+        "text_hash",
+        "span_hash",
+        "quote_hash",
+        "need_ids",
+        "need_facet_ids"
+      ],
+      "title": "EvidenceLedgerEntryV2",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSlice": {
+      "additionalProperties": false,
+      "description": "One exact L0 paragraph or contiguous-sentence slice of a parent block.\n\n``text`` is an exact substring of the parent ``TextBlock``; the slice id\nis stable over the parent identity plus the exact offsets and normalized\ntext hash.  Heading/title-only units carry an explicit source role and are\nnot narrative evidence by default.",
+      "properties": {
+        "access_scope": {
+          "minLength": 1,
+          "title": "Access Scope",
+          "type": "string"
+        },
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "parent_block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "quote_hash": {
+          "$ref": "#/$defs/QuoteHash"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "slice_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "slice_kind": {
+          "$ref": "#/$defs/EvidenceSliceKind"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "source_role": {
+          "$ref": "#/$defs/EvidenceSliceSourceRole",
+          "default": "narrative"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slice_id",
+        "parent_block_id",
+        "chapter_id",
+        "start",
+        "end",
+        "text",
+        "object_hash",
+        "quote_hash",
+        "source_commit",
+        "snapshot_id",
+        "access_scope",
+        "slice_kind"
+      ],
+      "title": "EvidenceSlice",
+      "type": "object"
+    },
+    "EvidenceSliceKind": {
+      "enum": [
+        "paragraph",
+        "sentence_window"
+      ],
+      "title": "EvidenceSliceKind",
+      "type": "string"
+    },
+    "EvidenceSliceSourceRole": {
+      "enum": [
+        "narrative",
+        "heading",
+        "unknown"
+      ],
+      "title": "EvidenceSliceSourceRole",
+      "type": "string"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "default": "evidence_ledger.v2",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "entries": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceLedgerEntryV2"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "rendered_tokens": {
+      "minimum": 0,
+      "title": "Rendered Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "rendered_tokens"
+  ],
+  "title": "EvidenceLedgerV2",
+  "type": "object"
+}

@@ -93,6 +93,7 @@ class Stage2MExecutionConfig:
     support_multi_enable_thinking: bool
     support_multi_thinking_token_budget: int
     support_multi_max_output_tokens: int
+    support_multi_repetition_penalty: float | None
 
 
 def _bounded_int(label: str, *, minimum: int, maximum: int) -> Callable[[str], int]:
@@ -198,6 +199,15 @@ def parser() -> argparse.ArgumentParser:
         default=2048,
     )
     value.add_argument(
+        "--support-multi-repetition-penalty",
+        type=float,
+        default=None,
+        help=(
+            "explicit provider repetition_penalty for Claim Support multi-slice "
+            "proposals only; other stages keep the default sampling payload"
+        ),
+    )
+    value.add_argument(
         "--allow-dirty-diagnostic",
         action="store_true",
         help=(
@@ -298,6 +308,7 @@ def main() -> int:
         multi_enable_thinking=args.support_multi_thinking,
         multi_thinking_token_budget=args.support_multi_thinking_token_budget,
         multi_max_output_tokens=args.support_multi_max_output_tokens,
+        multi_repetition_penalty=getattr(args, "support_multi_repetition_penalty", None),
     )
     if (args.resume_commit is None) != (args.resume_chapter is None):
         raise ValueError("--resume-commit and --resume-chapter must be supplied together")
@@ -645,6 +656,7 @@ def _ensure_experiment_manifest(
         support_multi_enable_thinking=getattr(args, "support_multi_thinking", False),
         support_multi_thinking_token_budget=getattr(args, "support_multi_thinking_token_budget", 0),
         support_multi_max_output_tokens=getattr(args, "support_multi_max_output_tokens", 2048),
+        support_multi_repetition_penalty=getattr(args, "support_multi_repetition_penalty", None),
     )
     execution_payload = asdict(execution_config)
     execution_config_hash = (

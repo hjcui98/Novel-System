@@ -87,6 +87,7 @@ class ModelRequest(DomainModel):
     scheduling_dependency_ids: tuple[StableId, ...] = ()
     scheduling_priority: int = Field(default=50, ge=0, le=100)
     scheduling_timeout_seconds: float | None = Field(default=None, gt=0.0, le=3600.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0, le=2.0)
 
 
 class ModelUsage(DomainModel):

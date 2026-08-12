@@ -2,11 +2,11 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-08-08
+> Updated: 2026-08-11
 >
 > Current progress source: `docs/project_status.md`
 >
-> Stage naming authority: `docs/adr/0005-stage-numbering-and-document-lifecycle.md`
+> Stage naming authority: `docs/adr/0006-three-product-stage-topology.md`
 
 ## 1. How to read this repository
 
@@ -31,7 +31,7 @@ reproducibility, and active Gates remain mandatory.
 
 ## 2. Canonical stage names
 
-| Stage | Canonical name | Status on 2026-07-31 |
+| Stage | Canonical name | Current status |
 |---|---|---|
 | Stage 0 | Engineering Foundation | `COMPLETE / PASS` |
 | Stage 1A | Memory Read Kernel | `ENGINEERING_COMPLETE` |
@@ -40,14 +40,14 @@ reproducibility, and active Gates remain mandatory.
 | Stage 2R | Stage 2A real hybrid retrieval workstream | `COMPLETE` |
 | Stage 2W | Stage 2A memory write and repair workstream | `COMPLETE` |
 | Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ACTIVE / M4_REPAIR` |
-| Stage 3 | Writer Core and Generation Quality | `PREPARATION_ACTIVE` |
-| Stage 4 | Advanced Agentic Retrieval and Risk Paths | `PLANNED` |
-| Stage 5 | Full Chapter and Volume Creation Loop | `PLANNED` |
-| Stage 6 | Long-Horizon Autonomous Operation | `PLANNED` |
-| Stage 7 | Controlled Experience/Skill Evolution and Production Expansion | `PLANNED` |
+| Stage 3 | Writer Agent and Writing Context Loop | `ENGINEERING_COMPLETE_IN_ISOLATED_BRANCH / CONDITIONAL_GATE` |
+| Stage 4 | Planner Agent and Planning Context Loop | `IMPLEMENTATION_ACTIVE_IN_ISOLATED_BRANCH` |
+| Stage 5 | Long-running Creative Runtime | `ISOLATED_KERNEL_DESIGN_READY / IMPLEMENTATION_NOT_STARTED` |
 
-Stage 3 is the canonical replacement for the former “Stage 2B”. The former Stage 3 through
-Stage 6 are now Stage 4 through Stage 7. `Stage 2R/2W/2M` remain Stage 2A workstream codes.
+ADR-0006 supersedes ADR-0005 only for Stage 3 and later: Writer and Planner are independent Stage 3/4
+products over the shared Stage 2 Memory foundation, and Stage 5 integrates them into long-running
+operation. Historical Stage 4–7 names remain valid provenance only. `Stage 2R/2W/2M` remain Stage 2A
+workstream codes.
 
 ## 3. Long-lived authoritative documents
 
@@ -67,15 +67,15 @@ canonical project `Stage` numbering.
 
 | Document | Lifecycle | Current use |
 |---|---|---|
-| `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; current exact paragraph/window slicing, token-bounded semantic-input/Ledger packing, and on-demand claim-closure repair |
+| `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; current exact paragraph/window slicing and evidence-first Writer package/Ledger delivery |
+| `docs/stage2_memory_architecture_repair_execution_20260811.md` | `ACTIVE_REPAIR_EXECUTION_PLAN` | Codex-reviewed Stage 2 repair roadmap: evidence-first Writer package first, then admitted Need/KG/R1/L1/L2/benchmark repairs |
 | `docs/stage2m_support_closure_campaign_20260802.md` | `ACTIVE` | 2026-08-02 support-closure campaign execution log: quality closure + real C60 ×3 (A0/A1/A2, producer v25→v27) + first-loss repairs; ended `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED` (mechanism gain confirmed, G06/G09 complete claims not formed) |
-| `docs/stage3_writer_core_overall_design.md` | `ACTIVE` | Stage 3 goals, scope, parallel boundaries, and completion criteria |
-| `docs/stage3_writer_core_preparation_assessment.md` | `ACTIVE` | Current technical readiness and resource envelope for Stage 3 |
-| `docs/stage3_writing_core_migration_execution.md` | `ACTIVE` | Workstream B Writing Core migration and implementation |
-| `docs/stage3_editor_reconciliation_execution.md` | `ACTIVE` | Workstream C Editor, repair routing, and change reconciliation |
-| `docs/stage3_generation_evaluation_development_execution.md` | `ACTIVE` | Workstream D generation evaluation tool development |
-| `docs/stage3_context_handoff_integration_execution.md` | `ACTIVE` | Workstream A deferred WriterContext handoff and minimal integration |
-| `docs/stage3_acceptance_test_execution.md` | `ACTIVE` | Independent Stage 3 engineering and semantic acceptance |
+| `docs/stage3_writer_core_overall_design.md` | `ACTIVE` | Writer product, plan-conditioned Memory, dynamic Context View, Skills and candidate Gate |
+| `docs/stage3_writer_context_loop_execution.md` | `ACTIVE` | Implemented Stage 3 Writer/Editor/Observer/Context loop; current accepted-identity convergence and real infrastructure/model Gates remain |
+| `docs/stage4_planner_core_overall_design.md` | `ACTIVE` | Planner product, inquiry-conditioned Memory, independent Plan Review and candidate Gate |
+| `docs/stage4_planner_context_loop_execution.md` | `ACTIVE` | Active Stage 4 implementation path: inquiry-conditioned Memory, Planner Context, Reviewer, conditional Graph adoption, then final unified testing |
+| `docs/stage5_long_running_creative_runtime_overall_design.md` | `ACTIVE` | Fixed Plan/Write/Accept/Commit topology, Task/Attempt, recovery, maintenance, controlled evolution and admission boundaries |
+| `docs/stage5_long_running_creative_runtime_execution.md` | `ACTIVE` | Detailed Stage 5 implementation path: isolated Runtime Kernel now, real Stage 4 integration after its Gate, evidence-triggered operations/evolution later |
 
 ## 5. Accepted decisions, baselines, and gate evidence
 
@@ -86,10 +86,15 @@ canonical project `Stage` numbering.
 | `docs/adr/0003-freeze-deterministic-memory-gateway.md` | `ACCEPTED` | Stage 2A conditional pass; deterministic gateway frozen |
 | `docs/adr/0004-stage2m-writer-context-product.md` | `ACCEPTED` | WriterContextPackage is the Memory read-side product |
 | `docs/adr/0005-stage-numbering-and-document-lifecycle.md` | `ACCEPTED` | Canonical numbering and document lifecycle |
+| `docs/adr/0006-three-product-stage-topology.md` | `ACCEPTED` | Stage 3 Writer, Stage 4 Planner and Stage 5 long-running topology; supersedes ADR-0005 later-stage mapping |
+| `docs/adr/0007-event-derived-agent-context-view.md` | `ACCEPTED` | Shared event-derived Context View, ContextDelta and safe compaction contract |
+| `docs/adr/0008-evidence-first-writer-context-product.md` | `ACCEPTED` | Evidence-first Stage 2M Writer package; Claim/Evaluator removed from the Agent default path |
 | `docs/retrieval_model_runtime.md` | `ACCEPTED_RUNTIME_BASELINE` | Locked Stage 1 retrieval-model revisions and runtime semantics |
 | `docs/stage2_memory_gate_c95_acceptance.md` | `ACCEPTED` | C95 infrastructure and safety gate |
 
 `docs/adr/0002-stage2-memory-controller-promotion.md` is `SUPERSEDED` by ADR-0003.
+`docs/adr/0004-stage2m-writer-context-product.md` remains the historical claim-first baseline and is
+`SUPERSEDED` by ADR-0008 for the active Stage 2M payload semantics.
 
 ## 6. Stage 2 implementation baselines retained for audit
 
@@ -115,13 +120,21 @@ maintenance and regression analysis but do not define current progress:
 | `docs/stage2m_task_closure_result_20260730.md` | `HISTORICAL` | WP7 result before the 2026-07-31 diagnostic WP8 run |
 | `docs/stage2m_gate_m4_root_cause_and_remediation_20260730.md` | `HISTORICAL_DIAGNOSTIC` | M4 failure diagnosis; still useful for failure localization |
 | `docs/stage3_writer_core_preparation_execution.md` | `SUPERSEDED` | Detailed legacy preparation design; replaced by the restrained Stage 3 overall design |
+| `docs/stage3_writer_core_preparation_assessment.md` | `HISTORICAL_ASSESSMENT` | Pre-convergence readiness snapshot; current status is in project_status and the Stage 3 design |
+| `docs/stage3_writing_core_migration_execution.md` | `SUPERSEDED` | Legacy Stage 3 workstream B; replaced by the single Writer Context Loop execution design |
+| `docs/stage3_editor_reconciliation_execution.md` | `SUPERSEDED` | Legacy Stage 3 workstream C; accepted concepts folded into the Writer Context Loop |
+| `docs/stage3_generation_evaluation_development_execution.md` | `SUPERSEDED` | Legacy workstream D; evaluation requirements folded into the current Stage 3 design |
+| `docs/stage3_context_handoff_integration_execution.md` | `SUPERSEDED` | Legacy workstream A; replaced by current WCP/Context View convergence |
+| `docs/stage3_acceptance_test_execution.md` | `SUPERSEDED` | Legacy A/B/C/D acceptance plan; current Gate lives in the Stage 3 design/execution pair |
 | `长篇小说Agent技术与执行评审建议_v0.1.md` | `HISTORICAL_REVIEW` | Initial review whose accepted decisions were incorporated into the execution plan |
 
-## 8. Draft review inputs
+## 8. Technical reference inputs
 
 | Document | Lifecycle | Intended use |
 |---|---|---|
-| `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `DRAFT` | Code-level and local protocol-v1 comparison with `rohitg00/agentmemory`; current deferral boundary, future Stage 4–7 placement, and candidate benchmark/test gates |
+| `docs/inkos_longform_agent_technical_reference_20260809.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | Fixed-commit InkOS evidence for rolling planning, protected/compressible context, bounded revision, chapter transaction and recovery |
+| `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | agentmemory source/test comparison for conditional BM25+Dense+Graph, compact→expand, provenance and external Hook ingress |
+| `docs/long_running_agent_runtime_source_reference_20260810.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | Hermes/OpenClaw/OpenHands/PydanticAI source audit for Context View, compaction, Task/Attempt, fencing and long-running Runtime |
 | `docs/stage2m_canary40_execution_20260802.md` | `CURRENT_RESULT / DIAGNOSTIC` | Real VAC C40/C60/C95 canary comparison and Gate HOLD evidence |
 | `docs/stage2m_phase4_c60_c95_trace_20260802.md` | `DIAGNOSTIC / HOLD` | Artifact-backed C60/C95 per-Gold loss localization and version boundary |
 

@@ -18,10 +18,12 @@ from novel_agent.domain.changes import (
     ChapterChangeDraftV2,
     CuratedOperationDraft,
     CuratedOperationDraftV2,
+    CuratorEntityRecord,
     CuratorEventRecord,
     CuratorObligationRecord,
     CuratorRelationRecord,
     CuratorStateRecord,
+    CuratorStoryTime,
     CuratorTypedRecord,
     CuratorV2EvidenceDraft,
     EvidenceCandidate,
@@ -37,7 +39,15 @@ from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.memory_write import ProposalConflict, ProposalEvidenceMergeReceipt
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
-from novel_agent.domain.world import StateRecord
+from novel_agent.domain.world import (
+    GraphCandidateBatchDraft,
+    GraphCandidateSupportStatus,
+    StateRecord,
+    TruthClass,
+    WorldGraphCandidateBatch,
+    WorldGraphEntityCandidate,
+    WorldGraphRelationCandidate,
+)
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import validate_evidence_ref
 from novel_agent.services.content_addressing import canonical_json_bytes, quote_hash
@@ -851,6 +861,343 @@ class ModelCurator:
             ),
             call,
             draft,
+        )
+
+    async def extract_graph_candidates(
+        self,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        current_world: WorldRootDocument,
+        request: ModelRequest,
+    ) -> tuple[WorldGraphCandidateBatch, ModelCallRecord]:
+        """Propose one bounded, evidence-bound graph-repair batch.
+
+        This is the graph profile of the existing V2 Curator corridor.  The
+        model may discover only entity/relation candidates and quote revealed
+        source text.  Canonical identity, predicate admission, and World writes
+        remain host-owned by ``WorldGraphExtractionPass``.
+        """
+
+        from novel_agent.services.world_graph import PredicateRegistry
+
+        candidates = self._evidence_generator.generate(text_root, chapter_index)
+        self.last_evidence_candidates = candidates
+        catalog = self._evidence_generator.index_by_id(candidates)
+        views = self._evidence_generator.model_views(candidates)
+        registry = PredicateRegistry()
+        predicates = tuple(
+            {
+                "predicate": item.predicate,
+                "subject_types": item.allowed_subject_types,
+                "object_types": item.allowed_object_types,
+            }
+            for item in registry.definitions
+        )
+        world_entities = tuple(
+            {
+                "entity_type": entity.entity_type,
+                "internal_label": entity.internal_label,
+                "aliases": entity.aliases,
+            }
+            for entity in current_world.entities
+        )
+        evidence_views = canonical_json_bytes(
+            [item.model_dump(mode="json") for item in views]
+        ).decode("utf-8")
+        safe_request = request.model_copy(
+            update={
+                "enable_thinking": False,
+                "prompt": (
+                    "Extract a bounded GRAPH_CANDIDATE_BATCH JSON from this revealed source "
+                    "unit. Return at most four candidates total. Propose only directly stated "
+                    "durable entity CREATE candidates and relation CREATE candidates. Copy "
+                    "subject_surface, object_surface, entity surface, and every evidence_quote "
+                    "verbatim from EVIDENCE_CANDIDATES. Use only a predicate listed in "
+                    "PREDICATE_REGISTRY. Prioritize relation candidates over entity-only "
+                    "discovery. Never emit a standalone entity candidate: emit an entity only "
+                    "when its surface is an endpoint of a relation in the same batch and no "
+                    "exact WORLD entity label or alias already matches that surface. Do not "
+                    "emit an entity candidate for an existing WORLD surface. Do not emit "
+                    "canonical IDs, infer aliases, merge "
+                    "entities, use pronouns as entities, invent end times, or promote rumor, "
+                    "dream, prediction, hypothetical, contested, or disproved statements. "
+                    "Existing WORLD entities are context for exact surface discovery only; the "
+                    "host decides their identity. If no directly supported candidate exists, "
+                    "return empty entities/relations and a short no_graph_candidate_reason. "
+                    "The combined entities plus relations count must be at most four. Use this "
+                    "exact JSON shape and field names: "
+                    '{"entities":[{"surface":"<verbatim surface>",'
+                    '"entity_type":"<type>","evidence_quotes":["<verbatim quote>"]}],'
+                    '"relations":[{"subject_surface":"<verbatim surface>",'
+                    '"predicate":"<registered predicate>",'
+                    '"object_surface":"<verbatim surface>",'
+                    '"valid_time":{"worldline":"main",'
+                    '"start_ordinal":1,"end_ordinal":null,"label":null},'
+                    '"evidence_quotes":["<verbatim quote>"]}],'
+                    '"no_graph_candidate_reason":null}.\n'
+                    '<GRAPH_REPAIR_INPUT trusted="false">\n'
+                    f"BASE_COMMIT={base_commit.root}\n"
+                    f"TEXT_ROOT={text_root.root_hash.root}\n"
+                    f"CHAPTER_INDEX={chapter_index}\n"
+                    "WORLD_ENTITIES="
+                    f"{canonical_json_bytes(world_entities).decode('utf-8')}\n"
+                    "PREDICATE_REGISTRY="
+                    f"{canonical_json_bytes(predicates).decode('utf-8')}\n"
+                    "EVIDENCE_CANDIDATES="
+                    f"{evidence_views}\n"
+                    "</GRAPH_REPAIR_INPUT>"
+                ),
+            }
+        )
+        self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
+        draft, call = await self._gateway.generate_structured(
+            safe_request,
+            GraphCandidateBatchDraft,
+        )
+        resolved_evidence = tuple(
+            candidate
+            for entity in draft.entities
+            for candidate in self._evidence_generator.resolve_evidence_quotes(
+                entity.evidence_quotes, candidates
+            )
+        ) + tuple(
+            candidate
+            for relation in draft.relations
+            for candidate in self._evidence_generator.resolve_evidence_quotes(
+                relation.evidence_quotes, candidates
+            )
+        )
+        evidence_ids = tuple(dict.fromkeys(item.candidate_id for item in resolved_evidence))
+        batch_id = StableId(
+            "graph-batch.model."
+            + self._digest(
+                text_root.root_hash.root.encode(),
+                base_commit.root.encode(),
+                str(chapter_index).encode(),
+                *(candidate_id.root.encode() for candidate_id in evidence_ids),
+                b"stage2m-model-curator-graph.v1",
+            )
+        )
+
+        def bind(quotes: tuple[str, ...]) -> tuple[EvidenceRef, ...]:
+            resolved = self._evidence_generator.resolve_evidence_quotes(quotes, candidates)
+            return tuple(
+                self._graph_evidence_ref(
+                    text_root,
+                    chapter_index,
+                    base_commit,
+                    candidate,
+                )
+                for candidate in resolved
+            )
+
+        support_operations = tuple(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.ENTITY,
+                target_id=StableId(f"graph-support.entity.{index}"),
+                record=CuratorEntityRecord(
+                    entity_type=item.entity_type,
+                    internal_label=item.surface,
+                ),
+                evidence_candidate_ids=tuple(
+                    candidate.candidate_id
+                    for candidate in self._evidence_generator.resolve_evidence_quotes(
+                        item.evidence_quotes, candidates
+                    )
+                ),
+            )
+            for index, item in enumerate(draft.entities)
+        ) + tuple(
+            CuratedOperationDraftV2(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.RELATION,
+                target_id=StableId(f"graph-support.relation.{index}"),
+                record=CuratorRelationRecord(
+                    predicate=item.predicate,
+                    subject_id=StableId("graph-support.subject"),
+                    object_id=StableId("graph-support.object"),
+                    valid_time=CuratorStoryTime.model_validate(item.valid_time.model_dump()),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                evidence_candidate_ids=tuple(
+                    candidate.candidate_id
+                    for candidate in self._evidence_generator.resolve_evidence_quotes(
+                        item.evidence_quotes, candidates
+                    )
+                ),
+            )
+            for index, item in enumerate(draft.relations)
+        )
+        support_decisions = self._support_gate.evaluate_draft(support_operations, catalog)
+        support_by_operation: dict[int, tuple[GraphCandidateSupportStatus, str]] = {}
+        partial_decisions = tuple(
+            decision
+            for decision in support_decisions
+            if decision.disposition is EvidenceSupportDisposition.PARTIAL
+        )
+        model_verifications: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
+        if partial_decisions and self._enable_model_semantic_verifier:
+            model_verifications = await self._verify_partial_batch(
+                partial_decisions,
+                ChapterChangeDraftV2(
+                    chapter_index=chapter_index,
+                    operations=support_operations,
+                    coverage=1.0,
+                ),
+                catalog,
+                request,
+            )
+        for operation_index, operation in enumerate(support_operations):
+            decisions = tuple(
+                decision
+                for decision in support_decisions
+                if decision.operation_index == operation_index
+            )
+            hard_rejection = next(
+                (
+                    decision
+                    for decision in decisions
+                    if decision.disposition
+                    in {
+                        EvidenceSupportDisposition.CONTRADICTS,
+                        EvidenceSupportDisposition.UNRELATED,
+                    }
+                ),
+                None,
+            )
+            if hard_rejection is not None:
+                support_by_operation[operation_index] = (
+                    GraphCandidateSupportStatus.REJECTED,
+                    hard_rejection.reason_code,
+                )
+                continue
+            if EvidenceSupportGate.all_lexical_support(decisions):
+                support_by_operation[operation_index] = (
+                    GraphCandidateSupportStatus.SUPPORTED,
+                    "evidence_support_gate_lexical",
+                )
+                continue
+            verified: tuple[EvidenceSupportDisposition, str] | None = None
+            if self._semantic_verifier is not None:
+                candidate_values = tuple(catalog[item] for item in operation.evidence_candidate_ids)
+                outcomes = tuple(
+                    self._semantic_verifier(operation.record, candidate)
+                    for candidate in candidate_values
+                )
+                if outcomes and all(
+                    outcome is not None and outcome[0] is EvidenceSupportDisposition.SUPPORTS
+                    for outcome in outcomes
+                ):
+                    verified = (EvidenceSupportDisposition.SUPPORTS, "trusted_semantic_verifier")
+            elif self._enable_model_semantic_verifier:
+                verified = model_verifications.get(operation_index)
+            if verified is not None and verified[0] is EvidenceSupportDisposition.SUPPORTS:
+                support_by_operation[operation_index] = (
+                    GraphCandidateSupportStatus.SUPPORTED,
+                    verified[1],
+                )
+            else:
+                support_by_operation[operation_index] = (
+                    GraphCandidateSupportStatus.REJECTED,
+                    "graph_candidate_evidence_support_unresolved",
+                )
+
+        entities = tuple(
+            WorldGraphEntityCandidate(
+                candidate_id=StableId(
+                    "graph-entity-candidate."
+                    + self._digest(
+                        batch_id.root.encode(),
+                        str(index).encode(),
+                        canonical_json_bytes(item.model_dump(mode="json")),
+                    )
+                ),
+                source_batch_id=batch_id,
+                surface=item.surface,
+                entity_type=item.entity_type,
+                evidence_refs=bind(item.evidence_quotes),
+                support_status=support_by_operation[index][0],
+                support_reason=support_by_operation[index][1],
+            )
+            for index, item in enumerate(draft.entities)
+        )
+        relation_offset = len(draft.entities)
+        relations = tuple(
+            WorldGraphRelationCandidate(
+                candidate_id=StableId(
+                    "graph-relation-candidate."
+                    + self._digest(
+                        batch_id.root.encode(),
+                        str(index).encode(),
+                        canonical_json_bytes(item.model_dump(mode="json")),
+                    )
+                ),
+                source_batch_id=batch_id,
+                subject_surface=item.subject_surface,
+                predicate=item.predicate,
+                object_surface=item.object_surface,
+                valid_time=item.valid_time,
+                evidence_refs=bind(item.evidence_quotes),
+                source_truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                support_status=support_by_operation[relation_offset + index][0],
+                support_reason=support_by_operation[relation_offset + index][1],
+            )
+            for index, item in enumerate(draft.relations)
+        )
+        return (
+            WorldGraphCandidateBatch(
+                batch_id=batch_id,
+                source_text_root=text_root.root_hash,
+                base_commit=base_commit,
+                chapter_index=chapter_index,
+                evidence_candidate_ids=evidence_ids,
+                policy_version="stage2m-model-curator-graph.v1",
+                model_request_id=request.request_id,
+                entities=entities,
+                relations=relations,
+            ),
+            call,
+        )
+
+    @staticmethod
+    def _graph_evidence_ref(
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        candidate: EvidenceCandidate,
+    ) -> EvidenceRef:
+        chapter = Stage1Curator._chapter(text_root, chapter_index)
+        block = next(
+            block
+            for scene in chapter.scenes
+            for block in scene.blocks
+            if block.block_id == candidate.block_id
+        )
+        selected = block.text[candidate.start : candidate.end]
+        if selected != candidate.text:
+            raise ModelCurationContractError("graph evidence candidate does not round-trip")
+        return EvidenceRef(
+            evidence_id=StableId(
+                "evidence.graph."
+                + ModelCurator._digest(
+                    text_root.root_hash.root.encode(),
+                    candidate.candidate_id.root.encode(),
+                )
+            ),
+            root_hash=text_root.root_hash,
+            object_hash=sha256_id(block.text.encode("utf-8")),
+            chapter_id=block.chapter_id,
+            scene_id=block.scene_id,
+            span=TextSpanRef(
+                block_id=block.block_id,
+                start=candidate.start,
+                end=candidate.end,
+            ),
+            quote_hash=quote_hash(selected),
+            resolved_at_commit=base_commit,
+            support_status=EvidenceSupportStatus.CURRENT,
         )
 
     def _resolve_evidence_draft(

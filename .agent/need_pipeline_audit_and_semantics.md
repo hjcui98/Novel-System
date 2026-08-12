@@ -3,10 +3,10 @@
 - 用途：对 C60（ZTJ-P003）Need 生成 → 检索 → 输出链路的**代码事实审计**，
   评测语义（盲式 A / 计划条件 B / 双 Arm C）分析，以及基于审计结论的**框架改进方案**。
   v2 整合全部 Codex 决策，替换 v1 中被否定的设计。
-- 状态：**Implementation accepted / formal Phase 4 admitted / Gate 0-3 pending**
-- 日期：2026-08-05（初版）→ 2026-08-06（Codex 增补与修订 v2）→ 2026-08-08（最小充分工程边界补充）→ 2026-08-09（实现与正式运行准入验收）
+- 状态：**ADR-0008 evidence-first repair active / Gate pending**
+- 日期：2026-08-05（初版）→ 2026-08-11（evidence-first 产品边界修订）
 - 依据：全部 `src/novel_agent/` 生产代码交叉核验 + 上位文档（`docs/project_status.md`、
-  ADR-0004、`docs/stage2_memory_benchmark_task_closure_execution.md`）+ b9-b11 工件
+  ADR-0008、`docs/stage2_memory_benchmark_task_closure_execution.md`）+ b9-b11/v3 工件
 - 标注：[已核验] = 代码直接确认；[Codex 新增] = 增补发现；[Codex 决策] = 架构决定
 
 ---
@@ -474,6 +474,27 @@ grounded_entities:
 包含所有图谱 ID、focus_ids、facets、completion spec、evidence policy 和 time scope。
 `focus_ids` 由 grounded entities 确定性派生，不来自 LLM。
 
+#### 8.5.1 Entity mention closure（2026-08-11 Codex 决策）
+
+五个冻结 checkpoint 的 corrected evaluator 证明：45 条 observed/operational Gold 只有 5 条 full
+Need match，39 条存在 entity miss；而多个 Need 的 `semantic_question/query_hints/trigger_plan_goal`
+已经逐字出现缺失人物。例如 P004 的问题明确询问“陈长生对落落的教学”，最终 `entity_ids` 只有
+陈长生；P003 fallback 文本明确出现“黑龙与陈长生”，最终 `entity_ids` 为空。
+
+因此 Grounder 不能把 LLM 的 `entity_mentions` 数组当成唯一 mention-detection 来源。唯一语义为：
+
+1. `NeedDraftGrounder` 仍是 entity linking owner；先合并显式 `entity_mentions`，再从同一 draft 已授权
+   的 semantic question、query hints、why-needed、trigger goal 中做 bounded literal mention closure；
+2. fallback Need 对自己的 query/semantic/hints 与来源 goal/outline 做同一 closure；
+3. 只允许同一 frozen World 的 internal label/alias exact normalized match；longest-first、唯一 ID 才
+   grounding，歧义/未见实体 fail closed；不得从 Gold、future text 或模型参数知识补实体；
+4. 每个 target goal 和每个 Need 问题中明确出现且唯一可 grounding 的实体，必须进入对应 validated
+   Need；缺失时走同一 Validator/whole fallback，不得 normal/fallback 局部拼接；
+5. entity_ids 闭包进入现有 query compiler 的 exact filters/anchors，原自然语言 query 同时保留。
+
+这补齐既有 Planner→Grounder→Validator 三层合同，不新增 NER/Entity Linking 服务，也不把整个 World
+实体表注入每个 Need。
+
 ### 8.6 分阶段修复方案
 
 #### Phase 0A：语义和输入链路
@@ -653,6 +674,27 @@ required_facets:
 | 3.4 | leakage 定量指标（`information_label=="plan"` 引用计数） |
 | 3.5 | 报告扩展为五段视图 |
 
+#### Phase 3 评分轴与严格 D9 的一致性（2026-08-11 Codex 修正）
+
+在 `AUTHOR_PLAN_CONDITIONED` 下，计划是 Planner 的输入，不是 Writer Claim 的证据产品。因而
+`PLAN_OBLIGATION` Gold 必须按以下唯一口径路由：
+
+1. 目标章节计划是否被 Planner 问到，由 **Plan Goal Coverage** 评分，并绑定 Planner artifact、
+   `trigger_plan_chapters`、目标 goal 与 validated Need lineage；
+2. Retrieval、evidence-first Writer Context 和 Evidence Ledger 仍只能处理 observed history，
+   `plan_citation_count` 必须为 0；
+3. accepted alternative 只有 `plan_node_ids`、没有 observed `evidence_refs` 的 Gold，属于
+   `PLAN_AXIS_ONLY_STRICT_D9`，不得进入 Evidence Recall、Completion/Claim Accuracy、
+   claim-weighted coverage 或 claim mandatory hit rate 的分母；
+4. 这些 Gold 仍须在报告中逐项保留并显示它们的评分轴/可用性，不能删除 Gold、改 mandatory、
+   改 weight 或伪造 plan citation；旧 72-Gold legacy 汇总如保留，只能明确标为不适用于严格 D9
+   的历史口径，不能当作 Gate 3 的 claim 分数；
+5. observed/operational Gold 的逐项 HIT/PARTIAL/MISS/CONTRADICTS/UNTRACEABLE 规则不变。
+
+这不是放宽 Gold 或阈值，而是消除当前实现中的结构性矛盾：五个 case 各有 5 条 mandatory
+Plan Gold，其 accepted alternative 仅含 plan node；若同时要求 Ledger 零 plan citation 又把它们计入
+claim mandatory 分母，则该指标在任何正确 D9 实现下都被恒定锁为 0。
+
 #### Phase 4：P001-P005 全量重跑
 
 - P001-P005：使用已审计并由 manifest/hash 绑定的固定输入，不根据运行结果修改输入或 Gold
@@ -680,7 +722,7 @@ required_facets:
 | **Gate 0** | 输入语义正确 | APC PlanningContext 可见；planner_may_read=True, retrieval/claim=False；observed-only evidence；零 leakage；hash/profile 正确 | — |
 | **Gate 1** | Need 规划正确 | goal_coverage 达标；semantic question 可由历史回答；无未来事实化；grounding_success_rate 达标；planner_fallback_rate 受控 | `goal_coverage_min`、`grounding_success_rate_min`、`planner_fallback_rate_max` |
 | **Gate 2** | 检索编译正确 | direct evidence recall 提升；BM25 不再由内部谓词主导；R1 predicates 语义正确；检索 trace 可分层；candidate_pollution 不恶化 | `evidence_recall_min`、`candidate_pollution_delta_max` |
-| **Gate 3** | 端到端正确 | 逐 case 报告 Claim Correctness 与 Completion Coverage；plan/future leakage=0；legacy baseline 和 APC 结果独立可比；不得选择性排除低分 case | `need_recall_min`、`claim_accuracy_min` |
+| **Gate 3** | 端到端材料交付正确 | 逐 case 输出 evidence-first Writing Package 与可解引 Ledger；plan/future leakage=0；legacy baseline 和 APC 结果独立可比；不得选择性排除低分 case | `need_recall_min`、`evidence_delivery_min` |
 
 本次正式重跑不标定或调整阈值，只保存逐 case 与聚合原始指标。阈值判断由 Codex 在完整矩阵产出后
 另行处理，不要求 OpenCode 为本轮新增 Gate 配置文件。
@@ -689,9 +731,13 @@ required_facets:
 
 ## 10. 关键约束
 
-1. 不改 Writer 4000 / Ledger 12000 / ADR-0004 / Gate 公式
+1. 保持 Writer 4000 / Ledger 12000；产品语义按 ADR-0008，不再以 ADR-0004 claim-first 路径为准
 2. 不改走廊语义（R4-R7 已修复）
-3. 不改评估器 Gold Matcher（Phase 3 新增指标，不动现有逻辑）
+3. 不修改 Gold、阈值或逐项语义状态；Gold Matcher 只允许修复已证明的 provenance identity
+   缺口。append-only replay TextRoot 或 case-local 编译 TextRoot 之间的引用，只有在 evaluator
+   持久化的 canonical observed ancestry proof 同时证明 case、checkpoint/cutoff、commit ancestry、
+   chapter/scene、object hash 和精确 span/quote 时才可跨 root 绑定；不得仅凭相同 object bytes
+   放宽匹配，future/evaluator-only/foreign root 仍 fail closed。
 4. 每 Phase 独立可回退（开发基线 `420e163`；已验收 clean executable commit `5ef295f`）
 5. Stage 3 冻结
 6. hash 校验**全部保留**；`_PRIVATE_FIELD_FRAGMENTS` 不做删除；plan 通道走类型化 `AuthorPlanningContext`
@@ -729,7 +775,7 @@ required_facets:
 | O9 | allow_plan 拆分 | 拆为三个独立字段 + deprecated 标记 + 过渡派生方案 |
 | O10 | LLM 输出 | 三层：PlannedNeedDraft（无图谱ID）→ Grounder → Stage1MemoryNeed |
 | O11 | Benchmark 角色 | P001-P005 同级固定，不划分开发/验证/测试集；本轮只测量不调参 |
-| O12 | 验收输出 | 分层 Gate 0-3 原始测量；本轮不新增或调节阈值 |
+| O12 | 验收输出 | Agent 只输出分层 evidence delivery 原始测量；语义评分由外部模型/人工执行 |
 | O13 | 全矩阵冻结 | P001-P005 输入、Gold 和 hash 在运行前固定，运行期间不变 |
 | O14 | query_hints 修复 | 标记为 legacy template path 修复；新 Planner 路径由 Query Bundle 取代 |
 | O15 | 单一事实来源 | `AuthorPlanningContext` 为权威来源；Manifest/TaskContract 只存 ref + hash + 派生字段 |
@@ -783,3 +829,38 @@ ablation。P001-P005 是同级固定 benchmark case，不再划分开发/验证/
 此状态不等于 Gate 0-3 或 Stage 2M PASS；正式矩阵只产出测量证据，最终判断由 Codex 后续完成。
 不得在正式运行中临时调整 prompt、2048 guard、Writer/Ledger budget、任一 case 输入/Gold 或 Gate
 阈值。
+
+---
+
+## 14. 2026-08-11 evidence-first 产品边界（当前决定）
+
+ADR-0008 取代本文此前把 Claim Support、whole verifier 和 semantic evaluator 当作 Stage 2M 默认产品
+闭环的表述。当前 Memory Agent 的责任在冻结 Writer 输入前结束：
+
+```text
+Author-visible Task/Plan
+  → Planner/Grounder/Validator/Query Compiler
+  → Retrieval/Rank/Exact L0 Expansion
+  → public Need/facet-bounded Evidence Selection
+  → WriterContextPackage + EvidenceLedger
+```
+
+唯一有效语义如下：
+
+1. package 按 Need/facet/scope 说明材料用途、列出 evidence ids 和 typed gaps；用途提示不能把
+   evaluator Gold 或未来事实写回公共产品；
+2. Ledger 保存 Writer 实际可读的 exact source slices 与完整 provenance；package ref 必须可解引，
+   每个 exposed evidence 必须绑定 public Need；
+3. Claim proposal、multi-slice synthesis、whole verifier、semantic receipt 和逐 Gold evaluator 均不在
+   Agent 默认路径内，也不是 package READY 或 Gate 3 的前置条件；
+4. 旧 claim-first 实现和报告只作为历史兼容/诊断，不再根据 `MISS/UNTRACEABLE` 继续修 Claim；
+5. Gold 解封后，用户可以另用强模型或人工读取冻结 package/Ledger 评分。该过程属于外部 benchmark，
+   不得反向修改被测运行；
+6. 当前 v3 只可作为 evidence-first 潜力基线：45 条 observed/operational Gold 中 33 条已有 accepted
+   raw evidence 在 Ledger（P001 4/8、P002 8/9、P003 2/9、P004 8/10、P005 11/11）。这不等同于
+   新 package 已完成，因为旧 `writer_context.v1` 未保证把这些 raw entries 作为 Writer-facing items
+   显式交付；新实现必须关闭这条暴露引用链。
+
+下一轮只修 deterministic entity mention closure、检索/选择与 evidence-first package materialization。
+不得新增另一个 evaluator、让 OpenCode/LLM 进入生产评分回路，或把“模型生成标准结论”重新变成
+Memory 的职责。

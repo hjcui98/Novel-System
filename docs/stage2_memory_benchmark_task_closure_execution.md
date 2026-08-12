@@ -324,21 +324,15 @@ public Need
   → 选中 handle 解析到 L0 TextBlock / exact span
   → 按原文段落或连续句窗派生 exact EvidenceSlice
   → token-bounded SupportWorkset
-  → 短 raw slices 原样装入语义工作输入并保留到 EvidenceLedger
-  → 单 slice 足够时生成并验证单来源 claim
-  → 仅未闭合 Need 做按需 multi-slice claim synthesis
-  → whole-claim independent verification
-  → 既有 group / receipt / variant / spec / Writer Context / Ledger
+  → 按 public Need/facet 选择 exact slices
+  → WriterContextPackage + EvidenceLedger
 ```
 
-`SupportWorkset` 不是新的 Memory 产品。通过可见性、证据解析和 exact-span 校验的 slice 可以作为
-明确标记的 raw evidence 原样进入 support producer/语义 owner 输入并保留到 `EvidenceLedger`，
-但不得冒充 verified claim 或自动闭合 facet。当前 ADR-0004 / `writer_context.v1` 仍只向 Writer 渲染
-已验证 claim；本任务不新增 Writer raw partition，也不修改公共 schema。
-Writer 4000/Ledger 12000 仍约束最终产品，不反向成为原始证据唯一容量。证据条数不设固定
-三条上限；超预算时只用 public Need/facet、合法 source/chapter diversity 和稳定检索顺序。按需
-claim 合成必须返回 cited slice IDs，host 只校验身份和精确引用并集，不枚举 atom 组合或创造语义。
-这不是 learned fusion。
+`SupportWorkset` 不是新的 Memory 产品。ADR-0008 已将当前产品改为 evidence-first：通过可见性、
+证据解析和 exact-span 校验的 slice，按 public Need/facet 直接 materialize 到
+`WriterContextPackage + EvidenceLedger`。Writer 4000/Ledger 12000 仍约束最终产品，不反向成为
+原始证据唯一容量；证据条数不设固定上限。Claim Support 和 semantic evaluator 不再是默认 Agent
+路径，不能为了自动形成 Gold 结论重新引入。
 
 Hook 平台、consolidation/长期记忆晋升、retention/自动遗忘、通用 observation graph、Viewer
 和 learned fusion 已在 Stage 3 上位章节登记为明确暂缓项，分别留给后续 Stage 的独立需求与
@@ -1314,7 +1308,9 @@ P001/P003 评测器通过人工对照后，再补齐 P002/P004/P005。
 - information scope 必须适用于 Writer；
 - 精确 evidence id 命中优先；
 - span 匹配必须在同一 text object/block 内，并达到配置的覆盖阈值；
-- plan Gold 必须命中相同的 author-visible plan node 或其合法版本；
+- legacy 评测若允许 Writer 引用计划，plan Gold 必须命中相同的 author-visible plan node 或其
+  合法版本；当前严格 D9 的 APC 产品不允许 Retrieval/Claim/Ledger 引用计划，因此仅含
+  `plan_node_ids` 的 Plan Gold 转入 Plan Goal Coverage 轴，不进入 observed Evidence/Claim 分母；
 - full-chapter overlap 本身不能判定 HIT。
 
 第二层：Gold reveal 后的语义支持检查
@@ -2444,6 +2440,8 @@ contradiction，VAC C60/C95 的主要损失仍在 long-range retrieval，故 P3 
 
 ### 21.3 2026-08-03 当前修复合同
 
+> 历史合同；2026-08-11 起由 §21.9/ADR-0008 的 evidence-first 产品边界取代，不再作为当前实现要求。
+
 §21.2 保留为不可改写的 campaign 结论；A4-A13 实现与真实产物作为诊断基线保留。当前执行方向以
 本节和 `.agent/plan.md` 为准，验收仍是 `REPAIR`，不是 campaign 延长或 C95 准入。
 
@@ -2459,7 +2457,7 @@ contradiction，VAC C60/C95 的主要损失仍在 long-range retrieval，故 P3 
 2. 用独立 token 预算建立 ordered `SupportWorkset`；短 slices 原样保留，不设固定三条上限。超预算时
    只用 public Need/facet、source/chapter diversity 和稳定检索顺序，deep-rank slice 仍有资格。
 3. 经边界和 exact-ref 校验的 slice 可原样进入 support producer/语义 owner 输入，并保留到独立
-   `EvidenceLedger`，但不是 verified claim，不自动闭合 facet。当前 Writer 仍只接收 verified claims。
+   `EvidenceLedger`，但不是 verified claim，不自动闭合 facet。当时 Writer 仍只接收 verified claims。
    单 slice 足够时只生成并整体验证一条单来源 claim；仅未闭合 Need 对 token-bounded exact slices 做按需
    multi-slice synthesis。
 4. model 必须返回 public facets 与 cited slice IDs；host 校验身份、精确 refs 并集和安全证明，不枚举
@@ -2555,26 +2553,101 @@ Gold、公式或检索语义，因此 APC 不从 ch0 重跑。已有 writer 继�
 checkpoint，并记录 `660abf8 -> b06b8de` 执行边界，不覆盖旧 manifest。TIO 仍须独立从 ch0 使用全新
 身份运行；该例外不得扩展到后续代码、prompt、预算、Gold、公式或 runtime-policy 变更。
 
+### 21.7 2026-08-11 冻结五检查点评测修复审查
+
+复用 v33 C20/C40/C60/C80/C95 的冻结 World/Commit 完成了五点 diagnostic。Planner scope 单一权威、
+完整 goal coverage fallback、runtime entity ID binding 和 Claim Support multi 的局部
+`repetition_penalty=1.10` 均有有效代码/产物证据；148 条 multi proposal 全部自然 `stop`，无
+length/repetition collapse，Canon 97 commits 与五个 checkpoint roots 未改变。
+
+Codex 只读审查同时确认该 diagnostic 不能作为 ancestry/matcher 或 Per-Gold 质量结论：当前
+`ObservedTextAncestryProof` 构造把 Commit manifest 的 TextRoot artifact id 与
+`TextRootDocument.root_hash` 混为同一身份，异常后静默返回 `None`，且 proof 没有持久化 ref。
+因此 47 条 observed Gold 的 matched Ledger 全为 0；其中 44 条已经有相同 object、33 条已有
+object+span overlap，6 条已有完整 evidence alternative，仍全部被报告为零匹配。报告中继续出现
+15 条 `TRACEABLE_CONTEXT_ITEM_IDS_NOT_MATCHER_BOUND`，证明 matcher v5 没有关闭计划要求的责任层
+缺口。
+
+另有一个独立公式矛盾：严格 D9 正确保持 `plan_citation_count=0`，但 25 条只含 plan-node
+alternative 的 Plan Gold 仍作为 mandatory 进入 claim 分母，使 `mandatory_hit_rate` 结构性恒为 0。
+从本节起，当前 Gate 0-3 采用 `.agent/need_pipeline_audit_and_semantics.md` Phase 3 的修正口径：
+Plan Gold 由 Plan Goal Coverage 评分；Observed/Operational Gold 才进入 Evidence/Claim 和 claim
+mandatory 分母。Gold、mandatory、weight 与阈值本身不改，legacy 72-Gold 汇总只保留审计标签。
+
+当前结论为 `REPAIR`。下一动作仅修正并持久化真实 TextRoot ancestry proof、统一 matcher 注入和
+D9 分轴评分，然后对现有五份 frozen paired context/semantic receipts 做离线复算；不重建 World、
+不重跑 Claim Support/模型、不调 prompt/预算/Gold/阈值。评分链正确后再依据新的首损表决定
+Need/entity 与 Claim/evidence quality repair。
+
+### 21.8 2026-08-11 evaluator/provenance 验收与质量主线
+
+round-2 repair 经 Codex 只读验收通过。v3 offline rescore 的五份 evaluator manifest 均为 v2 且
+proof ref 非空；proof/manifest/derived semantic receipt 的 CAS hash、byte length、media type 可
+verified read；matcher 对 cross-root 两侧 EvidenceRef 先做 concrete TextRoot 严格验证。chain length
+为 22/42/62/82/97，Plan Goal Coverage、typed Plan axis 与 leakage 进入报告。corrected observed
+matcher 为 P001 4/8、P002 8/9、P003 2/9、P004 8/10、P005 11/11。本节只接受 evaluator，不宣告
+M4/Gate/Stage PASS。
+
+corrected five-segment 将当前首损定位到 Need：45 条 observed Gold 全有 eligible Ledger candidates，
+33 条已有 accepted evidence alternative，但 full Need 只有 5/45；39 entity miss、9 scope miss、3
+facet miss。normal P004/P005 虽 Plan Goal Coverage=5/5，Need Recall 仍为 0/10、1/11；最终 11 条
+UNTRACEABLE、34 条 MISS。
+
+当前执行决定是最小的 entity-mention closure：复用 `NeedDraftGrounder`，从 Planner/fallback 当前已
+授权 question/hints/goal 中提取 frozen World 唯一 exact label/alias，补齐 explicit mention 数组漏掉的
+canonical entity id；歧义或 World 未见实体保持 fail closed。不得从 Gold/future text 反推实体，不用
+LLM pseudo-document 扩展，不建 NER/GraphRAG/第二 Planner。完成离线 Need replay 后，复用五个冻结
+checkpoint 只跑 Need→Retrieval→Claim→Evaluator；仅当 full Need 和 accepted evidence 已到 proposal
+input 仍失败时，才在现有 Claim Support contract 内补最小 facet/evidence binding。
+
+### 21.9 2026-08-11 evidence-first 产品收缩
+
+用户确认 Stage 2M Memory Agent 的生产目标不是替 Writer 生成标准答案式 Claim，也不是内置逐 Gold
+Evaluator。ADR-0008 因而取代 §21.8 最后一段的 Claim/Evaluator 质量闭环：默认路径在精确 evidence
+选择、装箱和可解引交付后结束，输出 evidence-first `WriterContextPackage + EvidenceLedger`。
+
+v3 产物支持这一收缩。45 条 observed/operational Gold 中 33 条已有 accepted raw evidence 在
+Ledger：P001 4/8、P002 8/9、P003 2/9、P004 8/10、P005 11/11。P004 G02/G03 的已有语义模型甚至
+判断 frozen Context claim 为 `SUPPORTS`，却因 claim 引用没有落到 matcher 认可的 Ledger entry 而
+最终失败。这说明 `11 UNTRACEABLE + 34 MISS` 主要混入了 Claim 生产与自动评分合同损失，不能继续
+作为 Memory 检索产品的唯一质量结论。
+
+新路径只要求：
+
+1. public Need/facet/scope 与目标写作任务相关；
+2. package 显式暴露 evidence items、用途提示、exact Ledger refs 和 typed gaps；
+3. Ledger refs 可解引到 cutoff-safe L0 slices，且 package/Ledger hash、预算和 lineage 可复现；
+4. Gold、未来正文和外部评分模型在 package freeze 前不可见；
+5. Claim proposal、whole verifier、semantic receipt 和 evaluator 不被默认 runner 调用，也不阻断
+   package READY。
+
+旧 `writer_context.v1` claim-first 产物和 evaluator 保留为历史诊断，不在本轮删除或继续扩建。外部
+强模型或人工可在冻结后读取 Gold、package 和 Ledger 独立评分，但其 verdict 不属于 Agent 产品，
+也不能反馈到同一实验身份。
+
 ---
 
 ## 22. 最终决策
 
-当前最重要的不是继续证明“系统能检索到很多东西”，而是证明：
+当前最重要的是证明：
 
-> 在只看到截止点历史和该 profile 合法作者规划时，系统能在严格信息边界和预算内，主动找回少量但足够的当前事实、关系、因果、知识边界和合法计划义务，把它们组装成可供后续写作使用的 ContextPackage，并能在冻结后逐项说明哪些 Gold 被正确支持、哪些缺失、哪些矛盾、哪些没有证据。
+> 在只看到截止点历史和该 profile 合法作者规划时，系统能在严格信息边界和预算内，主动找回少量
+> 但足够的当前事实、关系、因果与知识材料，按 Need/facet 组装成 Writer 可直接读取且能回指原文的
+> evidence-first ContextPackage + Ledger。语义理解和最终质量评分由 Writer、外部强模型或人工完成。
 
 在上述闭环完成前：
 
 - C95 基础设施 Gate 保持有效；
 - deterministic gateway 保持冻结/条件准入；
 - agentic gateway 不晋级；
-- Benchmark 不调用或评分续写 Writer，不设置预训练污染门禁；
+- Agent 默认路径不调用 Claim Support 或 semantic evaluator；Benchmark 的外部评分不进入被测运行；
 - `author_plan_conditioned` 与 `task_intent_only` 必须独立运行和报告；`history_only` 只保留为 legacy baseline；
 - 旧 WP7/WP8 Context 与诊断指标只作为历史/失败基线，不作为 P3 或 Benchmark 通过证据；
 - Stage 3 Writer 可以继续 DRAFT 隔离开发，但不能据此宣称记忆质量已经达标。
 - 所有剩余修复采用最小充分机制，复用现有责任主体；不预建与当前 Gate 无关的平台、第二管线或
   后续 Stage 能力。
 
-当前不需要重做 WP0-WP5、Planner、bounded parity 或旧 C60/C95 canary，也不需要等待人工 reviewer
-签署。下一步只需形成 clean executable-source identity，并按 §21.4 执行一次全新的 APC/TIO Phase 4；
-在该矩阵产出并经 Codex 判断前，M4、Gate 0-3、Agentic 晋级和 Stage 3 Memory 语义集成继续冻结。
+当前不需要重做 WP0-WP5、World replay、bounded parity 或旧 C60/C95 canary。下一步按 §21.9 和
+`.agent/plan.md` 修复 Need entity-mention closure，并把现有 retrieval/selection 直接 materialize 为
+evidence-first package/Ledger；复用五个冻结 checkpoint 只运行到 package freeze，导出五份可读产物
+供用户另行评分。在 Codex 接受该结果前，M4、Agentic 晋级和 Stage 3 Memory 集成继续冻结。

@@ -23,6 +23,7 @@ from novel_agent.domain.memory_benchmark import (
     FiveSegmentReport,
     FreezeReceipt,
     GoldBlindness,
+    GoldEligibility,
     GoldMatchStatus,
     GoldNeedBinding,
     GoldNeedSpec,
@@ -366,7 +367,7 @@ class ModelSemanticSupportVerifier:
 
 
 class MemoryBenchmarkEvaluator:
-    version = "per_gold_v3"
+    version = "per_gold_v4"
 
     def __init__(
         self,
@@ -442,7 +443,13 @@ class MemoryBenchmarkEvaluator:
         stage_loss_diagnostics = self._reconcile_terminal_stage_loss(
             stage_loss_diagnostics, comparisons
         )
-        total_weight = sum(item.weight for item in comparisons)
+        observed = tuple(
+            item for item in comparisons if item.eligibility is GoldEligibility.OBSERVED_CLAIM
+        )
+        plan_axis = tuple(
+            item for item in comparisons if item.eligibility is GoldEligibility.PLAN_AXIS_ONLY
+        )
+        total_weight = sum(item.weight for item in observed)
         score = {
             GoldMatchStatus.HIT: 1.0,
             GoldMatchStatus.PARTIAL: 0.5,
@@ -451,17 +458,29 @@ class MemoryBenchmarkEvaluator:
             GoldMatchStatus.UNTRACEABLE: 0.0,
         }
         weighted = (
-            sum(item.weight * score[item.status] for item in comparisons) / total_weight
+            sum(item.weight * score[item.status] for item in observed) / total_weight
             if total_weight
             else 0.0
         )
-        mandatory = tuple(item for item in comparisons if item.mandatory)
+        mandatory = tuple(item for item in observed if item.mandatory)
         mandatory_hit = (
             sum(item.status is GoldMatchStatus.HIT for item in mandatory) / len(mandatory)
             if mandatory
             else 1.0
         )
-        count = len(comparisons)
+        legacy_total = sum(item.weight for item in comparisons)
+        legacy_weighted = (
+            sum(item.weight * score[item.status] for item in comparisons) / legacy_total
+            if legacy_total
+            else 0.0
+        )
+        legacy_mandatory = tuple(item for item in comparisons if item.mandatory)
+        legacy_mandatory_hit = (
+            sum(item.status is GoldMatchStatus.HIT for item in legacy_mandatory)
+            / len(legacy_mandatory)
+            if legacy_mandatory
+            else 1.0
+        )
         return MemoryBenchmarkEvaluationReport(
             evaluator_version=self.version,
             profile=profile,
@@ -469,13 +488,13 @@ class MemoryBenchmarkEvaluator:
             weighted_coverage=weighted,
             mandatory_hit_rate=mandatory_hit,
             contradiction_rate=(
-                sum(item.status is GoldMatchStatus.CONTRADICTS for item in comparisons) / count
-                if count
+                sum(item.status is GoldMatchStatus.CONTRADICTS for item in observed) / len(observed)
+                if observed
                 else 0.0
             ),
             untraceable_rate=(
-                sum(item.status is GoldMatchStatus.UNTRACEABLE for item in comparisons) / count
-                if count
+                sum(item.status is GoldMatchStatus.UNTRACEABLE for item in observed) / len(observed)
+                if observed
                 else 0.0
             ),
             freeze_receipt_id=freeze_receipt.receipt_id,
@@ -485,6 +504,13 @@ class MemoryBenchmarkEvaluator:
             gate_metric_formula_version=GATE_METRIC_FORMULA_VERSION,
             gate_metric_formula_hash=GATE_METRIC_FORMULA_HASH,
             stage_loss_diagnostics=stage_loss_diagnostics,
+            observed_claim_count=len(observed),
+            observed_claim_weight=total_weight,
+            plan_axis_only_count=len(plan_axis),
+            plan_axis_only_weight=sum(item.weight for item in plan_axis),
+            plan_axis_only_gold_ids=tuple(item.gold_id for item in plan_axis),
+            legacy_72_gold_weighted_coverage=legacy_weighted,
+            legacy_72_gold_mandatory_hit_rate=legacy_mandatory_hit,
         )
 
     _SCOPE_BY_NEED_TYPE: ClassVar[dict[str, str]] = {
@@ -515,6 +541,7 @@ class MemoryBenchmarkEvaluator:
         per_gold_comparisons: tuple[PerGoldComparison, ...] = (),
         future_leakage_count: int,
         entity_id_by_label: Mapping[str, StableId] | None = None,
+        ambiguous_entity_labels: set[str] | None = None,
         planner_fallback_used: bool = False,
         planner_fallback_reason: str | None = None,
         planner_artifact_ref: ArtifactRef | None = None,
@@ -800,6 +827,7 @@ class MemoryBenchmarkEvaluator:
                 gold_metric_descriptor_hash=gold_metric_descriptors[item.gold_id].descriptor_hash,
                 missing_components=item.target_components,
                 explanation=(f"Writer Context was not quality-ready: {assembly_status.value}"),
+                eligibility=self._gold_eligibility(item),
             )
             for item in applicable
         )
@@ -807,7 +835,13 @@ class MemoryBenchmarkEvaluator:
         stage_loss_diagnostics = self._reconcile_terminal_stage_loss(
             stage_loss_diagnostics, comparisons
         )
-        mandatory = tuple(item for item in comparisons if item.mandatory)
+        observed = tuple(
+            item for item in comparisons if item.eligibility is GoldEligibility.OBSERVED_CLAIM
+        )
+        plan_axis = tuple(
+            item for item in comparisons if item.eligibility is GoldEligibility.PLAN_AXIS_ONLY
+        )
+        mandatory = tuple(item for item in observed if item.mandatory)
         return MemoryBenchmarkEvaluationReport(
             evaluator_version=self.version,
             profile=profile,
@@ -823,6 +857,11 @@ class MemoryBenchmarkEvaluator:
             gate_metric_formula_version=GATE_METRIC_FORMULA_VERSION,
             gate_metric_formula_hash=GATE_METRIC_FORMULA_HASH,
             stage_loss_diagnostics=stage_loss_diagnostics,
+            observed_claim_count=len(observed),
+            observed_claim_weight=sum(item.weight for item in observed),
+            plan_axis_only_count=len(plan_axis),
+            plan_axis_only_weight=sum(item.weight for item in plan_axis),
+            plan_axis_only_gold_ids=tuple(item.gold_id for item in plan_axis),
         )
 
     @staticmethod
@@ -887,6 +926,25 @@ class MemoryBenchmarkEvaluator:
             ):
                 raise ValueError("Gold metric descriptor evaluator manifest mismatch")
 
+    @staticmethod
+    def _gold_eligibility(gold: GoldItem) -> GoldEligibility:
+        """Typed scoring axis under strict D9.
+
+        A Gold whose accepted alternatives carry no observed EvidenceRefs
+        (plan-node-only) is ineligible for the Claim/Evidence axis and is
+        scored by Plan Goal Coverage instead.
+        """
+
+        alternatives = gold.accepted_evidence_sets or ()
+        if not alternatives:
+            return GoldEligibility.OBSERVED_CLAIM
+        if all(
+            not alternative.evidence_refs and bool(alternative.plan_node_ids)
+            for alternative in alternatives
+        ):
+            return GoldEligibility.PLAN_AXIS_ONLY
+        return GoldEligibility.OBSERVED_CLAIM
+
     def _compare(
         self,
         gold: GoldItem,
@@ -898,6 +956,27 @@ class MemoryBenchmarkEvaluator:
         metric_descriptor: ContentAddressedGoldMetricDescriptor,
     ) -> PerGoldComparison:
         evidence = self._evidence.match(gold, ledger)
+        eligibility = self._gold_eligibility(gold)
+        if eligibility is GoldEligibility.PLAN_AXIS_ONLY:
+            return PerGoldComparison(
+                gold_id=gold.gold_id,
+                status=GoldMatchStatus.MISS,
+                weight=gold.weight,
+                mandatory=gold.mandatory,
+                gold_metric_descriptor_ref=metric_descriptor.descriptor_ref,
+                gold_metric_descriptor_hash=metric_descriptor.descriptor_hash,
+                matched_context_item_ids=(),
+                matched_evidence_ledger_ids=(),
+                supported_components=(),
+                missing_components=tuple(gold.target_components),
+                explanation=(
+                    "plan-node-only Gold is ineligible for the observed "
+                    "Claim/Evidence axis under strict D9; scored by Plan Goal "
+                    "Coverage instead"
+                ),
+                verifier_receipt_ref=None,
+                eligibility=GoldEligibility.PLAN_AXIS_ONLY,
+            )
         all_items = self._items(package)
         evidence_item_ids = set(evidence.matched_ledger_ids)
         traceable_items = tuple(

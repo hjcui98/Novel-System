@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -24,6 +26,7 @@ from novel_agent.domain.memory_benchmark import (
     GoldNeedSpec,
     SegmentAvailability,
 )
+from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
 from novel_agent.services.memory_benchmark_evaluation import MemoryBenchmarkEvaluator
 from tests.fixtures.stage1_synthetic import make_synthetic_bundle
 
@@ -71,6 +74,10 @@ def _spec(
         required_entities=entities,
         required_facets=facets,
     )
+
+
+def _empty_ledger() -> EvidenceLedger:
+    return EvidenceLedger(contract_version="v1", rendered_tokens=0)
 
 
 def test_gold_need_spec_domain_edges() -> None:
@@ -527,3 +534,213 @@ def test_compiler_loads_gold_need_specs_from_sibling_yaml() -> None:
     )
     with pytest.raises(HumanBenchmarkCompileError, match="blindness is invalid"):
         compiler._gold_need_specs(manifest, gold_data, malformed_root)
+
+
+def test_runtime_world_labels_bind_entities_while_oracle_namespace_differs() -> None:
+    """The evaluator must use the frozen runtime World entity IDs, not the
+    bundle oracle World namespace (plan §2.4 / §4.2)."""
+    from novel_agent.services.memory_benchmark_evaluation import MemoryBenchmarkEvaluator
+
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    oracle = bundle.world_roots[0]
+    oracle_entity = oracle.entities[0]
+    runtime_id = StableId("entity.runtime.different-namespace")
+    task = build_safe_task_contract(
+        case_id=case.case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    need = _entity_bound_need(task, oracle_entity.entity_id, oracle_entity.internal_label)
+    need = need.model_copy(update={"entity_ids": (runtime_id,)})
+
+    evaluator = MemoryBenchmarkEvaluator()
+    entity_id_by_label = {oracle_entity.internal_label: runtime_id}
+    report = evaluator.evaluate_five_segments(
+        needs=(need,),
+        gold_need_specs=(
+            _spec(
+                "gold.runtime",
+                scopes=(need.need_facets[0].expected_claim_scope.value,),
+                entities=(oracle_entity.internal_label,),
+                facets=(need.need_facets[0].facet_kind.name,),
+            ),
+        ),
+        plan_goals=(plan.chapter_goals[0],),
+        gold_items=(
+            case.observed_use_gold[0].model_copy(update={"gold_id": StableId("gold.runtime")}),
+        ),
+        evidence_ledger=_empty_ledger(),
+        completion_accuracy=0.0,
+        future_leakage_count=0,
+        entity_id_by_label=entity_id_by_label,
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    binding = next(item for item in report.bindings if item.gold_id.root == "gold.runtime")
+    assert binding.entity_hits == (oracle_entity.internal_label,)
+    assert binding.entity_misses == ()
+
+
+def test_oracle_world_labels_do_not_bind_runtime_entities() -> None:
+    """A bundle oracle World with the same label but a different ID namespace
+    must not produce entity hits for runtime-bound Needs (plan §2.4)."""
+    from novel_agent.services.memory_benchmark_evaluation import MemoryBenchmarkEvaluator
+
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    oracle = bundle.world_roots[0]
+    oracle_entity = oracle.entities[0]
+    runtime_id = StableId("entity.runtime.other-id")
+    task = build_safe_task_contract(
+        case_id=case.case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    need = _entity_bound_need(task, oracle_entity.entity_id, oracle_entity.internal_label)
+    need = need.model_copy(update={"entity_ids": (runtime_id,)})
+
+    evaluator = MemoryBenchmarkEvaluator()
+    oracle_label_map = {oracle_entity.internal_label: oracle_entity.entity_id}
+    report = evaluator.evaluate_five_segments(
+        needs=(need,),
+        gold_need_specs=(
+            _spec(
+                "gold.oracle-wrong",
+                scopes=(need.need_facets[0].expected_claim_scope.value,),
+                entities=(oracle_entity.internal_label,),
+                facets=(need.need_facets[0].facet_kind.name,),
+            ),
+        ),
+        plan_goals=(plan.chapter_goals[0],),
+        gold_items=(
+            case.observed_use_gold[0].model_copy(update={"gold_id": StableId("gold.oracle-wrong")}),
+        ),
+        evidence_ledger=_empty_ledger(),
+        completion_accuracy=0.0,
+        future_leakage_count=0,
+        entity_id_by_label=oracle_label_map,
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    binding = next(item for item in report.bindings if item.gold_id.root == "gold.oracle-wrong")
+    assert binding.entity_hits == ()
+
+
+def test_ambiguous_runtime_label_never_binds() -> None:
+    """A label shared by two runtime entities must not yield an entity hit."""
+    from novel_agent.services.memory_benchmark_evaluation import MemoryBenchmarkEvaluator
+
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
+    oracle = bundle.world_roots[0]
+    entity = oracle.entities[0]
+    task = build_safe_task_contract(
+        case_id=case.case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    need = _entity_bound_need(task, entity.entity_id, entity.internal_label)
+
+    evaluator = MemoryBenchmarkEvaluator()
+    report = evaluator.evaluate_five_segments(
+        needs=(need,),
+        gold_need_specs=(
+            _spec(
+                "gold.ambiguous",
+                scopes=(need.need_facets[0].expected_claim_scope.value,),
+                entities=(entity.internal_label,),
+                facets=(need.need_facets[0].facet_kind.name,),
+            ),
+        ),
+        plan_goals=(plan.chapter_goals[0],),
+        gold_items=(
+            case.observed_use_gold[0].model_copy(update={"gold_id": StableId("gold.ambiguous")}),
+        ),
+        evidence_ledger=_empty_ledger(),
+        completion_accuracy=0.0,
+        future_leakage_count=0,
+        entity_id_by_label=None,
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+    )
+    assert all(not binding.entity_hits for binding in report.bindings)
+
+
+def _entity_bound_need(task: Any, entity_id: StableId, label: str) -> Stage1MemoryNeed:
+    """One license-free entity-bound Need with a single CURRENT_STATE facet."""
+    from novel_agent.domain.memory import (
+        ExpectedClaimScope,
+        FacetEvidenceRequirement,
+        NeedCompletionSpec,
+        NeedFacet,
+        NeedFacetKind,
+        NeedGapPolicy,
+        NeedUncertaintyPolicy,
+    )
+    from novel_agent.domain.writer_context import WriterContextSection
+
+    need_id = StableId("need.stage2m.entity.runtime-test.state")
+    facet = NeedFacet(
+        need_facet_id=StableId("need-facet.runtime-test.CURRENT_STATE"),
+        need_id=need_id,
+        facet_kind=NeedFacetKind.CURRENT_STATE,
+        expected_claim_scope=ExpectedClaimScope.CURRENT,
+        derivation_refs=(task.task_id,),
+        producer="test",
+        producer_version="test.v1",
+        information_scope="cutoff_safe",
+    )
+    completion = NeedCompletionSpec(
+        need_id=need_id,
+        required_need_facet_ids=(facet.need_facet_id,),
+        irreducible_need_facet_ids=(facet.need_facet_id,),
+        evidence_requirement_by_facet={
+            facet.need_facet_id.root: FacetEvidenceRequirement.CUTOFF_CURRENT_SOURCE
+        },
+        min_distinct_evidence_sources=1,
+        min_distinct_chapters=1,
+        require_current_claim=True,
+        require_causal_history=False,
+        uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+        gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+        producer="test",
+        producer_version="test.v1",
+    )
+    return Stage1MemoryNeed(
+        need_id=need_id,
+        run_id=RunId("run.stage2m.test"),
+        task_id=TaskId(task.task_id.root),
+        base_commit=CommitId("sha256:" + "a" * 64),
+        horizon_target=(task.target_chapter_start, task.target_chapter_end),
+        need_type="current_state",
+        query_intent=Stage1QueryIntent.SEMANTIC_HISTORY,
+        query_text=f"{label} 当前状态是什么?",
+        semantic_question="",
+        trigger_plan_chapters=(),
+        trigger_plan_goal="",
+        entity_ids=(entity_id,),
+        access_scope="writer_safe",
+        allow_plan=False,
+        planner_may_read_plan=True,
+        retrieval_may_return_plan=False,
+        claim_may_cite_plan=False,
+        legacy_allow_plan=False,
+        why_needed="test",
+        risk_level=NeedRisk.HIGH,
+        requirement=RequirementLevel.MANDATORY,
+        preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
+        allowed_candidate_pools=(CandidatePool.ANCHOR,),
+        expected_evidence_types=("text_span",),
+        stop_condition="one current claim",
+        purpose="test",
+        expected_section=WriterContextSection.CURRENT_WORLD_STATE,
+        focus_ids=(StableId("focus.runtime-test"),),
+        priority=90,
+        query_hints=(f"{label} 状态",),
+        need_facets=(facet,),
+        completion_spec=completion,
+    )

@@ -88,7 +88,7 @@ class TaskPlanConditionedNeedGenerator:
     """Generate needs from the bounded FocusSet, never by enumerating WorldRoot."""
 
     profile = "task_plan_conditioned_v1"
-    version = "task_plan_conditioned_need.v22"
+    version = "task_plan_conditioned_need.v23"
     completion_spec_version = "need_completion_spec.v1"
 
     _CAPABILITY_PREDICATE_KEYWORDS: ClassVar[tuple[str, ...]] = (
@@ -278,7 +278,8 @@ class TaskPlanConditionedNeedGenerator:
                 ),
                 fallback_used=planner_fallback,
                 planner_fallback_reason=(
-                    "planner_chain_unavailable_or_rejected" if planner_fallback else None
+                    (artifact.fallback_reason if artifact is not None else None)
+                    or ("planner_chain_unavailable_or_rejected" if planner_fallback else None)
                 ),
                 planner_metadata=planner_metadata,
                 planner_artifact=artifact,
@@ -374,6 +375,14 @@ class TaskPlanConditionedNeedGenerator:
             predicates: tuple[str, ...] = (),
         ) -> None:
             need_id = StableId(f"need.stage2m.{identity}"[:128])
+            # Entity-mention closure over this fallback Need's own text so the
+            # deterministic path keeps entities that appear in the query/goal
+            # but were not already bound by the focus extractor.
+            closed_entities = self._closed_entity_ids_for_text(
+                world,
+                (query, *query_hints, target_plan_text),
+            )
+            entity_ids = tuple(dict.fromkeys((*entity_ids, *closed_entities)))
             facets, completion_spec = self._completion_contract(
                 need_id=need_id,
                 need_type=need_type,
@@ -416,13 +425,18 @@ class TaskPlanConditionedNeedGenerator:
                     ),
                     allowed_candidate_pools=pools,
                     expected_evidence_types=("structured_record", "text_span"),
-                    stop_condition="one current claim with a minimal legal evidence set",
+                    stop_condition=(
+                        "served by cutoff-safe exact evidence slices or an explicit typed gap"
+                    ),
                     purpose=focus.reason,
                     expected_section=section,
                     focus_ids=(focus.focus_id,),
                     priority=priority,
                     query_hints=tuple(dict.fromkeys((query, *query_hints))),
-                    completion_criteria="claim is supported by cutoff-valid evidence",
+                    completion_criteria=(
+                        "every required facet is served by cutoff-safe exact evidence slices "
+                        "or a typed gap"
+                    ),
                     need_facets=facets,
                     completion_spec=completion_spec,
                 )
@@ -936,7 +950,8 @@ class TaskPlanConditionedNeedGenerator:
             unexpanded_focus_ids=unexpanded,
             fallback_used=planner_fallback,
             planner_fallback_reason=(
-                "planner_chain_unavailable_or_rejected" if planner_fallback else None
+                (planner_artifact.fallback_reason if planner_artifact is not None else None)
+                or ("planner_chain_unavailable_or_rejected" if planner_fallback else None)
             ),
             planner_metadata=planner_metadata,
             planner_artifact=planner_artifact,
@@ -965,6 +980,98 @@ class TaskPlanConditionedNeedGenerator:
                 else:
                     counts[0] += 1
         return (counts[0], counts[1], counts[2])
+
+    def _missing_goal_entities(
+        self,
+        *,
+        context: AuthorPlanningContext,
+        world: WorldRootDocument,
+        accepted: tuple[GroundedNeedDraft, ...],
+        target_start: int,
+        target_end: int,
+    ) -> tuple[tuple[int, StableId, str], ...]:
+        """Goal/entity coverage postcondition.
+
+        Every entity that is uniquely groundable in a target Plan goal's text
+        must appear in at least one accepted Need that triggers that goal.
+        Only World labels/aliases that uniquely resolve to one runtime entity
+        are required; ambiguous or absent entities are not enforced.
+        """
+
+        from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+        unique_entities = NeedDraftGrounder._world_label_map(world)
+        missing: list[tuple[int, StableId, str]] = []
+        accepted_by_goal: dict[int, tuple[GroundedNeedDraft, ...]] = {}
+        for draft in accepted:
+            for chapter in draft.trigger_plan_chapters:
+                accepted_by_goal.setdefault(chapter, ())
+                accepted_by_goal[chapter] = (*accepted_by_goal[chapter], draft)
+        for goal in context.chapter_goals:
+            if not (target_start <= goal.chapter_index <= target_end):
+                continue
+            from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+            normalized_goal = NeedDraftGrounder._normalize(goal.summary)
+            goal_entities = self._unique_entities_in_text(normalized_goal, unique_entities)
+            goal_drafts = accepted_by_goal.get(goal.chapter_index, ())
+            covered_ids = {
+                entity_id
+                for draft in goal_drafts
+                for entity_id in (
+                    mention.entity_id
+                    for mention in draft.entity_mentions
+                    if mention.entity_id is not None
+                )
+            }
+            for label, entity_id in goal_entities:
+                if entity_id not in covered_ids:
+                    missing.append((goal.chapter_index, entity_id, label))
+        return tuple(dict.fromkeys(missing))
+
+    @staticmethod
+    def _unique_entities_in_text(
+        text: str,
+        unique_entities: dict[str, StableId],
+    ) -> tuple[tuple[str, StableId], ...]:
+        """Longest-first verbatim entity labels found in one text fragment."""
+
+        normalized_by_length = tuple(sorted(unique_entities, key=lambda item: (-len(item), item)))
+        occupied: list[tuple[int, int]] = []
+        found: list[tuple[str, StableId]] = []
+        for normalized in normalized_by_length:
+            start = 0
+            while True:
+                idx = text.find(normalized, start)
+                if idx < 0:
+                    break
+                span = (idx, idx + len(normalized))
+                if not any(
+                    span[0] < other_end and other_start < span[1]
+                    for other_start, other_end in occupied
+                ):
+                    occupied.append(span)
+                    found.append((normalized, unique_entities[normalized]))
+                start = idx + 1
+        return tuple(found)
+
+    @staticmethod
+    def _closed_entity_ids_for_text(
+        world: WorldRootDocument,
+        texts: tuple[str, ...],
+    ) -> tuple[StableId, ...]:
+        """Entity ids that appear verbatim in the given text fragments.
+
+        Longest label first; only labels uniquely bound to one runtime entity
+        are returned.  Used by the deterministic fallback path.
+        """
+
+        from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+        unique_entities = NeedDraftGrounder._world_label_map(world)
+        combined = "\n".join(text for text in texts if text)
+        found = TaskPlanConditionedNeedGenerator._unique_entities_in_text(combined, unique_entities)
+        return tuple(dict.fromkeys(entity for _label, entity in found))
 
     def _run_planner_chain(
         self,
@@ -1053,10 +1160,95 @@ class TaskPlanConditionedNeedGenerator:
                 validated_need_set_hash=rejected_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason="all_drafts_rejected",
+                raw_scope_by_draft=validation.raw_scope_by_draft,
+                canonical_scope_by_draft=validation.canonical_scope_by_draft,
+                scope_normalization_reasons=validation.scope_normalization_reasons,
             )
             self._last_fallback_artifact = artifact
             return None
         accepted = validation.accepted_drafts
+        target_start, target_end = task.target_chapter_start, task.target_chapter_end
+        target_goal_chapters = tuple(
+            dict.fromkeys(
+                goal.chapter_index
+                for goal in context.chapter_goals
+                if target_start <= goal.chapter_index <= target_end
+            )
+        )
+        accepted_goal_chapters = tuple(
+            dict.fromkeys(chapter for draft in accepted for chapter in draft.trigger_plan_chapters)
+        )
+        missing_goal_chapters = tuple(
+            chapter for chapter in target_goal_chapters if chapter not in accepted_goal_chapters
+        )
+        if missing_goal_chapters:
+            rejected_hash = ArtifactId("sha256:" + "0" * 64)
+            fallback_metadata = planner_result.metadata.model_copy(
+                update={
+                    "validated_need_set_hash": rejected_hash,
+                    "fallback_used": True,
+                }
+            )
+            artifact = PlannerInvocationArtifact(
+                planning_context=planner_result.planning_context,
+                world_summary=planner_result.world_summary,
+                exact_prompt=planner_result.exact_prompt,
+                metadata=fallback_metadata,
+                raw_response=planner_result.raw_response,
+                attempts=planner_result.attempts,
+                parsed_drafts=planner_result.drafts,
+                grounded_drafts=grounded,
+                accepted_draft_ids=tuple(draft.draft_id for draft in accepted),
+                rejected_reasons=validation.rejected_reasons,
+                deduplicated_draft_ids=validation.deduplicated_draft_ids,
+                truncated_draft_ids=validation.truncated_draft_ids,
+                final_need_manifests=(),
+                validated_need_set_hash=rejected_hash,
+                fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
+                fallback_reason="insufficient_target_goal_coverage",
+                missing_goal_chapters=missing_goal_chapters,
+            )
+            self._last_fallback_artifact = artifact
+            return None
+        missing_goal_entities = self._missing_goal_entities(
+            context=context,
+            world=world,
+            accepted=accepted,
+            target_start=target_start,
+            target_end=target_end,
+        )
+        if missing_goal_entities:
+            rejected_hash = ArtifactId("sha256:" + "0" * 64)
+            fallback_metadata = planner_result.metadata.model_copy(
+                update={
+                    "validated_need_set_hash": rejected_hash,
+                    "fallback_used": True,
+                }
+            )
+            artifact = PlannerInvocationArtifact(
+                planning_context=planner_result.planning_context,
+                world_summary=planner_result.world_summary,
+                exact_prompt=planner_result.exact_prompt,
+                metadata=fallback_metadata,
+                raw_response=planner_result.raw_response,
+                attempts=planner_result.attempts,
+                parsed_drafts=planner_result.drafts,
+                grounded_drafts=grounded,
+                accepted_draft_ids=tuple(draft.draft_id for draft in accepted),
+                rejected_reasons=validation.rejected_reasons,
+                deduplicated_draft_ids=validation.deduplicated_draft_ids,
+                truncated_draft_ids=validation.truncated_draft_ids,
+                final_need_manifests=(),
+                validated_need_set_hash=rejected_hash,
+                fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
+                fallback_reason="insufficient_target_goal_entity_coverage",
+                missing_goal_entities=tuple(
+                    (entity_id.root, label, chapter)
+                    for chapter, entity_id, label in missing_goal_entities
+                ),
+            )
+            self._last_fallback_artifact = artifact
+            return None
         placeholder_hash = ArtifactId("sha256:" + "0" * 64)
         placeholder_ref = ArtifactId("sha256:" + "0" * 64)
         provisional_needs = tuple(
@@ -1095,6 +1287,9 @@ class TaskPlanConditionedNeedGenerator:
             final_need_manifests=manifests,
             validated_need_set_hash=validated_hash,
             fallback_status=PlannerFallbackStatus.PLANNER,
+            raw_scope_by_draft=validation.raw_scope_by_draft,
+            canonical_scope_by_draft=validation.canonical_scope_by_draft,
+            scope_normalization_reasons=validation.scope_normalization_reasons,
         )
         artifact_document_ref = self._persist_planner_artifact(artifact)
         artifact_ref = (
@@ -1126,6 +1321,136 @@ class TaskPlanConditionedNeedGenerator:
             generator_version=self.version,
             planner_artifact=artifact,
             planner_artifact_document_ref=artifact_document_ref,
+        )
+
+    def generate_evidence_first(
+        self,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        plan: PlanRootDocument,
+        planning_context: AuthorPlanningContext | None,
+        frozen_planner_artifact: PlannerInvocationArtifact,
+    ) -> NeedGenerationResult | None:
+        """Offline evidence-first Need rebuild from frozen Planner drafts.
+
+        Re-grounds and re-validates the frozen raw drafts with the current
+        deterministic rules (exact internal-label priority, unresolved lexical
+        anchors preserved) and rebuilds the final Needs with a fresh
+        validated identity.  No model is called; fallback artifacts keep the
+        frozen deterministic template behavior (``None`` -> template path).
+        """
+        if frozen_planner_artifact.metadata is None:
+            raise ValueError("evidence-first replay requires frozen Planner metadata")
+        if frozen_planner_artifact.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK:
+            return None
+        if planning_context is None:
+            raise ValueError("evidence-first replay requires AuthorPlanningContext")
+        grounded = tuple(
+            self._grounder.ground(draft, world) for draft in frozen_planner_artifact.parsed_drafts
+        )
+        focus_set = self._focus_extractor.extract(task, world, plan)
+        entity_ids = tuple(
+            dict.fromkeys(
+                entity_id
+                for draft in grounded
+                for entity_id in self._grounder.grounded_entity_ids(draft)
+            )
+        )
+        if entity_ids:  # pragma: no branch - accepted drafts require an anchor
+            focus_set = self._focus_extractor.extend(focus_set, entity_ids)
+        validation = self._validator.validate(
+            drafts=grounded,
+            task=task,
+            world=world,
+            focus_set=focus_set,
+            plan=plan,
+        )
+        accepted = validation.accepted_drafts
+        if not accepted:
+            self._last_fallback_artifact = frozen_planner_artifact
+            self._frozen_fallback_artifact = frozen_planner_artifact
+            return None
+        target_start, target_end = task.target_chapter_start, task.target_chapter_end
+        target_goal_chapters = tuple(
+            dict.fromkeys(
+                goal.chapter_index
+                for goal in planning_context.chapter_goals
+                if target_start <= goal.chapter_index <= target_end
+            )
+        )
+        accepted_goal_chapters = tuple(
+            dict.fromkeys(chapter for draft in accepted for chapter in draft.trigger_plan_chapters)
+        )
+        missing_goal_chapters = tuple(
+            chapter for chapter in target_goal_chapters if chapter not in accepted_goal_chapters
+        )
+        if missing_goal_chapters:
+            self._last_fallback_artifact = frozen_planner_artifact
+            self._frozen_fallback_artifact = frozen_planner_artifact
+            return None
+        placeholder = ArtifactId("sha256:" + "0" * 64)
+        provisional = tuple(
+            self._build_planner_need(
+                task=task,
+                world=world,
+                draft=draft,
+                need_type=validation.need_type_by_draft[draft.draft_id],
+                focus_set=focus_set,
+                artifact_ref=placeholder,
+                validated_hash=placeholder,
+            )
+            for draft in accepted
+        )
+        manifests = self._final_need_manifests(
+            provisional,
+            tuple(draft.draft_id for draft in accepted),
+        )
+        validated_hash = self._final_need_set_hash(manifests)
+        metadata = frozen_planner_artifact.metadata.model_copy(
+            update={"validated_need_set_hash": validated_hash, "fallback_used": False}
+        )
+        refreshed = frozen_planner_artifact.model_copy(
+            update={
+                "metadata": metadata,
+                "grounded_drafts": grounded,
+                "accepted_draft_ids": tuple(draft.draft_id for draft in accepted),
+                "rejected_reasons": validation.rejected_reasons,
+                "deduplicated_draft_ids": validation.deduplicated_draft_ids,
+                "truncated_draft_ids": validation.truncated_draft_ids,
+                "final_need_manifests": manifests,
+                "validated_need_set_hash": validated_hash,
+                "raw_scope_by_draft": validation.raw_scope_by_draft,
+                "canonical_scope_by_draft": validation.canonical_scope_by_draft,
+                "scope_normalization_reasons": validation.scope_normalization_reasons,
+            }
+        )
+        artifact_ref = self._persist_planner_artifact(refreshed)
+        artifact_id = (
+            artifact_ref.artifact_id
+            if artifact_ref is not None
+            else content_id(refreshed.model_dump(mode="json"))
+        )
+        needs = tuple(
+            need.model_copy(
+                update={
+                    "planner_artifact_ref": artifact_id,
+                    "validated_need_set_hash": validated_hash,
+                }
+            )
+            for need in provisional
+        )
+        return NeedGenerationResult(
+            task_id=task.task_id,
+            focus_set=focus_set,
+            needs=needs,
+            status=NeedGenerationStatus.READY,
+            planner_metadata=metadata,
+            fallback_used=False,
+            grounding_status_counts=self._grounding_status_counts(grounded),
+            need_completion_spec_version=self.completion_spec_version,
+            generator_version=self.version,
+            planner_artifact=refreshed,
+            planner_artifact_document_ref=artifact_ref,
         )
 
     @staticmethod
@@ -1402,7 +1727,7 @@ class TaskPlanConditionedNeedGenerator:
             task=task,
             focus=focus,
             allow_plan=False,
-            mandatory=False,
+            mandatory=True,
             facet_kinds_override=facet_kinds,
         )
         hints = tuple(
@@ -1428,8 +1753,8 @@ class TaskPlanConditionedNeedGenerator:
             claim_may_cite_plan=False,
             legacy_allow_plan=False,
             why_needed=draft.why_needed or focus.reason,
-            risk_level=NeedRisk.MEDIUM,
-            requirement=RequirementLevel.OPTIONAL,
+            risk_level=NeedRisk.HIGH,
+            requirement=RequirementLevel.MANDATORY,
             preferred_resolution_path=(
                 ResolutionPath.EXACT_TEMPORAL
                 if CandidatePool.R1 in pools
@@ -1437,13 +1762,15 @@ class TaskPlanConditionedNeedGenerator:
             ),
             allowed_candidate_pools=pools,
             expected_evidence_types=("structured_record", "text_span"),
-            stop_condition="one current claim with a minimal legal evidence set",
+            stop_condition="served by cutoff-safe exact evidence slices or an explicit typed gap",
             purpose=draft.why_needed or focus.reason,
             expected_section=section,
             focus_ids=focus_ids,
             priority=90,
             query_hints=hints,
-            completion_criteria="claim is supported by cutoff-valid evidence",
+            completion_criteria=(
+                "every required facet is served by cutoff-safe exact evidence slices or a typed gap"
+            ),
             need_facets=facets,
             completion_spec=completion_spec,
             planner_artifact_ref=artifact_ref,
@@ -1610,9 +1937,11 @@ class TaskPlanConditionedNeedGenerator:
             evidence_requirement_by_facet=evidence_requirements,
             min_distinct_evidence_sources=1,
             min_distinct_chapters=(2 if NeedFacetKind.SETUP in facet_kinds else 1),
-            require_current_claim=any(
-                item.expected_claim_scope is ExpectedClaimScope.CURRENT for item in facets
-            ),
+            # Evidence-first default: completion is served by cutoff-safe exact
+            # evidence slices or an explicit typed gap.  No active "one current
+            # claim" gate; CURRENT_CLAIM remains an explicit opt-in for legacy
+            # claim-driven paths only.
+            require_current_claim=False,
             require_causal_history=NeedFacetKind.CAUSAL_HISTORY in facet_kinds,
             uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
             gap_policy=NeedGapPolicy.FAIL_MANDATORY,

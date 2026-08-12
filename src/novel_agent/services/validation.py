@@ -63,6 +63,7 @@ class Stage1Validator:
             )
         self._check_write_conflicts(bundle, findings)
         self._check_evidence_and_truth(bundle, evidence_root, findings)
+        self._check_relation_invariants(bundle, proposed_world, findings)
         self._check_transitions_and_order(
             bundle, canonical_world, proposed_world, evidence_root, findings
         )
@@ -78,7 +79,7 @@ class Stage1Validator:
                         "OVERLAY_MISMATCH", "error", "proposed world differs from overlay result"
                     )
                 )
-        except OverlayError as error:
+        except (OverlayError, ValueError) as error:
             findings.append(self._finding("INVALID_OVERLAY", "error", str(error)))
         status = (
             ValidationStatus.FAILED
@@ -99,6 +100,65 @@ class Stage1Validator:
             ),
             validated_at=datetime.now(UTC),
         )
+
+    def _check_relation_invariants(
+        self,
+        bundle: CandidateChangeBundle,
+        proposed: WorldRootDocument,
+        findings: list[ValidationFinding],
+    ) -> None:
+        """Recheck graph writes independently of the extraction pass."""
+
+        from novel_agent.services.world_graph import PredicateRegistry
+
+        entities = {entity.entity_id: entity for entity in proposed.entities}
+        relations = {relation.relation_id: relation for relation in proposed.relations}
+        registry = PredicateRegistry()
+        for operation in bundle.observed_changes.operations:
+            payload = operation.payload
+            if (
+                operation.operation is ChangeOperationType.RETIRE
+                or not isinstance(payload, dict)
+                or payload.get("record_type") != "relation"
+            ):
+                continue
+            relation = relations.get(operation.target_id)
+            if relation is None:
+                findings.append(
+                    self._finding(
+                        "RELATION_WRITE_MISSING",
+                        "error",
+                        "changed relation is absent from proposed world",
+                    )
+                )
+                continue
+            subject = entities.get(relation.subject_id)
+            object_ = entities.get(relation.object_id)
+            if subject is None or object_ is None:
+                findings.append(
+                    self._finding(
+                        "RELATION_ENDPOINT_MISSING",
+                        "error",
+                        "relation endpoint is absent from proposed world",
+                    )
+                )
+                continue
+            try:
+                registry.validate_entity_types(
+                    relation.predicate,
+                    subject.entity_type,
+                    object_.entity_type,
+                )
+            except ValueError as error:
+                findings.append(self._finding("RELATION_PREDICATE_INVALID", "error", str(error)))
+            if relation.truth_class is not TruthClass.ACCEPTED_WORLD_FACT:
+                findings.append(
+                    self._finding(
+                        "RELATION_TRUTH_NOT_ACCEPTED",
+                        "error",
+                        "canonical graph relation must be an accepted world fact",
+                    )
+                )
 
     def _check_transitions_and_order(
         self,

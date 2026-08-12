@@ -238,6 +238,62 @@ def test_query_compiler_builds_per_channel_bundle() -> None:
     assert unavailable == {}
 
 
+def test_query_compiler_keeps_lexical_dense_path_for_unresolved_public_anchor() -> None:
+    """Round 2: an unresolved public anchor (no runtime entity id) keeps its
+    lexical/dense channels executable; only id-dependent exact/graph channels
+    are closed with typed reasons."""
+    from novel_agent.services.need_query_compiler import NeedQueryCompiler
+
+    unresolved_anchor = need(
+        Stage1QueryIntent.CURRENT_STATE,
+        "国教学院 是否允许旁听",
+        (CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+    ).model_copy(
+        update={
+            "entity_ids": (),
+            "query_hints": ("国教学院 来历",),
+            "semantic_question": "国教学院 在截止点前 是否允许旁听?",
+            "predicates": (),
+            "retrieval_may_return_plan": False,
+            "planner_may_read_plan": True,
+            "claim_may_cite_plan": False,
+            "legacy_allow_plan": False,
+            "allow_plan": False,
+            "hierarchy_parent_unit_ids": (),
+        }
+    )
+    bundle = NeedQueryCompiler().compile(unresolved_anchor)
+    assert bundle.exact_entity_ids == ()
+    assert bundle.graph_seeds == ()
+    assert "国教学院 是否允许旁听" in bundle.lexical_queries
+    assert "国教学院 来历" in bundle.lexical_queries
+    assert bundle.semantic_query == "国教学院 在截止点前 是否允许旁听?"
+
+    channels = (
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.GROUNDED_BM25,
+        RetrievalChannel.GROUNDED_DENSE,
+        RetrievalChannel.R1_EXACT,
+        RetrievalChannel.R1_TEMPORAL,
+        RetrievalChannel.TYPED_GRAPH,
+        RetrievalChannel.HIERARCHY,
+    )
+    eligible, unavailable = NeedQueryCompiler.eligible_channels(unresolved_anchor, bundle, channels)
+    assert eligible == (
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.GROUNDED_BM25,
+        RetrievalChannel.GROUNDED_DENSE,
+    )
+    assert unavailable == {
+        RetrievalChannel.R1_EXACT: "missing_exact_entity_or_predicate",
+        RetrievalChannel.R1_TEMPORAL: "missing_exact_entity_or_predicate",
+        RetrievalChannel.TYPED_GRAPH: "missing_graph_seed",
+        RetrievalChannel.HIERARCHY: "missing_hierarchy_basis",
+    }
+
+
 def test_semantic_history_is_anchor_first_with_application_rrf_diagnostics() -> None:
     trace = orchestrator().retrieve(
         need(

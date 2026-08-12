@@ -54,6 +54,23 @@ class AnchorBuilder:
         }
         units: list[RetrievalUnit] = []
         alias_registry = CanonicalAliasRegistry()
+        for entity in world.entities:
+            aliases = " ".join(entity.aliases)
+            units.append(
+                RetrievalUnit(
+                    unit_id=StableId(f"anchor.{entity.entity_id.root}"),
+                    unit_kind=RetrievalUnitKind.FACT_ANCHOR,
+                    source_commit=basis_commit,
+                    snapshot_id=snapshot_id,
+                    source_artifact=world.root_hash,
+                    source_refs=(world.root_hash,),
+                    text=(
+                        f"{entity.internal_label} {aliases} entity_type:{entity.entity_type}"
+                    ).strip(),
+                    entity_ids=(entity.entity_id,),
+                    predicate="entity_identity",
+                )
+            )
         for state in world.states:
             canonical_value = (
                 alias_registry.resolve(state.predicate, state.value)
@@ -67,6 +84,11 @@ class AnchorBuilder:
                     source_commit=basis_commit,
                     snapshot_id=snapshot_id,
                     source_artifact=world.root_hash,
+                    source_refs=tuple(
+                        dict.fromkeys(
+                            (world.root_hash, *(item.root_hash for item in state.evidence_refs))
+                        )
+                    ),
                     text=(
                         f"{labels[state.subject_id]} {state.predicate} "
                         f"{json.dumps(state.value, ensure_ascii=False, sort_keys=True)} "
@@ -96,6 +118,11 @@ class AnchorBuilder:
                     source_commit=basis_commit,
                     snapshot_id=snapshot_id,
                     source_artifact=world.root_hash,
+                    source_refs=tuple(
+                        dict.fromkeys(
+                            (world.root_hash, *(item.root_hash for item in event.evidence_refs))
+                        )
+                    ),
                     text=(
                         f"{participants} {event.event_type} "
                         f"{_evidence_snippets(event.evidence_refs, text, blocks)}"
@@ -120,6 +147,11 @@ class AnchorBuilder:
                     source_commit=basis_commit,
                     snapshot_id=snapshot_id,
                     source_artifact=world.root_hash,
+                    source_refs=tuple(
+                        dict.fromkeys(
+                            (world.root_hash, *(item.root_hash for item in relation.evidence_refs))
+                        )
+                    ),
                     text=(
                         f"{labels[relation.subject_id]} {relation.predicate} "
                         f"{labels[relation.object_id]} "

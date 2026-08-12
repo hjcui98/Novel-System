@@ -31,6 +31,7 @@ from novel_agent.domain.stage2 import (
     PairedContextComparison,
     PublicCheckpointCase,
 )
+from novel_agent.domain.text import QuoteHash
 from novel_agent.domain.writer_context import (
     ClaimSupportReceipt,
     ContextLineage,
@@ -219,7 +220,7 @@ def test_public_need_retrieval_and_lineage_contract_edges() -> None:
         with pytest.raises(ValidationError, match=message):
             Stage1MemoryNeed.model_validate(need.model_dump() | need_update)
 
-    unit = units[0]
+    unit = next(item for item in units if item.canonical_value_id is not None)
     fake_ref = ArtifactRef(
         artifact_id=ArtifactId("sha256:" + "0" * 64),
         media_type="application/json",
@@ -493,3 +494,59 @@ def test_retrieval_gate_enforces_exact_pass_evidence_and_report_status() -> None
     report = _report()
     with pytest.raises(ValidationError, match="status must agree"):
         Stage2RetrievalGateReport.model_validate(report.model_dump() | {"status": "failed"})
+
+
+def test_graph_path_receipt_validator_branches() -> None:
+    """Round 1 graph receipt domain: every path-shape failure is fail-closed."""
+    from novel_agent.domain.ids import CommitId
+    from novel_agent.domain.memory import GraphPathDereferenceStatus, GraphPathReceipt
+    from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
+    from novel_agent.domain.world import StoryTime
+
+    commit = CommitId("sha256:" + "7" * 64)
+    snapshot = StableId("snapshot.receipt")
+    seed = StableId("entity.seed")
+    mid = StableId("entity.mid")
+    valid_time = (StoryTime(worldline="main", start_ordinal=1, end_ordinal=5),)
+    evidence = EvidenceRef(
+        evidence_id=StableId("evidence.path"),
+        root_hash=ArtifactId("sha256:" + "8" * 64),
+        object_hash=ArtifactId("sha256:" + "9" * 64),
+        chapter_id=StableId("chapter.test.5"),
+        scene_id=StableId("scene.test.5.0"),
+        span=TextSpanRef(block_id=StableId("block.test.5.0"), start=0, end=3),
+        quote_hash=QuoteHash("sha256:" + "a" * 64),
+        support_status=EvidenceSupportStatus.CURRENT,
+        resolved_at_commit=commit,
+    )
+
+    def receipt(**updates: object) -> GraphPathReceipt:
+        base: dict[str, object] = {
+            "path_id": StableId("path.1"),
+            "source_commit": commit,
+            "snapshot_id": snapshot,
+            "seed_entity_ids": (seed,),
+            "relation_row_ids": (StableId("row.1"),),
+            "relation_ids": (StableId("rel.1"),),
+            "entity_path": (seed, mid),
+            "predicates": ("knows",),
+            "directions": ("forward",),
+            "valid_time": valid_time,
+            "edge_semantics": ("canonical",),
+            "evidence_refs": (evidence,),
+            "dereference_status": GraphPathDereferenceStatus.L0_VERIFIED,
+        }
+        base.update(updates)
+        return GraphPathReceipt.model_validate(base)
+
+    assert receipt().dereference_status is GraphPathDereferenceStatus.L0_VERIFIED
+    with pytest.raises(ValidationError, match="edge metadata lengths"):
+        receipt(predicates=("knows", "lives_in"))
+    with pytest.raises(ValidationError, match="entity count must be edge count plus one"):
+        receipt(entity_path=(seed, mid, mid))
+    with pytest.raises(ValidationError, match="must start at one of its declared seeds"):
+        receipt(entity_path=(mid, seed))
+    with pytest.raises(ValidationError, match="must be forward or reverse"):
+        receipt(directions=("sideways",))
+    with pytest.raises(ValidationError, match="only permits canonical edge semantics"):
+        receipt(edge_semantics=("inferred",))

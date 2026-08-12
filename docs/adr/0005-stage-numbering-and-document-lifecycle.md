@@ -4,6 +4,8 @@
 - Date: 2026-07-31
 - Decision owners: project architecture and delivery governance
 - Supersedes: the Stage 2B and later numbering in the initial execution plan
+- Superseded in part by: ADR-0006 for Stage 3 and later topology; Stage 0～2 naming and this ADR's
+  document-lifecycle decision remain accepted
 - Related index: `docs/README.md`
 - Current status source: `docs/project_status.md`
 

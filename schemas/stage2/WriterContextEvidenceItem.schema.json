@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "EvidenceFirstGap": {
+      "additionalProperties": false,
+      "properties": {
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceGapKind"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "need_ids",
+        "need_facet_ids",
+        "kind",
+        "reason"
+      ],
+      "title": "EvidenceFirstGap",
+      "type": "object"
+    },
+    "EvidenceGapKind": {
+      "enum": [
+        "no_selected_evidence",
+        "budget_exceeded",
+        "slice_oversized",
+        "cutoff_tainted",
+        "scope_tainted",
+        "dereference_failed",
+        "heading_source_role"
+      ],
+      "title": "EvidenceGapKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
+      "type": "string"
+    },
+    "WriterContextValidity": {
+      "enum": [
+        "current",
+        "historical",
+        "planned",
+        "uncertain"
+      ],
+      "title": "WriterContextValidity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Writer-visible evidence item: purpose plus ledger refs or a typed gap.\n\n``purpose`` is derived only from the public Need's semantic question /\nwhy-needed / facet metadata; it never rewrites material into a claim and\nnever reads Gold or future text.  ``raw_preview`` is a bounded prefix of\nthe exact Ledger text (never a model rewrite) with an explicit truncation\nflag.",
+  "properties": {
+    "evidence_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Evidence Ledger Ids",
+      "type": "array"
+    },
+    "gap": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceFirstGap"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "item_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "mandatory": {
+      "default": false,
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "preview_truncated": {
+      "default": false,
+      "title": "Preview Truncated",
+      "type": "boolean"
+    },
+    "purpose": {
+      "minLength": 1,
+      "title": "Purpose",
+      "type": "string"
+    },
+    "raw_preview": {
+      "default": "",
+      "title": "Raw Preview",
+      "type": "string"
+    },
+    "section": {
+      "$ref": "#/$defs/WriterContextSection"
+    },
+    "selection_reason": {
+      "default": "",
+      "title": "Selection Reason",
+      "type": "string"
+    },
+    "source_kind": {
+      "default": "",
+      "title": "Source Kind",
+      "type": "string"
+    },
+    "source_scope": {
+      "default": "",
+      "title": "Source Scope",
+      "type": "string"
+    },
+    "validity": {
+      "$ref": "#/$defs/WriterContextValidity",
+      "default": "uncertain"
+    }
+  },
+  "required": [
+    "item_id",
+    "section",
+    "need_ids",
+    "need_facet_ids",
+    "purpose"
+  ],
+  "title": "WriterContextEvidenceItem",
+  "type": "object"
+}
