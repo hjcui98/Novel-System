@@ -284,6 +284,37 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
         assert exc.violation_rule == "partial_evidence_unresolved_no_verifier"
 
 
+def test_v2_rejects_non_fact_evidence_as_accepted_world_fact() -> None:
+    root = _root_with("传闻陈长生已经踏入坐照境, 众人对此议论纷纷。")
+    generator = EvidenceCandidateGenerator()
+    candidate = next(item for item in generator.generate(root, 21) if "传闻" in item.text)
+    draft = _v2_state_draft(candidate)
+    operation = draft.operations[0]
+    fact_operation = operation.model_copy(
+        update={
+            "record": operation.record.model_copy(
+                update={"truth_class": TruthClass.ACCEPTED_WORLD_FACT}
+            )
+        }
+    )
+    curator = ModelCurator(
+        _FakeGateway(draft.model_copy(update={"operations": (fact_operation,)})),
+        evidence_generator=generator,
+        enforce_support_gate=False,
+    )
+
+    with pytest.raises(
+        CuratorProposalSemanticRejected,
+        match="CURATOR_PROPOSAL_FALSE_WORLD_FACT_PROMOTION",
+    ) as exc:
+        asyncio.run(
+            curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.false-fact"))
+        )
+
+    assert exc.value.operation_indexes == (0,)
+    assert exc.value.violation_rule == "accepted_world_fact_requires_factual_evidence"
+
+
 def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
     root = _root_with(text)

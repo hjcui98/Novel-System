@@ -63,6 +63,7 @@ class ModelCurationContractError(ValueError):
 
 _QUOTE_HINT_TOTAL_CHARS = 240
 _QUOTE_HINT_PREFIX_CHARS = 32
+_NON_FACT_MARKERS = ("据说", "传闻", "梦见", "假如", "也许")
 
 
 class CuratorProposalSemanticRejected(ModelCurationContractError):
@@ -438,6 +439,10 @@ class ModelCurator:
                     "this chapter's catalog. Never emit an empty no_op_evidence_quotes. "
                     "Evidence references are semantic quotes, never ids; no start/end offsets. "
                     "Preserve assertion/rumor/dream truth classes and do not infer future events. "
+                    "An accepted_world_fact MUST cite only evidence fragments without epistemic "
+                    "or non-factual markers such as 据说, 传闻, 梦见, 假如, or 也许; choose a "
+                    "direct factual fragment or preserve the appropriate assertion/rumor/dream "
+                    "truth class instead. "
                     "Emit only durable world-state deltas: exclude one-scene encounters, "
                     "atmosphere, immediate perceptions, temporary emotions, plans, estimates, "
                     "and unresolved possibilities. Every predicate and value must describe "
@@ -528,6 +533,7 @@ class ModelCurator:
             catalog=catalog,
             candidates=candidates,
         )
+        self._reject_non_fact_world_facts(draft, catalog)
 
         draft = self._normalize_entity_reference_aliases(draft, current_world)
         draft, merge_receipts = self._merge_normalized_collisions_v2(draft, base_commit)
@@ -964,7 +970,14 @@ class ModelCurator:
             quotes: tuple[str, ...],
         ) -> tuple[tuple[EvidenceCandidate, ...], str | None]:
             try:
-                return self._evidence_generator.resolve_evidence_quotes(quotes, candidates), None
+                resolved = self._evidence_generator.resolve_evidence_quotes(quotes, candidates)
+                if any(
+                    marker in candidate.text
+                    for marker in _NON_FACT_MARKERS
+                    for candidate in resolved
+                ):
+                    return (), "graph_candidate_non_fact_evidence"
+                return resolved, None
             except ValueError as error:
                 reason = str(error).casefold()
                 return (
@@ -1309,6 +1322,51 @@ class ModelCurator:
             declared_vs_observed_diff=evidence_draft.declared_vs_observed_diff,
             no_durable_delta_reason=evidence_draft.no_durable_delta_reason,
             no_op_evidence_candidate_ids=no_op_ids,
+        )
+
+    @staticmethod
+    def _reject_non_fact_world_facts(
+        draft: ChapterChangeDraftV2,
+        catalog: dict[StableId, EvidenceCandidate],
+    ) -> None:
+        violations: list[tuple[int, tuple[str, ...]]] = []
+        for index, operation in enumerate(draft.operations):
+            if getattr(operation.record, "truth_class", None) is not TruthClass.ACCEPTED_WORLD_FACT:
+                continue
+            markers = tuple(
+                marker
+                for marker in _NON_FACT_MARKERS
+                if any(
+                    marker in catalog[candidate_id].text
+                    for candidate_id in operation.evidence_candidate_ids
+                )
+            )
+            if markers:
+                violations.append((index, markers))
+        if not violations:
+            return
+        indexes = tuple(index for index, _ in violations)
+        feedback = tuple(
+            (
+                f"operation {index} cites non-factual marker(s) {', '.join(markers)}; "
+                "use direct factual evidence or preserve its epistemic truth class"
+            )[:240]
+            for index, markers in violations[:4]
+        )
+        raise CuratorProposalSemanticRejected(
+            "CURATOR_PROPOSAL_FALSE_WORLD_FACT_PROMOTION",
+            (),
+            safe_feedback=feedback,
+            operation_indexes=indexes,
+            json_pointers=tuple(
+                pointer
+                for index in indexes
+                for pointer in (
+                    f"/operations/{index}/record/truth_class",
+                    f"/operations/{index}/evidence_quotes",
+                )
+            ),
+            violation_rule="accepted_world_fact_requires_factual_evidence",
         )
 
     def _evidence_quote_feedback(
