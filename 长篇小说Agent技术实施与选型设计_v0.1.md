@@ -369,7 +369,12 @@ Agent 不直接保存 API Key，不直接决定供应商，不直接写数据库
 
 # 5. TaskGraph、LangGraph 与多 Agent 编排
 
-## 5.1 当前选择：LangGraph
+## 5.1 当前选择：LangGraph 作为可替换 leaf/subgraph adapter
+
+2026-08-10 修订：LangGraph 依赖和 PostgreSQL checkpointer 保留，但 Stage 3/4 不以完整章节
+TaskGraph 作为开发前置。Writer/Planner 可使用显式 Python service 或小型 LangGraph 子图实现固定 Agent
+Loop；领域状态、事件、Artifact、Context View 和恢复合同仍属于本项目。以下顶层章节图是 Stage 5
+固定创作拓扑的候选映射，不表示 Stage 3/4 已授权 Task/Attempt/Scheduler 平台。
 
 顶层 `Execution TaskGraph` 映射为 LangGraph `StateGraph`：
 
@@ -1345,40 +1350,35 @@ dataclass/Pydantic model；只有跨进程或版本化消费者确实需要时�
 3. 非连续 excerpt 不得继承 parent full passage 的语义覆盖范围。parent ref 保留为 lineage，
    每个可主张 clause 必须由精确 span 或 typed segment derivation 支持。
 4. `SupportWorkset` 不是 `WriterContextPackage`。通过 project/profile/basis/snapshot/scope/
-   cutoff/taint 和 exact-span 校验的 slice，可以按 token 预算原样进入 support producer/
-   semantic owner 的工作输入，并保存到 `EvidenceLedger`；它们不因此成为已验证 claim。
+   cutoff/taint 和 exact-span 校验的 slice，按 public Need/facet 做最终选择与 token 装箱，
+   直接进入 ADR-0008 的 evidence-first `WriterContextPackage + EvidenceLedger`。
 5. 原始 slice 与 derived preview 分 ID 保存。确定性或模型压缩只能生成可丢弃派生物，不得覆盖
    raw 主记录或成为 exact evidence 的唯一入口。
 6. 较短 slices 原样保留，容量只由明确 token 预算控制，不按固定证据条数截断。当预算不能
    容纳全部 slices 时，仅使用 public Need/facet、合法 source/chapter diversity 和原检索稳定顺序
    选择；deep-rank slice 在预算用尽前仍有资格进入，不得使用 Gold。
 
-支持生产不再强制“每 slice 一 atom”作为所有证据的必经层。正式路径是：
+支持生产不再强制“每 slice 一 atom/claim”作为所有证据的必经层。当前正式路径是：
 
 ```text
 target MemoryNeed
   → exact paragraph / contiguous sentence-window slices
   → token-bounded raw-evidence packing
-  → single-slice claim when one slice is semantically sufficient
-  → otherwise on-demand multi-slice claim synthesis for the still-open Need
-  → independent whole-claim verification
-  → existing support group / receipt / variant / spec
+  → Need/facet-grouped evidence items
+  → WriterContextPackage + EvidenceLedger
 ```
 
-单 slice 已完整表达目标时，语义 owner 产生一条只引用该 slice 的 claim 并独立验证。
-只有 public Need 仍未闭合时，才对一个按 token 有界、包含多个 exact slices 的工作集请求语义
-合成；模型必须返回 cited slice IDs，host 只验证身份、安全证明和引用精确集，不枚举“哪三个
-atom”、不改写或补桥。whole verifier 以完整 claim、全部 cited slices 和有界反证重新判定；
-最终 receipt/evidence refs 必须是该 claim 实际 cited slices 的精确并集。
+每个 package item 只需说明它服务的 public Need/facet 并引用精确 slices；不要求 Memory 在 Writer
+之前生成或验证唯一结论。Claim proposal、multi-slice synthesis、whole verifier 和 semantic receipt
+仅作历史诊断兼容，不得阻断 package READY。
 
 `ClaimAtom` 可作为单 slice 命题或调试中间件保留，但不得全量生成、不得被固定取前三条，
 也不得通过组合枚举把 benchmark 的两/三段 Gold 形状固化为通用架构。这一路径没有训练
 权重、在线学习或黑盒选组，不属于 learned fusion。
 
-当前 Stage 2M 已接受的 `writer_context.v1` 只向 Writer 渲染 receipt-bound verified claims，
-源文材料位于独立 `EvidenceLedger`。上述“raw 直通”指不经全量 atom 就进入内部语义输入
-与 Ledger，不是新增 Writer raw section。若要向 Writer 直接暴露 raw spans，必须先单独修订
-ADR-0004、公共 domain/schema 和对应预算/渲染合同；当前 Stage 2M 实现不得隐式越过该边界。
+ADR-0008 已显式修订该边界：新版本 package 按 Need/facet 暴露有界 raw preview 与 Ledger evidence
+ids，完整源文仍位于独立 `EvidenceLedger`。`writer_context.v1` 保留为 claim-first 历史兼容，
+不是当前默认产品。
 
 ---
 
@@ -1422,7 +1422,8 @@ Output Contract
 ```
 
 上述是通用 Context Compiler 分区超集；具体产品只能使用其已版本化合同允许的分区。当前
-Stage 2M `writer_context.v1` 不含 Writer-facing raw-spans 分区，源文保存在 `EvidenceLedger`。
+ADR-0008 evidence-first package 允许 Writer-facing 有界 raw preview 与可解引的
+`EvidenceLedger` refs；完整源文仍保存在 `EvidenceLedger`。
 
 `mandatory_constraints` 不参与相关性淘汰；预算不足时压缩表达、分割任务或阻断，而不是删除。
 
@@ -1458,22 +1459,17 @@ ContextDelta
 |---|---|---|
 | Retrieval handle budget | 各通道候选数、去重和多样性 | 缩小候选或产生 typed gap |
 | Per-Need expansion budget | 精确 L0 slice 数、跨度和 token | 对目标 Need 报 insufficient，不先挤占 Writer 产品预算 |
-| Semantic-call budget | 按需单/多 slice claim proposal 与 whole verifier | 对受影响 Need/claim fail-closed |
-| Product budget | Writer Context 与 Evidence Ledger | Writer 只装配已验证 claims，Ledger 保存已校验证据；Mandatory 无法容纳则 typed overflow |
+| Product budget | Writer Context 与 Evidence Ledger | 按 Need/facet 装配已校验 exact evidence；mandatory Need 无材料则 typed gap，无法容纳则 typed overflow |
 
 Writer Context 与 Ledger 的具体上限由当前 Stage/Profile 配置冻结；技术设计不把某个实验数字永久
 写死为架构常量。最终产品预算不能反向成为 support producer 唯一的原始证据容量。
 
-模型批处理只是 transport 优化。单个 transport 不得绑定多个大 Need 的完整工作集；请求按
-Need 和 token-bounded slice chunk 隔离。只要结构化响应整体可解析，就按 Need、claim 和 verifier
-decision 独立校验：缺失或非法 item 只关闭对应 item；transport 失败或整体不可解析才关闭对应
-transport chunk。必须输出统一漏斗：
+默认 evidence-first 路径不调用 Claim Support 模型。检索/展开批处理只是 transport 优化，必须按
+Need 和 token-bounded slice chunk 隔离，并输出统一漏斗：
 
 ```text
 raw candidate → L0 block resolved → exact slice segmented → SupportWorkset selected
-├─ raw slice packed → semantic input / EvidenceLedger retained
-└─ claim proposed/synthesized → whole claim verified → controller selected
-   → Writer claim packed → Ledger emitted
+→ Need/facet evidence packed → WriterContextPackage + EvidenceLedger emitted
 ```
 
 每个拒绝点记录 typed reason、目标身份和 artifact ref。只有漏斗中存在“精确证据充分但被错误
@@ -2177,7 +2173,7 @@ LangChain integrations
     处理模型和 Tool 接入
 
 LangGraph
-    实现章节 TaskGraph、子图、Interrupt 与 Checkpoint
+    作为 Writer/Planner leaf loop 与未来 Stage 5 固定拓扑的可替换 adapter
 
 PostgreSQL
     保存五 Root 元数据、Commit、Exact/Temporal、RunEventLog 与正确性结构
@@ -2202,3 +2198,148 @@ Gateway、LangGraph 和 typed ports/adapters 能关闭问题时，不增加同�
 失败证据或 benchmark 证明现有机制不足，且收益覆盖迁移、运维、观测和恢复成本时，才把
 `candidate/deferred` 能力升级。局部需求不得顺带触发全系统 async 化、微服务化、平台化或可配置
 DSL；若确有必要，先形成独立架构决定和验收基线。
+
+---
+
+# 28. Stage 3/4 双 Agent Context Runtime 与 Stage 5 长期运行选型修订
+
+## 28.1 两类 Memory 入口
+
+现有 Stage 2M `TaskPlanConditionedNeedGenerator`、Retrieval/Evidence Selection 和
+`WriterContextAssembler` 保持 Writer 专用正式入口：它要求上游已经给定章节/场景计划，并据此生成
+Writer MemoryNeed 与 evidence-first package。Stage 4 不把它泛化成通用 Planner：
+
+| 消费者 | 初始任务来源 | Need 生成 | 初始产品 |
+|---|---|---|---|
+| Writer | 已接受 Chapter/Scene Plan + `WritingTaskContract` | `TaskPlanConditionedNeedGenerator` | `WriterContextPackage` |
+| Planner | Author Intent + Planning Scope + current Plan/Canon + Planner 提出的 inquiry/goal | 新的 `PlanningInquiryConditionedNeedGenerator` | `PlannerContextPackage` |
+
+两种产品复用现有 Retrieval、Evidence Expansion、budget、basis/access/future filter 和
+artifact lineage。`PlannerContextPackage` 只增加规划消费者所需的 long-horizon plan history、arc、
+obligation、deviation、current world state 和 source/reference 投影；不得复制 Writer Context 或开放
+底层数据库。
+
+## 28.2 AgentContextView 是运行投影，不是新的 Context 真源
+
+新增的公共技术边界是 `AgentContextView`/`ContextDelta`/`ContextCompactionReceipt`，由现有
+Context Compiler 与 RunEventLog owner 扩展，不新增 StepStore 或 conversation DB。
+
+建议最小字段：
+
+```text
+AgentContextView
+  run_id / task_id / consumer / revision
+  base_commit / snapshot / profile / information_scope
+  seed_package_ref
+  protected_items
+  active_memory_items
+  recent_settled_tail
+  unresolved_needs
+  compacted_prefix_ref / covered_event_range / kept_boundary
+  token_report / provider_validity_receipt / context_hash
+```
+
+`WriterContextPackage`/`PlannerContextPackage` 是可审计 Seed；View 是发给某次模型调用的事件派生投影。
+全量 replay 是正确性 oracle，增量投影只是优化。basis、POV/access、Profile、task revision 或
+compaction generation 改变时必须 full rebuild。
+
+## 28.3 固定 Agent Loop，不提前建设长期 Scheduler
+
+Stage 3/4 第一版可用显式 Python service 或 LangGraph 小型子图实现固定循环：
+
+```text
+prepare seed → dispatch Agent step
+  → output/result
+  → REQUEST_MEMORY: settle → resolve → delta/compact → resume
+  → CONTEXT_PRESSURE: compact → validate → resume
+  → candidate terminal
+```
+
+LangGraph 只可承担 leaf/subgraph 的 State、Edge 和 checkpoint adapter；领域状态仍由 Pydantic contract、
+RunEventLog 和 Artifact Store 拥有。Stage 3/4 不建 Task/Attempt 表、lease、scheduler service 或 Temporal
+workflow。Stage 5 再以真实 chapter/volume caller 引入 event-derived Task projection。
+
+## 28.4 压缩算法和 dispatch Gate
+
+Context View 的安全属性取交集：
+
+- provider tool-call/result 与 thinking/tool-loop 原子性；
+- base commit/snapshot/profile、POV/access 和 future isolation；
+- mandatory task/plan/author intent 不可被 optional 摘要覆盖；
+- evidence citation 与 verified claim group 不可拆开；
+- summary 必须标为 runtime data，不能伪装为 user/system instruction；
+- requested/uncertain effect 不得投影为 completed。
+
+分层策略固定为：deterministic dedupe/supersession → compact handle → extractive reduction →
+provenance-bound summarization。每层后重新 token 计量，实际无变化时不生成 receipt。摘要和详情先写
+Artifact Store，随后以 basis event position/context generation CAS 发布 `context.compacted`；发布后
+使旧 provider prefix/cache key 失效。soft 失败返回原 View，hard limit 失败产生 typed suspension。
+
+## 28.5 Retrieval 成熟化采用 agentmemory 结论
+
+Stage 3/4 不新建三路检索系统。继续使用：
+
+- PostgreSQL Exact/Temporal 与 bounded Typed Graph；
+- OpenSearch Anchor/Grounded BM25+Dense；
+- application `FusionService` 作为唯一 RRF owner；
+- mandatory-first selector、Evidence Expansion、typed fallback 和完整 trace。
+
+关系链/因果多跳按 Need 条件执行：Anchor BM25+Dense 先选显式 entity anchor，未闭合的 relation/causal
+facet 才扩展 Typed Graph depth 1–2（上限 3），只接受 canonical/evidence edge，随后由同一 RRF owner
+融合并展开到 L0 Evidence。Stage 4 Planner 路径重点验证 `TypedGraphPathReceipt`、Anchor→Graph 条件
+扩展、compact→expand、source/path diversity、通道失败降级和同 corpus 消融。Exact state/quote 不参加
+默认 triple；不复制 agentmemory 的全局权重，per-intent weights 只有实验收益成立后才能晋升。
+
+## 28.6 Skill 与 Hook 技术边界
+
+继续复用当前 content-addressed `SkillRegistry`、`AgentSpec`、Prompt/ToolPolicy pin 和
+`SkillExecutionReceipt`。Stage 3 固定 Writer composition/dialogue/voice/POV/pacing/hook Skills；Stage 4
+固定 bootstrap/story/arc/chapter-set/chapter/scene/replan Skills。Agent 可选择任务允许列表内的 Skill，
+不能动态安装或覆盖 active Skill。
+
+Stage 3/4 内部事件直接 append `RunEvent`。`REQUEST_MEMORY` 是类型化 Agent action，不是 HTTP Hook。
+Stage 5 若接入外部 Agent/IDE/plugin，再新增窄 Hook ingress adapter：同步路径只做 schema/identity、
+allowlist、脱敏、限长、幂等和 artifact 持久化；LLM 压缩、embedding、OpenSearch、图抽取和
+consolidation 全部异步。Hook 不默认返回 Context，不直接修改 Canon/PlanRoot。
+
+## 28.7 Stage 5 Runtime 采用顺序
+
+Stage 5 复用现有 `RunEventLogRepository`、`RunCheckpointRepository`、`EffectReceipt` 和
+`ModelRequestAdmissionController`，按真实 caller 渐进增加：
+
+1. 固定 Planner→accept plan→Writer→Editor/Curator→accept draft→Commit 的单项目拓扑；
+2. event-derived `TaskRecord/TaskAttempt/TaskDependency` 与 project single-writer lane；
+3. claim/lease/heartbeat/reclaim/fence、unknown effect reconciliation 和 control command；
+4. context compaction 的跨天恢复、Supervisor、scheduled maintenance 和 delayed evaluation；
+5. Experience/Skill candidate、held-out promotion 和生产容量。
+
+Hermes 提供 Task/Attempt 事务语义，OpenHands 提供 event→View 与 Condensation，OpenClaw 提供 lane、
+input intent 和 compaction boundary，PydanticAI Harness 提供 settled/effect/receipt 形状。均只迁移
+不变量，不迁移完整 Runtime。Temporal 仍为 deferred：跨天/跨机、复杂人工等待、unknown effect、
+多项目规模或自研恢复成本中至少两个触发后再做对照实验。
+
+## 28.8 Stage 3/4/5 整合与单卡有界并发
+
+Stage 3/4 leaf 不各自建设调度器。Stage 5 使用现有 Task/Attempt/AttemptFence 表达业务执行权，使用
+project single-writer lane 保护 Canon，全部模型请求继续使用唯一的 endpoint-global
+`ModelRequestAdmissionController`。三层 admission 相互独立：
+
+```text
+Task claim/fence      哪个 Attempt 可以执行 durable task
+Project writer lane   哪个 generation 可以推进同一项目 Canon
+Model capacity lease  哪个请求可以占用单卡 request/KV 容量
+```
+
+第一版只实现进程内两路 bounded dispatcher：foreground Writer/Editor/Commit blocker 与一个
+lookahead/background Planner/maintenance candidate 可以并发；同书 N 与 N+1 正文和所有 Canon Commit
+仍串行。Stage 5 复用 `PLAN_CANDIDATE` 表达 lookahead，并在当前章 Commit/Freshness 后做 basis/affected
+scope revalidation，不增加通用 DAG、第二 Planner adapter 或 scheduler service。
+
+模型并发度是容量计算结果，不是固定常数。每次调用必须携带 prompt token、output reserve、safety
+allowance、dependency ids、context hash 和 priority；同时满足 endpoint request limit 与有效 KV-token
+budget 才放行。业务层两条 lane 可以同时 READY，而单卡在长 Context 下仍只放行 1 个请求。KV 不足
+只能排队或 typed timeout，不能缩减 Context/evidence/output contract。
+
+Qwen/vLLM 的 1/2/4/6/8 只作为真实 workload 标定档位。产品晋升顺序是 1→2；2 路必须用最终
+Writer/Planner/Editor/Curator 长 Prompt 证明无 OOM、length truncation、request loss、semantic input drift
+和未释放 lease 后才能成为默认。4/6/8 不因服务端 `max-num-seqs` 可用而自动启用。

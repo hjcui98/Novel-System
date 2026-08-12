@@ -23,11 +23,10 @@
 1. **先搭建完整但极薄的工程骨架**，使领域对象、Artifact、运行事件、检查点、模型调用、检索、提交和评测都拥有稳定接口；
 2. **再实现首个可独立验证的纵向切片——叙事记忆—状态内核**，使用真实小说进行只读检索、上下文构造、章节写回和连续回放测试。
 
-Stage 1 工程闭环完成后，可先进入 Stage 2A 的 Planner/Memory Agent Harness 与真实 Scenario
-构建，用它完成项目初始化、连续状态重建和正式读写质量取证；只有 Memory Kernel 正式门禁通过，
-才进入 Stage 3 Writer/Editor 与最小生成闭环。复杂风险路径、长期自主运行和 Skill 演化分别保留
-在后续 Stage 4～7。这样可以
-保证后续质量问题能够被定位到明确模块，而不是在完整系统中相互混杂。
+Stage 1 工程闭环完成后进入 Stage 2A/2R/2W/2M Memory Harness、连续 Scenario 和 Writer-facing
+Memory 取证。Stage 2 共享合同冻结后，Stage 3 Writer 与 Stage 4 Planner 作为两个独立产品并行
+开发；Stage 5 在二者分别通过候选闭环 Gate 后统一长期调度、恢复、提交、维护和受控演化。这样既
+保持失败可定位，也避免把 Writer、Planner 和长期 Runtime 串成不必要的前置链。
 
 本执行规划对原技术实施文档的阶段顺序做一项关键调整：
 
@@ -41,7 +40,8 @@ Stage 0 工程骨架
     → Stage 1A 真实小说只读回放与 Hybrid Retrieval Benchmark
     → Stage 1B 真实章节写回与连续 Commit Replay
     → Stage 2A Memory Agent Harness 与连续 Scenario 重建
-    → Stage 3 最小 Writer 生成 A/B
+    → Stage 3 Writer Context Loop || Stage 4 Planner Context Loop
+    → Stage 5 Long-running Creative Runtime
 ```
 
 即：**基础 Hybrid Retrieval、Narrative Hierarchy 和 Context Compiler 的实验前移；完整 Planner—Writer—Editor 闭环后移。**
@@ -126,7 +126,7 @@ Stage 0 和 Stage 1 不实现：
 5. **模型能力与架构能力分离**：消融实验保持同一模型、Prompt 骨架、token 预算和采样设置，只替换记忆/检索/上下文方案。
 6. **可回退**：每个 proposed / experimental 机制必须有替代方案、失败判据和回退路径。
 7. **不提前微服务化**：采用模块化单体；同进程 Service 直接调用，只有真实跨进程需求出现后才引入 MCP 或独立服务。
-8. **先固定路由，后引入 Agentic Retrieval**：Stage 1 使用可枚举、可测试的确定性 Retrieval Orchestrator；只有 Stage 4 才引入 R2 Memory Controller 的开放式多轮检索。
+8. **先固定路由，后按 Need 引入 Agentic Retrieval**：Stage 1/2 使用可枚举、可测试的确定性 Retrieval Orchestrator 作为安全默认；Stage 3 Writer 和 Stage 4 Planner 只有在 R0/R1 无法满足反应式 Need 时才进入有界 R2 Memory Controller，多轮检索不成为所有查询默认。
 9. **Benchmark 内容与执行系统解耦**：Runner、Manifest、Importer、Gold Loader 和 Evaluator 先用最小合成 fixture 完成契约测试；真实 Benchmark 到位后无需修改领域和检索接口即可运行。
 10. **最小充分工程**：每个工作包只实现其退出门禁和已证明缺口要求的机制；优先复用或收窄现有模块，不为后续 Stage 预建第二管线、通用平台、动态 DSL、新基础设施或完整控制面。
 11. **复杂度随证据晋级**：新增稳定 Agent、Service、存储、队列、运行时或跨层抽象必须有当前用例、明确 owner、不可由现有机制满足的证据和可量化验收；否则保留为 `deferred`。
@@ -163,14 +163,12 @@ Stage 0 和 Stage 1 不实现：
 | **Stage 1A** | 验证“写前能否找到需要的信息” | Benchmark 接入协议、L1、Query Intent Router、Anchor/Grounded 双候选池、应用层 RRF、Context Compiler、Retrieval Benchmark | 路由可诊断；关键状态与证据可测；优于简单基线；无未来泄漏 |
 | **Stage 1B** | 验证“读完一章后能否正确更新自己” | Curator、ObservedChangeSet、Overlay、Validation、Atomic Commit、Derived Snapshot Lite、Outbox、Freshness Gate、连续 Replay | 变化抽取达到门禁；连续回放无静默 Canon 或旧索引污染 |
 | **Stage 2A** | 用真实项目状态验证记忆 Agent Harness | 完整 Planner 六种 Mode、Curator Bootstrap/Replay、Scenario Builder、受限 Memory Controller、Tool/Prompt/Skill 合同 | 五个 cutoff 可连续重建；无未来泄漏；读写侧失败可分解 |
-| **Stage 3** | 验证记忆内核对生成质量的实际贡献 | Writer、Editor、上下文 A/B 生成、Declared/Observed 对账 | 同模型条件下，一致性和计划遵循显著优于基线 |
-| **Stage 4** | 引入复杂检索和高风险路径 | R2 Controller、Reactive MemoryNeed、ContextDelta、Guardian、Epistemic | 高风险场景收益覆盖新增成本与复杂度 |
-| **Stage 5** | 完整章节与卷级创作闭环 | 动态规划、候选、修复、计划偏离、质量状态 | 多章生成稳定、门禁可解释、错误可恢复 |
-| **Stage 6** | 长期自主运行 | 跨卷调度、维护、分支/Retcon、延迟评价、Durable Runtime | 数百章级运行可恢复、可审计、无失控循环 |
-| **Stage 7** | 受控自演化与生产扩展 | Experience、Skill 优化、生产部署与容量设计 | held-out gate 证明演化稳定且不损害回归集 |
+| **Stage 3** | Writer Agent 与 Writing Context Loop | 给定规划的 Writer Memory、动态 Context、Skills、Draft、Editor/Curator 对账 | 同模型条件下正文一致性、计划遵循和质量优于基线；候选不写 Canon |
+| **Stage 4** | Planner Agent 与 Planning Context Loop | inquiry-conditioned Memory、Planner Context、Plan Reviewer、规划候选与检索消融 | 规划覆盖、可实现性和长期一致性通过；候选不直接写 PlanRoot |
+| **Stage 5** | Long-running Creative Runtime | Plan/Write/Commit 固定拓扑、Task/Attempt、调度恢复、维护和受控演化 | 数百章级运行可恢复、可审计、无失控循环；演化经 held-out Gate |
 
-Stage 3 及以后是初步站位，允许根据 Stage 1/2A 的实证结果重新拆分。Stage 0、Stage 1 和用于
-完成真实记忆评测的 Stage 2A 是当前实施范围；Writer/Editor 仍受 Memory Kernel 正式门禁约束。
+Stage 3/4/5 的当前站位由 ADR-0006 冻结。Stage 3/4 的工程准备可以并行，但正式语义 Gate 仍须绑定
+被接受的 Stage 2 Memory executable identity、Context/检索合同和信息边界。
 
 ---
 
@@ -1291,7 +1289,7 @@ Project/Commit，再物化 R1，不绕过关系约束。原生 integration 也�
 本检查点只表示工程门禁通过，不改变 5.14 的正式退出条件。真实 DEV-110 与 DEV-113 仍等待
 用户提供有授权的 BenchmarkBundle；在真实 20→3 和至少 50 章 Gold replay 完成前，Stage 1
 状态为“formal gate pending”，Stage 2A 只允许推进 Agent Harness、Scenario Builder 和真实门禁
-取证，Stage 3～7 继续按第 9 节保持阻断。详细证据见
+取证，Stage 3～5 继续按第 9 节保持阻断。详细证据见
 `docs/stage1_acceptance.md`，工程基线决策见
 `docs/adr/0001-stage1-memory-kernel-baseline.md`，逐工作包剩余缺口见
 `docs/stage1_gap_audit.md`。确定性 hash embedding、词法 reranker、规则 Curator 和合成模型响应
@@ -1377,100 +1375,130 @@ BGE-M3 向量索引和 Typed Graph。因此五个 checkpoint 的零召回不能�
 模型和检索后端真实；`semantic_quality_eligible` 不得只由生成模型配置决定。P001 未证明 Gold
 Evidence 能从 Canonical 经 L1/L2、路由、候选、展开进入最终 Selection 前，不重跑完整 C20～C95。
 
-## 6.2 Stage 3：Writer Core 与最小生成闭环
+## 6.2 Stage 3：Writer Agent 与 Writing Context Loop
 
-Memory Kernel 正式冻结后加入：
-
-```text
-Writer
-Editor
-Writer-declared ChangeBundle
-Declared vs Observed Reconciliation
-```
-
-实验使用同一 Writer 模型和相同生成参数，只替换上下文方案：
+Stage 3 的唯一产品目标是把已接受的章节/场景规划和 Stage 2 Memory 转化为可审阅正文候选：
 
 ```text
-最近章节
-Naive RAG
-Stage 1 Kernel ContextPackage
+Accepted Chapter/Scene Plan + WritingTaskContract
+→ TaskPlanConditionedNeedGenerator
+→ WriterContextPackage
+→ AgentContextView
+→ Writer work plan + pinned Writing Skills
+→ Draft / REQUEST_MEMORY / ContextDelta / compaction / resume
+→ Editor REVIEW / LOCAL_REPAIR / MAJOR_REWRITE
+→ Curator final-candidate observation + reconciliation
+→ DRAFT_CANDIDATE_READY | REVIEW_REQUIRED | SUSPENDED | BLOCKED
 ```
 
-评测重点不是复现真实第 21～23 章，而是：
+当前 Stage 2M 的 plan-conditioned Need 生成是 Stage 3 的正式 Memory 入口：Writer 已经知道未来目标
+章节的规划、义务和禁区，Memory 的任务是找出完成这份规划需要的历史状态、关系、事件、人物声音、
+证据和方法信息。
 
-- 是否遵守当前状态；
-- 是否使用计划要求的信息；
-- 是否减少人物、时间、物品和世界规则矛盾；
-- 是否减少修复轮次；
-- 是否在相同 token 成本下提升质量。
+Stage 3 交付：
 
-Stage 3 仍不实现复杂 R2、长期自主调度和 Skill 演化。以下能力在 Stage 3 中明确暂缓，不能以
-“完善 Writer Context”为由提前建设：
+- `DRAFT / CONTINUE / MAJOR_REWRITE` 三模式和 candidate-only Draft lineage；
+- Writer preflight/`WriterWorkPlan`，显式处理人物、Beat、POV、对话、声音、节奏、Hook 和揭示；
+- 任务允许列表内、Profile-pinned 的 Writing Skill 选择和 receipt；
+- 类型化 `REQUEST_MEMORY`、ContextDelta、Context View revision 与安全压缩/恢复；
+- 独立 Editor、一次局部修复、一次有界重大重写、最终候选 Curator 观察和变化对账；
+- recent text / simple retrieval / deterministic Writer Context 的真实同条件生成实验。
 
-| 暂缓能力 | 后续站位 | Stage 3 边界 |
-|---|---|---|
-| 通用/外部 Hook 平台 | Stage 5 在真实 Runtime surface 需要时再建 | 只使用已有显式 RunEvent 与 handoff |
-| consolidation / 长期记忆晋升 | Stage 7 的 Experience/Skill candidate 流程 | 不把观察或摘要直接晋升 Canon/active Skill |
-| retention / 自动遗忘 | Stage 6 仅对 Operational/Derived 试验 | Canon 与证据不按热度自动遗忘 |
-| 通用 observation graph | Stage 7 作为独立候选并经消融 | 不与 World/Plan typed graph 混库、混真值 |
-| Viewer | post-Stage 7 的可选运维表面 | Stage 3 使用 trace bundle/报告，不以 Viewer 作为产品 |
-| learned fusion | Stage 7 受控实验 | Stage 3 保持冻结、可解释的确定性读取合同 |
+Writer 不直接获得 Exact/BM25/Dense/Graph、Memory write、Commit 或 Canon Tool。内部 Memory/Context
+控制点直接写 `RunEvent`，不建设通用 Hook ingress。Stage 3 不推进 Canon，不建跨任务 Scheduler、
+Task/Attempt、lease、Supervisor、Temporal 或自动 Skill 演化。
 
-这些后续站位是延期边界，不是提前授权；进入对应 Stage 前仍需实际需求、独立 benchmark 和该
-阶段的准入决定。
+## 6.3 Stage 4：Planner Agent 与 Planning Context Loop
 
-## 6.3 Stage 4：Agentic Retrieval 与高风险路径
-
-只有基础检索出现规则路由无法解决的系统性缺口时，加入：
+Stage 4 与 Stage 3 并行，目标是把作者初始设定、当前 Plan/Canon 和长期记忆变成可审阅规划候选。
+它不复用 Writer 的目标生成方式，因为规划阶段往往没有冻结的未来章节计划：
 
 ```text
-Advanced R2 Memory Controller（扩展 Stage 2A bounded baseline）
-Planner / Writer / Editor 发起 Reactive MemoryNeed
-ContextDelta 与局部恢复
-Memory Guardian
-更完整的 Assertion / Epistemic / Disclosure
-复杂多跳与 Graph Retrieval
-STRICT Profile
+Author Intent + Planning Scope + current Plan/Canon
+→ Planner inquiry/goal/alternatives proposal
+→ independent Plan Reviewer
+→ PlanningInquiryConditionedNeedGenerator
+→ PlannerContextPackage
+→ Planner Context Loop / REQUEST_MEMORY / ContextDelta / compaction
+→ PlanProposal + bounded review/revision
+→ PLAN_CANDIDATE_READY | REVIEW_REQUIRED | SUSPENDED | BLOCKED
 ```
 
-Neo4j 是否引入由多跳质量和 PostgreSQL recursive CTE 性能 Benchmark 决定。
+Stage 4 交付：
 
-## 6.4 Stage 5：完整章节与卷级闭环
+- `PROJECT_BOOTSTRAP / STORY / ARC_VOLUME / CHAPTER_SET / CHAPTER / SCENE / REPLAN`；
+- `author_supplied` 与 `planner_proposed` provenance；
+- Planner 自主提出 inquiry、目标、候选方向和 MemoryNeed，而不是从已给定章节规划反推 Need；
+- 独立 Plan Reviewer 对覆盖、矛盾、人物弧、义务、节奏和替代方案作有界审核；
+- consumer-specific `PlannerContextPackage`，与 Writer Context 共享 evidence/budget/basis 但不复制合同；
+- rolling 1～3 章 focus、卷/章节集规划、PlanDeviation 和可解释候选比较；
+- Planner Memory 的真实 benchmark，包括历史计划使用、长期一致性、计划可实现性和检索消融。
 
-逐步加入：
+Stage 4 同时成熟化 Planner 实际需要的高级读取，不创建新检索平台：已有
+`TYPED_GRAPH + ANCHOR_BM25 + ANCHOR_DENSE` 只按 relation/causal Need 条件触发，增加 graph path
+receipt、Anchor→Graph expansion、compact→expand、source/path diversity、完整通道降级与消融。
+Exact state/quote 保持 Exact/BM25；单一 application RRF owner 不变，不采用上游全局固定权重。
 
-- 动态卷/章/场景规划；
-- NarrativeEventBlueprint 与滚动计划；
-- 候选 Goal / Event / Plan 搜索；
-- Editor 修复与独立 Quality Judge；
-- PlanDeviationRecord；
-- ArcTrajectory、Storyline 和长期质量状态；
-- FAST / STANDARD / STRICT 风险自适应执行。
+Planner/Reviewer 都不能直接写 PlanRoot。Plan candidate 的接受和 Commit 由 Stage 5 统一编排。
 
-## 6.5 Stage 6：长期自主运行
+## 6.4 Stage 3 与 Stage 4 的并行开发合同
 
-重点从单章质量转向数百章运行可靠性：
+两个阶段先共同冻结：
 
-- 跨卷 TaskGraph；
-- 预算、优先级、暂停、恢复和 poison-loop；
-- Maintenance Worker；
-- Derived Snapshot 重建和 freshness；
-- 分支、Retcon、影响分析和回滚；
-- 延迟评价；
-- 多模型调度；
-- 达到跨天/跨机器恢复需求后再评估 Temporal。
+```text
+MemoryNeed basis/scope/provenance
+AgentContextView / ContextDelta / ContextCompactionReceipt
+RunEvent / settled checkpoint / provider-valid dispatch
+AgentSpec / Skill / Prompt / ToolPolicy receipts
+ModelRequestAdmissionController boundary
+```
 
-## 6.6 Stage 7：受控 Experience / Skill 演化与生产扩展
+随后使用独立 worktree：Stage 3 拥有 Writer/Editor/写作 Skill/生成评价；Stage 4 拥有
+Planner/Plan Reviewer/规划 Skill/规划评价。共享 Context View 实现只有一个 owner；另一阶段使用冻结
+port/fixture 开发，不能各建一套 compactor、session store 或 Memory Controller。
 
-加入：
+Stage 2M 正式 Gate 可继续独立执行。Stage 3/4 的工程准备可以并行，但正式语义验收必须绑定同一份
+被接受的 Stage 2 executable identity、Context/检索合同和信息边界。
 
-- 成功/失败轨迹的 Experience 抽象；
-- Memory Operation Skill Bank；
-- Skill 的 bounded edit、held-out gate 和回归门禁；
-- retrieval policy / routing / fusion learning；
-- 多项目、容量、HA、Kubernetes 和生产安全。
+## 6.5 Stage 5：Long-running Creative Runtime
 
-任何自动演化都不能直接修改已采用 Skill；必须生成候选版本并通过独立验证集晋升。
+Stage 5 在 Stage 3/4 分别通过候选闭环 Gate 后，把两者与 Memory/Commit 组织成长期运行产品：
+
+```text
+Planner candidate → explicit acceptance → PlanRoot Commit
+→ Stage 2 Writer Memory → Writer candidate → Editor/Curator/reconciliation
+→ explicit acceptance → ChangeBundle / CAS Commit / Projection / Freshness
+→ next chapter / rolling replan / maintenance
+```
+
+Stage 5 按真实失败证据渐进增加：
+
+1. 单项目固定章/卷拓扑、manual/semi/auto 停点和 project single-writer lane；
+2. event-derived Task/Attempt/Dependency、claim、fence、effect reconciliation 与局部恢复；
+3. 跨章/跨卷调度、pause/resume/interrupt/fork、预算、优先级和 poison-loop；
+4. heartbeat、lease/reclaim、Supervisor、scheduled maintenance、跨天/跨机演练；
+5. Derived rebuild/freshness、分支/Retcon、延迟评价和多模型调度；
+6. Experience/Skill candidate、held-out promotion、生产容量和可选 HA。
+
+Context View/compaction 在 Stage 3/4 已能管理单 Agent 窗口；Stage 5 只增加它的跨任务、跨天恢复和
+Supervisor 使用，不重写 Context 语义。
+
+外部 Hook ingress 只有出现 NS Runtime 外部的 Agent、IDE、Tool 或插件 caller 才建设。内部
+Writer/Planner/Editor/Curator/Tool/Model 继续直接 append `RunEvent`。Hook 请求只校验身份、allowlist、
+脱敏、限长、幂等和持久化；LLM 压缩、embedding、索引、图抽取、consolidation 全部异步，不默认
+注入 Context，不直接修改 Canon/PlanRoot。
+
+Temporal 保持 deferred。只有跨天/跨机、复杂人工等待、unknown external effect、多项目规模或现有
+恢复维护成本中至少两个触发条件成立时，才用固定 workload 与 PostgreSQL Runtime 做对照实验。
+
+任何 Experience/Skill 演化都只生成候选版本；active Skill 只能经独立 held-out gate 晋升，运行日志、
+访问热度和模型摘要不能直接改变 Canon、PlanRoot 或 active policy。
+
+Stage 5 第一版运行并发固定为“候选可重叠、Canon 单写者”：当前 Writer N 可以与绑定同一旧 basis 的
+Planner lookahead 或只读历史维护同时执行；lookahead 只能形成候选，必须在 N 的 Commit/Freshness 后
+重新验证才能进入 acceptance。Writer N+1、Plan/Draft/Memory Canon Commit 和会改变当前 Writer basis
+的维护仍串行。跨 leaf 并发由 Stage 5 bounded dispatcher 负责，模型实际并发由唯一
+`ModelRequestAdmissionController` 的 request/KV 双预算决定；Stage 3/4 不复制 scheduler。
 
 ---
 
@@ -1618,27 +1646,27 @@ CONDITIONAL PASS
 
 ACTIVE
     Stage 2M exact-slice read-grain and on-demand claim-closure repair
-    Stage 3 Writer Core preparation and isolated engineering
+    Stage 3 Writer candidate convergence design
+    Stage 4 Planner product-loop design
 
 BLOCKED
     Stage 3 Writer Semantic / Production Gate
-    Stage 4 advanced Agentic default promotion and risk paths
-    Stage 5 full chapter/volume loop
-    Stage 6 long-horizon autonomous operation
-    Stage 7 Skill/Experience evolution and production expansion
+    Stage 4 Planner Semantic / Production Gate
+    Stage 5 long-running Creative Runtime implementation
 ```
 
-Stage 3 preparation is permitted because the Stage 2A deterministic gateway and Canon safety
-boundary are frozen. Stage 3 semantic promotion is not permitted merely because the isolated
-Writer code exists. It requires migration to `WriterContextPackage`, current-main engineering
-gates, and an independently evaluated real Writer experiment.
+Stage 3/4 preparation is permitted because the Stage 2 deterministic gateway and Canon safety
+boundary are frozen. Stage 3 still requires latest-main convergence and a real Writer experiment;
+Stage 4 still requires inquiry-conditioned Planner Memory, Planner Context, independent Plan Review,
+and a real planning experiment. Neither can claim semantic promotion from isolated engineering tests
+alone.
 
 当前详细状态、Stage 2M 指标和下一步允许动作统一见 `docs/project_status.md`。
-当前 Stage 2M 不扩建记忆平台；只校正“大 TextBlock 直接压缩”导致的读取粒度损失。
-执行必须先派生段落/连续句窗 exact slices，再按 token 预算直通 support producer/语义输入并保留到
-EvidenceLedger，只对仍未闭合的 Need 做按需 claim 合成与整体验证。当前 Writer 公共合同仍只接收
-verified claims。不设固定三条证据上限，不枚举两/三 atom 组合，不使用
-Gold 选组。
+当前 Stage 2M 不扩建记忆平台。ADR-0008 将默认产品收缩为 evidence-first
+`WriterContextPackage + EvidenceLedger`：先派生段落/连续句窗 exact slices，再按 public Need/facet
+与 token 预算选择、装箱、引用并交付给 Writer。Claim 合成、whole verifier 和 semantic evaluator
+不再是 Agent 默认路径或 readiness 条件。不设固定证据条数上限，不枚举 atom 组合，不使用 Gold
+选组；Gold 解封后的语义评分由外部模型或人工独立执行。
 
 ---
 

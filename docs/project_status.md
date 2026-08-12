@@ -44,19 +44,19 @@ the long-running Creative Runtime that integrates accepted plan and draft candid
 may prepare in parallel over the shared Stage 2 Memory contracts. This documentation decision does
 not alter the active Stage 2M formal run or authorize implementation by itself.
 
-Stage 3 engineering implementation is now complete in the isolated
+Stage 3 engineering implementation is complete in the isolated
 `codex/stage3-writer-context-loop` branch at `bab4451`: the Writer/Editor/Observer candidate loop,
 reactive Memory, shared event-derived Context Runtime, compaction/recovery and evaluation runner are
 present, with 1893 deterministic tests, 100% coverage and full pre-commit reported. It remains a
-conditional Gate rather than current-main product acceptance because the branch is unmerged and the
-real model/infrastructure semantic gates were not completed. Stage 4 implementation is actively
-advancing in `codex/stage4-planner-context-loop`; its candidate commits include the inquiry-conditioned
-Planner loop and shared Context Runtime connection, but no formal Stage 4 PASS is recorded yet.
+conditional Gate because the real model/infrastructure semantic gates were not completed. Stage 4's
+`0dcf17a` candidate includes the inquiry-conditioned Planner loop and shared Context Runtime connection,
+but no formal Stage 4 PASS is recorded yet.
 
-Stage 5 now has an active design/execution pair. A bounded Runtime Kernel may be developed in an
-isolated clean worktree while Stage 4 continues: fixed topology, Task/Attempt/fence, acceptance
-commands, existing Commit/Projection/Freshness integration, settled recovery and minimal maintenance.
-Real Planner binding and the product Plan→Write→Commit Gate still wait for Stage 4 acceptance.
+Stage 5 now has an isolated Stage 3/4/5 integration candidate: fixed topology, Task/Attempt/fence,
+acceptance commands, existing Commit/Projection/Freshness integration, real Stage 3/4 leaf adapters,
+stable two-task ready batches and same-book Writer + Planner-lookahead overlap. Lookahead cannot be
+accepted until post-Draft exact Freshness promotes, replans or supersedes it. Product Plan→Write→Commit
+still waits for trusted production materializers and real semantic Gates.
 Multi-worker lease/reclaim, scheduled fire, external Hook ingress, Skill evolution and Temporal remain
 evidence-triggered rather than pre-authorized platform work.
 
@@ -76,9 +76,9 @@ architecture decision. This does not relax any safety, quality, reproducibility,
 | Stage 2R | Complete | Physical index/basis gate passed | Maintenance only |
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
 | Stage 2M | Evidence-first package/readiness and bounded World/KG/R1/L1/L2 repair accepted; v33 frozen source retained | Architecture-repair PASS; deterministic quality and unified real gate PASS | Keep external scoring post-freeze; maintain accepted contracts |
-| Stage 3 | Engineering implementation complete in isolated branch `bab4451` | Deterministic quality reported; real model/infrastructure Gate conditional; unmerged | Independent acceptance/convergence on the final common executable identity |
-| Stage 4 | Planner Context Loop candidate implemented and shared Context Runtime connected in active isolated branch | Full quality, real planning quality and independent Stage 4 Gate pending | Continue Stage 4 implementation and final unified test campaign |
-| Stage 5 | Design/execution ready; isolated Runtime Kernel admitted | Implementation not started; full product Gate waits for Stage 4 | Build only the isolated fixed-topology/Task/Attempt/Commit/recovery kernel; bind real Planner after Stage 4 PASS |
+| Stage 3 | Engineering implementation complete at `bab4451` and present in the integration candidate | Deterministic quality reported; real model/infrastructure Gate conditional | Run the real semantic Gate when endpoint capacity is available |
+| Stage 4 | Seven-mode Planner Context Loop `0dcf17a` integrated through the real public adapter | Deterministic quality reported; real seven-mode semantic Gate not run | Add final product materializer evidence, then run the real semantic Gate |
+| Stage 5 | Stage 3/4/5 integration candidate ready; two-lane Writer/lookahead orchestration implemented | 220 concentrated checks passed initially, 9 integration alignments fixed and passed; Ruff/strict MyPy clean; product Gate not run | Finish trusted production PlanRoot/TextRoot materializers, then run one final real multi-chapter Gate without disturbing Stage 2 benchmark |
 
 ## 3. Accepted Stage 2A evidence
 
@@ -509,3 +509,13 @@ Stage 5 may now open a third, clean, isolated worktree and execute only the A-la
 its single unified deterministic/PostgreSQL/crash/isolated-E2E test campaign. The real creative-loop
 integration layer starts only after Stage 4 has an accepted clean identity; evidence-triggered
 operations/evolution capabilities remain deferred until their named caller and Gate exist.
+
+2026-08-12 integration authorization: Stage 2 product semantics and owners are frozen at `408a46f` and
+must not be modified by the downstream integration. Stage 3 `bab4451`, Stage 4 `0dcf17a`, and the
+implemented Stage 5 A-layer may now be converged in an isolated integration worktree. The integration
+adds the real Planner/Writer leaf adapters and a dependency-aware two-lane dispatcher: Writer N may
+overlap a basis-bound Planner lookahead or read-only historical maintenance, while every Canon-changing
+operation remains serialized by the project writer lane and CAS Commit. The current `8002` endpoint may
+be occupied by the Stage 2 benchmark; integration work must not restart, reconfigure, cancel, or preempt
+that workload. Deterministic/offline evidence proceeds first, and real model checks are deferred when
+capacity cannot be proved available.

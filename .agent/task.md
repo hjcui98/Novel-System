@@ -1,20 +1,34 @@
 # Current task
 
-- Task: correct Stage 2M evidence read grain, pack exact raw slices, and close claims on demand
-- Codex: architect, root-cause and direction owner, final reviewer
-- OpenCode default `build`: implementation, tests, real API execution, monitoring, diagnosis,
-  repair, and implementation evidence reporting
-- Approval: the user invokes `/implement`
-- Merge: Codex after acceptance
+- Task: integrate the existing Stage 3 Writer, Stage 4 Planner, and Stage 5 Runtime candidates into
+  one executable, candidate-only-to-trusted-commit creative loop with bounded two-lane concurrency.
+- Owner: Codex implements, tests, diagnoses, and reports in this repository.
+- Authorized: 2026-08-12 by the user.
+- Stage 2 boundary: frozen product/executable semantics at `408a46f`; do not edit Stage 2 Memory,
+  evidence-first Writer Context, retrieval/selection, benchmark, or accepted Gate behavior.
 
 ## User requirements
 
-- Keep the interaction simple: Codex designs, OpenCode executes, Codex reviews.
-- Give OpenCode one substantial task rather than many tiny slices.
-- Use the canonical project documents as read-only authority; report real results in
-  `.agent/implementation.md` for Codex to accept and integrate.
-- Use and monitor the real Qwen3.6 API at `http://127.0.0.1:8002/v1`.
-- If Codex review does not pass, Codex supplies the next technical/architectural direction and
-  OpenCode continues. Do not impose an arbitrary repair-count limit.
-- Do not add a fixed small Need cap or mistake report plumbing for retrieval quality.
-- Stage 3, P3, formal Gate, C40, C80, and A/B/C are not part of this task.
+- Record the integration and concurrency design in the existing architecture/design/execution
+  documents before changing code.
+- Integrate Stage 3, Stage 4, and Stage 5; do not build a parallel framework.
+- Implement a complete Plan candidate → acceptance → Plan Commit/Freshness → Writer candidate →
+  acceptance → Draft Commit/Freshness → next/replan loop.
+- Add natural concurrency for independent work, especially Writer N with future Planner lookahead or
+  historical maintenance, while keeping same-project Canon writes serial.
+- Run focused/simple deterministic and offline tests after integration.
+- The local Qwen endpoint at `8002` may be occupied by the Stage 2 benchmark. Do not preempt,
+  restart, reconfigure, cancel, or load-test it. If exclusive capacity cannot be established by a
+  non-mutating health/usage check, skip real API tests and report them as deferred.
+- Preserve existing dirty work and never include `objects/`, local `benchmarks/`, `tmp/`, or private
+  runtime data in delivery.
+
+## Current result
+
+- Code state: `STAGE345_INTEGRATION_CANDIDATE_READY` in the shared Stage 5 integration worktree.
+- Implemented: real Stage 4 adapter, shared Stage 3/4 Context owner, two-task dispatcher, Writer +
+  Planner-lookahead overlap, post-Draft promote/replan/supersede, serial acceptance/Commit/Freshness.
+- Evidence: 220 checks passed in the concentrated run; 9 merge-alignment failures were repaired and
+  their exact selectors passed; changed code Ruff and strict MyPy pass.
+- Deferred: 8002 real API because endpoint ownership could not be established; Stage 3/4 semantic
+  Gates, Stage 5 real multi-chapter Gate, and trusted production root materializers.
