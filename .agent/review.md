@@ -1,5 +1,25 @@
 # Codex acceptance review
 
+## Final Memory workflow integration acceptance (2026-08-12)
+
+- Outcome: `PASS / STAGE2M_FINAL_ENGINEERING_ACCEPTANCE`
+- Accepted behavior: graph extraction is now part of the default chapter-reveal Memory Write path,
+  not only the isolated Round 3 backfill runner.
+- One chapter launches ordinary Curator and graph candidate extraction concurrently through the
+  shared endpoint admission controller, then merges once into the existing normalize/validate/
+  atomic-commit/projection chain. Canonical chapter commits remain strictly ordered.
+- Lineage includes both model profiles, graph candidate batches, graph admission receipt and the
+  merged `ObservedChangeSet`; no alternate graph store or write path was introduced.
+- Verification: formal scripted lifecycle completed 96 commits and five checkpoint freezes;
+  `make quality` passed with strict MyPy on 304 files, 1847 passed/9 deselected and 100% statement/
+  branch coverage. Full pre-commit passed after the final documentation update.
+- Benchmark boundary: the earlier P005 repair and five-point joint package remain accepted evidence,
+  but they are not a full C1-C95 rebuild through this newly wired default path. A clean real-model
+  Genesis-to-C95 replay is the next product benchmark and must not be reported as already complete.
+
+This section supersedes any reading of the architecture-repair acceptance below that implied the
+isolated backfill runner was already connected to ordinary chapter writes.
+
 ## Stage 2M architecture repair final acceptance (2026-08-12)
 
 - Outcome: `PASS / STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`

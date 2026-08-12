@@ -2108,3 +2108,35 @@ OpenCode 或实现者不得因为卡住就引入新平台、第二 truth store�
   statements / 6,942 branches，100% coverage）；full pre-commit PASS。
 - §24 cross-round gate 结论：`PASS / STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED`。ADR-0008 定义的外部
   model/human scoring 仍为 post-freeze 可选评估，不属于 Agent READY 前置条件。没有 commit、merge、push。
+
+## 30. 2026-08-12 final Memory Write integration
+
+§29 接受的 Round 3 能力此前只由隔离 backfill runner 调用；它证明 graph owner、admission、R1、
+L1/L2 和 Evidence-First read path 正确，但不证明新章节默认会构建 graph。本节关闭该最后缺口。
+
+正式 chapter-reveal 路径现在按以下顺序执行：
+
+1. 同一 revealed chapter、TextRoot、base WorldRoot 和 cutoff 下，并发调用 ordinary Curator profile
+   与 graph candidate profile；两个 profile 使用独立 `ModelCurator` 实例，共享同一 `ModelGateway`
+   和 endpoint-global request/KV admission controller。
+2. ordinary proposal 先在 host 内形成 provisional World overlay；`WorldGraphExtractionPass` 再针对
+   该 provisional World 审核 canonical relation-like states 和本章 graph candidates。这样同章新建
+   entity 可供 relation admission 使用，但 Canonical World 在 gate 前不变。
+3. accepted entity/relation operations 与 ordinary operations 合入一个 `ObservedChangeSet`，随后只走
+   一次现有 normalize、validate、risk/Guardian、atomic `CommitService` 和 full projection。没有第二
+   graph truth store、第二 commit 或旁路 projection。
+4. graph candidate batch 与 `WorldGraphExtractionReceipt` 作为 proposal transform lineage 持久化；
+   composite Curator receipt 引用全部 ordinary/graph model calls 和最终 merged changes。
+5. chapter/commit 顺序保持串行。C1 必须基于 C0 commit，C2 必须基于 C1 commit；不得为了 GPU
+   batching 并行 Canon writer。可并发的是同一章内无数据依赖的 model profiles，以及既有 Need、
+   evaluator batch 和 checkpoint read corridors。
+
+工程验收：正式 scripted lifecycle 从 Genesis 连续完成 96 次 atomic commits、C20/C40/C60/C80/C95
+freeze 与 projection；`make quality` 通过 strict MyPy 304 files、1847 tests（9 deselected）和 100%
+statement/branch coverage。该 smoke 证明 wiring/commit/projection，不是 real-model graph quality score。
+
+本次改动改变了 C1-C95 默认 World 构建 executable identity。因此 §29 的 frozen source 与 P005
+repair 仍是有效、不可变的历史 acceptance evidence，但不能宣称“五个 checkpoint 的 World 都由新
+默认路径重建”。最终产品 benchmark 的下一次运行必须从 clean Genesis 重新 reveal C1-C95，在同一
+新 commit identity 下冻结五点并重跑 Evidence-First retrieval/package；不得把旧 WorldRoot 与新
+package 拼成全量重建结论。

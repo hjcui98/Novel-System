@@ -101,8 +101,8 @@ def test_quality_repair_memory_write_budget_allows_progressive_feedback_retries(
 
     assert budget.max_curator_proposal_attempts == 5
     assert budget.max_curator_proposal_rejections == 5
-    assert budget.max_total_model_calls == 10
-    assert budget.token_budget == 96_000
+    assert budget.max_total_model_calls == 20
+    assert budget.token_budget == 192_000
     assert budget.wall_clock_budget_ms == 900_000
     assert budget.same_content_hash_limit == 3
     assert budget.same_finding_signature_limit == 3

@@ -2466,3 +2466,45 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   单卡串行，未混用；若做多卡并行需独立 identity manifest 并统一服务参数。
 - 证据：`inkos_lab/runs/gpu6-qwen36-ab-20260811-01/{api-smoke,api-matrix,inkos-no-thinking-v3,
   inkos-thinking-v3}`（含 REPORT、FINAL.txt、每批次 write JSON/快照、章节 SHA、tokenUsage）。
+
+## 27. Stage 2M final Memory workflow integration and concurrency audit (2026-08-12)
+
+### 27.1 Formal write-path integration
+
+- `TeacherForcedCuratorPort` now launches the ordinary chapter-change profile and bounded graph
+  candidate profile concurrently for the same revealed chapter. They use separate mutable
+  `ModelCurator` instances but one `ModelGateway`, call ledger and endpoint admission controller.
+- The host applies ordinary operations only to a provisional `WorldOverlay`, runs the existing
+  `WorldGraphExtractionPass`, and merges accepted graph operations into the same
+  `ObservedChangeSet`. The existing workflow remains the only normalizer, validator, risk gate,
+  atomic commit and projection path.
+- Candidate batches and `WorldGraphExtractionReceipt` are persisted as transform lineage. The
+  composite Curator receipt points to the merged changes and all ordinary/graph model calls. Failed
+  sibling tasks are cancelled and graph admission errors remain precommit contract failures.
+- The formal proposal call/token budget was doubled from 10/96,000 to 20/192,000 because each
+  attempt now owns two Curator profiles; proposal-attempt and poison-loop limits are unchanged.
+
+### 27.2 Concurrency audit
+
+- Already wired before this change: independent Claim Support Need pipelines default to 4 workers;
+  semantic evaluator batches default to 4; checkpoint read corridors default to 2; the CLI default
+  endpoint request limit is 8 with a 200,000 configured KV-token budget and 20% reserve.
+- Newly wired: ordinary Curator extraction and graph extraction overlap within one chapter. Their
+  results merge deterministically before one Canonical write. Chapter commits, root evolution,
+  normalization, validation and projection publication remain sequential.
+- Client concurrency is only half of GPU batching. The vLLM/Qwen process must also run continuous
+  batching with a compatible `max-num-seqs` (for example 4 or 8). Historical C1 measurements on a
+  `max-num-seqs=8` endpoint were 996.5s serial, 366.8s at 4 and 238.0s at 8 (about 2.7x/4.2x, not
+  4x/8x). The separately inspected GPU6:8005 process used `max-num-seqs=1`, so that process can only
+  queue concurrent clients; GPU1:8003 exposed `max-num-seqs=8`.
+
+### 27.3 Verification and benchmark consequence
+
+- Focused suites: 108 passed; concurrency regression proves two in-flight profiles and same-proposal
+  relation merge. Formal scripted Stage 2 lifecycle: 96 commits plus five freezes/projections passed.
+- Final `make quality`: Ruff/format PASS; strict MyPy 304 files; 1847 passed, 9 deselected; 24,323
+  statements and 6,954 branches at 100% coverage.
+- This closes the production wiring gap but changes the full replay executable identity. The §26.5
+  P005 repair and five-point package evidence remain valid historical acceptance artifacts; a final
+  real-model product benchmark must rebuild C1-C95 from Genesis under this committed code and then
+  retrieve/package at C20/C40/C60/C80/C95. It has not been represented as completed here.

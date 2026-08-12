@@ -413,6 +413,27 @@ The user may score the frozen packages later with an independent strong model or
 external verdict is not part of the tested Agent and cannot feed back into the same experiment
 identity.
 
+### 4.15 2026-08-12 Stage 2M default write path is complete
+
+Round 3 graph extraction is now connected to the formal chapter-reveal Memory Write workflow.
+For each chapter, ordinary Curator extraction and graph candidate extraction may run concurrently
+through one endpoint-global request/KV controller; their outputs are admitted and merged before one
+existing atomic commit and projection. Chapter/root evolution remains serial. The formal scripted
+flow completed 96 commits and all five checkpoint freezes, and the final deterministic gate reports
+1847 passed, 9 deselected, strict MyPy on 304 source files and 100% statement/branch coverage.
+
+The application already supports Qwen/vLLM request concurrency: defaults are 4 independent Support
+Needs, 4 evaluator batches, 2 checkpoint workers and endpoint limit 8, with a 200k configured KV
+budget. Effective GPU parallel decoding still depends on the deployed server's continuous-batching
+configuration. A `max-num-seqs=1` service serializes those requests; a compatible 4/8 service can
+batch them. Canonical chapter writers are intentionally never concurrent.
+
+Because this wiring changes the C1-C95 replay executable identity, existing frozen roots remain valid
+historical evidence but are not a substitute for rebuilding the benchmark memory under the new
+default path. The next formal product run starts from clean Genesis, replays C1-C95 with the real
+model, freezes C20/C40/C60/C80/C95 from that run, then executes Evidence-First retrieval/package on
+those exact roots.
+
 ## 5. Stage 3/4 implementation and Stage 5 isolation status
 
 Stage 3 has completed its engineering implementation in the isolated

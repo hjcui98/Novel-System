@@ -152,7 +152,14 @@ from novel_agent.domain.stage2 import (
     ToolPolicy,
     WorldPatchCandidate,
 )
-from novel_agent.domain.world import Entity, PlanNode, StateRecord, StoryTime, TruthClass
+from novel_agent.domain.world import (
+    Entity,
+    GraphCandidateBatchDraft,
+    PlanNode,
+    StateRecord,
+    StoryTime,
+    TruthClass,
+)
 from novel_agent.domain.writer_context import EvidenceLedger
 from novel_agent.ports.model_endpoint import ModelEndpointPort
 from novel_agent.prompts import PromptRegistry, PromptTemplate
@@ -226,7 +233,9 @@ def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
 
     The proposal budget is raised above the historical default because the
     local endpoint in json_object framing can need several contract-feedback
-    retries on complex chapters before producing a valid draft.
+    retries on complex chapters before producing a valid draft.  One proposal
+    attempt now has two concurrent Curator profiles, so the call and token caps
+    retain the same five-attempt repair corridor.
     """
 
     return MemoryWriteBudget(
@@ -234,8 +243,8 @@ def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
         max_curator_proposal_rejections=5,
         same_content_hash_limit=3,
         same_finding_signature_limit=3,
-        max_total_model_calls=10,
-        token_budget=96_000,
+        max_total_model_calls=20,
+        token_budget=192_000,
         wall_clock_budget_ms=900_000,
     )
 
@@ -2200,18 +2209,20 @@ class _TeacherForcedTransition:
         )
         self._boundary_registry = InformationBoundaryRegistryAdapter(self._boundary_port, artifacts)
         self._canonical_read = RepositoryCanonicalReadAdapter(commits, artifacts)
+        enforce_support_gate = (
+            harness.responses is None
+            and self.quality_repair_flags.evidence_support_gate
+            == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
+        )
         model_curator = ModelCurator(
             harness.gateway,
-            enforce_support_gate=(
-                harness.responses is None
-                and self.quality_repair_flags.evidence_support_gate
-                == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
-            ),
-            enable_model_semantic_verifier=(
-                harness.responses is None
-                and self.quality_repair_flags.evidence_support_gate
-                == EvidenceSupportGateMode.ENFORCE_PRE_CANDIDATE
-            ),
+            enforce_support_gate=enforce_support_gate,
+            enable_model_semantic_verifier=enforce_support_gate,
+        )
+        graph_curator = ModelCurator(
+            harness.gateway,
+            enforce_support_gate=enforce_support_gate,
+            enable_model_semantic_verifier=enforce_support_gate,
         )
         self._curator_port = TeacherForcedCuratorPort(
             CuratorReplayAgent(
@@ -2227,6 +2238,7 @@ class _TeacherForcedTransition:
             artifacts,
             TeacherForcedBenchmarkE2ERunner._request,
             self._script_workflow_model,
+            graph_curator=graph_curator,
         )
         self._guardian_port = LegacyGuardianPortAdapter(
             GuardianRiskReviewAgent(harness.runner, artifacts),
@@ -2260,6 +2272,15 @@ class _TeacherForcedTransition:
     def _script_workflow_model(self, request: ModelRequest, mode: AgentMode) -> None:
         """Lazily register scripted responses only when a port actually calls a model."""
         if self.harness.responses is None:
+            return
+        if request.scheduling_stage == "curator_graph_extraction":
+            TeacherForcedBenchmarkE2ERunner._script(
+                self.harness,
+                request,
+                GraphCandidateBatchDraft(
+                    no_graph_candidate_reason="scripted smoke has no graph candidate"
+                ),
+            )
             return
         if mode in {AgentMode.REPLAY, AgentMode.CURATOR_REPAIR}:
             candidates = EvidenceCandidateGenerator().generate(

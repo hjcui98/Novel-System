@@ -7,7 +7,9 @@ validator, Guardian, CommitService, and projection APIs.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +21,7 @@ from novel_agent.agents.guardian import GuardianRiskReviewAgent
 from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import (
+    ObservedChangeSet,
     ValidationFinding,
     ValidationReport,
     ValidationStatus,
@@ -56,6 +59,7 @@ from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
     ContractRef,
+    CuratorReplayResult,
     GuardianDecision,
     PatchRiskAssessment,
     WriteGateDecision,
@@ -80,16 +84,28 @@ from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
     ModelCurationContractError,
+    ModelCurator,
 )
+from novel_agent.services.overlay import WorldOverlay
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
     FreshnessGate,
     snapshot_id_for_commit,
 )
+from novel_agent.services.world_graph import (
+    WorldGraphExtractionPass,
+    WorldGraphExtractionResult,
+)
 
 ModelRequestFactory = Callable[[str, AgentMode], ModelRequest]
 ScriptCallback = Callable[[ModelRequest, AgentMode], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _CuratorProposalExecution:
+    result: CuratorReplayResult
+    graph_extraction: WorldGraphExtractionResult | None = None
 
 
 class RepositoryCanonicalReadAdapter:
@@ -320,6 +336,7 @@ class TeacherForcedCuratorPort:
         script: ScriptCallback | None = None,
         *,
         repair_script: ScriptCallback | None = None,
+        graph_curator: ModelCurator | None = None,
     ) -> None:
         self._replay = replay
         self._repair = repair
@@ -327,6 +344,10 @@ class TeacherForcedCuratorPort:
         self._request_factory = request_factory
         self._script = script
         self._repair_script = repair_script or script
+        self._graph_curator = graph_curator
+        if graph_curator is not None and graph_curator.gateway is not replay.curator.gateway:
+            raise ValueError("graph Curator must share the replay Curator ModelGateway")
+        self._graph_extraction = WorldGraphExtractionPass()
         self._revealed_text: TextRootDocument | None = None
         self.last_receipt: AgentExecutionReceipt | None = None
         self.proposal_calls = 0
@@ -343,29 +364,40 @@ class TeacherForcedCuratorPort:
             raise ValueError("Curator proposal requires revealed TextRoot and canonical WorldRoot")
         chapter_index = _chapter_index(request.request)
         model_request = self._request_factory(f"curator.replay.{chapter_index}", AgentMode.REPLAY)
-        if self._script is not None:
-            self._script(
-                model_request,
-                AgentMode.REPLAY,
-            )
+        graph_request = self._graph_model_request(model_request)
         manifest = _basis_manifest(basis)
-        result, _ = await self._replay.run(
+        execution = await self._run_proposal_profiles(
             version=manifest.schema_version,
             text_root=text,
             chapter_index=chapter_index,
             base_commit=basis.commit_id,
             current_world=world,
             request=model_request,
+            graph_request=graph_request,
         )
+        result = execution.result
         self.proposal_calls += 1
-        self.last_receipt = result.receipt
+        changes_ref = self._persist_changes(result.observed_changes, manifest.schema_version)
+        if execution.graph_extraction is None:
+            receipt = result.receipt
+            transform_refs: tuple[ArtifactRef, ...] = ()
+        else:
+            transform_refs = self._persist_graph_transforms(
+                execution.graph_extraction,
+                manifest.schema_version,
+            )
+            receipt = self._compose_agent_receipt(
+                result.receipt,
+                changes_ref,
+                transform_refs,
+                self._model_call_entries(model_request, graph_request),
+            )
+        self.last_receipt = receipt
         return CuratorProposalResult(
             observed_changes=result.observed_changes,
-            agent_receipt=result.receipt,
-            producer_receipt=self._persist_receipt(result.receipt, manifest.schema_version),
-            candidate_artifact=self._persist_changes(
-                result.observed_changes, manifest.schema_version
-            ),
+            agent_receipt=receipt,
+            producer_receipt=self._persist_receipt(receipt, manifest.schema_version),
+            candidate_artifact=changes_ref,
         )
 
     async def propose_attempt(
@@ -382,15 +414,13 @@ class TeacherForcedCuratorPort:
             f"curator.replay.{chapter_index}.proposal-{request.attempt_no}",
             AgentMode.REPLAY,
         ).model_copy(update={"request_id": request.model_request_id})
+        graph_request = self._graph_model_request(model_request)
         feedback = (
             None
             if request.feedback_artifact_ref is None
             else self._artifacts.read_verified(request.feedback_artifact_ref).decode("utf-8")
         )
-        if self._script is not None:
-            self._script(model_request, AgentMode.REPLAY)
         manifest = _basis_manifest(basis)
-        gateway = self._replay.curator.gateway
         started_at = datetime.now(UTC)
         print(
             f"[measure] ch{chapter_index} attempt {request.attempt_no} start "
@@ -399,7 +429,7 @@ class TeacherForcedCuratorPort:
             flush=True,
         )
         try:
-            result, _ = await self._replay.run(
+            execution = await self._run_proposal_profiles(
                 version=manifest.schema_version,
                 text_root=text,
                 chapter_index=chapter_index,
@@ -407,6 +437,7 @@ class TeacherForcedCuratorPort:
                 current_world=world,
                 request=model_request,
                 proposal_feedback=feedback,
+                graph_request=graph_request,
             )
         except (ValidationError, ModelCurationContractError) as error:
             self.proposal_calls += 1
@@ -416,9 +447,10 @@ class TeacherForcedCuratorPort:
                 error,
                 started_at,
                 manifest.schema_version,
+                graph_request=graph_request,
             )
         except Exception as error:
-            entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
+            entries = self._model_call_entries(model_request, graph_request)
             if not entries:
                 raise
             self.proposal_calls += 1
@@ -431,9 +463,9 @@ class TeacherForcedCuratorPort:
                 uncertain=any(entry.completed_at is None for entry in entries),
             ) from error
 
+        result = execution.result
         self.proposal_calls += 1
-        self.last_receipt = result.receipt
-        entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
+        entries = self._model_call_entries(model_request, graph_request)
         call_refs = tuple(
             self._persist_model_call_entry(entry, manifest.schema_version) for entry in entries
         )
@@ -441,9 +473,12 @@ class TeacherForcedCuratorPort:
             tuple(entry.request_id for entry in entries),
             manifest.schema_version,
         )
+        primary_raw_refs = self._persist_raw_responses(
+            (model_request.request_id,),
+            manifest.schema_version,
+        )
         changes_ref = self._persist_changes(result.observed_changes, manifest.schema_version)
-        agent_ref = self._persist_receipt(result.receipt, manifest.schema_version)
-        transform_refs = tuple(
+        curator_transform_refs = tuple(
             self._artifacts.put(
                 canonical_json_bytes(transform.model_dump(mode="json")),
                 media_type,
@@ -465,6 +500,23 @@ class TeacherForcedCuratorPort:
             )
             for transform in transforms
         )
+        graph_transform_refs = (
+            ()
+            if execution.graph_extraction is None
+            else self._persist_graph_transforms(
+                execution.graph_extraction,
+                manifest.schema_version,
+            )
+        )
+        transform_refs = (*curator_transform_refs, *graph_transform_refs)
+        agent_receipt = self._compose_agent_receipt(
+            result.receipt,
+            changes_ref,
+            transform_refs,
+            entries,
+        )
+        self.last_receipt = agent_receipt
+        agent_ref = self._persist_receipt(agent_receipt, manifest.schema_version)
         receipt = CuratorProposalAttemptReceipt(
             attempt_id=request.attempt_id,
             workflow_request_id=request.request.request_id,
@@ -483,7 +535,7 @@ class TeacherForcedCuratorPort:
             ),
             feedback_artifact_ref=request.feedback_artifact_ref,
             raw_response_refs=raw_refs,
-            parsed_draft_ref=raw_refs[-1] if raw_refs else None,
+            parsed_draft_ref=primary_raw_refs[-1] if primary_raw_refs else None,
             normalized_output_ref=changes_ref,
             output_hashes=tuple(
                 entry.raw_response_hash for entry in entries if entry.raw_response_hash is not None
@@ -511,6 +563,164 @@ class TeacherForcedCuratorPort:
             attempt_receipt=receipt,
         )
 
+    def _graph_model_request(self, request: ModelRequest) -> ModelRequest | None:
+        if self._graph_curator is None:
+            return None
+        suffix = ".graph"
+        request_id = request.request_id.root[: 128 - len(suffix)] + suffix
+        return request.model_copy(
+            update={
+                "request_id": StableId(request_id),
+                "trace_id": f"{request.trace_id}.graph",
+                "scheduling_stage": "curator_graph_extraction",
+            }
+        )
+
+    async def _run_proposal_profiles(
+        self,
+        *,
+        version: SchemaVersion,
+        text_root: TextRootDocument,
+        chapter_index: int,
+        base_commit: CommitId,
+        current_world: WorldRootDocument,
+        request: ModelRequest,
+        graph_request: ModelRequest | None,
+        proposal_feedback: str | None = None,
+    ) -> _CuratorProposalExecution:
+        if self._script is not None:
+            self._script(request, AgentMode.REPLAY)
+            if graph_request is not None:
+                self._script(graph_request, AgentMode.REPLAY)
+
+        replay_call = self._replay.run(
+            version=version,
+            text_root=text_root,
+            chapter_index=chapter_index,
+            base_commit=base_commit,
+            current_world=current_world,
+            request=request,
+            proposal_feedback=proposal_feedback,
+        )
+        if self._graph_curator is None or graph_request is None:
+            result, _ = await replay_call
+            return _CuratorProposalExecution(result=result)
+
+        replay_task = asyncio.create_task(replay_call)
+        graph_task = asyncio.create_task(
+            self._graph_curator.extract_graph_candidates(
+                text_root,
+                chapter_index,
+                base_commit,
+                current_world,
+                graph_request,
+            )
+        )
+        try:
+            replay_output, graph_output = await asyncio.gather(replay_task, graph_task)
+        except BaseException:
+            replay_task.cancel()
+            graph_task.cancel()
+            await asyncio.gather(replay_task, graph_task, return_exceptions=True)
+            raise
+
+        result, _ = replay_output
+        graph_batch, _ = graph_output
+        try:
+            provisional_world = WorldOverlay().apply(
+                current_world,
+                result.observed_changes,
+                canonical_commit=base_commit,
+            )
+            graph_extraction = self._graph_extraction.run(
+                provisional_world,
+                text_root,
+                candidate_batches=(graph_batch,),
+                base_commit=base_commit,
+            )
+        except ValueError as error:
+            raise ModelCurationContractError("graph candidate admission failed") from error
+
+        graph_operations = graph_extraction.change_set.operations
+        if graph_operations:
+            operations = (*result.observed_changes.operations, *graph_operations)
+            identity = sha256_id(
+                canonical_json_bytes(
+                    {
+                        "base_commit": base_commit.root,
+                        "source_artifact": result.observed_changes.source_artifact.artifact_id.root,
+                        "operation_ids": tuple(item.operation_id.root for item in operations),
+                    }
+                )
+            )
+            observed_changes = ObservedChangeSet(
+                change_set_id=StableId(f"changes.curator-graph.{identity.root[7:39]}"),
+                base_commit=base_commit,
+                source_artifact=result.observed_changes.source_artifact,
+                operations=operations,
+            )
+            result = result.model_copy(update={"observed_changes": observed_changes})
+        return _CuratorProposalExecution(
+            result=result,
+            graph_extraction=graph_extraction,
+        )
+
+    def _model_call_entries(
+        self,
+        request: ModelRequest,
+        graph_request: ModelRequest | None,
+    ) -> tuple[ModelCallLedgerEntry, ...]:
+        ledger = self._replay.curator.gateway.call_ledger
+        by_id = {
+            entry.request_id: entry
+            for prefix in (
+                request.request_id.root,
+                *((graph_request.request_id.root,) if graph_request is not None else ()),
+            )
+            for entry in ledger.list_for_prefix(prefix)
+        }
+        return tuple(sorted(by_id.values(), key=lambda entry: entry.request_id.root))
+
+    def _persist_graph_transforms(
+        self,
+        extraction: WorldGraphExtractionResult,
+        version: SchemaVersion,
+    ) -> tuple[ArtifactRef, ...]:
+        batch_refs = tuple(
+            self._artifacts.put(
+                canonical_json_bytes(batch.model_dump(mode="json")),
+                "application/vnd.novel-agent.world-graph-candidate-batch+json",
+                version,
+            )
+            for batch in extraction.candidate_batches
+        )
+        receipt_ref = self._artifacts.put(
+            canonical_json_bytes(extraction.receipt.model_dump(mode="json")),
+            "application/vnd.novel-agent.world-graph-extraction-receipt+json",
+            version,
+        )
+        return (*batch_refs, receipt_ref)
+
+    @staticmethod
+    def _compose_agent_receipt(
+        receipt: AgentExecutionReceipt,
+        changes_ref: ArtifactRef,
+        transform_refs: tuple[ArtifactRef, ...],
+        entries: tuple[ModelCallLedgerEntry, ...],
+    ) -> AgentExecutionReceipt:
+        calls = tuple(entry.call_record for entry in entries if entry.call_record is not None)
+        started_at = min((receipt.started_at, *(call.started_at for call in calls)))
+        completed_at = max((receipt.completed_at, *(call.completed_at for call in calls)))
+        return receipt.model_copy(
+            update={
+                "output_artifacts": (changes_ref, *transform_refs),
+                "model_call_ids": tuple(entry.request_id for entry in entries),
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "latency_ms": max(int((completed_at - started_at).total_seconds() * 1000), 0),
+            }
+        )
+
     def _proposal_rejected(
         self,
         request: CuratorProposalAttemptRequest,
@@ -518,9 +728,10 @@ class TeacherForcedCuratorPort:
         error: ValidationError | ModelCurationContractError,
         started_at: datetime,
         version: SchemaVersion,
+        *,
+        graph_request: ModelRequest | None = None,
     ) -> CuratorProposalRejected:
-        gateway = self._replay.curator.gateway
-        entries = gateway.call_ledger.list_for_prefix(model_request.request_id.root)
+        entries = self._model_call_entries(model_request, graph_request)
         call_refs = tuple(self._persist_model_call_entry(entry, version) for entry in entries)
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries), version

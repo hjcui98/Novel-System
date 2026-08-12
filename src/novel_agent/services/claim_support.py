@@ -94,10 +94,10 @@ SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET = 0
 # The whole-claim verifier runs without thinking mode; its per-claim entailment
 # decision stays small, so the ceiling covers the bounded decisions JSON.
 SEMANTIC_SUPPORT_VERIFICATION_MAX_OUTPUT_TOKENS = 1024
-# The local Qwen service is single-concurrency.  C60 showed that proposal
-# generations can legitimately cross 120 seconds, while every verifier batch
-# completed well below that ceiling.  A cancelled proposal can also remain in
-# the inference server briefly and make subsequent requests queue behind it.
+# The C60 Qwen endpoint used for this timeout measurement ran max-num-seqs=1.
+# Proposal generations can legitimately cross 120 seconds, while every verifier
+# batch completed well below that ceiling.  A cancelled proposal can also remain
+# in the inference server briefly and make subsequent requests queue behind it.
 # Separate the two stages instead of applying the verifier's short limit to the
 # more expensive proposal call.
 SEMANTIC_SUPPORT_PROPOSAL_TIMEOUT_SECONDS = 600.0

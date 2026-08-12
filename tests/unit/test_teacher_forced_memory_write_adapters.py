@@ -23,13 +23,15 @@ from novel_agent.adapters.memory_write.teacher_forced import (
 )
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
-from novel_agent.domain.changes import ChapterChangeDraft, WorldRecordKind
+from novel_agent.domain.changes import ChapterChangeDraft, ObservedChangeSet, WorldRecordKind
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite, WorldRootDocument
 from novel_agent.domain.memory_write import (
     CanonicalWriteBasis,
+    CuratorProposalAccepted,
     CuratorProposalRejected,
     MemoryWriteCandidatePayload,
+    MemoryWriteCommitProfile,
     ProposalConflict,
     ProposalRejectionKind,
     ProposalRejectionStage,
@@ -42,11 +44,13 @@ from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
     AgentType,
+    CuratorReplayResult,
     GuardianDecision,
     GuardianOutcome,
     WriteGateDecision,
     WriteGateOutcome,
 )
+from novel_agent.domain.world import WorldGraphCandidateBatch
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -77,6 +81,7 @@ from tests.contract.test_memory_write_workflow_contract import (
 )
 from tests.contract.test_stage2_contract import agent_receipt
 from tests.unit.test_memory_write_resume import _ready_data
+from tests.unit.test_world_graph_repair import _teacher_world
 
 
 def _commit_request() -> DurableMemoryWriteCommitRequest:
@@ -431,6 +436,24 @@ def _basis(*, include_documents: bool = True) -> CanonicalWriteBasis:
     )
 
 
+def _basis_with_world(
+    text: TextRootDocument,
+    world: WorldRootDocument,
+) -> CanonicalWriteBasis:
+    manifest = _manifest()
+    return CanonicalWriteBasis(
+        project_id=PROJECT,
+        commit_id=BASE,
+        root_manifest=manifest,
+        canonical_text=text,
+        canonical_plan=PlanRootDocument(
+            root_hash=manifest.plan_root.artifact_id,
+            schema_version=manifest.schema_version,
+        ),
+        canonical_world=world,
+    )
+
+
 def _curator_receipt() -> AgentExecutionReceipt:
     return agent_receipt().model_copy(
         update={
@@ -504,6 +527,20 @@ def test_curator_proposal_requires_text_and_world_documents() -> None:
 
     with pytest.raises(ValueError, match="proposal requires"):
         asyncio.run(port.propose(request))
+
+
+def test_graph_curator_must_share_the_replay_gateway() -> None:
+    replay = SimpleNamespace(curator=SimpleNamespace(gateway=ModelGateway(())))
+    graph_curator = SimpleNamespace(gateway=ModelGateway(()))
+
+    with pytest.raises(ValueError, match="must share"):
+        TeacherForcedCuratorPort(
+            cast(Any, replay),
+            cast(Any, object()),
+            cast(Any, InMemoryArtifactRepository()),
+            cast(Any, lambda *_: object()),
+            graph_curator=cast(Any, graph_curator),
+        )
 
 
 def test_curator_proposal_runs_without_an_optional_script() -> None:
@@ -598,6 +635,269 @@ def test_legacy_curator_proposal_invokes_optional_script() -> None:
         )
     )
     assert len(scripted) == 1
+
+
+def test_curator_proposal_attempt_runs_graph_profile_concurrently_and_merges_relation() -> None:
+    artifacts = InMemoryArtifactRepository()
+    world, text, _, _ = _teacher_world()
+    request = _request(profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC)
+    basis = CanonicalWriteBasis(
+        project_id=PROJECT,
+        commit_id=BASE,
+        root_manifest=_manifest(),
+        canonical_text=text,
+        canonical_plan=PlanRootDocument(
+            root_hash=_manifest().plan_root.artifact_id,
+            schema_version=_manifest().schema_version,
+        ),
+        canonical_world=world,
+    )
+    ordinary_changes = ObservedChangeSet(
+        change_set_id=StableId("changes.concurrent-curator.unit"),
+        base_commit=BASE,
+        source_artifact=_manifest().text_root,
+    )
+    receipt = agent_receipt().model_copy(
+        update={
+            "agent_type": AgentType.MEMORY_CURATOR,
+            "agent_mode": AgentMode.REPLAY,
+            "base_commit": BASE,
+        }
+    )
+    gateway = ModelGateway(())
+    ready = asyncio.Event()
+    inflight = 0
+    max_inflight = 0
+
+    async def rendezvous() -> None:
+        nonlocal inflight, max_inflight
+        inflight += 1
+        max_inflight = max(max_inflight, inflight)
+        if inflight == 2:
+            ready.set()
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        inflight -= 1
+
+    class Replay:
+        curator = SimpleNamespace(
+            gateway=gateway,
+            last_evidence_merge_receipts=(),
+            last_operation_filter_receipts=(),
+        )
+
+        async def run(self, **_: object) -> tuple[CuratorReplayResult, None]:
+            await rendezvous()
+            return (
+                CuratorReplayResult(
+                    observed_changes=ordinary_changes,
+                    coverage=1.0,
+                    receipt=receipt,
+                ),
+                None,
+            )
+
+    class GraphCurator:
+        def __init__(self) -> None:
+            self.gateway = gateway
+            self.request: ModelRequest | None = None
+
+        async def extract_graph_candidates(
+            self,
+            text_root: TextRootDocument,
+            chapter_index: int,
+            base_commit: CommitId,
+            _world: WorldRootDocument,
+            model_request: ModelRequest,
+        ) -> tuple[WorldGraphCandidateBatch, None]:
+            self.request = model_request
+            await rendezvous()
+            return (
+                WorldGraphCandidateBatch(
+                    batch_id=StableId("graph-batch.concurrent-curator.unit"),
+                    source_text_root=text_root.root_hash,
+                    base_commit=base_commit,
+                    chapter_index=chapter_index,
+                    policy_version="graph-concurrency-unit.v1",
+                    model_request_id=model_request.request_id,
+                ),
+                None,
+            )
+
+    graph_curator = GraphCurator()
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.concurrent-curator"))),
+        graph_curator=cast(Any, graph_curator),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(
+            _proposal_attempt_request(
+                artifacts,
+                StableId("model.concurrent-curator.attempt"),
+            ).model_copy(
+                update={
+                    "request": request,
+                    "basis": basis,
+                }
+            )
+        )
+    )
+
+    assert isinstance(outcome, CuratorProposalAccepted)
+    assert max_inflight == 2
+    assert world.relations == ()
+    assert len(outcome.observed_changes.operations) == 1
+    operation = outcome.observed_changes.operations[0]
+    assert isinstance(operation.payload, dict)
+    assert operation.payload["record_type"] == "relation"
+    assert graph_curator.request is not None
+    assert graph_curator.request.scheduling_stage == "curator_graph_extraction"
+    agent_ref = outcome.attempt_receipt.agent_execution_receipt_ref
+    assert agent_ref is not None
+    persisted_receipt = AgentExecutionReceipt.model_validate_json(
+        artifacts.read_verified(agent_ref),
+        strict=True,
+    )
+    assert {item.media_type for item in persisted_receipt.output_artifacts} >= {
+        "application/vnd.novel-agent.world-graph-candidate-batch+json",
+        "application/vnd.novel-agent.world-graph-extraction-receipt+json",
+    }
+
+    legacy = asyncio.run(
+        port.propose(
+            CuratorProposalRequest(
+                request=request,
+                basis=basis,
+                source_artifacts=(),
+                source_visibility_receipts=(),
+            )
+        )
+    )
+    assert legacy.agent_receipt is not None
+    assert {item.media_type for item in legacy.agent_receipt.output_artifacts} >= {
+        "application/vnd.novel-agent.world-graph-candidate-batch+json",
+        "application/vnd.novel-agent.world-graph-extraction-receipt+json",
+    }
+
+
+def test_curator_proposal_cancels_graph_profile_when_replay_fails() -> None:
+    world, text, _, _ = _teacher_world()
+    started = asyncio.Event()
+    graph_cancelled = False
+    gateway = ModelGateway(())
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **_: object) -> None:
+            await started.wait()
+            raise ModelCurationContractError("ordinary Curator rejected")
+
+    class GraphCurator:
+        def __init__(self) -> None:
+            self.gateway = gateway
+
+        async def extract_graph_candidates(self, *_: object) -> None:
+            nonlocal graph_cancelled
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                graph_cancelled = True
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, InMemoryArtifactRepository()),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.cancel-graph"))),
+        graph_curator=cast(Any, GraphCurator()),
+    )
+
+    with pytest.raises(ModelCurationContractError, match="ordinary Curator rejected"):
+        asyncio.run(
+            port.propose(
+                CuratorProposalRequest(
+                    request=_request(profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC),
+                    basis=_basis_with_world(text, world),
+                    source_artifacts=(),
+                    source_visibility_receipts=(),
+                )
+            )
+        )
+    assert graph_cancelled is True
+
+
+def test_curator_proposal_maps_graph_basis_mismatch_to_contract_failure() -> None:
+    world, text, _, _ = _teacher_world()
+    gateway = ModelGateway(())
+    ordinary_changes = ObservedChangeSet(
+        change_set_id=StableId("changes.graph-basis-mismatch.unit"),
+        base_commit=BASE,
+        source_artifact=_manifest().text_root,
+    )
+    receipt = agent_receipt().model_copy(
+        update={
+            "agent_type": AgentType.MEMORY_CURATOR,
+            "agent_mode": AgentMode.REPLAY,
+            "base_commit": BASE,
+        }
+    )
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **_: object) -> tuple[CuratorReplayResult, None]:
+            return CuratorReplayResult(
+                observed_changes=ordinary_changes,
+                coverage=1.0,
+                receipt=receipt,
+            ), None
+
+    class GraphCurator:
+        def __init__(self) -> None:
+            self.gateway = gateway
+
+        async def extract_graph_candidates(
+            self,
+            text_root: TextRootDocument,
+            chapter_index: int,
+            _base_commit: CommitId,
+            _world: WorldRootDocument,
+            model_request: ModelRequest,
+        ) -> tuple[WorldGraphCandidateBatch, None]:
+            return (
+                WorldGraphCandidateBatch(
+                    batch_id=StableId("graph-batch.basis-mismatch.unit"),
+                    source_text_root=text_root.root_hash,
+                    base_commit=CommitId("sha256:" + "9" * 64),
+                    chapter_index=chapter_index,
+                    policy_version="graph-basis-mismatch-unit.v1",
+                    model_request_id=model_request.request_id,
+                ),
+                None,
+            )
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, InMemoryArtifactRepository()),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.graph-basis-mismatch"))),
+        graph_curator=cast(Any, GraphCurator()),
+    )
+
+    with pytest.raises(ModelCurationContractError, match="graph candidate admission failed"):
+        asyncio.run(
+            port.propose(
+                CuratorProposalRequest(
+                    request=_request(profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC),
+                    basis=_basis_with_world(text, world),
+                    source_artifacts=(),
+                    source_visibility_receipts=(),
+                )
+            )
+        )
 
 
 def test_typed_proposal_requires_documents_and_preserves_typed_validation_failure() -> None:
