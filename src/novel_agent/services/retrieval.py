@@ -54,12 +54,20 @@ class RouteDefinition:
 
 ROUTES: dict[Stage1QueryIntent, RouteDefinition] = {
     Stage1QueryIntent.CURRENT_STATE: RouteDefinition(
-        (RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL), False
+        (RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL),
+        False,
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
     ),
-    Stage1QueryIntent.KNOWN_ID: RouteDefinition((RetrievalChannel.R1_EXACT,), False),
+    Stage1QueryIntent.KNOWN_ID: RouteDefinition(
+        (RetrievalChannel.R1_EXACT,),
+        False,
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+    ),
     Stage1QueryIntent.PLAN_NODE: RouteDefinition((RetrievalChannel.R1_EXACT,), False),
     Stage1QueryIntent.MANDATORY_CONSTRAINT: RouteDefinition(
-        (RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL), False
+        (RetrievalChannel.R1_EXACT, RetrievalChannel.R1_TEMPORAL),
+        False,
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
     ),
     Stage1QueryIntent.SEMANTIC_HISTORY: RouteDefinition(
         (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),

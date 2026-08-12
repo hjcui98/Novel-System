@@ -28,6 +28,7 @@ def _request(
     max_output_tokens: int | None = None,
     enable_thinking: bool | None = None,
     thinking_token_budget: int | None = None,
+    repetition_penalty: float | None = None,
 ) -> ModelRequest:
     return ModelRequest(
         request_id=StableId("request.test"),
@@ -42,6 +43,7 @@ def _request(
         timeout_seconds=10,
         enable_thinking=enable_thinking,
         thinking_token_budget=thinking_token_budget,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -615,3 +617,43 @@ def test_generate_does_not_include_api_key_in_error_message() -> None:
     )
     with pytest.raises(OpenAIChatEndpointError, match="after all retries"):
         asyncio.run(endpoint.generate(_request()))
+
+
+def test_payload_omits_repetition_penalty_by_default() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.clear()
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+                "model": "qwen36-27b",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request()))
+    assert "repetition_penalty" not in captured
+
+
+def test_payload_sends_explicit_repetition_penalty() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.clear()
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+                "model": "qwen36-27b",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(_request(repetition_penalty=1.10)))
+    assert captured.get("repetition_penalty") == 1.10

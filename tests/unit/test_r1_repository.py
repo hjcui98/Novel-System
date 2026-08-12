@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.adapters.postgres.models import R1RecordEntityRow, R1RecordRow
-from novel_agent.domain.ids import CommitId, ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     NeedRisk,
@@ -352,6 +352,7 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
             subject_id=base.entities[0].entity_id,
             object_id=tower.entity_id,
             valid_time=StoryTime(worldline="main", start_ordinal=21),
+            evidence_refs=base.obligations[0].evidence_refs,
             truth_class=TruthClass.ACCEPTED_WORLD_FACT,
         ),
         RelationRecord(
@@ -360,6 +361,7 @@ def test_bounded_typed_graph_uses_versioned_relation_edges(
             subject_id=tower.entity_id,
             object_id=guild.entity_id,
             valid_time=StoryTime(worldline="main", start_ordinal=1),
+            evidence_refs=base.obligations[0].evidence_refs,
             truth_class=TruthClass.ACCEPTED_WORLD_FACT,
         ),
         RelationRecord(
@@ -555,4 +557,170 @@ def test_r1_evidence_and_graph_time_helpers_fail_closed(
                 StoryTime(worldline="main", label="unknown"),
             )
             is True
+        )
+
+
+def test_validate_graph_path_receipts_typed_dereference_failures(
+    r1_database: tuple[Engine, sessionmaker[Session], CommitId],
+) -> None:
+    """Graph path receipts fail closed on every dereference branch (Round 1/2)."""
+    from novel_agent.domain.memory import GraphPathDereferenceStatus
+    from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
+    from novel_agent.services.artifacts import sha256_id
+    from novel_agent.services.content_addressing import quote_hash
+    from novel_agent.services.r1 import R1WorldRepository as R
+
+    _, factory, commit_id = r1_database
+    bundle = make_synthetic_bundle()
+    base = bundle.world_roots[0]
+    text = bundle.text_roots[0]
+    block = text.chapters[0].scenes[0].blocks[0]
+    span = TextSpanRef(block_id=block.block_id, start=0, end=8)
+    evidence = EvidenceRef(
+        evidence_id=StableId("evidence.path-1"),
+        root_hash=text.root_hash,
+        object_hash=sha256_id(block.text.encode("utf-8")),
+        chapter_id=block.chapter_id,
+        scene_id=block.scene_id,
+        span=span,
+        quote_hash=quote_hash(block.text[0:8]),
+        support_status=EvidenceSupportStatus.CURRENT,
+        resolved_at_commit=commit_id,
+    )
+    tower = Entity(
+        entity_id=StableId("entity.synthetic.tower"),
+        entity_type="location",
+        internal_label="北塔",
+    )
+    relation = RelationRecord(
+        relation_id=StableId("relation.synthetic.path"),
+        predicate="located_at",
+        subject_id=base.entities[0].entity_id,
+        object_id=tower.entity_id,
+        valid_time=StoryTime(worldline="main", start_ordinal=21),
+        evidence_refs=(evidence,),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = base.model_copy(
+        update={
+            "entities": (*base.entities, tower),
+            "relations": (*base.relations, relation),
+        }
+    )
+    repository = R1WorldRepository(factory)
+    repository.materialize(ProjectId("project.test"), commit_id, world)
+    paths = repository.typed_graph_paths(
+        commit_id, (base.entities[0].entity_id,), max_depth=2, limit=10
+    )
+    assert any(relation.relation_id in path.relation_ids for path in paths)
+    # Empty receipts short-circuit.
+    assert repository.validate_graph_path_receipts((), text) == ()
+    # A consistent receipt validates to L0_VERIFIED.
+    single = next(path for path in paths if path.relation_ids == (relation.relation_id,))
+    verified = repository.validate_graph_path_receipts((single,), text)
+    assert verified[0].dereference_status is GraphPathDereferenceStatus.L0_VERIFIED
+    # Mutating fields outside the path identity (relation ids) fails dereference.
+    forged_row_ids = (StableId("row.missing"),)
+    forged = single.model_copy(
+        update={
+            "relation_row_ids": forged_row_ids,
+            "path_id": repository._graph_path_id(
+                single.source_commit,
+                single.snapshot_id,
+                forged_row_ids,
+                single.entity_path,
+                single.directions,
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="does not dereference to its relation row"):
+        repository.validate_graph_path_receipts((forged,), text)
+    # Swapping the entity path keeps identity but breaks endpoint roles.
+    reversed_path = single.model_copy(
+        update={
+            "entity_path": tuple(reversed(single.entity_path)),
+            "path_id": repository._graph_path_id(
+                single.source_commit,
+                single.snapshot_id,
+                single.relation_row_ids,
+                tuple(reversed(single.entity_path)),
+                single.directions,
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="endpoint roles do not match"):
+        repository.validate_graph_path_receipts((reversed_path,), text)
+    reverse_entities = tuple(reversed(single.entity_path))
+    reverse_directions = ("reverse",)
+    valid_reverse = single.model_copy(
+        update={
+            "entity_path": reverse_entities,
+            "directions": reverse_directions,
+            "path_id": repository._graph_path_id(
+                single.source_commit,
+                single.snapshot_id,
+                single.relation_row_ids,
+                reverse_entities,
+                reverse_directions,
+            ),
+        }
+    )
+    reverse_verified = repository.validate_graph_path_receipts((valid_reverse,), text)
+    assert reverse_verified[0].dereference_status is GraphPathDereferenceStatus.L0_VERIFIED
+    # An identity mismatch is caught before any row work.
+    with pytest.raises(ValueError, match="identity does not match"):
+        repository.validate_graph_path_receipts(
+            (single.model_copy(update={"directions": ("reverse",)}),), text
+        )
+    # Stripping evidence from the relation row makes paths skip the edge (366)
+    # and receipt validation fail with a typed reason.
+    with factory.begin() as session:
+        row = session.scalar(
+            select(R1RecordRow).where(R1RecordRow.record_id == relation.relation_id.root)
+        )
+        assert row is not None
+        payload = dict(row.record_json)
+        payload.pop("evidence_refs", None)
+        row.record_json = payload
+    assert (
+        repository.typed_graph_paths(
+            commit_id, (base.entities[0].entity_id,), max_depth=2, limit=10
+        )
+        == ()
+    )
+    with pytest.raises(ValueError, match="relation row has no evidence"):
+        repository.validate_graph_path_receipts((single,), text)
+    # Evidence refs on the receipt that disagree with the row fail closed.
+    repository.materialize(ProjectId("project.test"), commit_id, world)
+    restored = next(
+        path
+        for path in repository.typed_graph_paths(
+            commit_id, (base.entities[0].entity_id,), max_depth=2, limit=10
+        )
+        if path.relation_ids == (relation.relation_id,)
+    )
+    with pytest.raises(ValueError, match="evidence does not match relation rows"):
+        repository.validate_graph_path_receipts(
+            (restored.model_copy(update={"evidence_refs": ()}),), text
+        )
+    # L0 evidence validation branches fail closed per mechanism.
+    blocks = repository._text_blocks(text)
+    R._validate_l0_evidence(evidence, blocks)
+    with pytest.raises(ValueError, match="no concrete span"):
+        R._validate_l0_evidence(evidence.model_copy(update={"span": None}), blocks)
+    with pytest.raises(ValueError, match="does not resolve to L0"):
+        R._validate_l0_evidence(
+            evidence.model_copy(update={"object_hash": ArtifactId("sha256:" + "c" * 64)}),
+            blocks,
+        )
+    with pytest.raises(ValueError, match="does not resolve to L0"):
+        R._validate_l0_evidence(
+            evidence.model_copy(
+                update={"span": TextSpanRef(block_id=StableId("block.ghost"), start=0, end=8)}
+            ),
+            blocks,
+        )
+    with pytest.raises(ValueError, match="quote hash does not match L0"):
+        R._validate_l0_evidence(
+            evidence.model_copy(update={"quote_hash": quote_hash("其他")}), blocks
         )

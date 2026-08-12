@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceSliceKind": {
+      "enum": [
+        "paragraph",
+        "sentence_window"
+      ],
+      "title": "EvidenceSliceKind",
+      "type": "string"
+    },
+    "EvidenceSliceSourceRole": {
+      "enum": [
+        "narrative",
+        "heading",
+        "unknown"
+      ],
+      "title": "EvidenceSliceSourceRole",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One exact L0 paragraph or contiguous-sentence slice of a parent block.\n\n``text`` is an exact substring of the parent ``TextBlock``; the slice id\nis stable over the parent identity plus the exact offsets and normalized\ntext hash.  Heading/title-only units carry an explicit source role and are\nnot narrative evidence by default.",
+  "properties": {
+    "access_scope": {
+      "minLength": 1,
+      "title": "Access Scope",
+      "type": "string"
+    },
+    "chapter_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "end": {
+      "minimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "object_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "parent_block_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "quote_hash": {
+      "$ref": "#/$defs/QuoteHash"
+    },
+    "scene_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "slice_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "slice_kind": {
+      "$ref": "#/$defs/EvidenceSliceKind"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "source_role": {
+      "$ref": "#/$defs/EvidenceSliceSourceRole",
+      "default": "narrative"
+    },
+    "start": {
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "slice_id",
+    "parent_block_id",
+    "chapter_id",
+    "start",
+    "end",
+    "text",
+    "object_hash",
+    "quote_hash",
+    "source_commit",
+    "snapshot_id",
+    "access_scope",
+    "slice_kind"
+  ],
+  "title": "EvidenceSlice",
+  "type": "object"
+}

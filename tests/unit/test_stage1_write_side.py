@@ -27,7 +27,9 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import ObligationStatus, WorldRootDocument
 from novel_agent.domain.world import TruthClass
+from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import text_root_content_id, world_root_content_id
+from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.curation import Stage1Curator
 from novel_agent.services.overlay import OverlayError, WorldOverlay, build_candidate_bundle
 from novel_agent.services.validation import Stage1Validator
@@ -98,7 +100,9 @@ def test_curator_overlay_and_validator_form_a_traceable_candidate() -> None:
 
     report = Stage1Validator().validate(candidate, world, proposed, future)
     assert report.status is ValidationStatus.PASSED
-    assert candidate.proposed_roots.world_root.artifact_id == proposed.root_hash
+    serialized_world_id = sha256_id(canonical_json_bytes(proposed.model_dump(mode="json")))
+    assert candidate.proposed_roots.world_root.artifact_id == serialized_world_id
+    assert serialized_world_id != proposed.root_hash
     assert candidate.produced_artifacts == (candidate.proposed_roots.world_root,)
     assert "transition.stage1-structural-v1" in report.validation_profile
 

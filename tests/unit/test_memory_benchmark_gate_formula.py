@@ -33,6 +33,7 @@ from novel_agent.domain.memory_benchmark import (
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.human_benchmark_compiler import HumanBenchmarkCompiler
 from novel_agent.services.memory_benchmark_metric_contracts import (
     GATE_METRIC_FORMULA_HASH,
@@ -55,10 +56,10 @@ def _put_contract(repository: ArtifactRepository, value: object) -> ArtifactRef:
 
 
 def test_gate_metric_formula_identity_is_frozen() -> None:
-    assert GATE_METRIC_FORMULA_VERSION == "gate_metric_formula.v2"
+    assert GATE_METRIC_FORMULA_VERSION == "gate_metric_formula.v3"
     assert (
         GATE_METRIC_FORMULA_HASH.root
-        == "sha256:6fdfa956164b1823cec6b8058a63f9a710dc53b5faff00eae32d8d7046915cec"
+        == "sha256:f7b8a5980c5bd87aaa5da4db1d4e2be420f75a610eecff01159c35a70ce1b33d"
     )
 
 
@@ -258,7 +259,7 @@ def _formula_case(
         code_version="formula-test.v1",
         run_config_hash=ArtifactId("sha256:" + "1" * 64),
         benchmark_contract_hash=ArtifactId("sha256:" + "2" * 64),
-        matcher_version="gold_evidence_matcher.v4",
+        matcher_version=GoldEvidenceMatcher.version,
         writer_token_budget=4000,
         evidence_ledger_token_budget=12_000,
         assembly_status=assembly_status,
@@ -355,7 +356,7 @@ def _formal_cases(
                 code_version="formal-test.v1",
                 run_config_hash=ArtifactId("sha256:" + "1" * 64),
                 benchmark_contract_hash=bundle.content_hash,
-                matcher_version="gold_evidence_matcher.v4",
+                matcher_version=GoldEvidenceMatcher.version,
                 writer_token_budget=4000,
                 evidence_ledger_token_budget=12_000,
                 assembly_status=ContextAssemblyStatus.READY,

@@ -583,6 +583,28 @@ def _r2_registration(
             (grounded,),
             None,
         )
+    if intent in {
+        Stage1QueryIntent.CURRENT_STATE,
+        Stage1QueryIntent.KNOWN_ID,
+        Stage1QueryIntent.MANDATORY_CONSTRAINT,
+    }:
+        # A current/known-id Need whose exact entity id is absent (for example
+        # an unresolved lexical institution anchor) keeps its public
+        # semantic/lexical query executable through the Anchor and Grounded
+        # BM25+dense routes; only the id-dependent exact/graph routes are
+        # closed.  The query text is never dropped because a mention lacks a
+        # runtime id.
+        return (
+            (
+                RetrievalChannel.ANCHOR_BM25,
+                RetrievalChannel.ANCHOR_DENSE,
+                RetrievalChannel.GROUNDED_BM25,
+                RetrievalChannel.GROUNDED_DENSE,
+            ),
+            (anchor,),
+            (grounded,),
+            None,
+        )
     if intent in {Stage1QueryIntent.EXACT_QUOTE, Stage1QueryIntent.RARE_PHRASE}:
         step = _step(intent, RetrievalChannel.GROUNDED_BM25, CandidatePool.GROUNDED)
         return ((RetrievalChannel.GROUNDED_BM25,), (_serial_group(intent, (step,)),), (), None)

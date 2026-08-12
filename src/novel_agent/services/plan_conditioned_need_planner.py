@@ -26,9 +26,11 @@ from novel_agent.domain.planning_memory import (
     PlannerRelationSummary,
     PlannerRunResult,
     PlannerStateSummary,
+    PlannerTargetStateCoverage,
     PlannerWorldSummary,
     RelationMention,
 )
+from novel_agent.domain.world import StateRecord
 from novel_agent.domain.writer_context import BenchmarkTaskContract
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import content_id
@@ -38,7 +40,7 @@ from novel_agent.services.model_gateway import ModelGateway
 class PlannerWorldSummaryBuilder:
     """Deterministic, bounded world projection for the LLM Planner."""
 
-    version = "planner_world_summary_builder.v1"
+    version = "planner_world_summary_builder.v2"
 
     _MAX_ENTITIES = 48
     _MAX_STATES = 64
@@ -96,6 +98,16 @@ class PlannerWorldSummaryBuilder:
                     indexed[1].state_id.root,
                 ),
             )
+        )
+        target_entities, target_coverages = cls._target_entities_and_state_coverage(
+            world,
+            label_by_id,
+            plan_text,
+            ranked_states,
+        )
+        selected_states, truncated_state_count = cls._target_aware_state_selection(
+            target_entities,
+            ranked_states,
         )
         legal_events = tuple(
             event
@@ -188,7 +200,7 @@ class PlannerWorldSummaryBuilder:
                         default=str,
                     )[:240],
                 )
-                for state in ranked_states[: cls._MAX_STATES]
+                for state in selected_states
             ),
             open_obligations=tuple(
                 PlannerObligationSummary(
@@ -226,17 +238,117 @@ class PlannerWorldSummaryBuilder:
                 )
                 for relation in ranked_relations[: cls._MAX_RELATIONS]
             ),
+            target_state_coverage=target_coverages,
             entity_count=len(world.entities),
             state_count=len(world.states),
             event_count=len(world.events),
             relation_count=len(world.relations),
             obligation_count=len(world.obligations),
             truncated_entity_count=max(0, len(world.entities) - cls._MAX_ENTITIES),
-            truncated_state_count=max(0, len(world.states) - cls._MAX_STATES),
+            truncated_state_count=truncated_state_count,
             truncated_event_count=max(0, len(legal_events) - cls._MAX_RECENT_EVENTS),
             truncated_relation_count=max(0, len(world.relations) - cls._MAX_RELATIONS),
             truncated_obligation_count=max(0, len(eligible_obligations) - cls._MAX_OBLIGATIONS),
         )
+
+    @classmethod
+    def _target_entities_and_state_coverage(
+        cls,
+        world: WorldRootDocument,
+        label_by_id: dict[StableId, str],
+        plan_text: str,
+        ranked_states: tuple[StateRecord, ...],
+    ) -> tuple[tuple[StableId, ...], tuple[PlannerTargetStateCoverage, ...]]:
+        """Extract the visible target entities and their per-target state counts.
+
+        Only labels that uniquely resolve to one runtime entity are treated as
+        targets; ambiguous or absent labels cannot anchor a target guarantee.
+        Each target entity is ordered by the number of its label hits in the
+        public task/Plan text so the most directly relevant entities are
+        protected first within the fixed state budget.
+        """
+        from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+        resolvable = NeedDraftGrounder._resolvable_label_map(world)
+        hits: dict[StableId, int] = {}
+        entity_order: dict[StableId, int] = {}
+        for index, entity in enumerate(world.entities):
+            entity_order[entity.entity_id] = index
+        for normalized, entity_id in resolvable.items():
+            count = plan_text.count(normalized)
+            if count > 0:
+                hits[entity_id] = hits.get(entity_id, 0) + count
+        targets = tuple(
+            entity_id
+            for entity_id, _count in sorted(
+                hits.items(),
+                key=lambda item: (-item[1], entity_order[item[0]], item[0].root),
+            )
+        )
+        per_target_states: dict[StableId, list[StateRecord]] = {}
+        for state in ranked_states:
+            per_target_states.setdefault(state.subject_id, []).append(state)
+        per_target_budget = max(1, cls._MAX_STATES // len(targets)) if targets else 0
+        coverages = tuple(
+            PlannerTargetStateCoverage(
+                label=label_by_id.get(entity_id, entity_id.root),
+                available=len(per_target_states.get(entity_id, ())),
+                selected=min(per_target_budget, len(per_target_states.get(entity_id, ()))),
+                truncated=max(
+                    0,
+                    len(per_target_states.get(entity_id, ())) - per_target_budget,
+                ),
+            )
+            for entity_id in targets
+        )
+        return targets, coverages
+
+    @classmethod
+    def _target_aware_state_selection(
+        cls,
+        target_entities: tuple[StableId, ...],
+        ranked_states: tuple[StateRecord, ...],
+    ) -> tuple[tuple[StateRecord, ...], int]:
+        """Select states so every target entity is represented, then fill up.
+
+        Within the same total ``_MAX_STATES`` budget, each target entity
+        receives up to ``_MAX_STATES // len(targets)`` of its own states (in
+        stable relevance order); the remaining slots are filled with the
+        globally ranked states that were not already selected.  States that
+        are not selected are counted as truncated.
+        """
+        selected_ids: set[StableId] = set()
+        selected: list[StateRecord] = []
+        per_target_budget = (
+            max(1, cls._MAX_STATES // len(target_entities)) if target_entities else 0
+        )
+        if target_entities:
+            for entity_id in target_entities:
+                if (
+                    len(selected) >= cls._MAX_STATES
+                ):  # pragma: no branch - targets are disjoint and capped per-target
+                    break  # pragma: no cover - unreachable under the per-target cap
+                taken = 0
+                for state in ranked_states:
+                    if state.subject_id != entity_id:
+                        continue
+                    if (
+                        state.state_id in selected_ids
+                    ):  # pragma: no branch - per-target state lists are disjoint
+                        continue  # pragma: no cover - disjoint per-target state lists
+                    selected.append(state)
+                    selected_ids.add(state.state_id)
+                    taken += 1
+                    if taken >= per_target_budget or len(selected) >= cls._MAX_STATES:
+                        break
+        for state in ranked_states:
+            if len(selected) >= cls._MAX_STATES:
+                break
+            if state.state_id in selected_ids:
+                continue
+            selected.append(state)
+            selected_ids.add(state.state_id)
+        return tuple(selected), max(0, len(ranked_states) - len(selected))
 
     @staticmethod
     def _event_chapter(event: object) -> int:

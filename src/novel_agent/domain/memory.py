@@ -98,6 +98,51 @@ class R1RecordView(DomainModel):
     record: dict[str, JsonValue]
 
 
+class GraphPathDereferenceStatus(StrEnum):
+    RELATION_ROWS_VERIFIED = "relation_rows_verified"
+    L0_VERIFIED = "l0_verified"
+
+
+class GraphPathReceipt(DomainModel):
+    path_id: StableId
+    source_commit: CommitId
+    snapshot_id: StableId
+    seed_entity_ids: tuple[StableId, ...] = Field(min_length=1)
+    relation_row_ids: tuple[StableId, ...] = Field(min_length=1)
+    relation_ids: tuple[StableId, ...] = Field(min_length=1)
+    entity_path: tuple[StableId, ...] = Field(min_length=2)
+    predicates: tuple[str, ...] = Field(min_length=1)
+    directions: tuple[str, ...] = Field(min_length=1)
+    valid_time: tuple[StoryTime, ...] = Field(min_length=1)
+    edge_semantics: tuple[str, ...] = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...] = Field(min_length=1)
+    dereference_status: GraphPathDereferenceStatus
+
+    @model_validator(mode="after")
+    def validate_path_shape(self) -> GraphPathReceipt:
+        edge_count = len(self.relation_ids)
+        if not all(
+            len(items) == edge_count
+            for items in (
+                self.relation_row_ids,
+                self.predicates,
+                self.directions,
+                self.valid_time,
+                self.edge_semantics,
+            )
+        ):
+            raise ValueError("graph path edge metadata lengths must match")
+        if len(self.entity_path) != edge_count + 1:
+            raise ValueError("graph path entity count must be edge count plus one")
+        if self.entity_path[0] not in self.seed_entity_ids:
+            raise ValueError("graph path must start at one of its declared seeds")
+        if any(direction not in {"forward", "reverse"} for direction in self.directions):
+            raise ValueError("graph path direction must be forward or reverse")
+        if any(semantic != "canonical" for semantic in self.edge_semantics):
+            raise ValueError("graph path receipt only permits canonical edge semantics")
+        return self
+
+
 class Stage1QueryIntent(StrEnum):
     CURRENT_STATE = "current_state"
     KNOWN_ID = "known_id"
@@ -433,6 +478,7 @@ class ChannelHit(DomainModel):
     raw_score: float
     candidate_count: int = Field(ge=1)
     hit_reason: str = Field(min_length=1)
+    graph_path_receipts: tuple[GraphPathReceipt, ...] = ()
 
 
 class FusedCandidate(DomainModel):

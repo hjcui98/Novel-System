@@ -822,3 +822,68 @@ def test_evaluator_rejects_stage_diagnostic_and_metric_descriptor_identity_drift
             (gold,),
             (diagnostic.model_copy(update={"gold_id": StableId("gold.diagnostic.wrong")}),),
         )
+
+
+def _plan_axis_gold() -> Any:
+    """A plan-node-only Gold (accepted alternative has no observed evidence)."""
+    bundle = make_synthetic_bundle()
+    case = bundle.case_manifests[0]
+    gold = case.plan_obligation_gold[0]
+    return gold.model_copy(
+        update={
+            "gold_id": StableId("gold.plan-axis-test"),
+            "accepted_evidence_sets": (
+                EvidenceSet(
+                    evidence_set_id=StableId("accepted.plan-axis-test.1"),
+                    plan_node_ids=(StableId("goal.plan-axis-test"),),
+                ),
+            ),
+        }
+    )
+
+
+def test_plan_axis_only_gold_excluded_from_claim_denominator(tmp_path: Path) -> None:
+    gold, package, ledger, receipt = _frozen()
+    plan_gold = _plan_axis_gold()
+    observed_gold = gold.model_copy(update={"gold_id": StableId("gold.observed-axis-test")})
+    gold_items = (plan_gold, observed_gold)
+    evaluator = MemoryBenchmarkEvaluator()
+    report = evaluator.evaluate(
+        package=package,
+        evidence_ledger=ledger,
+        gold_items=gold_items,
+        profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        freeze_receipt=receipt,
+        **_metric_args(tmp_path, gold_items),
+    )
+    assert report.plan_axis_only_count == 1
+    assert report.plan_axis_only_gold_ids == (StableId("gold.plan-axis-test"),)
+    assert report.observed_claim_count == 1
+    plan_axis = next(
+        item for item in report.comparisons if item.gold_id.root == "gold.plan-axis-test"
+    )
+    assert plan_axis.eligibility == "plan_axis_only"
+    observed = next(
+        item for item in report.comparisons if item.gold_id.root == "gold.observed-axis-test"
+    )
+    assert observed.eligibility == "observed_claim"
+
+
+def test_plan_axis_only_does_not_force_mandatory_to_zero(tmp_path: Path) -> None:
+    _gold, package, ledger, receipt = _frozen()
+    plan_gold = _plan_axis_gold().model_copy(update={"mandatory": True})
+    gold_items = (plan_gold,)
+    evaluator = MemoryBenchmarkEvaluator()
+    report = evaluator.evaluate(
+        package=package,
+        evidence_ledger=ledger,
+        gold_items=gold_items,
+        profile=BenchmarkInformationProfile.VISIBLE_AT_CUTOFF,
+        freeze_receipt=receipt,
+        **_metric_args(tmp_path, gold_items),
+    )
+    # Only plan-axis Gold in the denominator -> observed claim axis is empty.
+    assert report.observed_claim_count == 0
+    assert report.mandatory_hit_rate == 1.0
+    assert report.plan_axis_only_count == 1
+    assert report.legacy_72_gold_mandatory_hit_rate == 0.0

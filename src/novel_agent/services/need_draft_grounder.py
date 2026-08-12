@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import WorldRootDocument
@@ -18,50 +19,101 @@ from novel_agent.domain.planning_memory import (
 class NeedDraftGrounder:
     """Bind natural-language mentions to canonical world records.
 
-    The LLM never guesses graph ids; this layer resolves mentions through
-    exact label/alias matches first, then a bounded fuzzy match, and marks
-    ambiguous or unresolved mentions explicitly.  Same-label ambiguity is
-    resolved with relation context when the draft names the other endpoint;
-    otherwise the mention stays ``AMBIGUOUS``/``UNRESOLVED`` and the
-    validator decides.
+    Resolution uses one deterministic rule set (evidence-first Need contract):
+
+    1. a normalized mention that uniquely exact-matches an ``internal_label``
+       resolves directly to that runtime entity; another entity's same-named
+       alias must not turn the canonical exact match into ambiguity;
+    2. without an internal-label exact match, a unique alias exact match
+       grounds the mention;
+    3. multiple internal-label exact matches, multiple alias matches and
+       unknown labels all fail closed (``AMBIGUOUS``/``UNRESOLVED``) -- no
+       fuzzy, substring or dense inference is used to guess an id;
+    4. a bounded mention closure scans only the same public draft's semantic
+       question, query hints, why-needed and trigger goal, never Gold/future
+       or whole-World text;
+    5. every mention records explicit/derived source fields, match kind, and
+       the chosen id or typed rejection for the grounding audit.
     """
 
-    version = "need_draft_grounder.v1"
+    version = "need_draft_grounder.v3"
 
     @staticmethod
     def _normalize(label: str) -> str:
         return " ".join(re.sub(r"[\s\u3000]+", " ", label).strip().casefold().split())
+
+    @classmethod
+    def _resolvable_label_map(cls, world: WorldRootDocument) -> dict[str, StableId]:
+        """Normalized label -> entity id under internal-label priority.
+
+        A label is resolvable when exactly one entity carries it as
+        ``internal_label`` (even if other entities use it as an alias), or,
+        when no entity carries it as an internal label, exactly one entity
+        uses it as an alias.  Labels that are ambiguous under these rules are
+        excluded so closure and coverage postconditions never guess an ID.
+        """
+
+        internal_ids: dict[str, list[StableId]] = {}
+        alias_ids: dict[str, list[StableId]] = {}
+        for entity in world.entities:
+            if entity.internal_label.strip():
+                internal_ids.setdefault(cls._normalize(entity.internal_label), []).append(
+                    entity.entity_id
+                )
+            for label in entity.aliases:
+                if label.strip():
+                    alias_ids.setdefault(cls._normalize(label), []).append(entity.entity_id)
+        resolvable: dict[str, StableId] = {}
+        for normalized, ids in internal_ids.items():
+            if len(ids) == 1:
+                resolvable[normalized] = ids[0]
+        for normalized, ids in alias_ids.items():
+            if normalized not in internal_ids and len(ids) == 1:
+                resolvable[normalized] = ids[0]
+        return resolvable
+
+    @classmethod
+    def _world_label_map(cls, world: WorldRootDocument) -> dict[str, StableId]:
+        """Backward-compatible label map with internal-label priority."""
+        return cls._resolvable_label_map(world)
 
     def ground(
         self,
         draft: PlannedNeedDraft,
         world: WorldRootDocument,
     ) -> GroundedNeedDraft:
-        aliases_to_entities: dict[str, tuple[tuple[StableId, str], ...]] = {}
+        internal_label_entities: dict[str, tuple[StableId, ...]] = {}
+        alias_entities: dict[str, tuple[StableId, ...]] = {}
+        label_by_id = {entity.entity_id: entity.internal_label for entity in world.entities}
         for entity in world.entities:
-            labels = tuple(
-                dict.fromkeys(
-                    label for label in (entity.internal_label, *entity.aliases) if label.strip()
-                )
-            )
-            for label in labels:
-                normalized = self._normalize(label)
-                previous = aliases_to_entities.get(normalized, ())
-                if any(entity_id == entity.entity_id for entity_id, _canonical in previous):
+            if entity.internal_label.strip():
+                normalized = self._normalize(entity.internal_label)
+                if entity.entity_id not in internal_label_entities.get(
+                    normalized, ()
+                ):  # pragma: no branch - world entities are unique
+                    internal_label_entities[normalized] = (
+                        *internal_label_entities.get(normalized, ()),
+                        entity.entity_id,
+                    )
+            for label in dict.fromkeys(entity.aliases):
+                if not label.strip():
                     continue
-                aliases_to_entities[normalized] = (
-                    *previous,
-                    (entity.entity_id, entity.internal_label),
-                )
-        mention_by_normalized = {
-            self._normalize(mention.label): mention for mention in draft.entity_mentions
-        }
+                normalized = self._normalize(label)
+                if entity.entity_id not in alias_entities.get(
+                    normalized, ()
+                ):  # pragma: no branch - world entities are unique
+                    alias_entities[normalized] = (
+                        *alias_entities.get(normalized, ()),
+                        entity.entity_id,
+                    )
         resolved: dict[str, tuple[StableId, str]] = {}
 
-        def exact_candidates(label: str) -> tuple[tuple[StableId, str], ...]:
-            return aliases_to_entities.get(self._normalize(label), ())
-
-        def resolve_entity(label: str) -> GroundedEntityMention:
+        def resolve_entity(
+            label: str,
+            *,
+            mention_source: str = "explicit",
+            source_fields: tuple[str, ...] = (),
+        ) -> GroundedEntityMention:
             normalized = self._normalize(label)
             if normalized in resolved:
                 entity_id, canonical = resolved[normalized]
@@ -70,34 +122,29 @@ class NeedDraftGrounder:
                     canonical_label=canonical,
                     entity_id=entity_id,
                     confidence=1.0,
-                    grounding_method="exact_label_match",
+                    grounding_method="exact_internal_label_match"
+                    if normalized in internal_label_entities
+                    else "exact_alias_match",
                     grounding_status=GroundingStatus.GROUNDED,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
                 )
-            exact = exact_candidates(label)
-            if len(exact) == 1:
-                entity_id, canonical = exact[0]
+            internal = internal_label_entities.get(normalized, ())
+            if len(internal) == 1:
+                entity_id = internal[0]
+                canonical = label_by_id[entity_id]
                 resolved[normalized] = (entity_id, canonical)
                 return GroundedEntityMention(
                     mention=label,
                     canonical_label=canonical,
                     entity_id=entity_id,
                     confidence=1.0,
-                    grounding_method="exact_label_match",
+                    grounding_method="exact_internal_label_match",
                     grounding_status=GroundingStatus.GROUNDED,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
                 )
-            if exact:
-                context = relation_context_candidates(label, exact)
-                if len(context) == 1:
-                    entity_id, canonical = context[0]
-                    resolved[normalized] = (entity_id, canonical)
-                    return GroundedEntityMention(
-                        mention=label,
-                        canonical_label=canonical,
-                        entity_id=entity_id,
-                        confidence=0.9,
-                        grounding_method="relation_context_match",
-                        grounding_status=GroundingStatus.GROUNDED,
-                    )
+            if internal:
                 return GroundedEntityMention(
                     mention=label,
                     canonical_label=label,
@@ -105,30 +152,34 @@ class NeedDraftGrounder:
                     confidence=0.4,
                     grounding_method="ambiguous_label_match",
                     grounding_status=GroundingStatus.AMBIGUOUS,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
                 )
-            fuzzy: list[tuple[StableId, str]] = []
-            for alias, entries in aliases_to_entities.items():
-                if len(alias) >= 2 and (normalized in alias or alias in normalized):
-                    fuzzy.extend(entries)
-            if len(fuzzy) == 1:
-                hit_entity_id, hit_canonical = fuzzy[0]
-                resolved[normalized] = (hit_entity_id, hit_canonical)
+            aliases = alias_entities.get(normalized, ())
+            if len(aliases) == 1:
+                entity_id = aliases[0]
+                canonical = label_by_id[entity_id]
+                resolved[normalized] = (entity_id, canonical)
                 return GroundedEntityMention(
                     mention=label,
-                    canonical_label=hit_canonical,
-                    entity_id=hit_entity_id,
-                    confidence=0.8,
-                    grounding_method="fuzzy_label_match",
+                    canonical_label=canonical,
+                    entity_id=entity_id,
+                    confidence=1.0,
+                    grounding_method="exact_alias_match",
                     grounding_status=GroundingStatus.GROUNDED,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
                 )
-            if fuzzy:
+            if aliases:
                 return GroundedEntityMention(
                     mention=label,
                     canonical_label=label,
                     entity_id=None,
                     confidence=0.4,
-                    grounding_method="ambiguous_fuzzy_match",
+                    grounding_method="ambiguous_alias_match",
                     grounding_status=GroundingStatus.AMBIGUOUS,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
                 )
             return GroundedEntityMention(
                 mention=label,
@@ -137,49 +188,27 @@ class NeedDraftGrounder:
                 confidence=0.0,
                 grounding_method="no_label_match",
                 grounding_status=GroundingStatus.UNRESOLVED,
+                mention_source=mention_source,
+                mention_source_fields=source_fields,
             )
-
-        def relation_context_candidates(
-            label: str,
-            exact: tuple[tuple[StableId, str], ...],
-        ) -> tuple[tuple[StableId, str], ...]:
-            """Disambiguate same-label entities through draft relation endpoints."""
-
-            normalized = self._normalize(label)
-            candidates: list[tuple[StableId, str]] = []
-            for relation_mention in draft.relation_mentions:
-                subject_norm = self._normalize(relation_mention.subject_label)
-                object_norm = self._normalize(relation_mention.object_label)
-                if normalized not in {subject_norm, object_norm}:
-                    continue
-                other_label = (
-                    relation_mention.object_label
-                    if subject_norm == normalized
-                    else relation_mention.subject_label
-                )
-                other_mention = mention_by_normalized.get(self._normalize(other_label))
-                if other_mention is None:
-                    continue
-                other_resolved = (
-                    resolved.get(self._normalize(other_label)) or exact_candidates(other_label)[0]
-                    if len(exact_candidates(other_label)) == 1
-                    else None
-                )
-                if other_resolved is None:
-                    continue
-                for candidate_entity_id, candidate_canonical in exact:
-                    if any(
-                        relation.predicate == relation_mention.relation_label
-                        and other_resolved[0] in {relation.subject_id, relation.object_id}
-                        and candidate_entity_id in {relation.subject_id, relation.object_id}
-                        for relation in world.relations
-                    ):
-                        candidates.append((candidate_entity_id, candidate_canonical))
-            return tuple(dict.fromkeys(candidates))
 
         grounded_entities = tuple(
             resolve_entity(mention.label) for mention in draft.entity_mentions
         )
+        grounded_by_normalized = {self._normalize(item.mention): item for item in grounded_entities}
+        closure_texts: tuple[tuple[str, tuple[str, ...]], ...] = (
+            (draft.semantic_question, ("semantic_question",)),
+            *((hint, ("query_hints",)) for hint in draft.query_hints),
+            (draft.why_needed, ("why_needed",)),
+            (draft.trigger_plan_goal, ("trigger_plan_goal",)),
+        )
+        closed_mentions = self._mention_closure(
+            closure_texts=closure_texts,
+            unique_label_entities=self._resolvable_label_map(world),
+            grounded_by_normalized=grounded_by_normalized,
+            resolve=resolve_entity,
+        )
+        grounded_entities = (*grounded_entities, *closed_mentions)
         grounded_by_normalized = {self._normalize(item.mention): item for item in grounded_entities}
         grounded_relations: list[GroundedRelationMention] = []
         for mention in draft.relation_mentions:
@@ -269,6 +298,80 @@ class NeedDraftGrounder:
                 if mention.entity_id is not None
             )
         )
+
+    @classmethod
+    def _mention_closure(
+        cls,
+        *,
+        closure_texts: tuple[tuple[str, tuple[str, ...]], ...],
+        unique_label_entities: dict[str, StableId],
+        grounded_by_normalized: dict[str, GroundedEntityMention],
+        resolve: Callable[..., GroundedEntityMention],
+    ) -> tuple[GroundedEntityMention, ...]:
+        """Bounded literal entity-mention closure over a draft's own text.
+
+        Finds every resolvable label that occurs verbatim in the draft-
+        authorized text fields (semantic question, query hints, why-needed,
+        trigger goal), longest label first so a longer alias wins over a
+        shorter substring of it.  Only labels that uniquely resolve to one
+        runtime entity are closed in; ambiguous, empty, absent or unresolved
+        labels stay fail-closed.  Explicit mentions already resolved are
+        skipped.
+        """
+
+        normalized_by_length = tuple(
+            sorted(unique_label_entities, key=lambda item: (-len(item), item))
+        )
+        combined = "\n".join(text for text, _fields in closure_texts if text)
+        closed: list[GroundedEntityMention] = []
+        closed_ids: set[StableId] = set()
+        occupied: list[tuple[int, int]] = []
+        for normalized in normalized_by_length:
+            text = combined
+            start = 0
+            while True:
+                found = text.find(normalized, start)
+                if found < 0:
+                    break
+                span = (found, found + len(normalized))
+                if any(
+                    span[0] < other_end and other_start < span[1]
+                    for other_start, other_end in occupied
+                ):
+                    start = found + 1
+                    continue
+                occupied.append(span)
+                entity_id = unique_label_entities[normalized]
+                if entity_id in closed_ids:
+                    start = found + 1
+                    continue
+                mention = grounded_by_normalized.get(normalized)
+                if (
+                    mention is not None
+                    and mention.entity_id is not None
+                    and mention.grounding_status is GroundingStatus.GROUNDED
+                ):
+                    start = found + 1
+                    continue
+                fields = tuple(
+                    field
+                    for text_value, field_names in closure_texts
+                    if text_value and normalized in text_value
+                    for field in field_names
+                )
+                resolved_mention = resolve(
+                    normalized,
+                    mention_source="exact_text_mention_closure",
+                    source_fields=fields,
+                )
+                if (  # pragma: no branch - closure labels uniquely resolve
+                    resolved_mention.entity_id is not None
+                    and resolved_mention.grounding_status is GroundingStatus.GROUNDED
+                ):
+                    closed.append(resolved_mention)
+                    closed_ids.add(entity_id)
+                start = found + 1
+        return tuple(closed)
 
 
 __all__ = ["NeedDraftGrounder"]

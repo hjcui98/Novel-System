@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "grounding_method": {
+      "default": "no_label_match",
+      "title": "Grounding Method",
+      "type": "string"
+    },
+    "mention": {
+      "minLength": 1,
+      "title": "Mention",
+      "type": "string"
+    },
+    "source_draft_id": {
+      "minLength": 1,
+      "title": "Source Draft Id",
+      "type": "string"
+    },
+    "source_fields": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Source Fields",
+      "type": "array"
+    }
+  },
+  "required": [
+    "mention",
+    "source_draft_id"
+  ],
+  "title": "UnresolvedLexicalAnchor",
+  "type": "object"
+}

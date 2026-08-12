@@ -131,6 +131,20 @@
       ],
       "default": null
     },
+    "repetition_penalty": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "maximum": 2.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repetition Penalty"
+    },
     "request_id": {
       "$ref": "#/$defs/StableId"
     },

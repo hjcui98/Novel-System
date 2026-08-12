@@ -94,6 +94,8 @@ class GroundedEntityMention(DomainModel):
     confidence: float = Field(ge=0.0, le=1.0)
     grounding_method: str = ""
     grounding_status: GroundingStatus
+    mention_source: str = "explicit"
+    mention_source_fields: tuple[str, ...] = ()
 
 
 class GroundedRelationMention(DomainModel):
@@ -164,6 +166,27 @@ class PlannerStateSummary(DomainModel):
     value: str = Field(min_length=1)
 
 
+class PlannerTargetStateCoverage(DomainModel):
+    """Per-target-entity state coverage in the planner world summary.
+
+    Records how many of the target entity's states existed at the checkpoint,
+    how many were selected into the bounded summary and how many were
+    truncated, so the planner view can be audited per target without
+    serializing the whole World.
+    """
+
+    label: str = Field(min_length=1)
+    available: int = Field(ge=0)
+    selected: int = Field(ge=0)
+    truncated: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_coverage(self) -> PlannerTargetStateCoverage:
+        if self.available != self.selected + self.truncated:
+            raise ValueError("planner target state coverage counts are inconsistent")
+        return self
+
+
 class PlannerWorldSummary(DomainModel):
     """Deterministic, bounded world projection shown to the LLM Planner.
 
@@ -181,6 +204,7 @@ class PlannerWorldSummary(DomainModel):
     open_obligations: tuple[PlannerObligationSummary, ...] = ()
     recent_events: tuple[PlannerEventSummary, ...] = ()
     key_relations: tuple[PlannerRelationSummary, ...] = ()
+    target_state_coverage: tuple[PlannerTargetStateCoverage, ...] = ()
     entity_count: int = Field(ge=0)
     state_count: int = Field(ge=0)
     event_count: int = Field(ge=0)
@@ -306,6 +330,11 @@ class PlannerInvocationArtifact(DomainModel):
     validated_need_set_hash: ArtifactId
     fallback_status: PlannerFallbackStatus
     fallback_reason: str | None = None
+    missing_goal_chapters: tuple[int, ...] = ()
+    missing_goal_entities: tuple[tuple[str, str, int], ...] = ()
+    raw_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    canonical_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    scope_normalization_reasons: dict[str, str] = Field(default_factory=dict)
     artifact_ref: ArtifactRef | None = None
 
     @model_validator(mode="after")
@@ -377,6 +406,7 @@ __all__ = [
     "PlannerRelationSummary",
     "PlannerRunResult",
     "PlannerStateSummary",
+    "PlannerTargetStateCoverage",
     "PlannerWorldSummary",
     "RelationMention",
     "RetrievalQueryBundle",

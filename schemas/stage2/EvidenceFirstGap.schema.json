@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "EvidenceGapKind": {
+      "enum": [
+        "no_selected_evidence",
+        "budget_exceeded",
+        "slice_oversized",
+        "cutoff_tainted",
+        "scope_tainted",
+        "dereference_failed",
+        "heading_source_role"
+      ],
+      "title": "EvidenceGapKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "gap_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "$ref": "#/$defs/EvidenceGapKind"
+    },
+    "need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "gap_id",
+    "need_ids",
+    "need_facet_ids",
+    "kind",
+    "reason"
+  ],
+  "title": "EvidenceFirstGap",
+  "type": "object"
+}

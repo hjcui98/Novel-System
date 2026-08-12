@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import httpx
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
@@ -298,6 +298,16 @@ class MultiSliceClaimDraft(DomainModel):
     slice_unit_ids: tuple[StableId, ...] = Field(min_length=1)
     claim_text: str = Field(min_length=1, max_length=1200)
 
+    @model_validator(mode="after")
+    def validate_unique_references(self) -> MultiSliceClaimDraft:
+        facet_ids = tuple(item.root for item in self.need_facet_ids)
+        if len(facet_ids) != len(set(facet_ids)):
+            raise ValueError("multi-slice claim need_facet_ids must be unique")
+        slice_ids = tuple(item.root for item in self.slice_unit_ids)
+        if len(slice_ids) != len(set(slice_ids)):
+            raise ValueError("multi-slice claim slice_unit_ids must be unique")
+        return self
+
 
 class MultiSliceProposalBatch(DomainModel):
     claims: tuple[MultiSliceClaimDraft, ...] = Field(max_length=64)
@@ -542,6 +552,7 @@ class ClaimSupportTransportConfig:
     multi_enable_thinking: bool = False
     multi_thinking_token_budget: int = SEMANTIC_SUPPORT_MULTI_SLICE_THINKING_TOKEN_BUDGET
     multi_max_output_tokens: int = SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_MAX_OUTPUT_TOKENS
+    multi_repetition_penalty: float | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.multi_max_output_tokens <= 4096:
@@ -550,6 +561,10 @@ class ClaimSupportTransportConfig:
             raise ValueError("Claim Support thinking budget must fit inside its output budget")
         if not self.multi_enable_thinking and self.multi_thinking_token_budget != 0:
             raise ValueError("disabled Claim Support thinking requires a zero thinking budget")
+        if self.multi_repetition_penalty is not None and not (
+            0.0 < self.multi_repetition_penalty <= 2.0
+        ):
+            raise ValueError("Claim Support multi repetition penalty must be in (0, 2]")
 
 
 class TrustedClaimSupportProducer:
@@ -2482,12 +2497,14 @@ class TrustedClaimSupportProducer:
             ),
             scheduling_need_id=need.need_id,
             scheduling_stage="claim_support_multi_proposal",
+            repetition_penalty=self._transport_config.multi_repetition_penalty,
         )
         budget_fields: dict[str, object] = {
             "estimated_input_tokens": estimated_input_tokens,
             "max_output_tokens": self._transport_config.multi_max_output_tokens,
             "enable_thinking": self._transport_config.multi_enable_thinking,
             "thinking_token_budget": self._transport_config.multi_thinking_token_budget,
+            "repetition_penalty": self._transport_config.multi_repetition_penalty,
             "timeout_seconds": SEMANTIC_SUPPORT_MULTI_SLICE_PROPOSAL_TIMEOUT_SECONDS,
             "applied_input_token_budget": SEMANTIC_SUPPORT_SERIALIZED_REQUEST_TOKEN_BUDGET,
         }

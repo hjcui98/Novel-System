@@ -7,7 +7,7 @@ from enum import StrEnum
 from pydantic import Field, JsonValue, model_validator
 
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, StableId
 from novel_agent.domain.text import EvidenceRef
 
 
@@ -94,3 +94,225 @@ class RelationRecord(DomainModel):
     valid_time: StoryTime
     evidence_refs: tuple[EvidenceRef, ...] = ()
     truth_class: TruthClass
+
+
+class EntityResolutionStatus(StrEnum):
+    UNIQUE_LABEL = "unique_label"
+    UNIQUE_ALIAS = "unique_alias"
+    AMBIGUOUS = "ambiguous"
+    MISSING = "missing"
+
+
+class RelationBackfillStatus(StrEnum):
+    ACCEPTED = "accepted"
+    DEDUPED = "deduped"
+    REJECTED = "rejected"
+
+
+class GraphCandidateSupportStatus(StrEnum):
+    SUPPORTED = "supported"
+    REJECTED = "rejected"
+
+
+class EntityAdmissionStatus(StrEnum):
+    REUSED = "reused"
+    CREATED = "created"
+    DEDUPED = "deduped"
+    REJECTED = "rejected"
+
+
+class GraphEntityCandidateDraft(DomainModel):
+    surface: str = Field(min_length=1, max_length=160)
+    entity_type: str = Field(min_length=1, max_length=160)
+    evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+
+class GraphRelationCandidateDraft(DomainModel):
+    subject_surface: str = Field(min_length=1, max_length=160)
+    predicate: str = Field(min_length=1, max_length=160)
+    object_surface: str = Field(min_length=1, max_length=160)
+    valid_time: StoryTime
+    evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+
+class GraphCandidateBatchDraft(DomainModel):
+    entities: tuple[GraphEntityCandidateDraft, ...] = Field(default=(), max_length=4)
+    relations: tuple[GraphRelationCandidateDraft, ...] = Field(default=(), max_length=4)
+    no_graph_candidate_reason: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_bounded_output(self) -> GraphCandidateBatchDraft:
+        if len(self.entities) + len(self.relations) > 4:
+            raise ValueError("graph candidate batch permits at most four candidates")
+        if (self.entities or self.relations) and self.no_graph_candidate_reason is not None:
+            raise ValueError("non-empty graph candidate batch cannot carry a no-op reason")
+        if not self.entities and not self.relations and not self.no_graph_candidate_reason:
+            raise ValueError("empty graph candidate batch requires a reason")
+        return self
+
+
+class WorldGraphEntityCandidate(DomainModel):
+    candidate_id: StableId
+    source_batch_id: StableId
+    surface: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    support_status: GraphCandidateSupportStatus
+    support_reason: str = Field(min_length=1)
+
+
+class WorldGraphRelationCandidate(DomainModel):
+    candidate_id: StableId
+    source_batch_id: StableId
+    source_state_id: StableId | None = None
+    subject_surface: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    object_surface: str = Field(min_length=1)
+    valid_time: StoryTime
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    source_truth_class: TruthClass
+    support_status: GraphCandidateSupportStatus
+    support_reason: str = Field(min_length=1)
+
+
+class WorldGraphCandidateBatch(DomainModel):
+    batch_id: StableId
+    source_text_root: ArtifactId
+    base_commit: CommitId
+    chapter_index: int | None = Field(default=None, ge=1)
+    evidence_candidate_ids: tuple[StableId, ...] = ()
+    policy_version: str = Field(min_length=1)
+    model_request_id: StableId | None = None
+    entities: tuple[WorldGraphEntityCandidate, ...] = ()
+    relations: tuple[WorldGraphRelationCandidate, ...] = ()
+
+
+class EntityAliasResolutionReceipt(DomainModel):
+    receipt_id: StableId
+    mention: str = Field(min_length=1)
+    status: EntityResolutionStatus
+    matched_entity_ids: tuple[StableId, ...] = ()
+    resolved_entity_id: StableId | None = None
+    match_basis: str = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> EntityAliasResolutionReceipt:
+        unique = self.status in {
+            EntityResolutionStatus.UNIQUE_LABEL,
+            EntityResolutionStatus.UNIQUE_ALIAS,
+        }
+        if unique and (
+            self.resolved_entity_id is None or self.matched_entity_ids != (self.resolved_entity_id,)
+        ):
+            raise ValueError("unique entity resolution requires one matching resolved entity")
+        if not unique and self.resolved_entity_id is not None:
+            raise ValueError("non-unique entity resolution cannot expose a resolved entity")
+        return self
+
+
+class EntityAdmissionReceipt(DomainModel):
+    candidate_id: StableId
+    source_batch_id: StableId
+    surface: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    status: EntityAdmissionStatus
+    entity_id: StableId | None = None
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    resolution: EntityAliasResolutionReceipt
+    rejection_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_admission(self) -> EntityAdmissionReceipt:
+        admitted = self.status in {
+            EntityAdmissionStatus.REUSED,
+            EntityAdmissionStatus.CREATED,
+            EntityAdmissionStatus.DEDUPED,
+        }
+        if admitted and self.entity_id is None:
+            raise ValueError("admitted entity candidate requires an entity id")
+        if admitted and self.rejection_reason is not None:
+            raise ValueError("admitted entity candidate cannot have a rejection reason")
+        if not admitted and self.rejection_reason is None:
+            raise ValueError("rejected entity candidate requires a reason")
+        return self
+
+
+class RelationBackfillReceipt(DomainModel):
+    candidate_id: StableId
+    source_batch_id: StableId
+    source_state_id: StableId | None = None
+    source_truth_class: TruthClass
+    status: RelationBackfillStatus
+    predicate: str = Field(min_length=1)
+    subject_surface: str = Field(min_length=1)
+    object_surface: str = Field(min_length=1)
+    subject_id: StableId | None = None
+    object_id: StableId | None = None
+    relation_id: StableId | None = None
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    subject_resolution: EntityAliasResolutionReceipt | None = None
+    object_resolution: EntityAliasResolutionReceipt | None = None
+    rejection_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_status(self) -> RelationBackfillReceipt:
+        if self.status is RelationBackfillStatus.ACCEPTED:
+            if (
+                self.subject_id is None
+                or self.object_id is None
+                or self.relation_id is None
+                or not self.evidence_refs
+            ):
+                raise ValueError(
+                    "accepted relation backfill requires endpoints, identity, and evidence"
+                )
+            if self.rejection_reason is not None:
+                raise ValueError("accepted relation backfill cannot have a rejection reason")
+        elif self.status is RelationBackfillStatus.DEDUPED:
+            if self.subject_id is None or self.object_id is None or self.relation_id is None:
+                raise ValueError("deduped relation requires canonical relation identity")
+            if self.rejection_reason is not None:
+                raise ValueError("deduped relation cannot have a rejection reason")
+        elif self.rejection_reason is None:
+            raise ValueError("rejected relation backfill requires a rejection reason")
+        return self
+
+
+class WorldGraphExtractionReceipt(DomainModel):
+    receipt_id: StableId
+    source_world_root: ArtifactId
+    repaired_world_root: ArtifactId
+    predicate_registry_version: str = Field(min_length=1)
+    alias_policy_version: str = Field(min_length=1)
+    source_batch_ids: tuple[StableId, ...] = ()
+    entity_admissions: tuple[EntityAdmissionReceipt, ...] = ()
+    candidates: tuple[RelationBackfillReceipt, ...] = ()
+    accepted_relation_ids: tuple[StableId, ...] = ()
+    retained_state_ids: tuple[StableId, ...] = ()
+    accepted_count: int = Field(ge=0)
+    rejected_count: int = Field(ge=0)
+    deduped_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_accepted_relations(self) -> WorldGraphExtractionReceipt:
+        receipt_ids = tuple(
+            candidate.relation_id
+            for candidate in self.candidates
+            if candidate.status is RelationBackfillStatus.ACCEPTED
+        )
+        if receipt_ids != self.accepted_relation_ids:
+            raise ValueError("accepted relation ids must match accepted candidate receipts")
+        statuses = tuple(admission.status.value for admission in self.entity_admissions) + tuple(
+            candidate.status.value for candidate in self.candidates
+        )
+        if self.accepted_count != sum(
+            status in {"accepted", "created", "reused"} for status in statuses
+        ):
+            raise ValueError("graph receipt accepted accounting mismatch")
+        if self.rejected_count != statuses.count("rejected"):
+            raise ValueError("graph receipt rejected accounting mismatch")
+        if self.deduped_count != statuses.count("deduped"):
+            raise ValueError("graph receipt deduped accounting mismatch")
+        return self

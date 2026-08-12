@@ -1,105 +1,489 @@
 # OpenCode implementation and evidence
 
-- State: `RETURN_TO_CODEX_REVIEW`（§28：Stage 5 A 层第二轮返修已闭合——`runtime advance`
-  run-id 身份绑定 + 真实 Writer E2E 补 Draft acceptance → Commit → exact Freshness；
-  确定性套件 1969 passed、100% 覆盖、严格 MyPy、pre-commit 全绿；等待 Codex review）
+- State: `STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`
+  （§26.5：Round 1/2 Evidence-First 与 Round 3 World/KG/R1/L1/L2 已在同一冻结五点、同一 P005
+  repair basis 上完成真实 API/real-hybrid 联合验收；全量质量门与 pre-commit 通过）
+- Prior state: `EVIDENCE_FIRST_IMPLEMENTATION_COMPLETE / RETURN_TO_CODEX_UNIFIED_TEST`（§30：
+  evidence-first v2 package/ledger/L0 slice/Grounder/Validator/Summary/runner/artifacts 实现
+  收口，focused 测试与离线 admission replay 已验；五点真实运行与全量质量门交由 Codex 统一
+  测试、验收、整合）
 
-## 28. Stage 5 A 层第二轮返修（2026-08-11，Codex REPAIR）
+## 31. Stage 2M Round 3：World / KG / R1 typed_graph 最小关键修复（2026-08-11，Codex）
 
-Codex 在 `.agent/review.md` 对 §27 返修验收仍为 `REPAIR`，指出两个实际缺口：`runtime
-advance --run-id` 只解析不参与查询；真实 Writer E2E 停在 `WAITING_DRAFT_ACCEPTANCE` 未走完
-Draft acceptance → Commit → exact Freshness。测试证据本身已接受，本次按 review 方向补全，
-未改变 runtime 架构。
+### 31.1 修复设计摘要
 
-### 28.1 返修 1：`runtime advance` 绑定 project 与 run 双身份
+- 继续以 evidence-backed `WorldRootDocument.relations` 为唯一 KG 真源；不引入 Neo4j、独立 edge
+  table、外部 GraphRAG/LightRAG 依赖或第二套 graph store。
+- 借鉴本地 Microsoft GraphRAG、Neo4j GraphRAG Python、LightRAG 的共同组织原则，仅保留本仓库
+  当前需要的 `text/evidence unit -> candidate -> exact entity resolve -> schema validation -> canonical
+  write/materialization -> retrieval receipt`；不复制其框架、community/report、resolver 或 writer。
+- `WorldGraphExtractionPass` 只审计有登记 state-to-relation 规则的结构化 scalar state；object 必须由
+  exact canonical label/alias policy 唯一解析，predicate/type/evidence 必须验证。accepted candidate 写入
+  **新 content-addressed repair WorldRoot**；原 WorldRoot 不覆盖，原 relation-like StateRecord 全保留。
+- R1 仍由既有 `r1_record` / `r1_record_entity` owner materialize；graph edge count 只计
+  accepted、evidence-backed canonical relation row。typed graph path receipt 绑定 commit/snapshot/seeds、
+  row/relation ids、entity path、predicate/direction/time、edge semantics 与 evidence refs，并可进一步对
+  concrete append-only TextRoot 做 L0 dereference validation。
+- `AnchorBuilder` 在既有 L1 owner 中补 entity anchors，并让 relation/state/event anchor 保留 World/TextRoot
+  source refs；`FullDerivedProjectionBuilder` 无需新路径即可在 repair WorldRoot 上刷新 R1、relation
+  anchors 和既有 L2 indexes。
 
-- `RuntimeTaskQueryRepository.next_ready()` 增加可选 `run_id` 过滤（与既有 project 过滤
-  并列，无第二 task-selection path）。
-- `CreativeDispatcher` 增加 `run_id` 参数并传入 `next_ready()`；CLI `advance` 传
-  `RunId(args.run_id)`。
-- 新增回归 `test_runtime_advance_binds_run_identity_under_same_project`：同项目下创建两个
-  ready run（identity-a / identity-b），advance 指定 identity-a 后断言 identity-a 的 plan
-  task 离开 READY、identity-b 仍 READY；advance 一个不存在的 run-id 不 claim 任何任务。
-- 同步更新 dispatcher 测试 stub（`_TaskSource`、`_EveryReady`）的 `next_ready` 签名以接收
-  `run_id`。
+### 31.2 关键文件与最小闭环
 
-### 28.2 返修 2：真实 Writer E2E 走完 Draft acceptance → Commit → exact Freshness
+| 文件 | Round 3 改动 |
+|---|---|
+| `src/novel_agent/domain/world.py` | exact entity resolution、relation backfill candidate、World graph extraction receipts；accepted/rejected 形态 fail closed |
+| `src/novel_agent/services/world_graph.py`（新） | 18-predicate registry MVP、state relation rule、`EntityAliasRepairPolicy`、evidence/type/dedupe validation、`WorldGraphExtractionPass` 与新 repair WorldRoot identity |
+| `scripts/backfill_world_graph.py`（新） | 只读输入 World/Text JSON，拒绝覆盖既有 output identity，导出 repaired WorldRoot + extraction receipt |
+| `src/novel_agent/domain/memory.py` | `GraphPathReceipt`、row/L0 dereference status，并把 receipt 绑定到 typed graph `ChannelHit` |
+| `src/novel_agent/services/r1.py` | evidence-backed graph edge count、bounded path receipt、row endpoint/evidence validation、concrete L0 dereference、typed graph hit receipt retention |
+| `src/novel_agent/services/memory_pipeline.py` | entity anchors；state/event/relation source refs；既有 relation anchor 自然消费 repaired relations |
+| `tests/unit/test_world_graph_repair.py`（新）、`tests/unit/test_r1_repository.py` | registry/alias collision/backfill/rejection/new-root/R1/receipt/L0/L1 focused regressions；旧 graph fixture 补合法 evidence |
 
-- `test_real_writer_adapter_composes_through_draft_chain` 在
-  `WAITING_DRAFT_ACCEPTANCE` 后继续：提交持久化的 Draft candidate acceptance → 断言生成
-  `DRAFT_COMMIT` task → advance Draft Commit → advance Projection/Freshness。
-- 断言 exact freshness：`freshness.terminal is COMPLETED`（target_chapters=1）、
-  `current_commit == after_commit.current_commit`、Draft Commit task
-  `status is SUCCEEDED` 且 `terminal_artifact_refs` 长度为 1（immutable lineage）。
-- 该断言证明真实 Writer result → candidate acceptance → Commit → Projection/Freshness
-  在 adapter 层级完整组成，fake-writer 链路不可替代。
+实现闭环：
 
-### 28.3 验收证据
+```text
+existing evidence-backed relation-like StateRecord
+  -> predicate registry + exact entity/alias receipt + concrete evidence validation
+  -> RelationBackfillReceipt + RelationRecord
+  -> new content-addressed WorldRoot (old root unchanged; source state retained)
+  -> existing R1 relation row + subject/object roles; graph_edge_count > 0
+  -> typed_graph_paths GraphPathReceipt
+  -> relation-row verification -> concrete L0 verification
+  -> existing AnchorBuilder relation/entity anchors
+  -> existing FullDerivedProjectionBuilder L1/L2 refresh path
+```
 
-- 受影响的 dispatcher/query/CLI/real-writer E2E 测试先跑：23 passed。
-- 统一 A 层确定性套件：`1969 passed, 9 deselected`，`100%` 分支覆盖（含偶发并发竞态重跑
-  稳定达标）。
-- 严格 MyPy（353 source files）、Ruff、格式检查、pre-commit `--all-files`、`git diff
-  --check` 全部通过。
-- 真实基础设施 integration：Stage 5 integration 全过；唯一失败
-  `test_real_infrastructure.py::test_full_outbox_projection...` 与基线上一致（8 vs 4），非
-  Stage 5 回归。
-- `objects/` 与 `benchmarks/` 为本地运行数据，未被 git 跟踪，不纳入交付。
-- 未生成 ISOLATED_KERNEL_PASS 之外的产品声明；`real_stage4_adapter=false`、
-  `creative_product_gate=NOT_RUN`、`production_activation=BLOCKED`。
-- 未提交、未合并。
+### 31.3 Focused self-check（按本 goal 限制）
 
-## 27. Stage 5 A 层返修（2026-08-11，Codex REPAIR）
+- `pytest`（`--no-cov`）两组 focused checks：**42 passed + 29 passed = 71 passed**，覆盖新 graph
+  repair/R1 receipt/L0/L1 与既有 projection/retrieval backend。
+- focused Ruff check/format：PASS；strict MyPy（8 个相关 source/test files）：PASS；相关 diff
+  `git diff --check`：PASS。
+- 首轮 focused run 暴露 strict Python-object enum decode 与 R1 JSON row 边界不匹配；已改为
+  `model_validate_json()`，随后 42 个相关测试全绿。
 
-Codex 在 `.agent/review.md` 中对 Stage 5 A 层 isolated runtime kernel 验收为 `REPAIR`，测试
-证据已接受（1964 passed、100% 覆盖、严格 MyPy、Stage 5 PG 集成、迁移对称性、pre-commit），
-但指出两处 A 层接受要求缺失。本次返修按 review 方向补齐，未改变 runtime 架构。
+### 31.4 刻意未运行与 Round 2 统一整合事项
 
-### 27.1 返修 1：`runtime advance` CLI 操作（执行文档 A9）
+- 按 Round 3 goal 明确限制，**未运行** full `make quality`、全量 coverage、全量 pre-commit、五检查点
+  real backfill/projection/index rebuild、真实 PostgreSQL/OpenSearch/model API、正式 benchmark 或五点
+  acceptance；没有宣告 Stage 2M Gate PASS。
+- 没有修改 OpenCode Round 2 的 `need_query_compiler.py`、`retrieval.py`、`retrieval_routing.py`、
+  `evidence_first_checkpoint_runner.py` 或 Writer manifest/readiness owner。Round 2 合并后需统一验证 graph
+  zero-edge typed unavailable/fallback reason 与新的 `ChannelHit.graph_path_receipts` trace/manifest 保留。
+- 当前 pass intentionally 只 backfill **exactly resolvable existing entity** edges。`国教学院` 等 missing
+  organization 的 evidence-backed entity create/split/merge 尚未伪造；它们会以 missing/ambiguous typed
+  receipt 留在 audit，待 Round 2 gap evidence 与正式 repair replay 决定是否 admission。
+- 正式统一验收仍需证明：repair WorldRoot `relations > 0`、旧 root hash 不变、predicate/endpoints/evidence
+  全合法、R1 `graph_edge_count > 0`、known seeds 的 1-3 hop receipt 100% 回指 relation rows 与 L0、
+  relation anchors/L2 refreshed，且 evidence-first Writer package 路径无回归。
+- 未 commit、merge、push；未碰 Face、Stage 3/4/5、Claim Support、whole verifier、semantic evaluator、
+  Gold scorer 或 frozen benchmark Gold。
 
-- 新增 `runtime advance` 子命令：`--project-id --run-id --policy --manifest
-  --object-store-root --max-tasks`。
-- 实现走既有 `CreativeDispatcher`/`CreativeRuntimeService` owner（无第二编排路径）：从
-  `--policy` 加载 policy、`--manifest` 加载 Stage 5 manifest，装配 strict fake Planner +
-  确定性 Writer + 两个 `StrictDeterministicCandidateMaterializer` + `DerivedProjectionService`
-  + `DerivedSnapshotRepository`，用带 project 过滤的 dispatcher 有界推进 `max_tasks` 个 ready
-  task，输出 `{"progressed": N, "results": [...]}`；无 ready task 时输出 `progressed: 0`。
-- advance 用独立的 `RuntimeCommandService`（permission resolver 返回 policy.permission_hash），
-  使 dispatcher 的 claim 正常；其余 CLI 子命令保持不 claim。
-- CLI 测试新增：`test_runtime_advance_progresses_ready_tasks`（start → advance → accept-plan →
-  advance 走完 Commit/Projection/Draft）、`test_runtime_advance_no_ready_task_reports_progressed_zero`、
-  `test_runtime_advance_rejects_missing_identity`（缺 `--max-tasks` 触发 argparse 错误）。
-- 修复过程中发现并修正 CLI 顶层 `add_subparsers(dest="command")` 与子命令 `--command` 的
-  dest 冲突（改名为 `top_command`），该 bug 此前使 `maintenance`/`accept-*`/`unblock` 子命令
-  无法正确解析。
+## 30. Evidence-first Writing Package 实现收口（2026-08-11，plan §1-§4、Round 1）
 
-### 27.2 返修 2：真实 `Stage3WritingLeafAdapter` isolated E2E（执行文档 §11.5）
+### 30.1 实现清单（本轮代码改动）
 
-- 新增 `tests/integration/test_stage5_real_writer_e2e.py`：构造真实 `WriterContextLoopService`
-  （offline 确定性 SequenceEndpoint/BoundObserverEndpoint gateway + `WriterContextAssembler`
-  + `writer_context_inputs` fixtures），经真实 `Stage3WritingLeafAdapter` 接入
-  `CreativeRuntimeService`，`_writing_request_factory(task)` 基于 task 的 run/task/basis/snapshot
-  构造完整 `WritingLoopRequest`。
-- E2E 链路：Plan candidate → manual accept → Plan Commit → exact Projection/Freshness → Draft
-  candidate（真实 Writer loop 生成 DRAFT_CANDIDATE_READY 完整证据链）→ manual accept。
-- writer loop 使用独立 sqlite 事件流（不与 runtime 的 run 事件流共享），避免 RunEvent
-  sequence 冲突；保留了 fault-injection Writer 测试用于 terminal/failure 覆盖。
-- 验证证据：`test_real_writer_adapter_composes_through_draft_chain` 通过，证明 runtime →
-  request factory → Stage 3 公共边界 → Writer result 映射 → candidate acceptance → Commit →
-  Projection → Freshness 完整组成。
+| 组件 | 文件 | 内容 |
+|---|---|---|
+| v2 契约 | `src/novel_agent/domain/writer_context.py` | `EvidenceSlice`、`EvidenceLedgerEntryV2`、`EvidenceLedgerV2`、`WriterContextEvidenceItem`、`WriterContextPackageV2`（`writer_context.v2`）、`EvidenceFirstGap`/`EvidenceGapKind`、`WriterContextBudgetReportV2`、`EvidenceFirstLineage`、`UnresolvedLexicalAnchor`、`EvidenceFirstPackageManifest`；legacy v1 类型保留只读 |
+| L0 slice | `src/novel_agent/services/evidence_slice_resolver.py`（新） | 段落优先、超预算 contiguous sentence window、稳定 slice id、offset round-trip、heading source-role 过滤、oversized fail-closed |
+| 组装 | `src/novel_agent/services/evidence_first_writer_context_assembler.py`（新） | selected slice → v2 package + ledger；verified-read、span/object/quote/cutoff/scope 全验证、span 去重、writer 4000/ledger 12000 预算、preview 截断、typed gap、public-payload taint 检查 |
+| runner | `src/novel_agent/services/evidence_first_checkpoint_runner.py`（新） | 冻结 checkpoint 上 Need → Retrieval/Rank → Selection → Package/Ledger；零 Planner/Claim Support/verifier/evaluator 调用；frozen fallback 复用 frozen needs |
+| CLI | `scripts/run_evidence_first_frozen_checkpoints.py`（新） | 五点导出（package/ledger/manifest/markdown/case_record + output_index），只读 DB，复用冻结 attestation/index（无 rebuild） |
+| Grounder | `src/novel_agent/services/need_draft_grounder.py` | v3：internal-label 唯一精确优先（他实体同名 alias 不制造歧义）；无 internal 时唯一 alias exact；多 canonical/多 alias/未知 label fail-closed；移除 fuzzy/relation-context 推断；bounded mention closure 与 `_world_label_map` 同步更新 |
+| Validator | `src/novel_agent/services/need_validator.py` | unresolved lexical mention 不再丢弃整个 Need（仅零 mention 拒 `no_anchoring_mention`） |
+| Query 路由 | `src/novel_agent/services/retrieval.py`、`retrieval_routing.py` | `ROUTES[CURRENT_STATE/KNOWN_ID/MANDATORY_CONSTRAINT]` 注册 anchor fallback；R2 注册 CURRENT_STATE/KNOWN_ID/MANDATORY_CONSTRAINT anchor 主组 + grounded fallback，保证无 id 时 lexical/dense 可执行、exact/graph fail-closed |
+| Summary | `src/novel_agent/domain/planning_memory.py`、`services/plan_conditioned_need_planner.py` | `PlannerTargetStateCoverage` + `PlannerWorldSummary.target_state_coverage`；builder v2 target-aware state 选择（固定 64 预算内每目标实体有代表状态，per-target available/selected/truncated 计数；relations=0 不伪造） |
+| Need 离线重建 | `src/novel_agent/services/task_conditioned_need_generation.py` | `generate_evidence_first()`：frozen raw drafts + 新 Grounder/Validator 离线重建 Needs，新 validated identity，无模型调用；fallback artifact 保持 frozen template 行为 |
+| 测试 | `tests/unit/test_evidence_first_writer_context.py`（新）、`tests/unit/test_evidence_first_checkpoint_runner.py`（新）、`tests/unit/test_plan_conditioned_planner.py`、`tests/unit/test_stage2_retrieval_routing_service.py`、`tests/unit/test_stage2_paired_controller.py` | 见 §30.3 |
+| schemas | `schemas/stage2/` 新增 10 个 v2 schema（EvidenceSlice/EvidenceLedgerEntryV2/EvidenceLedgerV2/WriterContextEvidenceItem/WriterContextPackageV2/WriterContextBudgetReportV2/EvidenceFirstGap/EvidenceFirstLineage/UnresolvedLexicalAnchor/EvidenceFirstPackageManifest） | `scripts/export_stage2_schemas.py` 重导出 |
 
-### 27.3 验收证据
+### 30.2 离线 admission replay（§6.1，无模型调用，frozen 数据）
 
-- 受影响的 Stage 5 CLI/adapter/isolated-E2E 测试先跑：61 passed。
-- 统一 A 层确定性套件：`1968 passed, 9 deselected`，`100%` 分支覆盖。
-- 严格 MyPy（353 source files）、Ruff、格式检查、pre-commit `--all-files`、`git diff --check`
-  全部通过。
-- 真实基础设施 integration：Stage 5 integration 全过；唯一失败
-  `test_real_infrastructure.py::test_full_outbox_projection...` 与基线上一致（8 vs 4），非
-  Stage 5 回归。
-- 未生成 ISOLATED_KERNEL_PASS 之外的产品声明；`real_stage4_adapter=false`、
-  `creative_product_gate=NOT_RUN`、`production_activation=BLOCKED`。
-- 未提交、未合并。
+- **P004/C80（frozen drafts + C80 World）**：`d81_01` 的 `落落` 现为
+  `grounded / exact_internal_label_match`，绑定 canonical `entity.luo-luo`（旧
+  `ambiguous_label_match`）；证据优先 Needs 重建 **8 条**（与冻结数量一致，落落全部绑定）；
+  target-aware summary **64/108** states，覆盖 `落落(3,0)`、`关飞白(3,0)`、
+  `陈长生(21,21)`，`relation_count=0`、`key_relations=[]` 如实保留。
+- **P005/C95（frozen drafts + C95 World）**：`q97_02`（`国教学院` 唯一 mention）现被接受
+  （旧 `no_grounded_anchor` 拒绝），Needs **9 → 10**；`国教学院` 保持
+  `unresolved / no_label_match` 记入 audit；`q97_02` Need `entity_ids=[]`（无伪 id），
+  query 完整保留；channel eligibility：
+  `anchor_bm25/anchor_dense/grounded_bm25/grounded_dense` 可用，
+  `r1_exact/r1_temporal/typed_graph` 分别以
+  `missing_exact_entity_or_predicate`/`missing_graph_seed` fail-closed；
+  summary **64/124**，目标实体 `陈长生(16,29)`、`莫雨(2,0)`、`金玉律(1,0)`、
+  `天海胜雪(0,0)`。
+- 冻结身份未改动：DB `na_s2m_phase4_v33_apc_v1` 97 commits、head
+  `sha256:8bb66f7d…f254fd` 不变；五 checkpoint Commit/World/TextRoot/attestation/index 只读。
+
+### 30.3 测试与静态检查（focused）
+
+- focused pytest：**165 passed**（新 v2/resolver/assembler/runner 测试 + Grounder/Validator/
+  Summary/Query 路由回归，含 P004-like internal-label 优先、P005-like lexical anchor 保留、
+  heading 过滤与短句 negative control、预算 overflow/typed gap、taint 拒绝、legacy v1 只读、
+  slice 全验证 fail-closed、R1 anchor fallback 注册）。
+- `ruff check src tests scripts` / `ruff format --check` / strict `mypy`（301 files）全部通过；
+  `git diff --check` 干净；schemas 重导出。
+- 已知：全量 `make quality`（100% statement/branch coverage 门）尚未重跑，见 §30.4。
+
+### 30.4 输出路径与统一测试交接（Codex）
+
+- 五点真实运行命令（含冻结 embedding/reranker 8281/8282、OpenSearch 9200、DB 只读）：
+
+  ```bash
+  .conda-env/bin/python scripts/run_evidence_first_frozen_checkpoints.py \
+    --source-project /tmp/ns-stage2m-phase4-v33-apc-20260810 \
+    --output-root /tmp/ns-stage2m-evidence-first-five-20260811-v1 \
+    --database-url postgresql+psycopg://…@127.0.0.1:5432/na_s2m_phase4_v33_apc_v1 \
+    --experiment-id stage2m-evidence-first-v1-20260811 \
+    --case P001 --case P002 --case P003 --case P004 --case P005
+  ```
+
+- 每 case 目录 `<output-root>/<P001..P005>/` 导出：
+  `writer_context_package.json`（CAS verified 投影）、`evidence_ledger.json`、
+  `package_manifest.json`（source/contract/config/hash/ref/budget/call counts/immutable roots）、
+  `writer_context_package.md`（确定性可读投影）、`case_record.json`；
+  根目录 `output_index.json` 汇总五个 child refs（不覆盖、不扫描猜最新）。
+- 已知缺口 / 统一测试待办：
+  1. 全量 `make quality`（100% coverage）+ `pre-commit run --all-files` 未在本轮收口（个别
+     v2 防御性分支尚未达到 100% 覆盖率门）；
+  2. 五点真实 retrieval/package run 未执行（需 Codex 统一测试时跑，复用冻结 index，零模型调用，
+     Writer 4000 / Ledger 12000，checkpoint worker=1）；
+  3. `generate_evidence_first` 的 refreshed planner artifact 会在运行时由
+     `artifact_writer` 写入 CAS（runner 已接线，依赖真实 ArtifactRepository）；
+  4. v1/v2 双轨仅此轮共存（legacy claim assembler 仍只读可用，默认 runner 只产 v2），
+     Stage 3 Writer adapter 绑定 v2 属下一任务；
+  5. 未 commit/merge/push；未重建 projection/index；未改 frozen DB/Canon/World/TextRoot；
+     未调用 Claim Support/whole verifier/semantic evaluator/Planner model；未碰 Stage 3/4；
+     未建 KG/GraphRAG/新 evaluator。
+
+### 30.5 五点真实运行完成证据（Round 1 产物，2026-08-11 后台运行完成）
+
+运行命令同 §30.4，输出根 `/tmp/ns-stage2m-evidence-first-five-20260811-v1`，日志
+`/tmp/ns-stage2m-evidence-first-five-20260811-v1.run.log`。五点全部 **READY**：
+
+| case | needs | items | gaps | ledger entries | writer tokens | ledger tokens | retrieval calls | leakage |
+|---|---|---|---|---|---|---|---|---|
+| P001/C20 | 21 | 21 | 0 | 53 | 2518/4000 | 486/12000 | 48 | 0 |
+| P002/C40 | 25 | 25 | 0 | 109 | 3281/4000 | 965/12000 | 48 | 0 |
+| P003/C60 | 25 | 25 | 0 | 140 | 3327/4000 | 1094/12000 | 48 | 0 |
+| P004/C80 | 8 | 8 | 0 | 106 | 1008/4000 | 821/12000 | 19 | 0 |
+| P005/C95 | 10 | 10 | 0 | 125 | 1161/4000 | 897/12000 | 25 | 0 |
+
+- 每个 case 目录含 `writer_context_package.json`、`evidence_ledger.json`、
+  `package_manifest.json`、`writer_context_package.md`、`case_record.json`；根目录
+  `output_index.json`（experiment `stage2m-evidence-first-v1-20260811`，
+  `contract_version: writer_context.v2`）。
+- 零模型调用：五个 manifest 的 `call_counts` 中 planner/claim_support/whole_verifier/
+  semantic_evaluator 全为 0；仅 `retrieval_backend_calls`（冻结 index 真实混合检索）+ 已核准的
+  embedding/rerank 配置。
+- immutable roots 未变：`db_head_commit sha256:f4b5950192…`、`db_commit_count 97`、
+  `derived_snapshot_count 97`（与运行前一致，脚本首尾比对通过）。
+- P005 证据优先内容抽查：`国教学院` 相关 purpose 的 items 携带完整 ledger slice refs 与逐字
+  preview；lineage 记录 `unresolved_lexical_anchors: ['国教学院']`，`planner_fallback_used: false`。
+- 五点 `output_index.json` 的 case refs（package/ledger/manifest media type + sha256）均可在
+  冻结 CAS 中 verified read。
+
+## 32. Round 2：Need/Retrieval/Readiness 收口（2026-08-11，上位文档 §0.2/§15 Round 2）
+
+### 32.1 实现清单
+
+| 项 | 文件 | 内容 |
+|---|---|---|
+| 1. NeedCompletionSpec 默认不再 gate on current claim | `src/novel_agent/services/task_conditioned_need_generation.py` | `_completion_contract` 的 `require_current_claim` 固定为 `False`（CURRENT 证据语义仍由 facet 表达）；两处默认 `stop_condition`/`completion_criteria` 改为 "served by cutoff-safe exact evidence slices or an explicit typed gap" / "every required facet is served by cutoff-safe exact evidence slices or a typed gap"；`require_causal_history` 保留 |
+| 2. NeedQueryCompiler 保留 unresolved public anchor 的 lexical/dense 路径 | `tests/unit/test_stage1_retrieval.py` | 新增回归：无 entity id 的 anchor Need 编译后 `lexical_queries` 完整保留、`ANCHOR_BM25/ANCHOR_DENSE/GROUNDED_*` 保持 eligible，`R1_*`/`TYPED_GRAPH` 以 typed reason fail-closed（编译器行为本就正确，本轮以测试固化） |
+| 3. route trace 记录 eligible/ineligible channels 与 graph unavailable reason | `src/novel_agent/services/evidence_first_checkpoint_runner.py` | `_selections()` 增加 `route_plans` 参数；每条 trace record 新增 `eligible_channels`（plan.effective_channels）、`ineligible_channels`（plan.excluded_channels 带 reason）、`graph_unavailable_reason`（新 `_graph_unavailable_reason()`：plan 的 `query_unavailable_reasons[TYPED_GRAPH]` 优先，否则 plan/trace 的 typed_graph 零候选 → `graph_zero_candidates`）；`case_record.json` 的 route_plans 增加 `query_unavailable_reasons` |
+| 4. Manifest/readiness 机械字段 | `src/novel_agent/domain/writer_context.py`、`services/evidence_first_writer_context_assembler.py`、`scripts/run_evidence_first_frozen_checkpoints.py` | manifest 新增 `dereference_failure_count`/`scope_failure_count`/`cutoff_failure_count`/`leakage_failure_count`/`gap_codes`/`budget_status`/`root_hashes_unchanged`/`embedding_call_count`/`rerank_call_count`/`markdown_hash`；validator：READY ⇒ 四项 failure 全零、roots 未变、planner/claim/verifier/evaluator 调用全零；assembler `_reverify_slice` 改为返回 typed reason（`scope_failed`/`cutoff_failed`/`dereference_failed`），`EvidenceFirstAssemblyResult.mechanical_failure_counts` 计数，`dropped_slice_reasons` 记录精确原因；脚本按 case 写入 embedder/reranker call_records 增量、`_immutable_roots` 前后比对、markdown sha256；`case_record.json` 新增 §23.1 的 `readiness` 块 |
+| 5. packer 缺陷收口 | `src/novel_agent/services/evidence_first_writer_context_assembler.py` | (a) ledger 预算按 **unique span** 计费（跨 Need 共享 span 只计一次，原按 item 重复计费会错误丢弃）；(b) 合并 ledger entry 时合并 `evidence_refs`（原只合并 need/unit）；(c) dropped-slice 原因按 typed 类别记录 |
+| schemas | `schemas/stage2/EvidenceFirstPackageManifest.schema.json` 等 | `scripts/export_stage2_schemas.py` 重导出，contract 测试通过 |
+
+### 32.2 focused 证据（Round 2）
+
+- 新增/扩展测试：`test_evidence_first_writer_context.py`（shared-span ledger 预算单次计费、
+  merged evidence_refs、typed mechanical failure counts、manifest READY validator/gap_codes）、
+  `test_evidence_first_checkpoint_runner.py`（trace record 的 eligible/ineligible + graph
+  unavailable reason 三路径）、`test_stage1_retrieval.py`（unresolved anchor lexical/dense）、
+  `test_plan_conditioned_planner.py`/`test_evidence_first_checkpoint_runner.py`（生成 Need 默认
+  无 current-claim 门）、`test_stage2m_contract_edges.py`（fixture 修复：`units[0]` 因 Round 1
+  AnchorBuilder 新增 entity fact anchor 变为无 canonical value 的 unit，改为选择
+  `canonical_value_id is not None` 的 unit）。
+- focused pytest：相关 8 个测试文件 **168 passed**（含 Round 2 新增回归）。
+- 全量确定性套件（`pytest -m "not model_required and not integration"`，Round 2 改动期间）
+  **1809 passed / 9 deselected**；Round 2 新增代码 100% 覆盖（覆盖率的最终确认以 Codex
+  统一验收的 `make quality` 为准）。
+- `ruff check src tests scripts` / `ruff format --check src tests scripts` 通过；strict
+  `mypy`（303 files）通过；schemas contract 测试通过。
+- 已知（非本轮引入，交 Codex 统一验收时决策）：全量覆盖率为 **99.56%**，缺口全部在 Round 1
+  遗留的 `services/world_graph.py`（80%）、`domain/world.py`（92%）、`services/r1.py`（96%）
+  ——这三个文件属 Round 3 修复合约域，其 GraphPathReceipt/relation 修复合约此前无测试覆盖；
+  本次已顺带补 `world.py` 与 `r1.py`（见 `test_world_graph_repair.py`、
+  `test_r1_repository.py` 新增用例），`world_graph.py` 剩余缺口未补，由 Codex 决定补测或接受。
+  另 `.worktrees/stage5-long-running-runtime` 的 ruff 问题为预存噪音（非本轮引入）。
+
+### 32.3 交回 Codex（统一 Round 1 + Round 2 验收）
+
+- 命令（复用 §30.4 冻结资源，代码为 Round 2 版本，产物 hash 与 v1 不同属预期）：
+  五点真实运行同 §30.4（output-root 建议换新目录，如
+  `/tmp/ns-stage2m-evidence-first-five-20260811-v2`），然后全量 `make quality` +
+  `pre-commit run --all-files`。
+- 本轮未执行五点真实运行（按指示交 Codex 统一跑 Round1+Round2）；未 commit/merge/push；
+  未改 frozen DB/index/World/TextRoot；未碰 KG/World rebuild、Face、Stage 3/4、
+  Claim Support/evaluator/verifier；未宣告 Round 1/2 PASS。
+
+
+
+### 29.1 §28 遗留缺口修复（review 6 findings）
+
+1. **concrete TextRoot 双侧验证**：`GoldEvidenceMatcher` 新增 `text_roots:
+   Mapping[ArtifactId, TextRootDocument]`；cross-root 比较前分别对 expected（compiled
+   root）与 actual（对应 ancestry root）调用 `benchmark_importer.validate_evidence_ref()`
+   ——block/object/span/quote/root 任一 forged 即拒绝。proof 只持久化 refs/hashes，不复制
+   全文。
+2. **checkpoint 三重身份绑定**：`ObservedTextAncestryProof.build()` 强制 ancestry 非空且
+   首项 `commit_id/ref/logical hash` 与 checkpoint 完全一致；mismatch/empty 均
+   `ValueError`。
+3. **manifest 升版 + proof 引用**：evaluator manifest `v1→v2`；`score()` 与离线 CLI 均先
+   写 proof 到 CAS，再构建含 `ancestry_proof_ref` 的 manifest。case report/derived
+   receipt/index 经同一 manifest ref 可解引用到 proof。
+4. **derived semantic receipt**：旧 semantic receipt 经 verified read 复用（原 hash 不变）；
+   持久化新的 `stage2m-evaluator-semantic-receipt+json`（绑定 source receipt +
+   evaluator manifest + proof ref/hash + matcher/evaluator version + normalized
+   judgments），`ArtifactRef` 用真实 byte_length/media_type。
+5. **typed eligibility + Plan Goal Coverage 双路径**：`GoldEligibility` enum
+   （OBSERVED_CLAIM/PLAN_AXIS_ONLY）；`evaluate()` 与 `evaluate_typed_failure()` 共用
+   `_gold_eligibility()` 与分母分离 helper；两条路径均计算 five_segments（含 Plan Goal
+   Coverage）。
+6. **可重复 CLI 入口**：`scripts/rescore_stage2m_frozen_checkpoints.py`（新），复用
+   production 相同的 proof/manifest/receipt 构造与 CAS 持久化，全部 `read_verified` 回读。
+
+### 29.2 回归与质量门
+
+- ancestry 测试 34 个（含 4 个 forged negative controls：block/object/quote/span-bounds 被
+  concrete validator 拒绝；3 个三重身份 mismatch；empty ancestry）；
+- plan-axis 双路径测试（normal 分母分离 + typed-failure 同分类）；
+- pre-commit 全绿：**1714 passed, 9 deselected, 100.00% statement/branch coverage**；
+  strict mypy/ruff clean；schemas 重导出。
+
+### 29.3 v3 离线 rescore（可重复 CLI，无模型调用）
+
+输出 `/tmp/ns-stage2m-frozen-checkpoint-evaluator-rescore-20260811-v3/<case>/`；全部新
+proof/manifest/derived receipt/report 写现有 CAS 并 `read_verified` 回读。
+
+| Case | observed matcher | plan_axis | chain_len | Plan Goal Cov | fallback_rate | leakage |
+|---|---|---:|---:|---:|---:|---:|
+| P001/C20 | **4/8** | 5 | 22 | 0/5 | 1.0 | 0 |
+| P002/C40 | **8/9** | 5 | 42 | 0/5 | 1.0 | 0 |
+| P003/C60 | **2/9** | 5 | 62 | 0/5 | 1.0 | 0 |
+| P004/C80 | **8/10** | 5 | 82 | **5/5** | 0.0 | 0 |
+| P005/C95 | **11/11** | 5 | 97 | **5/5** | 0.0 | 0 |
+
+- observed matcher 数字与 review 期望完全一致（不再把 plan-axis Gold 混入分母）；
+- 5 个 evaluator manifest 均 `evaluator_manifest.v2` 且 `ancestry_proof_ref` 非 null；
+- chain lengths 为真实 22/42/62/82/97；Plan Goal Coverage 与 fallback 如实保留；
+- 已知 6 条完整 text alternative 仍不因 ancestry 缺失全零（P002-G01/G03/G04/G07/G08、
+  P005-G11 均获 ledger 匹配）。
+
+### 29.4 交接
+
+- 最终状态 `EVALUATOR_PROVENANCE_REPAIR_COMPLETE / RETURN_TO_CODEX_REVIEW`。
+- 未 commit/merge/push；未调用模型/重放 World/修改 Need/query/prompt/预算；未宣告
+  M4/Gate/formal PASS。真实质量首损（Need/Route/Retrieve/Claim/Evidence）留待下一任务。
+
+
+## 28. Evaluator/provenance repair（2026-08-11，plan §R）
+
+### 28.1 §27 错误归因更正
+
+§27 声称「ancestry 修复已生效」与「main 首损在 claim/evidence」**不成立**。Codex review
+（`.agent/review.md` REPAIR）确认：matcher v5 的零匹配本身是首损（proof 未生效），且 25 条
+Plan Gold 进入 claim mandatory 分母使指标结构性为 0。本轮只修这两处技术性缺陷；真实质量
+问题（45 条可评 Gold 仅 8 条 full Need match 等）留待下一任务。
+
+### 28.2 四项修复（R2.1-R2.4）
+
+1. **TextRoot 分层 identity**（`observed_text_ancestry.py` v2）：proof 同时保存
+   `checkpoint_text_root_ref`（ArtifactRef）与 `checkpoint_text_root_hash`（logical root）；
+   ancestry 每项含 commit_id + TextRoot ArtifactRef + 解引用后的 logical root。构造时经
+   artifact repository verified read 解析 `TextRootDocument` 才收集 logical root，不再混用
+   CAS blob id 与 logical root hash。
+2. **角色化 pair 判定**（R2.2）：`allows_expected()` 只允许 case-local compiled root；
+   `allows_actual()` 只允许 checkpoint/ancestry root；`canonical_source_key` 用
+   chapter/scene/object_hash（`prelude.*`→sentinel 0，case namespace 不参与），两侧
+   EvidenceRef 各自在自身 concrete TextRoot 上可解析后才进入 span overlap。无对称
+   `allows()` 大集合。
+3. **proof 持久化 + 单一 identity**（R2.3）：`_E2EEvaluator._build_ancestry_proof` 在
+   APC profile 下构建并写入 CAS（`observed-text-ancestry-proof+json`）；chain 断裂/多父/
+   read/parse 失败全部 typed `TeacherForcedBenchmarkError`（不再静默 `None`）；
+   proof ref 进入 evaluator manifest（`ancestry_proof_ref`）；共享 matcher 注入
+   GoldMetricContractBuilder / MemoryBenchmarkEvaluator / ModelSemanticSupportVerifier。
+   matcher v5→v6、evaluator per_gold_v3→v4、formula v2→v3（`role-paired-observed-text
+   -root-ancestry-v2` + `plan_axis_separation`）。
+4. **Plan-axis 分离**（R2.4）：`PerGoldComparison.eligibility`（`plan_axis_only` /
+   `observed_claim`）；plan-node-only Gold（accepted alternatives 无 evidence_refs 全
+   plan_node_ids）标 `plan_axis_only`，不进 Evidence Recall/Claim Accuracy/claim
+   mandatory/weighted 分母；`plan_axis_only_gold_ids/count/weight` 与
+   `observed_claim_count/weight` 进报告；legacy 72-Gold 口径保留为
+   `legacy_72_gold_*`（显式标记 legacy-not-applicable，不作为 Gate 3 分数）。
+
+### 28.3 回归矩阵（R3）与质量门
+
+- 新增/更新 license-free 测试：observed_text_ancestry v2 接口 26 个（角色 pair、prelude
+  sentinel、numbered namespace、manifest artifact vs logical root 分离、proof hash 稳定、
+  unparseable id fail-closed）；e2e ancestry typed-failure 8 个（state/commit/chain/
+  multi-parent/cycle/unreadable/missing ref/missing case/compiled root 全 typed raise）；
+  plan-axis 分离 2 个（排除分母 + mandatory 不为 0）。
+- pre-commit 全绿：**1706 passed, 9 deselected, 100% statement/branch coverage**；strict
+  mypy / ruff clean；`git diff --check` 干净。
+- 更新 schemas export（evaluator manifest 含 ancestry_proof_ref、report 含 plan-axis 字段）。
+
+### 28.4 离线五点复算（R4，不调用模型）
+
+- 读取 R1 列出的 5 个 paired artifacts + 5 个 semantic verifier receipts + 源 DB commit
+  chain（只读）；用新 matcher/evaluator/formula 纯离线重评，输出
+  `/tmp/ns-stage2m-frozen-checkpoint-evaluator-rescore-20260811-v2/<case>/`（未覆盖 v1）。
+
+| Case | observed | plan_axis | matcher_v6 match | untraceable | weighted |
+|---|---:|---:|---:|---:|---:|
+| P001/C20 | 8 | 5 | 4/13 | 0.625 | 0 |
+| P002/C40 | 9 | 5 | 8/14 | 0 | 0 |
+| P003/C60 | 9 | 5 | 2/14 | 0 | 0 |
+| P004/C80 | 10 | 5 | 8/15 | 0 | 0 |
+| P005/C95 | 11 | 5 | 11/16 | 0.545 | 0 |
+
+- **最低机械验收达成**：
+  - 6 条已知完整 text alternative（P002-G01/G03/G04/G07/G08、P005-G11）不再全 matcher
+    zero（ledger 匹配 11-28 条）；P005-G11 现 UNTRACEABLE（semantic 支持但 traceable
+    未绑定——可解释为 claim 引用不同 Ledger entry，非 proof 缺失）；
+  - 25 条 plan-axis Gold 全从 claim 分母排除（plan_axis=5/case），plan citation=0 保持；
+  - proof 每 case 持久化（hash、42 ancestry entries、compiled/checkpoint logical roots）；
+  - untraceable 从旧全 case 高位显著下降（P002/P003/P004 归零）；
+  - legacy 72-Gold mandatory 全 0 但显式标记 legacy-not-applicable。
+- 残余：P001/P005 untraceable 较高（semantic 支持但 traceable 未绑定）；P001/P002/P003
+  planner fallback 与 Plan Goal Coverage 0/5 或部分如实保留；graph/relations 未动。
+
+### 28.5 交接
+
+- 最终状态 `EVALUATOR_PROVENANCE_REPAIR_COMPLETE / RETURN_TO_CODEX_REVIEW`。
+- 技术性零分已修（matcher 不再全零、plan-axis 分离）；真实质量首损（Need/Route/Retrieve/
+  Claim/Evidence）需下一任务处理，本轮不改 prompt/预算/模型参数。
+- 未 commit/merge/push；未重跑 World/模型；未宣告 M4/Gate/formal PASS。
+
+
+## 27. 冻结 World 五检查点修复与重评（2026-08-11，plan §6.3 全新身份）
+
+### 27.1 证据隔离与源状态快照（§3.0）
+
+- HEAD `0ec1eb4`、fingerprint `sha256:0d67e865...7dc190f`；exec scope clean；无 runner。
+- 五 checkpoint 只读证明（DB `na_s2m_phase4_v33_apc_v1`，97 commits 线性，head=C95
+  `8bb66f7d`）：
+
+| Case | C | commit | chapters | world(ent,st,rel,ev) |
+|---|---:|---|---|---|
+| P001 | 20 | `9ad34064...7432d6` | 20 | 10,29,0,0 |
+| P002 | 40 | `378d71e6...046a0d6` | 40 | 14,52,0,0 |
+| P003 | 60 | `86c060c6...86e4bd0` | 60 | 23,81,0,1 |
+| P004 | 80 | `ba7c17cd...2dca57d` | 80 | 26,108,0,1 |
+| P005 | 95 | `8bb66f7d...f254fd` | 95 | 28,124,0,1 |
+
+- relations=0 / typed_graph=0 如实保留为 residual limitation。
+
+### 27.2 四项修复（§3.1-3.4，最小机制，仅既有 owner）
+
+1. **Planner scope 单一权威**（`need_validator.py` v2）：`required_claim_scopes` 保留为
+   raw/audit，final completion scope 只由 facet 推导；raw 缺失/错配记录
+   `missing_scope_canonicalized_from_facets`/`mismatched_scope_canonicalized_from_facets`
+   到 artifact，不丢 draft。PLAN_NODE/planned/未知值仍拒绝。
+2. **goal coverage postcondition**（`task_conditioned_need_generation.py`）：accepted drafts
+   `trigger_plan_chapters` 并集未覆盖全部 target goal chapters → 完整 deterministic fallback，
+   typed reason `insufficient_target_goal_coverage` + `missing_goal_chapters`；正常 Planner
+   Need/facets 全 mandatory（`RequirementLevel.MANDATORY` + irreducible=required）。
+3. **runtime entity binding**（`teacher_forced_benchmark_e2e.py`）：five-segment
+   `entity_id_by_label` 改用 `_FrozenState.world`（label/aliases→runtime ID，歧义不命中），
+   不再用 bundle oracle World。
+4. **ObservedTextAncestryProof**（`observed_text_ancestry.py` v1 + `gold_evidence_matching.py`
+   v5）：跨 TextRoot 匹配必须命中 checkpoint commit 沿单父链到 genesis 的 ancestry TextRoot
+   集合 + 相同 chapter/scene/object_hash + 精确 span overlap；foreign/future root fail closed。
+   proof 每 checkpoint 构建一次，注入 GoldMetricContractBuilder / MemoryBenchmarkEvaluator /
+   ModelSemanticSupportVerifier 共享同一 matcher。
+5. **repetition_penalty**（`model_calls.py`/`openai_chat.py`/`claim_support.py`）：
+   `ModelRequest.repetition_penalty` 可选，OpenAI adapter 仅非 None 发送；
+   `ClaimSupportTransportConfig.multi_repetition_penalty` 只作用于 multi-slice proposal；
+   `MultiSliceClaimDraft` fail-closed 校验 slice/facet id 唯一。CLI
+   `--support-multi-repetition-penalty` 纳入 execution config/manifest。
+
+### 27.3 回归矩阵与质量门（§4）
+
+- 新增 23 个 license-free 测试（Planner scope/goal/mandatory 10、entity binding 4、
+  ancestry/matcher 12、repetition/transport 7），更新 gate-formula matcher 版本断言。
+- `make quality`：ruff 全绿（`.worktrees/` Stage 5 目录为预存环境问题，stash 验证非本
+  轮引入）；pre-commit（ruff check/format + strict mypy + deterministic pytest）**全绿**，
+  **1686 passed, 9 deselected, 100% statement/branch coverage**，`git diff --check` 干净。
+
+### 27.4 五点重评前 admission（§5）
+
+- **§5.1 离线复算**（frozen drafts + runtime checkpoint World，无模型调用）：
+  - P003 raw 7 → 新 accepted **7**（旧 1，6 条 scope canonicalize 保留）；
+  - P005 raw 6 → 新 accepted **6**（旧 3，3 条保留）；
+  - P004 3 accepted + 8 `no_grounded_anchor`（泛称 draft 仍 fail-closed）；
+  - runtime world label 映射：P001 33 / P005 43 个唯一 label→runtime ID，歧义仅 1。
+- **§5.2 repetition A/B**（5 frozen failed prompts，endpoint limit=1）：baseline 与
+  candidate 1.10 全部 `stop`、合法 JSON、无重复 id；candidate 对 2 个 worst-case 复跑稳定。
+  **接受 repetition_penalty=1.10**（仅 Claim Support multi）。
+- **§5.3 C20 smoke**（P001/C20 recovery-checkpoint）：entity_hits 4/13（修复生效）；
+  planner fallback（ch24 draft 被判 `plan_goal_as_fact` → missing_goal=[24]）为
+  goal-coverage 正确 fail-closed；commit_count=0、leakage=0。
+
+### 27.5 五点重评（§6，顺序单写者，dirty diagnostic）
+
+- 隔离：mirror project `/tmp/ns-stage2m-frozen-checkpoint-repair-project-20260811-v1`
+  （reflink copy）；每 case 独立 output/experiment ID/OpenSearch namespace；DB 用
+  explicit historical recovery 只读路径；5 case 顺序运行，无并发。
+- 每 case 完整命令、config（need=2/endpoint=1/evaluator=1/checkpoint=1、multi
+  thinking=false/0/2048、**repetition_penalty=1.10**、scheduling 900、Writer 4000 /
+  Ledger 12000）与结果：
+- 产物根 `/tmp/ns-stage2m-frozen-checkpoint-repair-eval-20260811-v1/`，每 case 独立
+  `p00X-cYY/`（experiment_manifest/flow_summary/scenario_run/support_progress/
+  stage2m_case_CYY_A.json/e2e_paired_report.json/report_index.json/report_manifests/
+  reports/），运行日志 `p00X-cYY.run.log`。
+
+| Case | C | status | chain | commit | leak | scheduler acq=rel | support finish | matcher |
+|---|---|---|---|---|---|---|---|---|
+| P001 | 20 | completed | True | 0 | 0 | 89=89 | 32×stop | v5 |
+| P002 | 40 | completed | True | 0 | 0 | 101=101 | 36×stop | v5 |
+| P003 | 60 | completed | True | 0 | 0 | 106=106 | 48×stop | v5 |
+| P004 | 80 | completed | True | 0 | 0 | 41=41 | 14×stop | v5 |
+| P005 | 95 | completed | True | 0 | 0 | 44=44 | 18×stop | v5 |
+
+- **all 148 Claim Support proposals finish=stop，无 repetition/length collapse**；
+  DB Canon 97 commits 线性不变（head=C95），五 checkpoint roots 不变，无新 commit。
+- Planner：P001/P002/P003 fallback（goal 覆盖不足，含 ch24 goal-as-fact 拒判），
+  **P004/P005 normal Planner 成功（fallback=0）**。
+
+### 27.6 三代指标并列（§7.2，非本轮可调 Gate）
+
+| Case | 旧 2026-08-07 recall | 当前 v33 recall | entity_hits | untraceable | ledger bindings |
+|---|---:|---:|---:|---:|---:|
+| P001/C20 | 0.654 | 0.692 | 4/13 | 0.462 | 7 |
+| P002/C40 | 0.793 | 0.828 | 3/14 | 0.214 | 9 |
+| P003/C60 | 0.552 | 0.241 | 1/14 | 0.357 | 8 |
+| P004/C80 | 0.545 | 0.273 | 4/15 | 0.467 | 10 |
+| P005/C95 | 无旧基线 | 0.419 | 0/16 | 0.625 | 11 |
+
+- Per-Gold：5 case 均 `mandatory_hit_rate=0.0`、`weighted_coverage=0.0`；matcher
+  v5 下 entity_hits 恢复（P001 4 条、P004 4 条含多实体），但 claim/evidence 层仍全 MISS。
+- `support_terminal=completed_with_failures` 为 proposal 级 insufficient/garbage 判定
+  （正常 fail-closed），无 transport/length 失败。
+
+### 27.7 交接结论
+
+- 最终状态 `FROZEN_CHECKPOINT_REPAIR_DIAGNOSTIC_COMPLETE` / `RETURN_TO_CODEX_REVIEW`。
+- 机制修复已验证（scope canonicalize、goal fallback、runtime entity binding、ancestry
+  proof、repetition 无坍塌）；但 Per-Gold 仍全零，main 首损在 claim/evidence 匹配层，
+  本轮未触碰（plan §7.2 明确不得为追数值调参）。
+- 未 commit/merge/push；未宣告 M4/Gate/formal PASS；TIO/Agentic 未运行。
+
 
 ## 26. ch32 Curator 反馈死锁修复（2026-08-10，Codex REPAIR）
 
@@ -1905,38 +2289,180 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
 - Status: `RETURN_TO_CODEX_REVIEW`. These artifacts replace the v31/old-fingerprint evidence only;
   previously accepted implementation and test evidence is unchanged. No commit or merge was made.
 
-## 25. Stage 3 Writer Context Loop direct implementation (2026-08-10)
+## 25. GPU6 Writer thinking A/B 操作运行记录（2026-08-11，§18 指南）
 
-- Worktree: `/home/cuihengjia/agent/novel/NS-stage3-context-loop`; branch:
-  `codex/stage3-writer-context-loop`; executable Stage 2 base:
-  `0ec1eb492a9a3b0dc4b39b060f98778dbd63994d`; selective candidate source:
-  `3db41e686ffe01936ccc541ed60f6ea12552c8fc`. The old candidate branch was not merged or
-  cherry-picked wholesale.
-- S3-A through S3-D are implemented as one candidate-only path: typed Writer/Editor/Observer
-  agents and content-addressed Prompt/Skill contracts; `WriterWorkPlan`; bounded
-  `REQUEST_MEMORY`; `ContextDelta` and event-derived `AgentContextView`; safe soft/hard compaction,
-  provider-valid dispatch, checkpoint replay/recovery; finite PASS/local-repair/major-rewrite
-  review routes; read-only observation and declaration reconciliation; versioned Stage 3 schemas;
-  and offline plus real-full-chain evaluation runners.
-- The loop produces immutable draft candidates and receipts only. It does not write Canon,
-  `TextRoot`, `WorldRoot`, `PlanRoot`, `MemoryPatch`, or invoke `CommitService`. Shared Stage 2
-  owners remain authoritative; the implementation adds no second Memory Gateway, Model Gateway,
-  event store, artifact store, context store, scheduler, or general DAG.
-- Unified deterministic command:
-  `PYTHONPATH=src /home/cuihengjia/agent/novel/NS/.conda-env/bin/pytest -m "not integration and not model_required"`.
-  Result: `1893 passed, 9 deselected` in 285.95 seconds, 26,054 statements and 7,330 branches,
-  100% coverage. This includes the required Stage 2 Memory Gateway, WriterContext assembler, and
-  model-admission regressions.
-- Full repository pre-commit passes with `PYTHONPATH=src`: Ruff check, Ruff format, strict MyPy
-  across 324 source/test files, and deterministic Pytest. Independent Ruff, format, strict MyPy
-  over 173 production files, and `git diff --check` also pass.
-- Direct integration selection ran 5 tests: the Stage 2 benchmark freeze/reveal integration test
-  passed; 4 pre-existing real-infrastructure tests stopped at fixture setup because the available
-  Conda environment lacks the PostgreSQL `initdb` binary. No product assertion failed, but the
-  infrastructure integration gate is not claimed as passed.
-- The formal runner requires a real runtime factory and refuses fixture/scripted verdicts. No
-  Writer/Editor/Observer/evaluator endpoint configuration or credentials were available, so the
-  real three-scheme semantic experiment was not run and no semantic `PASS` is issued. Engineering
-  implementation is complete; the Stage 3 gate remains `CONDITIONAL_PASS` until the final accepted
-  Stage 2 executable identity is integrated and both infrastructure and formal model gates run.
-- No commit or merge was created.
+### 25.1 预检（§18.6）— PASS
+
+- InkOS CLI `1.7.2` 存在；brief `benchmarks/private/yujin_jiuxu_longform_v0.1/author_brief.md` 存在。
+- GPU6 `/v1/models`：`qwen36-27b-nvfp4`，`max_model_len=131072`。
+- 进程身份（只读，未重启）：vllm pid 1431098，`CUDA_VISIBLE_DEVICES=6`，`--port 8005`，
+  `--reasoning-parser qwen3`，MTP speculative（method=mtp, num_speculative_tokens=2），
+  KV `fp8_e4m3`，`max-num-seqs 1`，prefix caching 开启。与 manifest 一致。
+
+### 25.2 直接 API smoke（§18.7）— 失败，运行停止
+
+- RUN_ROOT: `inkos_lab/runs/gpu6-qwen36-ab-20260811-01/`（全新，证据目录受 .gitignore 保护）
+- 同一份《余烬九序》第一卷第一章 prompt（`api-smoke/prompt.md`），seed=24081106，Writer 参数
+  0.8/0.95/top_k20，两组唯一差异为 thinking 开关/预算/上限（2048 vs 2560/512）。
+- 结果：
+  - non-thinking：HTTP 200，`finish_reason=length`，content 尾部"原来，残缺"为**硬截断不完整句**，
+    机械循环无（12-gram max=1）。
+  - thinking：HTTP 200，`finish_reason=stop`，reasoning 511 tokens（≤512+16 容差），content 完整闭合。
+- 判定：non-thinking 命中 smoke 失败条件（"finish_reason=length 且句子被硬截断时失败"），同时命中
+  §18.10 停机条件。按指南停止，不进入 §18.8 三 seed 矩阵、不进入 §18.9 InkOS 长跑；未修改参数重试
+  伪装通过。
+- 状态：`BLOCKED:SMOKE_NON_THINKING_HARD_TRUNCATION`。证据与 SHA-256 见
+  `inkos_lab/runs/gpu6-qwen36-ab-20260811-01/api-smoke/REPORT.md`。
+
+## 26. Stage 2M evidence-first + World/KG architecture repair（2026-08-12）
+
+### 26.1 Implemented corridor
+
+- Round 1/2 的 Evidence-First package/readiness 路径现在显式携带 projection attestation、
+  `graph_edge_count`、per-Need graph readiness 与已通过 L0 dereference 的 graph path receipt
+  IDs；有 graph receipt 但无 validator、或 validator 未返回 `L0_VERIFIED` 时 fail closed。
+- Round 3 复用现有 `ModelCurator -> CandidateChangeBundle -> Stage1Validator -> CommitService ->
+  FullDerivedProjectionBuilder` 写侧链。模型只产出有界 entity/relation candidates 与逐字 evidence
+  quote；host 负责 evidence binding、support gate、alias/entity resolution、predicate/domain/range、
+  truth、dedupe、CAS、commit 和 projection。
+- `scripts/backfill_world_graph.py` 是唯一 repair/backfill runner：支持 JSON 或只读 source-project
+  checkpoint，写入隔离 artifact/SQLite/OpenSearch namespace，并输出 extraction receipt、validation
+  report、repair commit、projection attestation、R1 counts、typed graph receipts、model call records 与
+  source-root immutability proof。manifest 分开记录 World 内部 `source_commit` 与实际选择的
+  `selected_source_commit`。
+- 五点 `scripts/run_evidence_first_frozen_checkpoints.py` 现可用可选
+  `--repair-workspace/--repair-case` 把一个冻结 checkpoint（正式配方为 P005/C95）切换到 repair
+  project/commit 的 World、R1、exact projection attestation 和 L2 physical indexes；冻结 task、Need、
+  Planner artifact 仍来自同一 source checkpoint。切换前强制校验 selected source commit、TextRoot、
+  PlanRoot 一致，避免把两次独立绿灯误报为 joint acceptance。
+- Evidence-First 产物写入 output-root 自己的 CAS，不再向 frozen source 或 repair object store 追加
+  package artifacts。统一 `output_index.json` 记录 started/completed、source project、脱敏 DB identity、
+  per-case refs/config hash、aggregate config hash 与 aggregate mechanical status。
+- `Stage1Validator` 独立复核本次 relation writes 的 canonical endpoints、registered predicate、
+  domain/range 与 accepted truth；Pydantic overlay validation error 被转换为 FAILED finding，不再使
+  validator 崩溃。CAS artifact ID 与 World 内部 semantic root hash 的职责也已分离。
+
+### 26.2 Deterministic acceptance
+
+- `make quality`: PASS。
+- Ruff check/format：PASS；strict MyPy：304 files，PASS。
+- Pytest：`1840 passed, 9 deselected`；24,228 statements / 6,936 branches，100% coverage。
+- focused evidence：World/KG repair、model support/audit、validator、checkpoint readiness、R1 reverse
+  path 和 schema/contract suites 均通过；source-project runner 单测证明 source head 与 root bytes
+  不变且 repair commit 独立；joint loader/basis 测试实际读取 repair SQLite/CAS，并证明 P005 选择
+  repair commit/project、非 repair case 保持 source basis、错配 source commit fail closed。
+- 未 commit、merge 或 push；未修改 frozen source project、DB、index、WorldRoot、TextRoot 或 Gold。
+
+### 26.3 Historical pre-authorization checkpoint
+
+- 冻结项目 `/tmp/ns-stage2m-phase4-v33-apc-20260810`、DB
+  `na_s2m_phase4_v33_apc_v1` 与 C95 commit
+  `sha256:8bb66f7d10cef9b8859766b4bb4126a6791c506e6f936287608595527ff254fd`
+  已定位。
+- 2026-08-12 预检时 8002/8281/8282/9200 均未监听。尝试通过仓库既有
+  `scripts/native_infra.py up` 启动锁定服务时，执行环境拒绝 escalated persistent-service side
+  effect，要求 human explicit approval；未绕过审批，未生成伪 real evidence。
+- 因此当时状态为 `ENGINEERING_PASS / UNIFIED_REAL_GATE_PENDING_AUTHORIZATION`。不得将其写成
+  Stage 2M M4 PASS；授权并完成全新五 checkpoint + Round 3 real model/real-hybrid 联合运行后，
+  才能写最终接受结论。
+
+### 26.4 Authorized real run and fail-closed iterations (2026-08-12)
+
+- Human authorization was received and the repository-managed PostgreSQL, OpenSearch, MinIO, OTEL,
+  BAAI/bge-m3 (8281) and BAAI/bge-reranker-v2-m3 (8282) services were started. The model endpoint
+  exposed `qwen36-27b-nvfp4` with a 131072-token context window.
+- Two isolated attempts failed closed before projection: v1 exposed an unnecessary default-thinking
+  output truncation; v2 exposed schema drift and a structured retry that dropped `response_schema`.
+  The graph profile now disables thinking, states the exact bounded JSON shape and relation-first
+  selection rule, and every structured retry preserves strict JSON schema. Regression tests cover
+  both transport and domain behavior.
+- The first projection-complete real-hybrid repair evidence was
+  `/tmp/ns-stage2m-round3-world-repair-20260812-v4`: source C95 remained unchanged; repair commit
+  `sha256:93982fbd6bdd8ecdd9442444d1cdcde4f20e1900d58dabb0fade4114f27c36c6` and snapshot
+  `snapshot.93982fbd6bdd8ecdd9442444d1cdcde4f20e1900d58dabb0fade4114f27c36c6`
+  contain 4 relation rows, 4 graph edges, 6 graph-path receipts, all L0 verified, 198 R1 records,
+  169 entity associations and a real-hybrid projection attestation. The selected source commit,
+  TextRoot and source WorldRoot are unchanged.
+- The first joint attempt failed closed because the initially inspected frozen handoff directory did
+  not expose the five hard-bound paired objects. A complete content-addressed mirror was subsequently
+  located at `/tmp/ns-stage2m-frozen-checkpoint-repair-project-20260811-v1`; all five paired object
+  hashes and the five top manifests were verified before reuse. No Need or Planner input was
+  regenerated or inferred from rendered packages.
+- A second joint attempt correctly rejected v4 because its repair commit used the C95 commit
+  PlanRoot rather than P005's exact checkpoint PlanRoot. The P005 plan was compiled from the frozen
+  paired input, hash-verified as
+  `sha256:7c577cb3c03e2150c1705315cc138ed0a7d459e78ebaa0c3db7c9fd31914670a`, and supplied through the
+  explicit checkpoint-plan override while source immutability continued to validate the original
+  commit PlanRoot. A third attempt then exposed the missing persisted `derived_snapshot` row; the
+  canonical projection publisher now stores and reads back that row before declaring repair success.
+- Latest deterministic gate: Ruff/format PASS; strict MyPy 304 files PASS; `1843 passed,
+  9 deselected`; 24,246 statements and 6,942 branches at 100% coverage. No commit, merge or push was
+  made.
+
+### 26.5 Final same-basis real acceptance (2026-08-12)
+
+- Accepted Round 3 workspace:
+  `/tmp/ns-stage2m-round3-world-repair-20260812-v5`. Repair commit
+  `sha256:b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` and snapshot
+  `snapshot.b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` use P005's exact
+  checkpoint PlanRoot and the unchanged frozen TextRoot. The source C95 commit, source WorldRoot,
+  source TextRoot, source commit PlanRoot and source head remained unchanged.
+- The repair produced 2 accepted relation rows / 2 typed graph edges, 1 graph-path receipt with
+  `l0_verified`, 169 R1 records, 165 entity associations, 265 anchor documents and 96 grounded
+  documents. The persisted projection attestation is `exact`; all 8 channels, including
+  `typed_graph` (2/2), have zero failed units and no degraded channels.
+- Final joint output:
+  `/tmp/ns-stage2m-evidence-first-joint-20260812-v4/output_index.json`. Aggregate mechanical status is
+  `PASS`; P001-P005 are all `READY`, every case has zero gap/dereference/scope/cutoff/leakage failures
+  and unchanged roots. P005 is explicitly `joint_repair=true` and binds the v5 repair commit,
+  snapshot, project, indexes, exact P005 PlanRoot and original C95 source checkpoint commit.
+- Final verification after the last code and test formatting changes: `make quality` PASS (strict
+  MyPy 304 files; 1843 passed, 9 deselected; 24,246 statements / 6,942 branches, 100% coverage) and
+  `.conda-env/bin/pre-commit run --all-files` PASS.
+- Acceptance: `STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`. ADR-0008's optional
+  external model/human scoring remains post-freeze and is not an Agent READY prerequisite. The real
+  run and acceptance occurred before commit; Codex later formed one focused local Stage 2M commit
+  after explicit human authorization. It remains unmerged and unpushed.
+
+## 26. GPU6 Writer thinking A/B 长跑结果（2026-08-12，§18 指南，attempt-02 起）
+
+### 26.1 过程状态机（全部按 §18.7.1/§18.10 受控执行）
+
+- attempt-01（2048/2560）：non-thinking `finish_reason=length` 硬截断 → 重分类
+  `INCONCLUSIVE:NON_THINKING_OUTPUT_BUDGET_MISMATCH`，证据保留。
+- attempt-02（4096/4608+512）：两侧完整闭合，seed 确定性得到验证（thinking 输出与 attempt-01
+  逐字节一致）→ smoke 通过，进入矩阵。
+- 三 seed 矩阵三版：v1 发现 lane2-thinking 陆远职业与 brief 冲突（提示合同缺口）→ v2 钉死陆远
+  事实但 lane2-thinking 长度 66.6% 低于 70% 下限 → v3 只改目标长度句后 6/6 全门禁通过
+  → `API_AB_PASS`（3 seed × 2 mode，5-gram Jaccard worst=0.032，SHA 全异，长度 108-120%）。
+- InkOS 长跑：v1/v2（`INKOS_LLM_API_KEY=EMPTY`）实为 pi-ai transport，会静默丢弃全部 extra
+  （seed/top_p/chat_template_kwargs），服务端默认 thinking，A/B 无效 → 重建 v3（127.0.0.1 免 key，
+  native transport 透传 extra）；thinking 建书再遇 undici 300s headersTimeout（非流式长生成）
+  → 两侧统一改 `INKOS_LLM_STREAM=true`（InkOS 默认值）后建书与 30 章长跑成功。
+
+### 26.2 最终判定（GPU6 单卡串行，模型 qwen36-27b-nvfp4@8005）
+
+| 项 | non-thinking lane A | thinking lane B |
+|---|---|---|
+| 章数 | 33（≥30） | 34（≥30） |
+| auditPassRate | 18%（6 ready / 27 audit-failed） | 71%（24 ready / 10 audit-failed） |
+| qualityScore | 54 | 70 |
+| critical audit issues 总数 | 60 | 13 |
+| 平均字数 | 3160 | 3002 |
+| 典型 critical | 禁止句式「不是…而是…」反复出现、Memo 偏离 | 单章 Memo 偏离/视角越界（可修复） |
+| state-degraded 修复 | ch3（rewrite） | ch7(rewrite), ch10/12/13/26/28/29(repair-state，validator 协议偶发失败重试) |
+| 复读/12-gram | 无机械循环 | 无机械循环 |
+
+- 状态：`API_AB_PASS`（矩阵）+ `INKOS_30CH_DIAGNOSTIC_PASS`（两条隔离长跑均完成 30 章，
+  无复读、无状态推进错误；含 1 次 ch3 长度归一化后仍超硬区间→rewrite 修复）。
+- **非 `ROLE_SCOPED_WRITER_AB_PASS`**：Writer 实际温度仍为 InkOS 代码内 0.7，seed/top_p 为
+  transport extra；thinking 作用于全管线（含 validator/auditor），Validator 严格 PASS/FAIL 协议
+  在 thinking 下偶发失效（ch13 需 4 次重试）。正式 role-scoped PASS 需 Stage 3 Writer policy 成为
+  采样参数 owner。
+- 成本：thinking 约 +55% 延迟/章（~171s vs ~110s），thinking 单章 ≈1023 reasoning tokens；
+  但审计通过率 71% vs 18%、critical 13 vs 60——thinking 在本 InkOS 长跑中质量显著更稳，
+  无重复退化，成本收益为正（非 AI 幻觉式优势，有每章审计证据）。
+- 发现 8003 端口存在 GPU1 同模型 vLLM（max-num-seqs=8 vs GPU6=1）：本轮按 §18.8 保持 GPU6
+  单卡串行，未混用；若做多卡并行需独立 identity manifest 并统一服务参数。
+- 证据：`inkos_lab/runs/gpu6-qwen36-ab-20260811-01/{api-smoke,api-matrix,inkos-no-thinking-v3,
+  inkos-thinking-v3}`（含 REPORT、FINAL.txt、每批次 write JSON/快照、章节 SHA、tokenUsage）。

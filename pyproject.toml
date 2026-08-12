@@ -66,6 +66,7 @@ packages = ["src/novel_agent"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+extend-exclude = [".worktrees"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

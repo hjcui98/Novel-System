@@ -12,7 +12,7 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.canonical import CanonicalAliasReceipt
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, StableId
 from novel_agent.domain.model_calls import ModelCallRecord
-from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.text import EvidenceRef, QuoteHash
 
 
 class BenchmarkInformationProfile(StrEnum):
@@ -370,6 +370,341 @@ class FreezeReceipt(DomainModel):
         return self
 
 
+class EvidenceSliceKind(StrEnum):
+    PARAGRAPH = "paragraph"
+    SENTENCE_WINDOW = "sentence_window"
+
+
+class EvidenceSliceSourceRole(StrEnum):
+    NARRATIVE = "narrative"
+    HEADING = "heading"
+    UNKNOWN = "unknown"
+
+
+class EvidenceSlice(DomainModel):
+    """One exact L0 paragraph or contiguous-sentence slice of a parent block.
+
+    ``text`` is an exact substring of the parent ``TextBlock``; the slice id
+    is stable over the parent identity plus the exact offsets and normalized
+    text hash.  Heading/title-only units carry an explicit source role and are
+    not narrative evidence by default.
+    """
+
+    slice_id: StableId
+    parent_block_id: StableId
+    chapter_id: StableId
+    scene_id: StableId | None = None
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    object_hash: ArtifactId
+    quote_hash: QuoteHash
+    source_commit: CommitId
+    snapshot_id: StableId
+    access_scope: str = Field(min_length=1)
+    slice_kind: EvidenceSliceKind
+    source_role: EvidenceSliceSourceRole = EvidenceSliceSourceRole.NARRATIVE
+
+    @model_validator(mode="after")
+    def validate_slice(self) -> EvidenceSlice:
+        if self.end < self.start:
+            raise ValueError("evidence slice end must be greater than or equal to start")
+        return self
+
+
+class EvidenceLedgerEntryV2(DomainModel):
+    """Evidence-first ledger entry: exact raw slice text plus full provenance.
+
+    One entry stores one deduplicated slice text; ``need_ids`` aggregates every
+    public Need that selected it.  ``dereference_receipt`` records whether the
+    entry was re-read from its exact parent block text during assembly.
+    """
+
+    ledger_id: StableId
+    evidence_slices: tuple[EvidenceSlice, ...]
+    evidence_text: str = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...]
+    retrieval_unit_ids: tuple[StableId, ...] = ()
+    basis_commit_id: CommitId
+    basis_snapshot_id: StableId
+    cutoff_chapter: int = Field(ge=0)
+    information_scope: str = Field(min_length=1)
+    taint: str = "none"
+    text_hash: ArtifactId
+    span_hash: ArtifactId
+    quote_hash: QuoteHash
+    dereference_receipt: str = "verified_read"
+    need_ids: tuple[StableId, ...]
+    need_facet_ids: tuple[StableId, ...]
+
+    @model_validator(mode="after")
+    def validate_entry(self) -> EvidenceLedgerEntryV2:
+        if not self.evidence_slices:
+            raise ValueError("evidence ledger entry requires at least one exact slice")
+        if len(self.evidence_slices) != len({slice_.slice_id for slice_ in self.evidence_slices}):
+            raise ValueError("evidence ledger entry slices must be unique")
+        if self.evidence_text != "".join(slice_.text for slice_ in self.evidence_slices):
+            raise ValueError("evidence ledger entry text must match its exact slices")
+        if not self.need_ids:
+            raise ValueError("exposed ledger entry must bind at least one public Need")
+        return self
+
+
+class EvidenceLedgerV2(DomainModel):
+    contract_version: str = "evidence_ledger.v2"
+    entries: tuple[EvidenceLedgerEntryV2, ...] = ()
+    rendered_tokens: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_ledger(self) -> EvidenceLedgerV2:
+        ledger_ids = tuple(entry.ledger_id for entry in self.entries)
+        if len(ledger_ids) != len(set(ledger_ids)):
+            raise ValueError("evidence ledger entry ids must be unique")
+        return self
+
+
+class EvidenceGapKind(StrEnum):
+    NO_SELECTED_EVIDENCE = "no_selected_evidence"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    SLICE_OVERSIZED = "slice_oversized"
+    CUTOFF_TAINTED = "cutoff_tainted"
+    SCOPE_TAINTED = "scope_tainted"
+    DEREFERENCE_FAILED = "dereference_failed"
+    HEADING_SOURCE_ROLE = "heading_source_role"
+
+
+class EvidenceFirstGap(DomainModel):
+    gap_id: StableId
+    need_ids: tuple[StableId, ...]
+    need_facet_ids: tuple[StableId, ...]
+    kind: EvidenceGapKind
+    reason: str = Field(min_length=1)
+
+
+class WriterContextEvidenceItem(DomainModel):
+    """Writer-visible evidence item: purpose plus ledger refs or a typed gap.
+
+    ``purpose`` is derived only from the public Need's semantic question /
+    why-needed / facet metadata; it never rewrites material into a claim and
+    never reads Gold or future text.  ``raw_preview`` is a bounded prefix of
+    the exact Ledger text (never a model rewrite) with an explicit truncation
+    flag.
+    """
+
+    item_id: StableId
+    section: WriterContextSection
+    need_ids: tuple[StableId, ...]
+    need_facet_ids: tuple[StableId, ...]
+    purpose: str = Field(min_length=1)
+    evidence_ledger_ids: tuple[StableId, ...] = ()
+    raw_preview: str = ""
+    preview_truncated: bool = False
+    source_scope: str = ""
+    source_kind: str = ""
+    validity: WriterContextValidity = WriterContextValidity.UNCERTAIN
+    mandatory: bool = False
+    selection_reason: str = ""
+    gap: EvidenceFirstGap | None = None
+
+    @model_validator(mode="after")
+    def validate_item(self) -> WriterContextEvidenceItem:
+        if self.gap is not None:
+            if self.evidence_ledger_ids or self.raw_preview:
+                raise ValueError("typed gap items cannot carry evidence or previews")
+            return self
+        if not self.evidence_ledger_ids:
+            raise ValueError("writer context evidence item requires ledger refs or a typed gap")
+        if not self.raw_preview:
+            raise ValueError("writer context evidence item requires a raw preview")
+        if len(self.evidence_ledger_ids) != len(set(self.evidence_ledger_ids)):
+            raise ValueError("writer context evidence ledger ids must be unique")
+        return self
+
+
+class WriterContextBudgetReportV2(DomainModel):
+    tokenizer: str = Field(min_length=1)
+    tokenizer_version: str = Field(min_length=1)
+    configured_writer_token_budget: int = Field(ge=1)
+    actual_rendered_writer_tokens: int = Field(ge=0)
+    configured_ledger_token_budget: int = Field(ge=1)
+    actual_rendered_ledger_tokens: int = Field(ge=0)
+    item_count: int = Field(ge=0)
+    evidence_item_count: int = Field(ge=0)
+    gap_item_count: int = Field(ge=0)
+    ledger_entry_count: int = Field(ge=0)
+    dropped_slice_reasons: dict[str, str] = Field(default_factory=dict)
+    final_status: ContextAssemblyStatus
+
+    @model_validator(mode="after")
+    def validate_ready_budget(self) -> WriterContextBudgetReportV2:
+        if (
+            self.final_status is ContextAssemblyStatus.READY
+            and self.actual_rendered_writer_tokens > self.configured_writer_token_budget
+        ):
+            raise ValueError("READY evidence-first package cannot exceed its writer budget")
+        if (
+            self.final_status is ContextAssemblyStatus.READY
+            and self.actual_rendered_ledger_tokens > self.configured_ledger_token_budget
+        ):
+            raise ValueError("READY evidence-first package cannot exceed its ledger budget")
+        if self.item_count != self.evidence_item_count + self.gap_item_count:
+            raise ValueError("evidence-first item counts are inconsistent")
+        return self
+
+
+class UnresolvedLexicalAnchor(DomainModel):
+    mention: str = Field(min_length=1)
+    source_draft_id: str = Field(min_length=1)
+    source_fields: tuple[str, ...] = ()
+    grounding_method: str = "no_label_match"
+
+
+class EvidenceFirstLineage(DomainModel):
+    need_ids: tuple[StableId, ...] = ()
+    assembler_version: str = Field(min_length=1)
+    grounder_version: str = ""
+    validator_version: str = ""
+    generator_version: str = ""
+    query_compiler_version: str = ""
+    route_plan_version: str = ""
+    resolver_version: str = ""
+    planner_artifact_ref: ArtifactRef | None = None
+    planner_artifact_hash: ArtifactId | None = None
+    planner_fallback_used: bool = False
+    unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...] = ()
+
+
+class WriterContextPackageV2(DomainModel):
+    """Evidence-first Writer Context product (``writer_context.v2``).
+
+    The default Stage 2M read-side product (ADR-0008): public
+    Need/facet/scope-organized evidence items plus typed gaps, with a bound
+    EvidenceLedger reference.  No claim groups, variants, receipts or semantic
+    verdicts are required for READY.
+    """
+
+    contract_version: Literal["writer_context.v2"] = "writer_context.v2"
+    task_contract: BenchmarkTaskContract
+    basis_commit_id: CommitId
+    basis_snapshot_id: StableId
+    arm: Literal["A", "B", "C"]
+    items: tuple[WriterContextEvidenceItem, ...]
+    gaps: tuple[EvidenceFirstGap, ...] = ()
+    budget_report: WriterContextBudgetReportV2
+    evidence_ledger_ref: ArtifactRef
+    lineage: EvidenceFirstLineage
+    rendered_context: str = ""
+
+    @model_validator(mode="after")
+    def validate_package(self) -> WriterContextPackageV2:
+        gap_ids = {gap.gap_id for item in self.items if item.gap is not None for gap in (item.gap,)}
+        listed_gap_ids = {gap.gap_id for gap in self.gaps}
+        if gap_ids != listed_gap_ids:
+            raise ValueError("package typed gaps must match item gap bindings")
+        return self
+
+
+class EvidenceFirstPackageManifest(DomainModel):
+    """Reproducible package/ledger freeze manifest for one checkpoint.
+
+    The manifest carries the source, contract, configuration, content hashes,
+    artifact refs, budgets, call counts and immutable root identity so a
+    Writer, human or external strong model can verify the package without
+    scanning the object store.
+    """
+
+    manifest_id: StableId
+    experiment_id: str = Field(min_length=1)
+    case_id: StableId
+    checkpoint_chapter: int = Field(ge=0)
+    basis_commit_id: CommitId
+    basis_snapshot_id: StableId
+    contract_version: Literal["writer_context.v2"] = "writer_context.v2"
+    ledger_contract_version: str = "evidence_ledger.v2"
+    assembler_version: str = Field(min_length=1)
+    run_config_hash: ArtifactId
+    package_artifact_ref: ArtifactRef
+    evidence_ledger_ref: ArtifactRef
+    package_hash: ArtifactId
+    evidence_ledger_hash: ArtifactId
+    generated_at: str = Field(min_length=1)
+    writer_token_budget: int = Field(ge=1)
+    evidence_ledger_token_budget: int = Field(ge=1)
+    call_counts: dict[str, int] = Field(default_factory=dict)
+    immutable_root_hashes: dict[str, str] = Field(default_factory=dict)
+    need_count: int = Field(ge=0)
+    item_count: int = Field(ge=0)
+    gap_count: int = Field(ge=0)
+    gap_codes: tuple[str, ...] = ()
+    ledger_entry_count: int = Field(ge=0)
+    ledger_tokens: int = Field(ge=0)
+    future_leakage_count: int = Field(default=0, ge=0)
+    leakage_failure_count: int = Field(default=0, ge=0)
+    dereference_failure_count: int = Field(default=0, ge=0)
+    scope_failure_count: int = Field(default=0, ge=0)
+    cutoff_failure_count: int = Field(default=0, ge=0)
+    budget_status: str = Field(min_length=1)
+    root_hashes_unchanged: bool = True
+    embedding_call_count: int = Field(default=0, ge=0)
+    rerank_call_count: int = Field(default=0, ge=0)
+    markdown_hash: ArtifactId | None = None
+    assembly_status: str = Field(min_length=1)
+    projection_attestation_id: StableId | None = None
+    graph_edge_count: int = Field(default=0, ge=0)
+    graph_readiness_by_need: dict[str, str] = Field(default_factory=dict)
+    verified_graph_path_receipt_ids: tuple[StableId, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> EvidenceFirstPackageManifest:
+        if self.package_artifact_ref.artifact_id != self.package_hash:
+            raise ValueError("package manifest ref must match its retained artifact hash")
+        if self.evidence_ledger_ref.artifact_id != self.evidence_ledger_hash:
+            raise ValueError("ledger manifest ref must match its retained artifact hash")
+        if self.leakage_failure_count != self.future_leakage_count:
+            raise ValueError("leakage failure count must equal the future leakage count")
+        if self.gap_codes != tuple(dict.fromkeys(self.gap_codes)):
+            raise ValueError("gap codes must be unique and ordered")
+        if self.assembly_status == "READY":
+            failures = (
+                self.dereference_failure_count,
+                self.scope_failure_count,
+                self.cutoff_failure_count,
+                self.leakage_failure_count,
+            )
+            if any(item != 0 for item in failures):
+                raise ValueError("READY manifest cannot carry mechanical failure counts")
+            if not self.root_hashes_unchanged:
+                raise ValueError("READY manifest requires unchanged immutable roots")
+            claim_path_calls = tuple(
+                self.call_counts.get(key, 0)
+                for key in (
+                    "need_planner_model_calls",
+                    "claim_support_calls",
+                    "whole_verifier_calls",
+                    "semantic_evaluator_calls",
+                )
+            )
+            if any(item != 0 for item in claim_path_calls):
+                raise ValueError("READY manifest requires zero claim-path model calls")
+        graph_statuses = set(self.graph_readiness_by_need.values())
+        allowed_graph_statuses = {
+            "ready",
+            "zero_edge",
+            "missing_seed",
+            "filtered_or_no_path",
+            "not_required",
+        }
+        if not graph_statuses.issubset(allowed_graph_statuses):
+            raise ValueError("package manifest has an unknown graph readiness status")
+        if "ready" in graph_statuses and (
+            self.graph_edge_count == 0 or not self.verified_graph_path_receipt_ids
+        ):
+            raise ValueError("graph READY requires visible edges and verified path receipts")
+        if self.graph_edge_count == 0 and self.verified_graph_path_receipt_ids:
+            raise ValueError("zero-edge projection cannot expose graph path receipts")
+        return self
+
+
 __all__ = [
     "BenchmarkInformationProfile",
     "BenchmarkTaskContract",
@@ -381,15 +716,28 @@ __all__ = [
     "ContextGap",
     "ContextLineage",
     "CutoffAttestation",
+    "EvidenceFirstGap",
+    "EvidenceFirstLineage",
+    "EvidenceFirstPackageManifest",
+    "EvidenceGapKind",
     "EvidenceLedger",
     "EvidenceLedgerEntry",
+    "EvidenceLedgerEntryV2",
+    "EvidenceLedgerV2",
     "EvidenceResolutionStatus",
+    "EvidenceSlice",
+    "EvidenceSliceKind",
+    "EvidenceSliceSourceRole",
     "FreezeReceipt",
     "PublicCheckpointPayload",
     "SemanticSupportStatus",
+    "UnresolvedLexicalAnchor",
     "WriterContextBudgetReport",
+    "WriterContextBudgetReportV2",
+    "WriterContextEvidenceItem",
     "WriterContextItem",
     "WriterContextPackage",
+    "WriterContextPackageV2",
     "WriterContextSection",
     "WriterContextValidity",
 ]

@@ -314,6 +314,7 @@ class ModelGateway:
                 retry_request = request.model_copy(
                     update={
                         "request_id": type(request.request_id)(retry_id),
+                        "response_schema": schema,
                         "prompt": (
                             request.prompt
                             + "\n\n<STRUCTURED_OUTPUT_RETRY>\n"

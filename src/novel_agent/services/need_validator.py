@@ -59,6 +59,9 @@ class NeedValidationResult(DomainModel):
     grounded_entity_count: int = Field(ge=0)
     ambiguous_entity_count: int = Field(ge=0)
     unresolved_entity_count: int = Field(ge=0)
+    raw_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    canonical_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    scope_normalization_reasons: dict[str, str] = Field(default_factory=dict)
 
 
 class NeedValidator:
@@ -69,12 +72,15 @@ class NeedValidator:
     canonical completion contracts.
     """
 
-    version = "need_validator.v1"
+    version = "need_validator.v2"
 
     def __init__(self, *, max_total_needs: int = 32) -> None:
         if max_total_needs < 1:
             raise ValueError("max_total_needs must be positive")
         self._max_total_needs = max_total_needs
+        self._raw_scope_by_draft: dict[str, tuple[str, ...]] = {}
+        self._canonical_scope_by_draft: dict[str, tuple[str, ...]] = {}
+        self._scope_normalization_reasons: dict[str, str] = {}
 
     @classmethod
     def need_type_for_facets(
@@ -102,6 +108,9 @@ class NeedValidator:
         plan: PlanRootDocument | None = None,
     ) -> NeedValidationResult:
         del focus_set
+        self._raw_scope_by_draft = {}
+        self._canonical_scope_by_draft = {}
+        self._scope_normalization_reasons = {}
         target_start = task.target_chapter_start
         target_end = task.target_chapter_end
         accepted: list[GroundedNeedDraft] = []
@@ -130,18 +139,25 @@ class NeedValidator:
                 rejected_reasons[draft.draft_id] = "unknown_or_empty_scope_facet"
                 continue
             facet_kinds = tuple(_FACET_BY_PLANNER_VALUE[item] for item in draft.suggested_facets)
-            scope_values = tuple(
+            raw_scope_values = tuple(
                 _SCOPE_BY_PLANNER_VALUE[item] for item in draft.required_claim_scopes
             )
             expected_scopes = {_EXPECTED_SCOPE_BY_FACET[item] for item in facet_kinds}
-            if NeedFacetKind.PLAN_NODE in facet_kinds or ExpectedClaimScope.PLANNED in scope_values:
+            if (
+                NeedFacetKind.PLAN_NODE in facet_kinds
+                or ExpectedClaimScope.PLANNED in raw_scope_values
+            ):
                 rejected_ids.append(draft.draft_id)
                 rejected_reasons[draft.draft_id] = "plan_scope_not_historical_memory"
                 continue
-            if not scope_values or set(scope_values) != expected_scopes:
-                rejected_ids.append(draft.draft_id)
-                rejected_reasons[draft.draft_id] = "scope_facet_mismatch"
-                continue
+            canonical_scopes = tuple(sorted(expected_scopes, key=lambda item: item.value))
+            scope_reason: str | None = None
+            if not raw_scope_values:
+                scope_reason = "missing_scope_canonicalized_from_facets"
+            elif set(raw_scope_values) != expected_scopes:
+                scope_reason = "mismatched_scope_canonicalized_from_facets"
+            if scope_reason is not None:
+                self._scope_normalization_reasons[draft.draft_id] = scope_reason
             need_type = self.need_type_for_facets(draft.suggested_facets)
             if draft.trigger_plan_chapters and any(
                 chapter < target_start or chapter > target_end
@@ -184,14 +200,16 @@ class NeedValidator:
                 )
             )
             entity_ids = tuple(item for item in entity_ids if item in world_entity_ids)
-            has_grounded_relation = any(
-                mention.grounding_status is GroundingStatus.GROUNDED
-                and mention.relation_id is not None
-                for mention in draft.relation_mentions
-            )
-            if not entity_ids and not has_grounded_relation:
+            has_anchoring_mention = bool(draft.entity_mentions or draft.relation_mentions)
+            if not has_anchoring_mention:
+                # A draft with no mention at all has nothing to anchor its
+                # public question to.  A draft whose mentions are unresolved
+                # lexical anchors (for example a legitimate institution that
+                # has no runtime entity id yet) is kept: the mention stays in
+                # the semantic/lexical query text and only the exact/graph
+                # routes fail closed on the missing id.
                 rejected_ids.append(draft.draft_id)
-                rejected_reasons[draft.draft_id] = "no_grounded_anchor"
+                rejected_reasons[draft.draft_id] = "no_anchoring_mention"
                 continue
             key = (
                 _normalize(draft.semantic_question),
@@ -204,6 +222,12 @@ class NeedValidator:
             seen.add(key)
             if len(accepted) >= self._max_total_needs:
                 break
+            self._raw_scope_by_draft[draft.draft_id] = tuple(
+                item.value for item in raw_scope_values
+            )
+            self._canonical_scope_by_draft[draft.draft_id] = tuple(
+                item.value for item in canonical_scopes
+            )
             accepted.append(draft)
             need_type_by_draft[draft.draft_id] = need_type
 
@@ -237,6 +261,9 @@ class NeedValidator:
                 for draft in drafts
                 for mention in draft.entity_mentions
             ),
+            raw_scope_by_draft=dict(self._raw_scope_by_draft),
+            canonical_scope_by_draft=dict(self._canonical_scope_by_draft),
+            scope_normalization_reasons=dict(self._scope_normalization_reasons),
         )
 
     @staticmethod

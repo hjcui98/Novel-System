@@ -51,6 +51,7 @@ from novel_agent.domain.artifacts import (
 from novel_agent.domain.benchmark import (
     BenchmarkBundle,
     ChapterDocument,
+    GoldItem,
     PlanRootDocument,
     PreludeDocument,
     TextRootDocument,
@@ -80,7 +81,12 @@ from novel_agent.domain.memory import (
     FreshnessStatus,
     WorldRootDocument,
 )
-from novel_agent.domain.memory_benchmark import MemoryBenchmarkCaseArmReport
+from novel_agent.domain.memory_benchmark import (
+    ContentAddressedGoldMetricDescriptor,
+    FiveSegmentReport,
+    MemoryBenchmarkCaseArmReport,
+    MemoryBenchmarkEvaluationReport,
+)
 from novel_agent.domain.memory_write import (
     ChapterRevealTrigger,
     CuratorWorldProposalInput,
@@ -147,6 +153,7 @@ from novel_agent.domain.stage2 import (
     WorldPatchCandidate,
 )
 from novel_agent.domain.world import Entity, PlanNode, StateRecord, StoryTime, TruthClass
+from novel_agent.domain.writer_context import EvidenceLedger
 from novel_agent.ports.model_endpoint import ModelEndpointPort
 from novel_agent.prompts import PromptRegistry, PromptTemplate
 from novel_agent.prompts.registry import content_hash
@@ -191,6 +198,10 @@ from novel_agent.services.memory_write_workflow import LocalMemoryWriteWorkflow
 from novel_agent.services.model_curation import ModelCurator
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 from novel_agent.services.model_request_admission import ModelRequestAdmissionController
+from novel_agent.services.observed_text_ancestry import (
+    ObservedTextAncestryProof,
+    TextRootAncestryEntry,
+)
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -298,6 +309,7 @@ class _FrozenState:
     world: WorldRootDocument
     plan: PlanRootDocument
     commit: CommitId
+    text_root_ref: ArtifactRef | None = None
 
 
 class TeacherForcedBenchmarkE2ERunner:
@@ -2459,6 +2471,7 @@ class _TeacherForcedTransition:
                 world=self.world,
                 plan=self.plan,
                 commit=resulting_commit,
+                text_root_ref=manifest.text_root,
             )
             checkpoint = ScenarioCheckpointArtifacts(
                 text_root=manifest.text_root.artifact_id,
@@ -2687,6 +2700,7 @@ class _TeacherForcedTransition:
             world=self.world,
             plan=self.plan,
             commit=parent_commit,
+            text_root_ref=manifest.text_root,
         )
         self.last_revealed_chapter = chapter
         checkpoint = ScenarioCheckpointArtifacts(
@@ -3028,6 +3042,178 @@ class _E2EEvaluator:
         with self._results_lock:
             return tuple(self._stage2m_results)
 
+    def _build_ancestry_proof(
+        self,
+        case: Any,
+        comparison: Any,
+    ) -> tuple[
+        ObservedTextAncestryProof,
+        dict[ArtifactId, TextRootDocument],
+    ]:
+        """Build and persist the observed TextRoot ancestry proof.
+
+        Walks the single-parent canonical commit chain from the checkpoint
+        commit back to genesis.  Every manifest TextRoot is read through the
+        verified artifact repository and its logical ``TextRootDocument
+        .root_hash`` is collected, retaining the concrete documents for
+        cross-root EvidenceRef validation.  The case-local compiled historical
+        root is bound separately by the bundle content hash and is never
+        treated as a commit ancestor.  Any chain/read/parse failure raises a
+        typed error; the caller must not silently continue without a proof.
+        """
+
+        state = self.freezer.transition.states.get(case.case_id)
+        if state is None:
+            raise TeacherForcedBenchmarkError(
+                f"checkpoint state missing for {case.case_id.root}; cannot build ancestry proof"
+            )
+        checkpoint_commit = state.commit
+        commits = self.freezer.transition.commits
+        if commits is None:
+            raise TeacherForcedBenchmarkError(
+                "commit service unavailable; cannot build ancestry proof"
+            )
+        entries: list[TextRootAncestryEntry] = []
+        text_roots: dict[ArtifactId, TextRootDocument] = {}
+        seen: set[str] = set()
+        cursor: CommitId | None = checkpoint_commit
+        while cursor is not None:
+            if cursor.root in seen:
+                raise TeacherForcedBenchmarkError(
+                    "commit ancestry contains a cycle; cannot build ancestry proof"
+                )
+            seen.add(cursor.root)
+            try:
+                manifest = commits.load_manifest(cursor)
+            except Exception as error:
+                raise TeacherForcedBenchmarkError(
+                    "commit ancestry manifest read failed: " + str(error)
+                ) from error
+            if len(manifest.parent_commit_ids) > 1:
+                raise TeacherForcedBenchmarkError(
+                    "commit ancestry is not single-parent; cannot build ancestry proof"
+                )
+            text_root_ref = manifest.text_root
+            try:
+                text_bytes = self.artifacts.read_verified(text_root_ref)
+                text_document = TextRootDocument.model_validate_json(text_bytes.decode("utf-8"))
+            except Exception as error:
+                raise TeacherForcedBenchmarkError(
+                    "cannot resolve manifest TextRoot into a logical root: " + str(error)
+                ) from error
+            entries.append(
+                TextRootAncestryEntry(
+                    commit_id=cursor,
+                    text_root_ref=text_root_ref,
+                    text_root_logical_hash=text_document.root_hash,
+                )
+            )
+            text_roots[text_document.root_hash] = text_document
+            parent = manifest.parent_commit_ids[0] if manifest.parent_commit_ids else None
+            cursor = parent
+        checkpoint_root_ref = state.text_root_ref if hasattr(state, "text_root_ref") else None
+        checkpoint_root_hash = state.text.root_hash
+        if checkpoint_root_ref is None:
+            raise TeacherForcedBenchmarkError(
+                "checkpoint state lacks its TextRoot artifact ref; cannot build ancestry proof"
+            )
+        compiled_case = next(
+            (item for item in self.bundle.case_manifests if item.case_id == case.case_id),
+            None,
+        )
+        if compiled_case is None:
+            raise TeacherForcedBenchmarkError("case manifest missing; cannot build ancestry proof")
+        compiled_text_root = next(
+            (
+                root
+                for root in self.bundle.text_roots
+                if root.root_hash == compiled_case.input_text_root
+            ),
+            None,
+        )
+        if compiled_text_root is None:
+            raise TeacherForcedBenchmarkError(
+                "case compiled historical TextRoot missing; cannot build ancestry proof"
+            )
+        text_roots[compiled_text_root.root_hash] = compiled_text_root
+        proof = ObservedTextAncestryProof.build(
+            benchmark_content_hash=self.bundle.content_hash,
+            case_id=case.case_id,
+            profile=self.profile.value,
+            checkpoint_chapter=case.history_range[1],
+            checkpoint_commit=checkpoint_commit,
+            checkpoint_text_root_ref=checkpoint_root_ref,
+            checkpoint_text_root_hash=checkpoint_root_hash,
+            ancestry=tuple(entries),
+            case_input_text_root_hash=compiled_text_root.root_hash,
+        )
+        return proof, text_roots
+
+    @staticmethod
+    def _runtime_entity_label_map(
+        runtime_world: WorldRootDocument,
+    ) -> tuple[dict[str, StableId], set[str]]:
+        """Build label/alias -> runtime entity id from the frozen runtime World.
+
+        A label or alias mapping to multiple runtime ids is recorded as
+        ambiguous and never binds; empty labels are skipped.
+        """
+
+        label_to_ids: dict[str, list[StableId]] = {}
+        for entity in runtime_world.entities:
+            for label in dict.fromkeys((entity.internal_label, *entity.aliases)):
+                if not label:
+                    continue
+                label_to_ids.setdefault(label, []).append(entity.entity_id)
+        entity_id_by_label: dict[str, StableId] = {}
+        ambiguous_labels: set[str] = set()
+        for label, ids in label_to_ids.items():
+            if len(ids) == 1:
+                entity_id_by_label[label] = ids[0]
+            else:
+                ambiguous_labels.add(label)
+        return entity_id_by_label, ambiguous_labels
+
+    def _compute_five_segments(
+        self,
+        benchmark_evaluator: MemoryBenchmarkEvaluator,
+        case: Any,
+        comparison: Any,
+        gold_items: tuple[GoldItem, ...],
+        evidence_ledger: EvidenceLedger,
+        per_gold: MemoryBenchmarkEvaluationReport,
+        metric_descriptors: Mapping[StableId, ContentAddressedGoldMetricDescriptor],
+    ) -> FiveSegmentReport:
+        """Compute five-segment evaluation (incl. Plan Goal Coverage) for one arm."""
+        plan = next(
+            (root for root in self.bundle.plan_roots if root.root_hash == case.input_plan_root),
+            None,
+        )
+        plan_goals = tuple(
+            goal
+            for goal in (plan.chapter_goals if plan is not None else ())
+            if case.target_range[0] <= goal.chapter_index <= case.target_range[1]
+        )
+        runtime_world = self.freezer.transition.states[case.case_id].world
+        entity_id_by_label, ambiguous_labels = self._runtime_entity_label_map(runtime_world)
+        return benchmark_evaluator.evaluate_five_segments(
+            needs=comparison.generated_needs,
+            gold_need_specs=case.gold_need_specs,
+            plan_goals=plan_goals,
+            gold_items=gold_items,
+            evidence_ledger=evidence_ledger,
+            completion_accuracy=per_gold.weighted_coverage,
+            per_gold_comparisons=per_gold.comparisons,
+            future_leakage_count=comparison.deterministic.future_leakage_count,
+            entity_id_by_label=entity_id_by_label or None,
+            ambiguous_entity_labels=ambiguous_labels,
+            planner_fallback_used=comparison.planner_fallback_used,
+            planner_fallback_reason=comparison.planner_fallback_reason,
+            planner_artifact_ref=comparison.planner_artifact_ref,
+            grounded_status_counts=comparison.grounded_status_counts,
+            profile=self.profile,
+        )
+
     def score(self, freeze: Any, evaluator_sources: tuple[Any, ...]) -> EvaluatorDisposition:
         if {item.source_class for item in evaluator_sources} != {
             SourceClass.FUTURE_TEXT_PRIVATE,
@@ -3064,7 +3250,26 @@ class _E2EEvaluator:
         applicable_gold = tuple(
             item for item in gold_items if self.profile in item.applicable_profiles
         )
-        metric_builder = GoldMetricContractBuilder(self.artifacts)
+        if self.profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
+            ancestry_proof, text_roots = self._build_ancestry_proof(case, comparison)
+            proof_ref = self.artifacts.put(
+                canonical_json_bytes(ancestry_proof.model_dump(mode="json")),
+                "application/vnd.novel-agent.observed-text-ancestry-proof+json",
+                VERSION,
+            )
+        else:
+            ancestry_proof = None
+            text_roots = {}
+            proof_ref = None
+        evidence_matcher = GoldEvidenceMatcher(
+            ancestry_proof=ancestry_proof,
+            text_roots=text_roots,
+        )
+        metric_builder = GoldMetricContractBuilder(
+            self.artifacts,
+            matcher=evidence_matcher,
+            ancestry_proof_ref=proof_ref,
+        )
         _evaluator_manifest, evaluator_manifest_ref = metric_builder.build_manifest(
             gold_items=applicable_gold,
             evaluator_manifest_id=evaluator_manifest_id,
@@ -3075,7 +3280,7 @@ class _E2EEvaluator:
             evaluator_manifest_id=evaluator_manifest_id,
             evaluator_manifest_hash=evaluator_manifest_hash,
         )
-        benchmark_evaluator = MemoryBenchmarkEvaluator()
+        benchmark_evaluator = MemoryBenchmarkEvaluator(evidence_matcher=evidence_matcher)
         arm_inputs = (
             (
                 comparison.deterministic.context,
@@ -3131,6 +3336,16 @@ class _E2EEvaluator:
                     gold_metric_descriptors=metric_descriptors,
                     stage_loss_diagnostics=stage_loss_diagnostics,
                 )
+                five_segments = self._compute_five_segments(
+                    benchmark_evaluator,
+                    case,
+                    comparison,
+                    gold_items,
+                    evidence_ledger,
+                    per_gold,
+                    metric_descriptors,
+                )
+                per_gold = per_gold.model_copy(update={"five_segments": five_segments})
                 ledger_ref = self.artifacts.put(
                     canonical_json_bytes(evidence_ledger.model_dump(mode="json")),
                     "application/vnd.novel-agent.evaluator-writer-evidence-ledger+json",
@@ -3190,6 +3405,7 @@ class _E2EEvaluator:
                 )
                 verifier = ModelSemanticSupportVerifier(
                     self.semantic_gateway,
+                    evidence_matcher=evidence_matcher,
                     max_concurrent_batches=self.max_concurrent_batches,
                 )
                 batch, calls = asyncio.run(
@@ -3226,6 +3442,17 @@ class _E2EEvaluator:
                             ).root,
                             "batch": batch.model_dump(mode="json"),
                             "model_calls": [call.model_dump(mode="json") for call in calls],
+                            "evaluator_manifest_id": evaluator_manifest_id.root,
+                            "evaluator_manifest_ref": evaluator_manifest_ref.artifact_id.root,
+                            "ancestry_proof_ref": (
+                                proof_ref.artifact_id.root if proof_ref is not None else None
+                            ),
+                            "ancestry_proof_hash": (
+                                ancestry_proof.proof_hash.root
+                                if ancestry_proof is not None
+                                else None
+                            ),
+                            "matcher_version": GoldEvidenceMatcher.version,
                         }
                     ),
                     "application/vnd.novel-agent.stage2m-semantic-verifier-receipt+json",
@@ -3247,42 +3474,14 @@ class _E2EEvaluator:
                 verifier_receipt_ref=verifier_receipt_ref,
                 stage_loss_diagnostics=stage_loss_diagnostics,
             )
-            plan = next(
-                (root for root in self.bundle.plan_roots if root.root_hash == case.input_plan_root),
-                None,
-            )
-            world = next(
-                (
-                    root
-                    for root in self.bundle.world_roots
-                    if root.root_hash == case.input_world_root_verified
-                ),
-                None,
-            )
-            plan_goals = tuple(
-                goal
-                for goal in (plan.chapter_goals if plan is not None else ())
-                if case.target_range[0] <= goal.chapter_index <= case.target_range[1]
-            )
-            five_segments = benchmark_evaluator.evaluate_five_segments(
-                needs=comparison.generated_needs,
-                gold_need_specs=case.gold_need_specs,
-                plan_goals=plan_goals,
-                gold_items=gold_items,
-                evidence_ledger=evidence_ledger,
-                completion_accuracy=per_gold.weighted_coverage,
-                per_gold_comparisons=per_gold.comparisons,
-                future_leakage_count=comparison.deterministic.future_leakage_count,
-                entity_id_by_label=(
-                    {entity.internal_label: entity.entity_id for entity in world.entities}
-                    if world is not None
-                    else None
-                ),
-                planner_fallback_used=comparison.planner_fallback_used,
-                planner_fallback_reason=comparison.planner_fallback_reason,
-                planner_artifact_ref=comparison.planner_artifact_ref,
-                grounded_status_counts=comparison.grounded_status_counts,
-                profile=self.profile,
+            five_segments = self._compute_five_segments(
+                benchmark_evaluator,
+                case,
+                comparison,
+                gold_items,
+                evidence_ledger,
+                per_gold,
+                metric_descriptors,
             )
             per_gold = per_gold.model_copy(update={"five_segments": five_segments})
             ledger_ref = self.artifacts.put(

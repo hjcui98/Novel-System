@@ -35,6 +35,15 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "GoldEligibility": {
+      "description": "Which scoring axis a Gold belongs to under strict D9.",
+      "enum": [
+        "observed_claim",
+        "plan_axis_only"
+      ],
+      "title": "GoldEligibility",
+      "type": "string"
+    },
     "GoldMatchStatus": {
       "enum": [
         "HIT",
@@ -59,6 +68,10 @@
   },
   "additionalProperties": false,
   "properties": {
+    "eligibility": {
+      "$ref": "#/$defs/GoldEligibility",
+      "default": "observed_claim"
+    },
     "explanation": {
       "minLength": 1,
       "title": "Explanation",

@@ -271,6 +271,8 @@ class OpenAICompatibleChatEndpoint:
             "response_format": response_format,
             "chat_template_kwargs": template_kwargs,
         }
+        if request.repetition_penalty is not None:
+            payload["repetition_penalty"] = request.repetition_penalty
         return payload
 
     async def aclose(self) -> None:

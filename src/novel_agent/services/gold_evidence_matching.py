@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import Field
 
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.benchmark import GoldItem
-from novel_agent.domain.ids import StableId
+from novel_agent.domain.benchmark import GoldItem, TextRootDocument
+from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory_benchmark import EvidenceLedger, EvidenceSet, EvidenceStageCoverage
 from novel_agent.domain.text import EvidenceRef
+from novel_agent.services.benchmark_importer import validate_evidence_ref
+from novel_agent.services.observed_text_ancestry import ObservedTextAncestryProof
 
 
 class GoldEvidenceMatch(DomainModel):
@@ -21,14 +25,32 @@ class GoldEvidenceMatch(DomainModel):
 
 
 class GoldEvidenceMatcher:
-    """Require a content-addressed evidence identity/span match."""
+    """Require a content-addressed evidence identity/span match.
 
-    version = "gold_evidence_matcher.v4"
+    Cross-root matches are only allowed under a persisted
+    ``ObservedTextAncestryProof`` with role-paired roots: the expected (Gold)
+    side must be the case-local compiled historical TextRoot and the actual
+    (Ledger) side must be the checkpoint canonical root or a proven single
+    parent ancestor.  Before any cross-root credit, both EvidenceRefs are
+    validated against their own concrete TextRootDocument via
+    ``validate_evidence_ref``; a forged block/object/span/quote/root fails
+    closed.
+    """
 
-    def __init__(self, *, minimum_span_coverage: float = 0.5) -> None:
+    version = "gold_evidence_matcher.v6"
+
+    def __init__(
+        self,
+        *,
+        minimum_span_coverage: float = 0.5,
+        ancestry_proof: ObservedTextAncestryProof | None = None,
+        text_roots: Mapping[ArtifactId, TextRootDocument] | None = None,
+    ) -> None:
         if not 0.0 < minimum_span_coverage <= 1.0:
             raise ValueError("minimum span coverage must be in (0, 1]")
         self._minimum_span_coverage = minimum_span_coverage
+        self._ancestry_proof = ancestry_proof
+        self._text_roots = text_roots or {}
 
     def match(self, gold: GoldItem, ledger: EvidenceLedger) -> GoldEvidenceMatch:
         alternatives = self.accepted_alternatives(gold)
@@ -150,7 +172,29 @@ class GoldEvidenceMatcher:
         # object bytes/coordinates may be deduplicated only after the importer
         # has bound both references to the same canonical observed root.
         if expected.root_hash != actual.root_hash:
-            return False
+            proof = self._ancestry_proof
+            if proof is None:
+                return False
+            # Role-paired roots only: Gold side is the compiled case input
+            # root; Ledger side is the checkpoint root or a proven ancestor.
+            if not proof.allows_expected(expected.root_hash):
+                return False
+            if not proof.allows_actual(actual.root_hash):
+                return False
+            expected_root = self._text_roots.get(proof.case_input_text_root_hash)
+            actual_root = self._text_roots.get(actual.root_hash)
+            if expected_root is None or actual_root is None:
+                return False
+            try:
+                validate_evidence_ref(expected, expected_root)
+                validate_evidence_ref(actual, actual_root)
+            except Exception:
+                return False
+            return proof.span_overlaps(
+                expected,
+                actual,
+                minimum_span_coverage=self._minimum_span_coverage,
+            )
         if expected.evidence_id == actual.evidence_id:
             return True
         if expected.object_hash != actual.object_hash:
@@ -159,17 +203,12 @@ class GoldEvidenceMatcher:
         # references have precise spans. This forbids whole-chapter coincidence.
         if expected.span is None or actual.span is None:
             return False
-        # Block ids may be independently namespaced inside one proven root, so
-        # exact object content plus coordinates remain the portable child key.
+        # Same root: block ids share the root namespace, so exact object content
+        # plus coordinates remain the portable child key.
         overlap = max(
             0,
             min(expected.span.end, actual.span.end) - max(expected.span.start, actual.span.start),
         )
-        # Human Gold may name a reviewed chapter/block while the memory curator
-        # emits the precise sentence span that supports a frozen claim. Measure
-        # overlap against the narrower span so a precise child span can resolve
-        # inside that reviewed block. This is provenance candidate matching only:
-        # the independent semantic verifier still has to establish HIT/PARTIAL.
         expected_width = max(1, expected.span.end - expected.span.start)
         actual_width = max(1, actual.span.end - actual.span.start)
         return overlap / min(expected_width, actual_width) >= self._minimum_span_coverage

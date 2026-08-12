@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actual_rendered_ledger_tokens": {
+      "minimum": 0,
+      "title": "Actual Rendered Ledger Tokens",
+      "type": "integer"
+    },
+    "actual_rendered_writer_tokens": {
+      "minimum": 0,
+      "title": "Actual Rendered Writer Tokens",
+      "type": "integer"
+    },
+    "configured_ledger_token_budget": {
+      "minimum": 1,
+      "title": "Configured Ledger Token Budget",
+      "type": "integer"
+    },
+    "configured_writer_token_budget": {
+      "minimum": 1,
+      "title": "Configured Writer Token Budget",
+      "type": "integer"
+    },
+    "dropped_slice_reasons": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Dropped Slice Reasons",
+      "type": "object"
+    },
+    "evidence_item_count": {
+      "minimum": 0,
+      "title": "Evidence Item Count",
+      "type": "integer"
+    },
+    "final_status": {
+      "$ref": "#/$defs/ContextAssemblyStatus"
+    },
+    "gap_item_count": {
+      "minimum": 0,
+      "title": "Gap Item Count",
+      "type": "integer"
+    },
+    "item_count": {
+      "minimum": 0,
+      "title": "Item Count",
+      "type": "integer"
+    },
+    "ledger_entry_count": {
+      "minimum": 0,
+      "title": "Ledger Entry Count",
+      "type": "integer"
+    },
+    "tokenizer": {
+      "minLength": 1,
+      "title": "Tokenizer",
+      "type": "string"
+    },
+    "tokenizer_version": {
+      "minLength": 1,
+      "title": "Tokenizer Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tokenizer",
+    "tokenizer_version",
+    "configured_writer_token_budget",
+    "actual_rendered_writer_tokens",
+    "configured_ledger_token_budget",
+    "actual_rendered_ledger_tokens",
+    "item_count",
+    "evidence_item_count",
+    "gap_item_count",
+    "ledger_entry_count",
+    "final_status"
+  ],
+  "title": "WriterContextBudgetReportV2",
+  "type": "object"
+}
