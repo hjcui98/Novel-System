@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "ChangeOperationType": {
+      "enum": [
+        "create",
+        "replace",
+        "retire"
+      ],
+      "title": "ChangeOperationType",
+      "type": "string"
+    },
+    "CuratorEntityRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "entity_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "identity_invariants": {
+          "default": [],
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Identity Invariants",
+          "type": "array"
+        },
+        "internal_label": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Internal Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_type",
+        "internal_label"
+      ],
+      "title": "CuratorEntityRecord",
+      "type": "object"
+    },
+    "CuratorEventRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "effect_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 4,
+          "title": "Effect Refs",
+          "type": "array"
+        },
+        "event_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "narrative_order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativeOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "participant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 6,
+          "title": "Participant Ids",
+          "type": "array"
+        },
+        "story_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CuratorStoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        }
+      },
+      "required": [
+        "event_type",
+        "truth_class"
+      ],
+      "title": "CuratorEventRecord",
+      "type": "object"
+    },
+    "CuratorObligationRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "due_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Due Chapter"
+        },
+        "kind": {
+          "enum": [
+            "foreshadowing",
+            "promise",
+            "objective",
+            "unresolved_conflict"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "owner_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 6,
+          "title": "Owner Ids",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "progressed",
+            "resolved",
+            "abandoned"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "description",
+        "status"
+      ],
+      "title": "CuratorObligationRecord",
+      "type": "object"
+    },
+    "CuratorStateRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "predicate": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/CuratorStoryTime"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "subject_id",
+        "predicate",
+        "value",
+        "valid_time",
+        "truth_class"
+      ],
+      "title": "CuratorStateRecord",
+      "type": "object"
+    },
+    "CuratorStoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "CuratorStoryTime",
+      "type": "object"
+    },
+    "NarrativeOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "chapter_index": {
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "scene_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Index"
+        }
+      },
+      "required": [
+        "chapter_index"
+      ],
+      "title": "NarrativeOrder",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Model-output curator operation: evidence is semantic quotes, never ids.\n\nThe Grounder principle (planning semantics, §8.5 of the Stage 2M audit):\nthe model copies natural-language fragments from the chapter, and the\nhost resolves them deterministically to content-addressed candidate ids.",
+  "properties": {
+    "evidence_quotes": {
+      "items": {
+        "maxLength": 240,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Evidence Quotes",
+      "type": "array"
+    },
+    "operation": {
+      "$ref": "#/$defs/ChangeOperationType"
+    },
+    "record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CuratorEntityRecord"
+        },
+        {
+          "$ref": "#/$defs/CuratorEventRecord"
+        },
+        {
+          "$ref": "#/$defs/CuratorStateRecord"
+        },
+        {
+          "$ref": "#/$defs/CuratorObligationRecord"
+        }
+      ],
+      "title": "Record"
+    },
+    "record_kind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "obligation"
+      ],
+      "title": "Record Kind",
+      "type": "string"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "operation",
+    "record_kind",
+    "target_id",
+    "record",
+    "evidence_quotes"
+  ],
+  "title": "CuratorV2OperationDraft",
+  "type": "object"
+}

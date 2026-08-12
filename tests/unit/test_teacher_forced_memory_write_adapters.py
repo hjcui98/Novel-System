@@ -50,7 +50,7 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
-from novel_agent.domain.world import GraphCandidateBatchDraft, WorldGraphCandidateBatch
+from novel_agent.domain.world import WorldGraphCandidateBatch
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -708,19 +708,21 @@ def test_curator_proposal_attempt_runs_graph_profile_concurrently_and_merges_rel
             base_commit: CommitId,
             _world: WorldRootDocument,
             model_request: ModelRequest,
-        ) -> tuple[WorldGraphCandidateBatch, None]:
+        ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[()]]:
             self.request = model_request
             await rendezvous()
             return (
-                WorldGraphCandidateBatch(
-                    batch_id=StableId("graph-batch.concurrent-curator.unit"),
-                    source_text_root=text_root.root_hash,
-                    base_commit=base_commit,
-                    chapter_index=chapter_index,
-                    policy_version="graph-concurrency-unit.v1",
-                    model_request_id=model_request.request_id,
+                (
+                    WorldGraphCandidateBatch(
+                        batch_id=StableId("graph-batch.concurrent-curator.unit"),
+                        source_text_root=text_root.root_hash,
+                        base_commit=base_commit,
+                        chapter_index=chapter_index,
+                        policy_version="graph-concurrency-unit.v1",
+                        model_request_id=model_request.request_id,
+                    ),
                 ),
-                None,
+                (),
             )
 
     graph_curator = GraphCurator()
@@ -829,66 +831,6 @@ def test_curator_proposal_cancels_graph_profile_when_replay_fails() -> None:
     assert graph_cancelled is True
 
 
-def test_curator_proposal_skips_invalid_graph_batch_without_dropping_ordinary_result() -> None:
-    artifacts = InMemoryArtifactRepository()
-    world, text, _, _ = _teacher_world()
-    request = _request(profile=MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC)
-    ordinary_changes = ObservedChangeSet(
-        change_set_id=StableId("changes.graph-schema-fallback.unit"),
-        base_commit=BASE,
-        source_artifact=_manifest().text_root,
-    )
-    receipt = agent_receipt().model_copy(
-        update={
-            "agent_type": AgentType.MEMORY_CURATOR,
-            "agent_mode": AgentMode.REPLAY,
-            "base_commit": BASE,
-        }
-    )
-    gateway = ModelGateway(())
-
-    class Replay:
-        curator = SimpleNamespace(gateway=gateway)
-
-        async def run(self, **_: object) -> tuple[CuratorReplayResult, None]:
-            return CuratorReplayResult(
-                observed_changes=ordinary_changes,
-                coverage=1.0,
-                receipt=receipt,
-            ), None
-
-    class GraphCurator:
-        def __init__(self) -> None:
-            self.gateway = gateway
-
-        async def extract_graph_candidates(self, *_: object) -> None:
-            GraphCandidateBatchDraft.model_validate(
-                {"entities": [{"surface": "超过上限", "entity_type": "character"}] * 5}
-            )
-            raise AssertionError("unreachable")
-
-    port = TeacherForcedCuratorPort(
-        cast(Any, Replay()),
-        cast(Any, object()),
-        cast(Any, artifacts),
-        cast(Any, lambda *_: _proposal_model_request(StableId("model.graph-schema-fallback"))),
-        graph_curator=cast(Any, GraphCurator()),
-    )
-
-    outcome = asyncio.run(
-        port.propose(
-            CuratorProposalRequest(
-                request=request,
-                basis=_basis_with_world(text, world),
-                source_artifacts=(),
-                source_visibility_receipts=(),
-            )
-        )
-    )
-
-    assert outcome.observed_changes == ordinary_changes
-
-
 def test_curator_proposal_maps_graph_basis_mismatch_to_contract_failure() -> None:
     world, text, _, _ = _teacher_world()
     gateway = ModelGateway(())
@@ -926,17 +868,19 @@ def test_curator_proposal_maps_graph_basis_mismatch_to_contract_failure() -> Non
             _base_commit: CommitId,
             _world: WorldRootDocument,
             model_request: ModelRequest,
-        ) -> tuple[WorldGraphCandidateBatch, None]:
+        ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[()]]:
             return (
-                WorldGraphCandidateBatch(
-                    batch_id=StableId("graph-batch.basis-mismatch.unit"),
-                    source_text_root=text_root.root_hash,
-                    base_commit=CommitId("sha256:" + "9" * 64),
-                    chapter_index=chapter_index,
-                    policy_version="graph-basis-mismatch-unit.v1",
-                    model_request_id=model_request.request_id,
+                (
+                    WorldGraphCandidateBatch(
+                        batch_id=StableId("graph-batch.basis-mismatch.unit"),
+                        source_text_root=text_root.root_hash,
+                        base_commit=CommitId("sha256:" + "9" * 64),
+                        chapter_index=chapter_index,
+                        policy_version="graph-basis-mismatch-unit.v1",
+                        model_request_id=model_request.request_id,
+                    ),
                 ),
-                None,
+                (),
             )
 
     port = TeacherForcedCuratorPort(
@@ -1294,8 +1238,6 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         assert outcome.rejection.retryable is retryable
         assert len(outcome.attempt_receipt.raw_response_refs) == 1
         assert len(outcome.attempt_receipt.model_call_receipt_refs) == 1
-        if outcome.rejection.reason_code == "CURATOR_PROPOSAL_SCHEMA_REJECTED":
-            assert "Relation records require" in outcome.rejection.safe_feedback[0]
         if outcome.rejection.reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE":
             assert "require 0 <= start < end" in outcome.rejection.safe_feedback[0]
 

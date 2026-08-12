@@ -27,14 +27,10 @@ _MIN_DERIVED_LITERAL_SEMANTIC_CHARS = 8
 DEFAULT_MAX_CANDIDATE_CHARS = 240
 DEFAULT_TARGET_MIN = 40
 DEFAULT_TARGET_MAX = 160
-# The semantic-quote contract (Grounder principle: the model copies natural
-# language fragments and the host binds them to content-addressed ids) makes
-# catalog size independent of model memorization, so the catalog must cover
-# the whole chapter: a small catalog leaves later spans unbindable and the
-# model's legitimate quotes get rejected.  512 covers a full-length chapter
-# (measured: a 19.6k-character chapter yields ~180 candidates; 128 covered
-# only a quarter and dropped legitimate quotes).
-DEFAULT_MAX_CHAPTER_CANDIDATES = 512
+# The active catalog covers the complete chapter. Callers may set an explicit
+# bound for a deliberately bounded fixture or workflow, but the default must
+# not silently make later source units unbindable.
+DEFAULT_MAX_CHAPTER_CANDIDATES: int | None = None
 
 
 class EvidenceCandidateGenerator:
@@ -46,13 +42,15 @@ class EvidenceCandidateGenerator:
         max_candidate_chars: int = DEFAULT_MAX_CANDIDATE_CHARS,
         target_min_chars: int = DEFAULT_TARGET_MIN,
         target_max_chars: int = DEFAULT_TARGET_MAX,
-        max_chapter_candidates: int = DEFAULT_MAX_CHAPTER_CANDIDATES,
+        max_chapter_candidates: int | None = DEFAULT_MAX_CHAPTER_CANDIDATES,
     ) -> None:
         if max_candidate_chars < 1:
             raise ValueError("max_candidate_chars must be positive")
         self._max_chars = max_candidate_chars
         self._target_min = target_min_chars
         self._target_max = target_max_chars
+        if max_chapter_candidates is not None and max_chapter_candidates < 1:
+            raise ValueError("max_chapter_candidates must be positive when set")
         self._max_chapter = max_chapter_candidates
 
     def generate(
@@ -72,7 +70,7 @@ class EvidenceCandidateGenerator:
                         text=block.text,
                     )
                 )
-                if len(candidates) >= self._max_chapter:
+                if self._max_chapter is not None and len(candidates) >= self._max_chapter:
                     return tuple(candidates[: self._max_chapter])
         return tuple(candidates)
 
@@ -195,6 +193,74 @@ class EvidenceCandidateGenerator:
                 continue
             raise ValueError(
                 f"evidence quote unresolved against the chapter catalog: {quote[:60]!r}"
+            )
+        return tuple(resolved)
+
+    @classmethod
+    def resolve_exact_evidence_quotes(
+        cls,
+        quotes: tuple[str, ...],
+        candidates: tuple[EvidenceCandidate, ...],
+        chapter: ChapterDocument,
+    ) -> tuple[EvidenceCandidate, ...]:
+        """Bind verbatim quotes to unique physical spans covered by this source unit."""
+
+        blocks = {
+            block.block_id: (scene.scene_index, block.text)
+            for scene in chapter.scenes
+            for block in scene.blocks
+        }
+        covered: dict[StableId, list[tuple[int, int]]] = {}
+        for candidate in candidates:
+            covered.setdefault(candidate.block_id, []).append((candidate.start, candidate.end))
+        merged_ranges: dict[StableId, tuple[tuple[int, int], ...]] = {}
+        for block_id, spans in covered.items():
+            ranges: list[tuple[int, int]] = []
+            for start, end in sorted(spans):
+                if ranges and start <= ranges[-1][1]:
+                    ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+                else:
+                    ranges.append((start, end))
+            merged_ranges[block_id] = tuple(ranges)
+
+        resolved: list[EvidenceCandidate] = []
+        for quote in quotes:
+            if len(cls._semantic_span(quote)) < 2:
+                raise ValueError(f"evidence quote too short to resolve: {quote[:40]!r}")
+            matches: list[tuple[StableId, int, int, int]] = []
+            for block_id, covered_ranges in merged_ranges.items():
+                scene_index, text = blocks[block_id]
+                start = 0
+                while True:
+                    offset = text.find(quote, start)
+                    if offset < 0:
+                        break
+                    end = offset + len(quote)
+                    if any(
+                        range_start <= offset and end <= range_end
+                        for range_start, range_end in covered_ranges
+                    ):
+                        matches.append((block_id, scene_index, offset, end))
+                    start = offset + 1
+            unique = tuple(dict.fromkeys(matches))
+            if len(unique) > 1:
+                raise ValueError(
+                    f"evidence quote ambiguous ({len(unique)} physical spans): {quote[:60]!r}"
+                )
+            if not unique:
+                raise ValueError(
+                    f"evidence quote unresolved against the source unit: {quote[:60]!r}"
+                )
+            block_id, scene_index, start, end = unique[0]
+            resolved.append(
+                cls._make_candidate(
+                    block_id=block_id,
+                    chapter_index=chapter.chapter_index,
+                    scene_index=scene_index,
+                    text=quote,
+                    start=start,
+                    end=end,
+                )
             )
         return tuple(resolved)
 
@@ -326,10 +392,15 @@ class EvidenceCandidateGenerator:
         selection: EvidenceQuoteSelection,
         chapter: ChapterDocument,
     ) -> EvidenceCandidate:
-        blocks = {block.block_id: block for scene in chapter.scenes for block in scene.blocks}
-        block = blocks.get(selection.block_id)
-        if block is None:
+        blocks = {
+            block.block_id: (scene.scene_index, block)
+            for scene in chapter.scenes
+            for block in scene.blocks
+        }
+        resolved_block = blocks.get(selection.block_id)
+        if resolved_block is None:
             raise ValueError("quote selection references unknown block")
+        scene_index, block = resolved_block
         text = block.text
         quote = selection.exact_quote
         matches: list[int] = []
@@ -366,7 +437,7 @@ class EvidenceCandidateGenerator:
         return self._make_candidate(
             block_id=selection.block_id,
             chapter_index=chapter.chapter_index,
-            scene_index=0,
+            scene_index=scene_index,
             text=quote,
             start=start_idx,
             end=end_idx,

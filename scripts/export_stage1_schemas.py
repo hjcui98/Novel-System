@@ -42,6 +42,8 @@ from novel_agent.domain.changes import (
     CuratorRelationRecord,
     CuratorStateRecord,
     CuratorStoryTime,
+    CuratorV2EvidenceDraft,
+    CuratorV2OperationDraft,
     EvidenceCandidate,
     EvidenceCandidateView,
     EvidenceQuoteSelection,
@@ -100,6 +102,11 @@ from novel_agent.domain.replay import (
     ReplayChapterResult,
     ReplayMaterializedRecord,
 )
+from novel_agent.domain.world import (
+    GraphCandidatePageDraft,
+    WorldGraphCandidateBatch,
+    WorldGraphExtractionReceipt,
+)
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage1"
 MODELS = (
@@ -139,6 +146,8 @@ MODELS = (
     CuratorRelationRecord,
     CuratorStateRecord,
     CuratorStoryTime,
+    CuratorV2EvidenceDraft,
+    CuratorV2OperationDraft,
     EvidenceCandidate,
     EvidenceCandidateView,
     EvidenceQuoteSelection,
@@ -185,6 +194,9 @@ MODELS = (
     PlannerStateSummary,
     PlannerWorldSummary,
     RelationMention,
+    GraphCandidatePageDraft,
+    WorldGraphCandidateBatch,
+    WorldGraphExtractionReceipt,
 )
 
 

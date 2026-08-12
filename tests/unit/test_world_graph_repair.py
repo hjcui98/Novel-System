@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,13 @@ from novel_agent.domain.memory import (
     RetrievalUnitKind,
     WorldRootDocument,
 )
-from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.model_calls import (
+    ModelCallPurpose,
+    ModelRequest,
+    ModelRole,
+    ModelUsage,
+    ProviderModelResult,
+)
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
 from novel_agent.domain.world import (
     Entity,
@@ -103,6 +110,21 @@ def _teacher_world() -> tuple[WorldRootDocument, TextRootDocument, StableId, Sta
     return world, text, teacher_id, student_id
 
 
+def _world_with_state_truth(
+    world: WorldRootDocument,
+    truth_class: TruthClass,
+) -> WorldRootDocument:
+    provisional = world.model_copy(
+        update={
+            "root_hash": ArtifactId("sha256:" + "0" * 64),
+            "states": tuple(
+                state.model_copy(update={"truth_class": truth_class}) for state in world.states
+            ),
+        }
+    )
+    return provisional.model_copy(update={"root_hash": world_root_content_id(provisional)})
+
+
 def test_predicate_registry_is_bounded_and_records_ownership_metadata() -> None:
     registry = PredicateRegistry()
 
@@ -153,7 +175,7 @@ def test_world_graph_pass_backfills_evidence_relation_without_removing_state() -
         "teacher_of",
         student_id,
     )
-    assert relation.truth_class is TruthClass.ACCEPTED_WORLD_FACT
+    assert relation.truth_class is TruthClass.ASSERTION
     assert result.receipt.candidates[0].status is RelationBackfillStatus.ACCEPTED
 
 
@@ -231,7 +253,7 @@ def test_stage1_validator_independently_rejects_unregistered_relation() -> None:
     [
         ("missing_relation", "RELATION_WRITE_MISSING"),
         ("missing_endpoint", "RELATION_ENDPOINT_MISSING"),
-        ("non_accepted_truth", "RELATION_TRUTH_NOT_ACCEPTED"),
+        ("non_concrete_truth", "RELATION_TRUTH_NOT_CONCRETE"),
     ],
 )
 def test_stage1_validator_reports_each_relation_invariant(variant: str, expected_code: str) -> None:
@@ -246,7 +268,7 @@ def test_stage1_validator_reports_each_relation_invariant(variant: str, expected
         update = (
             {"subject_id": StableId("entity.missing")}
             if variant == "missing_endpoint"
-            else {"truth_class": TruthClass.ASSERTION}
+            else {"truth_class": TruthClass.UNKNOWN}
         )
         relation = relation.model_copy(update=update)
         provisional = extraction.repaired_world.model_copy(update={"relations": (relation,)})
@@ -275,21 +297,23 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
     quote = text.chapters[4].scenes[0].blocks[0].text
     response = json.dumps(
         {
-            "entities": [
+            "status": "complete",
+            "candidates": [
                 {
+                    "kind": "entity",
                     "surface": "北塔",
                     "entity_type": "location",
                     "evidence_quotes": [quote],
-                }
-            ],
-            "relations": [
+                },
                 {
+                    "kind": "relation",
                     "subject_surface": "林澈",
                     "predicate": "located_at",
                     "object_surface": "北塔",
                     "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "accepted_world_fact",
                     "evidence_quotes": [quote],
-                }
+                },
             ],
         },
         ensure_ascii=False,
@@ -315,7 +339,7 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
         prompt="",
     )
 
-    batch, _ = asyncio.run(
+    batches, _ = asyncio.run(
         ModelCurator(
             gateway,
             semantic_verifier=lambda _record, _candidate: (
@@ -330,7 +354,8 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
             request,
         )
     )
-    result = WorldGraphExtractionPass().run(world, text, candidate_batches=(batch,))
+    batch = batches[0]
+    result = WorldGraphExtractionPass().run(world, text, candidate_batches=batches)
 
     created = next(item for item in result.receipt.entity_admissions if item.surface == "北塔")
     accepted = next(
@@ -343,13 +368,12 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
     assert created.entity_id != student_id
     assert accepted.status is RelationBackfillStatus.ACCEPTED
     assert accepted.object_id == created.entity_id
-    assert batch.model_request_id == request.request_id
+    assert batch.model_request_id is not None
+    assert batch.model_request_id.root.endswith(".u000.p00")
     assert batch.relations[0].evidence_refs[0].span is not None
     assert endpoint.requests[0].enable_thinking is False
-    assert '"evidence_quotes"' in endpoint.requests[0].prompt
-    assert (
-        "combined entities plus relations count must be at most four" in endpoint.requests[0].prompt
-    )
+    assert "every evidence_quote" in endpoint.requests[0].prompt
+    assert "at most 12 candidates" in endpoint.requests[0].prompt
     assert (
         "Prioritize relation candidates over entity-only discovery" in endpoint.requests[0].prompt
     )
@@ -361,13 +385,15 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
     quote = text.chapters[4].scenes[0].blocks[0].text
     draft_response = json.dumps(
         {
-            "entities": [],
-            "relations": [
+            "status": "complete",
+            "candidates": [
                 {
+                    "kind": "relation",
                     "subject_surface": "旧誓言",
                     "predicate": "teacher_of",
                     "object_surface": "林澈",
                     "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "accepted_world_fact",
                     "evidence_quotes": [quote],
                 }
             ],
@@ -411,9 +437,10 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
 
     unresolved_gateway = gateway(FakeModelEndpoint(draft_response))
     unresolved_curator = ModelCurator(unresolved_gateway)
-    unresolved, _ = asyncio.run(
+    unresolved_batches, _ = asyncio.run(
         unresolved_curator.extract_graph_candidates(text, 5, world.source_commit, world, request())
     )
+    unresolved = unresolved_batches[0]
     assert unresolved.relations[0].support_status.value == "rejected"
 
     scripted = ScriptedModelEndpoint(
@@ -428,9 +455,10 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
         verified_gateway,
         enable_model_semantic_verifier=True,
     )
-    verified, _ = asyncio.run(
+    verified_batches, _ = asyncio.run(
         verified_curator.extract_graph_candidates(text, 5, world.source_commit, world, request())
     )
+    verified = verified_batches[0]
     assert verified.relations[0].support_status.value == "supported"
     assert len(verified_gateway.call_records) == 2
 
@@ -451,15 +479,16 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
             )
 
     hard_gateway = gateway(FakeModelEndpoint(draft_response))
-    hard, _ = asyncio.run(
+    hard_batches, _ = asyncio.run(
         ModelCurator(hard_gateway, support_gate=HardRejectGate()).extract_graph_candidates(
             text, 5, world.source_commit, world, request()
         )
     )
+    hard = hard_batches[0]
     assert hard.relations[0].support_reason == "HARD_GRAPH_CONTRADICTION"
 
     verifier_reject_gateway = gateway(FakeModelEndpoint(draft_response))
-    verifier_rejected, _ = asyncio.run(
+    verifier_rejected_batches, _ = asyncio.run(
         ModelCurator(
             verifier_reject_gateway,
             semantic_verifier=lambda _record, _candidate: (
@@ -468,14 +497,15 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
             ),
         ).extract_graph_candidates(text, 5, world.source_commit, world, request())
     )
+    verifier_rejected = verifier_rejected_batches[0]
     assert verifier_rejected.relations[0].support_status.value == "rejected"
 
     candidate = verified_curator.last_evidence_candidates[0].model_copy(update={"text": "wrong"})
     with pytest.raises(ValueError, match="does not round-trip"):
-        ModelCurator._graph_evidence_ref(text, 5, world.source_commit, candidate)
+        ModelCurator._evidence_ref(text, 5, world.source_commit, candidate)
 
 
-def test_model_graph_profile_rejects_ambiguous_evidence_without_blocking_batch() -> None:
+def test_model_graph_profile_rejects_non_roundtripping_evidence_without_blocking_batch() -> None:
     world, text, _, _ = _teacher_world()
     block = text.chapters[4].scenes[0].blocks[0]
     candidates = tuple(
@@ -500,13 +530,15 @@ def test_model_graph_profile_rejects_ambiguous_evidence_without_blocking_batch()
 
     response = json.dumps(
         {
-            "entities": [],
-            "relations": [
+            "status": "complete",
+            "candidates": [
                 {
+                    "kind": "relation",
                     "subject_surface": "林澈",
                     "predicate": "member_of",
                     "object_surface": "国教学院",
                     "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "accepted_world_fact",
                     "evidence_quotes": ["国教学院"],
                 }
             ],
@@ -533,32 +565,36 @@ def test_model_graph_profile_rejects_ambiguous_evidence_without_blocking_batch()
         prompt="",
     )
 
-    batch, _ = asyncio.run(
+    batches, _ = asyncio.run(
         ModelCurator(
             gateway,
             evidence_generator=AmbiguousGenerator(),
         ).extract_graph_candidates(text, 5, world.source_commit, world, request)
     )
+    batch = batches[0]
 
     assert batch.relations[0].support_status.value == "rejected"
-    assert batch.relations[0].support_reason == "graph_candidate_evidence_ambiguous"
+    assert batch.relations[0].support_reason == "graph_candidate_evidence_unresolved"
     assert batch.relations[0].evidence_refs == ()
-    extraction = WorldGraphExtractionPass().run(world, text, candidate_batches=(batch,))
+    extraction = WorldGraphExtractionPass().run(world, text, candidate_batches=batches)
     assert extraction.receipt.candidates[-1].status is RelationBackfillStatus.REJECTED
 
 
 def test_model_graph_profile_fails_closed_on_invalid_semantic_verifier_response() -> None:
     world, text, _, _ = _teacher_world()
+    world = _world_with_state_truth(world, TruthClass.ACCEPTED_WORLD_FACT)
     quote = text.chapters[4].scenes[0].blocks[0].text
     draft_response = json.dumps(
         {
-            "entities": [],
-            "relations": [
+            "status": "complete",
+            "candidates": [
                 {
+                    "kind": "relation",
                     "subject_surface": "旧誓言",
                     "predicate": "teacher_of",
                     "object_surface": "林澈",
                     "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "accepted_world_fact",
                     "evidence_quotes": [quote],
                 }
             ],
@@ -602,12 +638,13 @@ def test_model_graph_profile_fails_closed_on_invalid_semantic_verifier_response(
         prompt="",
     )
 
-    batch, _ = asyncio.run(
+    batches, _ = asyncio.run(
         ModelCurator(
             gateway,
             enable_model_semantic_verifier=True,
         ).extract_graph_candidates(text, 5, world.source_commit, world, request)
     )
+    batch = batches[0]
 
     assert batch.relations[0].support_status.value == "rejected"
     assert batch.relations[0].support_reason == (
@@ -615,11 +652,159 @@ def test_model_graph_profile_fails_closed_on_invalid_semantic_verifier_response(
     )
 
 
+def test_graph_profile_continuation_no_progress_is_typed_incomplete() -> None:
+    world, text, _, _ = _teacher_world()
+    quote = text.chapters[4].scenes[0].blocks[0].text
+    response = json.dumps(
+        {
+            "status": "has_more",
+            "candidates": [
+                {
+                    "kind": "relation",
+                    "subject_surface": "旧誓言",
+                    "predicate": "teacher_of",
+                    "object_surface": "林澈",
+                    "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "assertion",
+                    "evidence_quotes": [quote],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    endpoint = FakeModelEndpoint(response)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.continuation",
+                model_name="fake.graph.continuation",
+                adapter=endpoint,
+            ),
+        )
+    )
+
+    batches, _ = asyncio.run(
+        ModelCurator(gateway).extract_graph_candidates(
+            text,
+            5,
+            world.source_commit,
+            world,
+            request=ModelRequest(
+                request_id=StableId("request.graph.continuation"),
+                run_id=RunId("run.graph.continuation"),
+                task_id=TaskId("task.graph.continuation"),
+                model_role=ModelRole.IMPLEMENTATION,
+                purpose=ModelCallPurpose.DEVELOPMENT,
+                trace_id="trace.graph.continuation",
+                prompt="",
+            ),
+        )
+    )
+
+    assert len(endpoint.requests) == 2
+    assert batches[-1].unit_status.value == "incomplete"
+    assert batches[-1].incomplete_reason == "duplicate_only_no_progress"
+    assert batches[-1].deduped_candidate_keys == batches[0].candidate_keys
+
+
+def test_graph_profile_runs_eight_independent_source_units_concurrently() -> None:
+    world, text, _, _ = _teacher_world()
+    block = text.chapters[4].scenes[0].blocks[0]
+    candidates = tuple(
+        EvidenceCandidate(
+            candidate_id=StableId(f"evidence.concurrent.{index}"),
+            block_id=block.block_id,
+            chapter_index=5,
+            scene_index=0,
+            text=block.text,
+            start=0,
+            end=len(block.text),
+            content_hash=sha256_id(block.text.encode("utf-8")),
+        )
+        for index in range(8)
+    )
+
+    class EightUnitGenerator(EvidenceCandidateGenerator):
+        def generate(
+            self, _text_root: TextRootDocument, _chapter_index: int
+        ) -> tuple[EvidenceCandidate, ...]:
+            return candidates
+
+    class ConcurrentEndpoint:
+        is_external = False
+
+        def __init__(self) -> None:
+            self.ready = asyncio.Event()
+            self.inflight = 0
+            self.max_inflight = 0
+
+        async def generate(self, _request: ModelRequest) -> ProviderModelResult:
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+            if self.inflight == 8:
+                self.ready.set()
+            await asyncio.wait_for(self.ready.wait(), timeout=1)
+            self.inflight -= 1
+            return ProviderModelResult(
+                text=json.dumps(
+                    {
+                        "status": "complete",
+                        "candidates": [],
+                        "no_graph_candidate_reason": "none found",
+                    }
+                ),
+                model_version="concurrent-v1",
+                usage=ModelUsage(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost_usd=Decimal("0"),
+                ),
+            )
+
+    endpoint = ConcurrentEndpoint()
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.concurrent",
+                model_name="fake.graph.concurrent",
+                adapter=endpoint,
+            ),
+        )
+    )
+    batches, _ = asyncio.run(
+        ModelCurator(
+            gateway,
+            evidence_generator=EightUnitGenerator(),
+            graph_source_unit_tokens=1,
+        ).extract_graph_candidates(
+            text,
+            5,
+            world.source_commit,
+            world,
+            ModelRequest(
+                request_id=StableId("request.graph.concurrent"),
+                run_id=RunId("run.graph.concurrent"),
+                task_id=TaskId("task.graph.concurrent"),
+                model_role=ModelRole.IMPLEMENTATION,
+                purpose=ModelCallPurpose.DEVELOPMENT,
+                trace_id="trace.graph.concurrent",
+                prompt="",
+            ),
+        )
+    )
+
+    assert len(batches) == 8
+    assert endpoint.max_inflight == 8
+
+
 def test_backfill_runner_uses_validation_commit_projection_and_l0_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     world, text, _, _ = _teacher_world()
+    world = _world_with_state_truth(world, TruthClass.ACCEPTED_WORLD_FACT)
     root = tmp_path
     world_path = root / "world.json"
     text_path = root / "text.json"
@@ -678,6 +863,7 @@ def test_backfill_runner_imports_source_commit_without_mutating_source(
     from novel_agent.services.projection import DerivedSnapshotRepository
 
     world, text, _, _ = _teacher_world()
+    world = _world_with_state_truth(world, TruthClass.ACCEPTED_WORLD_FACT)
     plan = make_synthetic_bundle().plan_roots[0]
     checkpoint_plan = plan.model_copy(update={"root_hash": ArtifactId("sha256:" + "a" * 64)})
     checkpoint_plan_path = tmp_path / "checkpoint-plan.json"
@@ -810,6 +996,7 @@ def test_backfill_runner_imports_source_commit_without_mutating_source(
 
 def test_repaired_relation_materializes_paths_receipts_and_l1_anchor() -> None:
     world, text, teacher_id, _ = _teacher_world()
+    world = _world_with_state_truth(world, TruthClass.ACCEPTED_WORLD_FACT)
     repaired = WorldGraphExtractionPass().run(world, text).repaired_world
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -869,9 +1056,8 @@ def test_world_graph_pass_audits_unresolvable_evidence_without_creating_edge() -
         update={"states": (state.model_copy(update={"truth_class": TruthClass.RUMOR}),)}
     )
     rumor_result = WorldGraphExtractionPass().run(rumor, text)
-    rumor_reason = rumor_result.receipt.candidates[0].rejection_reason
-    assert rumor_result.repaired_world.relations == ()
-    assert rumor_reason == "truth_class_not_admitted:rumor"
+    assert rumor_result.repaired_world.relations[0].truth_class is TruthClass.RUMOR
+    assert rumor_result.receipt.candidates[0].status is RelationBackfillStatus.ACCEPTED
 
 
 def test_repair_receipt_domain_validators_fail_closed() -> None:

@@ -1,0 +1,220 @@
+{
+  "$defs": {
+    "GraphCandidatePageStatus": {
+      "enum": [
+        "complete",
+        "has_more"
+      ],
+      "title": "GraphCandidatePageStatus",
+      "type": "string"
+    },
+    "GraphEntityCandidateDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "evidence_quotes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "kind": {
+          "const": "entity",
+          "default": "entity",
+          "title": "Kind",
+          "type": "string"
+        },
+        "surface": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "surface",
+        "entity_type",
+        "evidence_quotes"
+      ],
+      "title": "GraphEntityCandidateDraft",
+      "type": "object"
+    },
+    "GraphRelationCandidateDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_quotes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "kind": {
+          "const": "relation",
+          "default": "relation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "object_surface": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Object Surface",
+          "type": "string"
+        },
+        "predicate": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "source_truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "subject_surface": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Subject Surface",
+          "type": "string"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        }
+      },
+      "required": [
+        "subject_surface",
+        "predicate",
+        "object_surface",
+        "valid_time",
+        "source_truth_class",
+        "evidence_quotes"
+      ],
+      "title": "GraphRelationCandidateDraft",
+      "type": "object"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidates": {
+      "default": [],
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "entity": "#/$defs/GraphEntityCandidateDraft",
+            "relation": "#/$defs/GraphRelationCandidateDraft"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/GraphEntityCandidateDraft"
+          },
+          {
+            "$ref": "#/$defs/GraphRelationCandidateDraft"
+          }
+        ]
+      },
+      "maxItems": 12,
+      "title": "Candidates",
+      "type": "array"
+    },
+    "no_graph_candidate_reason": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "No Graph Candidate Reason"
+    },
+    "status": {
+      "$ref": "#/$defs/GraphCandidatePageStatus"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "GraphCandidatePageDraft",
+  "type": "object"
+}

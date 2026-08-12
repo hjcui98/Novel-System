@@ -348,7 +348,7 @@ Purpose: 修复已被现实审计确认的 World graph source 缺失，使本项
 命中固定专名或通过几个 benchmark case 为目标；WorldRoot 仍采用 open-world 语义，完成口径是通用
 构建机制和真实投影闭环，而不是宣称正文语义已被全量抽取。
 
-#### Round 3 当前状态（2026-08-12）
+#### Round 3 修复前基线（2026-08-12）
 
 `.agent/implementation.md` §31 已完成最小关键实现：
 
@@ -363,6 +363,33 @@ Purpose: 修复已被现实审计确认的 World graph source 缺失，使本项
 现有 Overlay、Validation、Artifact/Commit 和 `FullDerivedProjectionBuilder`；真实 repair identity 下的
 R1/L1/L2 尚未重建。因此下一步不是继续给当前 pass 加样例分支，而是补齐以下唯一生产链：
 
+#### Round 3 四项根因修复状态（2026-08-13）
+
+下文定义的四项根因已按本轮生产路径完成代码闭环：
+
+- ordinary `CuratorV2EvidenceDraft` 的生成 schema 已排除 Relation；memory workflow 在 merge 边界再次
+  拒绝普通 Curator relation，唯一 canonical admission owner 是 `WorldGraphExtractionPass`；
+- model quote 现在回到当前 source unit 的原始 block 做唯一 verbatim substring binding，生成新的 exact
+  slice；ordinary/graph 共用同一 EvidenceRef materializer，不再引用父 candidate 的整段 offset；
+- graph relation 显式携带 `source_truth_class`，admission 和 `Stage1Validator` 接受并保留 concrete truth，
+  只拒绝 `UNKNOWN/NOT_APPLICABLE`；R1 edge/path 仍只消费 `ACCEPTED_WORLD_FACT`；
+- graph output 已改为 discriminated single-array page，JSON Schema 直接表达 `maxItems=12`；chapter candidates
+  默认不截断，host 按约 1,500 token source unit 切分，不同 unit 默认 8 路并发且可按
+  endpoint capacity 调整，同 unit 最多 16 页串行
+  continuation。重复无进展或页保险触发时生成 typed incomplete，memory workflow/backfill runner fail closed。
+
+本轮还补齐 source candidate ids、exact evidence ids、page candidate/dedupe keys、unit complete/incomplete
+receipt，以及 CLI 的 `--max-concurrent-graph-units` / `--max-pages-per-graph-unit`。没有增加 graph storage、
+scheduler、关键词 truth classifier、兼容 dispatcher 或 case-specific 分支。
+
+代码级验证：Round 3/Curator/memory workflow focused tests 166 passed；新增机制测试直接验证普通 schema 无
+Relation、exact quote offset round-trip、continuation duplicate-only incomplete 和 8 个独立 source units 的真实
+并发；相关 Ruff 与 strict MyPy 通过。提交前统一 quality/pre-commit 结果以本次 commit 记录为准。
+
+边界说明：以上表示四个根因的实现与确定性测试闭环，不等于已用 GPU1:8003 从 frozen source 全量重建
+World/KG，也不等于五点 benchmark 已基于新 repair identity 重跑。真实模型 backfill、projection 和五点
+benchmark 仍须在本 commit 之后使用隔离 output identity 执行，不能复用旧 World/KG 结果冒充验收。
+
 ```text
 existing World records + TextRoot/L0 evidence units
   -> evidence-bound entity/relation candidates
@@ -376,6 +403,25 @@ existing World records + TextRoot/L0 evidence units
   -> GraphPathReceipt
   -> exact L0 dereference
 ```
+
+#### 重新确认后的根因与共同失效链
+
+2026-08-12 在回退偏离实现、重新阅读当前工作区和 OpenCode/GraphRAG 参考源码后，Round 3 还有四个
+必须一起关闭的根因。它们不是四个互不相关的小校验：前两个让 relation owner 与证据边界分叉，第三个
+把分叉结果晋升为 canonical fact，第四个则让抽取召回被一个无法由生成 grammar 完整表达的整章硬上限
+截断。
+
+| Root cause | Current code | Actual failure | Repair owner |
+|---|---|---|---|
+| Relation 双写入口 | `ModelCurator.extract_reported_v2()` 的普通 `CuratorV2EvidenceDraft` 仍允许 `CuratorRelationRecord`；`extract_graph_candidates()` 又单独产生 graph relation candidate | 同一种 canonical relation 可绕过或进入两套 identity、truth、resolution、evidence policy | `domain/changes.py` 的普通 Curator 输出契约 + `ModelCurator`；canonical relation admission 只归 `WorldGraphExtractionPass` |
+| semantic quote 被扩大为 catalog candidate span | `resolve_evidence_quotes()` 返回父 `EvidenceCandidate`；`model_curation.py` 再以父 candidate 的 `start/end` 构造 `EvidenceRef` | 模型引用的局部事实与同一 candidate 中相邻的传闻、假设或别的事实共用一个 evidence span | `EvidenceCandidateGenerator` 的 exact quote binding；`ModelCurator` 只消费绑定后的精确 span |
+| assertion 被升级为 accepted fact | `_admit_relation_candidate()` 接受 `ASSERTION`；创建 `RelationRecord` 时固定写 `ACCEPTED_WORLD_FACT` | source truth 被 owner 内静默改写，R1 typed graph 随后把它当可遍历事实 | `WorldGraphExtractionPass` 必须原样 materialize source truth；R1 typed traversal 只消费 accepted fact |
+| Graph batch 总数约束不进入 JSON grammar | `entities.maxItems=4`、`relations.maxItems=4`，但合计 `<=4` 只在 Pydantic after-validator | constrained generation 合法地产生 `4+4`，到 host 才失败；同时一次整章调用没有 continuation，四项变成召回上限 | `domain/world.py` 的单数组 page schema + `ModelCurator` 的 TextUnit/page loop |
+
+共同修复顺序必须是：先收口 relation owner，再让 model quote 绑定成 exact physical span，再让 graph
+admission 保留而不是提升 truth class，最后把整章单次抽取改成 source-unit candidate stream。若只把 `4`
+改成更大的数，前三项仍会把错误事实更快写入 World；若只加 truth 关键词黑名单，双写和粗 EvidenceRef
+仍然存在。
 
 #### Entry 与并行边界
 
@@ -398,35 +444,204 @@ existing World records + TextRoot/L0 evidence units
 3. LightRAG 的 chunk source-id retention 和 rebuild/merge：entity/relation 聚合后仍保留全部 source
    lineage，并能基于同一输入确定性重跑；本项目使用 `EvidenceRef`、repair receipt 和 CAS identity
    实现，不新增 graph storage abstraction。
+4. OpenCode `dev@d92d1e654bd1aa8ccb972b3059825314c1633eb8` 的 agent loop：
+   `packages/opencode/src/session/prompt.ts` 先由 `SessionTools.resolve()` 将当前 agent/permission 下可用工具的
+   description 与 JSON Schema 暴露给模型，普通文本任务不强制 `toolChoice`；模型直接返回 tool call 或
+   final response。`agent.steps`、finish reason 与 compaction 是运行预算和停止边界，不是一个预生成的
+   N-best 动作候选表；skill 也只把 name/description 暴露在 system prompt，正文由 `skill` tool 按需加载。
+5. Hermes、PydanticAI 与 OpenHands 的本地源码给出相同控制形态：模型在显式 action space 中选择下一
+   action，host 校验/执行并把 observation 放回下一轮；PydanticAI 的 `ModelRequestNode -> CallToolsNode ->
+   End` 是 execution graph，不是 domain knowledge graph。显式维护多条候选路径属于 LATS/MCTS 等额外
+   test-time search，不是本项目 graph extraction 的必要机制。
+
+参考位置：
+
+- `/home/cuihengjia/agent-source-research/opencode/packages/opencode/src/session/prompt.ts`：1088-1335；
+- `/home/cuihengjia/agent-source-research/opencode/packages/opencode/src/session/tools.ts`：41-134；
+- `/home/cuihengjia/agent-source-research/opencode/packages/opencode/src/session/system.ts`：101-113；
+- `/home/cuihengjia/agent-source-research/opencode/packages/opencode/src/skill/index.ts`：310-345；
+- `/home/cuihengjia/agent-source-research/opencode/packages/opencode/src/session/compaction.ts` 与
+  `overflow.ts`；
+- Microsoft GraphRAG `TextUnit -> extract -> merge`：
+  <https://microsoft.github.io/graphrag/index/default_dataflow/>；
+- ReAct：<https://arxiv.org/abs/2210.03629>；Toolformer：<https://arxiv.org/abs/2302.04761>；
+  LATS（仅作为“不采用默认树搜索”的对照）：<https://arxiv.org/abs/2310.04406>。
+
+从这些实现采纳的不是通用 agent loop，而是两条边界：
+
+1. **合法候选空间与运行预算分开**。Predicate Registry/typed candidate schema 定义模型能提出什么；
+   page size、source-unit 数、并发数和模型请求预算只控制一次运行能处理多少，不能定义小说中最多有多少
+   关系。
+2. **知识图、执行图、运行轨迹分开**。`WorldRoot.relations` 是小说知识图 truth；source-unit/page 状态是
+   一次抽取的执行轨迹；允许的 `extract -> resolve -> admit -> write -> project` 顺序是代码定义的 workflow。
+   本轮不得把三者合并成新的“long graph”或通用 agent framework。
 
 不采纳 fuzzy/similarity entity merge、description summary 作为事实、community/global reports、自动关系
 权重、独立 graph writer、第二向量实体库或新的 storage plugin family。这些都不是当前空图的必要修复。
 
+#### Relation、State、Event 的产品边界
+
+“所有 relation 统一走 graph candidate/exact resolution”只约束 canonical `RelationRecord` 的创建入口，
+不表示所有小说语义都要压成二元图边：
+
+| Semantics | Canonical owner | Graph behavior |
+|---|---|---|
+| evidence-backed、可持续查询的 entity-to-entity 事实，如师徒、亲属、隶属、控制、所在地 | `RelationRecord` | accepted fact 才投影为 R1 typed edge；唯一写入口是 `WorldGraphExtractionPass` |
+| 境界、伤势、情绪、外貌、数量等 subject-to-scalar 属性 | `StateRecord` | 默认不是 edge；只有 registry 已声明的 relation-like state 才产生候选，原 state 保留 |
+| 战斗、会面、死亡、迁移等多参与者、带时序的 happenings | `Event` | canonical truth 仍是 Event；projection 可派生 entity-event 导航，不把事件拆成第二份 canonical pairwise facts |
+| 计划、承诺、目标、未解决责任 | `PlanObligation` | 不写 World relation edge |
+| assertion、rumor、dream、prediction、hypothetical、contested、disproved entity-to-entity statement | 对应 truth class 的 `RelationRecord` | 可作为有证据的 typed relation row 保存，但不进入 accepted typed graph；不得提升 truth |
+
+因此 ordinary Curator 继续拥有 Entity/Event/State/Obligation observation，但不再拥有 Relation mutation；
+graph profile 只发现 Entity/Relation candidate，最终 Writer 仍读取 exact L0 evidence，而不是把图边文本当真值。
+
 #### 下一步操作：一个连续开发单元
 
-下面 5 项是同一轮连续实现顺序，不再拆成 Round 3A/3B/3C，也不在每一项之间启动大测试轮。
+下面 7 项是同一轮连续实现顺序，不再拆成 Round 3A/3B/3C，也不在每一项之间启动大测试轮。
 
-##### 1. 把 structured audit 与 L0 extraction 统一为 candidate stream
+##### 1. 收口 Relation 的唯一创建入口
 
-保留当前 relation-like State audit，同时增加 bounded L0 graph candidate generation：
+先关闭普通 Curator 的 relation 输出，再修改 graph 抽取；否则同一次 memory write 仍可从旧路径绕开新
+policy。
 
-- 复用 `ModelCurator.extract_reported_v2()` 已有的 EvidenceCandidate catalog、semantic quote grounding、
-  exact `EvidenceRef`、ModelGateway、structured output 和 model-call ledger；
-- 在 `ModelCurator` 现有 owner 内增加窄的 graph-repair entry point/profile，只允许提出 `entity CREATE`
-  和 `relation CREATE`；不新建第二个 extractor service；
-- candidate 按现有 paragraph/sentence EvidenceCandidate 或 TextUnit 分批。若 chapter-wide “最多四项”
-  会截断关系发现，就缩小 source batch，不提高为无界输出；
-- 每个 batch identity 由 source TextRoot、basis commit、chapter/TextUnit/evidence candidate ids 和 policy
-  version 确定；同一输入重跑得到相同 candidate ids/order；
-- relation-like State candidate 与 L0/model candidate 最终进入同一 admission API，并转换成现有
-  `ChangeOperation` / `ObservedChangeSet` 可消费的操作；
-- model 只负责 candidate discovery，不能决定 canonical entity id、不能直接构造 accepted WorldRoot，
-  也不能新增自由 predicate。
+1. 在 `src/novel_agent/domain/changes.py` 为 active model-output 增加窄的
+   `CuratorObservedRecord = Entity | Event | State | Obligation`，并让 `CuratorV2OperationDraft.record` 使用
+   该 union；其 `record_kind` 同时收窄为不含 relation 的 `Literal`。内部
+   `CuratedOperationDraftV2`/`CuratorTypedRecord` 可继续表达合法 graph support/mutation。这样导出的 JSON
+   Schema 本身不再向普通 Curator 暴露 relation，而不是只依赖 after-validator 或 prompt。
+2. `CuratorRelationRecord` 可以继续作为内部 typed support/mutation 结构供 graph profile 转换使用，但
+   `ModelCurator.extract_reported_v2()` 不再以它作为模型输出。不要为历史调用增加 feature flag 或双版本
+   dispatcher；直接更新当前 caller、schema export 与 fixtures。
+3. 在 `extract_reported_v2()` 从 model draft 转换 `ChapterChangeDraftV2` 的单一边界保留一个 fail-fast
+   owner invariant：若非 graph profile 仍出现 `WorldRecordKind.RELATION`，返回明确的
+   `CURATOR_RELATION_OWNER_VIOLATION`，不得 materialize `ChangeOperation`。
+4. `src/novel_agent/adapters/memory_write/teacher_forced.py` 保持普通 Curator 与 graph extraction 可以并行
+   获取候选，但 merge 时 Relation 只接受 `WorldGraphExtractionPass` 的 change set；不得把普通
+   `ObservedChangeSet` 中的 relation 与 graph change set 拼接。
+5. `src/novel_agent/services/mutation_normalizer.py`、`overlay.py` 仍然支持合法 Relation operation，因为
+   它们是通用 mutation corridor；不要在底层禁止 relation。禁止的是 relation 绕开 graph owner 的来源。
 
-禁止 regex 从正文直接宣判关系，禁止在 prompt/host code 中加入固定专名、case id、checkpoint-specific
-relation、Gold 或测试期望值。State/Event/Obligation 的常规写入不在这次 graph repair 中顺手重做。
+完成后的唯一写链：
 
-##### 2. 完成通用 entity admission
+```text
+ordinary Curator -> Entity/Event/State/Obligation operations
+graph profile/state audit -> WorldGraphCandidateBatch pages
+                         -> WorldGraphExtractionPass
+                         -> Relation operations
+both change sets -> existing overlay/validator/commit corridor
+```
+
+##### 2. 把模型 quote 绑定为 exact physical span
+
+`EvidenceCandidate` 继续作为向模型展示的 bounded source context，但它不再自动等于最终 `EvidenceRef`
+范围。实现必须区分 **source candidate** 与 **resolved quote slice**：
+
+1. 在 `src/novel_agent/services/evidence_candidates.py` 增加或改造唯一 exact binding 方法，使每个模型
+   `evidence_quote` 在当前 source unit 允许的 block/range 内执行原文 substring 查找，返回新的
+   `EvidenceCandidate` exact slice：`text == block.text[start:end] == evidence_quote`。
+2. 同一 physical span 可能被多个重叠 catalog candidate 覆盖；在 source unit 的原始 block text 上查找，
+   再按 `(block_id, absolute_start,
+   absolute_end)` 去重，再判断唯一性。一个 quote 对应多个不同 physical spans 时 typed ambiguous；零个时
+   typed unresolved。不得用 punctuation-insensitive、SequenceMatcher 或 fuzzy 结果自动绑定；这些只能继续
+  用于 repair feedback。
+3. quote 跨相邻 catalog candidate 时，在两者属于同一 source unit 且原始 block 上存在一个连续 exact
+   span 的情况下允许绑定；不能返回“第二个 candidate 的整段”代替跨界 quote。
+4. `_resolve_evidence_draft()` 将 exact slice 加入本次 host catalog，再把 exact slice id 写入内部
+   `ChapterChangeDraftV2`。`extract_graph_candidates()` 直接用 exact slices 建 candidate evidence refs。
+   model 仍然只复制自然语言 quote，不输出 offsets 或 canonical ids。
+5. `ModelCurator._graph_evidence_ref()` 与 ordinary Curator 的 EvidenceRef materialization 合并复用一个
+  现有 helper/窄 helper，输入必须是 exact slice，`span.start/end`、`quote_hash`、`evidence_id` 均由该
+   slice 计算。不要保留 ordinary/graph 两套 offset 算法。
+6. bounded parent source context 仍可送进 semantic support/truth classification，但只能作为 batch/source
+   lineage；最终 relation `evidence_refs` 只引用 exact quote spans。不能为拦截传闻重新引入固定词表。
+
+这项修复的验收不是“EvidenceRef 更短”，而是每个 ref 都满足：
+
+```text
+model evidence_quote
+  == resolved exact slice.text
+  == parent block.text[EvidenceRef.span.start:EvidenceRef.span.end]
+  == quote_hash input
+```
+
+##### 3. 把整章四项硬截断改成弹性 candidate page stream
+
+当前 `GraphCandidateBatchDraft(entities<=4, relations<=4, total<=4)` 替换为 JSON Schema 可直接表达的
+单数组 page：
+
+```text
+GraphCandidatePageDraft
+  status: complete | has_more
+  candidates: tuple[GraphEntityCandidateDraft | GraphRelationCandidateDraft, ...]
+              minItems=0, maxItems=12; item discriminator=kind
+  no_graph_candidate_reason: optional short text
+
+GraphEntityCandidateDraft
+  kind: entity
+  surface, entity_type, evidence_quotes
+
+GraphRelationCandidateDraft
+  kind: relation
+  subject_surface, predicate, object_surface, valid_time,
+  source_truth_class, evidence_quotes
+```
+
+`maxItems=12` 是一次 constrained JSON 输出的 page width，不是章节/小说 relation 总量。entity candidate
+仍只允许作为同页 relation 的缺失 endpoint；模型不得消费 page 去做独立 entity census。flattened union
+让总数约束进入 provider JSON grammar，删除原来的 entities/relations 双数组与 total after-validator。保留一个
+窄 after-validator 只检查跨字段语义：空 page 必须是 `complete` 且有 reason；非空 page 不带 no-op reason；
+`has_more` 不能是空 page。该 validator 不再承担 candidate 数量约束。
+
+`source_truth_class` 是 candidate statement 的 epistemic class，不是 graph traversal permission。模型可提出
+accepted fact、assertion、rumor、dream、prediction、hypothetical、contested、disproved 或 retconned
+relation，但 evidence quote 集必须同时覆盖 relation proposition 和判断该 truth class 所需的局部叙述语境；
+每个 quote 仍各自绑定 exact physical slice。`UNKNOWN`/`NOT_APPLICABLE` 没有可 materialize 的关系承诺，
+在 admission typed reject。不得在 prompt 中继续禁止所有非事实关系，否则 ordinary Curator 的 Relation
+入口关闭后会丢失它们。
+
+source-unit 与 continuation 由 host 控制：
+
+1. `ModelCurator` 按 chapter/scene/block 原始顺序将 paragraph/sentence EvidenceCandidates 组成稳定、连续的
+   source units；单元以现有 ModelGateway token estimate 控制在约 1,500 source tokens，不再把整章约
+   180 个 candidates 一次塞入 prompt。unit id 绑定 TextRoot、basis commit、chapter、candidate ids 与
+   policy version。
+2. 每个 unit 先请求 page 0。若 page 达到 12，或 model 返回 `has_more`，则带本 unit 已发出的 canonical
+   candidate keys 进入下一页，只要求新增候选；若未饱和且返回 `complete`，该 unit 完成。
+3. 同一 unit continuation 串行执行；不同 units 使用现有 ModelGateway/
+   `ModelRequestAdmissionController` 并发，runner 的默认 `max_concurrent_graph_units=8` 对齐当前
+   `GPU1:8003 max-num-seqs=8`。不得新建 scheduler、queue 或 worker framework。
+4. 不设置 per-unit relation 语义总数或固定“两次续页”。只要页面饱和或返回 `has_more` 且仍产生新的
+   exact candidate，就继续该 unit；未饱和 `complete` 正常结束。连续页只产生已见 candidate 时以
+   `duplicate_only_no_progress` 结束。设置宽松的 `max_pages_per_graph_unit=16` 作为失控/坏模型的运行保险，
+   一页 12 项即单 unit 最多返回 192 个 records；达到保险或 runner 时间预算时记录 typed
+   `graph_source_unit_incomplete`，不得静默截断或宣告 graph-ready。一个 chapter/novel 有任意数量 units，
+   因而没有全章/全书 relation 总量硬上限。
+5. page candidate id 由 source unit、kind、surface/predicate/time/truth 与 exact evidence span identity
+   得出，不依赖 page index；同一候选在 continuation 重复时 exact-dedupe。page/batch identity 另外包含
+   unit id、page index、model request id 与 policy version，用于调用 lineage。
+6. `WorldGraphCandidateBatch` 增加最少的 source-unit/page/completeness 字段，并区分 model-visible source
+   candidate ids 与最终 exact evidence refs。每个 source unit 必须以 complete 或 typed incomplete receipt
+   结束，chapter completeness 不能由“返回了若干关系”推断。
+
+伪代码固定为：
+
+```text
+units = build_stable_source_units(chapter_evidence_candidates)
+pages = run_independent_units(units, concurrency=8)
+for unit in units:
+    page = extract(unit, already_emitted=())
+    while (page.status == has_more or page.size == 12) and page_index < 16 and run_budget_available:
+        page = extract(unit, already_emitted=unique_candidate_keys)
+        stop typed-incomplete if no new candidate was produced
+    close unit as complete or typed incomplete when page/run budget is exhausted
+merge exact-deduped candidates in source order
+WorldGraphExtractionPass.admit(...)
+```
+
+禁止 regex 从正文直接宣判关系，禁止固定专名/case/checkpoint/Gold 分支，也不引入 LATS/MCTS 或让模型
+自由选择 workflow tool。这里需要的是确定性数据流水线，不是通用 coding-agent loop。
+
+##### 4. 完成通用 entity admission
 
 所有 relation endpoint 先经过 `EntityAliasRepairPolicy`，并按下面唯一顺序处理：
 
@@ -445,7 +660,7 @@ model-emitted target id 不是 canonical authority。host 必须根据 admission
 reject。只有出现带明确 identity evidence、且 exact admission 无法表达的真实候选时，才返回 Codex 决定
 是否增加最小 merge/split operation。
 
-##### 3. 把 relation admission 接到现有 mutation contract
+##### 5. 保留 source truth，并接到现有 mutation contract
 
 `WorldGraphExtractionPass` 继续作为 Round 3 唯一 admission owner。structured 和 L0/model candidates
 统一执行：
@@ -453,7 +668,8 @@ reject。只有出现带明确 identity evidence、且 exact admission 无法表
 - predicate 必须存在于 `PredicateRegistry`；
 - subject/object type 满足 domain/range；
 - endpoints 已存在或有同批 admitted entity CREATE；
-- truth class 允许进入 accepted World fact；
+- `source_truth_class` 必须是明确、evidence-supported 的 concrete class；materialization 必须原样保留，
+  不得把 assertion/rumor 等升级为 accepted fact；`UNKNOWN`/`NOT_APPLICABLE` typed reject；
 - valid time/worldline 合法，未有证据时不得虚构结束时间；
 - EvidenceRef 在当前 TextRoot/cutoff/basis 可解引用，quote hash 和 span round-trip 成立；
 - local evidence 对该 relation 有直接支持；
@@ -463,14 +679,33 @@ local evidence support 复用已有 evidence binding/support gate；不得重新
 verifier、semantic evaluator 或 Gold matcher。发现 registry 缺少正文中反复出现的直接关系时，保留
 candidate/evidence 统计并返回 Codex；实现者不得让 model 生成任意 predicate，也不得趁机扩建 ontology。
 
-accepted candidate 必须转换为 `ChangeOperation` / `ObservedChangeSet`。当前 pass 直接构造的
+admission status 为 `ACCEPTED` 的 candidate 必须转换为 `ChangeOperation` / `ObservedChangeSet`；这里的
+`ACCEPTED` 表示“准入并物化 typed relation”，不等于其 `truth_class` 必须是
+`ACCEPTED_WORLD_FACT`。当前 pass 直接构造的
 `repaired_world` 可以保留为便捷返回值，但其内容必须由 `WorldOverlay.apply()` 从同一 change set 得到并
 与 direct result 相等；不再让 `world_graph.py` 成为第二套 mutation protocol。
 
 relation-like State 暂时全部保留。Predicate Registry 已声明某属性属于 Relation，并不自动授权删除历史
 State；State 的 supersede/migration 需要单独证据和上位决策，不能在 graph backfill 中静默执行。
 
-##### 4. 形成 immutable repair identity
+`_admit_relation_candidate()` 的具体修复不能留给实现者猜测：
+
+1. 删除把 truth admission 写成“允许集合后统一晋升”的逻辑。允许 evidence-supported 的 concrete
+   `TruthClass` 原样 materialize；只对 `UNKNOWN`/`NOT_APPLICABLE` 返回 typed reject；
+2. `GraphRelationCandidateDraft` 必须由模型显式输出 `source_truth_class`，L0 local support 使用完整 bounded
+   source unit 和 exact quote 集判断关系与 epistemic status，但最终 EvidenceRef 仍只引用 exact slices；
+   复用当前 local support gate，不新增 whole-chapter verifier 或关键词分类器；
+3. 创建 `RelationRecord` 时直接写入 `candidate.source_truth_class`；不得再无条件构造
+   `TruthClass.ACCEPTED_WORLD_FACT`；
+4. relation-like State 的 truth class 原样进入 candidate 和 relation。ASSERTION state 可形成 ASSERTION
+   relation，但 state 自身继续保留；
+5. receipt 同时保留 source truth class 与 rejection reason，使后续 projection/benchmark 能区分
+   unsupported、non-factual、ambiguous identity 和 duplicate，不能都折叠成 zero-edge；
+6. `FullDerivedProjectionBuilder` 可为所有 materialized relations 生成带 truth class 的 R1 rows；现有
+   `typed_graph_paths()`/edge association 继续只允许 `ACCEPTED_WORLD_FACT`。manifest 分开报告
+   `relation_row_count` 与 `accepted_graph_edge_count`，不能把 assertion row 算成可遍历 edge。
+
+##### 6. 形成 immutable repair identity
 
 把 `scripts/backfill_world_graph.py` 从单 root 诊断入口扩展为 Round 3 唯一 operational runner；不要再
 新增并行 runner。它应支持 root JSON 诊断输入，也支持 source project/artifact location + 一个或多个
@@ -504,11 +739,12 @@ runner 只导出完成闭环所需的最小产物：
 不新增 Markdown 报告、dashboard、graph database dump、第二 output-index family、queue 或 control plane。
 重跑与 resume 只依赖 stable batch id、content-addressed artifacts 和一个 repair manifest。
 
-##### 5. 用真实 repair identity 重建 R1/L1/L2
+##### 7. 用真实 repair identity 重建 R1/L1/L2
 
 对 repair commit/identity 调用现有 `FullDerivedProjectionBuilder`，不得单独手写 graph projection：
 
-- 每个 accepted `RelationRecord` materialize 为一个 R1 relation row，并写 subject/object role association；
+- 每个 materialized `RelationRecord` 都形成一个保留原 truth class 的 R1 relation row，并写
+  subject/object role association；
 - `graph_edge_count` 从该 repair identity 下可见且有 evidence 的 accepted relation rows 计算；
 - `AnchorBuilder` 从同一 World/Text basis 生成 entity/relation anchors，保留 World root 和 L0 evidence
   source refs；
@@ -525,9 +761,12 @@ Round 2 完成后，只在其现有 manifest/readiness contract 上接入 projec
 
 | File / owner | 必须完成的改动 | 保持不变的边界 |
 |---|---|---|
-| `src/novel_agent/domain/world.py` | 只补现有 receipt 无法表达的 source batch、entity admission 和 rejection basis；保持 accepted/rejected accounting 可核对 | 复用 `ChangeOperation`，不新增第二 mutation DTO/ontology |
-| `src/novel_agent/services/world_graph.py` | 统一 structured/L0 candidate admission；host-owned entity id mapping；predicate/type/time/truth/evidence/multiplicity validation；输出 change set + receipt | `WorldRoot.relations` 是唯一 graph truth |
-| `src/novel_agent/services/model_curation.py` | 在现有 V2 evidence-grounded Curator 内增加 bounded graph candidate mode；限制 entity/relation create 和 registered predicate | model 只提候选，不写 root、不决定 identity |
+| `src/novel_agent/domain/changes.py` | 普通 `CuratorV2OperationDraft` 的 model-output union/Literal 排除 Relation；内部 mutation/support union 仍可表达 graph-owned relation | 不删除底层 Relation operation；不增加 legacy/feature-flag 双路径 |
+| `src/novel_agent/domain/world.py` | 以 discriminated single-array `GraphCandidatePageDraft` 替换双数组 `GraphCandidateBatchDraft`；page `maxItems=12`；增加最小 source-unit/page/completeness receipt 字段 | 12 只是一页输出宽度；不设 chapter/novel relation 总量，不新增第二 ontology |
+| `src/novel_agent/services/evidence_candidates.py` | semantic quote 解析为 unique exact physical slice；跨 candidate 时仍必须回到同一 block 连续原文；fuzzy 只用于反馈 | source candidate 可保留为模型上下文，但不能自动成为最终 EvidenceRef |
+| `src/novel_agent/services/world_graph.py` | 统一 State/L0 candidate admission；materialize concrete source truth 原值；host-owned entity id mapping；predicate/type/time/evidence/multiplicity validation；输出 change set + receipt | `WorldRoot.relations` 是唯一 relation truth；不做 assertion promotion 或关键词 truth 推断 |
+| `src/novel_agent/services/model_curation.py` | 普通 Curator fail-fast 拒绝 Relation；graph profile 按 stable source unit/page 抽取；exact quote slice materialization；复用现有 ModelGateway ledger | model 只提候选/epistemic class，不写 root、不决定 identity；不实现通用 agent loop |
+| `src/novel_agent/adapters/memory_write/teacher_forced.py` | 保持普通 Curator 与独立 graph source units 可并行；只接纳 graph change set 的 Relation；通过现有 gateway admission 控制总并发 8 | 同 unit continuation 串行；不新增 scheduler/queue |
 | `src/novel_agent/services/overlay.py`、`validation.py` | 复用现有 apply/validate；只补真实暴露出的 registry/domain/range/multiplicity validation hook | 不复制 World mutation/commit protocol |
 | `src/novel_agent/services/artifacts.py`、`commits.py`、`replay.py` | 复用 CAS、Commit/replay 形成隔离 repair identity 和 source lineage | 不改 frozen identity，不建设分支平台 |
 | `scripts/backfill_world_graph.py` | 成为 candidate -> admission -> mutation -> artifact -> projection 的唯一 runner，保留简易 JSON 模式 | 不新增第二 runner/report family |
@@ -548,20 +787,28 @@ checkpoint-specific expected relation。
 #### Round 3 完成验收
 
 1. 同一 runner 能处理任意合法 source root/commit，不含固定 case/checkpoint/专名分支；
-2. source candidate accounting 可闭合：每个 candidate 都进入 accepted、rejected 或 exact-deduped，且有
-   receipt；
-3. 有合法 evidence-backed relation candidate 的 repair identity 能产生 `relations > 0`；每条 accepted
+2. ordinary Curator 的生成 schema 不暴露 Relation；非 graph 来源无法 materialize Relation operation，
+   `WorldGraphExtractionPass` 是唯一 canonical relation admission owner；
+3. 每个 model evidence quote 绑定为 unique exact physical slice；最终 EvidenceRef 与 quote、block substring、
+   quote hash 四者 round-trip 相等，不再扩大成 parent candidate；
+4. source-unit/page accounting 可闭合：每个 unit 都是 complete 或 typed incomplete；每个 candidate 都进入
+   accepted、rejected 或 exact-deduped，且有 receipt；page 上限 12 进入 JSON Schema，章节没有 relation
+   总数硬上限；
+5. ASSERTION/RUMOR/DREAM/PREDICTION/HYPOTHETICAL/CONTESTED/DISPROVED/RETCONNED candidate 若被
+   materialize，`RelationRecord` 与 R1 row 必须保留同一 truth class；只有 `ACCEPTED_WORLD_FACT` 计入
+   typed graph edge/path；
+6. 有合法 evidence-backed relation candidate 的 repair identity 能产生 `relations > 0`；每条 accepted
    relation 的 endpoints、predicate、time、truth、EvidenceRef 和 admission lineage 均合法；
-4. missing entity create 走通用 exact-evidence admission；ambiguous/missing/unsupported 走 typed reject，
+7. missing entity create 走通用 exact-evidence admission；ambiguous/missing/unsupported 走 typed reject，
    不存在 fuzzy fallback；
-5. old accepted WorldRoot/Commit/DB/index 不变，repair root、manifest 和 source lineage 可验证；
-6. R1 `graph_edge_count` 精确等于 repair identity 下可见 accepted relation rows，不是硬编码非零值；
-7. Need-derived seed 存在 canonical path 时，typed graph receipt 可回到 relation rows 和 exact L0 slices；
+8. old accepted WorldRoot/Commit/DB/index 不变，repair root、manifest 和 source lineage 可验证；
+9. R1 `graph_edge_count` 精确等于 repair identity 下可见 accepted relation rows，不是硬编码非零值；
+10. Need-derived seed 存在 canonical path 时，typed graph receipt 可回到 relation rows 和 exact L0 slices；
    不可达时返回 typed reason，不伪造路径；
-8. entity/relation anchors 和 L2 indexes 与同一 repair identity、scope、cutoff、basis 对齐；
-9. Round 2 整合后 readiness 能区分 graph ready、zero-edge、missing-seed、filtered/no-path，Writer package
+11. entity/relation anchors 和 L2 indexes 与同一 repair identity、scope、cutoff、basis 对齐；
+12. Round 2 整合后 readiness 能区分 graph ready、zero-edge、missing-seed、filtered/no-path，Writer package
    继续 evidence-first；
-10. 没有第二 graph truth store、Neo4j/GraphRAG/LightRAG dependency、community report、Claim/evaluator
+13. 没有第二 graph truth store、Neo4j/GraphRAG/LightRAG dependency、community report、Claim/evaluator
     回流或 Stage 3+ 改动。
 
 实现完成后只做一轮统一验收：focused invariant/contract tests、full quality/pre-commit、隔离 repair

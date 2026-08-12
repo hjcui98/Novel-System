@@ -23,6 +23,7 @@ from novel_agent.domain.world import (
     EntityAliasResolutionReceipt,
     EntityResolutionStatus,
     GraphCandidateSupportStatus,
+    GraphSourceUnitStatus,
     RelationBackfillReceipt,
     RelationBackfillStatus,
     RelationRecord,
@@ -423,6 +424,10 @@ class WorldGraphExtractionPass:
         statuses = tuple(receipt.status.value for receipt in entity_receipts) + tuple(
             receipt.status.value for receipt in relation_receipts
         )
+        source_unit_statuses: dict[StableId, GraphSourceUnitStatus] = {}
+        for batch in batches:
+            if batch.source_unit_id is not None:
+                source_unit_statuses[batch.source_unit_id] = batch.unit_status
         extraction_receipt = WorldGraphExtractionReceipt(
             receipt_id=StableId(
                 "world-graph-extraction."
@@ -433,6 +438,16 @@ class WorldGraphExtractionPass:
             predicate_registry_version=self._registry.VERSION,
             alias_policy_version=self._alias_policy.VERSION,
             source_batch_ids=tuple(batch.batch_id for batch in batches),
+            completed_source_unit_ids=tuple(
+                unit_id
+                for unit_id, status in source_unit_statuses.items()
+                if status is GraphSourceUnitStatus.COMPLETE
+            ),
+            incomplete_source_unit_ids=tuple(
+                unit_id
+                for unit_id, status in source_unit_statuses.items()
+                if status is not GraphSourceUnitStatus.COMPLETE
+            ),
             entity_admissions=tuple(entity_receipts),
             candidates=tuple(relation_receipts),
             accepted_relation_ids=accepted_ids,
@@ -516,7 +531,7 @@ class WorldGraphExtractionPass:
             batch_id=batch_id,
             source_text_root=text.root_hash,
             base_commit=basis,
-            evidence_candidate_ids=tuple(
+            exact_evidence_candidate_ids=tuple(
                 dict.fromkeys(
                     evidence.evidence_id
                     for candidate in candidates
@@ -648,9 +663,9 @@ class WorldGraphExtractionPass:
         reason: str | None = None
         if candidate.support_status is GraphCandidateSupportStatus.REJECTED:
             reason = candidate.support_reason
-        elif candidate.source_truth_class not in {
-            TruthClass.ACCEPTED_WORLD_FACT,
-            TruthClass.ASSERTION,
+        elif candidate.source_truth_class in {
+            TruthClass.UNKNOWN,
+            TruthClass.NOT_APPLICABLE,
         }:
             reason = f"truth_class_not_admitted:{candidate.source_truth_class.value}"
         elif subject_id is None:
@@ -738,7 +753,7 @@ class WorldGraphExtractionPass:
             object_id=object_id,
             valid_time=candidate.valid_time,
             evidence_refs=candidate.evidence_refs,
-            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+            truth_class=candidate.source_truth_class,
         )
         return (
             self._relation_receipt(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -121,34 +122,79 @@ class EntityAdmissionStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class GraphCandidatePageStatus(StrEnum):
+    COMPLETE = "complete"
+    HAS_MORE = "has_more"
+
+
+class GraphSourceUnitStatus(StrEnum):
+    CONTINUE = "continue"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+
+
 class GraphEntityCandidateDraft(DomainModel):
+    kind: Literal["entity"] = "entity"
     surface: str = Field(min_length=1, max_length=160)
     entity_type: str = Field(min_length=1, max_length=160)
     evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
 
 
 class GraphRelationCandidateDraft(DomainModel):
+    kind: Literal["relation"] = "relation"
     subject_surface: str = Field(min_length=1, max_length=160)
     predicate: str = Field(min_length=1, max_length=160)
     object_surface: str = Field(min_length=1, max_length=160)
     valid_time: StoryTime
+    source_truth_class: TruthClass
     evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
 
 
-class GraphCandidateBatchDraft(DomainModel):
-    entities: tuple[GraphEntityCandidateDraft, ...] = Field(default=(), max_length=4)
-    relations: tuple[GraphRelationCandidateDraft, ...] = Field(default=(), max_length=4)
+GraphCandidateDraft = Annotated[
+    GraphEntityCandidateDraft | GraphRelationCandidateDraft,
+    Field(discriminator="kind"),
+]
+
+
+class GraphCandidatePageDraft(DomainModel):
+    status: GraphCandidatePageStatus
+    candidates: tuple[GraphCandidateDraft, ...] = Field(default=(), max_length=12)
     no_graph_candidate_reason: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
-    def validate_bounded_output(self) -> GraphCandidateBatchDraft:
-        if len(self.entities) + len(self.relations) > 4:
-            raise ValueError("graph candidate batch permits at most four candidates")
-        if (self.entities or self.relations) and self.no_graph_candidate_reason is not None:
-            raise ValueError("non-empty graph candidate batch cannot carry a no-op reason")
-        if not self.entities and not self.relations and not self.no_graph_candidate_reason:
-            raise ValueError("empty graph candidate batch requires a reason")
+    def validate_page_semantics(self) -> GraphCandidatePageDraft:
+        if self.candidates and self.no_graph_candidate_reason is not None:
+            raise ValueError("non-empty graph candidate page cannot carry a no-op reason")
+        if not self.candidates and (
+            self.status is not GraphCandidatePageStatus.COMPLETE
+            or not self.no_graph_candidate_reason
+        ):
+            raise ValueError("empty graph candidate page must be complete and carry a reason")
+        relation_endpoints = {
+            surface
+            for candidate in self.candidates
+            if isinstance(candidate, GraphRelationCandidateDraft)
+            for surface in (candidate.subject_surface, candidate.object_surface)
+        }
+        if any(
+            candidate.surface not in relation_endpoints
+            for candidate in self.candidates
+            if isinstance(candidate, GraphEntityCandidateDraft)
+        ):
+            raise ValueError("entity candidate must be a relation endpoint in the same page")
         return self
+
+    @property
+    def entities(self) -> tuple[GraphEntityCandidateDraft, ...]:
+        return tuple(
+            item for item in self.candidates if isinstance(item, GraphEntityCandidateDraft)
+        )
+
+    @property
+    def relations(self) -> tuple[GraphRelationCandidateDraft, ...]:
+        return tuple(
+            item for item in self.candidates if isinstance(item, GraphRelationCandidateDraft)
+        )
 
 
 class WorldGraphEntityCandidate(DomainModel):
@@ -180,11 +226,27 @@ class WorldGraphCandidateBatch(DomainModel):
     source_text_root: ArtifactId
     base_commit: CommitId
     chapter_index: int | None = Field(default=None, ge=1)
-    evidence_candidate_ids: tuple[StableId, ...] = ()
+    source_unit_id: StableId | None = None
+    page_index: int = Field(default=0, ge=0)
+    unit_status: GraphSourceUnitStatus = GraphSourceUnitStatus.COMPLETE
+    incomplete_reason: str | None = Field(default=None, min_length=1)
+    source_candidate_ids: tuple[StableId, ...] = ()
+    exact_evidence_candidate_ids: tuple[StableId, ...] = ()
+    candidate_keys: tuple[str, ...] = ()
+    deduped_candidate_keys: tuple[str, ...] = ()
     policy_version: str = Field(min_length=1)
     model_request_id: StableId | None = None
     entities: tuple[WorldGraphEntityCandidate, ...] = ()
     relations: tuple[WorldGraphRelationCandidate, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_unit_status(self) -> WorldGraphCandidateBatch:
+        if self.unit_status is GraphSourceUnitStatus.INCOMPLETE:
+            if self.incomplete_reason is None:
+                raise ValueError("incomplete graph source unit requires a reason")
+        elif self.incomplete_reason is not None:
+            raise ValueError("complete or continuing graph source unit cannot carry a reason")
+        return self
 
 
 class EntityAliasResolutionReceipt(DomainModel):
@@ -287,6 +349,8 @@ class WorldGraphExtractionReceipt(DomainModel):
     predicate_registry_version: str = Field(min_length=1)
     alias_policy_version: str = Field(min_length=1)
     source_batch_ids: tuple[StableId, ...] = ()
+    completed_source_unit_ids: tuple[StableId, ...] = ()
+    incomplete_source_unit_ids: tuple[StableId, ...] = ()
     entity_admissions: tuple[EntityAdmissionReceipt, ...] = ()
     candidates: tuple[RelationBackfillReceipt, ...] = ()
     accepted_relation_ids: tuple[StableId, ...] = ()
@@ -297,6 +361,8 @@ class WorldGraphExtractionReceipt(DomainModel):
 
     @model_validator(mode="after")
     def validate_accepted_relations(self) -> WorldGraphExtractionReceipt:
+        if set(self.completed_source_unit_ids) & set(self.incomplete_source_unit_ids):
+            raise ValueError("graph source unit cannot be both complete and incomplete")
         receipt_ids = tuple(
             candidate.relation_id
             for candidate in self.candidates

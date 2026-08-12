@@ -154,7 +154,8 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.world import (
     Entity,
-    GraphCandidateBatchDraft,
+    GraphCandidatePageDraft,
+    GraphCandidatePageStatus,
     PlanNode,
     StateRecord,
     StoryTime,
@@ -282,14 +283,25 @@ RealHybridBackendProvider = Callable[[ProjectId, CommitId], Stage2RetrievalBacke
 class _ResponseBook:
     def __init__(self) -> None:
         self._responses: dict[StableId, str] = {}
+        self._stage_responses: dict[str, str] = {}
 
     def add(self, request_id: StableId, model: Any) -> None:
         self._responses[request_id] = model.model_dump_json()
+
+    def add_stage(self, scheduling_stage: str, model: Any) -> None:
+        self._stage_responses[scheduling_stage] = model.model_dump_json()
 
     def resolve(self, request: ModelRequest) -> str:
         try:
             return self._responses.pop(request.request_id)
         except KeyError as error:
+            stage_response = (
+                self._stage_responses.get(request.scheduling_stage)
+                if request.scheduling_stage is not None
+                else None
+            )
+            if stage_response is not None:
+                return stage_response
             raise TeacherForcedBenchmarkError(
                 f"scripted model has no response for {request.request_id.root}"
             ) from error
@@ -2274,11 +2286,11 @@ class _TeacherForcedTransition:
         if self.harness.responses is None:
             return
         if request.scheduling_stage == "curator_graph_extraction":
-            TeacherForcedBenchmarkE2ERunner._script(
-                self.harness,
-                request,
-                GraphCandidateBatchDraft(
-                    no_graph_candidate_reason="scripted smoke has no graph candidate"
+            self.harness.responses.add_stage(
+                request.scheduling_stage,
+                GraphCandidatePageDraft(
+                    status=GraphCandidatePageStatus.COMPLETE,
+                    no_graph_candidate_reason="scripted smoke has no graph candidate",
                 ),
             )
             return

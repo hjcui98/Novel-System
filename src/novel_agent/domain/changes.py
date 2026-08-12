@@ -119,6 +119,16 @@ CuratorTypedRecord = (
     | CuratorObligationRecord
 )
 
+CuratorObservedRecord = (
+    CuratorEntityRecord | CuratorEventRecord | CuratorStateRecord | CuratorObligationRecord
+)
+CuratorObservedRecordKind = Literal[
+    WorldRecordKind.ENTITY,
+    WorldRecordKind.EVENT,
+    WorldRecordKind.STATE,
+    WorldRecordKind.OBLIGATION,
+]
+
 
 class CuratedOperationDraft(DomainModel):
     operation: ChangeOperationType
@@ -218,9 +228,9 @@ class CuratorV2OperationDraft(DomainModel):
     """
 
     operation: ChangeOperationType
-    record_kind: WorldRecordKind
+    record_kind: CuratorObservedRecordKind
     target_id: StableId
-    record: CuratorTypedRecord
+    record: CuratorObservedRecord
     evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(min_length=1, max_length=4)
 
     @model_validator(mode="after")
@@ -229,7 +239,6 @@ class CuratorV2OperationDraft(DomainModel):
             WorldRecordKind.ENTITY: CuratorEntityRecord,
             WorldRecordKind.EVENT: CuratorEventRecord,
             WorldRecordKind.STATE: CuratorStateRecord,
-            WorldRecordKind.RELATION: CuratorRelationRecord,
             WorldRecordKind.OBLIGATION: CuratorObligationRecord,
         }[self.record_kind]
         if not isinstance(self.record, expected):

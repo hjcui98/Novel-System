@@ -187,7 +187,12 @@ async def _model_batches(
         ),
         structured_max_retries=1,
     )
-    curator = ModelCurator(gateway, enable_model_semantic_verifier=True)
+    curator = ModelCurator(
+        gateway,
+        enable_model_semantic_verifier=True,
+        max_concurrent_graph_units=args.max_concurrent_graph_units,
+        max_pages_per_graph_unit=args.max_pages_per_graph_unit,
+    )
     batches: list[WorldGraphCandidateBatch] = []
     calls: list[ModelCallRecord] = []
     for chapter in args.chapter:
@@ -202,15 +207,15 @@ async def _model_batches(
             max_output_tokens=args.model_max_output_tokens,
             timeout_seconds=args.model_timeout_seconds,
         )
-        batch, call = await curator.extract_graph_candidates(
+        chapter_batches, chapter_calls = await curator.extract_graph_candidates(
             text,
             chapter,
             base_commit,
             world,
             request,
         )
-        batches.append(batch)
-        calls.append(call)
+        batches.extend(chapter_batches)
+        calls.extend(chapter_calls)
     audited_calls = tuple(gateway.call_records)
     if not audited_calls:
         audited_calls = tuple(calls)
@@ -233,6 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--chapter", type=int, action="append")
     parser.add_argument("--model-max-output-tokens", type=int, default=4096)
+    parser.add_argument("--max-concurrent-graph-units", type=int, default=8)
+    parser.add_argument("--max-pages-per-graph-unit", type=int, default=16)
     parser.add_argument("--model-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--real-hybrid", action="store_true")
     parser.add_argument("--opensearch-url", default="http://127.0.0.1:9200")
@@ -392,6 +399,8 @@ def main() -> int:
             candidate_batches=(*supplied_batches, *model_batches),
             base_commit=repair_base,
         )
+        if extraction.receipt.incomplete_source_unit_ids:
+            raise RuntimeError("graph source unit extraction is incomplete")
         candidate_payload = canonical_json_bytes(
             [batch.model_dump(mode="json") for batch in extraction.candidate_batches]
         )

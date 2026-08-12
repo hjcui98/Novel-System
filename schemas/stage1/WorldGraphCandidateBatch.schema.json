@@ -1,0 +1,479 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "GraphCandidateSupportStatus": {
+      "enum": [
+        "supported",
+        "rejected"
+      ],
+      "title": "GraphCandidateSupportStatus",
+      "type": "string"
+    },
+    "GraphSourceUnitStatus": {
+      "enum": [
+        "continue",
+        "complete",
+        "incomplete"
+      ],
+      "title": "GraphSourceUnitStatus",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    },
+    "WorldGraphEntityCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "entity_type": {
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "source_batch_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "support_reason": {
+          "minLength": 1,
+          "title": "Support Reason",
+          "type": "string"
+        },
+        "support_status": {
+          "$ref": "#/$defs/GraphCandidateSupportStatus"
+        },
+        "surface": {
+          "minLength": 1,
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "source_batch_id",
+        "surface",
+        "entity_type",
+        "support_status",
+        "support_reason"
+      ],
+      "title": "WorldGraphEntityCandidate",
+      "type": "object"
+    },
+    "WorldGraphRelationCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "object_surface": {
+          "minLength": 1,
+          "title": "Object Surface",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "source_batch_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_state_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "subject_surface": {
+          "minLength": 1,
+          "title": "Subject Surface",
+          "type": "string"
+        },
+        "support_reason": {
+          "minLength": 1,
+          "title": "Support Reason",
+          "type": "string"
+        },
+        "support_status": {
+          "$ref": "#/$defs/GraphCandidateSupportStatus"
+        },
+        "valid_time": {
+          "$ref": "#/$defs/StoryTime"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "source_batch_id",
+        "subject_surface",
+        "predicate",
+        "object_surface",
+        "valid_time",
+        "source_truth_class",
+        "support_status",
+        "support_reason"
+      ],
+      "title": "WorldGraphRelationCandidate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "batch_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "candidate_keys": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Candidate Keys",
+      "type": "array"
+    },
+    "chapter_index": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapter Index"
+    },
+    "deduped_candidate_keys": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Deduped Candidate Keys",
+      "type": "array"
+    },
+    "entities": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorldGraphEntityCandidate"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "exact_evidence_candidate_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Exact Evidence Candidate Ids",
+      "type": "array"
+    },
+    "incomplete_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Incomplete Reason"
+    },
+    "model_request_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "page_index": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Page Index",
+      "type": "integer"
+    },
+    "policy_version": {
+      "minLength": 1,
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "relations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorldGraphRelationCandidate"
+      },
+      "title": "Relations",
+      "type": "array"
+    },
+    "source_candidate_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Source Candidate Ids",
+      "type": "array"
+    },
+    "source_text_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "source_unit_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "unit_status": {
+      "$ref": "#/$defs/GraphSourceUnitStatus",
+      "default": "complete"
+    }
+  },
+  "required": [
+    "batch_id",
+    "source_text_root",
+    "base_commit",
+    "policy_version"
+  ],
+  "title": "WorldGraphCandidateBatch",
+  "type": "object"
+}

@@ -65,7 +65,6 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
-from novel_agent.domain.world import WorldGraphCandidateBatch
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -607,24 +606,16 @@ class TeacherForcedCuratorPort:
             result, _ = await replay_call
             return _CuratorProposalExecution(result=result)
 
-        graph_curator = self._graph_curator
         replay_task = asyncio.create_task(replay_call)
-
-        async def run_graph_profile() -> tuple[WorldGraphCandidateBatch, Any] | None:
-            try:
-                return await graph_curator.extract_graph_candidates(
-                    text_root,
-                    chapter_index,
-                    base_commit,
-                    current_world,
-                    graph_request,
-                )
-            except ValidationError:
-                # Graph extraction is an additive channel.  An invalid graph
-                # batch must not discard a valid ordinary Curator proposal.
-                return None
-
-        graph_task = asyncio.create_task(run_graph_profile())
+        graph_task = asyncio.create_task(
+            self._graph_curator.extract_graph_candidates(
+                text_root,
+                chapter_index,
+                base_commit,
+                current_world,
+                graph_request,
+            )
+        )
         try:
             replay_output, graph_output = await asyncio.gather(replay_task, graph_task)
         except BaseException:
@@ -634,9 +625,13 @@ class TeacherForcedCuratorPort:
             raise
 
         result, _ = replay_output
-        if graph_output is None:
-            return _CuratorProposalExecution(result=result)
-        graph_batch, _ = graph_output
+        graph_batches, _ = graph_output
+        if any(
+            operation.payload.get("record_type") == "relation"
+            for operation in result.observed_changes.operations
+            if isinstance(operation.payload, dict)
+        ):
+            raise ModelCurationContractError("ordinary Curator bypassed canonical relation owner")
         try:
             provisional_world = WorldOverlay().apply(
                 current_world,
@@ -646,9 +641,11 @@ class TeacherForcedCuratorPort:
             graph_extraction = self._graph_extraction.run(
                 provisional_world,
                 text_root,
-                candidate_batches=(graph_batch,),
+                candidate_batches=graph_batches,
                 base_commit=base_commit,
             )
+            if graph_extraction.receipt.incomplete_source_unit_ids:
+                raise ValueError("graph source unit extraction is incomplete")
         except ValueError as error:
             raise ModelCurationContractError("graph candidate admission failed") from error
 
@@ -758,22 +755,12 @@ class TeacherForcedCuratorPort:
                     for key in (item.get("input") or {})
                 }
             )
-            if extra_fields:
-                detail = (
-                    "Curator Draft failed the structured domain contract; remove the "
-                    f"extra fields: {', '.join(extra_fields)}"
-                )
-            else:
-                validation_details = "; ".join(
-                    f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
-                    for item in errors[:2]
-                )
-                detail = (
-                    "Curator Draft schema error: "
-                    f"{validation_details}. Relation records require predicate, subject_id, "
-                    "object_id, valid_time, truth_class and never value; state records use "
-                    "value."
-                )[:240]
+            detail = (
+                "Curator Draft failed the structured domain contract; remove the "
+                f"extra fields: {', '.join(extra_fields)}"
+                if extra_fields
+                else "Curator Draft failed the structured domain contract"
+            )
             kind = ProposalRejectionKind.SCHEMA_REJECTED
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
             reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"

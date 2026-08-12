@@ -279,40 +279,61 @@ def test_v2_binds_candidate_and_rejects_unrelated() -> None:
         )
         raise AssertionError("expected unresolved-evidence rejection")
     except CuratorProposalSemanticRejected as exc:
-        assert "UNRESOLVED" in exc.reason_code
+        assert exc.reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE"
         assert exc.operation_indexes == (0,)
-        assert exc.violation_rule == "partial_evidence_unresolved_no_verifier"
+        assert exc.violation_rule == "evidence_quote_must_match_chapter_catalog"
 
 
-def test_v2_rejects_non_fact_evidence_as_accepted_world_fact() -> None:
-    root = _root_with("传闻陈长生已经踏入坐照境, 众人对此议论纷纷。")
-    generator = EvidenceCandidateGenerator()
-    candidate = next(item for item in generator.generate(root, 21) if "传闻" in item.text)
-    draft = _v2_state_draft(candidate)
-    operation = draft.operations[0]
-    fact_operation = operation.model_copy(
-        update={
-            "record": operation.record.model_copy(
-                update={"truth_class": TruthClass.ACCEPTED_WORLD_FACT}
-            )
-        }
+def test_v2_schema_excludes_relation_and_materializes_exact_quote_span() -> None:
+    schema = CuratorV2EvidenceDraft.model_json_schema()
+    assert "CuratorRelationRecord" not in str(schema)
+
+    text = "陈长生进入国教学院, 并在庭前停下。"
+    root = _root_with(text)
+    quote = "陈长生进入国教学院"
+    draft = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.location"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="location",
+                    value="国教学院",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                evidence_quotes=(quote,),
+            ),
+        ),
     )
-    curator = ModelCurator(
-        _FakeGateway(draft.model_copy(update={"operations": (fact_operation,)})),
-        evidence_generator=generator,
-        enforce_support_gate=False,
-    )
-
-    with pytest.raises(
-        CuratorProposalSemanticRejected,
-        match="CURATOR_PROPOSAL_FALSE_WORLD_FACT_PROMOTION",
-    ) as exc:
-        asyncio.run(
-            curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.false-fact"))
+    changes, _call, resolved = asyncio.run(
+        ModelCurator(_FakeGateway(draft), enforce_support_gate=False).extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.exact-span"),
         )
+    )
 
-    assert exc.value.operation_indexes == (0,)
-    assert exc.value.violation_rule == "accepted_world_fact_requires_factual_evidence"
+    evidence = changes.operations[0].evidence_refs[0]
+    assert evidence.span is not None
+    block = root.chapters[0].scenes[0].blocks[0]
+    assert block.text[evidence.span.start : evidence.span.end] == quote
+    exact = next(
+        item
+        for item in ModelCurator(
+            _FakeGateway(draft), enforce_support_gate=False
+        )._evidence_generator.resolve_exact_evidence_quotes(
+            (quote,),
+            EvidenceCandidateGenerator().generate(root, 21),
+            root.chapters[0],
+        )
+    )
+    assert resolved.operations[0].evidence_candidate_ids == (exact.candidate_id,)
 
 
 def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
@@ -373,7 +394,7 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     assert "/operations/1/record/subject_id" in prompt
     assert "entity.guojiao-academy" in prompt
     assert "prepend one CREATE operation for that exact entity ID" in prompt
-    assert "Never reference a new entity from a state, relation, event, or obligation" in prompt
+    assert "Never reference a new entity from a state, event, or obligation" in prompt
 
 
 def test_replay_agent_uses_candidate_v2() -> None:
@@ -1259,7 +1280,7 @@ def test_v2_rejects_unknown_evidence_candidate_id() -> None:
         )
     assert exc.value.violation_rule == "evidence_quote_must_match_chapter_catalog"
     assert exc.value.information_boundary is False
-    assert exc.value.operation_indexes == ()
+    assert exc.value.operation_indexes == (0,)
     assert "evidence quote unresolved" in exc.value.safe_feedback[0]
     assert exc.value.json_pointers == ("/operations/0/evidence_quotes/0",)
 
@@ -1669,8 +1690,8 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     assert prompt.index("</CURATOR_INPUT>") < prompt.index("<CURATOR_OUTPUT_CONTRACT")
     assert "MUST be copied verbatim" in prompt
     assert "Every operation MUST carry a non-empty evidence_quotes array" in prompt
-    assert "For record_kind=relation, the record object MUST contain exactly" in prompt
-    assert "it MUST NOT contain value" in prompt
+    assert "For record_kind=relation" not in prompt
+    assert "record_kind=state" in prompt
     assert "composite method or process MUST cite" in prompt
     assert "half_shichen is not half_hour" in prompt
     assert "encoded as a belief/estimate/claim" in prompt

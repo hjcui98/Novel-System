@@ -1,0 +1,560 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EntityAdmissionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "entity_type": {
+          "minLength": 1,
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "rejection_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rejection Reason"
+        },
+        "resolution": {
+          "$ref": "#/$defs/EntityAliasResolutionReceipt"
+        },
+        "source_batch_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/EntityAdmissionStatus"
+        },
+        "surface": {
+          "minLength": 1,
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "source_batch_id",
+        "surface",
+        "entity_type",
+        "status",
+        "resolution"
+      ],
+      "title": "EntityAdmissionReceipt",
+      "type": "object"
+    },
+    "EntityAdmissionStatus": {
+      "enum": [
+        "reused",
+        "created",
+        "deduped",
+        "rejected"
+      ],
+      "title": "EntityAdmissionStatus",
+      "type": "string"
+    },
+    "EntityAliasResolutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "match_basis": {
+          "minLength": 1,
+          "title": "Match Basis",
+          "type": "string"
+        },
+        "matched_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Matched Entity Ids",
+          "type": "array"
+        },
+        "mention": {
+          "minLength": 1,
+          "title": "Mention",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "resolved_entity_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/EntityResolutionStatus"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "mention",
+        "status",
+        "match_basis"
+      ],
+      "title": "EntityAliasResolutionReceipt",
+      "type": "object"
+    },
+    "EntityResolutionStatus": {
+      "enum": [
+        "unique_label",
+        "unique_alias",
+        "ambiguous",
+        "missing"
+      ],
+      "title": "EntityResolutionStatus",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "RelationBackfillReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "object_resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityAliasResolutionReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "object_surface": {
+          "minLength": 1,
+          "title": "Object Surface",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "rejection_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rejection Reason"
+        },
+        "relation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_batch_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_state_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_truth_class": {
+          "$ref": "#/$defs/TruthClass"
+        },
+        "status": {
+          "$ref": "#/$defs/RelationBackfillStatus"
+        },
+        "subject_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "subject_resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityAliasResolutionReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "subject_surface": {
+          "minLength": 1,
+          "title": "Subject Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "source_batch_id",
+        "source_truth_class",
+        "status",
+        "predicate",
+        "subject_surface",
+        "object_surface"
+      ],
+      "title": "RelationBackfillReceipt",
+      "type": "object"
+    },
+    "RelationBackfillStatus": {
+      "enum": [
+        "accepted",
+        "deduped",
+        "rejected"
+      ],
+      "title": "RelationBackfillStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
+    "TruthClass": {
+      "enum": [
+        "accepted_world_fact",
+        "assertion",
+        "rumor",
+        "dream",
+        "prediction",
+        "hypothetical",
+        "unknown",
+        "contested",
+        "disproved",
+        "retconned",
+        "not_applicable"
+      ],
+      "title": "TruthClass",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_count": {
+      "minimum": 0,
+      "title": "Accepted Count",
+      "type": "integer"
+    },
+    "accepted_relation_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Accepted Relation Ids",
+      "type": "array"
+    },
+    "alias_policy_version": {
+      "minLength": 1,
+      "title": "Alias Policy Version",
+      "type": "string"
+    },
+    "candidates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RelationBackfillReceipt"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "completed_source_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Completed Source Unit Ids",
+      "type": "array"
+    },
+    "deduped_count": {
+      "minimum": 0,
+      "title": "Deduped Count",
+      "type": "integer"
+    },
+    "entity_admissions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EntityAdmissionReceipt"
+      },
+      "title": "Entity Admissions",
+      "type": "array"
+    },
+    "incomplete_source_unit_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Incomplete Source Unit Ids",
+      "type": "array"
+    },
+    "predicate_registry_version": {
+      "minLength": 1,
+      "title": "Predicate Registry Version",
+      "type": "string"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "rejected_count": {
+      "minimum": 0,
+      "title": "Rejected Count",
+      "type": "integer"
+    },
+    "repaired_world_root": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "retained_state_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Retained State Ids",
+      "type": "array"
+    },
+    "source_batch_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Source Batch Ids",
+      "type": "array"
+    },
+    "source_world_root": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "source_world_root",
+    "repaired_world_root",
+    "predicate_registry_version",
+    "alias_policy_version",
+    "accepted_count",
+    "rejected_count",
+    "deduped_count"
+  ],
+  "title": "WorldGraphExtractionReceipt",
+  "type": "object"
+}

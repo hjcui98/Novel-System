@@ -14,9 +14,9 @@ from novel_agent.domain.world import (
     EntityAdmissionStatus,
     EntityAliasResolutionReceipt,
     EntityResolutionStatus,
-    GraphCandidateBatchDraft,
+    GraphCandidatePageDraft,
+    GraphCandidatePageStatus,
     GraphCandidateSupportStatus,
-    GraphEntityCandidateDraft,
     GraphRelationCandidateDraft,
     RelationBackfillReceipt,
     RelationBackfillStatus,
@@ -122,38 +122,38 @@ def test_graph_domain_contracts_reject_invalid_shapes_and_accounting() -> None:
     world, _, _, _ = _teacher_world()
     resolution = EntityAliasRepairPolicy().resolve(world, "不存在")
     evidence = world.states[0].evidence_refs
-    with pytest.raises(ValidationError, match="at most four"):
-        GraphCandidateBatchDraft(
-            entities=tuple(
-                GraphEntityCandidateDraft(
-                    surface=f"entity-{index}",
-                    entity_type="character",
-                    evidence_quotes=("evidence quote",),
-                )
-                for index in range(3)
-            ),
-            relations=tuple(
+    with pytest.raises(ValidationError, match="at most 12"):
+        GraphCandidatePageDraft(
+            status=GraphCandidatePageStatus.COMPLETE,
+            candidates=tuple(
                 GraphRelationCandidateDraft(
                     subject_surface="subject",
                     predicate="teacher_of",
                     object_surface="object",
                     valid_time=StoryTime(worldline="main", start_ordinal=1),
+                    source_truth_class=TruthClass.ACCEPTED_WORLD_FACT,
                     evidence_quotes=("evidence quote",),
                 )
-                for _ in range(2)
+                for _ in range(13)
             ),
         )
     with pytest.raises(ValidationError, match="cannot carry a no-op"):
-        GraphCandidateBatchDraft(
-            entities=(
-                GraphEntityCandidateDraft(
-                    surface="entity", entity_type="character", evidence_quotes=("quote text",)
+        GraphCandidatePageDraft(
+            status=GraphCandidatePageStatus.COMPLETE,
+            candidates=(
+                GraphRelationCandidateDraft(
+                    subject_surface="subject",
+                    predicate="teacher_of",
+                    object_surface="object",
+                    valid_time=StoryTime(worldline="main", start_ordinal=1),
+                    source_truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                    evidence_quotes=("quote text",),
                 ),
             ),
             no_graph_candidate_reason="not empty",
         )
-    with pytest.raises(ValidationError, match="requires a reason"):
-        GraphCandidateBatchDraft()
+    with pytest.raises(ValidationError, match="must be complete and carry a reason"):
+        GraphCandidatePageDraft(status=GraphCandidatePageStatus.COMPLETE)
     for update, message in (
         ({"status": EntityAdmissionStatus.CREATED}, "requires an entity id"),
         (
@@ -297,7 +297,7 @@ def test_entity_admission_covers_fail_closed_and_identity_paths() -> None:
     ("updates", "reason"),
     [
         ({"support_status": GraphCandidateSupportStatus.REJECTED}, "test_support"),
-        ({"source_truth_class": TruthClass.RUMOR}, "truth_class_not_admitted:rumor"),
+        ({"source_truth_class": TruthClass.UNKNOWN}, "truth_class_not_admitted:unknown"),
         ({"subject_surface": "不存在"}, "subject_entity_missing"),
         ({"object_surface": "不存在"}, "object_entity_missing"),
         ({"object_surface": "旧誓言"}, "self_relation_not_admitted"),

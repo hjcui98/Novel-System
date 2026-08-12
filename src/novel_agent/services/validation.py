@@ -30,7 +30,6 @@ from novel_agent.services.overlay import OverlayError, WorldOverlay
 
 
 class Stage1Validator:
-    _NON_FACT_MARKERS = ("据说", "传闻", "梦见", "假如", "也许")
     _OBLIGATION_TRANSITIONS: ClassVar[dict[str, frozenset[str]]] = {
         "open": frozenset({"progressed", "resolved", "abandoned"}),
         "progressed": frozenset({"resolved", "abandoned"}),
@@ -151,12 +150,12 @@ class Stage1Validator:
                 )
             except ValueError as error:
                 findings.append(self._finding("RELATION_PREDICATE_INVALID", "error", str(error)))
-            if relation.truth_class is not TruthClass.ACCEPTED_WORLD_FACT:
+            if relation.truth_class in {TruthClass.UNKNOWN, TruthClass.NOT_APPLICABLE}:
                 findings.append(
                     self._finding(
-                        "RELATION_TRUTH_NOT_ACCEPTED",
+                        "RELATION_TRUTH_NOT_CONCRETE",
                         "error",
-                        "canonical graph relation must be an accepted world fact",
+                        "canonical relation requires a concrete source truth class",
                     )
                 )
 
@@ -322,7 +321,6 @@ class Stage1Validator:
                     self._finding("MISSING_EVIDENCE", "error", "world change has no evidence")
                 )
                 continue
-            resolved_text: list[str] = []
             for evidence in operation.evidence_refs:
                 try:
                     validate_evidence_ref(evidence, root)
@@ -336,28 +334,6 @@ class Stage1Validator:
                         )
                     )
                     continue
-                assert evidence.span is not None
-                block = next(
-                    block
-                    for chapter in root.chapters
-                    for scene in chapter.scenes
-                    for block in scene.blocks
-                    if block.block_id == evidence.span.block_id
-                )
-                resolved_text.append(block.text[evidence.span.start : evidence.span.end])
-            payload = operation.payload
-            record = payload.get("record", {}) if isinstance(payload, dict) else {}
-            truth = record.get("truth_class") if isinstance(record, dict) else None
-            if truth == TruthClass.ACCEPTED_WORLD_FACT.value and any(
-                marker in text for marker in self._NON_FACT_MARKERS for text in resolved_text
-            ):
-                findings.append(
-                    self._finding(
-                        "FALSE_WORLD_FACT_PROMOTION",
-                        "error",
-                        "non-factual assertion was promoted to accepted world fact",
-                    )
-                )
 
     @staticmethod
     def _finding(code: str, severity: str, message: str) -> ValidationFinding:

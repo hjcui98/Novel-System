@@ -227,7 +227,7 @@ def test_replay_blocks_explicitly_when_snapshot_is_stale_or_missing(
     assert result.committed_chapters == 0 and result.blocked_chapters == 1
 
 
-def test_replay_blocks_invalid_truth_promotion_before_commit(
+def test_replay_preserves_explicit_assertion_truth_before_commit(
     replay_database: tuple[Engine, sessionmaker[Session]],
 ) -> None:
     _, factory = replay_database
@@ -235,7 +235,7 @@ def test_replay_blocks_invalid_truth_promotion_before_commit(
     manifest, world, future = _inputs(commits)
     rule = _rules()[21][0].model_copy(update={"phrase": "林澈"})
     record = dict(rule.record)
-    record["truth_class"] = "accepted_world_fact"
+    record["truth_class"] = "assertion"
     rule = rule.model_copy(update={"record": record})
     marker_block = (
         future.chapters[0].scenes[0].blocks[0].model_copy(update={"text": "据说林澈重申旧誓言。"})
@@ -249,7 +249,7 @@ def test_replay_blocks_invalid_truth_promotion_before_commit(
         update={"root_hash": ArtifactId("sha256:" + "0" * 64), "chapters": (chapter,)}
     )
     root = provisional.model_copy(update={"root_hash": text_root_content_id(provisional)})
-    promoted = rule.model_copy(update={"phrase": "据说林澈"})
+    assertion = rule.model_copy(update={"phrase": "据说林澈"})
 
     result = runner.run(
         replay_id=StableId("replay.blocked.validation"),
@@ -258,11 +258,18 @@ def test_replay_blocks_invalid_truth_promotion_before_commit(
         initial_manifest=manifest,
         initial_world=world,
         chapters=root,
-        rules_by_chapter={21: (promoted,)},
+        rules_by_chapter={21: (assertion,)},
     )
-    assert result.chapter_results[0].status is ReplayChapterStatus.BLOCKED_BY_VALIDATION
+    chapter_result = result.chapter_results[0]
+    assert chapter_result.status is ReplayChapterStatus.COMMITTED
+    event = next(
+        item
+        for item in chapter_result.materialized_records
+        if item.target_id == assertion.target_id
+    )
+    assert event.record["truth_class"] == TruthClass.ASSERTION.value
     with factory() as session:
-        assert session.scalar(select(func.count()).select_from(CommitRow)) == 1
+        assert session.scalar(select(func.count()).select_from(CommitRow)) == 2
 
 
 class _RejectingCommitService(CommitService):
