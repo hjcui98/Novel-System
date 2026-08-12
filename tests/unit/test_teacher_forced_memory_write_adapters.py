@@ -1234,6 +1234,8 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         assert outcome.rejection.retryable is retryable
         assert len(outcome.attempt_receipt.raw_response_refs) == 1
         assert len(outcome.attempt_receipt.model_call_receipt_refs) == 1
+        if outcome.rejection.reason_code == "CURATOR_PROPOSAL_SCHEMA_REJECTED":
+            assert "Relation records require" in outcome.rejection.safe_feedback[0]
         if outcome.rejection.reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE":
             assert "require 0 <= start < end" in outcome.rejection.safe_feedback[0]
 

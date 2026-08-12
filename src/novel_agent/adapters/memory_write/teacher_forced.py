@@ -747,12 +747,22 @@ class TeacherForcedCuratorPort:
                     for key in (item.get("input") or {})
                 }
             )
-            detail = (
-                "Curator Draft failed the structured domain contract; remove the "
-                f"extra fields: {', '.join(extra_fields)}"
-                if extra_fields
-                else "Curator Draft failed the structured domain contract"
-            )
+            if extra_fields:
+                detail = (
+                    "Curator Draft failed the structured domain contract; remove the "
+                    f"extra fields: {', '.join(extra_fields)}"
+                )
+            else:
+                validation_details = "; ".join(
+                    f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+                    for item in errors[:2]
+                )
+                detail = (
+                    "Curator Draft schema error: "
+                    f"{validation_details}. Relation records require predicate, subject_id, "
+                    "object_id, valid_time, truth_class and never value; state records use "
+                    "value."
+                )[:240]
             kind = ProposalRejectionKind.SCHEMA_REJECTED
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
             reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"
