@@ -1,0 +1,249 @@
+{
+  "case_id": "case.stage3.eval.enter-tower",
+  "evaluator_instructions": [
+    "仅依据正文判断连续性冲突和事实编造，不参考生成该正文的上下文方案。",
+    "计划遵循按正文是否实际使用计划锚点判断，而不是按声明判断。",
+    "文学质量按相对简单基线是否明显退化评分，0 表示明显退化，1 表示不低于基线。"
+  ],
+  "inputs": [
+    {
+      "context_package": {
+        "active_plan_obligations": [],
+        "base_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "budget_report": {
+          "dropped_optional_unit_ids": [],
+          "full_chapter_read_count": 0,
+          "mandatory_tokens": 0,
+          "optional_tokens": 49,
+          "token_budget": 1600
+        },
+        "context_id": "context.stage3.eval.recent-prose",
+        "current_world_state": [],
+        "mandatory_constraints": [],
+        "raw_evidence_spans": [],
+        "relevant_historical_events": [],
+        "retrieval_traces": [],
+        "snapshot_id": "snapshot.stage3.eval.c20",
+        "style_or_reference_optional": [
+          {
+            "access_scope": "writer_safe",
+            "derivation_taint": [],
+            "entity_ids": [],
+            "information_label": "observed",
+            "mandatory": false,
+            "narrative_start": 20,
+            "snapshot_id": "snapshot.stage3.eval.c20",
+            "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "暮色四合，林澈扶着石墙走下山坡，北塔的石门立在阴影里。他拍了拍衣角的尘土，站在门前，没有立刻伸手。",
+            "unit_id": "unit.stage3.eval.recent-prose",
+            "unit_kind": "scene_anchor",
+            "worldline": "main"
+          }
+        ],
+        "task_contract": "writing-contract.stage3.eval.c21",
+        "truth_and_knowledge_boundaries": [],
+        "unresolved_gaps": []
+      },
+      "entry": "fixture:recent-prose",
+      "input_status": "ready",
+      "scheme": "recent_prose"
+    },
+    {
+      "context_package": {
+        "active_plan_obligations": [],
+        "base_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "budget_report": {
+          "dropped_optional_unit_ids": [],
+          "full_chapter_read_count": 0,
+          "mandatory_tokens": 29,
+          "optional_tokens": 0,
+          "token_budget": 1600
+        },
+        "context_id": "context.stage3.eval.simple-retrieval",
+        "current_world_state": [
+          {
+            "access_scope": "writer_safe",
+            "derivation_taint": [],
+            "entity_ids": [
+              "entity.stage3.eval.lin-che"
+            ],
+            "information_label": "observed",
+            "mandatory": true,
+            "narrative_start": 20,
+            "snapshot_id": "snapshot.stage3.eval.c20",
+            "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "林澈左臂有伤，不能用力推门。",
+            "unit_id": "unit.stage3.eval.injury",
+            "unit_kind": "state_anchor",
+            "worldline": "main"
+          }
+        ],
+        "mandatory_constraints": [
+          {
+            "access_scope": "writer_safe",
+            "derivation_taint": [],
+            "entity_ids": [],
+            "information_label": "observed",
+            "mandatory": true,
+            "narrative_start": 20,
+            "snapshot_id": "snapshot.stage3.eval.c20",
+            "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "石门只会在月影抵达门槛时开启。",
+            "unit_id": "unit.stage3.eval.gate-rule",
+            "unit_kind": "fact_anchor",
+            "worldline": "main"
+          }
+        ],
+        "raw_evidence_spans": [],
+        "relevant_historical_events": [],
+        "retrieval_traces": [],
+        "snapshot_id": "snapshot.stage3.eval.c20",
+        "style_or_reference_optional": [],
+        "task_contract": "writing-contract.stage3.eval.c21",
+        "truth_and_knowledge_boundaries": [],
+        "unresolved_gaps": []
+      },
+      "entry": "fixture:simple-retrieval",
+      "input_status": "ready",
+      "scheme": "simple_retrieval"
+    },
+    {
+      "writer_context_package": {
+        "arm": "C",
+        "basis_commit_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "basis_snapshot_id": "snapshot.stage3.eval.c20",
+        "budget_report": {
+          "actual_rendered_writer_tokens": 41,
+          "configured_writer_token_budget": 1600,
+          "deduplicated_item_count": 0,
+          "dropped_optional_ids": [],
+          "dropped_optional_reasons": {},
+          "evidence_ledger_tokens": 0,
+          "final_status": "READY",
+          "header_citation_gap_tokens": 0,
+          "mandatory_conclusion_tokens": 41,
+          "optional_conclusion_tokens": 0,
+          "reduction_rounds": 0,
+          "superseded_item_count": 0,
+          "tokenizer": "fixture-character",
+          "tokenizer_version": "1"
+        },
+        "causal_history": [],
+        "continuity_constraints": [
+          {
+            "claim": "石门只会在月影抵达门槛时开启。",
+            "confidence": 1.0,
+            "context_item_id": "item.stage3.eval.gate-rule",
+            "evidence_ledger_ids": ["ledger.stage3.eval.gate-rule"],
+            "mandatory": true,
+            "need_ids": [],
+            "retrieval_unit_ids": ["unit.stage3.eval.gate-rule"],
+            "section": "continuity_constraints",
+            "validity": "current"
+          }
+        ],
+        "contract_version": "writer_context.v1",
+        "current_world_state": [
+          {
+            "claim": "林澈左臂有伤，不能用力推门。",
+            "confidence": 1.0,
+            "context_item_id": "item.stage3.eval.injury",
+            "evidence_ledger_ids": ["ledger.stage3.eval.injury"],
+            "mandatory": true,
+            "need_ids": [],
+            "retrieval_unit_ids": ["unit.stage3.eval.injury"],
+            "section": "current_world_state",
+            "validity": "current"
+          }
+        ],
+        "evidence_ledger_ref": {
+          "artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "byte_length": 0,
+          "media_type": "application/vnd.novel-agent.evidence-ledger+json",
+          "schema_version": "1.0.0"
+        },
+        "gaps": [],
+        "knowledge_and_disclosure": [],
+        "lineage": {
+          "assembler_version": "stage3-evaluation-fixture-v1",
+          "normalized_unit_count": 3,
+          "retrieval_unit_ids": [
+            "unit.stage3.eval.gate-rule",
+            "unit.stage3.eval.injury",
+            "unit.stage3.eval.plan-enter"
+          ]
+        },
+        "long_range_callbacks": [],
+        "plan_and_obligations": [
+          {
+            "claim": "不靠蛮力，找到入塔方法。",
+            "confidence": 1.0,
+            "context_item_id": "item.stage3.eval.plan-enter",
+            "evidence_ledger_ids": ["ledger.stage3.eval.plan-enter"],
+            "mandatory": true,
+            "need_ids": [],
+            "retrieval_unit_ids": ["unit.stage3.eval.plan-enter"],
+            "section": "plan_and_obligations",
+            "validity": "planned"
+          }
+        ],
+        "relationship_and_emotion": [],
+        "rendered_context": "石门只会在月影抵达门槛时开启。\n林澈左臂有伤，不能用力推门。\n不靠蛮力，找到入塔方法。",
+        "task_contract": {
+          "checkpoint_chapter": 20,
+          "information_profile": "author_plan_conditioned",
+          "output_contract_version": "writer_context.v1",
+          "target_chapter_end": 21,
+          "target_chapter_start": 21,
+          "task_id": "task.stage3.eval.enter-tower",
+          "task_kind": "memory_context_for_target_range",
+          "task_template_version": "stage3-evaluation-v1",
+          "task_text": "为第 21 章准备 Writer Context。"
+        }
+      },
+      "entry": "fixture:writer-context-package",
+      "input_status": "ready",
+      "scheme": "writer_context_package"
+    }
+  ],
+  "writing_task": {
+    "active_plan_obligations": [
+      "obligation.stage3.eval.enter-tower"
+    ],
+    "blocking_gaps": [],
+    "chapter_goal": "让林澈在不违背伤势约束的情况下找到进入北塔的方法。",
+    "contract_id": "writing-contract.stage3.eval.c21",
+    "forbidden_reveals": [
+      "不得解释北塔顶层的秘密"
+    ],
+    "length_policy": {
+      "maximum_characters": 420,
+      "minimum_characters": 120,
+      "target_characters": 220
+    },
+    "mandatory_constraints": [
+      "左臂有伤，不得强行推门。"
+    ],
+    "narrative_person": "第三人称限知",
+    "pov": "林澈",
+    "preserve_requirements": [
+      "保持先观察后行动的习惯"
+    ],
+    "required_beats": [
+      "确认左臂伤势仍限制行动",
+      "发现月影是开启石门的条件",
+      "借铜镜改变光路"
+    ],
+    "scene_goals": [
+      "观察石门与月影的关系并完成开门动作。"
+    ],
+    "style_requirements": [
+      "克制叙述",
+      "以可见动作承载判断"
+    ],
+    "target_chapter": 21,
+    "target_scenes": [
+      "scene.stage3.eval.21.1"
+    ]
+  }
+}

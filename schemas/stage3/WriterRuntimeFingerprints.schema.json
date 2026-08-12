@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_spec_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "model_configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "prompt_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "skill_fingerprints": {
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "minItems": 1,
+      "title": "Skill Fingerprints",
+      "type": "array"
+    },
+    "tool_policy_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "agent_spec_fingerprint",
+    "prompt_fingerprint",
+    "skill_fingerprints",
+    "tool_policy_fingerprint",
+    "configuration_fingerprint",
+    "model_configuration_fingerprint"
+  ],
+  "title": "WriterRuntimeFingerprints",
+  "type": "object"
+}

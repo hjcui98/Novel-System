@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "ContextPressure": {
+      "additionalProperties": false,
+      "properties": {
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "hard_exceeded": {
+          "title": "Hard Exceeded",
+          "type": "boolean"
+        },
+        "hard_limit_tokens": {
+          "minimum": 0,
+          "title": "Hard Limit Tokens",
+          "type": "integer"
+        },
+        "rendered_input_tokens": {
+          "minimum": 0,
+          "title": "Rendered Input Tokens",
+          "type": "integer"
+        },
+        "soft_exceeded": {
+          "title": "Soft Exceeded",
+          "type": "boolean"
+        },
+        "soft_limit_tokens": {
+          "minimum": 0,
+          "title": "Soft Limit Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rendered_input_tokens",
+        "available_input_tokens",
+        "soft_limit_tokens",
+        "hard_limit_tokens",
+        "soft_exceeded",
+        "hard_exceeded"
+      ],
+      "title": "ContextPressure",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "pressure": {
+      "$ref": "#/$defs/ContextPressure"
+    }
+  },
+  "required": [
+    "pressure"
+  ],
+  "title": "ContextPressureDetectedPayload",
+  "type": "object"
+}

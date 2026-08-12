@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "ReconciliationVerdict": {
+      "enum": [
+        "matched",
+        "declared_only",
+        "observed_only",
+        "mismatched"
+      ],
+      "title": "ReconciliationVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "curator_observation": {
+      "default": "",
+      "title": "Curator Observation",
+      "type": "string"
+    },
+    "detail": {
+      "default": "",
+      "title": "Detail",
+      "type": "string"
+    },
+    "subject": {
+      "default": "",
+      "title": "Subject",
+      "type": "string"
+    },
+    "verdict": {
+      "$ref": "#/$defs/ReconciliationVerdict"
+    },
+    "writer_hint": {
+      "default": "",
+      "title": "Writer Hint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "verdict"
+  ],
+  "title": "CollectedReconciliationItem",
+  "type": "object"
+}

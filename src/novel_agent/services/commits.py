@@ -78,58 +78,63 @@ class CommitService:
 
     def commit(self, request: CommitRequest) -> CommitResult:
         with self._session_factory() as session, session.begin():
-            project = session.scalar(
-                select(ProjectRow)
-                .where(ProjectRow.project_id == request.project_id.root)
-                .with_for_update()
+            return self._commit_in_session(session, request)
+
+    def _commit_in_session(self, session: Session, request: CommitRequest) -> CommitResult:
+        """Trusted primitive for a runtime transaction that already owns fencing."""
+
+        project = session.scalar(
+            select(ProjectRow)
+            .where(ProjectRow.project_id == request.project_id.root)
+            .with_for_update()
+        )
+        if project is None:
+            raise ProjectNotFoundError(request.project_id.root)
+
+        existing = session.scalar(
+            select(CommitReceiptRow).where(
+                CommitReceiptRow.project_id == request.project_id.root,
+                CommitReceiptRow.idempotency_key == request.idempotency_key.root,
             )
-            if project is None:
-                raise ProjectNotFoundError(request.project_id.root)
+        )
+        if existing is not None:
+            return CommitResult.model_validate_json(json.dumps(existing.result_json))
 
-            existing = session.scalar(
-                select(CommitReceiptRow).where(
-                    CommitReceiptRow.project_id == request.project_id.root,
-                    CommitReceiptRow.idempotency_key == request.idempotency_key.root,
-                )
-            )
-            if existing is not None:
-                return CommitResult.model_validate_json(json.dumps(existing.result_json))
+        rejection = self._validate_request(request)
+        if rejection is not None:
+            return self._record_result(session, request, rejection)
 
-            rejection = self._validate_request(request)
-            if rejection is not None:
-                return self._record_result(session, request, rejection)
-
-            if project.current_commit_id != request.base_commit.root:
-                result = CommitResult(
-                    request_id=request.request_id,
-                    status=CommitStatus.CONFLICTED,
-                    reason="base commit is not the current project commit",
-                )
-                return self._record_result(session, request, result)
-
-            manifest = request.bundle.proposed_roots
-            commit_id = manifest_commit_id(manifest)
-            committed_at = datetime.now(UTC)
-            session.add(
-                CommitRow(
-                    commit_id=commit_id.root,
-                    project_id=request.project_id.root,
-                    base_commit_id=request.base_commit.root,
-                    manifest_json=manifest.model_dump(mode="json"),
-                    created_at=committed_at,
-                )
-            )
-            session.flush()
-            self._enqueue_projection(session, request.project_id, commit_id, committed_at)
-            project.current_commit_id = commit_id.root
+        if project.current_commit_id != request.base_commit.root:
             result = CommitResult(
                 request_id=request.request_id,
-                status=CommitStatus.ACCEPTED,
-                commit_id=commit_id,
-                manifest=manifest,
-                committed_at=committed_at,
+                status=CommitStatus.CONFLICTED,
+                reason="base commit is not the current project commit",
             )
             return self._record_result(session, request, result)
+
+        manifest = request.bundle.proposed_roots
+        commit_id = manifest_commit_id(manifest)
+        committed_at = datetime.now(UTC)
+        session.add(
+            CommitRow(
+                commit_id=commit_id.root,
+                project_id=request.project_id.root,
+                base_commit_id=request.base_commit.root,
+                manifest_json=manifest.model_dump(mode="json"),
+                created_at=committed_at,
+            )
+        )
+        session.flush()
+        self._enqueue_projection(session, request.project_id, commit_id, committed_at)
+        project.current_commit_id = commit_id.root
+        result = CommitResult(
+            request_id=request.request_id,
+            status=CommitStatus.ACCEPTED,
+            commit_id=commit_id,
+            manifest=manifest,
+            committed_at=committed_at,
+        )
+        return self._record_result(session, request, result)
 
     @staticmethod
     def _validate_request(request: CommitRequest) -> CommitResult | None:

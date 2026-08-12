@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "external_hook_ingress": {
+      "default": false,
+      "title": "External Hook Ingress",
+      "type": "boolean"
+    },
+    "multi_worker_lease": {
+      "default": false,
+      "title": "Multi Worker Lease",
+      "type": "boolean"
+    },
+    "real_stage4_adapter": {
+      "default": false,
+      "title": "Real Stage4 Adapter",
+      "type": "boolean"
+    },
+    "scheduled_fire": {
+      "default": false,
+      "title": "Scheduled Fire",
+      "type": "boolean"
+    },
+    "skill_evolution": {
+      "default": false,
+      "title": "Skill Evolution",
+      "type": "boolean"
+    },
+    "temporal_adapter": {
+      "default": false,
+      "title": "Temporal Adapter",
+      "type": "boolean"
+    }
+  },
+  "title": "Stage5FeatureAdmission",
+  "type": "object"
+}

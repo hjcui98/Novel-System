@@ -1,0 +1,303 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ControllerPromotionDecision": {
+      "enum": [
+        "accept_bounded_default",
+        "freeze_deterministic_gateway",
+        "reject_architecture",
+        "defer"
+      ],
+      "title": "ControllerPromotionDecision",
+      "type": "string"
+    },
+    "FutureIsolationAttestation": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonical_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Canonical Source Ids",
+          "type": "array"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_only_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evaluator Only Source Ids",
+          "type": "array"
+        },
+        "overlap_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Overlap Source Ids",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "attestation_id",
+        "checkpoint_chapter",
+        "canonical_source_ids",
+        "evaluator_only_source_ids",
+        "passed",
+        "configuration_fingerprint"
+      ],
+      "title": "FutureIsolationAttestation",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage2GateReport": {
+      "additionalProperties": false,
+      "properties": {
+        "blockers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checks": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "controller_promotion": {
+          "$ref": "#/$defs/ControllerPromotionDecision"
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "memory_gateway_frozen": {
+          "title": "Memory Gateway Frozen",
+          "type": "boolean"
+        },
+        "report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Stage2GateVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "evidence_id",
+        "verdict",
+        "checks",
+        "blockers",
+        "controller_promotion",
+        "memory_gateway_frozen",
+        "configuration_fingerprint"
+      ],
+      "title": "Stage2GateReport",
+      "type": "object"
+    },
+    "Stage2GateVerdict": {
+      "enum": [
+        "pass",
+        "conditional_pass",
+        "fail",
+        "incomplete"
+      ],
+      "title": "Stage2GateVerdict",
+      "type": "string"
+    },
+    "WriterInputTaint": {
+      "description": "Input labels that are forbidden at the Writer information boundary.",
+      "enum": [
+        "future",
+        "evaluator",
+        "gold"
+      ],
+      "title": "WriterInputTaint",
+      "type": "string"
+    },
+    "WriterSourceBinding": {
+      "additionalProperties": false,
+      "description": "Bind a trusted source identity to its immutable artifact.",
+      "properties": {
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "taints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterInputTaint"
+          },
+          "title": "Taints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_artifact"
+      ],
+      "title": "WriterSourceBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable lineage shared by every input and output of one Writer run.\n\n``configuration_fingerprint`` is specifically the canonical JSON fingerprint\nof the Writer AgentSpec, matching ``StructuredAgentRunner.prepare``.  The\nembedded future-isolation attestation retains its independent Memory and\ninformation-boundary configuration fingerprint; the two are intentionally\nnot required to match.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "context_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "context_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "context_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "future_isolation_attestation": {
+      "$ref": "#/$defs/FutureIsolationAttestation"
+    },
+    "memory_gate_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "memory_gate_report": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Stage2GateReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model_configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "plan_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "project_profile_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WriterSourceBinding"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "writing_contract_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "project_id",
+    "base_commit",
+    "snapshot_id",
+    "context_id",
+    "context_artifact",
+    "context_fingerprint",
+    "writing_contract_artifact",
+    "plan_artifact",
+    "project_profile_artifact",
+    "configuration_fingerprint",
+    "model_configuration_fingerprint",
+    "future_isolation_attestation"
+  ],
+  "title": "WriterArtifactBasis",
+  "type": "object"
+}

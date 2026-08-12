@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "minItems": 1,
+      "title": "Case Artifacts",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "editor_model_identity": {
+      "minLength": 1,
+      "title": "Editor Model Identity",
+      "type": "string"
+    },
+    "evaluator_hidden_until_context_freeze": {
+      "const": true,
+      "default": true,
+      "title": "Evaluator Hidden Until Context Freeze",
+      "type": "boolean"
+    },
+    "evaluator_model_identity": {
+      "minLength": 1,
+      "title": "Evaluator Model Identity",
+      "type": "string"
+    },
+    "fixture_verdicts_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Fixture Verdicts Allowed",
+      "type": "boolean"
+    },
+    "full_chain_required": {
+      "const": true,
+      "default": true,
+      "title": "Full Chain Required",
+      "type": "boolean"
+    },
+    "git_commit": {
+      "minLength": 1,
+      "title": "Git Commit",
+      "type": "string"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "memory_gateway_policy_identity": {
+      "minLength": 1,
+      "title": "Memory Gateway Policy Identity",
+      "type": "string"
+    },
+    "observer_model_identity": {
+      "minLength": 1,
+      "title": "Observer Model Identity",
+      "type": "string"
+    },
+    "rubric_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "source_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "stage2_base_commit": {
+      "minLength": 1,
+      "title": "Stage2 Base Commit",
+      "type": "string"
+    },
+    "stage2_configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "threshold_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "thresholds_frozen_before_run": {
+      "const": true,
+      "default": true,
+      "title": "Thresholds Frozen Before Run",
+      "type": "boolean"
+    },
+    "writer_model_identity": {
+      "minLength": 1,
+      "title": "Writer Model Identity",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifest_id",
+    "git_commit",
+    "source_fingerprint",
+    "stage2_base_commit",
+    "stage2_configuration_fingerprint",
+    "memory_gateway_policy_identity",
+    "writer_model_identity",
+    "editor_model_identity",
+    "observer_model_identity",
+    "evaluator_model_identity",
+    "rubric_artifact",
+    "threshold_artifact",
+    "case_artifacts",
+    "created_at"
+  ],
+  "title": "Stage3FormalManifest",
+  "type": "object"
+}

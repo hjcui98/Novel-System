@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "PlanningProvenance": {
+      "enum": [
+        "author_supplied",
+        "accepted_plan_derived",
+        "canon_derived",
+        "reviewer_derived",
+        "planner_proposed"
+      ],
+      "title": "PlanningProvenance",
+      "type": "string"
+    },
+    "PlanningQuestionKind": {
+      "enum": [
+        "fact",
+        "relation_causal",
+        "obligation_pacing",
+        "style_reference",
+        "human_choice"
+      ],
+      "title": "PlanningQuestionKind",
+      "type": "string"
+    },
+    "PlanningReference": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        },
+        "provenance": {
+          "$ref": "#/$defs/PlanningProvenance"
+        },
+        "reference_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Reference Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "provenance"
+      ],
+      "title": "PlanningReference",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "blocking": {
+      "default": false,
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "entity_labels": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Entity Labels",
+      "type": "array"
+    },
+    "goal_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "$ref": "#/$defs/PlanningQuestionKind"
+    },
+    "provenance": {
+      "$ref": "#/$defs/PlanningReference"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "question_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "relation_object": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Object"
+    },
+    "relation_predicate": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Predicate"
+    },
+    "relation_subject": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Subject"
+    }
+  },
+  "required": [
+    "question_id",
+    "kind",
+    "question",
+    "provenance",
+    "goal_id"
+  ],
+  "title": "PlanningQuestion",
+  "type": "object"
+}

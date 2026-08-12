@@ -1,0 +1,346 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextDelta": {
+      "additionalProperties": false,
+      "properties": {
+        "added_memory_items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContextViewItem"
+          },
+          "title": "Added Memory Items",
+          "type": "array"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "delta_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "information_scope": {
+          "default": "writer_safe",
+          "enum": [
+            "writer_safe",
+            "planner_safe"
+          ],
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "parent_view_revision": {
+          "minimum": 0,
+          "title": "Parent View Revision",
+          "type": "integer"
+        },
+        "plan_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "profile_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "resolution_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "resolved_need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Resolved Need Ids",
+          "type": "array"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/ContextDeltaStatus"
+        },
+        "superseded_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Superseded Item Ids",
+          "type": "array"
+        },
+        "token_impact": {
+          "title": "Token Impact",
+          "type": "integer"
+        },
+        "unresolved_need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Unresolved Need Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "delta_id",
+        "request_ref",
+        "resolution_ref",
+        "parent_view_revision",
+        "token_impact",
+        "status"
+      ],
+      "title": "ContextDelta",
+      "type": "object"
+    },
+    "ContextDeltaStatus": {
+      "enum": [
+        "RESOLVED",
+        "PARTIAL",
+        "INSUFFICIENT",
+        "DENIED",
+        "BUDGET_EXHAUSTED"
+      ],
+      "title": "ContextDeltaStatus",
+      "type": "string"
+    },
+    "ContextItemKind": {
+      "enum": [
+        "system_policy",
+        "tool_policy",
+        "writing_task",
+        "accepted_plan",
+        "project_profile",
+        "author_intent",
+        "planning_inquiry",
+        "goal_proposal",
+        "memory_claim",
+        "evidence_handle",
+        "unresolved_need",
+        "work_plan",
+        "draft_checkpoint",
+        "editor_instruction",
+        "model_batch",
+        "tool_batch",
+        "runtime_summary"
+      ],
+      "title": "ContextItemKind",
+      "type": "string"
+    },
+    "ContextLayer": {
+      "enum": [
+        "protected",
+        "memory",
+        "working",
+        "recent_settled",
+        "compacted_prefix"
+      ],
+      "title": "ContextLayer",
+      "type": "string"
+    },
+    "ContextViewItem": {
+      "additionalProperties": false,
+      "properties": {
+        "atomic_group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content": {
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "information_scope": {
+          "default": "writer_safe",
+          "enum": [
+            "writer_safe",
+            "planner_safe",
+            "runtime"
+          ],
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "instruction_boundary": {
+          "default": false,
+          "title": "Instruction Boundary",
+          "type": "boolean"
+        },
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ContextItemKind"
+        },
+        "layer": {
+          "$ref": "#/$defs/ContextLayer"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "pending_effect": {
+          "default": false,
+          "title": "Pending Effect",
+          "type": "boolean"
+        },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "source_event_range": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Event Range"
+        },
+        "supersedes_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supersedes Item Ids",
+          "type": "array"
+        },
+        "token_count": {
+          "minimum": 1,
+          "title": "Token Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item_id",
+        "layer",
+        "kind",
+        "content",
+        "token_count"
+      ],
+      "title": "ContextViewItem",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "delta": {
+      "$ref": "#/$defs/ContextDelta"
+    }
+  },
+  "required": [
+    "delta"
+  ],
+  "title": "ContextDeltaAppliedPayload",
+  "type": "object"
+}

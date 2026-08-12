@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ContextScheme": {
+      "description": "The three comparable Context inputs of a Stage 3 generation run.",
+      "enum": [
+        "recent_prose",
+        "simple_retrieval",
+        "writer_context_package"
+      ],
+      "title": "ContextScheme",
+      "type": "string"
+    },
+    "EvaluatorDimension": {
+      "description": "Dimensions left to an independent evaluator or blind human review.",
+      "enum": [
+        "continuity_and_fact_conflict",
+        "unplanned_leak_or_fabrication",
+        "plan_following",
+        "literary_quality_degradation"
+      ],
+      "title": "EvaluatorDimension",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "dimension": {
+      "$ref": "#/$defs/EvaluatorDimension"
+    },
+    "rationale": {
+      "default": "",
+      "title": "Rationale",
+      "type": "string"
+    },
+    "reviewer_label": {
+      "default": "",
+      "maxLength": 240,
+      "title": "Reviewer Label",
+      "type": "string"
+    },
+    "scheme": {
+      "$ref": "#/$defs/ContextScheme"
+    },
+    "score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Score"
+    }
+  },
+  "required": [
+    "case_id",
+    "scheme",
+    "dimension"
+  ],
+  "title": "HumanScoreEntry",
+  "type": "object"
+}

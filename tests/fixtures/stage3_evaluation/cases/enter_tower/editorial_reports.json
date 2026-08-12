@@ -1,0 +1,53 @@
+{
+  "recent_prose": {
+    "draft_id": "draft.stage3.eval.enter-tower.recent-prose",
+    "issues": [
+      {
+        "description": "正文让林澈用左臂顶门，与左臂有伤的约束冲突。",
+        "issue_type": "fact_conflict",
+        "location": "scene.21.1",
+        "severity": "high"
+      },
+      {
+        "description": "正文提及北塔顶层的秘密，属于禁止泄露内容。",
+        "issue_type": "unplanned_reveal",
+        "location": "scene.21.1",
+        "severity": "high"
+      }
+    ],
+    "repair_count": 1,
+    "report_id": "editorial.stage3.eval.enter-tower.recent-prose",
+    "rewrite_count": 0,
+    "unresolved_issues": [
+      "北塔内部的守卫信息不在冻结上下文中。"
+    ],
+    "verdict": "local_repair"
+  },
+  "simple_retrieval": {
+    "draft_id": "draft.stage3.eval.enter-tower.simple-retrieval",
+    "issues": [
+      {
+        "description": "计划目标未在正文中明确推进。",
+        "issue_type": "plan_use",
+        "location": "scene.21.1",
+        "severity": "low"
+      }
+    ],
+    "repair_count": 0,
+    "report_id": "editorial.stage3.eval.enter-tower.simple-retrieval",
+    "rewrite_count": 0,
+    "unresolved_issues": [],
+    "verdict": "pass"
+  },
+  "writer_context_package": {
+    "draft_id": "draft.stage3.eval.enter-tower.writer-context-package",
+    "issues": [],
+    "repair_count": 0,
+    "report_id": "editorial.stage3.eval.enter-tower.writer-context-package",
+    "rewrite_count": 0,
+    "unresolved_issues": [
+      "塔内守卫状态不在冻结上下文中。"
+    ],
+    "verdict": "pass"
+  }
+}

@@ -106,6 +106,7 @@ class NeedValidator:
         world: WorldRootDocument,
         focus_set: FocusSet,
         plan: PlanRootDocument | None = None,
+        goal_bindings: dict[int, str] | None = None,
     ) -> NeedValidationResult:
         del focus_set
         self._raw_scope_by_draft = {}
@@ -119,7 +120,7 @@ class NeedValidator:
         rejected_reasons: dict[str, str] = {}
         deduplicated_ids: list[str] = []
         seen: set[tuple[str, tuple[str, ...], str]] = set()
-        canonical_goals = (
+        canonical_goals = goal_bindings or (
             {goal.chapter_index: _normalize(goal.summary) for goal in plan.chapter_goals}
             if plan is not None
             else {}

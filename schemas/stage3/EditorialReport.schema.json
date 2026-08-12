@@ -1,0 +1,927 @@
+{
+  "$defs": {
+    "AgentExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillExecutionReceipt"
+          },
+          "title": "Skill Receipts",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "agent_spec",
+        "agent_type",
+        "agent_mode",
+        "prompt_fingerprint",
+        "configuration_fingerprint",
+        "status",
+        "started_at",
+        "completed_at",
+        "latency_ms"
+      ],
+      "title": "AgentExecutionReceipt",
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "DraftSpan": {
+      "additionalProperties": false,
+      "description": "A trusted, service-generated character range in a candidate Draft.",
+      "properties": {
+        "block_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DraftSpan",
+      "type": "object"
+    },
+    "EditorialIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "issue_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "issue_type": {
+          "$ref": "#/$defs/EditorialIssueType"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EditorialLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "repairable": {
+          "default": false,
+          "title": "Repairable",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/EditorialSeverity"
+        },
+        "structural": {
+          "default": false,
+          "title": "Structural",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "issue_id",
+        "issue_type",
+        "severity",
+        "description"
+      ],
+      "title": "EditorialIssue",
+      "type": "object"
+    },
+    "EditorialIssueType": {
+      "enum": [
+        "constraint_violation",
+        "continuity",
+        "pov",
+        "disclosure",
+        "plan",
+        "style",
+        "context_gap",
+        "unsupported_change",
+        "structure"
+      ],
+      "title": "EditorialIssueType",
+      "type": "string"
+    },
+    "EditorialLocation": {
+      "additionalProperties": false,
+      "description": "A review issue location; offsets are trusted only after service resolution.",
+      "properties": {
+        "block_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "evidence_quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Quote"
+        },
+        "occurrence": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        }
+      },
+      "title": "EditorialLocation",
+      "type": "object"
+    },
+    "EditorialSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "EditorialSeverity",
+      "type": "string"
+    },
+    "EditorialVerdict": {
+      "description": "The only routing outcomes an Editor may produce.",
+      "enum": [
+        "PASS",
+        "LOCAL_REPAIR",
+        "MAJOR_REWRITE"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "LocalRepairScope": {
+      "additionalProperties": false,
+      "description": "The complete trusted boundary an Editor local repair may change.",
+      "properties": {
+        "allowed_spans": {
+          "items": {
+            "$ref": "#/$defs/DraftSpan"
+          },
+          "minItems": 1,
+          "title": "Allowed Spans",
+          "type": "array"
+        },
+        "instructions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instructions",
+          "type": "array"
+        },
+        "issue_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Issue Ids",
+          "type": "array"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        }
+      },
+      "required": [
+        "issue_ids",
+        "allowed_spans",
+        "instructions"
+      ],
+      "title": "LocalRepairScope",
+      "type": "object"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "RewriteDirective": {
+      "additionalProperties": false,
+      "properties": {
+        "directive_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "directive_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "instructions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instructions",
+          "type": "array"
+        },
+        "parent_draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        },
+        "scope": {
+          "$ref": "#/$defs/RewriteScope"
+        }
+      },
+      "required": [
+        "directive_id",
+        "parent_draft_id",
+        "scope",
+        "directive_artifact",
+        "instructions"
+      ],
+      "title": "RewriteDirective",
+      "type": "object"
+    },
+    "RewriteScope": {
+      "enum": [
+        "major_rewrite",
+        "local_repair"
+      ],
+      "title": "RewriteScope",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Read-only Editor result used for routing; it never authorizes a write.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "context_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "draft_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "issues": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EditorialIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "model_call_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planner_replan_required": {
+      "default": false,
+      "title": "Planner Replan Required",
+      "type": "boolean"
+    },
+    "receipt": {
+      "$ref": "#/$defs/AgentExecutionReceipt"
+    },
+    "repair_scope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocalRepairScope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "report_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "rewrite_directive": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RewriteDirective"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "task_contract_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "unresolved_needs": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unresolved Needs",
+      "type": "array"
+    },
+    "verdict": {
+      "$ref": "#/$defs/EditorialVerdict"
+    }
+  },
+  "required": [
+    "report_id",
+    "draft_id",
+    "task_contract_id",
+    "context_id",
+    "base_commit",
+    "verdict",
+    "receipt",
+    "created_at"
+  ],
+  "title": "EditorialReport",
+  "type": "object"
+}

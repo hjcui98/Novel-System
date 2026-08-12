@@ -18,6 +18,7 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import AuthorPlanningContext
 from novel_agent.domain.ids import ArtifactId, RunId, StableId
+from novel_agent.domain.memory import Stage1MemoryNeed
 from novel_agent.domain.world import StoryTime
 
 PLANNER_OUTPUT_SCHEMA_VERSION = "planned_need_draft.v1"
@@ -386,6 +387,27 @@ class RetrievalQueryBundle(DomainModel):
         return self
 
 
+class PlannerNeedGenerationResult(DomainModel):
+    """Reviewed-inquiry lineage for the Planner-specific Need set."""
+
+    inquiry_ref: ArtifactRef
+    inquiry_review_ref: ArtifactRef
+    needs: tuple[Stage1MemoryNeed, ...]
+    query_bundles: dict[str, RetrievalQueryBundle]
+    rejected_question_ids: tuple[StableId, ...] = ()
+    rejection_reasons: dict[str, str] = Field(default_factory=dict)
+    validated_need_set_hash: ArtifactId
+    generator_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_query_bundles(self) -> PlannerNeedGenerationResult:
+        if set(self.query_bundles) != {need.need_id.root for need in self.needs}:
+            raise ValueError("Planner Need query bundles must cover the final Need set")
+        if len({need.need_id for need in self.needs}) != len(self.needs):
+            raise ValueError("Planner Need identities must be unique")
+        return self
+
+
 __all__ = [
     "PLANNER_OUTPUT_SCHEMA_VERSION",
     "EntityMention",
@@ -402,6 +424,7 @@ __all__ = [
     "PlannerInvocationArtifact",
     "PlannerInvocationAttempt",
     "PlannerInvocationAttemptStatus",
+    "PlannerNeedGenerationResult",
     "PlannerObligationSummary",
     "PlannerRelationSummary",
     "PlannerRunResult",

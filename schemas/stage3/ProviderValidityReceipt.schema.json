@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "atomic_groups_valid": {
+      "title": "Atomic Groups Valid",
+      "type": "boolean"
+    },
+    "available_input_tokens": {
+      "minimum": 0,
+      "title": "Available Input Tokens",
+      "type": "integer"
+    },
+    "context_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "provider_valid": {
+      "title": "Provider Valid",
+      "type": "boolean"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "rendered_input_tokens": {
+      "minimum": 0,
+      "title": "Rendered Input Tokens",
+      "type": "integer"
+    },
+    "reserved_output_tokens": {
+      "minimum": 0,
+      "title": "Reserved Output Tokens",
+      "type": "integer"
+    },
+    "safety_allowance_tokens": {
+      "minimum": 0,
+      "title": "Safety Allowance Tokens",
+      "type": "integer"
+    },
+    "sequence_limit": {
+      "minimum": 1,
+      "title": "Sequence Limit",
+      "type": "integer"
+    },
+    "tokenizer": {
+      "minLength": 1,
+      "title": "Tokenizer",
+      "type": "string"
+    },
+    "tokenizer_version": {
+      "minLength": 1,
+      "title": "Tokenizer Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "tokenizer",
+    "tokenizer_version",
+    "sequence_limit",
+    "reserved_output_tokens",
+    "safety_allowance_tokens",
+    "rendered_input_tokens",
+    "available_input_tokens",
+    "atomic_groups_valid",
+    "provider_valid",
+    "context_hash"
+  ],
+  "title": "ProviderValidityReceipt",
+  "type": "object"
+}

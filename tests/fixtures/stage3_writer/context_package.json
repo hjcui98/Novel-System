@@ -1,0 +1,57 @@
+{
+  "base_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "budget_report": {
+    "mandatory_tokens": 80,
+    "optional_tokens": 0,
+    "token_budget": 1600
+  },
+  "context_id": "context.stage3.shadow.c21",
+  "items": [
+    {
+      "access_scope": "writer_safe",
+      "category": "mandatory_constraints",
+      "derivation_taint": [],
+      "information_label": "observed",
+      "item_id": "item.stage3.constraint.gate",
+      "mandatory": true,
+      "narrative_start": 20,
+      "snapshot_id": "snapshot.stage3.shadow.c20",
+      "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "text": "石门只会在月影抵达门槛时开启。"
+    },
+    {
+      "access_scope": "writer_safe",
+      "category": "current_world_state",
+      "derivation_taint": [],
+      "entity_ids": [
+        "entity.stage3.lin-che"
+      ],
+      "information_label": "observed",
+      "item_id": "item.stage3.state.injury",
+      "mandatory": true,
+      "narrative_start": 20,
+      "predicate": "left_arm_condition",
+      "snapshot_id": "snapshot.stage3.shadow.c20",
+      "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "text": "林澈左臂仍有伤，不能用力推门。"
+    },
+    {
+      "access_scope": "writer_safe",
+      "category": "active_plan_obligations",
+      "derivation_taint": [],
+      "entity_ids": [
+        "entity.stage3.lin-che"
+      ],
+      "information_label": "author_plan",
+      "item_id": "item.stage3.plan.enter-tower",
+      "mandatory": true,
+      "narrative_start": 21,
+      "snapshot_id": "snapshot.stage3.shadow.c20",
+      "source_commit": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "text": "林澈需要在本章找到不依赖蛮力的入塔方法。"
+    }
+  ],
+  "snapshot_id": "snapshot.stage3.shadow.c20",
+  "task_contract": "writing-contract.stage3.shadow.c21",
+  "unresolved_gaps": []
+}

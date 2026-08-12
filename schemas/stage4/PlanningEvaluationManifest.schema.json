@@ -1,0 +1,514 @@
+{
+  "$defs": {
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BootstrapStrategy": {
+      "enum": [
+        "normalize_only",
+        "develop_candidates"
+      ],
+      "title": "BootstrapStrategy",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "mandatory_reserve_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Mandatory Reserve Tokens",
+          "type": "integer"
+        },
+        "token_budget": {
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "token_budget"
+      ],
+      "title": "ContextBudget",
+      "type": "object"
+    },
+    "PlanningBudgets": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/ContextBudget"
+        },
+        "inquiry_revisions": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Inquiry Revisions",
+          "type": "integer"
+        },
+        "model_token_budget": {
+          "default": 8000,
+          "minimum": 1,
+          "title": "Model Token Budget",
+          "type": "integer"
+        },
+        "plan_revisions": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Plan Revisions",
+          "type": "integer"
+        },
+        "retrieval": {
+          "$ref": "#/$defs/RetrievalBudget"
+        },
+        "reviewer_memory_rounds": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Reviewer Memory Rounds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "retrieval",
+        "context"
+      ],
+      "title": "PlanningBudgets",
+      "type": "object"
+    },
+    "PlanningEvaluationCase": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "corpus_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "expected_issue_tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Issue Tags",
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "request": {
+          "$ref": "#/$defs/PlanningLoopRequest"
+        }
+      },
+      "required": [
+        "case_id",
+        "mode",
+        "request",
+        "corpus_fingerprint"
+      ],
+      "title": "PlanningEvaluationCase",
+      "type": "object"
+    },
+    "PlanningLoopRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_plan_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "accepted_text_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "accepted_world_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "allowed_skill_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Allowed Skill Ids",
+          "type": "array"
+        },
+        "author_intent_artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Author Intent Artifacts",
+          "type": "array"
+        },
+        "budgets": {
+          "$ref": "#/$defs/PlanningBudgets"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "explicit_author_overrides": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Explicit Author Overrides",
+          "type": "array"
+        },
+        "horizon_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon End"
+        },
+        "horizon_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Start"
+        },
+        "model_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "task": {
+          "$ref": "#/$defs/PlanningTask"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "project_id",
+        "task",
+        "author_intent_artifacts",
+        "budgets",
+        "configuration_fingerprint",
+        "model_fingerprint"
+      ],
+      "title": "PlanningLoopRequest",
+      "type": "object"
+    },
+    "PlanningTask": {
+      "additionalProperties": false,
+      "properties": {
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "creative_scope": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Creative Scope",
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "planning_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BootstrapStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "planning_task_id",
+        "project_id",
+        "mode"
+      ],
+      "title": "PlanningTask",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RetrievalBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_anchor_expansions": {
+          "default": 8,
+          "minimum": 0,
+          "title": "Max Anchor Expansions",
+          "type": "integer"
+        },
+        "max_candidates": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Candidates",
+          "type": "integer"
+        },
+        "max_full_chapter_reads": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Full Chapter Reads",
+          "type": "integer"
+        },
+        "max_query_rewrites_per_need": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Query Rewrites Per Need",
+          "type": "integer"
+        },
+        "max_rounds": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Rounds",
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "default": 12,
+          "minimum": 1,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "token_budget": {
+          "default": 12000,
+          "minimum": 1,
+          "title": "Token Budget",
+          "type": "integer"
+        },
+        "wall_clock_budget_ms": {
+          "default": 30000,
+          "minimum": 1,
+          "title": "Wall Clock Budget Ms",
+          "type": "integer"
+        }
+      },
+      "title": "RetrievalBudget",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/PlanningEvaluationCase"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "corpus_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "frozen_before_evaluator": {
+      "title": "Frozen Before Evaluator",
+      "type": "boolean"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "model_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "pilot_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "rubric_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "threshold_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "manifest_id",
+    "schema_version",
+    "cases",
+    "configuration_fingerprint",
+    "model_fingerprint",
+    "corpus_fingerprint",
+    "pilot_fingerprint",
+    "rubric_fingerprint",
+    "threshold_fingerprint",
+    "frozen_before_evaluator"
+  ],
+  "title": "PlanningEvaluationManifest",
+  "type": "object"
+}

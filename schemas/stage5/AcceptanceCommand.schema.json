@@ -1,0 +1,285 @@
+{
+  "$defs": {
+    "AcceptanceDecision": {
+      "enum": [
+        "accept",
+        "reject",
+        "revoke"
+      ],
+      "title": "AcceptanceDecision",
+      "type": "string"
+    },
+    "ActorKind": {
+      "enum": [
+        "author",
+        "operator",
+        "policy"
+      ],
+      "title": "ActorKind",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CandidateBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "affects_future_plan": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affects Future Plan"
+        },
+        "artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "candidate_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Candidate Hash",
+          "type": "string"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "horizon_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon End"
+        },
+        "horizon_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Start"
+        },
+        "kind": {
+          "$ref": "#/$defs/CandidateKind"
+        },
+        "lineage_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Lineage Artifact Refs",
+          "type": "array"
+        },
+        "planning_purpose": {
+          "$ref": "#/$defs/TaskPurpose",
+          "default": "normal"
+        },
+        "protected_chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protected Chapter Index"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "kind",
+        "artifact_ref",
+        "candidate_hash",
+        "basis_commit"
+      ],
+      "title": "CandidateBinding",
+      "type": "object"
+    },
+    "CandidateKind": {
+      "enum": [
+        "plan",
+        "draft"
+      ],
+      "title": "CandidateKind",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TaskPurpose": {
+      "enum": [
+        "normal",
+        "lookahead",
+        "replan",
+        "derived_maintenance"
+      ],
+      "title": "TaskPurpose",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_policy_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Acceptance Policy Hash",
+      "type": "string"
+    },
+    "actor_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Actor Id",
+      "type": "string"
+    },
+    "actor_kind": {
+      "$ref": "#/$defs/ActorKind"
+    },
+    "candidate": {
+      "$ref": "#/$defs/CandidateBinding"
+    },
+    "command_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "decision": {
+      "$ref": "#/$defs/AcceptanceDecision"
+    },
+    "expected_project_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "idempotency_identity": {
+      "$ref": "#/$defs/StableId"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "kind": {
+      "const": "acceptance",
+      "default": "acceptance",
+      "title": "Kind",
+      "type": "string"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "reason": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "command_id",
+    "project_id",
+    "run_id",
+    "task_id",
+    "candidate",
+    "acceptance_policy_hash",
+    "actor_kind",
+    "actor_id",
+    "decision",
+    "reason",
+    "expected_project_commit",
+    "idempotency_identity",
+    "issued_at"
+  ],
+  "title": "AcceptanceCommand",
+  "type": "object"
+}

@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "claim_token": {
+      "$ref": "#/$defs/StableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "task_revision": {
+      "minimum": 1,
+      "title": "Task Revision",
+      "type": "integer"
+    },
+    "writer_generation": {
+      "minimum": 0,
+      "title": "Writer Generation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "project_id",
+    "task_id",
+    "attempt_id",
+    "claim_token",
+    "task_revision",
+    "writer_generation"
+  ],
+  "title": "AttemptFence",
+  "type": "object"
+}

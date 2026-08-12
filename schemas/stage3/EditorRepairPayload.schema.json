@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "Structured response for one bounded local repair.",
+  "properties": {
+    "repaired_text": {
+      "minLength": 1,
+      "title": "Repaired Text",
+      "type": "string"
+    },
+    "self_observations": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Self Observations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "repaired_text"
+  ],
+  "title": "EditorRepairPayload",
+  "type": "object"
+}

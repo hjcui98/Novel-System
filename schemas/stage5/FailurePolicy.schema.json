@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "RetryOwner": {
+      "enum": [
+        "model_gateway",
+        "leaf",
+        "runtime",
+        "reconciler",
+        "acceptance",
+        "trusted_commit",
+        "projection",
+        "freshness",
+        "operator",
+        "none"
+      ],
+      "title": "RetryOwner",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "consumes_task_budget": {
+      "title": "Consumes Task Budget",
+      "type": "boolean"
+    },
+    "retry_owner": {
+      "$ref": "#/$defs/RetryOwner"
+    },
+    "retryable": {
+      "title": "Retryable",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "retry_owner",
+    "retryable",
+    "consumes_task_budget"
+  ],
+  "title": "FailurePolicy",
+  "type": "object"
+}

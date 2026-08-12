@@ -1,5 +1,7 @@
 """Trusted deterministic application services."""
 
+from typing import Any
+
 from novel_agent.services.artifacts import (
     ArtifactIntegrityError,
     ArtifactRepository,
@@ -12,16 +14,45 @@ from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogR
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 
 __all__ = [
+    "AgentContextProjector",
+    "AgentContextRuntime",
     "ArtifactIntegrityError",
     "ArtifactRepository",
     "CommitService",
+    "ContextCompactor",
     "EvaluationHarness",
     "EvaluationLedgerRepository",
     "ModelGateway",
     "RegisteredModelEndpoint",
     "RunCheckpointRepository",
     "RunEventLogRepository",
+    "WriterContextLoopService",
+    "SharedPlannerContextRuntime",
     "manifest_commit_id",
     "object_key",
     "sha256_id",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"AgentContextProjector", "AgentContextRuntime", "ContextCompactor"}:
+        from novel_agent.services.agent_context import (
+            AgentContextProjector,
+            AgentContextRuntime,
+            ContextCompactor,
+        )
+
+        return {
+            "AgentContextProjector": AgentContextProjector,
+            "AgentContextRuntime": AgentContextRuntime,
+            "ContextCompactor": ContextCompactor,
+        }[name]
+    if name == "WriterContextLoopService":
+        from novel_agent.services.writer_context_loop import WriterContextLoopService
+
+        return WriterContextLoopService
+    if name == "SharedPlannerContextRuntime":
+        from novel_agent.services.planner_context_runtime import SharedPlannerContextRuntime
+
+        return SharedPlannerContextRuntime
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "DraftSpan": {
+      "additionalProperties": false,
+      "description": "A trusted, service-generated character range in a candidate Draft.",
+      "properties": {
+        "block_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DraftSpan",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The complete trusted boundary an Editor local repair may change.",
+  "properties": {
+    "allowed_spans": {
+      "items": {
+        "$ref": "#/$defs/DraftSpan"
+      },
+      "minItems": 1,
+      "title": "Allowed Spans",
+      "type": "array"
+    },
+    "instructions": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Instructions",
+      "type": "array"
+    },
+    "issue_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "minItems": 1,
+      "title": "Issue Ids",
+      "type": "array"
+    },
+    "preserve_requirements": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Preserve Requirements",
+      "type": "array"
+    }
+  },
+  "required": [
+    "issue_ids",
+    "allowed_spans",
+    "instructions"
+  ],
+  "title": "LocalRepairScope",
+  "type": "object"
+}

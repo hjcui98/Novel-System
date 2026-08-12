@@ -1,0 +1,493 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextConsumer": {
+      "enum": [
+        "writer",
+        "planner"
+      ],
+      "title": "ContextConsumer",
+      "type": "string"
+    },
+    "ContextItemKind": {
+      "enum": [
+        "system_policy",
+        "tool_policy",
+        "writing_task",
+        "accepted_plan",
+        "project_profile",
+        "author_intent",
+        "planning_inquiry",
+        "goal_proposal",
+        "memory_claim",
+        "evidence_handle",
+        "unresolved_need",
+        "work_plan",
+        "draft_checkpoint",
+        "editor_instruction",
+        "model_batch",
+        "tool_batch",
+        "runtime_summary"
+      ],
+      "title": "ContextItemKind",
+      "type": "string"
+    },
+    "ContextLayer": {
+      "enum": [
+        "protected",
+        "memory",
+        "working",
+        "recent_settled",
+        "compacted_prefix"
+      ],
+      "title": "ContextLayer",
+      "type": "string"
+    },
+    "ContextViewItem": {
+      "additionalProperties": false,
+      "properties": {
+        "atomic_group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content": {
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "information_scope": {
+          "default": "writer_safe",
+          "enum": [
+            "writer_safe",
+            "planner_safe",
+            "runtime"
+          ],
+          "title": "Information Scope",
+          "type": "string"
+        },
+        "instruction_boundary": {
+          "default": false,
+          "title": "Instruction Boundary",
+          "type": "boolean"
+        },
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ContextItemKind"
+        },
+        "layer": {
+          "$ref": "#/$defs/ContextLayer"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "pending_effect": {
+          "default": false,
+          "title": "Pending Effect",
+          "type": "boolean"
+        },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "source_event_range": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Event Range"
+        },
+        "supersedes_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supersedes Item Ids",
+          "type": "array"
+        },
+        "token_count": {
+          "minimum": 1,
+          "title": "Token Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item_id",
+        "layer",
+        "kind",
+        "content",
+        "token_count"
+      ],
+      "title": "ContextViewItem",
+      "type": "object"
+    },
+    "ProviderValidityReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "atomic_groups_valid": {
+          "title": "Atomic Groups Valid",
+          "type": "boolean"
+        },
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "context_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "provider_valid": {
+          "title": "Provider Valid",
+          "type": "boolean"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "rendered_input_tokens": {
+          "minimum": 0,
+          "title": "Rendered Input Tokens",
+          "type": "integer"
+        },
+        "reserved_output_tokens": {
+          "minimum": 0,
+          "title": "Reserved Output Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "sequence_limit": {
+          "minimum": 1,
+          "title": "Sequence Limit",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "minLength": 1,
+          "title": "Tokenizer",
+          "type": "string"
+        },
+        "tokenizer_version": {
+          "minLength": 1,
+          "title": "Tokenizer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "tokenizer",
+        "tokenizer_version",
+        "sequence_limit",
+        "reserved_output_tokens",
+        "safety_allowance_tokens",
+        "rendered_input_tokens",
+        "available_input_tokens",
+        "atomic_groups_valid",
+        "provider_valid",
+        "context_hash"
+      ],
+      "title": "ProviderValidityReceipt",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "active_memory_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContextViewItem"
+      },
+      "title": "Active Memory Items",
+      "type": "array"
+    },
+    "base_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "basis_event_position": {
+      "minimum": 0,
+      "title": "Basis Event Position",
+      "type": "integer"
+    },
+    "compacted_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Compacted Item Ids",
+      "type": "array"
+    },
+    "compacted_prefix_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContextViewItem"
+      },
+      "title": "Compacted Prefix Items",
+      "type": "array"
+    },
+    "compacted_prefix_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "consumer": {
+      "$ref": "#/$defs/ContextConsumer"
+    },
+    "context_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "covered_event_range": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Covered Event Range"
+    },
+    "generation": {
+      "minimum": 0,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "information_scope": {
+      "enum": [
+        "writer_safe",
+        "planner_safe"
+      ],
+      "title": "Information Scope",
+      "type": "string"
+    },
+    "kept_boundary": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Kept Boundary",
+      "type": "integer"
+    },
+    "plan_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "protected_items": {
+      "items": {
+        "$ref": "#/$defs/ContextViewItem"
+      },
+      "title": "Protected Items",
+      "type": "array"
+    },
+    "provider_validity_receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProviderValidityReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "recent_settled_tail": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContextViewItem"
+      },
+      "title": "Recent Settled Tail",
+      "type": "array"
+    },
+    "revision": {
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "seed_package_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "token_report": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Token Report",
+      "type": "object"
+    },
+    "unresolved_need_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unresolved Need Ids",
+      "type": "array"
+    },
+    "working_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContextViewItem"
+      },
+      "title": "Working Items",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "task_id",
+    "consumer",
+    "revision",
+    "generation",
+    "basis_event_position",
+    "information_scope",
+    "seed_package_ref",
+    "protected_items",
+    "context_hash"
+  ],
+  "title": "AgentContextView",
+  "type": "object"
+}

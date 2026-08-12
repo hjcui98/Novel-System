@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "AutomationMode": {
+      "enum": [
+        "manual",
+        "semi",
+        "auto"
+      ],
+      "title": "AutomationMode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "auto_accept_draft": {
+      "default": false,
+      "title": "Auto Accept Draft",
+      "type": "boolean"
+    },
+    "auto_accept_plan": {
+      "default": false,
+      "title": "Auto Accept Plan",
+      "type": "boolean"
+    },
+    "automation_mode": {
+      "$ref": "#/$defs/AutomationMode"
+    },
+    "enable_planner_lookahead": {
+      "default": false,
+      "title": "Enable Planner Lookahead",
+      "type": "boolean"
+    },
+    "lookahead_horizon": {
+      "default": 3,
+      "maximum": 12,
+      "minimum": 1,
+      "title": "Lookahead Horizon",
+      "type": "integer"
+    },
+    "max_task_attempts": {
+      "default": 3,
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Max Task Attempts",
+      "type": "integer"
+    },
+    "max_tasks_per_advance": {
+      "default": 1,
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Max Tasks Per Advance",
+      "type": "integer"
+    },
+    "permission_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Permission Hash",
+      "type": "string"
+    },
+    "policy_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Hash",
+      "type": "string"
+    },
+    "runtime_parallelism": {
+      "default": 1,
+      "enum": [
+        1,
+        2
+      ],
+      "title": "Runtime Parallelism",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "automation_mode",
+    "policy_hash",
+    "permission_hash"
+  ],
+  "title": "CreativeRunPolicy",
+  "type": "object"
+}

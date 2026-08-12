@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from novel_agent.adapters.postgres.database import Base
@@ -82,6 +82,93 @@ class RunCheckpointRow(Base):
     event_position: Mapped[int] = mapped_column(Integer, nullable=False)
     checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeTaskProjectionRow(Base):
+    __tablename__ = "runtime_task_projection"
+    __table_args__ = (
+        Index(
+            "ix_runtime_task_claim",
+            "project_id",
+            "status",
+            "priority",
+            "scheduled_for",
+        ),
+    )
+
+    task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("run_stream.run_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.project_id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_attempt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    basis_commit: Mapped[str] = mapped_column(String(71), nullable=False)
+    basis_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    policy_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    permission_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    task_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeTaskAttemptRow(Base):
+    __tablename__ = "runtime_task_attempt"
+    __table_args__ = (UniqueConstraint("task_id", "attempt_no"),)
+
+    attempt_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("runtime_task_projection.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    claim_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    fence_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    failure_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attempt_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class RuntimeEffectProjectionRow(Base):
+    __tablename__ = "runtime_effect_projection"
+    __table_args__ = (UniqueConstraint("request_identity"),)
+
+    effect_identity: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_identity: Mapped[str] = mapped_column(String(128), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("runtime_task_projection.task_id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("runtime_task_attempt.attempt_id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    result_ref_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    effect_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class ProjectWriterClaimRow(Base):
+    __tablename__ = "project_writer_claim"
+
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.project_id", ondelete="CASCADE"), primary_key=True
+    )
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class EvaluationEntryRow(Base):

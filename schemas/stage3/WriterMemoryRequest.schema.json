@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "anchor_labels": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Anchor Labels",
+      "type": "array"
+    },
+    "blocked_action": {
+      "minLength": 1,
+      "title": "Blocked Action",
+      "type": "string"
+    },
+    "known_context_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Known Context Item Ids",
+      "type": "array"
+    },
+    "mandatory_suggestion": {
+      "default": false,
+      "title": "Mandatory Suggestion",
+      "type": "boolean"
+    },
+    "purpose": {
+      "minLength": 1,
+      "title": "Purpose",
+      "type": "string"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "requested_evidence_type": {
+      "minLength": 1,
+      "title": "Requested Evidence Type",
+      "type": "string"
+    },
+    "risk": {
+      "minLength": 1,
+      "title": "Risk",
+      "type": "string"
+    },
+    "scene_or_draft_checkpoint": {
+      "minLength": 1,
+      "title": "Scene Or Draft Checkpoint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "question",
+    "purpose",
+    "blocked_action",
+    "requested_evidence_type",
+    "scene_or_draft_checkpoint",
+    "risk"
+  ],
+  "title": "WriterMemoryRequest",
+  "type": "object"
+}

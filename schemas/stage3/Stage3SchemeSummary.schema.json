@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "ContextScheme": {
+      "description": "The three comparable Context inputs of a Stage 3 generation run.",
+      "enum": [
+        "recent_prose",
+        "simple_retrieval",
+        "writer_context_package"
+      ],
+      "title": "ContextScheme",
+      "type": "string"
+    },
+    "EditorialVerdict": {
+      "enum": [
+        "pass",
+        "local_repair",
+        "major_rewrite"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    },
+    "ReconciliationVerdict": {
+      "enum": [
+        "matched",
+        "declared_only",
+        "observed_only",
+        "mismatched"
+      ],
+      "title": "ReconciliationVerdict",
+      "type": "string"
+    },
+    "Stage3FailureCategory": {
+      "description": "Typed scheme status; a failed scheme is never replaced by another result.",
+      "enum": [
+        "input_not_ready",
+        "writer_failed",
+        "editor_failed",
+        "reconciliation_failed",
+        "evaluation_failed",
+        "completed"
+      ],
+      "title": "Stage3FailureCategory",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "completed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Completed",
+      "type": "integer"
+    },
+    "editor_verdicts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/EditorialVerdict"
+      },
+      "title": "Editor Verdicts",
+      "type": "object"
+    },
+    "evaluator_scored_dimensions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Evaluator Scored Dimensions",
+      "type": "integer"
+    },
+    "failed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Failed",
+      "type": "integer"
+    },
+    "failures": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/Stage3FailureCategory"
+      },
+      "title": "Failures",
+      "type": "object"
+    },
+    "input_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "latency_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "reconciliation": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/ReconciliationVerdict"
+      },
+      "title": "Reconciliation",
+      "type": "object"
+    },
+    "repair_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Repair Count",
+      "type": "integer"
+    },
+    "rewrite_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rewrite Count",
+      "type": "integer"
+    },
+    "rule_passed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rule Passed",
+      "type": "integer"
+    },
+    "rule_total": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rule Total",
+      "type": "integer"
+    },
+    "scheme": {
+      "$ref": "#/$defs/ContextScheme"
+    }
+  },
+  "required": [
+    "scheme"
+  ],
+  "title": "Stage3SchemeSummary",
+  "type": "object"
+}

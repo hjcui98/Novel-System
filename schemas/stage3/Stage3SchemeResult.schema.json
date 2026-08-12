@@ -1,0 +1,1508 @@
+{
+  "$defs": {
+    "AgentExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillExecutionReceipt"
+          },
+          "title": "Skill Receipts",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "agent_spec",
+        "agent_type",
+        "agent_mode",
+        "prompt_fingerprint",
+        "configuration_fingerprint",
+        "status",
+        "started_at",
+        "completed_at",
+        "latency_ms"
+      ],
+      "title": "AgentExecutionReceipt",
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CollectedEditorialIssue": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "issue_type": {
+          "default": "",
+          "title": "Issue Type",
+          "type": "string"
+        },
+        "location": {
+          "default": "",
+          "title": "Location",
+          "type": "string"
+        },
+        "severity": {
+          "default": "",
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "title": "CollectedEditorialIssue",
+      "type": "object"
+    },
+    "CollectedEditorialReport": {
+      "additionalProperties": true,
+      "description": "Minimal Editor collection contract; tolerant of future Editor fields.",
+      "properties": {
+        "draft_id": {
+          "minLength": 1,
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "issues": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CollectedEditorialIssue"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "repair_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Repair Count",
+          "type": "integer"
+        },
+        "report_id": {
+          "minLength": 1,
+          "title": "Report Id",
+          "type": "string"
+        },
+        "rewrite_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Rewrite Count",
+          "type": "integer"
+        },
+        "unresolved_issues": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Unresolved Issues",
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/EditorialVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "draft_id",
+        "verdict"
+      ],
+      "title": "CollectedEditorialReport",
+      "type": "object"
+    },
+    "CollectedReconciliationItem": {
+      "additionalProperties": true,
+      "properties": {
+        "curator_observation": {
+          "default": "",
+          "title": "Curator Observation",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "subject": {
+          "default": "",
+          "title": "Subject",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/ReconciliationVerdict"
+        },
+        "writer_hint": {
+          "default": "",
+          "title": "Writer Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict"
+      ],
+      "title": "CollectedReconciliationItem",
+      "type": "object"
+    },
+    "CollectedReconciliationResult": {
+      "additionalProperties": true,
+      "description": "Minimal reconciliation collection contract; tolerant of future fields.",
+      "properties": {
+        "draft_id": {
+          "minLength": 1,
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CollectedReconciliationItem"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "result_id": {
+          "minLength": 1,
+          "title": "Result Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result_id",
+        "draft_id"
+      ],
+      "title": "CollectedReconciliationResult",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextScheme": {
+      "description": "The three comparable Context inputs of a Stage 3 generation run.",
+      "enum": [
+        "recent_prose",
+        "simple_retrieval",
+        "writer_context_package"
+      ],
+      "title": "ContextScheme",
+      "type": "string"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "ControllerPromotionDecision": {
+      "enum": [
+        "accept_bounded_default",
+        "freeze_deterministic_gateway",
+        "reject_architecture",
+        "defer"
+      ],
+      "title": "ControllerPromotionDecision",
+      "type": "string"
+    },
+    "DraftArtifact": {
+      "additionalProperties": false,
+      "description": "Content-addressed Writer candidate; never a canonical TextRoot.",
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/WriterArtifactBasis"
+        },
+        "candidate_only": {
+          "const": true,
+          "default": true,
+          "title": "Candidate Only",
+          "type": "boolean"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "model_call_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_draft_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "raw_output_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "sidecar_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "text_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "writer_receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        }
+      },
+      "required": [
+        "draft_id",
+        "mode",
+        "basis",
+        "text_artifact",
+        "sidecar_artifact",
+        "raw_output_artifact",
+        "writer_receipt",
+        "model_call_ids",
+        "created_at"
+      ],
+      "title": "DraftArtifact",
+      "type": "object"
+    },
+    "EditorialVerdict": {
+      "enum": [
+        "pass",
+        "local_repair",
+        "major_rewrite"
+      ],
+      "title": "EditorialVerdict",
+      "type": "string"
+    },
+    "EvaluatorDimension": {
+      "description": "Dimensions left to an independent evaluator or blind human review.",
+      "enum": [
+        "continuity_and_fact_conflict",
+        "unplanned_leak_or_fabrication",
+        "plan_following",
+        "literary_quality_degradation"
+      ],
+      "title": "EvaluatorDimension",
+      "type": "string"
+    },
+    "EvaluatorScore": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "dimension": {
+          "$ref": "#/$defs/EvaluatorDimension"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        },
+        "scheme": {
+          "$ref": "#/$defs/ContextScheme"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "source": {
+          "default": "scripted",
+          "enum": [
+            "scripted",
+            "human"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "scheme",
+        "dimension"
+      ],
+      "title": "EvaluatorScore",
+      "type": "object"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "FutureIsolationAttestation": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonical_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Canonical Source Ids",
+          "type": "array"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_only_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evaluator Only Source Ids",
+          "type": "array"
+        },
+        "overlap_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Overlap Source Ids",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "attestation_id",
+        "checkpoint_chapter",
+        "canonical_source_ids",
+        "evaluator_only_source_ids",
+        "passed",
+        "configuration_fingerprint"
+      ],
+      "title": "FutureIsolationAttestation",
+      "type": "object"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ReconciliationVerdict": {
+      "enum": [
+        "matched",
+        "declared_only",
+        "observed_only",
+        "mismatched"
+      ],
+      "title": "ReconciliationVerdict",
+      "type": "string"
+    },
+    "RuleAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/RuleCheckResult"
+          },
+          "title": "Checks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "checks"
+      ],
+      "title": "RuleAssessment",
+      "type": "object"
+    },
+    "RuleCheckKind": {
+      "description": "Deterministic, explainable rule checks over a candidate draft.",
+      "enum": [
+        "mandatory_constraint_present",
+        "plan_obligation_present",
+        "preserve_requirement_present",
+        "forbidden_reveal_absent",
+        "draft_length_in_policy",
+        "declared_hint_evidence_present"
+      ],
+      "title": "RuleCheckKind",
+      "type": "string"
+    },
+    "RuleCheckResult": {
+      "additionalProperties": false,
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "detail": {
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuleCheckKind"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "check_id",
+        "kind",
+        "passed",
+        "reference",
+        "detail"
+      ],
+      "title": "RuleCheckResult",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage2GateReport": {
+      "additionalProperties": false,
+      "properties": {
+        "blockers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checks": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "controller_promotion": {
+          "$ref": "#/$defs/ControllerPromotionDecision"
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "memory_gateway_frozen": {
+          "title": "Memory Gateway Frozen",
+          "type": "boolean"
+        },
+        "report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Stage2GateVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "evidence_id",
+        "verdict",
+        "checks",
+        "blockers",
+        "controller_promotion",
+        "memory_gateway_frozen",
+        "configuration_fingerprint"
+      ],
+      "title": "Stage2GateReport",
+      "type": "object"
+    },
+    "Stage2GateVerdict": {
+      "enum": [
+        "pass",
+        "conditional_pass",
+        "fail",
+        "incomplete"
+      ],
+      "title": "Stage2GateVerdict",
+      "type": "string"
+    },
+    "Stage3FailureCategory": {
+      "description": "Typed scheme status; a failed scheme is never replaced by another result.",
+      "enum": [
+        "input_not_ready",
+        "writer_failed",
+        "editor_failed",
+        "reconciliation_failed",
+        "evaluation_failed",
+        "completed"
+      ],
+      "title": "Stage3FailureCategory",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "WriterArtifactBasis": {
+      "additionalProperties": false,
+      "description": "Immutable lineage shared by every input and output of one Writer run.\n\n``configuration_fingerprint`` is specifically the canonical JSON fingerprint\nof the Writer AgentSpec, matching ``StructuredAgentRunner.prepare``.  The\nembedded future-isolation attestation retains its independent Memory and\ninformation-boundary configuration fingerprint; the two are intentionally\nnot required to match.",
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "context_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "context_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "context_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "future_isolation_attestation": {
+          "$ref": "#/$defs/FutureIsolationAttestation"
+        },
+        "memory_gate_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory_gate_report": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stage2GateReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model_configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "plan_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterSourceBinding"
+          },
+          "title": "Source Artifacts",
+          "type": "array"
+        },
+        "writing_contract_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "project_id",
+        "base_commit",
+        "snapshot_id",
+        "context_id",
+        "context_artifact",
+        "context_fingerprint",
+        "writing_contract_artifact",
+        "plan_artifact",
+        "project_profile_artifact",
+        "configuration_fingerprint",
+        "model_configuration_fingerprint",
+        "future_isolation_attestation"
+      ],
+      "title": "WriterArtifactBasis",
+      "type": "object"
+    },
+    "WriterExecutionMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_count": {
+          "minimum": 0,
+          "title": "Model Call Count",
+          "type": "integer"
+        },
+        "model_called": {
+          "title": "Model Called",
+          "type": "boolean"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model_called",
+        "model_call_count",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms"
+      ],
+      "title": "WriterExecutionMetrics",
+      "type": "object"
+    },
+    "WriterExecutionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "basis": {
+          "$ref": "#/$defs/WriterArtifactBasis"
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DraftArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "failure_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriterFailureCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "failure_detail": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Detail"
+        },
+        "fingerprints": {
+          "$ref": "#/$defs/WriterRuntimeFingerprints"
+        },
+        "invocation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "metrics": {
+          "$ref": "#/$defs/WriterExecutionMetrics"
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentExecutionReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "retry_safe": {
+          "title": "Retry Safe",
+          "type": "boolean"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "status": {
+          "$ref": "#/$defs/WriterTerminalStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "result_id",
+        "invocation_id",
+        "run_id",
+        "task_id",
+        "status",
+        "basis",
+        "fingerprints",
+        "metrics",
+        "retry_safe"
+      ],
+      "title": "WriterExecutionResult",
+      "type": "object"
+    },
+    "WriterFailureCode": {
+      "enum": [
+        "needs_context",
+        "contract_rejected",
+        "model_unavailable",
+        "model_output_rejected",
+        "budget_exhausted",
+        "artifact_write_failed",
+        "cancelled",
+        "fatal"
+      ],
+      "title": "WriterFailureCode",
+      "type": "string"
+    },
+    "WriterInputTaint": {
+      "description": "Input labels that are forbidden at the Writer information boundary.",
+      "enum": [
+        "future",
+        "evaluator",
+        "gold"
+      ],
+      "title": "WriterInputTaint",
+      "type": "string"
+    },
+    "WriterRuntimeFingerprints": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_spec_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "model_configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "skill_fingerprints": {
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "minItems": 1,
+          "title": "Skill Fingerprints",
+          "type": "array"
+        },
+        "tool_policy_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "agent_spec_fingerprint",
+        "prompt_fingerprint",
+        "skill_fingerprints",
+        "tool_policy_fingerprint",
+        "configuration_fingerprint",
+        "model_configuration_fingerprint"
+      ],
+      "title": "WriterRuntimeFingerprints",
+      "type": "object"
+    },
+    "WriterSourceBinding": {
+      "additionalProperties": false,
+      "description": "Bind a trusted source identity to its immutable artifact.",
+      "properties": {
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "taints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterInputTaint"
+          },
+          "title": "Taints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_artifact"
+      ],
+      "title": "WriterSourceBinding",
+      "type": "object"
+    },
+    "WriterTerminalStatus": {
+      "enum": [
+        "completed",
+        "needs_context",
+        "contract_rejected",
+        "model_unavailable",
+        "model_output_rejected",
+        "budget_exhausted",
+        "artifact_write_failed",
+        "cancelled",
+        "fatal"
+      ],
+      "title": "WriterTerminalStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Uniform per-scheme outcome; missing pieces are typed, never zeroed.",
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "draft": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DraftArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "editorial": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CollectedEditorialReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evaluator_scores": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvaluatorScore"
+      },
+      "title": "Evaluator Scores",
+      "type": "array"
+    },
+    "failure_detail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Detail"
+    },
+    "reconciliation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CollectedReconciliationResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rules": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuleAssessment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scheme": {
+      "$ref": "#/$defs/ContextScheme"
+    },
+    "status": {
+      "$ref": "#/$defs/Stage3FailureCategory"
+    },
+    "writer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WriterExecutionResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "case_id",
+    "scheme",
+    "status"
+  ],
+  "title": "Stage3SchemeResult",
+  "type": "object"
+}

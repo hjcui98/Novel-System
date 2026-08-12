@@ -17,9 +17,10 @@ from novel_agent.domain.model_calls import (
     ModelUsage,
     ProviderModelResult,
 )
+from novel_agent.ports.model_endpoint import ModelEndpointError
 
 
-class OpenAIChatEndpointError(RuntimeError):
+class OpenAIChatEndpointError(ModelEndpointError):
     """Transport failure with safe provider telemetry when a response exists."""
 
     def __init__(

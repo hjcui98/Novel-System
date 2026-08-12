@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "LookaheadRevalidationOutcome": {
+      "enum": [
+        "promoted",
+        "replan_required",
+        "superseded"
+      ],
+      "title": "LookaheadRevalidationOutcome",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "affects_future_plan": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Affects Future Plan"
+    },
+    "current_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "current_snapshot": {
+      "$ref": "#/$defs/StableId"
+    },
+    "horizon_end": {
+      "title": "Horizon End",
+      "type": "integer"
+    },
+    "horizon_start": {
+      "title": "Horizon Start",
+      "type": "integer"
+    },
+    "lookahead_task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "original_basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "outcome": {
+      "$ref": "#/$defs/LookaheadRevalidationOutcome"
+    },
+    "protected_chapter_index": {
+      "title": "Protected Chapter Index",
+      "type": "integer"
+    },
+    "reason": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "run_id",
+    "lookahead_task_id",
+    "original_basis_commit",
+    "current_commit",
+    "current_snapshot",
+    "protected_chapter_index",
+    "horizon_start",
+    "horizon_end",
+    "outcome",
+    "reason"
+  ],
+  "title": "LookaheadRevalidationReceipt",
+  "type": "object"
+}

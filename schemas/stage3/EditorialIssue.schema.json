@@ -1,0 +1,144 @@
+{
+  "$defs": {
+    "EditorialIssueType": {
+      "enum": [
+        "constraint_violation",
+        "continuity",
+        "pov",
+        "disclosure",
+        "plan",
+        "style",
+        "context_gap",
+        "unsupported_change",
+        "structure"
+      ],
+      "title": "EditorialIssueType",
+      "type": "string"
+    },
+    "EditorialLocation": {
+      "additionalProperties": false,
+      "description": "A review issue location; offsets are trusted only after service resolution.",
+      "properties": {
+        "block_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "evidence_quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Quote"
+        },
+        "occurrence": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        }
+      },
+      "title": "EditorialLocation",
+      "type": "object"
+    },
+    "EditorialSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "EditorialSeverity",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "issue_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "issue_type": {
+      "$ref": "#/$defs/EditorialIssueType"
+    },
+    "location": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EditorialLocation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repairable": {
+      "default": false,
+      "title": "Repairable",
+      "type": "boolean"
+    },
+    "severity": {
+      "$ref": "#/$defs/EditorialSeverity"
+    },
+    "structural": {
+      "default": false,
+      "title": "Structural",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "issue_id",
+    "issue_type",
+    "severity",
+    "description"
+  ],
+  "title": "EditorialIssue",
+  "type": "object"
+}

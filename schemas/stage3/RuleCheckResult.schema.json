@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "RuleCheckKind": {
+      "description": "Deterministic, explainable rule checks over a candidate draft.",
+      "enum": [
+        "mandatory_constraint_present",
+        "plan_obligation_present",
+        "preserve_requirement_present",
+        "forbidden_reveal_absent",
+        "draft_length_in_policy",
+        "declared_hint_evidence_present"
+      ],
+      "title": "RuleCheckKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "check_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "detail": {
+      "minLength": 1,
+      "title": "Detail",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/RuleCheckKind"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "reference": {
+      "minLength": 1,
+      "title": "Reference",
+      "type": "string"
+    }
+  },
+  "required": [
+    "check_id",
+    "kind",
+    "passed",
+    "reference",
+    "detail"
+  ],
+  "title": "RuleCheckResult",
+  "type": "object"
+}

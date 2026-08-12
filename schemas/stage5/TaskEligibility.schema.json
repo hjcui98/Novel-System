@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "TaskStatus": {
+      "enum": [
+        "pending",
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_retry",
+        "recovery_pending",
+        "blocked",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "eligible": {
+      "title": "Eligible",
+      "type": "boolean"
+    },
+    "reason_code": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/TaskStatus"
+    }
+  },
+  "required": [
+    "eligible",
+    "status",
+    "reason_code"
+  ],
+  "title": "TaskEligibility",
+  "type": "object"
+}

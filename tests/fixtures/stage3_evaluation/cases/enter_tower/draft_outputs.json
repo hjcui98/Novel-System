@@ -1,0 +1,92 @@
+{
+  "recent_prose": {
+    "declared_memory_hints": [
+      {
+        "change_kind": "CHANGE",
+        "confidence": 0.9,
+        "evidence_quote": "石门向里退开",
+        "predicate_hint": "open_state",
+        "subject_hint": "北塔石门",
+        "value_hint": "opened"
+      },
+      {
+        "change_kind": "CHANGE",
+        "confidence": 0.5,
+        "evidence_quote": "石门缓缓关闭",
+        "predicate_hint": "close_state",
+        "subject_hint": "北塔石门",
+        "value_hint": "closed"
+      }
+    ],
+    "draft_text": "暮色四合，北塔的石门立在阴影里。林澈看了一眼门上的旧锁，没有等待月影，直接用左臂顶住石门，门板纹丝不动。他退后两步，摸出腰间的铜镜，让月光照在锁孔上。片刻后，门内传来机括声，石门向里退开。林澈大步跨过门槛，心想北塔顶层的秘密恐怕要到更高处才能窥见。塔内烛火自行亮起，沿着走廊一一点燃。",
+    "self_observations": [
+      "已经打开石门。"
+    ],
+    "unresolved_questions": [
+      "门内的守卫状态尚未确认。"
+    ]
+  },
+  "simple_retrieval": {
+    "declared_memory_hints": [
+      {
+        "change_kind": "CHANGE",
+        "confidence": 0.93,
+        "evidence_quote": "石门向里退开",
+        "predicate_hint": "open_state",
+        "subject_hint": "北塔石门",
+        "value_hint": "opened"
+      },
+      {
+        "change_kind": "UNCERTAIN",
+        "confidence": 0.7,
+        "evidence_quote": "侧身跨过门槛",
+        "predicate_hint": "location",
+        "subject_hint": "林澈",
+        "value_hint": "北塔入口内侧"
+      }
+    ],
+    "draft_text": "林澈站在北塔石门前，没有立刻伸手。他记得检索到的两条事实：石门只会在月影抵达门槛时开启，左臂有伤不能强行推门。他退后半步，看着门槛上的浅槽一点一点被月影填满，机括声随即响起，石门向里退开。他先观察后行动，等门缝稳定，才侧身跨过门槛。铜镜仍挂在腰间，没有派上用场。",
+    "self_observations": [
+      "没有用左臂推门。"
+    ],
+    "unresolved_questions": [
+      "进入北塔后的路线尚未由上下文给出。"
+    ]
+  },
+  "writer_context_package": {
+    "declared_memory_hints": [
+      {
+        "change_kind": "CHANGE",
+        "confidence": 0.91,
+        "evidence_quote": "石门向里退开",
+        "predicate_hint": "open_state",
+        "subject_hint": "北塔石门",
+        "value_hint": "opened"
+      },
+      {
+        "change_kind": "UNCERTAIN",
+        "confidence": 0.72,
+        "evidence_quote": "跨过门槛",
+        "predicate_hint": "location",
+        "subject_hint": "林澈",
+        "value_hint": "北塔入口内侧"
+      },
+      {
+        "change_kind": "UNCERTAIN",
+        "confidence": 0.8,
+        "evidence_quote": "银白的反光越过缺口",
+        "predicate_hint": "light_path",
+        "subject_hint": "铜镜",
+        "value_hint": "redirected"
+      }
+    ],
+    "draft_text": "暮色沿青石坡缓缓沉下，林澈停在北塔石门前，没有立刻伸手。他的左臂有伤，被布带紧紧束着，不能强行推门。他退后半步，看见门槛上一道浅槽正被逐渐拉长的月影填满，旧刻痕在冷光里显出完整的一句：石门只会在月影抵达门槛时开启。可云层移动太快，月影偏在最后一寸之外。他取下腰间铜镜，用右手抵住镜背，慢慢调整角度，银白的反光越过缺口，恰好补进浅槽。门内传来低沉的机括声，石门向里退开。这不失为一个不靠蛮力的入塔方法。他先观察后行动，等门缝稳定，才跨过门槛；塔内的黑暗仍未交代它守着什么。",
+    "self_observations": [
+      "已保留左臂伤势限制。",
+      "未揭示北塔顶层秘密。"
+    ],
+    "unresolved_questions": [
+      "塔内的守卫状态尚未由冻结上下文给出。"
+    ]
+  }
+}

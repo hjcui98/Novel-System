@@ -1,5 +1,63 @@
 # OpenCode implementation and evidence
 
+- State: `STAGE345_INTEGRATION_CANDIDATE_READY`（2026-08-12；Codex 直接实现）
+
+## 33. Stage 3/4/5 整合与单卡两路有界并发（2026-08-12）
+
+本轮按用户授权由 Codex 直接实现，不采用 Codex–OpenCode 交接流程。设计先写入现有总架构、技术选型、
+Stage 3/4/5 执行文档与 `.agent/plan.md`，再进入代码整合。
+
+### 33.1 集成来源与冲突决策
+
+- 冻结 Stage 2：`408a46f`；Stage 3 Writer Context Loop：`bab4451`；Stage 4 Planner Context
+  Loop：`0dcf17a`；Stage 5 A 层本地基线：`7af3818`。
+- 保留 Stage 2 最终 `GraphPathReceipt`、Memory Gateway、evidence-first、R1、检索路由和全部
+  `schemas/stage2`；Stage 4 不再带回旧 `TypedGraphPathReceipt` 或旧 relation/causal 路由。
+- 共享 `AgentContextView` 采用单一 Stage 3 owner，并加入 Planner consumer；Writer 的完整 accepted
+  basis、writer-safe scope、compaction/replay 约束继续 fail closed。
+- `PlanningTask`/`PlannerProposalDraft` 只登记已经存在的 `CHAPTER_SET` 模式；`PlanProposal` lineage 与
+  `NeedValidator.goal_bindings` 均为默认不生效的 Stage 4 可选扩展，Stage 2 原调用行为不变。
+
+### 33.2 实现结果
+
+- 新增 `Stage4PlanningLeafAdapter`：只通过 Stage 4 公共 `PlanningContextLoopService` request/result
+  边界接入 Stage 5，核对 project/run/task/commit/snapshot 与 author-intent 绑定；accepted independent
+  review、Planner Context、Memory 和事件 artifact 保持在 candidate lineage 中。
+- Stage 5 manifest 将 Stage 4 状态改为 `INTEGRATED`、`real_stage4_adapter=true`。开发期不再反复读取
+  源码并做 fingerprint/hash 比对；历史 fingerprint 字段只保留 provenance，不参与 admission。
+- `RuntimeTaskQueryRepository.ready_batch()` 提供稳定 ready batch；`CreativeDispatcher` 只允许
+  `parallelism=1|2`，并用 `asyncio.gather(return_exceptions=True)` 保证一个 sibling 失败不会取消另一个
+  已独立启动的 Attempt。
+- 同项目并发只允许当前 `DRAFT_CANDIDATE` 与明确标记的 `LOOKAHEAD PLAN_CANDIDATE`，且两者 basis
+  相同；Commit、Projection/Freshness 和其他任务继续单路串行。
+- `CreativeRunPolicy` 增加 `runtime_parallelism`、`enable_planner_lookahead`、`lookahead_horizon`。
+  初始 Plan exact Freshness 后可同时创建当前 Draft 和下一窗口 lookahead。
+- lookahead 永远不能直接 manual/auto accept。当前 Draft Commit + exact Freshness 后：无未来 Plan
+  影响则产生版本化 revalidation receipt 并晋升到当前 commit；有影响则 supersede 并创建 Stage 4
+  replan；缺少影响信息则 fail closed 地 supersede 并重规划。所有 acceptance/Commit 仍串行。
+- 移除 Stage 5 schema hash golden 清单；Stage 3/4/5 schema 只做一次 typed export，Stage 2 schema
+  保持 `408a46f` 原样。
+
+### 33.3 本轮验证
+
+- 开发前最小冒烟：14 passed。
+- 一次集中确定性测试：220 passed、9 failed；9 项均为合并契约对齐（`CHAPTER_SET` 合法模式、冻结
+  Stage 2 relation/causal 路由测试期待、manifest active flag），修复后只定向复查：9 passed。
+- 覆盖内容包括 Stage 2 Memory Gateway/evidence-first/model admission、Stage 3 contract/Context/Writer
+  loop、Stage 4 contract/loop/schema、Stage 5 domain/CLI/runtime/integration/真实 Stage 3 adapter E2E、
+  两路 overlap 与 lookahead promotion。
+- 变更文件 Ruff 通过；11 个变更生产模块 strict MyPy 通过；`git diff --check` 在提交前执行。
+- 未进行源码哈希验证，未反复重跑已通过的 220 项。
+- 8002 端口的进程所有权在沙箱内无法可靠判定，因此没有发送 API 请求、没有重启或改配置；真实
+  Stage 3/4/5 模型 Gate 记为 `DEFERRED_ENDPOINT_OWNERSHIP_AMBIGUOUS`。
+
+### 33.4 尚未宣称
+
+- 本轮不是 Stage 3 三方案语义 Gate、Stage 4 七模式语义 Gate 或 Stage 5 多章真实模型产品 Gate；
+- production trusted PlanRoot/TextRoot materializer 的真实产品装配仍需下一轮以现有 Commit/validation
+  owner 为基础完成，隔离 CLI 仍使用显式 fixture materializer；
+- multi-worker lease、4/6/8 并发、Hook、Temporal、Skill evolution 均未实现，也没有必要在本轮加入。
+
 - State: `STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`
   （§26.5：Round 1/2 Evidence-First 与 Round 3 World/KG/R1/L1/L2 已在同一冻结五点、同一 P005
   repair basis 上完成真实 API/real-hybrid 联合验收；全量质量门与 pre-commit 通过）

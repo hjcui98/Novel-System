@@ -1,0 +1,68 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "context_safety_allowance_tokens": {
+      "minimum": 0,
+      "title": "Context Safety Allowance Tokens",
+      "type": "integer"
+    },
+    "context_sequence_limit": {
+      "minimum": 1,
+      "title": "Context Sequence Limit",
+      "type": "integer"
+    },
+    "context_soft_limit_tokens": {
+      "minimum": 1,
+      "title": "Context Soft Limit Tokens",
+      "type": "integer"
+    },
+    "max_local_repairs": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Max Local Repairs",
+      "type": "integer"
+    },
+    "max_major_rewrites": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Max Major Rewrites",
+      "type": "integer"
+    },
+    "max_memory_questions": {
+      "default": 3,
+      "maximum": 8,
+      "minimum": 1,
+      "title": "Max Memory Questions",
+      "type": "integer"
+    },
+    "max_reactive_memory_rounds": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Max Reactive Memory Rounds",
+      "type": "integer"
+    },
+    "max_writer_turns": {
+      "default": 2,
+      "maximum": 2,
+      "minimum": 1,
+      "title": "Max Writer Turns",
+      "type": "integer"
+    },
+    "reserved_output_tokens": {
+      "minimum": 0,
+      "title": "Reserved Output Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "context_sequence_limit",
+    "reserved_output_tokens",
+    "context_safety_allowance_tokens",
+    "context_soft_limit_tokens"
+  ],
+  "title": "WritingLoopBudgets",
+  "type": "object"
+}

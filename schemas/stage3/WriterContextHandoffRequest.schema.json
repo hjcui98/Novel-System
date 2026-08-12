@@ -1,0 +1,1878 @@
+{
+  "$defs": {
+    "AgentExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "prompt_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillExecutionReceipt"
+          },
+          "title": "Skill Receipts",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "agent_spec",
+        "agent_type",
+        "agent_mode",
+        "prompt_fingerprint",
+        "configuration_fingerprint",
+        "status",
+        "started_at",
+        "completed_at",
+        "latency_ms"
+      ],
+      "title": "AgentExecutionReceipt",
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "AgentType": {
+      "enum": [
+        "planner",
+        "memory_curator",
+        "memory_controller",
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
+      ],
+      "title": "AgentType",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
+      "type": "object"
+    },
+    "CanonicalAliasReceipt": {
+      "additionalProperties": false,
+      "description": "Predicate-scoped proof that a versioned registry equates two raw values.",
+      "properties": {
+        "canonical_value_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonicalizer_version": {
+          "minLength": 1,
+          "title": "Canonicalizer Version",
+          "type": "string"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "raw_values": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Raw Values",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "registry_version": {
+          "minLength": 1,
+          "title": "Registry Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "registry_version",
+        "predicate",
+        "raw_values",
+        "canonical_value_id",
+        "canonicalizer_version"
+      ],
+      "title": "CanonicalAliasReceipt",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextAssemblyStatus": {
+      "enum": [
+        "READY",
+        "NEEDS_REDUCTION",
+        "CONTEXT_BUDGET_INSUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "POLICY_BLOCKED"
+      ],
+      "title": "ContextAssemblyStatus",
+      "type": "string"
+    },
+    "ContextGap": {
+      "additionalProperties": false,
+      "properties": {
+        "conflict": {
+          "default": false,
+          "title": "Conflict",
+          "type": "boolean"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gap_id",
+        "description"
+      ],
+      "title": "ContextGap",
+      "type": "object"
+    },
+    "ContextLineage": {
+      "additionalProperties": false,
+      "properties": {
+        "assembler_version": {
+          "minLength": 1,
+          "title": "Assembler Version",
+          "type": "string"
+        },
+        "canonical_alias_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Canonical Alias Receipt Refs",
+          "type": "array"
+        },
+        "canonical_alias_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CanonicalAliasReceipt"
+          },
+          "title": "Canonical Alias Receipts",
+          "type": "array"
+        },
+        "context_assembly_spec_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "normalized_unit_count": {
+          "minimum": 0,
+          "title": "Normalized Unit Count",
+          "type": "integer"
+        },
+        "retrieval_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "selected_claim_variant_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Claim Variant Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "assembler_version",
+        "normalized_unit_count"
+      ],
+      "title": "ContextLineage",
+      "type": "object"
+    },
+    "ContinuationBoundary": {
+      "additionalProperties": false,
+      "properties": {
+        "frozen_prefix_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "frozen_prefix_characters": {
+          "minimum": 1,
+          "title": "Frozen Prefix Characters",
+          "type": "integer"
+        },
+        "parent_draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "parent_draft_id",
+        "frozen_prefix_artifact",
+        "frozen_prefix_characters"
+      ],
+      "title": "ContinuationBoundary",
+      "type": "object"
+    },
+    "ContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "ContractRef",
+      "type": "object"
+    },
+    "ControllerPromotionDecision": {
+      "enum": [
+        "accept_bounded_default",
+        "freeze_deterministic_gateway",
+        "reject_architecture",
+        "defer"
+      ],
+      "title": "ControllerPromotionDecision",
+      "type": "string"
+    },
+    "DraftArtifact": {
+      "additionalProperties": false,
+      "description": "Content-addressed Writer candidate; never a canonical TextRoot.",
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/WriterArtifactBasis"
+        },
+        "candidate_only": {
+          "const": true,
+          "default": true,
+          "title": "Candidate Only",
+          "type": "boolean"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "model_call_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Model Call Ids",
+          "type": "array"
+        },
+        "model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_draft_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "raw_output_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "sidecar_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "text_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "writer_receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        }
+      },
+      "required": [
+        "draft_id",
+        "mode",
+        "basis",
+        "text_artifact",
+        "sidecar_artifact",
+        "raw_output_artifact",
+        "writer_receipt",
+        "model_call_ids",
+        "created_at"
+      ],
+      "title": "DraftArtifact",
+      "type": "object"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "suspended",
+        "rejected"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "FutureIsolationAttestation": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "canonical_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Canonical Source Ids",
+          "type": "array"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluator_only_source_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evaluator Only Source Ids",
+          "type": "array"
+        },
+        "overlap_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Overlap Source Ids",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "attestation_id",
+        "checkpoint_chapter",
+        "canonical_source_ids",
+        "evaluator_only_source_ids",
+        "passed",
+        "configuration_fingerprint"
+      ],
+      "title": "FutureIsolationAttestation",
+      "type": "object"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RewriteDirective": {
+      "additionalProperties": false,
+      "properties": {
+        "directive_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "directive_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "instructions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instructions",
+          "type": "array"
+        },
+        "parent_draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        },
+        "scope": {
+          "$ref": "#/$defs/RewriteScope"
+        }
+      },
+      "required": [
+        "directive_id",
+        "parent_draft_id",
+        "scope",
+        "directive_artifact",
+        "instructions"
+      ],
+      "title": "RewriteDirective",
+      "type": "object"
+    },
+    "RewriteScope": {
+      "enum": [
+        "major_rewrite",
+        "local_repair"
+      ],
+      "title": "RewriteScope",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "SkillContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "content_hash"
+      ],
+      "title": "SkillContractRef",
+      "type": "object"
+    },
+    "SkillExecutionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "base_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Checkpoints",
+          "type": "array"
+        },
+        "context_manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "escalations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Escalations",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillContractRef"
+        },
+        "skipped_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped Checkpoints",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tool_call_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Tool Call Ids",
+          "type": "array"
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "skill",
+        "agent_type",
+        "agent_mode",
+        "status",
+        "latency_ms"
+      ],
+      "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "Stage2GateReport": {
+      "additionalProperties": false,
+      "properties": {
+        "blockers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checks": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "controller_promotion": {
+          "$ref": "#/$defs/ControllerPromotionDecision"
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "memory_gateway_frozen": {
+          "title": "Memory Gateway Frozen",
+          "type": "boolean"
+        },
+        "report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Stage2GateVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "evidence_id",
+        "verdict",
+        "checks",
+        "blockers",
+        "controller_promotion",
+        "memory_gateway_frozen",
+        "configuration_fingerprint"
+      ],
+      "title": "Stage2GateReport",
+      "type": "object"
+    },
+    "Stage2GateVerdict": {
+      "enum": [
+        "pass",
+        "conditional_pass",
+        "fail",
+        "incomplete"
+      ],
+      "title": "Stage2GateVerdict",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "WriterArtifactBasis": {
+      "additionalProperties": false,
+      "description": "Immutable lineage shared by every input and output of one Writer run.\n\n``configuration_fingerprint`` is specifically the canonical JSON fingerprint\nof the Writer AgentSpec, matching ``StructuredAgentRunner.prepare``.  The\nembedded future-isolation attestation retains its independent Memory and\ninformation-boundary configuration fingerprint; the two are intentionally\nnot required to match.",
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "context_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "context_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "context_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "future_isolation_attestation": {
+          "$ref": "#/$defs/FutureIsolationAttestation"
+        },
+        "memory_gate_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory_gate_report": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stage2GateReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model_configuration_fingerprint": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "plan_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterSourceBinding"
+          },
+          "title": "Source Artifacts",
+          "type": "array"
+        },
+        "writing_contract_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "project_id",
+        "base_commit",
+        "snapshot_id",
+        "context_id",
+        "context_artifact",
+        "context_fingerprint",
+        "writing_contract_artifact",
+        "plan_artifact",
+        "project_profile_artifact",
+        "configuration_fingerprint",
+        "model_configuration_fingerprint",
+        "future_isolation_attestation"
+      ],
+      "title": "WriterArtifactBasis",
+      "type": "object"
+    },
+    "WriterBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "input_token_limit": {
+          "minimum": 1,
+          "title": "Input Token Limit",
+          "type": "integer"
+        },
+        "max_model_calls": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Max Model Calls",
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "default": 0,
+          "maximum": 0,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "output_token_limit": {
+          "minimum": 1,
+          "title": "Output Token Limit",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 600.0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "input_token_limit",
+        "output_token_limit"
+      ],
+      "title": "WriterBudget",
+      "type": "object"
+    },
+    "WriterContextBudgetReport": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_rendered_writer_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Writer Tokens",
+          "type": "integer"
+        },
+        "configured_writer_token_budget": {
+          "minimum": 1,
+          "title": "Configured Writer Token Budget",
+          "type": "integer"
+        },
+        "deduplicated_item_count": {
+          "minimum": 0,
+          "title": "Deduplicated Item Count",
+          "type": "integer"
+        },
+        "dropped_optional_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dropped Optional Ids",
+          "type": "array"
+        },
+        "dropped_optional_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Dropped Optional Reasons",
+          "type": "object"
+        },
+        "evidence_ledger_tokens": {
+          "minimum": 0,
+          "title": "Evidence Ledger Tokens",
+          "type": "integer"
+        },
+        "final_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "header_citation_gap_tokens": {
+          "minimum": 0,
+          "title": "Header Citation Gap Tokens",
+          "type": "integer"
+        },
+        "mandatory_conclusion_tokens": {
+          "minimum": 0,
+          "title": "Mandatory Conclusion Tokens",
+          "type": "integer"
+        },
+        "optional_conclusion_tokens": {
+          "minimum": 0,
+          "title": "Optional Conclusion Tokens",
+          "type": "integer"
+        },
+        "reduction_rounds": {
+          "minimum": 0,
+          "title": "Reduction Rounds",
+          "type": "integer"
+        },
+        "superseded_item_count": {
+          "minimum": 0,
+          "title": "Superseded Item Count",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "minLength": 1,
+          "title": "Tokenizer",
+          "type": "string"
+        },
+        "tokenizer_version": {
+          "minLength": 1,
+          "title": "Tokenizer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenizer",
+        "tokenizer_version",
+        "configured_writer_token_budget",
+        "actual_rendered_writer_tokens",
+        "evidence_ledger_tokens",
+        "mandatory_conclusion_tokens",
+        "optional_conclusion_tokens",
+        "header_citation_gap_tokens",
+        "deduplicated_item_count",
+        "superseded_item_count",
+        "reduction_rounds",
+        "final_status"
+      ],
+      "title": "WriterContextBudgetReport",
+      "type": "object"
+    },
+    "WriterContextItem": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "claim_variant_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "context_item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_ledger_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evidence Ledger Ids",
+          "type": "array"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "retrieval_unit_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Retrieval Unit Ids",
+          "type": "array"
+        },
+        "section": {
+          "$ref": "#/$defs/WriterContextSection"
+        },
+        "supersedes_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supersedes Item Ids",
+          "type": "array"
+        },
+        "support_group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "validity": {
+          "$ref": "#/$defs/WriterContextValidity"
+        }
+      },
+      "required": [
+        "context_item_id",
+        "section",
+        "claim",
+        "validity",
+        "mandatory",
+        "confidence",
+        "need_ids",
+        "retrieval_unit_ids",
+        "evidence_ledger_ids"
+      ],
+      "title": "WriterContextItem",
+      "type": "object"
+    },
+    "WriterContextPackage": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Arm",
+          "type": "string"
+        },
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "budget_report": {
+          "$ref": "#/$defs/WriterContextBudgetReport"
+        },
+        "causal_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Causal History",
+          "type": "array"
+        },
+        "continuity_constraints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Continuity Constraints",
+          "type": "array"
+        },
+        "contract_version": {
+          "minLength": 1,
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "current_world_state": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Current World State",
+          "type": "array"
+        },
+        "evidence_ledger_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "gaps": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContextGap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "knowledge_and_disclosure": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Knowledge And Disclosure",
+          "type": "array"
+        },
+        "lineage": {
+          "$ref": "#/$defs/ContextLineage"
+        },
+        "long_range_callbacks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Long Range Callbacks",
+          "type": "array"
+        },
+        "plan_and_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Plan And Obligations",
+          "type": "array"
+        },
+        "relationship_and_emotion": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterContextItem"
+          },
+          "title": "Relationship And Emotion",
+          "type": "array"
+        },
+        "rendered_context": {
+          "title": "Rendered Context",
+          "type": "string"
+        },
+        "task_contract": {
+          "$ref": "#/$defs/BenchmarkTaskContract"
+        }
+      },
+      "required": [
+        "contract_version",
+        "task_contract",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "arm",
+        "budget_report",
+        "evidence_ledger_ref",
+        "lineage",
+        "rendered_context"
+      ],
+      "title": "WriterContextPackage",
+      "type": "object"
+    },
+    "WriterContextSection": {
+      "enum": [
+        "continuity_constraints",
+        "current_world_state",
+        "relationship_and_emotion",
+        "causal_history",
+        "knowledge_and_disclosure",
+        "plan_and_obligations",
+        "long_range_callbacks"
+      ],
+      "title": "WriterContextSection",
+      "type": "string"
+    },
+    "WriterContextValidity": {
+      "enum": [
+        "current",
+        "historical",
+        "planned",
+        "uncertain"
+      ],
+      "title": "WriterContextValidity",
+      "type": "string"
+    },
+    "WriterInputTaint": {
+      "description": "Input labels that are forbidden at the Writer information boundary.",
+      "enum": [
+        "future",
+        "evaluator",
+        "gold"
+      ],
+      "title": "WriterInputTaint",
+      "type": "string"
+    },
+    "WriterSourceBinding": {
+      "additionalProperties": false,
+      "description": "Bind a trusted source identity to its immutable artifact.",
+      "properties": {
+        "source_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "taints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterInputTaint"
+          },
+          "title": "Taints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_artifact"
+      ],
+      "title": "WriterSourceBinding",
+      "type": "object"
+    },
+    "WritingLengthPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_characters": {
+          "minimum": 1,
+          "title": "Maximum Characters",
+          "type": "integer"
+        },
+        "minimum_characters": {
+          "minimum": 1,
+          "title": "Minimum Characters",
+          "type": "integer"
+        },
+        "target_characters": {
+          "minimum": 1,
+          "title": "Target Characters",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_characters",
+        "target_characters",
+        "maximum_characters"
+      ],
+      "title": "WritingLengthPolicy",
+      "type": "object"
+    },
+    "WritingTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "active_plan_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Active Plan Obligations",
+          "type": "array"
+        },
+        "blocking_gaps": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Blocking Gaps",
+          "type": "array"
+        },
+        "chapter_goal": {
+          "minLength": 1,
+          "title": "Chapter Goal",
+          "type": "string"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "forbidden_reveals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Forbidden Reveals",
+          "type": "array"
+        },
+        "length_policy": {
+          "$ref": "#/$defs/WritingLengthPolicy"
+        },
+        "mandatory_constraints": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Mandatory Constraints",
+          "type": "array"
+        },
+        "narrative_person": {
+          "minLength": 1,
+          "title": "Narrative Person",
+          "type": "string"
+        },
+        "pov": {
+          "minLength": 1,
+          "title": "Pov",
+          "type": "string"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        },
+        "required_beats": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Required Beats",
+          "type": "array"
+        },
+        "scene_goals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Scene Goals",
+          "type": "array"
+        },
+        "style_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Style Requirements",
+          "type": "array"
+        },
+        "target_chapter": {
+          "minimum": 1,
+          "title": "Target Chapter",
+          "type": "integer"
+        },
+        "target_scenes": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Target Scenes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract_id",
+        "target_chapter",
+        "target_scenes",
+        "pov",
+        "narrative_person",
+        "chapter_goal",
+        "length_policy"
+      ],
+      "title": "WritingTaskContract",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Formal Stage 3 handoff from the writer-facing Memory product.\n\nThe request deliberately carries the Stage 2M ``WriterContextPackage`` rather than the\nlegacy ``Stage1ContextPackage``. Artifact materialization, snapshot conversion, and all\nreadiness checks are owned by the handoff adapter; this contract only describes the trusted\ninputs and the requested Writer mode.",
+  "properties": {
+    "budget": {
+      "$ref": "#/$defs/WriterBudget"
+    },
+    "context_package": {
+      "$ref": "#/$defs/WriterContextPackage"
+    },
+    "continuation_boundary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContinuationBoundary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "future_isolation_attestation": {
+      "$ref": "#/$defs/FutureIsolationAttestation"
+    },
+    "integration_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "memory_gate_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "memory_gate_report": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Stage2GateReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "mode": {
+      "$ref": "#/$defs/AgentMode",
+      "default": "draft"
+    },
+    "model_configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "plan_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "prior_draft": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DraftArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "project_profile_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "rewrite_directive": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RewriteDirective"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "source_artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WriterSourceBinding"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "writer_configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "writing_task": {
+      "$ref": "#/$defs/WritingTaskContract"
+    }
+  },
+  "required": [
+    "integration_id",
+    "run_id",
+    "task_id",
+    "project_id",
+    "context_package",
+    "writing_task",
+    "plan_artifact",
+    "project_profile_artifact",
+    "future_isolation_attestation",
+    "writer_configuration_fingerprint",
+    "model_configuration_fingerprint",
+    "budget"
+  ],
+  "title": "WriterContextHandoffRequest",
+  "type": "object"
+}

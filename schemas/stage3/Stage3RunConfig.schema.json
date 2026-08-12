@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "case_directory": {
+      "minLength": 1,
+      "title": "Case Directory",
+      "type": "string"
+    },
+    "command": {
+      "minLength": 1,
+      "title": "Command",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "generation_parameters": {
+      "additionalProperties": true,
+      "title": "Generation Parameters",
+      "type": "object"
+    },
+    "git_commit": {
+      "minLength": 1,
+      "title": "Git Commit",
+      "type": "string"
+    },
+    "git_dirty": {
+      "title": "Git Dirty",
+      "type": "boolean"
+    },
+    "output_directory": {
+      "minLength": 1,
+      "title": "Output Directory",
+      "type": "string"
+    },
+    "writer_model": {
+      "minLength": 1,
+      "title": "Writer Model",
+      "type": "string"
+    }
+  },
+  "required": [
+    "git_commit",
+    "git_dirty",
+    "writer_model",
+    "command",
+    "created_at",
+    "case_directory",
+    "output_directory"
+  ],
+  "title": "Stage3RunConfig",
+  "type": "object"
+}
