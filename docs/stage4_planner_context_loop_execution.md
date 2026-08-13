@@ -2,9 +2,9 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 执行状态：`IMPLEMENTATION_ACTIVE_IN_ISOLATED_BRANCH / FINAL_GATE_PENDING`
+> 执行状态：`ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING`
 >
-> 更新日期：2026-08-10
+> 更新日期：2026-08-13
 >
 > 阶段：Stage 4 — Planner Agent and Planning Context Loop
 >
@@ -21,6 +21,11 @@
 
 > 当前实现证据：`codex/stage4-planner-context-loop`；`2d76c3c` 已形成 Planner Context Loop
 > candidate，`88e1027` 已接共享 Context Runtime。全量质量、真实规划评价和独立 Gate 尚待完成。
+
+> Stage 5 production handoff：`ProductionStage4InvocationFactory` 已把 Stage 5 durable task 的 author-intent
+> refs、current roots、exact snapshot 和 rolling horizon 投影成正式 `CHAPTER_SET` request；CLI/纵向 runner
+> 只经显式 production assembly 调用 `Stage4PlanningLeafAdapter`。20→25 focused evidence 已确认请求覆盖
+> 21～25；真实 Planner 语义运行仍待 endpoint 空闲。
 
 ## 1. 本阶段的完成定义
 
@@ -279,8 +284,9 @@ bounded revision instruction
 - Reviewer 使用自己的 AgentSpec、Prompt、Skill、receipt；
 - 输入是原始 author/current-state refs + 被审对象，不读取 Planner chain-of-thought；
 - Reviewer 没有 Memory write/PlanRoot/Commit Tool；
-- inquiry 最多一次 reviewer-directed revision；
-- final Plan 最多一次 reviewer-directed revision并重审；
+- inquiry 与 final Plan 的 reviewer-directed revision 使用每次 invocation 的有界 work slice，默认一次；
+- slice 用完时保存 checkpoint 并 `YIELDED`，后续 invocation 可在有进展时续跑；相同内容/issue 无进展时
+  进入 review，而不是靠扩大次数循环；
 - 第二次仍非 ACCEPT 或涉及重大作者取舍时 `HUMAN_REQUIRED/REVIEW_REQUIRED`。
 
 同一底层模型可以用于开发，但 Agent/Prompt/context 必须独立；正式评价再使用独立 evaluator 或盲审。
@@ -354,7 +360,31 @@ context use declarations
 
 Reviewer 发现新的必要 Memory gap 时，由服务生成 reviewer-bound request，再通过同一 Need generator；
 Reviewer 不直接调用 retrieval。第一版每个 planning loop 只允许有限的 inquiry Memory 和一次 plan-review
-补充 Memory；重复 fingerprint、无新信息或预算耗尽进入 typed terminal。
+补充 Memory；重复 fingerprint、无新信息进入 typed review terminal。Memory work allowance 用完进入
+`BUDGET_REVIEW`，只有显式增加 Planner Memory tranche 后才能从 checkpoint 续跑；Task retry tranche
+不等同于 retrieval rounds/tool calls/token/time budget。
+
+### 5.7 2026-08-13 自主 Planner loop 收尾决定
+
+当前 production loop 已有 inquiry Memory、reviewer-bound Memory、phase checkpoint、每 invocation revision
+slice、`YIELDED` 续跑、no-progress guard、独立 Planner-Memory tranche、rolling Plan projection 和 Planner
+Context soft target。本轮把三个未闭合点纳入同一 owner，不修改 Stage 2：
+
+1. `PlannerAgent.run_turn()` 的正式输出为 `PlanningTurnOutput`。`PLAN_READY` 继续物化既有
+   `PlannerExecutionResult`；`REQUEST_MEMORY` 只能携带问题，服务把问题绑定到当前 accepted inquiry goal，经过
+   同一个 inquiry review/Need generator/Memory Gateway/ContextDelta 路径后再次调用 Planner。Planner 本身仍
+   不直接调用 retrieval。
+2. `PlanningBudgets.model_token_budget` 定义为一次 invocation 的累计软 slice，不再冒充单次 provider output
+   ceiling。`PlanningLoopCheckpoint` 累加 call/input/output/reasoning token；每个已结算模型调用后检查 slice，
+   达到时在最近安全 phase 写 checkpoint 并 `YIELDED`。单次物理输出上限继续由 production model request
+   policy 和 provider hard window 决定。
+3. Need generator 先逐问题执行 goal-bound 合法性验证，再跨全部合法结果去重并按 `blocking → inquiry order`
+   形成最多 24 项 current tranche；余项作为 `deferred_question_ids` 持久化。下一 invocation 从 deferred
+   frontier 继续，不静默丢弃第 25 项，也不把 deferred 当 rejection。
+
+停止语义保持清楚：有 deferred 或新 evidence 时 checkpoint/yield；相同 Planner Memory 问题、相同 Context
+artifact 或无新增 facet closure 时进入 typed review/no-progress；provider hard window、basis、access 和 future
+leakage 仍是不可自动放宽的硬边界。
 
 ## 6. 七种 Planner 模式的具体输出
 

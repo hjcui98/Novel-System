@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from sqlalchemy import create_engine
+
+from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
+from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.runtime.stage3_writer import (
+    ProductionWritingRequestFactory,
+    Stage2MWriterContextInvocation,
+    WritingRequestPolicy,
+)
+from novel_agent.adapters.runtime.stage4_planner import (
+    ProductionStage4InvocationFactory,
+    Stage4InvocationPolicy,
+)
+from novel_agent.domain.artifacts import (
+    PlanRootRef,
+    ProjectProfileRootRef,
+    TextRootRef,
+    WorldRootRef,
+)
+from novel_agent.domain.benchmark import ChapterGoal
+from novel_agent.domain.creative_runtime import PlanningLoopRequest
+from novel_agent.domain.generation import WritingLengthPolicy, WritingLoopBudgets
+from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.planning import PlanningBudgets
+from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
+from novel_agent.domain.stage2 import (
+    AgentMode,
+    ContextBudget,
+    ContractRef,
+    ProjectProfileRootDocument,
+    PromptContractRef,
+    RetrievalBudget,
+    SkillContractRef,
+)
+from novel_agent.domain.writer_context import ContextAssemblyStatus, WriterContextPackageV2
+from novel_agent.domain.writing_loop import WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.commits import CommitService
+from novel_agent.services.content_addressing import canonical_json_bytes, plan_root_content_id
+from novel_agent.services.evidence_first_writer_context_assembler import (
+    EvidenceFirstWriterContextAssembler,
+    NeedEvidenceSelection,
+    SliceSelectionTrace,
+)
+from novel_agent.services.evidence_slice_resolver import EvidenceSliceResolver
+from novel_agent.services.recent_prose import RecentProseAssembler
+from tests.factories import make_manifest
+from tests.fixtures.stage1_synthetic import make_synthetic_bundle
+from tests.fixtures.stage2_memory_benchmark import writer_context_inputs
+
+VERSION = SchemaVersion("1.0.0")
+HASH = ArtifactId("sha256:" + "1" * 64)
+
+
+def _put(artifacts: ArtifactRepository, value: object, media_type: str) -> object:
+    payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    return artifacts.put(canonical_json_bytes(payload), media_type, VERSION)
+
+
+def _profile() -> ProjectProfileRootDocument:
+    contract = ContractRef(contract_id=StableId("agent.writer"), version=VERSION, content_hash=HASH)
+    return ProjectProfileRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        style_profile={
+            "pov": "Lin",
+            "narrative_person": "third person limited",
+            "forbidden_reveals": ["Do not reveal the tower core."],
+        },
+        agent_specs=(contract,),
+        prompt_contracts=(
+            PromptContractRef(**contract.model_dump(mode="python"), render_fingerprint=HASH),
+        ),
+        skill_contracts=(SkillContractRef(**contract.model_dump(mode="python")),),
+        tool_policies=(contract,),
+        model_profiles=("offline-v1",),
+    )
+
+
+def _canonical(tmp_path: Path) -> tuple[ArtifactRepository, CommitService, object, object]:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    commits = CommitService(build_session_factory(engine))
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    bundle = make_synthetic_bundle()
+    text = next(item for item in bundle.text_roots if len(item.chapters) == 20)
+    world = bundle.world_roots[0]
+    original_plan = bundle.plan_roots[0]
+    goal = ChapterGoal(
+        goal_id=StableId("plan.chapter.21"),
+        chapter_index=21,
+        summary="Enter the tower while protecting the injured arm.",
+    )
+    provisional = original_plan.model_copy(
+        update={"root_hash": ArtifactId("sha256:" + "0" * 64), "chapter_goals": (goal,)}
+    )
+    plan = provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
+    text_ref = _put(artifacts, text, "application/vnd.novel-agent.text-root+json")
+    world_ref = _put(artifacts, world, "application/vnd.novel-agent.world-root+json")
+    plan_ref = _put(artifacts, plan, "application/vnd.novel-agent.plan-root+json")
+    profile = _profile()
+    profile_ref = _put(artifacts, profile, "application/vnd.novel-agent.project-profile-root+json")
+    manifest = make_manifest().model_copy(
+        update={
+            "text_root": TextRootRef(**text_ref.model_dump(mode="python")),
+            "world_root": WorldRootRef(**world_ref.model_dump(mode="python")),
+            "plan_root": PlanRootRef(**plan_ref.model_dump(mode="python")),
+            "project_profile_root": ProjectProfileRootRef(**profile_ref.model_dump(mode="python")),
+        }
+    )
+    base = commits.initialize_project(manifest)
+    return artifacts, commits, base, text
+
+
+def test_production_writing_factory_builds_v2_request_from_exact_commit(
+    tmp_path: Path,
+) -> None:
+    artifacts, commits, base, _text = _canonical(tmp_path)
+    snapshot = StableId("snapshot.chapter.20")
+    run_id = RunId("run.production-writer")
+    old_checkpoint_ref = artifacts.put(
+        b'{"checkpoint":"old"}', WRITING_LOOP_CHECKPOINT_MEDIA_TYPE, VERSION
+    )
+    unrelated_ref = artifacts.put(b"terminal", "application/json", VERSION)
+    checkpoint_ref = artifacts.put(
+        b'{"checkpoint":"latest"}', WRITING_LOOP_CHECKPOINT_MEDIA_TYPE, VERSION
+    )
+    task = TaskRecord(
+        task_id=TaskId("task.production-writer"),
+        run_id=run_id,
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=base,
+        basis_snapshot=snapshot,
+        policy_hash=HASH.root,
+        permission_hash=HASH.root,
+        chapter_index=21,
+        target_chapters=25,
+        terminal_artifact_refs=(old_checkpoint_ref, unrelated_ref, checkpoint_ref),
+    )
+
+    def stage2m(invocation: Stage2MWriterContextInvocation):
+        _fixture_task, needs, _units, _fixture_base = writer_context_inputs()
+        block = invocation.text.chapters[-1].scenes[0].blocks[0]
+        need = needs[0].model_copy(
+            update={
+                "run_id": run_id,
+                "task_id": invocation.task.task_id,
+                "base_commit": invocation.base_commit,
+                "horizon_target": (21, 21),
+            }
+        )
+        slice_ = EvidenceSliceResolver().resolve_block(
+            block,
+            source_commit=invocation.base_commit,
+            snapshot_id=invocation.snapshot_id,
+            access_scope=need.access_scope,
+        )[0]
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=invocation.task,
+            selections=(
+                NeedEvidenceSelection(
+                    need=need,
+                    selections=(
+                        SliceSelectionTrace(
+                            slice_id=slice_.slice_id,
+                            unit_id=StableId("unit.production-writer"),
+                            route_channel="r1_exact",
+                            fused_rank=1,
+                            selection_reason="production factory focused evidence",
+                        ),
+                    ),
+                    slices=(slice_,),
+                ),
+            ),
+            text_root=invocation.text,
+            basis_commit_id=invocation.base_commit,
+            basis_snapshot_id=invocation.snapshot_id,
+        )
+        assert result.status is ContextAssemblyStatus.READY
+        return result
+
+    request = ProductionWritingRequestFactory(
+        commits=commits,
+        artifacts=artifacts,
+        recent_prose=RecentProseAssembler(artifacts, VERSION),
+        writer_context=stage2m,
+        policy=WritingRequestPolicy(
+            pov="fallback POV",
+            narrative_person="fallback person",
+            length_policy=WritingLengthPolicy(
+                minimum_characters=500,
+                target_characters=1_500,
+                maximum_characters=3_000,
+            ),
+            allowed_skills=(StableId("skill.scene-composition"),),
+            budgets=WritingLoopBudgets(
+                context_sequence_limit=32_000,
+                reserved_output_tokens=4_000,
+                context_safety_allowance_tokens=1_000,
+                context_soft_limit_tokens=24_000,
+            ),
+            writer_configuration_fingerprint=HASH,
+            model_configuration_fingerprint=HASH,
+            future_isolation_configuration_fingerprint=HASH,
+        ),
+        schema_version=VERSION,
+    )(task)
+
+    assert request.writing_task.target_chapter == 21
+    assert request.writing_task.chapter_goal.startswith("Enter the tower")
+    assert request.writing_task.pov == "Lin"
+    assert isinstance(request.writer_context_package, WriterContextPackageV2)
+    assert request.recent_prose_context.previous_chapter is not None
+    assert request.recent_prose_context.previous_chapter.chapter_index == 20
+    assert request.future_isolation_attestation.evaluator_only_source_ids == ()
+    assert request.resume_checkpoint_ref == checkpoint_ref
+
+
+def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
+    tmp_path: Path,
+) -> None:
+    artifacts, commits, base, _text = _canonical(tmp_path)
+    author_ref = artifacts.put(b"coarse author outline", "text/plain", VERSION)
+    old_checkpoint_ref = artifacts.put(
+        b'{"checkpoint":"old"}',
+        "application/vnd.novel-agent.planning-loop-checkpoint+json",
+        VERSION,
+    )
+    unrelated_ref = artifacts.put(b"terminal", "application/json", VERSION)
+    checkpoint_ref = artifacts.put(
+        b'{"checkpoint":"latest"}',
+        "application/vnd.novel-agent.planning-loop-checkpoint+json",
+        VERSION,
+    )
+    request = PlanningLoopRequest(
+        run_id=RunId("run.production-planner"),
+        task_id=TaskId("task.production-planner"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        basis_snapshot=StableId("snapshot.chapter.20"),
+        input_artifact_refs=(author_ref,),
+        continuation_artifact_refs=(old_checkpoint_ref, unrelated_ref, checkpoint_ref),
+        planner_memory_budget_extensions=2,
+        chapter_index=20,
+        horizon_start=21,
+        horizon_end=25,
+    )
+    policy = Stage4InvocationPolicy(
+        budgets=PlanningBudgets(
+            retrieval=RetrievalBudget(max_full_chapter_reads=1),
+            context=ContextBudget(token_budget=8_000),
+        ),
+        configuration_fingerprint=HASH,
+        model_fingerprint=HASH,
+        model_max_output_tokens=9_000,
+    )
+    factory = ProductionStage4InvocationFactory(
+        commits=commits,
+        artifacts=artifacts,
+        policy=policy,
+    )
+    invocation = factory(request)
+
+    assert invocation.request.task.mode is AgentMode.CHAPTER_SET
+    assert invocation.request.horizon_start == 21
+    assert invocation.request.horizon_end == 25
+    assert invocation.request.author_intent_artifacts == (author_ref,)
+    assert invocation.world is not None
+    assert invocation.text_root is not None
+    assert invocation.resume_checkpoint_ref == checkpoint_ref
+    base_retrieval = policy.budgets.retrieval
+    effective_retrieval = invocation.request.budgets.retrieval
+    assert effective_retrieval.max_rounds == base_retrieval.max_rounds * 3
+    assert effective_retrieval.max_tool_calls == base_retrieval.max_tool_calls * 3
+    assert effective_retrieval.max_anchor_expansions == base_retrieval.max_anchor_expansions * 3
+    assert effective_retrieval.max_full_chapter_reads == base_retrieval.max_full_chapter_reads * 3
+    assert effective_retrieval.wall_clock_budget_ms == base_retrieval.wall_clock_budget_ms * 3
+    assert effective_retrieval.token_budget == base_retrieval.token_budget * 3
+    assert effective_retrieval.max_candidates == base_retrieval.max_candidates
+    assert (
+        effective_retrieval.max_query_rewrites_per_need
+        == base_retrieval.max_query_rewrites_per_need
+    )
+    model_request = invocation.model_request("plan", AgentMode.CHAPTER_SET, 1)
+    assert model_request.task_id == request.task_id
+    assert model_request.max_output_tokens == policy.model_max_output_tokens

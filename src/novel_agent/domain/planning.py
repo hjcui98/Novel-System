@@ -17,11 +17,14 @@ from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
     ContextBudget,
+    PlannerProposalDraft,
     PlanningTask,
     PlanProposal,
     RetrievalBudget,
 )
 from novel_agent.domain.text import EvidenceRef
+
+PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE = "application/vnd.novel-agent.planning-loop-checkpoint+json"
 
 
 class PlanningProvenance(StrEnum):
@@ -105,7 +108,7 @@ class PlanningInquiry(DomainModel):
     expected_output_shape: str = Field(min_length=1)
     human_choices: tuple[str, ...] = ()
     parent_inquiry_id: StableId | None = None
-    generation: int = Field(default=1, ge=1, le=2)
+    generation: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def validate_inquiry(self) -> PlanningInquiry:
@@ -138,7 +141,7 @@ class PlanningInquiry(DomainModel):
             raise ValueError("PROJECT_BOOTSTRAP inquiry requires author-approved sources")
         if self.generation == 1 and self.parent_inquiry_id is not None:
             raise ValueError("initial inquiry cannot have a parent")
-        if self.generation == 2 and self.parent_inquiry_id is None:
+        if self.generation > 1 and self.parent_inquiry_id is None:
             raise ValueError("revised inquiry requires its parent")
         return self
 
@@ -223,11 +226,20 @@ class PlanReview(DomainModel):
 
 
 class PlanningBudgets(DomainModel):
-    inquiry_revisions: int = Field(default=1, ge=0, le=1)
-    plan_revisions: int = Field(default=1, ge=0, le=1)
-    reviewer_memory_rounds: int = Field(default=1, ge=0, le=1)
+    # Per-invocation work slices.  Checkpoints carry lifetime counters; a later
+    # Stage 5 Attempt may grant another slice without changing physical limits.
+    inquiry_revisions: int = Field(default=1, ge=0)
+    plan_revisions: int = Field(default=1, ge=0)
+    reviewer_memory_rounds: int = Field(default=1, ge=0)
+    planner_memory_rounds: int = Field(default=1, ge=0)
     retrieval: RetrievalBudget
     context: ContextBudget
+    # Stage 2 ContextBudget remains the Memory package budget.  This optional
+    # Stage 4 value is only the Planner View selection target; the shared
+    # Context Runtime owns the provider's physical hard window.
+    planner_context_target_tokens: int | None = Field(default=None, ge=1)
+    # Aggregate input/output/reasoning tokens consumed by one invocation.  A call is
+    # never interrupted mid-flight; the loop yields at the next durable phase boundary.
     model_token_budget: int = Field(default=8_000, ge=1)
 
 
@@ -312,6 +324,7 @@ class PlannerContextBudgetReport(DomainModel):
     token_budget: int = Field(ge=1)
     mandatory_tokens: int = Field(ge=0)
     selected_tokens: int = Field(ge=0)
+    soft_overflow_tokens: int = Field(default=0, ge=0)
     dropped_item_ids: tuple[StableId, ...] = ()
     drop_reasons: dict[str, str] = Field(default_factory=dict)
 
@@ -319,8 +332,8 @@ class PlannerContextBudgetReport(DomainModel):
     def validate_totals(self) -> PlannerContextBudgetReport:
         if self.mandatory_tokens > self.selected_tokens:
             raise ValueError("mandatory Planner context exceeds selected total")
-        if self.selected_tokens > self.token_budget:
-            raise ValueError("Planner context exceeds its token budget")
+        if self.soft_overflow_tokens != max(0, self.selected_tokens - self.token_budget):
+            raise ValueError("Planner context token budget soft overflow report is inconsistent")
         return self
 
 
@@ -414,6 +427,41 @@ class PlanningTurnAction(StrEnum):
     REQUEST_MEMORY = "request_memory"
 
 
+class PlanningTurnDraft(DomainModel):
+    """Untrusted Planner response before trusted proposal lineage is attached."""
+
+    action: PlanningTurnAction
+    plan_proposal_draft: PlannerProposalDraft | None = None
+    memory_questions: tuple[str, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+    selected_skill_ids: tuple[StableId, ...] = ()
+    used_context_item_ids: tuple[StableId, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_plan_draft(cls, value: object) -> object:
+        """Treat the existing raw proposal shape as PLAN_READY during migration."""
+
+        if isinstance(value, dict) and "action" not in value and "mode" in value:
+            return {
+                "action": PlanningTurnAction.PLAN_READY,
+                "plan_proposal_draft": value,
+            }
+        return value
+
+    @model_validator(mode="after")
+    def validate_action(self) -> PlanningTurnDraft:
+        if self.action is PlanningTurnAction.PLAN_READY:
+            if self.plan_proposal_draft is None or self.memory_questions:
+                raise ValueError("PLAN_READY requires a proposal draft and no Memory request")
+        elif self.plan_proposal_draft is not None or not self.memory_questions:
+            raise ValueError("REQUEST_MEMORY requires questions and no proposal draft")
+        if len(self.memory_questions) != len(set(self.memory_questions)):
+            raise ValueError("Planner Memory questions must be unique")
+        return self
+
+
 class PlanningTurnOutput(DomainModel):
     action: PlanningTurnAction
     plan_proposal: PlanProposal | None = None
@@ -447,6 +495,7 @@ class PlanningLoopTerminal(StrEnum):
     DEGRADED_NOT_PROMOTABLE = "degraded_not_promotable"
     REVIEW_REQUIRED = "review_required"
     SUSPENDED = "suspended"
+    YIELDED = "yielded"
     BLOCKED = "blocked"
 
 
@@ -470,14 +519,20 @@ class PlanningLoopResult(DomainModel):
                 raise ValueError("ready terminal requires a non-degraded Plan candidate")
             if self.plan_review_ref is None:
                 raise ValueError("ready terminal requires an accepted independent review")
+        if self.terminal is PlanningLoopTerminal.YIELDED and not any(
+            ref.media_type == PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE for ref in self.event_artifacts
+        ):
+            raise ValueError("yielded planning loop requires a resumable checkpoint")
         return self
 
 
 class PlanningLoopPhase(StrEnum):
     PREFLIGHT = "preflight"
+    INQUIRY_REVIEWED = "inquiry_reviewed"
     INQUIRY_ACCEPTED = "inquiry_accepted"
     MEMORY_RESOLVED = "memory_resolved"
     CONTEXT_READY = "context_ready"
+    PLANNER_MEMORY_PENDING = "planner_memory_pending"
     PLAN_PROPOSED = "plan_proposed"
     PLAN_REVIEWED = "plan_reviewed"
     TERMINAL = "terminal"
@@ -496,9 +551,69 @@ class PlanningLoopCheckpoint(DomainModel):
     planner_context_ref: ArtifactRef | None = None
     proposal_ref: ArtifactRef | None = None
     plan_review_ref: ArtifactRef | None = None
-    inquiry_revisions_used: int = Field(default=0, ge=0, le=1)
-    plan_revisions_used: int = Field(default=0, ge=0, le=1)
-    reviewer_memory_rounds_used: int = Field(default=0, ge=0, le=1)
+    execution_ref: ArtifactRef | None = None
+    inquiry_revisions_used: int = Field(default=0, ge=0)
+    plan_revisions_used: int = Field(default=0, ge=0)
+    reviewer_memory_rounds_used: int = Field(default=0, ge=0)
+    reviewer_memory_review_ids: tuple[StableId, ...] = ()
+    reviewer_context_refs: tuple[ArtifactRef, ...] = ()
+    planner_memory_rounds_used: int = Field(default=0, ge=0)
+    planner_memory_context_refs: tuple[ArtifactRef, ...] = ()
+    handled_memory_question_ids: tuple[StableId, ...] = ()
+    deferred_memory_question_ids: tuple[StableId, ...] = ()
+    pending_planner_memory_questions: tuple[str, ...] = ()
+    model_calls_used: int = Field(default=0, ge=0)
+    model_input_tokens_used: int = Field(default=0, ge=0)
+    model_output_tokens_used: int = Field(default=0, ge=0)
+    model_reasoning_tokens_used: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_resume_frontier(self) -> PlanningLoopCheckpoint:
+        inquiry_phases = {
+            PlanningLoopPhase.INQUIRY_REVIEWED,
+            PlanningLoopPhase.INQUIRY_ACCEPTED,
+            PlanningLoopPhase.MEMORY_RESOLVED,
+            PlanningLoopPhase.CONTEXT_READY,
+            PlanningLoopPhase.PLANNER_MEMORY_PENDING,
+            PlanningLoopPhase.PLAN_PROPOSED,
+            PlanningLoopPhase.PLAN_REVIEWED,
+        }
+        if self.phase in inquiry_phases and (
+            self.inquiry_ref is None or self.inquiry_review_ref is None
+        ):
+            raise ValueError("post-inquiry checkpoint requires inquiry and review refs")
+        if (
+            self.phase
+            in {
+                PlanningLoopPhase.CONTEXT_READY,
+                PlanningLoopPhase.PLANNER_MEMORY_PENDING,
+                PlanningLoopPhase.PLAN_PROPOSED,
+                PlanningLoopPhase.PLAN_REVIEWED,
+            }
+            and self.planner_context_ref is None
+        ):
+            raise ValueError("post-context checkpoint requires a Planner context ref")
+        if self.phase is PlanningLoopPhase.PLAN_REVIEWED and any(
+            ref is None for ref in (self.proposal_ref, self.plan_review_ref, self.execution_ref)
+        ):
+            raise ValueError("reviewed Plan checkpoint requires proposal, review, and execution")
+        if len(set(self.reviewer_memory_review_ids)) != len(self.reviewer_memory_review_ids):
+            raise ValueError("reviewer Memory checkpoint contains duplicate review ids")
+        if self.reviewer_memory_rounds_used != len(self.reviewer_memory_review_ids):
+            raise ValueError("reviewer Memory counter differs from handled reviews")
+        if len(self.reviewer_context_refs) != len(self.reviewer_memory_review_ids):
+            raise ValueError("reviewer Memory reviews require matching context refs")
+        if len(set(self.handled_memory_question_ids)) != len(self.handled_memory_question_ids):
+            raise ValueError("handled Planner Memory question ids must be unique")
+        if len(set(self.deferred_memory_question_ids)) != len(self.deferred_memory_question_ids):
+            raise ValueError("deferred Planner Memory question ids must be unique")
+        if set(self.handled_memory_question_ids) & set(self.deferred_memory_question_ids):
+            raise ValueError("handled and deferred Planner Memory questions must be disjoint")
+        if len(self.pending_planner_memory_questions) != len(
+            set(self.pending_planner_memory_questions)
+        ):
+            raise ValueError("pending Planner Memory questions must be unique")
+        return self
 
 
 class PlanningLoopEventReceipt(DomainModel):

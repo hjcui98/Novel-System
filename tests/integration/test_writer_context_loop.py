@@ -27,6 +27,7 @@ from novel_agent.domain.agent_context import (
     ContextItemKind,
     ContextLayer,
     ContextViewItem,
+    SettledArtifactPayload,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.editorial import (
@@ -66,7 +67,7 @@ from novel_agent.domain.model_calls import (
     ModelRole,
     ProviderModelResult,
 )
-from novel_agent.domain.runtime import RunEventType
+from novel_agent.domain.runtime import RunEvent, RunEventType
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentMode,
@@ -84,7 +85,14 @@ from novel_agent.domain.stage3_loop_evaluation import (
     Stage3FullChainCaseResult,
     Stage3FullChainSchemeResult,
 )
-from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
+from novel_agent.domain.writer_context import EvidenceFirstGap, EvidenceGapKind
+from novel_agent.domain.writing_loop import (
+    WritingLoopCheckpoint,
+    WritingLoopPhase,
+    WritingLoopResult,
+    WritingLoopTerminalStatus,
+)
+from novel_agent.ports.model_endpoint import ModelEndpointError
 from novel_agent.prompts import PromptRegistry
 from novel_agent.prompts.registry import content_hash
 from novel_agent.services.agent_context import (
@@ -98,8 +106,15 @@ from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.editorial import EditorialReviewError, EditorialService
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
+from novel_agent.services.evidence_first_writer_context_assembler import (
+    EvidenceFirstWriterContextAssembler,
+    NeedEvidenceSelection,
+    SliceSelectionTrace,
+)
+from novel_agent.services.evidence_slice_resolver import EvidenceSliceResolver
 from novel_agent.services.memory_gateway import MemoryGatewayBlockedError
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.stage3_evaluation import load_case
 from novel_agent.services.stage3_loop_evaluation import (
     PreparedFullChainRun,
@@ -214,6 +229,15 @@ def _request(artifacts: ArtifactRepository, suffix: str) -> WritingLoopRequest:
     plan_ref = _put(artifacts, {"goal": "enter the tower"})
     profile_ref = _put(artifacts, {"voice": "restrained"})
     package_ref = _put(artifacts, package)
+    text_root = next(
+        item for item in make_synthetic_bundle().text_roots if len(item.chapters) == 20
+    )
+    recent_prose, recent_prose_ref = RecentProseAssembler(artifacts, VERSION).assemble(
+        text_root=text_root,
+        base_commit=base_commit,
+        snapshot_id=snapshot_id,
+        target_chapter=writing_task.target_chapter,
+    )
     assert hasattr(task_ref, "artifact_id")
     assert hasattr(plan_ref, "artifact_id")
     assert hasattr(profile_ref, "artifact_id")
@@ -237,6 +261,8 @@ def _request(artifacts: ArtifactRepository, suffix: str) -> WritingLoopRequest:
         project_profile_revision="profile-v1",
         writer_context_package=package,
         writer_context_package_artifact=package_ref,
+        recent_prose_context=recent_prose,
+        recent_prose_context_artifact=recent_prose_ref,
         future_isolation_attestation=FutureIsolationAttestation(
             attestation_id=StableId(f"attestation.stage3-loop.{suffix}"),
             checkpoint_chapter=20,
@@ -349,10 +375,13 @@ def _loop(
     request: WritingLoopRequest,
     route: EditorialVerdict,
     *,
+    artifact_repository: ArtifactRepository | None = None,
     writer_turns: tuple[WriterTurnOutput, ...] | None = None,
     editor_responses: tuple[str, ...] | None = None,
 ) -> tuple[WriterContextLoopService, ModelRequest, ArtifactRepository]:
-    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    artifacts = artifact_repository or ArtifactRepository(
+        FilesystemObjectStore(tmp_path / "objects")
+    )
     initial_text = (
         "Lin studies the moonlit groove and opens the gate without using her injured arm."
     )
@@ -436,6 +465,127 @@ def _loop(
     return loop, model_request, artifacts
 
 
+def test_writer_events_and_checkpoints_are_scoped_to_the_task_stream(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stream-objects"))
+    first_request = _request(artifacts, "shared-stream")
+    second_request = first_request.model_copy(
+        update={"task_id": TaskId("task.stage3-loop.shared-stream.second")}
+    )
+    loop, _model_request, _loop_artifacts = _loop(
+        tmp_path,
+        repositories,
+        first_request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+    events, checkpoints = repositories
+    events.append(
+        RunEvent(
+            event_id=StableId("event.runtime.before-writer"),
+            run_id=first_request.run_id,
+            task_id=TaskId("task.runtime.before-writer"),
+            sequence_no=1,
+            event_type=RunEventType.TASK_STARTED,
+            occurred_at=datetime.now(UTC),
+            idempotency_identity=StableId("event.runtime.before-writer.identity"),
+            payload_schema_version=VERSION,
+            trace_id="runtime-before-writer",
+            payload={"source": "runtime"},
+        )
+    )
+    turn_ref = _put(artifacts, {"turn": "settled"})
+
+    first_view = loop._append_and_apply(
+        first_request,
+        loop._seed(first_request),
+        RunEventType.WRITER_TURN_SETTLED,
+        SettledArtifactPayload(artifact_ref=turn_ref).model_dump(mode="json"),
+        (turn_ref,),
+        "writer-turn-0",
+    )
+    loop._checkpoint(first_view, "writer-turn-0")
+    first_checkpoint = checkpoints.latest(
+        first_request.run_id,
+        logical_stage=f"stage3.context:writer:{first_request.task_id.root}",
+    )
+    second_view = loop._append_and_apply(
+        second_request,
+        loop._seed(second_request),
+        RunEventType.WRITER_TURN_SETTLED,
+        SettledArtifactPayload(artifact_ref=turn_ref).model_dump(mode="json"),
+        (turn_ref,),
+        "writer-turn-0",
+    )
+    loop._checkpoint(second_view, "writer-turn-0")
+    resumed_first_view = loop._append_and_apply(
+        first_request,
+        first_view,
+        RunEventType.TASK_STARTED,
+        {"source": "retry"},
+        (),
+        "retry-boundary",
+    )
+    loop._checkpoint(resumed_first_view, "writer-turn-0")
+    resumed_first_checkpoint = checkpoints.latest(
+        first_request.run_id,
+        logical_stage=f"stage3.context:writer:{first_request.task_id.root}",
+    )
+    second_checkpoint = checkpoints.latest(
+        second_request.run_id,
+        logical_stage=f"stage3.context:writer:{second_request.task_id.root}",
+    )
+    assert first_view.basis_event_position == 2
+    assert second_view.basis_event_position == 3
+    assert resumed_first_view.basis_event_position == 4
+    assert first_checkpoint is not None
+    assert second_checkpoint is not None
+    assert resumed_first_checkpoint is not None
+    assert first_checkpoint.checkpoint_id != second_checkpoint.checkpoint_id
+    assert first_checkpoint.checkpoint_id != resumed_first_checkpoint.checkpoint_id
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        TimeoutError("model request timed out"),
+        ModelEndpointError("model transport exhausted"),
+    ),
+)
+def test_writer_loop_maps_model_runtime_failures_without_leaking(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+    failure: Exception,
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "model-unavailable"))
+    request = _request(artifacts, type(failure).__name__.casefold())
+    loop, model_request, _loop_artifacts = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+
+    class UnavailableCognition:
+        async def create_work_plan(self, *_args: object) -> None:
+            raise failure
+
+    loop._cognition = cast(Any, UnavailableCognition())
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.MODEL_UNAVAILABLE
+    assert result.failure_detail
+    assert {
+        request.writing_task_artifact,
+        request.accepted_plan.artifact,
+        request.writer_context_package_artifact,
+        request.recent_prose_context_artifact,
+    }.issubset(result.artifacts)
+
+
 @pytest.mark.parametrize(
     ("route", "expected_repair", "expected_rewrite"),
     (
@@ -453,7 +603,13 @@ def test_real_candidate_loop_closes_all_editor_routes(
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "request-objects"))
     request = _request(artifacts, route.value.casefold())
-    loop, model_request, loop_artifacts = _loop(tmp_path, repositories, request, route)
+    loop, model_request, loop_artifacts = _loop(
+        tmp_path,
+        repositories,
+        request,
+        route,
+        artifact_repository=artifacts,
+    )
     # The DRAFT_READY route never invokes reactive_inputs; passing the typed name documents
     # that this test covers the no-reactive branch without inventing a Memory fixture verdict.
     result = asyncio.run(
@@ -468,10 +624,133 @@ def test_real_candidate_loop_closes_all_editor_routes(
     assert result.observation is not None
     assert result.reconciliation is not None
     assert not result.reconciliation.comparisons
+    assert result.context_view is not None
+    recent_items = tuple(
+        item
+        for item in result.context_view.active_memory_items
+        if item.kind is ContextItemKind.RECENT_PROSE
+    )
+    assert tuple(item.mandatory for item in recent_items) == (True, False, False)
+    assert request.recent_prose_context.previous_chapter is not None
+    previous_text = artifacts.read_verified(
+        request.recent_prose_context.previous_chapter.full_text_artifact
+    ).decode()
+    assert previous_text in recent_items[0].content
     assert result.candidate_only
     assert not result.canon_mutated
     assert not result.memory_patch_generated
     assert not result.commit_called
+
+
+def test_writer_seed_uses_bounded_evidence_preview_and_renders_typed_gap(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "evidence-first"))
+    request = _request(artifacts, "evidence-first")
+    task, needs, _units, base_commit = writer_context_inputs()
+    text_root = next(
+        item for item in make_synthetic_bundle().text_roots if len(item.chapters) == 20
+    )
+    block = text_root.chapters[-1].scenes[0].blocks[0]
+    slice_ = EvidenceSliceResolver().resolve_block(
+        block,
+        source_commit=base_commit,
+        snapshot_id=request.snapshot_id,
+        access_scope=needs[0].access_scope,
+    )[0]
+    assembly = EvidenceFirstWriterContextAssembler().assemble(
+        task=task,
+        selections=(
+            NeedEvidenceSelection(
+                need=needs[0],
+                selections=(
+                    SliceSelectionTrace(
+                        slice_id=slice_.slice_id,
+                        unit_id=StableId("unit.stage3.evidence-first"),
+                        route_channel="r1_exact",
+                        fused_rank=1,
+                        selection_reason="focused Stage 3 handoff fixture",
+                    ),
+                ),
+                slices=(slice_,),
+            ),
+        ),
+        text_root=text_root,
+        basis_commit_id=base_commit,
+        basis_snapshot_id=request.snapshot_id,
+        arm="A",
+    )
+    ledger_ref = artifacts.put(
+        canonical_json_bytes(assembly.evidence_ledger.model_dump(mode="json")),
+        "application/vnd.novel-agent.evidence-ledger-v2+json",
+        VERSION,
+    )
+    assert ledger_ref == assembly.package.evidence_ledger_ref
+    evidence_item = assembly.package.items[0]
+    preview = slice_.text[: max(1, len(slice_.text) // 2)]
+    bounded_item = evidence_item.model_copy(
+        update={"raw_preview": preview, "preview_truncated": True}
+    )
+    gap = EvidenceFirstGap(
+        gap_id=StableId("gap.stage3.evidence-first"),
+        need_ids=evidence_item.need_ids,
+        need_facet_ids=evidence_item.need_facet_ids,
+        kind=EvidenceGapKind.BUDGET_EXCEEDED,
+        reason="the remaining exact evidence is deferred to reactive Memory",
+    )
+    gap_item = evidence_item.model_copy(
+        update={
+            "item_id": StableId("item.stage3.evidence-first.gap"),
+            "purpose": "resolve the remaining blocking continuity question",
+            "evidence_ledger_ids": (),
+            "raw_preview": "",
+            "preview_truncated": False,
+            "mandatory": True,
+            "gap": gap,
+        }
+    )
+    package = assembly.package.model_copy(
+        update={
+            "items": (bounded_item, gap_item),
+            "gaps": (gap,),
+            "budget_report": assembly.package.budget_report.model_copy(
+                update={"item_count": 2, "evidence_item_count": 1, "gap_item_count": 1}
+            ),
+        }
+    )
+    package_ref = _put(artifacts, package)
+    evidence_request = request.model_copy(
+        update={
+            "writer_context_package": package,
+            "writer_context_package_artifact": package_ref,
+        }
+    )
+    loop, _model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        evidence_request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+
+    view = loop._seed(evidence_request)
+
+    evidence_items = tuple(
+        item for item in view.active_memory_items if item.kind is ContextItemKind.EVIDENCE_HANDLE
+    )
+    gap_items = tuple(
+        item for item in view.active_memory_items if item.kind is ContextItemKind.UNRESOLVED_NEED
+    )
+    assert len(evidence_items) == 1
+    assert preview in evidence_items[0].content
+    assert slice_.text not in evidence_items[0].content
+    assert "渐进展开" in evidence_items[0].content
+    assert evidence_items[0].mandatory
+    assert len(gap_items) == 1
+    assert gap.reason in gap_items[0].content
+    assert gap_items[0].mandatory
+    assert set(view.unresolved_need_ids) == set(gap.need_ids)
 
 
 @pytest.mark.parametrize(
@@ -509,6 +788,7 @@ def test_loop_stops_after_one_failed_repair_or_rewrite_review(
         repositories,
         request,
         route,
+        artifact_repository=artifacts,
         editor_responses=(*responses[:-1], final_review),
     )
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
@@ -527,6 +807,7 @@ def test_major_rewrite_rejects_another_memory_round(
         repositories,
         request,
         EditorialVerdict.MAJOR_REWRITE,
+        artifact_repository=artifacts,
         writer_turns=(_writer_turn("A complete initial draft."), _memory_turn()),
     )
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
@@ -556,6 +837,7 @@ def test_reconciliation_mismatch_routes_to_review_required(
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=artifacts,
         writer_turns=(turn,),
     )
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
@@ -566,6 +848,47 @@ def test_reconciliation_mismatch_routes_to_review_required(
 
 def test_reactive_inputs_type_is_public() -> None:
     assert ReactiveMemoryInputs.__module__ == "novel_agent.services.writer_reactive_memory"
+
+
+def test_post_draft_slice_resumes_editor_and_observer_without_repeating_writer(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "post-draft-resume"))
+    request = _request(artifacts, "post-draft-resume")
+    initial = request.model_copy(
+        update={
+            "budgets": request.budgets.model_copy(
+                update={"max_post_draft_model_calls": 0}
+            )
+        }
+    )
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+    first = asyncio.run(loop.execute(initial, model_request, cast(Any, object())))
+    assert first.status is WritingLoopTerminalStatus.YIELDED
+    assert first.checkpoint_ref is not None
+    checkpoint = WritingLoopCheckpoint.model_validate_json(
+        artifacts.read_verified(first.checkpoint_ref)
+    )
+    assert checkpoint.phase is WritingLoopPhase.EDITOR_PENDING
+
+    resumed = initial.model_copy(
+        update={
+            "resume_checkpoint_ref": first.checkpoint_ref,
+            "budgets": initial.budgets.model_copy(
+                update={"max_post_draft_model_calls": 5}
+            ),
+        }
+    )
+    second = asyncio.run(loop.execute(resumed, model_request, cast(Any, object())))
+    assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert second.initial_draft == first.initial_draft
 
 
 def test_stage3_public_lazy_exports_are_resolvable() -> None:
@@ -687,6 +1010,7 @@ def test_stage3_loop_contracts_reject_invalid_cross_boundary_state(
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
     assert result.work_plan is not None
@@ -866,6 +1190,7 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=artifacts,
     )
     plan_model_request = model_request.model_copy(
         update={"request_id": StableId("request.cognition.work-plan")}
@@ -1015,7 +1340,10 @@ def _memory_turn() -> WriterTurnOutput:
     (
         (ContextDeltaStatus.DENIED, WritingLoopTerminalStatus.MEMORY_DENIED),
         (ContextDeltaStatus.INSUFFICIENT, WritingLoopTerminalStatus.MEMORY_INSUFFICIENT),
-        (ContextDeltaStatus.BUDGET_EXHAUSTED, WritingLoopTerminalStatus.MEMORY_INSUFFICIENT),
+        (
+            ContextDeltaStatus.BUDGET_EXHAUSTED,
+            WritingLoopTerminalStatus.MEMORY_BUDGET_EXHAUSTED,
+        ),
     ),
 )
 def test_loop_maps_terminal_memory_outcomes(
@@ -1031,6 +1359,7 @@ def test_loop_maps_terminal_memory_outcomes(
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
         writer_turns=(_memory_turn(),),
     )
 
@@ -1066,6 +1395,9 @@ def test_loop_maps_terminal_memory_outcomes(
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
     assert result.status is expected
     assert len(result.context_deltas) == 1
+    assert (result.checkpoint_ref is not None) is (
+        status is ContextDeltaStatus.BUDGET_EXHAUSTED
+    )
 
 
 def test_loop_maps_preflight_context_and_downstream_failures(
@@ -1080,6 +1412,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         basis_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     wrong_model = model_request.model_copy(update={"task_id": TaskId("task.wrong")})
     assert (
@@ -1102,6 +1435,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         limit_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     assert (
         asyncio.run(limit_loop.execute(limit_request, limit_model, cast(Any, object()))).status
@@ -1118,6 +1452,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         writer_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     writer_loop._cognition = cast(Any, FailingCognition())
     assert (
@@ -1135,6 +1470,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         editor_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     editor_loop._editorial = cast(Any, FailingEditor())
     assert (
@@ -1152,6 +1488,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         observer_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     observer_loop._observer = cast(Any, FailingObserver())
     assert (
@@ -1171,6 +1508,7 @@ def test_loop_maps_preflight_context_and_downstream_failures(
         repositories,
         reconciliation_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     reconciliation_loop._reconciliation = cast(Any, FailingReconciliation())
     assert (
@@ -1207,6 +1545,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         turn_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     turn_loop._cognition = cast(Any, FailTurn(turn_loop._cognition))
     assert (
@@ -1220,6 +1559,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         context_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     real_ensure = context_loop._ensure_dispatch
     dispatch_count = 0
@@ -1251,6 +1591,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         exhausted_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
         writer_turns=(_memory_turn(),),
     )
     assert (
@@ -1270,6 +1611,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         reactive_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
         writer_turns=(_memory_turn(),),
     )
     reactive_loop._reactive = cast(Any, FailReactive())
@@ -1290,6 +1632,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         material_request,
         EditorialVerdict.PASS,
+        artifact_repository=request_artifacts,
     )
     material_loop._materializer = cast(Any, FailMaterializer())
     assert (
@@ -1309,6 +1652,7 @@ def test_loop_maps_turn_memory_materialization_and_repair_failures(
         repositories,
         repair_request,
         EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=request_artifacts,
         editor_responses=(*repair_responses[:-1], "{}"),
     )
     assert (
@@ -1328,6 +1672,7 @@ def test_loop_publishes_compaction_rejects_invalid_provider_and_replays_event(
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=artifacts,
     )
     seed = loop._seed(request)
     generous = ContextWindowPolicy(
@@ -1413,7 +1758,13 @@ def test_loop_retains_compaction_receipts_across_writer_dispatches(
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / f"receipt-{route.value}"))
     request = _request(artifacts, f"receipt-{route.value.casefold()}")
-    loop, model_request, _ = _loop(tmp_path / route.value, repositories, request, route)
+    loop, model_request, _ = _loop(
+        tmp_path / route.value,
+        repositories,
+        request,
+        route,
+        artifact_repository=artifacts,
+    )
     seed = loop._seed(request)
     broad = ContextWindowPolicy(
         sequence_limit=100_000,
@@ -1463,6 +1814,7 @@ def test_resolved_reactive_delta_rebuilds_context_and_resumes_writer(
         repositories,
         request,
         EditorialVerdict.PASS,
+        artifact_repository=artifacts,
         writer_turns=(_memory_turn(), _writer_turn("A resumed complete candidate draft.")),
     )
 
@@ -1507,6 +1859,121 @@ def test_resolved_reactive_delta_rebuilds_context_and_resumes_writer(
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
     assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
     assert result.context_deltas[0].parent_view_revision > 0
+
+
+def test_reactive_writer_yields_and_resumes_without_repeating_settled_model_work(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "reactive-resume"))
+    request = _request(artifacts, "reactive-resume")
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+        writer_turns=(
+            _memory_turn(),
+            _memory_turn(),
+            _writer_turn("Lin uses the newly recalled detail and completes the chapter."),
+        ),
+    )
+
+    class CountingCognition:
+        def __init__(self, delegate: object) -> None:
+            self.delegate = cast(Any, delegate)
+            self.work_plan_calls = 0
+            self.writer_turn_calls = 0
+
+        async def create_work_plan(self, *args: object, **kwargs: object) -> object:
+            self.work_plan_calls += 1
+            return await self.delegate.create_work_plan(*args, **kwargs)
+
+        async def take_turn(self, *args: object, **kwargs: object) -> object:
+            self.writer_turn_calls += 1
+            return await self.delegate.take_turn(*args, **kwargs)
+
+    class TwoResolvedMemoryRounds:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve(
+            self,
+            loop_request: WritingLoopRequest,
+            view: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> ReactiveMemoryResult:
+            self.calls += 1
+            typed_view = cast(Any, view)
+            suffix = str(self.calls)
+            request_ref = artifacts.put(
+                f"request-{suffix}".encode(), "application/json", VERSION
+            )
+            resolution_ref = artifacts.put(
+                f"resolution-{suffix}".encode(), "application/json", VERSION
+            )
+            evidence_ref = artifacts.put(
+                f"evidence-{suffix}".encode(), "application/json", VERSION
+            )
+            item = ContextViewItem(
+                item_id=StableId(f"context-memory.reactive-resume.{suffix}"),
+                layer=ContextLayer.MEMORY,
+                kind=ContextItemKind.MEMORY_CLAIM,
+                content=f"Resolved continuity fact {suffix}.",
+                token_count=5,
+                source_artifact_refs=(evidence_ref,),
+                information_scope="writer_safe",
+            )
+            return ReactiveMemoryResult(
+                delta=ContextDelta(
+                    delta_id=StableId(f"context-delta.reactive-resume.{suffix}"),
+                    request_ref=request_ref,
+                    resolution_ref=resolution_ref,
+                    parent_view_revision=typed_view.revision,
+                    base_commit=loop_request.base_commit,
+                    snapshot_id=loop_request.snapshot_id,
+                    profile_ref=loop_request.project_profile_artifact,
+                    plan_ref=loop_request.accepted_plan.artifact,
+                    added_memory_items=(item,),
+                    resolved_need_ids=(StableId(f"need.reactive-resume.{suffix}"),),
+                    evidence_refs=(evidence_ref,),
+                    token_impact=item.token_count,
+                    status=ContextDeltaStatus.RESOLVED,
+                ),
+                request_fingerprint=ArtifactId("sha256:" + f"{self.calls:064x}"),
+                needs=(),
+            )
+
+    cognition = CountingCognition(loop._cognition)
+    memory = TwoResolvedMemoryRounds()
+    loop._cognition = cast(Any, cognition)
+    loop._reactive = cast(Any, memory)
+
+    first = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert first.status is WritingLoopTerminalStatus.YIELDED
+    assert first.checkpoint_ref is not None
+    checkpoint = WritingLoopCheckpoint.model_validate_json(
+        artifacts.read_verified(first.checkpoint_ref)
+    )
+    assert checkpoint.memory_rounds == 1
+    assert checkpoint.writer_turns == 2
+    assert cognition.work_plan_calls == 1
+    assert cognition.writer_turn_calls == 2
+
+    resumed_request = request.model_copy(
+        update={"resume_checkpoint_ref": first.checkpoint_ref}
+    )
+    resumed = asyncio.run(
+        loop.execute(resumed_request, model_request, cast(Any, object()))
+    )
+
+    assert resumed.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert cognition.work_plan_calls == 1
+    assert cognition.writer_turn_calls == 3
+    assert memory.calls == 2
 
 
 def test_reactive_memory_is_bounded_deduplicated_and_gateway_owned(tmp_path: Path) -> None:
@@ -1746,6 +2213,7 @@ def test_formal_evaluation_runs_all_three_real_candidate_chains(tmp_path: Path) 
                 repositories,
                 request,
                 EditorialVerdict.PASS,
+                artifact_repository=request_artifacts,
             )
             return PreparedFullChainRun(
                 loop=loop,

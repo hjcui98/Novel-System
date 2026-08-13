@@ -30,7 +30,7 @@ from novel_agent.domain.stage2 import (
     Stage2GateReport,
     Stage2GateVerdict,
 )
-from novel_agent.domain.writer_context import WriterContextPackage
+from novel_agent.domain.writer_context import WriterContextPackage, WriterContextPackageV2
 
 _NonEmptyText = Annotated[str, StringConstraints(min_length=1)]
 
@@ -226,12 +226,62 @@ class AcceptedPlanBinding(DomainModel):
     snapshot_id: StableId
 
 
+class RecentChapterProse(DomainModel):
+    """One committed recent chapter with an exact full-text artifact and compact trail."""
+
+    chapter_id: StableId
+    chapter_index: int = Field(ge=1)
+    title: str | None = None
+    full_text_artifact: ArtifactRef
+    full_text_characters: int = Field(ge=1)
+    compact_trail: _NonEmptyText
+
+
+class RecentProseContext(DomainModel):
+    """Deterministic near-prose context projected from the accepted TextRoot."""
+
+    context_id: StableId
+    base_commit: CommitId
+    snapshot_id: StableId
+    checkpoint_chapter: int = Field(ge=0)
+    previous_chapter: RecentChapterProse | None = None
+    earlier_chapters: tuple[RecentChapterProse, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_chapters(self) -> RecentProseContext:
+        if self.checkpoint_chapter == 0:
+            if self.previous_chapter is not None or self.earlier_chapters:
+                raise ValueError("chapter-zero RecentProseContext cannot contain chapter prose")
+            return self
+        if (
+            self.previous_chapter is None
+            or self.previous_chapter.chapter_index != self.checkpoint_chapter
+        ):
+            raise ValueError("RecentProseContext requires the full checkpoint chapter")
+        earlier_indexes = tuple(item.chapter_index for item in self.earlier_chapters)
+        if earlier_indexes != tuple(sorted(earlier_indexes, reverse=True)):
+            raise ValueError("earlier recent chapters must be ordered newest first")
+        if any(index >= self.checkpoint_chapter for index in earlier_indexes):
+            raise ValueError("earlier recent chapters must precede the checkpoint chapter")
+        chapter_ids = (
+            self.previous_chapter.chapter_id,
+            *(item.chapter_id for item in self.earlier_chapters),
+        )
+        if len(chapter_ids) != len(set(chapter_ids)):
+            raise ValueError("RecentProseContext chapter ids must be unique")
+        return self
+
+
 class WritingLoopBudgets(DomainModel):
-    max_reactive_memory_rounds: int = Field(default=1, ge=0, le=1)
+    # These are per-invocation work allowances.  The Stage 5 Task/Attempt owner
+    # decides whether a later invocation is legal; the schema must not silently
+    # turn the first implementation's default into a product-wide ceiling.
+    max_reactive_memory_rounds: int = Field(default=1, ge=0)
     max_memory_questions: int = Field(default=3, ge=1, le=8)
     max_local_repairs: int = Field(default=1, ge=0, le=1)
     max_major_rewrites: int = Field(default=1, ge=0, le=1)
-    max_writer_turns: int = Field(default=2, ge=1, le=2)
+    max_writer_turns: int = Field(default=2, ge=1)
+    max_post_draft_model_calls: int = Field(default=5, ge=0)
     context_sequence_limit: int = Field(ge=1)
     reserved_output_tokens: int = Field(ge=0)
     context_safety_allowance_tokens: int = Field(ge=0)
@@ -260,8 +310,11 @@ class WritingLoopRequest(DomainModel):
     accepted_plan: AcceptedPlanBinding
     project_profile_artifact: ArtifactRef
     project_profile_revision: _NonEmptyText
-    writer_context_package: WriterContextPackage
+    writer_context_package: WriterContextPackage | WriterContextPackageV2
     writer_context_package_artifact: ArtifactRef
+    recent_prose_context: RecentProseContext
+    recent_prose_context_artifact: ArtifactRef
+    resume_checkpoint_ref: ArtifactRef | None = None
     future_isolation_attestation: FutureIsolationAttestation
     information_scope: Literal["writer_safe"] = "writer_safe"
     mode: AgentMode = AgentMode.DRAFT
@@ -283,8 +336,12 @@ class WritingLoopRequest(DomainModel):
             or self.accepted_plan.snapshot_id != self.snapshot_id
             or self.writer_context_package.basis_commit_id != self.base_commit
             or self.writer_context_package.basis_snapshot_id != self.snapshot_id
+            or self.recent_prose_context.base_commit != self.base_commit
+            or self.recent_prose_context.snapshot_id != self.snapshot_id
         ):
-            raise ValueError("WritingTask, accepted Plan, and Writer Context must share a basis")
+            raise ValueError(
+                "WritingTask, accepted Plan, Writer Context, and recent prose must share a basis"
+            )
         target = self.writer_context_package.task_contract
         if not (
             target.target_chapter_start
@@ -292,6 +349,11 @@ class WritingLoopRequest(DomainModel):
             <= target.target_chapter_end
         ):
             raise ValueError("Writer Context target range excludes the WritingTask chapter")
+        expected_checkpoint = self.writing_task.target_chapter - 1
+        if self.recent_prose_context.checkpoint_chapter != expected_checkpoint:
+            raise ValueError("recent prose checkpoint must immediately precede the target chapter")
+        if self.future_isolation_attestation.checkpoint_chapter != expected_checkpoint:
+            raise ValueError("future-isolation checkpoint must precede the target chapter")
         return self
 
 
@@ -712,6 +774,8 @@ __all__ = [
     "DeclaredMemoryHint",
     "DraftArtifact",
     "MemoryHintChangeKind",
+    "RecentChapterProse",
+    "RecentProseContext",
     "RewriteDirective",
     "RewriteScope",
     "WriterAdvisoryFinding",

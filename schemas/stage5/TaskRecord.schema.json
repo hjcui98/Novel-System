@@ -96,6 +96,7 @@
         "running",
         "waiting_input",
         "waiting_retry",
+        "budget_review",
         "recovery_pending",
         "blocked",
         "succeeded",
@@ -241,6 +242,12 @@
       "title": "Permission Hash",
       "type": "string"
     },
+    "planner_memory_budget_extensions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Planner Memory Budget Extensions",
+      "type": "integer"
+    },
     "policy_hash": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Policy Hash",
@@ -283,6 +290,12 @@
     "purpose": {
       "$ref": "#/$defs/TaskPurpose",
       "default": "normal"
+    },
+    "retry_tranche_size": {
+      "default": 3,
+      "minimum": 1,
+      "title": "Retry Tranche Size",
+      "type": "integer"
     },
     "run_id": {
       "$ref": "#/$defs/RunId"

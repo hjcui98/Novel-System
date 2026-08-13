@@ -127,7 +127,11 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
             elif control_payload.action == "resume":
                 paused = False
                 cancel_requested = False
-                status = TaskStatus.READY
+                status = (
+                    TaskStatus.READY
+                    if task.failure_budget > 0
+                    else TaskStatus.BUDGET_REVIEW
+                )
             elif control_payload.action == "cancel":
                 paused = True
                 cancel_requested = True
@@ -137,7 +141,17 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                     else TaskStatus.RECOVERY_PENDING
                 )
             elif control_payload.action in {"retry", "unblock"}:
-                status = TaskStatus.READY
+                status = (
+                    TaskStatus.READY
+                    if task.failure_budget > 0
+                    else TaskStatus.BUDGET_REVIEW
+                )
+            elif control_payload.action == "extend_budget":
+                status = (
+                    TaskStatus.READY
+                    if task.failure_budget + control_payload.additional_attempts > 0
+                    else TaskStatus.BUDGET_REVIEW
+                )
             elif control_payload.action == "recovery_pending":  # pragma: no cover - last branch
                 status = TaskStatus.RECOVERY_PENDING
             tasks[task_key] = task.model_copy(
@@ -147,6 +161,17 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                     "cancel_requested": cancel_requested,
                     "block_cause": (
                         None if control_payload.action == "unblock" else task.block_cause
+                    ),
+                    "failure_budget": (
+                        task.failure_budget + control_payload.additional_attempts
+                        if control_payload.action == "extend_budget"
+                        else task.failure_budget
+                    ),
+                    "planner_memory_budget_extensions": (
+                        task.planner_memory_budget_extensions
+                        + control_payload.additional_planner_memory_tranches
+                        if control_payload.action == "extend_budget"
+                        else task.planner_memory_budget_extensions
                     ),
                     "task_revision": task.task_revision + 1,
                 }

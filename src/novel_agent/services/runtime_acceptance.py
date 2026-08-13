@@ -14,9 +14,10 @@ from novel_agent.domain.creative_runtime import (
     CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
+    commit_task_from_acceptance,
 )
 from novel_agent.domain.ids import SchemaVersion, StableId
-from novel_agent.domain.runtime import TaskKind, TaskStatus
+from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes
@@ -124,10 +125,21 @@ class RuntimeAcceptanceService:
             ACCEPTANCE_MEDIA_TYPE,
             self._schema_version,
         )
+        successors: tuple[TaskRecord, ...] = ()
+        if receipt.accepted_binding is not None:
+            settled = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.SUCCEEDED,
+                    "terminal_artifact_refs": (receipt_ref,),
+                }
+            )
+            successors = (commit_task_from_acceptance(settled, receipt),)
         self._commands.complete_waiting_task(
             command.task_id,
             receipt=receipt,
             receipt_ref=receipt_ref,
+            successor_tasks=successors,
         )
         return receipt
 

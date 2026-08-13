@@ -38,6 +38,7 @@
     "FailureClass": {
       "enum": [
         "worker_startup",
+        "worker_lease_expired",
         "provider_transient",
         "leaf_review_required",
         "basis_changed",

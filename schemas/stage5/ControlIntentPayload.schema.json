@@ -20,6 +20,18 @@
       "title": "Actor Id",
       "type": "string"
     },
+    "additional_attempts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Additional Attempts",
+      "type": "integer"
+    },
+    "additional_planner_memory_tranches": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Additional Planner Memory Tranches",
+      "type": "integer"
+    },
     "command_id": {
       "$ref": "#/$defs/StableId"
     },

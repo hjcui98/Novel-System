@@ -26,7 +26,7 @@ from novel_agent.domain.agent_context import (
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.runtime import ResumabilityStatus, RunCheckpoint, RunEvent, RunEventType
-from novel_agent.domain.writer_context import WriterContextPackage
+from novel_agent.domain.writer_context import WriterContextPackage, WriterContextPackageV2
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
@@ -137,38 +137,61 @@ class AgentContextProjector:
         *,
         run_id: RunId,
         task_id: TaskId,
-        package: WriterContextPackage,
+        package: WriterContextPackage | WriterContextPackageV2,
         seed_package_ref: ArtifactRef,
         profile_ref: ArtifactRef,
         plan_ref: ArtifactRef,
         protected_items: tuple[ContextViewItem, ...],
+        recent_prose_items: tuple[ContextViewItem, ...] = (),
+        evidence_first_items: tuple[ContextViewItem, ...] = (),
     ) -> AgentContextView:
-        sections = (
-            package.continuity_constraints,
-            package.current_world_state,
-            package.relationship_and_emotion,
-            package.causal_history,
-            package.knowledge_and_disclosure,
-            package.plan_and_obligations,
-            package.long_range_callbacks,
-        )
-        memory_items = tuple(
-            ContextViewItem(
-                item_id=item.context_item_id,
-                layer=ContextLayer.MEMORY,
-                kind=ContextItemKind.MEMORY_CLAIM,
-                content=item.claim,
-                token_count=max(1, self._count_tokens(item.claim)),
-                source_artifact_refs=(
-                    (item.support_receipt_ref,) if item.support_receipt_ref is not None else ()
-                ),
-                supersedes_item_ids=item.supersedes_item_ids,
-                mandatory=item.mandatory,
-                information_scope="writer_safe",
+        if any(
+            item.layer is not ContextLayer.MEMORY or item.kind is not ContextItemKind.RECENT_PROSE
+            for item in recent_prose_items
+        ):
+            raise ContextProjectionError("recent prose seed items use the wrong layer or kind")
+        if isinstance(package, WriterContextPackageV2):
+            if any(
+                item.layer is not ContextLayer.MEMORY
+                or item.kind
+                not in {ContextItemKind.EVIDENCE_HANDLE, ContextItemKind.UNRESOLVED_NEED}
+                for item in evidence_first_items
+            ):
+                raise ContextProjectionError(
+                    "evidence-first seed items use the wrong layer or kind"
+                )
+            memory_items = (*recent_prose_items, *evidence_first_items)
+        else:
+            if evidence_first_items:
+                raise ContextProjectionError(
+                    "legacy Writer context cannot receive evidence-first seed items"
+                )
+            sections = (
+                package.continuity_constraints,
+                package.current_world_state,
+                package.relationship_and_emotion,
+                package.causal_history,
+                package.knowledge_and_disclosure,
+                package.plan_and_obligations,
+                package.long_range_callbacks,
             )
-            for section in sections
-            for item in section
-        )
+            memory_items = recent_prose_items + tuple(
+                ContextViewItem(
+                    item_id=item.context_item_id,
+                    layer=ContextLayer.MEMORY,
+                    kind=ContextItemKind.MEMORY_CLAIM,
+                    content=item.claim,
+                    token_count=max(1, self._count_tokens(item.claim)),
+                    source_artifact_refs=(
+                        (item.support_receipt_ref,) if item.support_receipt_ref is not None else ()
+                    ),
+                    supersedes_item_ids=item.supersedes_item_ids,
+                    mandatory=item.mandatory,
+                    information_scope="writer_safe",
+                )
+                for section in sections
+                for item in section
+            )
         unresolved = tuple(need_id for gap in package.gaps for need_id in gap.need_ids)
         return self.seed(
             run_id=run_id,
@@ -181,7 +204,7 @@ class AgentContextProjector:
             information_scope="writer_safe",
             seed_package_ref=seed_package_ref,
             protected_items=protected_items,
-            active_memory_items=memory_items,
+            active_memory_items=tuple(memory_items),
             unresolved_need_ids=tuple(dict.fromkeys(unresolved)),
         )
 
@@ -240,12 +263,13 @@ class AgentContextProjector:
         return self.refresh_tokens(_with_hash(updated))
 
     def apply_event(self, view: AgentContextView, event: RunEvent) -> AgentContextView:
-        if event.run_id != view.run_id or (
-            event.task_id is not None and event.task_id != view.task_id
-        ):
-            raise ContextProjectionError("RunEvent belongs to another Context View")
+        if event.run_id != view.run_id:
+            raise ContextProjectionError("RunEvent belongs to another run")
         if event.sequence_no != view.basis_event_position + 1:
             raise ContextProjectionError("RunEvent is not the next event in sequence")
+        if event.task_id is not None and event.task_id != view.task_id:
+            advanced = view.model_copy(update={"basis_event_position": event.sequence_no})
+            return self.refresh_tokens(_with_hash(advanced))
         updated = view
         if event.event_type is RunEventType.CONTEXT_DELTA_APPLIED:
             delta_payload = ContextDeltaAppliedPayload.model_validate(event.payload, strict=False)
@@ -621,7 +645,7 @@ class AgentContextRuntime:
             checkpoint_id=checkpoint_id,
             run_id=view.run_id,
             event_position=view.basis_event_position,
-            logical_stage="stage3.context",
+            logical_stage=self._logical_stage(view.task_id, view.consumer),
             state_artifact_ref=ref,
             resumability_status=ResumabilityStatus.RESUMABLE,
         )
@@ -639,17 +663,30 @@ class AgentContextRuntime:
     ) -> AgentContextView:
         """Append one idempotent typed event and project it through the single owner."""
 
-        identity = StableId(f"event.{trace_namespace}.{view.run_id.root}.{label}"[:128])
+        identity = self._event_identity(
+            trace_namespace=trace_namespace,
+            view=view,
+            label=label,
+        )
         prior = self._events.replay(view.run_id)
         existing = next(
             (item for item in prior if item.idempotency_identity == identity),
             None,
         )
+        tail = tuple(item for item in prior if item.sequence_no > view.basis_event_position)
+        if tail:
+            view = self._projector.full_replay(view, tail)
         if existing is None:
+            event_suffix = content_id(
+                (
+                    view.run_id.root,
+                    view.task_id.root,
+                    view.consumer.value,
+                    label,
+                )
+            ).root[-48:]
             event = RunEvent(
-                event_id=StableId(
-                    f"event-id.{trace_namespace}.{content_id((view.run_id.root, label)).root[-48:]}"
-                ),
+                event_id=StableId(f"event-id.{trace_namespace}.{event_suffix}"),
                 run_id=view.run_id,
                 task_id=view.task_id,
                 sequence_no=(prior[-1].sequence_no + 1 if prior else 1),
@@ -662,26 +699,111 @@ class AgentContextRuntime:
                 artifact_refs=artifact_refs,
             )
             existing = self._events.append(event)
-        return self._projector.apply_event(view, existing)
+            return self._projector.apply_event(view, existing)
+
+        comparable = RunEvent(
+            event_id=existing.event_id,
+            run_id=view.run_id,
+            task_id=view.task_id,
+            sequence_no=existing.sequence_no,
+            event_type=event_type,
+            occurred_at=existing.occurred_at,
+            idempotency_identity=identity,
+            payload_schema_version=self._schema_version,
+            trace_id=f"{trace_namespace}:{view.run_id.root}",
+            span_id=existing.span_id,
+            payload=payload,
+            artifact_refs=artifact_refs,
+        )
+        self._events.append(comparable)
+        return view
 
     def restore(self, run_id: RunId, seed: AgentContextView) -> AgentContextView:
-        checkpoint = self._checkpoints.latest(run_id)
+        checkpoint = self._matching_checkpoint(
+            run_id,
+            task_id=seed.task_id,
+            consumer=seed.consumer,
+        )
         view = seed
-        after = 0
-        if checkpoint is not None and checkpoint.logical_stage == "stage3.context":
+        after = seed.basis_event_position
+        if checkpoint is not None:
             raw = self._artifacts.read_verified(checkpoint.state_artifact_ref)
             view = AgentContextView.model_validate_json(raw)
+            if view.task_id != seed.task_id or view.consumer is not seed.consumer:
+                raise ContextProjectionError("checkpoint belongs to another Context stream")
             after = checkpoint.event_position
         events = self._events.replay(run_id, after_sequence=after)
         return self._projector.full_replay(view, events)
 
-    def restore_latest(self, run_id: RunId) -> AgentContextView | None:
-        checkpoint = self._checkpoints.latest(run_id)
-        if checkpoint is None or checkpoint.logical_stage != "stage3.context":
+    def restore_latest(
+        self,
+        run_id: RunId,
+        *,
+        task_id: TaskId | None = None,
+        consumer: ContextConsumer | None = None,
+    ) -> AgentContextView | None:
+        if (task_id is None) != (consumer is None):
+            raise ValueError("task_id and consumer must be supplied together")
+        if task_id is None or consumer is None:
+            checkpoint = self._checkpoints.latest(run_id)
+            if checkpoint is None or not checkpoint.logical_stage.startswith("stage3.context"):
+                return None
+        else:
+            checkpoint = self._matching_checkpoint(
+                run_id,
+                task_id=task_id,
+                consumer=consumer,
+            )
+        if checkpoint is None:
             return None
         raw = self._artifacts.read_verified(checkpoint.state_artifact_ref)
         persisted = AgentContextView.model_validate_json(raw)
+        if task_id is not None and (
+            persisted.task_id != task_id or persisted.consumer is not consumer
+        ):
+            raise ContextProjectionError("checkpoint belongs to another Context stream")
         return self.restore(run_id, persisted)
+
+    def _matching_checkpoint(
+        self,
+        run_id: RunId,
+        *,
+        task_id: TaskId,
+        consumer: ContextConsumer,
+    ) -> RunCheckpoint | None:
+        checkpoint = self._checkpoints.latest(
+            run_id,
+            logical_stage=self._logical_stage(task_id, consumer),
+        )
+        if checkpoint is not None:
+            return checkpoint
+        legacy = self._checkpoints.latest(run_id, logical_stage="stage3.context")
+        if legacy is None:
+            return None
+        raw = self._artifacts.read_verified(legacy.state_artifact_ref)
+        legacy_view = AgentContextView.model_validate_json(raw)
+        if legacy_view.task_id == task_id and legacy_view.consumer is consumer:
+            return legacy
+        return None
+
+    @staticmethod
+    def _logical_stage(task_id: TaskId, consumer: ContextConsumer) -> str:
+        return f"stage3.context:{consumer.value}:{task_id.root}"
+
+    @staticmethod
+    def _event_identity(
+        *,
+        trace_namespace: str,
+        view: AgentContextView,
+        label: str,
+    ) -> StableId:
+        readable = f"event.{trace_namespace}.{view.task_id.root}.{view.consumer.value}.{label}"
+        if len(readable) <= 128:
+            return StableId(readable)
+        suffix = content_id((view.run_id.root, view.task_id.root, view.consumer.value, label)).root[
+            -48:
+        ]
+        return StableId(f"event.{trace_namespace[:32]}.{view.consumer.value}.{suffix}")
 
 
 __all__ = [

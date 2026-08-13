@@ -43,9 +43,11 @@
     "PlanningLoopPhase": {
       "enum": [
         "preflight",
+        "inquiry_reviewed",
         "inquiry_accepted",
         "memory_resolved",
         "context_ready",
+        "planner_memory_pending",
         "plan_proposed",
         "plan_reviewed",
         "terminal"
@@ -82,6 +84,33 @@
     "configuration_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
     },
+    "deferred_memory_question_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Deferred Memory Question Ids",
+      "type": "array"
+    },
+    "execution_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "handled_memory_question_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Handled Memory Question Ids",
+      "type": "array"
+    },
     "inquiry_ref": {
       "anyOf": [
         {
@@ -106,7 +135,6 @@
     },
     "inquiry_revisions_used": {
       "default": 0,
-      "maximum": 1,
       "minimum": 0,
       "title": "Inquiry Revisions Used",
       "type": "integer"
@@ -121,6 +149,38 @@
         }
       ],
       "default": null
+    },
+    "model_calls_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Model Calls Used",
+      "type": "integer"
+    },
+    "model_input_tokens_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Model Input Tokens Used",
+      "type": "integer"
+    },
+    "model_output_tokens_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Model Output Tokens Used",
+      "type": "integer"
+    },
+    "model_reasoning_tokens_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Model Reasoning Tokens Used",
+      "type": "integer"
+    },
+    "pending_planner_memory_questions": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Pending Planner Memory Questions",
+      "type": "array"
     },
     "phase": {
       "$ref": "#/$defs/PlanningLoopPhase"
@@ -138,7 +198,6 @@
     },
     "plan_revisions_used": {
       "default": 0,
-      "maximum": 1,
       "minimum": 0,
       "title": "Plan Revisions Used",
       "type": "integer"
@@ -154,6 +213,20 @@
       ],
       "default": null
     },
+    "planner_memory_context_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Planner Memory Context Refs",
+      "type": "array"
+    },
+    "planner_memory_rounds_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Planner Memory Rounds Used",
+      "type": "integer"
+    },
     "proposal_ref": {
       "anyOf": [
         {
@@ -168,9 +241,24 @@
     "request_id": {
       "$ref": "#/$defs/StableId"
     },
+    "reviewer_context_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Reviewer Context Refs",
+      "type": "array"
+    },
+    "reviewer_memory_review_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Reviewer Memory Review Ids",
+      "type": "array"
+    },
     "reviewer_memory_rounds_used": {
       "default": 0,
-      "maximum": 1,
       "minimum": 0,
       "title": "Reviewer Memory Rounds Used",
       "type": "integer"

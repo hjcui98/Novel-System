@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.adapters.runtime.isolated import (
     StrictDeterministicCandidateMaterializer,
 )
@@ -131,18 +132,30 @@ class _Planner:
         artifacts: ArtifactRepository,
         *,
         status: PlanningTerminalStatus = PlanningTerminalStatus.PLAN_CANDIDATE_READY,
+        failure_code: str | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._status = status
+        self._failure_code = failure_code
+        self.requests: list[PlanningLoopRequest] = []
 
     async def run(self, request: PlanningLoopRequest) -> PlanningLoopResult:
+        self.requests.append(request)
         if self._status is not PlanningTerminalStatus.PLAN_CANDIDATE_READY:
+            checkpoint = self._artifacts.put(
+                request.task_id.root.encode(),
+                "application/vnd.novel-agent.planning-checkpoint+json",
+                SchemaVersion("1.0.0"),
+            )
             return PlanningLoopResult(
                 result_id=StableId("planner.result"),
                 run_id=request.run_id,
                 task_id=request.task_id,
                 status=self._status,
-                failure_code=f"planner_{self._status.value.lower()}",
+                artifact_refs=(checkpoint,),
+                failure_code=(
+                    self._failure_code or f"planner_{self._status.value.lower()}"
+                ),
                 failure_detail="injected planner terminal",
             )
         artifact = self._artifacts.put(
@@ -250,6 +263,32 @@ def _request(
     )
 
 
+def test_creative_run_starts_after_existing_canon_and_plans_to_absolute_target(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _factory, _commits, _artifacts, commands, base = creative_kernel
+    request = CreativeRunRequest(
+        run_id=RunId("run.existing-canon"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        policy=_policy(),
+        current_chapter=20,
+        target_chapters=25,
+    )
+
+    task = commands.create_run_and_initial_task(request)
+
+    assert task.chapter_index == 20
+    assert task.target_chapters == 25
+    assert (task.horizon_start, task.horizon_end) == (21, 25)
+
+
 def _build_runtime(
     factory: sessionmaker[Session],
     commits: CommitService,
@@ -264,6 +303,7 @@ def _build_runtime(
     projection: DerivedProjectionService | None = None,
     snapshots: DerivedSnapshotRepository | None = None,
     project_id: ProjectId | None = None,
+    task_reader: RuntimeTaskQueryRepository | None = None,
 ) -> CreativeRuntimeService:
     project_id = project_id or ProjectId("project.test")
     return CreativeRuntimeService(
@@ -282,6 +322,7 @@ def _build_runtime(
         or DerivedProjectionService(ProjectionOutboxRepository(factory), _ProjectionBuilder()),
         snapshots or DerivedSnapshotRepository(factory),
         lambda policy_hash: policy_resolver(policy_hash),
+        task_reader,
     )
 
 
@@ -311,21 +352,18 @@ def _accept_waiting(
     commit: CommitId,
 ) -> TaskId:
     task = commands.get_task(waiting_task_id)
-    assert len(task.input_artifact_refs) == 1
-    ref = task.input_artifact_refs[0]
+    assert task.candidate_binding_ref is not None
+    candidate = CandidateBinding.model_validate_json(
+        runtime._artifacts.read_verified(task.candidate_binding_ref)
+    )
+    assert candidate.kind is kind and candidate.basis_commit == commit
     result = runtime.submit_acceptance(
         AcceptanceCommand(
             command_id=StableId(f"accept.{waiting_task_id.root}"),
             project_id=task.project_id,
             run_id=task.run_id,
             task_id=task.task_id,
-            candidate=CandidateBinding(
-                candidate_id=StableId(f"candidate.{kind.value}.{waiting_task_id.root}"),
-                kind=kind,
-                artifact_ref=ref,
-                candidate_hash=ref.artifact_id.root,
-                basis_commit=commit,
-            ),
+            candidate=candidate,
             acceptance_policy_hash=HASH,
             actor_kind=ActorKind.AUTHOR,
             actor_id="author",
@@ -333,6 +371,41 @@ def _accept_waiting(
             reason="approved",
             expected_project_commit=commit,
             idempotency_identity=StableId(f"accept.{waiting_task_id.root}.identity"),
+            issued_at=NOW,
+        ),
+        policy=_policy(),
+    )
+    assert result.current_task_id is not None
+    return result.current_task_id
+
+
+def _accept_bound_candidate(
+    runtime: CreativeRuntimeService,
+    commands: RuntimeCommandService,
+    artifacts: ArtifactRepository,
+    waiting_task_id: TaskId,
+) -> TaskId:
+    task = commands.get_task(waiting_task_id)
+    assert task.candidate_binding_ref is not None
+    candidate = CandidateBinding.model_validate_json(
+        artifacts.read_verified(task.candidate_binding_ref)
+    )
+    result = runtime.submit_acceptance(
+        AcceptanceCommand(
+            command_id=StableId(f"accept-bound.{waiting_task_id.root}"),
+            project_id=task.project_id,
+            run_id=task.run_id,
+            task_id=task.task_id,
+            candidate=candidate,
+            acceptance_policy_hash=HASH,
+            actor_kind=ActorKind.AUTHOR,
+            actor_id="author",
+            decision=AcceptanceDecision.ACCEPT,
+            reason="approved",
+            expected_project_commit=task.basis_commit,
+            idempotency_identity=StableId(
+                f"accept-bound.{waiting_task_id.root}.identity"
+            ),
             issued_at=NOW,
         ),
         policy=_policy(),
@@ -386,7 +459,6 @@ def test_planner_and_writer_failure_branches_are_audited(
             CreativeRunTerminal.REVIEW_REQUIRED,
             CreativeRunTerminal.BLOCKED,
         }
-
     for writer_status in (
         WritingLoopTerminalStatus.MODEL_UNAVAILABLE,
         WritingLoopTerminalStatus.BASIS_CHANGED,
@@ -431,9 +503,232 @@ def test_planner_and_writer_failure_branches_are_audited(
         result = asyncio.run(
             runtime.advance(draft.current_task_id, worker_id=f"writer.{writer_status.value}")
         )
-        assert result.terminal is CreativeRunTerminal.WAITING_RETRY or (
-            result.terminal is CreativeRunTerminal.BLOCKED
+        assert result.terminal is (
+            CreativeRunTerminal.BLOCKED
+            if writer_status is WritingLoopTerminalStatus.BASIS_CHANGED
+            else CreativeRunTerminal.WAITING_RETRY
         )
+
+
+def test_planner_yield_keeps_checkpoint_claimable_without_spending_retry_budget(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, base = creative_kernel
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=cast(
+            PlanningLeafPort,
+            _Planner(
+                artifacts,
+                status=PlanningTerminalStatus.YIELDED,
+                failure_code="PLAN_REVISION_SLICE_EXHAUSTED",
+            ),
+        ),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+    )
+    start = runtime.start(_request(base, run_id="run.planner-yield"))
+    assert start.current_task_id is not None
+
+    result = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+
+    task = commands.get_task(start.current_task_id)
+    assert result.terminal is CreativeRunTerminal.PROGRESSED
+    assert task.status is TaskStatus.READY
+    assert task.failure_budget == task.retry_tranche_size
+    assert len(task.terminal_artifact_refs) == 1
+
+
+@pytest.mark.parametrize(
+    ("writer_status", "expected_terminal", "expected_task_status", "reason_code"),
+    (
+        (
+            WritingLoopTerminalStatus.YIELDED,
+            CreativeRunTerminal.PROGRESSED,
+            TaskStatus.READY,
+            "writer_yielded",
+        ),
+        (
+            WritingLoopTerminalStatus.MEMORY_BUDGET_EXHAUSTED,
+            CreativeRunTerminal.BUDGET_REVIEW,
+            TaskStatus.BUDGET_REVIEW,
+            "writer_memory_budget_exhausted",
+        ),
+    ),
+)
+def test_writer_yield_preserves_checkpoint_and_retry_budget(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+    writer_status: WritingLoopTerminalStatus,
+    expected_terminal: CreativeRunTerminal,
+    expected_task_status: TaskStatus,
+    reason_code: str,
+) -> None:
+    factory, commits, artifacts, commands, base = creative_kernel
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=cast(PlanningLeafPort, _Planner(artifacts)),
+        writer=cast(
+            WritingLeafPort,
+            _Writer(
+                artifacts,
+                status=writer_status,
+                fail=True,
+            ),
+        ),
+    )
+    start = runtime.start(_request(base, run_id="run.writer-yield"))
+    assert start.current_task_id is not None
+    waiting = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    assert waiting.current_task_id is not None
+    asyncio.run(runtime.advance(waiting.current_task_id, worker_id="acceptance"))
+    commit_task = _accept_waiting(
+        runtime,
+        commands,
+        waiting.current_task_id,
+        kind=CandidateKind.PLAN,
+        commit=base,
+    )
+    projection = asyncio.run(runtime.advance(commit_task, worker_id="commit"))
+    assert projection.current_task_id is not None
+    draft = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
+    assert draft.current_task_id is not None
+
+    result = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer"))
+
+    task = commands.get_task(draft.current_task_id)
+    assert result.terminal is expected_terminal
+    assert result.reason_code == reason_code
+    assert task.status is expected_task_status
+    assert task.failure_budget == task.retry_tranche_size
+    assert len(task.terminal_artifact_refs) == 1
+
+
+def test_planner_memory_budget_yield_waits_for_budget_extension(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, base = creative_kernel
+    planner = _Planner(
+        artifacts,
+        status=PlanningTerminalStatus.YIELDED,
+        failure_code="INQUIRY_MEMORY_BUDGET_EXHAUSTED",
+    )
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=cast(
+            PlanningLeafPort,
+            planner,
+        ),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+    )
+    start = runtime.start(_request(base, run_id="run.planner-budget-yield"))
+    assert start.current_task_id is not None
+
+    result = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+
+    task = commands.get_task(start.current_task_id)
+    assert result.terminal is CreativeRunTerminal.BUDGET_REVIEW
+    assert result.reason_code == "INQUIRY_MEMORY_BUDGET_EXHAUSTED"
+    assert result.next_legal_commands == ("extend_budget", "cancel")
+    assert task.status is TaskStatus.BUDGET_REVIEW
+    assert task.failure_budget == task.retry_tranche_size
+    extended = commands.extend_budget(
+        task.task_id,
+        command_id=StableId("extend.planner-memory-budget"),
+        actor_id="operator",
+        reason="allow another bounded Planner Memory tranche",
+        additional_planner_memory_tranches=1,
+    )
+    resumed = asyncio.run(runtime.advance(extended.task_id, worker_id="planner.resumed"))
+    assert resumed.terminal is CreativeRunTerminal.BUDGET_REVIEW
+    assert planner.requests[-1].planner_memory_budget_extensions == 1
+    assert planner.requests[-1].continuation_artifact_refs == task.terminal_artifact_refs
+
+
+def test_draft_horizon_end_schedules_a_fresh_normal_planner_task(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, base = creative_kernel
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=cast(PlanningLeafPort, _Planner(artifacts)),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+        task_reader=RuntimeTaskQueryRepository(factory),
+    )
+    request = CreativeRunRequest(
+        run_id=RunId("run.rolling-plan"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        policy=_policy().model_copy(update={"planning_horizon": 1}),
+        target_chapters=2,
+    )
+    start = runtime.start(request)
+    assert start.current_task_id is not None
+    plan_waiting = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    assert plan_waiting.current_task_id is not None
+    plan_commit = _accept_bound_candidate(
+        runtime, commands, artifacts, plan_waiting.current_task_id
+    )
+    plan_projection = asyncio.run(runtime.advance(plan_commit, worker_id="plan-commit"))
+    assert plan_projection.current_task_id is not None
+    draft = asyncio.run(
+        runtime.advance(plan_projection.current_task_id, worker_id="plan-projection")
+    )
+    assert draft.current_task_id is not None
+    draft_waiting = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer"))
+    assert draft_waiting.current_task_id is not None
+    draft_commit = _accept_bound_candidate(
+        runtime, commands, artifacts, draft_waiting.current_task_id
+    )
+    draft_projection = asyncio.run(runtime.advance(draft_commit, worker_id="draft-commit"))
+    assert draft_projection.current_task_id is not None
+
+    rolling = asyncio.run(
+        runtime.advance(draft_projection.current_task_id, worker_id="draft-projection")
+    )
+
+    assert rolling.reason_code == "planning_horizon_advanced"
+    assert rolling.current_task_id is not None
+    task = commands.get_task(rolling.current_task_id)
+    assert task.kind is TaskKind.PLAN_CANDIDATE
+    assert task.purpose.value == "normal"
+    assert task.chapter_index == 1
+    assert (task.horizon_start, task.horizon_end) == (2, 2)
+    assert task.basis_snapshot is not None
 
 
 def test_writer_request_factory_violation_is_rejected(
@@ -638,20 +933,17 @@ def test_unknown_task_kind_and_rejected_candidate_branches(
     waiting = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
     assert waiting.current_task_id is not None
     task = commands.get_task(waiting.current_task_id)
-    ref = task.input_artifact_refs[0]
+    assert task.candidate_binding_ref is not None
+    bound_candidate = CandidateBinding.model_validate_json(
+        artifacts.read_verified(task.candidate_binding_ref)
+    )
     rejected = runtime.submit_acceptance(
         AcceptanceCommand(
             command_id=StableId("accept.reject"),
             project_id=task.project_id,
             run_id=task.run_id,
             task_id=task.task_id,
-            candidate=CandidateBinding(
-                candidate_id=StableId("candidate.rejected"),
-                kind=CandidateKind.PLAN,
-                artifact_ref=ref,
-                candidate_hash=ref.artifact_id.root,
-                basis_commit=fresh_base,
-            ),
+            candidate=bound_candidate,
             acceptance_policy_hash=HASH,
             actor_kind=ActorKind.AUTHOR,
             actor_id="author",

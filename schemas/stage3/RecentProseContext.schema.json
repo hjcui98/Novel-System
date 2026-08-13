@@ -1,0 +1,147 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RecentChapterProse": {
+      "additionalProperties": false,
+      "description": "One committed recent chapter with an exact full-text artifact and compact trail.",
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "compact_trail": {
+          "minLength": 1,
+          "title": "Compact Trail",
+          "type": "string"
+        },
+        "full_text_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "full_text_characters": {
+          "minimum": 1,
+          "title": "Full Text Characters",
+          "type": "integer"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index",
+        "full_text_artifact",
+        "full_text_characters",
+        "compact_trail"
+      ],
+      "title": "RecentChapterProse",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Deterministic near-prose context projected from the accepted TextRoot.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "context_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "earlier_chapters": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RecentChapterProse"
+      },
+      "title": "Earlier Chapters",
+      "type": "array"
+    },
+    "previous_chapter": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecentChapterProse"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "context_id",
+    "base_commit",
+    "snapshot_id",
+    "checkpoint_chapter"
+  ],
+  "title": "RecentProseContext",
+  "type": "object"
+}

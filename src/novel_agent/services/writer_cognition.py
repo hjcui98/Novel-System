@@ -130,6 +130,9 @@ class WriterCognitionService:
                 ),
                 "allowed_skill_ids": [item.root for item in request.allowed_skills],
                 "context_hash": view.context_hash.root,
+                # The work plan must be conditioned on the same bounded View as
+                # the Writer turn, especially the previous chapter and typed gaps.
+                "agent_context_view": render_context(view),
             }
         ).decode("utf-8")
         prepared = model_request.model_copy(

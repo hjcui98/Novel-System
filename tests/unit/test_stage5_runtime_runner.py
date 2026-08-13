@@ -203,6 +203,7 @@ def test_validate_runtime_assembly_rejects_bad_production_and_isolated_mixes() -
         writer=real,
         plan_materializer=real,
         draft_materializer=real,
+        chapter_settlement=real,
         production=True,
     )
     with pytest.raises(RuntimeError, match="strict fake Planner"):
@@ -413,6 +414,66 @@ def test_dispatcher_overlaps_only_current_draft_and_planner_lookahead() -> None:
 
     normal_plan = task("task.parallel.normal-plan", TaskKind.PLAN_CANDIDATE, TaskPurpose.NORMAL)
     assert CreativeDispatcher._parallel_batch((ready[0], normal_plan)) == (ready[0],)
+    wrong_chapter = ready[1].model_copy(
+        update={"protected_chapter_index": 2, "horizon_start": 3, "horizon_end": 3}
+    )
+    assert CreativeDispatcher._parallel_batch((ready[0], wrong_chapter)) == (ready[0],)
+
+
+def test_parallel_dispatcher_yields_when_every_claim_loses_its_race() -> None:
+    basis = CommitId("sha256:" + "1" * 64)
+
+    def task(identity: str, kind: TaskKind, purpose: TaskPurpose) -> TaskRecord:
+        return TaskRecord(
+            task_id=TaskId(identity),
+            run_id=RunId("run.parallel-conflict"),
+            project_id=ProjectId("project.test"),
+            kind=kind,
+            purpose=purpose,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=basis,
+            basis_snapshot=StableId("snapshot.parallel-conflict"),
+            policy_hash=HASH,
+            permission_hash=PERMISSION_HASH,
+            chapter_index=1,
+            target_chapters=3,
+            horizon_start=(2 if purpose is TaskPurpose.LOOKAHEAD else None),
+            horizon_end=(3 if purpose is TaskPurpose.LOOKAHEAD else None),
+            protected_chapter_index=(1 if purpose is TaskPurpose.LOOKAHEAD else None),
+        )
+
+    ready = (
+        task("task.conflict.draft", TaskKind.DRAFT_CANDIDATE, TaskPurpose.NORMAL),
+        task("task.conflict.lookahead", TaskKind.PLAN_CANDIDATE, TaskPurpose.LOOKAHEAD),
+    )
+
+    class _StaleBatch:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ready_batch(self, **_: object) -> tuple[TaskRecord, ...]:
+            self.calls += 1
+            if self.calls > 1:
+                raise AssertionError("zero-progress dispatch must not poll the stale batch again")
+            return ready
+
+    class _LostClaims:
+        async def advance(self, task_id: TaskId, *, worker_id: str) -> CreativeRunResult:
+            from novel_agent.services.runtime_commands import RuntimeCommandConflictError
+
+            raise RuntimeCommandConflictError(f"lost {task_id.root} as {worker_id}")
+
+    source = _StaleBatch()
+    dispatcher = CreativeDispatcher(
+        cast(RuntimeTaskQueryRepository, source),
+        cast(CreativeRuntimeService, _LostClaims()),
+        worker_id="parallel-conflict",
+        parallelism=2,
+    )
+
+    assert asyncio.run(dispatcher.run_bounded(max_tasks=2)) == ()
+    assert source.calls == 1
 
 
 def test_audit_report_derives_from_durable_truth(
@@ -472,3 +533,38 @@ def test_audit_report_derives_from_durable_truth(
     )
     assert len(report_with_effect.effects) == 1
     assert report_with_effect.model_request_count == 0
+
+
+def test_dispatcher_selects_four_projects_but_only_safe_same_project_pair() -> None:
+    base = CommitId("sha256:" + "a" * 64)
+
+    def leaf(project: str, suffix: str, *, lookahead: bool = False) -> TaskRecord:
+        return TaskRecord(
+            task_id=TaskId(f"task.{project}.{suffix}"),
+            run_id=RunId(f"run.{project}"),
+            project_id=ProjectId(f"project.{project}"),
+            kind=(TaskKind.PLAN_CANDIDATE if lookahead else TaskKind.DRAFT_CANDIDATE),
+            purpose=(TaskPurpose.LOOKAHEAD if lookahead else TaskPurpose.NORMAL),
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=base,
+            policy_hash=HASH,
+            permission_hash=PERMISSION_HASH,
+            chapter_index=2,
+            protected_chapter_index=(2 if lookahead else None),
+            horizon_start=(3 if lookahead else None),
+            horizon_end=(4 if lookahead else None),
+        )
+
+    draft_a = leaf("a", "draft")
+    ready = (
+        draft_a,
+        leaf("a", "lookahead", lookahead=True),
+        leaf("b", "draft"),
+        leaf("c", "draft"),
+        leaf("d", "draft"),
+    )
+    selected = CreativeDispatcher._parallel_batch(ready, limit=4)
+    assert len(selected) == 4
+    assert len([item for item in selected if item.project_id == draft_a.project_id]) == 2
+    assert len({item.project_id for item in selected}) == 3

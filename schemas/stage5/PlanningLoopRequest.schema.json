@@ -98,6 +98,14 @@
       "title": "Chapter Index",
       "type": "integer"
     },
+    "continuation_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Continuation Artifact Refs",
+      "type": "array"
+    },
     "horizon_end": {
       "anyOf": [
         {
@@ -131,6 +139,12 @@
       },
       "title": "Input Artifact Refs",
       "type": "array"
+    },
+    "planner_memory_budget_extensions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Planner Memory Budget Extensions",
+      "type": "integer"
     },
     "project_id": {
       "$ref": "#/$defs/ProjectId"

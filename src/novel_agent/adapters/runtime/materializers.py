@@ -187,6 +187,18 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         incoming_goals = tuple(
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
         )
+        if candidate.horizon_start is not None and candidate.horizon_end is not None:
+            expected_chapters = tuple(
+                range(candidate.horizon_start, candidate.horizon_end + 1)
+            )
+            actual_chapters = tuple(
+                sorted(goal.chapter_index for goal in incoming_goals)
+            )
+            if actual_chapters != expected_chapters:
+                raise CandidateMaterializationError(
+                    "Plan candidate must provide exactly one chapter goal for every "
+                    "chapter in its accepted horizon"
+                )
         incoming_node_ids = {item.plan_node_id for item in incoming_nodes}
         incoming_goal_ids = {item.goal_id for item in incoming_goals}
         nodes = tuple(

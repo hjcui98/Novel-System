@@ -362,6 +362,146 @@
       "title": "ContextLineage",
       "type": "object"
     },
+    "EvidenceFirstGap": {
+      "additionalProperties": false,
+      "properties": {
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceGapKind"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "need_ids",
+        "need_facet_ids",
+        "kind",
+        "reason"
+      ],
+      "title": "EvidenceFirstGap",
+      "type": "object"
+    },
+    "EvidenceFirstLineage": {
+      "additionalProperties": false,
+      "properties": {
+        "assembler_version": {
+          "minLength": 1,
+          "title": "Assembler Version",
+          "type": "string"
+        },
+        "generator_version": {
+          "default": "",
+          "title": "Generator Version",
+          "type": "string"
+        },
+        "grounder_version": {
+          "default": "",
+          "title": "Grounder Version",
+          "type": "string"
+        },
+        "need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "planner_artifact_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_fallback_used": {
+          "default": false,
+          "title": "Planner Fallback Used",
+          "type": "boolean"
+        },
+        "query_compiler_version": {
+          "default": "",
+          "title": "Query Compiler Version",
+          "type": "string"
+        },
+        "resolver_version": {
+          "default": "",
+          "title": "Resolver Version",
+          "type": "string"
+        },
+        "route_plan_version": {
+          "default": "",
+          "title": "Route Plan Version",
+          "type": "string"
+        },
+        "unresolved_lexical_anchors": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UnresolvedLexicalAnchor"
+          },
+          "title": "Unresolved Lexical Anchors",
+          "type": "array"
+        },
+        "validator_version": {
+          "default": "",
+          "title": "Validator Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assembler_version"
+      ],
+      "title": "EvidenceFirstLineage",
+      "type": "object"
+    },
+    "EvidenceGapKind": {
+      "enum": [
+        "no_selected_evidence",
+        "budget_exceeded",
+        "slice_oversized",
+        "cutoff_tainted",
+        "scope_tainted",
+        "dereference_failed",
+        "heading_source_role"
+      ],
+      "title": "EvidenceGapKind",
+      "type": "string"
+    },
     "FutureIsolationAttestation": {
       "additionalProperties": false,
       "properties": {
@@ -419,6 +559,101 @@
       "title": "ProjectId",
       "type": "string"
     },
+    "RecentChapterProse": {
+      "additionalProperties": false,
+      "description": "One committed recent chapter with an exact full-text artifact and compact trail.",
+      "properties": {
+        "chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "compact_trail": {
+          "minLength": 1,
+          "title": "Compact Trail",
+          "type": "string"
+        },
+        "full_text_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "full_text_characters": {
+          "minimum": 1,
+          "title": "Full Text Characters",
+          "type": "integer"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "chapter_id",
+        "chapter_index",
+        "full_text_artifact",
+        "full_text_characters",
+        "compact_trail"
+      ],
+      "title": "RecentChapterProse",
+      "type": "object"
+    },
+    "RecentProseContext": {
+      "additionalProperties": false,
+      "description": "Deterministic near-prose context projected from the accepted TextRoot.",
+      "properties": {
+        "base_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "context_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "earlier_chapters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RecentChapterProse"
+          },
+          "title": "Earlier Chapters",
+          "type": "array"
+        },
+        "previous_chapter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecentChapterProse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "context_id",
+        "base_commit",
+        "snapshot_id",
+        "checkpoint_chapter"
+      ],
+      "title": "RecentProseContext",
+      "type": "object"
+    },
     "RunId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "RunId",
@@ -438,6 +673,40 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "TaskId",
       "type": "string"
+    },
+    "UnresolvedLexicalAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "grounding_method": {
+          "default": "no_label_match",
+          "title": "Grounding Method",
+          "type": "string"
+        },
+        "mention": {
+          "minLength": 1,
+          "title": "Mention",
+          "type": "string"
+        },
+        "source_draft_id": {
+          "minLength": 1,
+          "title": "Source Draft Id",
+          "type": "string"
+        },
+        "source_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mention",
+        "source_draft_id"
+      ],
+      "title": "UnresolvedLexicalAnchor",
+      "type": "object"
     },
     "WriterContextBudgetReport": {
       "additionalProperties": false,
@@ -531,6 +800,179 @@
         "final_status"
       ],
       "title": "WriterContextBudgetReport",
+      "type": "object"
+    },
+    "WriterContextBudgetReportV2": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_rendered_ledger_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Ledger Tokens",
+          "type": "integer"
+        },
+        "actual_rendered_writer_tokens": {
+          "minimum": 0,
+          "title": "Actual Rendered Writer Tokens",
+          "type": "integer"
+        },
+        "configured_ledger_token_budget": {
+          "minimum": 1,
+          "title": "Configured Ledger Token Budget",
+          "type": "integer"
+        },
+        "configured_writer_token_budget": {
+          "minimum": 1,
+          "title": "Configured Writer Token Budget",
+          "type": "integer"
+        },
+        "dropped_slice_reasons": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Dropped Slice Reasons",
+          "type": "object"
+        },
+        "evidence_item_count": {
+          "minimum": 0,
+          "title": "Evidence Item Count",
+          "type": "integer"
+        },
+        "final_status": {
+          "$ref": "#/$defs/ContextAssemblyStatus"
+        },
+        "gap_item_count": {
+          "minimum": 0,
+          "title": "Gap Item Count",
+          "type": "integer"
+        },
+        "item_count": {
+          "minimum": 0,
+          "title": "Item Count",
+          "type": "integer"
+        },
+        "ledger_entry_count": {
+          "minimum": 0,
+          "title": "Ledger Entry Count",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "minLength": 1,
+          "title": "Tokenizer",
+          "type": "string"
+        },
+        "tokenizer_version": {
+          "minLength": 1,
+          "title": "Tokenizer Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenizer",
+        "tokenizer_version",
+        "configured_writer_token_budget",
+        "actual_rendered_writer_tokens",
+        "configured_ledger_token_budget",
+        "actual_rendered_ledger_tokens",
+        "item_count",
+        "evidence_item_count",
+        "gap_item_count",
+        "ledger_entry_count",
+        "final_status"
+      ],
+      "title": "WriterContextBudgetReportV2",
+      "type": "object"
+    },
+    "WriterContextEvidenceItem": {
+      "additionalProperties": false,
+      "description": "Writer-visible evidence item: purpose plus ledger refs or a typed gap.\n\n``purpose`` is derived only from the public Need's semantic question /\nwhy-needed / facet metadata; it never rewrites material into a claim and\nnever reads Gold or future text.  ``raw_preview`` is a bounded prefix of\nthe exact Ledger text (never a model rewrite) with an explicit truncation\nflag.",
+      "properties": {
+        "evidence_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evidence Ledger Ids",
+          "type": "array"
+        },
+        "gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceFirstGap"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "mandatory": {
+          "default": false,
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "need_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Ids",
+          "type": "array"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "purpose": {
+          "minLength": 1,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "raw_preview": {
+          "default": "",
+          "title": "Raw Preview",
+          "type": "string"
+        },
+        "section": {
+          "$ref": "#/$defs/WriterContextSection"
+        },
+        "selection_reason": {
+          "default": "",
+          "title": "Selection Reason",
+          "type": "string"
+        },
+        "source_kind": {
+          "default": "",
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "source_scope": {
+          "default": "",
+          "title": "Source Scope",
+          "type": "string"
+        },
+        "validity": {
+          "$ref": "#/$defs/WriterContextValidity",
+          "default": "uncertain"
+        }
+      },
+      "required": [
+        "item_id",
+        "section",
+        "need_ids",
+        "need_facet_ids",
+        "purpose"
+      ],
+      "title": "WriterContextEvidenceItem",
       "type": "object"
     },
     "WriterContextItem": {
@@ -763,6 +1205,77 @@
       "title": "WriterContextPackage",
       "type": "object"
     },
+    "WriterContextPackageV2": {
+      "additionalProperties": false,
+      "description": "Evidence-first Writer Context product (``writer_context.v2``).\n\nThe default Stage 2M read-side product (ADR-0008): public\nNeed/facet/scope-organized evidence items plus typed gaps, with a bound\nEvidenceLedger reference.  No claim groups, variants, receipts or semantic\nverdicts are required for READY.",
+      "properties": {
+        "arm": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Arm",
+          "type": "string"
+        },
+        "basis_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "budget_report": {
+          "$ref": "#/$defs/WriterContextBudgetReportV2"
+        },
+        "contract_version": {
+          "const": "writer_context.v2",
+          "default": "writer_context.v2",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "evidence_ledger_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "gaps": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceFirstGap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/WriterContextEvidenceItem"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "lineage": {
+          "$ref": "#/$defs/EvidenceFirstLineage"
+        },
+        "rendered_context": {
+          "default": "",
+          "title": "Rendered Context",
+          "type": "string"
+        },
+        "task_contract": {
+          "$ref": "#/$defs/BenchmarkTaskContract"
+        }
+      },
+      "required": [
+        "task_contract",
+        "basis_commit_id",
+        "basis_snapshot_id",
+        "arm",
+        "items",
+        "budget_report",
+        "evidence_ledger_ref",
+        "lineage"
+      ],
+      "title": "WriterContextPackageV2",
+      "type": "object"
+    },
     "WriterContextSection": {
       "enum": [
         "continuity_constraints",
@@ -852,16 +1365,20 @@
           "title": "Max Memory Questions",
           "type": "integer"
         },
+        "max_post_draft_model_calls": {
+          "default": 5,
+          "minimum": 0,
+          "title": "Max Post Draft Model Calls",
+          "type": "integer"
+        },
         "max_reactive_memory_rounds": {
           "default": 1,
-          "maximum": 1,
           "minimum": 0,
           "title": "Max Reactive Memory Rounds",
           "type": "integer"
         },
         "max_writer_turns": {
           "default": 2,
-          "maximum": 2,
           "minimum": 1,
           "title": "Max Writer Turns",
           "type": "integer"
@@ -1049,6 +1566,23 @@
       "title": "Project Profile Revision",
       "type": "string"
     },
+    "recent_prose_context": {
+      "$ref": "#/$defs/RecentProseContext"
+    },
+    "recent_prose_context_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "resume_checkpoint_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "run_id": {
       "$ref": "#/$defs/RunId"
     },
@@ -1062,7 +1596,15 @@
       "$ref": "#/$defs/ArtifactId"
     },
     "writer_context_package": {
-      "$ref": "#/$defs/WriterContextPackage"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WriterContextPackage"
+        },
+        {
+          "$ref": "#/$defs/WriterContextPackageV2"
+        }
+      ],
+      "title": "Writer Context Package"
     },
     "writer_context_package_artifact": {
       "$ref": "#/$defs/ArtifactRef"
@@ -1087,6 +1629,8 @@
     "project_profile_revision",
     "writer_context_package",
     "writer_context_package_artifact",
+    "recent_prose_context",
+    "recent_prose_context_artifact",
     "future_isolation_attestation",
     "allowed_skills",
     "budgets",

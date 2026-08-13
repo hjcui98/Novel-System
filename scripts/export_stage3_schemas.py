@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -18,9 +17,6 @@ from novel_agent.domain import (
 from novel_agent.domain.base import DomainModel
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage3"
-GOLDEN_MANIFEST = (
-    Path(__file__).parents[1] / "tests" / "golden" / "stage3_writer" / "schema_manifest.json"
-)
 DOMAIN_MODULES = (
     generation,
     editorial,
@@ -54,16 +50,5 @@ def main() -> None:
     for stale in OUTPUT_DIRECTORY.glob("*.schema.json"):
         if stale.name not in expected:
             stale.unlink()
-    manifest = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(OUTPUT_DIRECTORY.glob("*.schema.json"))
-    }
-    GOLDEN_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    GOLDEN_MANIFEST.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ import json
 import platform
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from novel_agent.config import AppSettings
 from novel_agent.domain.ids import CommitId, ProjectId
@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     advance.add_argument("--policy", type=Path, required=True)
     advance.add_argument("--manifest", type=Path, required=True)
     advance.add_argument("--object-store-root", type=Path, required=True)
+    advance.add_argument("--assembly-factory", required=True)
     advance.add_argument("--max-tasks", type=int, required=True)
     for action in ("pause", "resume", "cancel", "retry"):
         control = runtime_commands.add_parser(action)
@@ -66,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
         control.add_argument("--command-id", required=True)
         control.add_argument("--actor-id", required=True)
         control.add_argument("--reason", required=True)
+    extend_budget = runtime_commands.add_parser("extend-budget")
+    extend_budget.add_argument("--project-id", required=True)
+    extend_budget.add_argument("--run-id", required=True)
+    extend_budget.add_argument("--task-id", required=True)
+    extend_budget.add_argument("--observed-revision", type=int, required=True)
+    extend_budget.add_argument("--command-id", required=True)
+    extend_budget.add_argument("--actor-id", required=True)
+    extend_budget.add_argument("--reason", required=True)
+    extend_budget.add_argument("--additional-attempts", type=int, default=0)
+    extend_budget.add_argument(
+        "--additional-planner-memory-tranches", type=int, default=0
+    )
     reconcile = runtime_commands.add_parser("reconcile-effect")
     reconcile.add_argument("--project-id", required=True)
     reconcile.add_argument("--run-id", required=True)
@@ -165,120 +178,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
             return 0
         if args.runtime_command == "advance":
-            from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository as _Q
-            from novel_agent.adapters.runtime.isolated import (
-                StrictDeterministicCandidateMaterializer,
-                StrictFakePlanningLeaf,
-            )
-            from novel_agent.domain.creative_runtime import CandidateKind
-            from novel_agent.domain.generation import WritingLoopRequest
             from novel_agent.domain.stage5_manifest import load_stage5_manifest
-            from novel_agent.ports.creative_runtime import (
-                PlanningLeafPort,
-                WritingLeafPort,
+            from novel_agent.runtime.creative_assembly import (
+                ProductionAssemblyContext,
+                load_production_runtime_assembly,
             )
-            from novel_agent.runtime.creative_assembly import validate_runtime_assembly
-            from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
-            from novel_agent.services.creative_runtime import CreativeRuntimeService
-            from novel_agent.services.projection import (
-                DerivedProjectionService,
-                DerivedSnapshotRepository,
-                ProjectionBuilder,
-                ProjectionOutboxRepository,
-            )
-            from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 
             policy = CreativeRunPolicy.model_validate_json(args.policy.read_bytes())
             manifest = load_stage5_manifest(args.manifest)
-            advance_commands = RuntimeCommandService(
-                factory,
-                events,
-                permission_hash_resolver=lambda _project_id: policy.permission_hash,
-            )
-            artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
-            plan_materializer = StrictDeterministicCandidateMaterializer(
-                CommitService(factory), candidate_kind=CandidateKind.PLAN
-            )
-            draft_materializer = StrictDeterministicCandidateMaterializer(
-                CommitService(factory), candidate_kind=CandidateKind.DRAFT
-            )
-
-            class _DeterministicWriter:
-                is_fixture = False
-
-                def __init__(self, store: ArtifactRepository) -> None:
-                    self._store = store
-
-                async def run(self, request: WritingLoopRequest) -> object:
-                    from novel_agent.domain.ids import SchemaVersion as _V
-                    from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
-
-                    ref = self._store.put(
-                        request.task_id.root.encode(),
-                        "text/plain",
-                        _V("1.0.0"),
-                    )
-                    return type(
-                        "Result",
-                        (),
-                        {
-                            "status": WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY,
-                            "final_candidate_id": ref.artifact_id,
-                            "final_text_artifact": ref,
-                            "artifacts": (ref,),
-                            "failure_detail": None,
-                        },
-                    )()
-
-            writer = cast(WritingLeafPort, _DeterministicWriter(artifacts))
-            planner = cast(PlanningLeafPort, StrictFakePlanningLeaf(artifacts))
-            task_reader = _Q(factory)
-            validate_runtime_assembly(
-                manifest,
-                planner=planner,
-                writer=writer,
-                plan_materializer=plan_materializer,
-                draft_materializer=draft_materializer,
-                production=False,
-            )
-            runtime = CreativeRuntimeService(
-                advance_commands,
-                RuntimeAcceptanceService(advance_commands, CommitService(factory), artifacts),
-                CommitService(factory),
-                artifacts,
-                planner,
-                writer,
-                lambda task: type(
-                    "Request",
-                    (),
-                    {
-                        "run_id": task.run_id,
-                        "task_id": task.task_id,
-                        "base_commit": task.basis_commit,
-                        "snapshot_id": task.basis_snapshot,
-                    },
-                )(),
-                plan_materializer,
-                draft_materializer,
-                DerivedProjectionService(
-                    ProjectionOutboxRepository(factory),
-                    cast(ProjectionBuilder, _ProjectionBuilder()),
+            assembly = load_production_runtime_assembly(
+                args.assembly_factory,
+                ProductionAssemblyContext(
+                    database_url=args.database_url,
+                    object_store_root=args.object_store_root,
+                    project_id=ProjectId(args.project_id),
+                    run_id=RunId(args.run_id),
+                    policy=policy,
+                    manifest=manifest,
                 ),
-                DerivedSnapshotRepository(factory),
-                lambda policy_hash: policy
-                if policy_hash == policy.policy_hash
-                else (_ for _ in ()).throw(KeyError(policy_hash)),
-                task_reader,
             )
-            dispatcher = CreativeDispatcher(
-                task_reader,
-                runtime,
-                worker_id="cli-advance",
-                project_id=ProjectId(args.project_id),
-                run_id=RunId(args.run_id),
-                parallelism=policy.runtime_parallelism,
+            results = _run_async(
+                assembly.dispatcher.run_bounded(max_tasks=args.max_tasks)
             )
-            results = _run_async(dispatcher.run_bounded(max_tasks=args.max_tasks))
             if not results:
                 print(json.dumps({"progressed": 0, "results": []}, sort_keys=True))
                 return 0
@@ -405,7 +326,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.run_id
         ):
             raise ValueError("explicit project/run/task identity mismatch")
-        if args.runtime_command == "resume":
+        if args.runtime_command == "extend-budget":
+            task = commands.extend_budget(
+                task_id,
+                command_id=command_id,
+                actor_id=args.actor_id,
+                reason=args.reason,
+                additional_attempts=args.additional_attempts,
+                additional_planner_memory_tranches=(
+                    args.additional_planner_memory_tranches
+                ),
+                observed_revision=args.observed_revision,
+            )
+        elif args.runtime_command == "resume":
             task = commands.resume(
                 task_id,
                 command_id=command_id,

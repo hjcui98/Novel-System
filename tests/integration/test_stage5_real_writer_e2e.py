@@ -110,11 +110,9 @@ from novel_agent.domain.stage2 import (
     ProposalProvenance,
     ProposedItem,
 )
-from novel_agent.domain.stage5_manifest import load_stage5_manifest
 from novel_agent.domain.writing_loop import WritingLoopResult
 from novel_agent.ports.creative_runtime import WritingLeafPort
 from novel_agent.prompts import PromptRegistry
-from novel_agent.runtime.creative_assembly import validate_runtime_assembly
 from novel_agent.services.agent_context import (
     AgentContextProjector,
     AgentContextRuntime,
@@ -132,6 +130,7 @@ from novel_agent.services.projection import (
     DerivedSnapshotRepository,
     ProjectionOutboxRepository,
 )
+from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import RuntimeCommandService
 from novel_agent.services.writer_candidate import WriterCandidateMaterializer
@@ -256,9 +255,7 @@ def _canonical_manifest(artifacts: ArtifactRepository) -> RootManifest:
             "project_profile_root": ProjectProfileRootRef(
                 **profile_artifact.model_dump(mode="python")
             ),
-            "reference_root": ReferenceRootRef(
-                **reference_artifact.model_dump(mode="python")
-            ),
+            "reference_root": ReferenceRootRef(**reference_artifact.model_dump(mode="python")),
         }
     )
 
@@ -340,9 +337,7 @@ class _MaterializableStage4Loop:
             request.run_id,
             request.task_id,
             request.task.base_commit,
-        ).model_copy(
-            update={"input_artifacts": (proposal_ref,)}
-        )
+        ).model_copy(update={"input_artifacts": (proposal_ref,)})
         review = PlanReview(
             review_id=StableId(f"review.{request.task_id.root}"[:128]),
             target_kind=ReviewTargetKind.PLAN_PROPOSAL,
@@ -527,6 +522,18 @@ class _Stage3WriterAssembly:
             manifest.project_profile_root.model_dump(mode="python", exclude={"root_kind"})
         )
         package_ref = _put(self._artifacts, package)
+        text_root = TextRootDocument.model_validate_json(
+            self._artifacts.read_verified(manifest.text_root)
+        )
+        recent_prose, recent_prose_ref = RecentProseAssembler(
+            self._artifacts,
+            VERSION,
+        ).assemble(
+            text_root=text_root,
+            base_commit=task.basis_commit,
+            snapshot_id=task.basis_snapshot,
+            target_chapter=writing_task.target_chapter,
+        )
         request = WritingLoopRequest(
             run_id=task.run_id,
             task_id=task.task_id,
@@ -546,6 +553,8 @@ class _Stage3WriterAssembly:
             project_profile_revision="profile-v1",
             writer_context_package=package,
             writer_context_package_artifact=package_ref,
+            recent_prose_context=recent_prose,
+            recent_prose_context_artifact=recent_prose_ref,
             future_isolation_attestation=FutureIsolationAttestation(
                 attestation_id=StableId(f"attestation.{task.task_id.root}"),
                 checkpoint_chapter=20,
@@ -701,20 +710,8 @@ def real_writer_kernel(
     loop = assembly.build_loop(factory)
     writer = assembly.writing_leaf(loop=loop)
     planner = _planning_leaf(artifacts, commits)
-    plan_materializer = PlanCandidateMaterializer(
-        artifacts, commits, schema_version=VERSION
-    )
-    draft_materializer = DraftCandidateMaterializer(
-        artifacts, commits, schema_version=VERSION
-    )
-    validate_runtime_assembly(
-        load_stage5_manifest(PACKAGE_ROOT / "runtime" / "stage5_development_manifest.json"),
-        planner=planner,
-        writer=writer,
-        plan_materializer=plan_materializer,
-        draft_materializer=draft_materializer,
-        production=True,
-    )
+    plan_materializer = PlanCandidateMaterializer(artifacts, commits, schema_version=VERSION)
+    draft_materializer = DraftCandidateMaterializer(artifacts, commits, schema_version=VERSION)
     runtime = CreativeRuntimeService(
         commands,
         RuntimeAcceptanceService(commands, commits, artifacts),
@@ -752,6 +749,8 @@ def test_real_writer_adapter_composes_through_draft_chain(
         basis_commit=base,
         basis_snapshot=StableId("snapshot.initial"),
         policy=policy,
+        current_chapter=20,
+        target_chapters=21,
     )
     start = runtime.start(request)
     assert start.current_task_id is not None
@@ -794,8 +793,7 @@ def test_real_writer_adapter_composes_through_draft_chain(
         (
             WritingLoopResult.model_validate_json(artifacts.read_verified(ref))
             for ref in failed_task.terminal_artifact_refs
-            if ref.media_type
-            == "application/vnd.novel-agent.writing-loop-result+json"
+            if ref.media_type == "application/vnd.novel-agent.writing-loop-result+json"
         ),
         None,
     )

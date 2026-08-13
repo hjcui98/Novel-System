@@ -46,6 +46,7 @@
         "WAITING_PLAN_ACCEPTANCE",
         "WAITING_DRAFT_ACCEPTANCE",
         "WAITING_RETRY",
+        "BUDGET_REVIEW",
         "RECOVERY_PENDING",
         "REVIEW_REQUIRED",
         "BLOCKED",

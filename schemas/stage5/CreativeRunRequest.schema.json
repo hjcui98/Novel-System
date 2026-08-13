@@ -72,21 +72,18 @@
         },
         "lookahead_horizon": {
           "default": 3,
-          "maximum": 12,
           "minimum": 1,
           "title": "Lookahead Horizon",
           "type": "integer"
         },
         "max_task_attempts": {
           "default": 3,
-          "maximum": 20,
           "minimum": 1,
           "title": "Max Task Attempts",
           "type": "integer"
         },
         "max_tasks_per_advance": {
           "default": 1,
-          "maximum": 10,
           "minimum": 1,
           "title": "Max Tasks Per Advance",
           "type": "integer"
@@ -95,6 +92,12 @@
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Permission Hash",
           "type": "string"
+        },
+        "planning_horizon": {
+          "default": 5,
+          "minimum": 1,
+          "title": "Planning Horizon",
+          "type": "integer"
         },
         "policy_hash": {
           "pattern": "^sha256:[0-9a-f]{64}$",
@@ -155,6 +158,13 @@
         }
       ],
       "default": null
+    },
+    "current_chapter": {
+      "default": 0,
+      "maximum": 9999,
+      "minimum": 0,
+      "title": "Current Chapter",
+      "type": "integer"
     },
     "input_artifact_refs": {
       "default": [],

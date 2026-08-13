@@ -6,7 +6,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pydantic import JsonValue
 from sqlalchemy import func, select
@@ -21,7 +21,7 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
-from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.changes import CommitRequest, CommitResult, CommitStatus
 from novel_agent.domain.creative_runtime import AcceptanceReceipt, CreativeRunRequest
 from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
@@ -82,10 +82,19 @@ class RuntimeCommandService:
         session_factory: sessionmaker[Session],
         events: RunEventLogRepository,
         permission_hash_resolver: Callable[[str], str],
+        *,
+        attempt_lease_seconds: int = 300,
     ) -> None:
+        if attempt_lease_seconds < 3:
+            raise ValueError("Attempt lease must be at least three seconds")
         self._session_factory = session_factory
         self._events = events
         self._permission_hash_resolver = permission_hash_resolver
+        self._attempt_lease = timedelta(seconds=attempt_lease_seconds)
+
+    @property
+    def heartbeat_interval_seconds(self) -> float:
+        return max(1.0, self._attempt_lease.total_seconds() / 3.0)
 
     def create_run_and_initial_task(self, request: CreativeRunRequest) -> TaskRecord:
         task = TaskRecord(
@@ -101,7 +110,14 @@ class RuntimeCommandService:
             permission_hash=request.policy.permission_hash,
             input_artifact_refs=request.input_artifact_refs,
             failure_budget=request.policy.max_task_attempts,
+            retry_tranche_size=request.policy.max_task_attempts,
+            chapter_index=request.current_chapter,
             target_chapters=request.target_chapters,
+            horizon_start=request.current_chapter + 1,
+            horizon_end=min(
+                request.target_chapters,
+                request.current_chapter + request.policy.planning_horizon,
+            ),
         )
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
@@ -166,6 +182,7 @@ class RuntimeCommandService:
                 TaskStatus.READY,
                 TaskStatus.WAITING_INPUT,
                 TaskStatus.WAITING_RETRY,
+                TaskStatus.BUDGET_REVIEW,
                 TaskStatus.BLOCKED,
             }:
                 raise RuntimeCommandConflictError("only inactive work may be superseded")
@@ -199,6 +216,7 @@ class RuntimeCommandService:
         *,
         receipt: AcceptanceReceipt,
         receipt_ref: ArtifactRef,
+        successor_tasks: tuple[TaskRecord, ...] = (),
     ) -> TaskRecord:
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
@@ -243,6 +261,7 @@ class RuntimeCommandService:
                 receipt.idempotency_identity,
                 artifact_refs=(receipt_ref,),
             )
+            self._insert_successor_tasks(session, updated, successor_tasks, now)
             return updated
 
     def claim(
@@ -297,6 +316,8 @@ class RuntimeCommandService:
                 claim_token_digest=_digest(token.root),
                 fence_generation=attempt_no,
                 claimed_at=now,
+                heartbeat_at=now,
+                lease_expires_at=now + self._attempt_lease,
             )
             claimed = task.model_copy(
                 update={
@@ -350,6 +371,157 @@ class RuntimeCommandService:
             )
             return started
 
+    def heartbeat(self, fence: AttemptFence) -> TaskAttempt:
+        """Renew only the matching current Attempt; fencing remains authoritative."""
+
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            _task, attempt = self._require_fence(session, fence)
+            if attempt.ended_at is not None:
+                raise StaleAttemptFenceError("settled Attempt cannot heartbeat")
+            renewed = attempt.model_copy(
+                update={
+                    "heartbeat_at": now,
+                    "lease_expires_at": now + self._attempt_lease,
+                }
+            )
+            self._update_attempt(session, renewed)
+            return renewed
+
+    def suspect_expired_attempt(
+        self,
+        task_id: TaskId,
+        *,
+        command_id: StableId,
+        actor_id: str,
+        reason: str,
+        observed_revision: int | None = None,
+        now: datetime | None = None,
+    ) -> TaskRecord:
+        """Fence new work after lease expiry; do not infer that external work stopped."""
+
+        observed_at = now or datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if task.status is TaskStatus.RECOVERY_PENDING:
+                return task
+            if task.status is not TaskStatus.RUNNING or task.current_attempt_id is None:
+                raise RuntimeCommandConflictError("lease suspicion requires a running Attempt")
+            row = session.get(RuntimeTaskAttemptRow, task.current_attempt_id.root)
+            if row is None:
+                raise RuntimeCommandConflictError("current Attempt projection is missing")
+            attempt = TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
+            if attempt.lease_expires_at is None or attempt.lease_expires_at >= observed_at:
+                raise RuntimeCommandConflictError("Attempt lease has not expired")
+            updated = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.RECOVERY_PENDING,
+                }
+            )
+            self._update_task(session, updated, observed_at)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=command_id,
+                    action="lease_expired",
+                    actor_id=actor_id,
+                    reason=reason,
+                ).model_dump(mode="json"),
+                command_id,
+            )
+            return updated
+
+    def reclaim_expired_attempt(
+        self,
+        task_id: TaskId,
+        *,
+        command_id: StableId,
+        actor_id: str,
+        reason: str,
+        observed_revision: int | None = None,
+        now: datetime | None = None,
+    ) -> TaskRecord:
+        """Release an expired owner only after the effect frontier is settled."""
+
+        observed_at = now or datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if (
+                task.status is not TaskStatus.RECOVERY_PENDING
+                or task.current_attempt_id is None
+            ):
+                raise RuntimeCommandConflictError(
+                    "lease reclaim requires RECOVERY_PENDING with a current Attempt"
+                )
+            row = session.get(RuntimeTaskAttemptRow, task.current_attempt_id.root)
+            if row is None:
+                raise RuntimeCommandConflictError("current Attempt projection is missing")
+            attempt = TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
+            if attempt.lease_expires_at is None or attempt.lease_expires_at >= observed_at:
+                raise RuntimeCommandConflictError("Attempt lease is no longer expired")
+            unresolved = session.scalar(
+                select(RuntimeEffectProjectionRow.effect_identity).where(
+                    RuntimeEffectProjectionRow.attempt_id == attempt.attempt_id.root,
+                    RuntimeEffectProjectionRow.status.in_(
+                        (EffectStatus.REQUESTED.value, EffectStatus.UNCERTAIN.value)
+                    ),
+                )
+            )
+            if unresolved is not None:
+                raise RuntimeCommandConflictError(
+                    "expired Attempt effect frontier requires reconciliation"
+                )
+            settled_attempt = attempt.model_copy(
+                update={
+                    "ended_at": observed_at,
+                    "outcome": AttemptOutcome.SUSPENDED,
+                    "failure_class": FailureClass.WORKER_LEASE_EXPIRED,
+                }
+            )
+            settled_task = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.WAITING_RETRY,
+                    "current_attempt_id": None,
+                }
+            )
+            self._update_attempt(session, settled_attempt)
+            self._update_task(session, settled_task, observed_at)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=command_id,
+                    action="lease_reclaim",
+                    actor_id=actor_id,
+                    reason=reason,
+                ).model_dump(mode="json"),
+                command_id,
+            )
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_ATTEMPT_SETTLED,
+                TaskAttemptSettledPayload(
+                    attempt_id=attempt.attempt_id,
+                    outcome=AttemptOutcome.SUSPENDED,
+                    task_status=TaskStatus.WAITING_RETRY,
+                    failure_class=FailureClass.WORKER_LEASE_EXPIRED,
+                    ended_at=observed_at,
+                ).model_dump(mode="json"),
+                StableId(f"{command_id.root}.attempt-settled"[:128]),
+            )
+            return settled_task
+
     def settle_attempt(
         self,
         fence: AttemptFence,
@@ -358,13 +530,16 @@ class RuntimeCommandService:
         terminal_status: TaskStatus,
         artifact_refs: tuple[ArtifactRef, ...] = (),
         failure_class: FailureClass | None = None,
+        successor_tasks: tuple[TaskRecord, ...] = (),
     ) -> TaskRecord:
         if terminal_status not in {
+            TaskStatus.READY,
             TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
             TaskStatus.BLOCKED,
             TaskStatus.WAITING_RETRY,
+            TaskStatus.BUDGET_REVIEW,
         }:
             raise ValueError("attempt settlement requires a terminal or explicit waiting status")
         now = datetime.now(UTC)
@@ -391,23 +566,30 @@ class RuntimeCommandService:
                 failure_class is not None and failure_policy(failure_class).consumes_task_budget
             )
             remaining = task.failure_budget - (1 if consumes_budget else 0)
+            settled_status = (
+                TaskStatus.BUDGET_REVIEW
+                if terminal_status is TaskStatus.WAITING_RETRY
+                and consumes_budget
+                and remaining <= 0
+                else terminal_status
+            )
             settled_task = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
-                    "status": terminal_status,
+                    "status": settled_status,
                     "current_attempt_id": None,
                     "terminal_artifact_refs": artifact_refs,
                     "failure_budget": max(0, remaining),
                     "block_cause": (
                         failure_class.value
-                        if terminal_status is TaskStatus.BLOCKED and failure_class is not None
+                        if settled_status is TaskStatus.BLOCKED and failure_class is not None
                         else task.block_cause
                     ),
                 }
             )
             self._update_attempt(session, settled_attempt)
             self._update_task(session, settled_task, now)
-            if terminal_status is TaskStatus.BLOCKED and settled_task.block_cause is not None:
+            if settled_status is TaskStatus.BLOCKED and settled_task.block_cause is not None:
                 self._append(
                     session,
                     task.run_id,
@@ -428,11 +610,11 @@ class RuntimeCommandService:
                 TaskAttemptSettledPayload(
                     attempt_id=attempt.attempt_id,
                     outcome=outcome,
-                    task_status=terminal_status,
+                    task_status=settled_status,
                     failure_class=failure_class,
                     block_cause=(
                         failure_class.value
-                        if terminal_status is TaskStatus.BLOCKED and failure_class is not None
+                        if settled_status is TaskStatus.BLOCKED and failure_class is not None
                         else None
                     ),
                     terminal_artifact_refs=artifact_refs,
@@ -441,6 +623,7 @@ class RuntimeCommandService:
                 StableId(f"{attempt.attempt_id.root}.settled"),
                 artifact_refs=artifact_refs,
             )
+            self._insert_successor_tasks(session, settled_task, successor_tasks, now)
             return settled_task
 
     def record_effect_requested(self, fence: AttemptFence, receipt: EffectReceipt) -> EffectReceipt:
@@ -479,6 +662,28 @@ class RuntimeCommandService:
                 ).model_dump(mode="json"),
                 StableId(f"{receipt.effect_identity.root}.requested"),
             )
+            return receipt
+
+    def effect_for_current_attempt(
+        self, task_id: TaskId, *, external_system: str
+    ) -> EffectReceipt | None:
+        """Read the outer effect owned by a task's still-current Attempt."""
+
+        with self._session_factory() as session:
+            task = self._load_task(session, task_id, lock=False)
+            if task.current_attempt_id is None:
+                return None
+            row = session.scalar(
+                select(RuntimeEffectProjectionRow).where(
+                    RuntimeEffectProjectionRow.task_id == task_id.root,
+                    RuntimeEffectProjectionRow.attempt_id == task.current_attempt_id.root,
+                )
+            )
+            if row is None:
+                return None
+            receipt = EffectReceipt.model_validate_json(json.dumps(row.effect_json))
+            if receipt.external_system != external_system:
+                return None
             return receipt
 
     def record_effect_terminal(self, fence: AttemptFence, receipt: EffectReceipt) -> EffectReceipt:
@@ -577,10 +782,15 @@ class RuntimeCommandService:
         actor_id: str,
         reason: str,
         terminal_status: TaskStatus = TaskStatus.WAITING_RETRY,
+        failure_class: FailureClass | None = None,
         observed_revision: int | None = None,
     ) -> TaskRecord:
-        if terminal_status not in {TaskStatus.WAITING_RETRY, TaskStatus.CANCELLED}:
-            raise ValueError("operator reconciliation may only retry or cancel")
+        if terminal_status not in {
+            TaskStatus.WAITING_RETRY,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+        }:
+            raise ValueError("operator reconciliation may only retry, block, or cancel")
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
             task = self._load_task(session, task_id, lock=True)
@@ -601,12 +811,12 @@ class RuntimeCommandService:
             if row is None:
                 raise RuntimeCommandConflictError("current attempt projection is missing")
             attempt = TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
-            outcome = (
-                AttemptOutcome.CANCELLED
-                if terminal_status is TaskStatus.CANCELLED
-                else AttemptOutcome.SUSPENDED
-            )
-            failure = (
+            outcome = {
+                TaskStatus.CANCELLED: AttemptOutcome.CANCELLED,
+                TaskStatus.BLOCKED: AttemptOutcome.FAILED,
+                TaskStatus.WAITING_RETRY: AttemptOutcome.SUSPENDED,
+            }[terminal_status]
+            failure = failure_class or (
                 FailureClass.CANCELLED
                 if terminal_status is TaskStatus.CANCELLED
                 else FailureClass.WORKER_STARTUP
@@ -614,12 +824,23 @@ class RuntimeCommandService:
             settled_attempt = attempt.model_copy(
                 update={"ended_at": now, "outcome": outcome, "failure_class": failure}
             )
+            consumes_budget = failure_policy(failure).consumes_task_budget
+            remaining = task.failure_budget - (1 if consumes_budget else 0)
+            settled_status = (
+                TaskStatus.BUDGET_REVIEW
+                if terminal_status is TaskStatus.WAITING_RETRY and remaining <= 0
+                else terminal_status
+            )
             settled_task = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
-                    "status": terminal_status,
+                    "status": settled_status,
                     "current_attempt_id": None,
-                    "paused": terminal_status is TaskStatus.CANCELLED,
+                    "failure_budget": max(0, remaining),
+                    "paused": settled_status is TaskStatus.CANCELLED,
+                    "block_cause": (
+                        reason if settled_status is TaskStatus.BLOCKED else task.block_cause
+                    ),
                 }
             )
             self._update_attempt(session, settled_attempt)
@@ -637,6 +858,19 @@ class RuntimeCommandService:
                 ).model_dump(mode="json"),
                 command_id,
             )
+            if settled_status is TaskStatus.BLOCKED:
+                self._append(
+                    session,
+                    task.run_id,
+                    task.task_id,
+                    RunEventType.RUNTIME_TASK_BLOCKED,
+                    TaskBlockedPayload(
+                        failure_class=failure,
+                        cause_fingerprint=_digest(reason),
+                        sanitized_message=reason[:512],
+                    ).model_dump(mode="json"),
+                    StableId(f"blocked.{command_id.root}"[:128]),
+                )
             self._append(
                 session,
                 task.run_id,
@@ -645,7 +879,7 @@ class RuntimeCommandService:
                 TaskAttemptSettledPayload(
                     attempt_id=attempt.attempt_id,
                     outcome=outcome,
-                    task_status=terminal_status,
+                    task_status=settled_status,
                     failure_class=failure,
                     ended_at=now,
                 ).model_dump(mode="json"),
@@ -782,6 +1016,8 @@ class RuntimeCommandService:
             if action == "retry" and task.status is not TaskStatus.WAITING_RETRY:
                 raise RuntimeCommandConflictError("retry requires WAITING_RETRY")
             status = transitions.get(action, task.status)
+            if action == "retry" and task.failure_budget <= 0:
+                status = TaskStatus.BUDGET_REVIEW
             if action == "pause" and task.current_attempt_id is None:
                 status = TaskStatus.PENDING
             if action == "cancel":
@@ -811,6 +1047,70 @@ class RuntimeCommandService:
             )
             return updated
 
+    def extend_budget(
+        self,
+        task_id: TaskId,
+        *,
+        command_id: StableId,
+        actor_id: str,
+        reason: str,
+        additional_attempts: int = 0,
+        additional_planner_memory_tranches: int = 0,
+        observed_revision: int | None = None,
+    ) -> TaskRecord:
+        """Add an explicit retry tranche to budget-waiting work and make it claimable."""
+
+        if (
+            isinstance(additional_attempts, bool)
+            or isinstance(additional_planner_memory_tranches, bool)
+            or additional_attempts < 0
+            or additional_planner_memory_tranches < 0
+            or not (additional_attempts or additional_planner_memory_tranches)
+        ):
+            raise ValueError("budget extension must add a retry or Planner Memory tranche")
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if task.status is not TaskStatus.BUDGET_REVIEW or task.current_attempt_id is not None:
+                raise RuntimeCommandConflictError(
+                    "budget extension requires inactive BUDGET_REVIEW work"
+                )
+            if task.failure_budget + additional_attempts <= 0:
+                raise RuntimeCommandConflictError(
+                    "budget extension must leave the task with a positive retry budget"
+                )
+            updated = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.READY,
+                    "failure_budget": task.failure_budget + additional_attempts,
+                    "planner_memory_budget_extensions": (
+                        task.planner_memory_budget_extensions
+                        + additional_planner_memory_tranches
+                    ),
+                }
+            )
+            self._update_task(session, updated, now)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=command_id,
+                    action="extend_budget",
+                    actor_id=actor_id,
+                    reason=reason,
+                    additional_attempts=additional_attempts,
+                    additional_planner_memory_tranches=(
+                        additional_planner_memory_tranches
+                    ),
+                ).model_dump(mode="json"),
+                command_id,
+            )
+            return updated
+
     def unblock(
         self,
         task_id: TaskId,
@@ -834,7 +1134,11 @@ class RuntimeCommandService:
             updated = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
-                    "status": TaskStatus.READY,
+                    "status": (
+                        TaskStatus.READY
+                        if task.failure_budget > 0
+                        else TaskStatus.BUDGET_REVIEW
+                    ),
                     "block_cause": None,
                 }
             )
@@ -875,7 +1179,11 @@ class RuntimeCommandService:
             updated = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
-                    "status": TaskStatus.READY,
+                    "status": (
+                        TaskStatus.READY
+                        if task.failure_budget > 0
+                        else TaskStatus.BUDGET_REVIEW
+                    ),
                     "paused": False,
                     "cancel_requested": False,
                 }
@@ -958,6 +1266,8 @@ class RuntimeCommandService:
         fence: AttemptFence,
         request: CommitRequest,
         commits: CommitService,
+        *,
+        successor_tasks: tuple[TaskRecord, ...] = (),
     ) -> CommitResult:
         """Fence, Canon CAS, task projection, and RunEvent settle in one transaction."""
 
@@ -1062,7 +1372,210 @@ class RuntimeCommandService:
                 StableId(f"{attempt.attempt_id.root}.settled"),
                 artifact_refs=request.bundle.produced_artifacts,
             )
+            if result.status is CommitStatus.ACCEPTED:
+                assert result.commit_id is not None
+                self._insert_successor_tasks(
+                    session,
+                    settled_task,
+                    successor_tasks,
+                    now,
+                    expected_basis=result.commit_id,
+                )
             return result
+
+    def record_external_commit(
+        self,
+        fence: AttemptFence,
+        commit_id: CommitId,
+        *,
+        commits: CommitService,
+        artifact_refs: tuple[ArtifactRef, ...] = (),
+        effect_receipt: EffectReceipt | None = None,
+        successor_tasks: tuple[TaskRecord, ...] = (),
+    ) -> TaskRecord:
+        """Settle a fenced Draft commit already accepted by Stage 2W's atomic owner."""
+
+        manifest = commits.load_manifest(commit_id)
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task, attempt = self._require_fence(session, fence)
+            return self._settle_external_commit_in_session(
+                session,
+                task,
+                attempt,
+                commit_id=commit_id,
+                manifest=manifest,
+                artifact_refs=artifact_refs,
+                effect_receipt=effect_receipt,
+                successor_tasks=successor_tasks,
+                now=now,
+            )
+
+    def reconcile_external_commit(
+        self,
+        task_id: TaskId,
+        commit_id: CommitId,
+        *,
+        commits: CommitService,
+        effect_receipt: EffectReceipt,
+        successor_tasks: tuple[TaskRecord, ...],
+        artifact_refs: tuple[ArtifactRef, ...] = (),
+        observed_revision: int | None = None,
+    ) -> TaskRecord:
+        """Finish a proven Stage 2W commit after the worker fence was lost."""
+
+        manifest = commits.load_manifest(commit_id)
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if task.current_attempt_id is None:
+                raise RuntimeCommandConflictError("task has no interrupted external Attempt")
+            row = session.get(RuntimeTaskAttemptRow, task.current_attempt_id.root)
+            if row is None:
+                raise RuntimeCommandConflictError("interrupted Attempt projection is missing")
+            attempt = TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
+            return self._settle_external_commit_in_session(
+                session,
+                task,
+                attempt,
+                commit_id=commit_id,
+                manifest=manifest,
+                artifact_refs=artifact_refs,
+                effect_receipt=effect_receipt,
+                successor_tasks=successor_tasks,
+                now=now,
+            )
+
+    def _settle_external_commit_in_session(
+        self,
+        session: Session,
+        task: TaskRecord,
+        attempt: TaskAttempt,
+        *,
+        commit_id: CommitId,
+        manifest: RootManifest,
+        artifact_refs: tuple[ArtifactRef, ...],
+        effect_receipt: EffectReceipt | None,
+        successor_tasks: tuple[TaskRecord, ...],
+        now: datetime,
+    ) -> TaskRecord:
+        if task.kind is not TaskKind.DRAFT_COMMIT:
+            raise RuntimeCommandConflictError(
+                "only a Draft commit task may record Chapter Settlement"
+            )
+        project = session.scalar(
+            select(ProjectRow)
+            .where(ProjectRow.project_id == task.project_id.root)
+            .with_for_update()
+        )
+        if (
+            project is None
+            or project.current_commit_id != commit_id.root
+            or manifest.project_id != task.project_id
+            or manifest.parent_commit_ids != (task.basis_commit,)
+        ):
+            raise RuntimeCommandConflictError(
+                "Chapter Settlement commit does not advance the fenced task basis"
+            )
+        if effect_receipt is not None:
+            if (
+                effect_receipt.status is not EffectStatus.COMPLETED
+                or effect_receipt.provider_request_id != commit_id.root
+            ):
+                raise RuntimeCommandConflictError(
+                    "Chapter Settlement effect does not prove the accepted commit"
+                )
+            effect_row = session.get(
+                RuntimeEffectProjectionRow, effect_receipt.effect_identity.root
+            )
+            if effect_row is None or effect_row.attempt_id != attempt.attempt_id.root:
+                raise RuntimeCommandConflictError(
+                    "Chapter Settlement effect belongs to another Attempt"
+                )
+            prior = EffectReceipt.model_validate_json(json.dumps(effect_row.effect_json))
+            if (
+                prior.request_identity != effect_receipt.request_identity
+                or prior.external_system != effect_receipt.external_system
+                or prior.attempt_no != effect_receipt.attempt_no
+            ):
+                raise RuntimeCommandConflictError("Chapter Settlement effect identity changed")
+            effect_row.status = effect_receipt.status.value
+            effect_row.provider_request_id = effect_receipt.provider_request_id
+            effect_row.result_ref_json = (
+                None
+                if effect_receipt.result_artifact_ref is None
+                else effect_receipt.result_artifact_ref.model_dump(mode="json")
+            )
+            effect_row.effect_json = effect_receipt.model_dump(mode="json")
+            effect_refs = (
+                ()
+                if effect_receipt.result_artifact_ref is None
+                else (effect_receipt.result_artifact_ref,)
+            )
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_EFFECT_TERMINAL,
+                EffectTerminalPayload(
+                    effect=effect_receipt,
+                    task_id=task.task_id,
+                    attempt_id=attempt.attempt_id,
+                ).model_dump(mode="json"),
+                StableId(
+                    f"{effect_receipt.effect_identity.root}.{effect_receipt.status.value}"
+                ),
+                artifact_refs=effect_refs,
+            )
+        settled_attempt = attempt.model_copy(
+            update={"ended_at": now, "outcome": AttemptOutcome.SUCCEEDED}
+        )
+        settled_task = task.model_copy(
+            update={
+                "task_revision": task.task_revision + 1,
+                "status": TaskStatus.SUCCEEDED,
+                "current_attempt_id": None,
+                "terminal_artifact_refs": artifact_refs,
+            }
+        )
+        self._update_attempt(session, settled_attempt)
+        self._update_task(session, settled_task, now)
+        self._append(
+            session,
+            task.run_id,
+            task.task_id,
+            RunEventType.COMMIT_ACCEPTED,
+            {
+                "commit_id": commit_id.root,
+                "owner": "stage2w.chapter_reveal_atomic",
+            },
+            StableId(f"{attempt.attempt_id.root}.chapter-settlement"),
+            artifact_refs=artifact_refs,
+        )
+        self._append(
+            session,
+            task.run_id,
+            task.task_id,
+            RunEventType.RUNTIME_ATTEMPT_SETTLED,
+            TaskAttemptSettledPayload(
+                attempt_id=attempt.attempt_id,
+                outcome=AttemptOutcome.SUCCEEDED,
+                task_status=TaskStatus.SUCCEEDED,
+                terminal_artifact_refs=artifact_refs,
+                ended_at=now,
+            ).model_dump(mode="json"),
+            StableId(f"{attempt.attempt_id.root}.settled"),
+            artifact_refs=artifact_refs,
+        )
+        self._insert_successor_tasks(
+            session,
+            settled_task,
+            successor_tasks,
+            now,
+            expected_basis=commit_id,
+        )
+        return settled_task
 
     def _require_fence(
         self, session: Session, fence: AttemptFence
@@ -1092,6 +1605,79 @@ class RuntimeCommandService:
             ):
                 raise StaleAttemptFenceError("attempt lost the project writer generation")
         return task, attempt
+
+    def _insert_successor_tasks(
+        self,
+        session: Session,
+        predecessor: TaskRecord,
+        successors: tuple[TaskRecord, ...],
+        now: datetime,
+        *,
+        expected_basis: CommitId | None = None,
+    ) -> None:
+        """Create fixed-topology successors inside the predecessor's transaction."""
+
+        if not successors:
+            return
+        if predecessor.status is not TaskStatus.SUCCEEDED:
+            raise RuntimeCommandConflictError("only a succeeded task may create successors")
+        allowed_kinds = {
+            TaskKind.PLAN_CANDIDATE: {TaskKind.PLAN_ACCEPTANCE},
+            TaskKind.DRAFT_CANDIDATE: {TaskKind.DRAFT_ACCEPTANCE},
+            TaskKind.PLAN_ACCEPTANCE: {TaskKind.PLAN_COMMIT},
+            TaskKind.DRAFT_ACCEPTANCE: {TaskKind.DRAFT_COMMIT},
+            TaskKind.PLAN_COMMIT: {TaskKind.PROJECTION_FRESHNESS},
+            TaskKind.DRAFT_COMMIT: {TaskKind.PROJECTION_FRESHNESS},
+            TaskKind.PROJECTION_FRESHNESS: {
+                TaskKind.PLAN_CANDIDATE,
+                TaskKind.DRAFT_CANDIDATE,
+            },
+        }.get(predecessor.kind, set())
+        basis = expected_basis or predecessor.basis_commit
+        seen_ids: set[str] = set()
+        for successor in successors:
+            if successor.task_id.root in seen_ids:
+                raise RuntimeCommandConflictError("successor task identity is duplicated")
+            seen_ids.add(successor.task_id.root)
+            if successor.kind not in allowed_kinds:
+                raise RuntimeCommandConflictError("successor skips the fixed runtime topology")
+            if (
+                successor.run_id != predecessor.run_id
+                or successor.project_id != predecessor.project_id
+                or successor.policy_hash != predecessor.policy_hash
+                or successor.permission_hash != predecessor.permission_hash
+            ):
+                raise RuntimeCommandConflictError("successor differs from its runtime owner")
+            if successor.basis_commit != basis:
+                raise RuntimeCommandConflictError("successor differs from its settled basis")
+            if predecessor.task_id not in successor.dependency_task_ids:
+                raise RuntimeCommandConflictError("successor does not depend on its predecessor")
+            if successor.task_revision != 0 or successor.current_attempt_id is not None:
+                raise RuntimeCommandConflictError("successor must be an unclaimed initial task")
+            if successor.status not in {
+                TaskStatus.PENDING,
+                TaskStatus.READY,
+                TaskStatus.WAITING_INPUT,
+            }:
+                raise RuntimeCommandConflictError("successor has an invalid initial status")
+            for dependency in successor.dependency_task_ids:
+                if session.get(RuntimeTaskProjectionRow, dependency.root) is None:
+                    raise RuntimeCommandConflictError("successor dependency does not exist")
+            existing = session.get(RuntimeTaskProjectionRow, successor.task_id.root)
+            if existing is not None:
+                restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
+                if restored != successor:
+                    raise RuntimeCommandConflictError("successor task identity collision")
+                continue
+            self._append(
+                session,
+                successor.run_id,
+                successor.task_id,
+                RunEventType.RUNTIME_TASK_CREATED,
+                TaskCreatedPayload(task=successor).model_dump(mode="json"),
+                StableId(f"{successor.task_id.root}.created"),
+            )
+            self._insert_task(session, successor, now)
 
     @staticmethod
     def _require_observed_revision(task: TaskRecord, observed_revision: int | None) -> None:
@@ -1186,6 +1772,8 @@ class RuntimeCommandService:
                 claim_digest=attempt.claim_token_digest,
                 fence_generation=attempt.fence_generation,
                 claimed_at=attempt.claimed_at,
+                heartbeat_at=attempt.heartbeat_at or attempt.claimed_at,
+                lease_expires_at=attempt.lease_expires_at or attempt.claimed_at,
                 started_at=attempt.started_at,
                 ended_at=attempt.ended_at,
                 outcome=None,
@@ -1201,6 +1789,8 @@ class RuntimeCommandService:
             raise LookupError(  # pragma: no cover - guarded by _require_fence
                 attempt.attempt_id.root
             )
+        row.heartbeat_at = attempt.heartbeat_at or attempt.claimed_at
+        row.lease_expires_at = attempt.lease_expires_at or attempt.claimed_at
         row.started_at = attempt.started_at
         row.ended_at = attempt.ended_at
         row.outcome = None if attempt.outcome is None else attempt.outcome.value

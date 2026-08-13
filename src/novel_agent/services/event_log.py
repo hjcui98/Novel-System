@@ -149,17 +149,14 @@ class RunCheckpointRepository:
             )
             return checkpoint
 
-    def latest(self, run_id: RunId) -> RunCheckpoint | None:
-        with self._session_factory() as session:
-            row = session.scalar(
-                select(RunCheckpointRow)
-                .where(RunCheckpointRow.run_id == run_id.root)
-                .order_by(RunCheckpointRow.event_position.desc())
-                .limit(1)
-            )
-            return None if row is None else self._checkpoint_from_row(row)
+    def latest(
+        self,
+        run_id: RunId,
+        *,
+        logical_stage: str | None = None,
+    ) -> RunCheckpoint | None:
+        """Return the latest checkpoint, optionally restricted to one logical stream."""
 
-    def latest_resumable(self, run_id: RunId) -> RunCheckpoint | None:
         with self._session_factory() as session:
             rows = session.scalars(
                 select(RunCheckpointRow)
@@ -168,7 +165,27 @@ class RunCheckpointRepository:
             )
             for row in rows:
                 checkpoint = self._checkpoint_from_row(row)
-                if checkpoint.resumability_status is ResumabilityStatus.RESUMABLE:
+                if logical_stage is None or checkpoint.logical_stage == logical_stage:
+                    return checkpoint
+            return None
+
+    def latest_resumable(
+        self,
+        run_id: RunId,
+        *,
+        logical_stage: str | None = None,
+    ) -> RunCheckpoint | None:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(RunCheckpointRow)
+                .where(RunCheckpointRow.run_id == run_id.root)
+                .order_by(RunCheckpointRow.event_position.desc())
+            )
+            for row in rows:
+                checkpoint = self._checkpoint_from_row(row)
+                if checkpoint.resumability_status is ResumabilityStatus.RESUMABLE and (
+                    logical_stage is None or checkpoint.logical_stage == logical_stage
+                ):
                     return checkpoint
             return None
 

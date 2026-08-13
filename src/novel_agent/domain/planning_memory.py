@@ -394,7 +394,9 @@ class PlannerNeedGenerationResult(DomainModel):
     inquiry_review_ref: ArtifactRef
     needs: tuple[Stage1MemoryNeed, ...]
     query_bundles: dict[str, RetrievalQueryBundle]
+    selected_question_ids: tuple[StableId, ...] = ()
     rejected_question_ids: tuple[StableId, ...] = ()
+    deferred_question_ids: tuple[StableId, ...] = ()
     rejection_reasons: dict[str, str] = Field(default_factory=dict)
     validated_need_set_hash: ArtifactId
     generator_version: str = Field(min_length=1)
@@ -405,6 +407,10 @@ class PlannerNeedGenerationResult(DomainModel):
             raise ValueError("Planner Need query bundles must cover the final Need set")
         if len({need.need_id for need in self.needs}) != len(self.needs):
             raise ValueError("Planner Need identities must be unique")
+        if len(self.selected_question_ids) != len(self.needs):
+            raise ValueError("selected Planner questions must match the current Need tranche")
+        if set(self.rejected_question_ids) & set(self.deferred_question_ids):
+            raise ValueError("deferred Planner questions are not rejected questions")
         return self
 
 

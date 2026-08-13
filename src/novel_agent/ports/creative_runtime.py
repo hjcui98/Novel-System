@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from novel_agent.domain.changes import CandidateChangeBundle, ValidationReport
+from novel_agent.domain.changes import CandidateChangeBundle, CommitResult, ValidationReport
 from novel_agent.domain.creative_runtime import (
     AcceptedCandidateBinding,
     PlanningLoopRequest,
     PlanningLoopResult,
 )
 from novel_agent.domain.generation import WritingLoopRequest
-from novel_agent.domain.ids import RunId
+from novel_agent.domain.ids import RunId, StableId
+from novel_agent.domain.memory_write import MemoryWriteWorkflowResult
 from novel_agent.domain.runtime import EffectReceipt, TaskRecord
 from novel_agent.domain.writing_loop import WritingLoopResult
 
@@ -34,6 +35,14 @@ class CandidateMaterializer(Protocol):
     ) -> tuple[CandidateChangeBundle, ValidationReport]: ...
 
 
+class ChapterSettlementPort(Protocol):
+    def effect_identity(self, accepted: AcceptedCandidateBinding) -> StableId: ...
+
+    def resolve_commit(self, accepted: AcceptedCandidateBinding) -> CommitResult | None: ...
+
+    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult: ...
+
+
 class RuntimeTaskReader(Protocol):
     def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]: ...
 
@@ -49,6 +58,7 @@ class EffectStatusResolver(Protocol):
 __all__ = [
     "CandidateMaterializationError",
     "CandidateMaterializer",
+    "ChapterSettlementPort",
     "EffectStatusResolver",
     "PlanningLeafPort",
     "RuntimeTaskReader",

@@ -1477,9 +1477,8 @@ public MemoryNeed
   → compact retrieval handle
   → 仅对选中 handle 解析 L0 Block
   → 按原文段落/连续句窗生成精确 EvidenceSlice
-  → 内部 SupportWorkset
-  → 预算内原文证据直通语义 owner + 未闭合 Need 的按需 claim 生产/验证
-  → WriterContextPackage
+  → 按 public Need / facet 选择与预算装箱
+  → WriterContextPackage + EvidenceLedger
 
 增强通路：
 L1 summary / dense / typed graph / model-derived compact
@@ -1487,12 +1486,11 @@ L1 summary / dense / typed graph / model-derived compact
   → 回到同一精确 L0 展开入口
 ```
 
-`SupportWorkset` 是 Memory Controller / support producer 在生成受支持主张前使用的内部工作集，
-不是新的公共 Memory 产品，也不直接暴露给 Writer。已接受的 read-side 产品仍是
-`WriterContextPackage`。经过可见性、真值边界和精确引用校验的 L0 slice 可以原样进入
-语义 owner 的工作输入，并以原文身份记录到 `EvidenceLedger`；它不因此成为 Writer-facing
-claim。当前已接受的 `writer_context.v1` 仍只编译已验证 claim。若未来要把 raw partition 直接
-暴露给 Writer，必须单独修订公共产品合同与 ADR，不得在 Stage 2M 内隐式改 schema。
+`SupportWorkset` 是 Memory Controller 的内部候选工作集，不是新的公共 Memory 产品。
+ADR-0008 已将活跃 read-side 产品修订为 evidence-first
+`WriterContextPackage + EvidenceLedger`：经过可见性、真值边界和精确引用校验的 L0 slice 直接
+作为 Writer 材料交付，package 按 Need/facet 组织并引用 Ledger。Memory 不再必须先生成唯一的事实
+claim；`writer_context.v1` claim-first 路径仅保留为历史兼容。
 
 此边界要求：
 
@@ -1510,11 +1508,8 @@ claim。当前已接受的 `writer_context.v1` 仍只编译已验证 claim。若
   map；
 - project/profile、basis commit、snapshot、scope、cutoff、truth 与 taint 过滤在评分和展开前
   fail-closed；增强通道失败可以降级，真值边界不得降级；
-- 不得为每个 slice 强制生成 atom，也不得由 host 枚举固定两/三 atom 组合。单个
-  exact slice 已完整表达 Need 时，可直接生成并验证单来源 claim；仅当 Need 仍未闭合时，
-  语义 owner 才对一个 token-bounded exact-slice 工作集生成候选结论，再由 whole-claim verifier
-  对完整结论和全部 cited slices 独立校验。这是确定性切片/装箱与有界语义验证，
-  不是 learned fusion；
+- 不得为每个 slice 强制生成 atom/claim，也不得由 host 枚举固定两/三段组合。证据选择后直接进入
+  evidence-first package/Ledger；Claim Support 和 semantic evaluator 不在 Agent 默认路径内；
 - “检索结果被返回”与“消费者确认使用”是不同事实，分别记录 exposed receipt 与 use receipt，
   访问频率不得由返回动作冒充真实使用。
 
@@ -5616,3 +5611,136 @@ Task / Plan
 > 长程信息。
 
 本版至此形成完整的高层总体架构。具体数据库、模型、技术框架、Skill 文件结构、评分公式、阈值、资源调度参数和实验方案继续留给后续专项设计。
+
+---
+
+## U14. 当前阶段拓扑、双创作 Agent 与动态上下文窗口
+
+> 本节是 2026-08-10 后 Stage 3 及以后设计的当前基线。它取代本文及旧执行文档中把
+> Advanced Retrieval、完整创作循环、长期自治和 Skill 演化串成 Stage 4～7 的旧阶段站位；
+> Stage 0～2A/2R/2W/2M 的既有定义、实现和验收证据不变。
+
+### U14.1 当前只保留三个后续产品阶段
+
+| 阶段 | 独立产品目标 | 与其他阶段的关系 |
+|---|---|---|
+| Stage 3 | Writer Agent 与正文候选闭环 | 读取已接受章节规划和 Stage 2 Memory；输出正文候选，不写 Canon |
+| Stage 4 | Planner Agent 与规划候选闭环 | 读取作者意图、当前 Canon/Plan 和 Stage 2 Memory；输出规划候选，不直接写 PlanRoot |
+| Stage 5 | 长期创作 Runtime | 接受并编排 Stage 3/4 候选，负责长期任务、恢复、调度、提交、维护与受控演化 |
+
+Stage 3 与 Stage 4 都建立在 Stage 2 已完成的 Memory 读写底座之上。共同合同冻结后，两者可以在
+独立 worktree 中并行开发；Stage 5 只有在两个候选闭环分别通过验收后才接管长期运行和 Canon 推进。
+
+原 Stage 4 的 Reactive Memory、ContextDelta 和复杂检索不再构成独立串行阶段：调用侧分别进入
+Writer/Planner 循环，共享能力继续由 Stage 2 Memory Controller、Retrieval Service 和 Context
+Compiler 拥有。原 Stage 5 的规划与写作拆入 Stage 3/4，原 Stage 6 的长期自治和原 Stage 7 的受控
+Experience/Skill 演化归入 Stage 5 的渐进工作包。
+
+### U14.2 Writer Memory 与 Planner Memory 的目标生成不对称
+
+当前 Stage 2M 的正式输入是已给定的未来章节/章节集规划。它根据冻结的作者计划、目标章节和
+`PlanObligation` 推导 `Stage1MemoryNeed`，再检索写正文需要的历史状态、关系、事件、声音样本和
+证据，最终生成 `WriterContextPackage`。这一路径是 **plan-conditioned Writer memory**，只适用于
+Stage 3：
+
+```text
+Accepted Chapter/Scene Plan + WritingTask
+  → TaskPlanConditionedNeedGenerator
+  → Writer MemoryNeed
+  → Retrieval / Exact Evidence Selection
+  → WriterContextPackage + EvidenceLedger
+```
+
+Stage 4 不能把这条路径原样复用，因为 Planner 在全书、卷、章节集或重规划时通常还没有可作为
+检索目标的冻结章节规划。Planner 的正确顺序是：
+
+```text
+Author Intent + Planning Scope + current Plan/Canon
+  → Planner 提出 PlanningInquiry / GoalProposal / alternatives
+  → 独立 Plan Reviewer 检查目标覆盖、矛盾和遗漏
+  → PlanningInquiryConditionedNeedGenerator
+  → Planner MemoryNeed
+  → Retrieval / Evidence / Plan history
+  → PlannerContextPackage
+  → PlanProposal / bounded revision
+```
+
+两条路径共享 `MemoryNeed` 的 basis、scope、权限、证据、预算和追踪字段，共享 R0/R1/R2、检索通道、
+Controller、Context View 与压缩机制；但不得共享 Need 生成器，也不得把
+`WriterContextPackage` 原样交给 Planner。`PlannerContextPackage` 是相同 Canon/Derived Memory 面向
+规划消费者的只读投影，不是新的 Canon Root 或第二真相源。
+
+### U14.3 Writer 与 Planner 都是有动态窗口的 Agent Loop
+
+`WriterContextPackage` 和 `PlannerContextPackage` 只是一次 Run 的初始 Context Seed。Agent 真正收到
+的是由 Seed、后续 `ContextDelta`、最近 settled steps、工具调用批次和压缩摘要组成的
+`AgentContextView`：
+
+```text
+Context Seed
+  + protected task/plan/intent/profile
+  + selected verified memory
+  + recent Agent steps and tool batches
+  + unresolved MemoryNeed
+  + provenance-bound compacted prefix
+  → AgentContextView revision N
+```
+
+Writer/Planner 发现关键未知时只提交类型化 `REQUEST_MEMORY`，说明缺什么、当前动作为什么被阻断、
+已知内容和安全继续点。请求者不能选择 BM25、Dense、Graph 或任意 top-k。Memory Controller 决定
+Need 是否成立、检索/展开/停止和语义保留；Context Compiler/View Projector 只执行 token 计量、
+结构分组、ContextDelta、压缩和渲染。
+
+Stage 3/4 的“Hook”只允许是进程内、领域类型化的控制点，例如 `REQUEST_MEMORY`、
+`CONTEXT_PRESSURE`、`SCENE_SETTLED` 和 `PLAN_REVIEW_SETTLED`；它们直接写 `RunEvent`。通用外部 Hook
+ingress 只属于 Stage 5 中外部 Agent、IDE、Tool 或插件接入：请求路径只做项目/run 身份校验、
+allowlist、脱敏、限长、幂等和持久化，不同步执行 LLM、embedding、索引、图抽取、consolidation，
+不默认注入 Context，也不能修改 Canon 或 PlanRoot。
+
+### U14.4 上下文筛选和压缩的责任与安全合同
+
+上下文管理和长期任务调度是两个不同问题：
+
+- Stage 3/4 立即实现单个 Agent 窗口内的补充、筛选、压缩和安全恢复；
+- Stage 5 才实现跨任务、跨章节、跨天和跨 Worker 的 Task/Attempt/Supervisor 调度。
+
+窗口策略采用 `protected + compressible + recent tail`：当前任务、作者意图、Plan obligations、硬状态、
+知识边界、未解决 Need、Evidence/Claim 原子组不得因预算静默删除。压缩按 cheap-to-expensive 分层：
+
+1. 去重、移除被 supersede 的 Operational 噪声和无语义缓存标记；
+2. 把已展开证据恢复成 compact handle/verified claim，完整证据仍保存在 EvidenceLedger；
+3. 在安全 cut 上把旧 settled prefix 压缩成带 covered range、basis、模型使用和 provenance 的摘要；
+4. 重新计量并验证最终 dispatch Context；仍超限则 `SUSPENDED/BLOCKED`，不得截断 mandatory 内容。
+
+原始 `RunEventLog` 永不因 compaction 删除。`context.compacted` 只发布新的可重建 View，必须保持同一
+模型响应的 tool calls/results、thinking/tool loop、claim/evidence 和 pending effect 原子性。soft
+compaction 无法证明结构与信息安全时为 no-op；hard limit 无法安全关闭时 fail closed。
+
+### U14.5 Writer、Planner 与 Skill
+
+Writer 在正式生成前形成非 Canon 的 `WriterWorkPlan`，明确场景/Beat、人物参与、POV、对话和声音、
+节奏、Hook/悬念、必须兑现或暂不揭示的内容，并从 `ProjectProfileRoot` 固定版本的 Method Assets 中
+选择获准 Skill。Skill 指导写作方法，不能授予检索或 Canon 权限。
+
+Planner 使用独立的规划 Skill/Profile，覆盖 Project Bootstrap、Story、Arc/Volume、Chapter Set、
+Chapter、Scene 和 Replan。Planner 可以提出新目标和多个候选，但所有新增内容必须保持
+`planner_proposed` provenance。独立 Plan Reviewer 返回 `ACCEPT / REVISE / HUMAN_REQUIRED`；第一版
+只允许有界修订，不建设无上限多 Agent 辩论。
+
+Stage 3 输出 `DRAFT_CANDIDATE_READY / REVIEW_REQUIRED / SUSPENDED / BLOCKED`；Stage 4 输出
+`PLAN_CANDIDATE_READY / REVIEW_REQUIRED / SUSPENDED / BLOCKED`。二者都不直接推进 Canon。Stage 5
+按显式接受策略把 Plan/Text/World/Profile 候选组装为受验证 ChangeBundle，再经过 CAS Commit、
+Projection 和 Freshness。
+
+### U14.6 已吸收的源码研究结论
+
+- InkOS：采用宏观 Plan + 滚动 focus、先编译 Context 再写作、protected/compressible、有界修复、
+  只重试失败层和单书严格串行；不复制其第二套存储、ChapterMemo Canon 或巨型 PipelineRunner。
+- agentmemory：保留现有 Exact/BM25/Dense/Typed Graph 和单一 application RRF owner；关系/因果 Need
+  才条件触发 Anchor→Graph 扩展，补 graph path receipt、compact→expand、source/path diversity、
+  完整消融和降级测试；不采用所有查询默认三路并发，也不复制全局 0.4/0.6/0.3 权重。
+- Long-running Runtime 研究：采用 RunEvent→Context View、Condensation event、安全 cut、工具批次
+  原子性、settled checkpoint、Task/Attempt/fencing 和单写者 lane；不迁移上游完整 Runtime，
+  Temporal 只在 Stage 5 触发条件成立后作为叶子执行 adapter 候选。
+
+这些研究提供机制证据，不取代 NS 的五 Root、Commit、Memory、Context、RunEvent 和 Gate 所有权。

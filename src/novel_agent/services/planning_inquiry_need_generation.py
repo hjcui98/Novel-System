@@ -64,6 +64,7 @@ class PlanningInquiryConditionedNeedGenerator:
             raise ValueError("Planner Need budget must be positive")
         self._grounder = NeedDraftGrounder()
         self._validator = NeedValidator(max_total_needs=max_total_needs)
+        self._max_total_needs = max_total_needs
         self._focus = TaskFocusExtractor()
         self._compiler = NeedQueryCompiler()
 
@@ -78,6 +79,7 @@ class PlanningInquiryConditionedNeedGenerator:
         run_id: RunId,
         task_id: TaskId,
         reviewer_bound: bool = False,
+        exclude_question_ids: tuple[StableId, ...] = (),
     ) -> PlannerNeedGenerationResult:
         if review.target_kind is not ReviewTargetKind.INQUIRY and not (
             reviewer_bound and review.target_kind is ReviewTargetKind.PLAN_PROPOSAL
@@ -112,7 +114,12 @@ class PlanningInquiryConditionedNeedGenerator:
         drafts: list[PlannedNeedDraft] = []
         question_by_draft: dict[str, PlanningQuestion] = {}
         rejected: dict[str, str] = {}
-        questions = (*inquiry.assumptions, *inquiry.questions)
+        excluded = set(exclude_question_ids)
+        questions = tuple(
+            question
+            for question in (*inquiry.assumptions, *inquiry.questions)
+            if question.question_id not in excluded
+        )
         for question in questions:
             if question.kind is PlanningQuestionKind.HUMAN_CHOICE:
                 rejected[question.question_id.root] = "human_choice_is_not_a_memory_fact"
@@ -167,6 +174,35 @@ class PlanningInquiryConditionedNeedGenerator:
                 )
         del goal_bindings
         rejected.update(validation_reasons)
+        # Per-question validation preserves the exact goal binding.  Apply the
+        # product-wide tranche and dedup only after every question has passed
+        # that validation, so the validator cap cannot reset for each question.
+        ordered_valid = sorted(
+            accepted_drafts,
+            key=lambda item: (not question_by_draft[item.draft_id].blocking),
+        )
+        selected: list[GroundedNeedDraft] = []
+        deferred: list[StableId] = []
+        seen_keys: set[tuple[str, tuple[str, ...], str]] = set()
+        for validated_draft in ordered_valid:
+            question = question_by_draft[validated_draft.draft_id]
+            key = (
+                self._normalize(validated_draft.semantic_question),
+                tuple(
+                    item.root
+                    for item in self._grounder.grounded_entity_ids(validated_draft)
+                ),
+                NeedValidator.need_type_for_facets(validated_draft.suggested_facets),
+            )
+            if key in seen_keys:
+                rejected[question.question_id.root] = "duplicate_reviewed_memory_question"
+                continue
+            seen_keys.add(key)
+            if len(selected) >= self._max_total_needs:
+                deferred.append(question.question_id)
+                continue
+            selected.append(validated_draft)
+
         provisional = tuple(
             self._build_need(
                 draft=draft,
@@ -179,7 +215,7 @@ class PlanningInquiryConditionedNeedGenerator:
                 end=end,
                 validated_hash=ArtifactId("sha256:" + "0" * 64),
             )
-            for draft in accepted_drafts
+            for draft in selected
         )
         identity_payload = tuple(
             need.model_dump(
@@ -205,7 +241,11 @@ class PlanningInquiryConditionedNeedGenerator:
             inquiry_review_ref=review_ref,
             needs=needs,
             query_bundles=bundles,
+            selected_question_ids=tuple(
+                question_by_draft[draft.draft_id].question_id for draft in selected
+            ),
             rejected_question_ids=tuple(StableId(item) for item in sorted(rejected)),
+            deferred_question_ids=tuple(deferred),
             rejection_reasons=rejected,
             validated_need_set_hash=validated_hash,
             generator_version=self.version,

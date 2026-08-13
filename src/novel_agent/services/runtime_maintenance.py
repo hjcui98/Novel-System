@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from novel_agent.adapters.postgres.models import (
     ProjectionOutboxRow,
     RuntimeEffectProjectionRow,
+    RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
 from novel_agent.domain.base import DomainModel
@@ -77,6 +78,28 @@ class RuntimeMaintenanceService:
             item_count=count,
             reason="deterministic pre-check completed",
         )
+
+    def expired_task_ids(self, *, now: datetime | None = None) -> tuple[TaskId, ...]:
+        """Return lease-expired current Tasks for command-owner suspicion handling."""
+
+        observed_at = now or datetime.now(UTC)
+        with self._session_factory() as session:
+            task_ids = tuple(
+                session.scalars(
+                    select(RuntimeTaskProjectionRow.task_id)
+                    .join(
+                        RuntimeTaskAttemptRow,
+                        RuntimeTaskAttemptRow.attempt_id
+                        == RuntimeTaskProjectionRow.current_attempt_id,
+                    )
+                    .where(
+                        RuntimeTaskProjectionRow.status == TaskStatus.RUNNING.value,
+                        RuntimeTaskAttemptRow.ended_at.is_(None),
+                        RuntimeTaskAttemptRow.lease_expires_at < observed_at,
+                    )
+                )
+            )
+        return tuple(TaskId(item) for item in task_ids)
 
     @staticmethod
     def _count(session: Session, command: MaintenanceCommand) -> int:
@@ -200,7 +223,7 @@ class RuntimeSupervisor:
                         code="runtime_failure_budget_exhausted",
                         failure_class=FailureClass.BUDGET_EXHAUSTED,
                         requires_operator=True,
-                        proposed_command="cancel",
+                        proposed_command="extend_budget",
                     )
                 )
                 existing.add(task.task_id.root)

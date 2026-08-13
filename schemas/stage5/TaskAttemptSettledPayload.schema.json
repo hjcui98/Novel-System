@@ -48,6 +48,7 @@
     "FailureClass": {
       "enum": [
         "worker_startup",
+        "worker_lease_expired",
         "provider_transient",
         "leaf_review_required",
         "basis_changed",
@@ -82,6 +83,7 @@
         "running",
         "waiting_input",
         "waiting_retry",
+        "budget_review",
         "recovery_pending",
         "blocked",
         "succeeded",

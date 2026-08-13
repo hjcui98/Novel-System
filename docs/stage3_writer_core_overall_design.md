@@ -1,350 +1,233 @@
-# Stage 3 Writer Core 与生成质量总设计
+# Stage 3 Writer Agent 与 Writing Context Loop 总设计
 
 > 文档生命周期：`ACTIVE`
 >
-> 设计状态：`DESIGN_BASELINE`
+> 设计状态：`DESIGN_BASELINE_2026-08-10`
 >
-> 开发状态：`NOT_STARTED`
+> 开发状态：`ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING`
 >
-> 初始日期：2026-07-31
+> 阶段：Stage 3 — Writer Agent and Writing Context Loop
 >
-> 最近修订：2026-08-03
+> 上位决定：ADR-0006、ADR-0007、ADR-0008（ADR-0004 为历史 claim-first 基线）
 >
-> 阶段：Stage 3 — Writer Core and Generation Quality
->
-> 本文职责：定义 Stage 3 的目标、范围、总体接口、并行边界和完成判定
->
-> 本文不承担：逐项任务清单、人员排期、字段级 Schema 设计和测试用例穷举
+> 本文职责：定义 Writer 产品闭环、动态上下文窗口、Skill、Memory 请求和验收边界
 
 ## 1. 设计结论
 
-Stage 3 的目标不是继续扩展 Memory 基础设施，而是把已经形成的
-`WriterContextPackage` 转化为可评估的正文候选，并建立最小、独立的生成质量闭环：
+Stage 3 的目标是把**已经给定并接受的章节/场景规划**、作者本轮写作指令和 Stage 2 Memory 变成
+可审阅的正文候选：
 
 ```text
-WritingTask + WriterContextPackage
-    → Writer 生成候选正文
-    → Editor 独立审阅
-    → 局部修复或重大重写
-    → Curator 独立观察正文变化
-    → Writer 声明与 Curator 观察结果对账
-    → 生成质量评估
+WritingTaskContract + accepted Chapter/Scene Plan
+→ Stage 2M plan-conditioned Writer Memory
+→ WriterContextPackage
+→ dynamic AgentContextView
+→ Writer work plan / Skills / Draft steps
+→ reactive REQUEST_MEMORY / ContextDelta / safe compaction / resume
+→ Editor / bounded repair or rewrite
+→ Curator observation / reconciliation
+→ DRAFT_CANDIDATE_READY
 ```
 
-Stage 3 完成后，项目应能回答三个问题：
+本阶段回答：
 
-1. Writer 能否稳定地把任务、计划约束和记忆上下文写成候选正文；
-2. 独立 Editor 能否发现主要问题，并把问题路由到局部修复或重大重写；
-3. 在同一 Writer 模型和相近预算下，`WriterContextPackage` 是否比简单上下文更有助于连续性、
-   计划遵循和整体写作质量。
+1. Writer 能否把章节规划、人物、情节、对话、语言、POV、节奏、Hook 和记忆约束实现为正文；
+2. 初始记忆不足时，Writer 能否在不直接控制检索的情况下安全补充信息并继续；
+3. 长生成循环中的上下文窗口能否持续补充、压缩、重建并保持 provenance；
+4. WriterContextPackage 是否相对 recent text/simple retrieval 提升连续性、计划遵循和文学质量。
 
-本阶段的终点是“可集成、可评估的候选生成链”，不是生产化的完整章节系统。正文和变化结果都保持
-候选状态，不在 Stage 3 内直接写入 Canon。
+Stage 3 只输出候选，不写 TextRoot、WorldRoot、PlanRoot 或 Commit。
 
-## 2. 当前起点
+## 2. 当前实现起点
 
-Stage 3 明确以现有 Writing Core 为实现基线，不重新建设另一套 Writer。legacy worktree
-`/home/cuihengjia/agent/novel/NS-stage2b-writer` 已经包含 Writer 三模式、候选
-`DraftArtifact`、typed failure、Prompt/Skill、shadow runner 和一组通过的隔离测试。
+当前 `main` 已有 Stage 2M WriterContext、检索、Evidence、Model admission、RunEventLog 和
+content-addressed Skill/Prompt receipt。独立分支 `codex/stage3-writer-context-loop` 的 `bab4451`
+已经完成：
 
-这些代码是 Stage 3 的主体起点。为了形成最终集成结果，迁移只需解决四件事；前两项由 Writing
-Core 工作流先完成，后两项可以留到后置集成工作流：
+- Writer `DRAFT / CONTINUE / MAJOR_REWRITE`、`WriterWorkPlan` 和固定 Skill 选择；
+- candidate-only `DraftArtifact`、sidecar、父子 lineage 和 typed failure；
+- reactive `REQUEST_MEMORY`、共享 `AgentContextView`/ContextDelta/compaction 和 checkpoint recovery；
+- Writer Agent/Service、Editor Review/Repair、最终候选观察、变化对账和三方案评价 runner；
+- `WriterContextPackage` handoff、endpoint admission 接线和 versioned Stage 3 schemas。
 
-- 把未提交实现整理成可评审的 Git 变更；
-- 把项目面对外的 `stage2b` 命名迁移到 `stage3`；
-- 在后置集成阶段把 `Stage1ContextPackage` 输入替换为 `WriterContextPackage`；
-- 在后置集成完成后，让最小链通过一次正常的 current-main 集成验证。
+该分支报告 1893 deterministic tests、100% coverage 和 full pre-commit，工程实现已完成。尚未完成的是
+最终共同 executable identity 上的合并/独立验收、真实基础设施 Gate 和正式三方案真实模型语义实验，
+因此当前状态是 `CONDITIONAL_GATE`，不是生产 PASS。Stage 5 只能消费其 public candidate terminal，
+不能据此授权 Writer 直接写 Canon。
 
-除非现有行为与当前公共合同或安全边界冲突，Writer 领域模型、生成服务、Agent、Prompt/Skill 和
-测试都优先直接迁移。开发精力用于删去不再需要的复杂度、补齐当前接口以及新增 Editor、对账和
-生成质量评估；不重新实现已经正确的 Writer 主体，也不为了迁移复制一套新 Harness、Artifact
-系统或运行账本。
+## 3. Writer Memory 的专用前提
 
-Stage 2M 与 Stage 3 Writing Core 可以独立开发。Stage 3 前期使用冻结 fixture 或本地 handoff
-contract 开发 Writer、Editor 和评价链；Stage 2M 稳定后，再由工作流 A 完成
-`WriterContextPackage` adapter 和正式集成。接口名称、版本和字段差异在集成工作包中统一，
-不作为两个阶段独立开发的阻塞项。
-
-## 3. 范围和边界
-
-### 3.1 Stage 3 交付范围
-
-- `DRAFT`、`CONTINUE`、`MAJOR_REWRITE` 三种 Writer 模式；
-- candidate-only `DraftArtifact` 及父子 lineage；
-- `WriterContextPackage` 到 Writer 的单一输入边界；
-- Writer 的弱变化提示、未决问题和自我观察；
-- Editor `REVIEW` 与 `LOCAL_REPAIR`；
-- `PASS`、`LOCAL_REPAIR`、`MAJOR_REWRITE` 三类审阅结论；
-- Writer 声明变化与 Curator 独立观察变化的对账结果；
-- 一条不写 Canon 的最小集成链；
-- 一次有明确样本、基线和评价方法的真实模型生成实验。
-
-### 3.2 不在 Stage 3 交付
-
-- Advanced Agentic Retrieval、复杂 R2 或 Writer 直接检索；
-- 完整 Planner 重规划实现；
-- 完整章节/卷 TaskGraph 和生产调度；
-- Candidate ChangeBundle 的生产提交和 Canon 写入；
-- 长期自主恢复、跨机器调度和大规模并发；
-- 多候选搜索、常驻多 Judge 或自动 Skill 演化；
-- 通用/外部 Hook 平台；
-- consolidation 或长期记忆自动晋升；
-- Operational/Derived retention 与自动遗忘；
-- 通用 observation graph；
-- Viewer 产品；
-- learned fusion 或在线自适应检索策略；
-- 为每次运行新增一套哈希门禁、证明文件或验收清单；
-- 没有真实需求支撑的数据库 migration、平台层或通用框架。
-
-这些能力分别属于 Stage 4–7，或应在真实 Stage 3 结果证明需要后再增加。其中 compact→exact
-expand 属于 Stage 4 的高级读取接口；Hook 仅在 Stage 5 有真实外部 Runtime surface 时考虑；
-Operational retention 属于 Stage 6；consolidation/晋升、独立 observation graph 与 learned
-fusion 属于 Stage 7 的受控候选；Viewer 延后到 post-Stage 7 的可选运维表面。列入后续站位不
-等于预先批准实施，仍须对应 Stage 的需求、消融和门禁。
-
-### 3.3 必须保持的边界
-
-只保留会影响系统正确性的四条硬边界：
-
-1. Writer 输出始终是候选，不是 Canon；
-2. Writer 不直接使用底层检索、Memory 写入、Commit 或 Canon 接口；
-3. Editor 必须独立审阅，Writer 的自我评价不能代替正式审阅；
-4. Curator 必须独立读取正文，Writer 的变化提示不能直接变成 MemoryPatch。
-
-已有 Artifact 内容寻址可以继续作为运行实现细节，但 Stage 3 不再围绕内容哈希建立额外的人工
-门禁。代码和文档版本统一由 Git 管理。
-
-## 4. 最小产品链
-
-### 4.1 输入
-
-Stage 3 只定义一个生成入口，输入由三部分组成：
-
-- `WritingTaskContract`：本次要写什么、必须满足什么、不能泄露什么；
-- `WriterContextPackage`：Writer 实际可见的连续性、状态、关系、历史、计划和未决缺口；
-- 可选的 prior draft 与明确指令：仅供 `CONTINUE` 或 `MAJOR_REWRITE` 使用。
-
-Stage 2M 继续拥有 `WriterContextPackage`。Stage 3 只提供小型 handoff/adapter，不复制
-Context Package，不把 `EvidenceLedger` 或原始检索轨迹默认塞入 Writer Prompt。
-
-如果当前 `WriterContextPackage` 中仍有只服务 Benchmark 的字段，优先在边界适配，不立即设计
-第二个 Writer Context 合同。只有实际生产调用无法表达时，才对公共合同做最小泛化。
-
-### 4.2 Writer 输出
-
-Writer 输出包含：
-
-- 候选正文；
-- 弱变化提示；
-- 未决问题；
-- 自我观察；
-- 模式和父 Draft 关系。
-
-可信 ID、证据定位、内容寻址和 Canon 身份由现有 Service 生成或校验，不要求模型猜测。总设计不
-固定所有字段，具体字段由 Writer 执行文档和现有实现共同收敛。
-
-### 4.3 Editor 与修复
-
-Editor 先执行只读 `REVIEW`：
-
-- `PASS`：正文可进入后续候选处理；
-- `LOCAL_REPAIR`：Editor 按明确范围做一次局部修复；
-- `MAJOR_REWRITE`：退回 Writer，保留旧 Draft，不做原地覆盖。
-
-第一版不加入多轮 Judge 讨论。局部修复后只重新检查受影响内容；重大重写才重新执行完整审阅和
-变化对账。
-
-### 4.4 变化对账
-
-Writer 的变化提示与 Curator 的独立观察形成一个 `ReconciliationResult`，至少区分：
-
-- 双方一致；
-- Writer 提示但正文没有充分支持；
-- 正文发生变化但 Writer 未提示；
-- 对变化类型或对象的判断不一致。
-
-对账结果用于评价和后续 Curator 改进，不在本阶段自动发布 MemoryPatch 或 Canon 变更。
-
-## 5. 并行开发划分
-
-Stage 3 划分为四个开发工作流。四个工作流对应四份代码开发执行文档，阶段验收由独立的第五份
-文档负责，不在本文展开到 Issue 或测试用例级别。
-
-| 工作流 | 主要职责 | 主要输出 | 不负责 |
-|---|---|---|---|
-| A. Context handoff 与正式集成 | 在两侧基本稳定后收敛 WriterContext adapter 并接通最小链 | 当前主线可用的 Context handoff 与集成链 | 阻塞 B/C/D 前期开发、重做 Stage 2M |
-| B. Writing Core 迁移与完善 | 基于现有实现迁移 Stage 3 合同、三模式 Writer、Prompt/Skill、DraftArtifact 和离线 runner | 当前主线可用的三模式 Writing Core | 另起一套 Writer、Editor、Curator、Canon |
-| C. Editor 与变化对账 | Review、Local Repair、重大重写路由、声明/观察对账 | EditorialReport、修复 Draft、ReconciliationResult | 生产提交、Memory 写回 |
-| D. 生成质量评估开发 | 实现样本、基线、统一 runner、评价接口和报告能力 | 可由独立验收人员运行的生成质量评估工具 | 为自己开发的工具签发阶段验收结论 |
-
-### 5.1 依赖关系
+Stage 2M 当前 Memory 流程以冻结章节规划为目标：
 
 ```text
-B：迁移 Writing Core
-C：开发 Editor 与变化对账
-D：开发样本、基线和评价工具
-        并行进行
-
-Stage 2M 合同稳定
-+ B/C 基本完成
-        ↓
-A：收敛 WriterContext handoff 并接通最小链
-        ↓
-独立验收人员：使用 D 的工具执行正式生成实验
+Plan obligations + target chapters
+→ TaskPlanConditionedNeedGenerator
+→ exact evidence retrieval / selection
+→ evidence-first WriterContextPackage + EvidenceLedger
 ```
 
-工作流 B 拥有 Writer 和 Draft 公共合同，工作流 A 拥有 Stage 2M 到 Stage 3 的 Context
-handoff。C、D 使用冻结 fixture 和已发布合同开发；若发现接口问题，反馈给对应所有者，不各自
-复制或扩展公共模型。
+这正是 Stage 3 所需输入。Writer 负责阅读 evidence-first package 中的原始材料并形成当前写作理解，
+Memory 不预先替 Writer 生成唯一标准 Claim。Writer 不负责重新决定全书/卷/章节集目标；如果上游没有可执行章节规划，
+Stage 3 返回 `BLOCKED/MISSING_ACCEPTED_PLAN`，由 Stage 4 Planner 或人工规划解决。不得让 Writer 为了
+继续生成而现场补造 PlanRoot。
 
-### 5.2 建议代码所有权
+`WriterContextPackage` 是初始、不可变、可审计的 Context Seed。后续补搜不会原地改写该 Package，
+而是产生绑定其 basis 的 `ContextDelta` 和新的 `AgentContextView` revision。
 
-| 工作流 | 优先拥有的路径 |
-|---|---|
-| A | WriterContext adapter、Writing Core 集成 service 和最小链 |
-| B | `domain/generation.py`、Stage 3 schema/export、Writer Agent/Service、prompts/skills、shadow runner |
-| C | Editor/Editorial 新模块、reconciliation service 及其测试 |
-| D | Stage 3 evaluation、fixtures、实验 runner 和报告生成 |
+### 3.1 最近正文是独立的确定性连续性输入
 
-确实无法避免的 Writer 共享枚举或公共导出由 B 统一修改，Context handoff 改动由 A 统一修改。
-其他工作流不同时编辑 `domain/stage2.py`、Stage 2M evaluator、Memory Controller 或 Curator
-写回主链。
+写第 N 章时，第 N-1 章完整正文不是检索候选，而是默认叙事接缝。Stage 3 使用通用
+`RecentProseContext` 与 `WriterContextPackage` 分责：前者由 accepted TextRoot 机械投影，默认包含上一章
+完整正文、较早近章的摘要/章尾和可展开引用；后者继续负责按 Planning Need 检索的状态、历史、关系、
+披露和计划义务。两者共同进入一个 `WritingLoopRequest`，不通过外部 Hook，也不授予 Writer 任意读取 Tool。
 
-## 6. 多 Agent / 多分支协作方式
+上一章完整正文属于 mandatory Memory；较早 trail 可压缩。更详细的生产合同、当前代码断点和 Stage 2～5
+纵向测试见 `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md`。
 
-并行开发使用 Git 作为唯一版本和交接机制：
+截至 2026-08-13，`ProductionWritingRequestFactory` 已关闭正式 handoff：它从当前 accepted roots 自动构造
+WritingTask，调用 Stage 2M evidence-first provider，持久化 v2 WCP/EvidenceLedger，装配 RecentProse，并把
+同一 exact basis/snapshot 交给 Stage 3。生产 runtime 不再允许测试 lambda 手工拼 WCP/attestation；真实模型
+语义 Gate 仍未运行。
 
-1. B 先把现有 Writing Core 整理成可评审的 Stage 3 实现基线；
-2. B/C/D 使用独立 branch/worktree，并通过冻结 fixture 并行开发；
-3. Stage 2M 在自己的工作流中继续演进，不等待 Stage 3；
-4. Stage 2M 稳定且 B/C 基本完成后，A 建立集成分支并统一 handoff 差异；
-5. 每个工作流保持少量、可评审的提交，合并前只做一次必要 rebase；
-6. B/C/D 的开发成果先集成，A 随后接通最小链，正式实验由独立验收人员执行。
+### 3.2 长运行预算是 invocation slice，不是 Writing Task 寿命
 
-不额外建立人工文件锁、hash 清单、分支指纹表或重复的状态 manifest。文件所有权表、Git 提交和
-正常代码评审足以处理并行冲突。
+Writer 的 provider context hard window、output reserve、basis/snapshot、access scope 与前一章完整正文是
+不可自动放宽的边界。`WritingLoopBudgets` 中的 reactive turn allowance 只表示一次 invocation 能做多少
+工作：到达 slice 后写入 `WritingLoopCheckpoint(REACTIVE_MEMORY_PENDING)` 并返回 `YIELDED`；Stage 5 将同一
+Task 恢复为 `READY`，不扣 retry budget。Checkpoint 保存已结算 WorkPlan、pending Writer turn、exact Context
+View、累计模型轮次、Memory request fingerprints 和 lineage，下一 invocation 从 pending reactive Memory
+继续，不重复 WorkPlan 或已结算模型调用。
 
-如果一个工作流需要大范围修改另一个工作流拥有的路径，应暂停该交叉修改并先调整接口，而不是让
-两个 agent 在同一文件中并行堆叠实现。
+Memory 报告 `BUDGET_EXHAUSTED` 时进入 `BUDGET_REVIEW`，而不是自动无限扩容；明确补充预算后仍从同一
+checkpoint 继续。重复相同 request、没有新 evidence 或 provider hard window 无法安全压缩仍属于有界
+no-progress/physical stop。
 
-## 7. 开发顺序
+2026-08-13 的下一实现增量继续复用同一个 `WritingLoopCheckpoint`，把真实生产链已经存在的安全点扩展为
+`EDITOR_PENDING / OBSERVER_PENDING / RECONCILIATION_PENDING`。Checkpoint 只保存已结算的 typed artifact、
+exact Context View、最终候选选择和累计 ModelCall；恢复时按 phase 跳过已经结算的 Writer、Editor 或 Observer
+调用。它不是任意 Agent 状态机，也不捕获 Python coroutine/local mutable state。post-draft model-call allowance
+是 invocation slice：到达后 `YIELDED`，Stage 5 续发同一个 Writing Task；Editor 的 PASS/repair/rewrite Gate、
+Observer 独立观察和 reconciliation Gate 均不得因恢复而省略。
 
-### 第一步：独立并行开发
+## 4. Writer 正式循环
 
-- B 把现有 Writing Core 整理成可评审提交，完成 `stage2b` → `stage3` 命名迁移；
-- B 保留已验证的三模式和 candidate-only 设计，使用冻结 Writer Context fixture；
-- C 使用固定 Draft fixture 开发 Editor 和变化对账；
-- D 开发小而有代表性的任务集、简单基线、评价工具与报告输出；
-- Stage 2M 继续独立修复和稳定 `WriterContextPackage`。
+### 4.1 Preflight 与 WriterWorkPlan
 
-### 第二步：后置 Context 集成
+Writer 开始前验证：
 
-当 Stage 2M 合同稳定且 B/C 基本完成后，由 A：
+- WritingTask、Plan、WCP 使用同一 base commit/snapshot/profile；
+- WCP `READY`，无 blocking/conflict gap 和未来泄漏；
+- task target、Plan obligations、must keep/must avoid 与 WCP 绑定；
+- 最终渲染 Prompt 在实际模型输入预算内。
 
-- 统一接口名称、版本和必要字段差异；
-- 实现 `WriterContextPackage` adapter；
-- 把冻结 fixture handoff 替换为正式 handoff；
-- 接通最小集成链。
-
-集成链只包含：
+随后生成非 Canon 的 `WriterWorkPlan`：
 
 ```text
-WriterContextPackage
-→ Writer
-→ Editor Review / Repair or Rewrite
-→ Curator observation
-→ ReconciliationResult
+scene / beat order
+participating characters and current state
+POV / epistemic and reader disclosure boundary
+dialogue intent / character voice
+pacing / transition / emotional movement
+hook setup / advance / payoff / defer
+selected writing skills
+known risks and unresolved questions
 ```
 
-该链使用候选 Artifact 和测试/实验存储，不调用生产 Commit。
+它是本次执行方法，不是新的 ChapterPlan 或 PlanRoot。
 
-### 第三步：独立执行一次正式生成实验
+### 4.2 Skill 使用
 
-在 Writer、Editor 和对账链稳定后，由未参与对应功能实现的验收人员使用 D 的工具执行正式
-实验。实验使用同一 Writer 模型、相同生成参数和相近 token 预算，比较：
+Writer 只可使用 `WritingTaskContract.allowed_skills` 与 ProjectProfile 固定的版本，例如：
 
-- 最近正文上下文；
-- 简单检索上下文；
-- deterministic `WriterContextPackage`。
+- scene/beat realization；
+- character voice and dialogue；
+- POV/epistemic discipline；
+- pacing and transition；
+- hook/foreshadowing realization；
+- style/genre method；
+- continuation/major-rewrite method。
 
-这次实验同时评价约束遵循、连续性、计划使用、修复轮次和文学质量。若结果暴露明确实现缺陷，
-修复后重跑受影响部分；不因为指标波动而无目标地反复全量测试。
+Skill 通过现有 `SkillRegistry`、AgentSpec 和 `SkillExecutionReceipt` 固定内容 hash、输入输出、完成/跳过
+checkpoint 和 unresolved；Skill 不授予 Retrieval、Memory write 或 Canon 权限。
 
-## 8. 验证策略
+### 4.3 Reactive Memory
 
-### 8.1 开发自检
+初始 WCP 应主动覆盖可预测需求；只有执行中出现未预料关键未知时才发起：
 
-每个开发工作流只维护能证明自身行为的测试：
+```text
+REQUEST_MEMORY
+  need/question
+  purpose and blocked action
+  known context
+  requested evidence type
+  base commit/snapshot/scope/POV/audience
+  current draft/scene checkpoint
+```
 
-- 公共输入输出的合同测试；
-- 核心正向路径；
-- 会造成错误正文、越权或伪成功的关键失败路径；
-- Writer、Editor、Curator/Commit 权限边界。
+Runtime 先尝试 Context-local R0，再按注册合同执行 R1；需要语义裁决、多跳、冲突或充分性判断才进入
+Memory Controller R2。Writer 不能指定底层通道或无限 top-k。
 
-已有 legacy Writer 测试优先改名、迁移和删重，不复制成新的 unit/contract/golden/property/
-regression 多套版本。内部字段和辅助函数不要求逐一建立测试文件。
+Controller 返回 `RESOLVED / PARTIAL / INSUFFICIENT / DENIED / BUDGET_EXHAUSTED`。只有合法结果才能
+形成 `ContextDelta`；basis、POV/access、Profile 或 plan revision 改变时必须重新编译完整 Seed/View，
+不能套用旧 Delta。
 
-开发者在交接前运行所属模块的专项测试和基本静态检查，不为自己的模块签发验收结论。全仓
-`make quality` 和跨模块测试由独立验收人员在集成候选形成后运行。只有代码、公共合同、
-Prompt/Skill、模型配置或评价样本发生实质变化，才需要重跑对应验证。
+第一版每个 Draft 只允许有界 Memory 往返；重复同 fingerprint、无新增证据或预算耗尽时 typed
+suspend/block，不能无限自问自搜。
 
-### 8.2 独立生成质量验证
+### 4.4 Context View 与压缩
 
-正式实验只保留一套声明清楚的样本和评价流程，重点回答：
+`AgentContextView` 由以下层组成：
 
-- mandatory constraints 和 plan obligations 是否被正文实际使用；
-- 人物、时间、地点、物品、关系和世界规则是否出现冲突；
-- 是否发生计划外泄露或对缺失事实的编造；
-- Editor 的 PASS/Repair/Rewrite 分布和实际修复效果；
-- Writer 提示与 Curator 观察是否一致；
-- 文学质量相对简单基线是否出现明显退化。
+```text
+protected: system/tool policy, WritingTask, accepted Plan, mandatory constraints, author intent
+memory: recent prose + WCP evidence items / exact Ledger refs + legal ContextDelta
+working: WriterWorkPlan, current scene/draft state, unresolved questions
+recent tail: settled model/tool batches
+compacted prefix: provenance-bound summary + kept boundary
+```
 
-评价可以由独立模型与盲审人工结合，但不建立多个功能重复的常驻 Judge。D 负责把样本、方法和
-工具实现清楚，独立验收人员负责运行、复核和形成结论。
+Memory Controller 决定语义保留，Context Compiler/View Projector 机械执行压缩。顺序为去重/替代、
+compact handle、抽取式缩减、必要时带 provenance 摘要。tool call/result、thinking/tool loop、
+claim/evidence、pending effect 不可拆开；mandatory 和 unresolved gap 不可被摘要伪造填补。
 
-## 9. 完成判定
+soft compaction 失败保持原 View；hard limit 无法安全关闭时返回 `SUSPENDED/CONTEXT_LIMIT`。原始
+RunEvent/Artifact 永不删除，`context.compacted` 只改变下一次 dispatch projection。
 
-Stage 3 只有一个阶段级完成判定，不为四个工作流分别建立层层 Gate。完成时应同时具备：
+### 4.5 候选、审阅和对账
 
-1. current-main 中存在使用 `WriterContextPackage` 的 Stage 3 Writer；
-2. Writer 三模式生成候选 Draft，且不具备检索、Memory 写入和 Canon 权限；
-3. Editor 可独立 Review，并完成一次局部修复或重大重写路由；
-4. Curator 独立观察与 Writer 声明能够形成对账结果；
-5. 最小集成链通过独立的 fake/offline 和真实模型验证；
-6. 独立验收执行的正式实验给出可解释结果，且没有未来泄露或 Canon 污染；
-7. 结果、限制和未解决问题被写入项目状态，不用“测试通过”替代语义结论。
+Writer 完成 Draft 后：
 
-如果真实实验未显示预期收益，应根据失败归因继续改 Writer、Context 或评价样本；不要通过增加
-门禁、报告、哈希校验或重复测试来制造进度感。
+1. Editor `REVIEW` 返回 `PASS / LOCAL_REPAIR / MAJOR_REWRITE`；
+2. `LOCAL_REPAIR` 最多一次，按冻结 scope 修复并独立复审；
+3. `MAJOR_REWRITE` 保留父 Draft，最多一次生成子 Draft 并完整复审；
+4. Curator 只观察最终通过审阅的候选；
+5. Writer declarations 与 Curator observation 形成 reconciliation；
+6. mismatch、修复耗尽或重要决定转为 `REVIEW_REQUIRED`。
 
-## 10. 后续执行文档
+Stage 3 Curator observation 只用于候选对账，不生成或提交正式 MemoryPatch。
 
-当前执行文档为：
+## 5. Hook 和运行边界
 
-| 文档 | 职责 | 启动顺序 |
-|---|---|---|
-| `docs/stage3_writing_core_migration_execution.md` | B：Writing Core 迁移与完善 | 可立即并行 |
-| `docs/stage3_editor_reconciliation_execution.md` | C：Editor 与变化对账 | 可立即并行 |
-| `docs/stage3_generation_evaluation_development_execution.md` | D：生成质量评估工具开发 | 可立即并行 |
-| `docs/stage3_context_handoff_integration_execution.md` | A：Context handoff 与最小链集成 | B/C 和 Stage 2M 稳定后 |
-| `docs/stage3_acceptance_test_execution.md` | 独立测试、审核和阶段结论 | 集成候选形成后 |
+Stage 3 内部所谓 Hook 只指类型化状态转移：`REQUEST_MEMORY`、`CONTEXT_PRESSURE`、
+`SCENE_SETTLED`、`DRAFT_SETTLED`。它们由服务直接 append `RunEvent`，不走 shell/HTTP Hook。
 
-每份开发执行文档至少明确：
+Stage 3 不建设外部 Hook ingress、Task/Attempt DB、lease、Supervisor、Temporal、通用 DAG、
+Operational observation index、consolidation 或 Viewer。所有模型调用共享当前
+`ModelRequestAdmissionController`。
 
-1. 目标和明确不做的事项；
-2. 拥有的文件与共享接口；
-3. 输入、输出和依赖；
-4. 足够直接实施的代码步骤和失败处理；
-5. Git branch/worktree、提交边界和合并方式；
-6. 开发者必须完成的最小自检；
-7. 向独立验收人员或下一工作流的交接条件。
+## 6. 验收
 
-足够详细不等于复制总体架构、穷举所有字段或建立重复门禁。只有执行中发生真实设计分歧时，才
-回到本文或新增 ADR。
+工程验收：
 
-## 11. 下一步
+- 最新 Stage 2M 主线上的严格 typing、schema、migration、tests 和 100% branch coverage；
+- WCP/Plan/task/basis 强绑定，Prompt 实际 token admission 无重复 Context；
+- Memory request、ContextDelta、compaction、resume 和 typed failure regression；
+- full replay 与 incremental Context View 等价，provider/information properties 通过；
+- Writer/Editor/Curator/Commit 权限边界保持。
 
-总设计、四份开发执行文档和独立验收测试文档已形成。下一步分配 B/C/D 实现负责人和独立
-worktree，让三者使用冻结 fixture 并行启动；A 的实现负责人可以预先指定，但在 Stage 2M
-合同稳定且 B/C 基本完成后再开始正式集成。验收负责人应与对应实现负责人分离，并在集成候选
-形成后开始工作。
+语义验收使用同一 Writer 模型、参数和相近预算比较 recent text、simple retrieval、deterministic
+Writer Context；正式 Runner 必须执行真实 Writer→Editor→Curator observation→reconciliation，不能用
+fixture verdict/observation 代替。评价计划遵循、人物/状态/时间/关系一致性、对话声音、Hook/揭示、
+修复轮次、文学质量、Memory 往返收益和 Context exposed/confirmed-use。
+
+Stage 3 `PASS` 只表示正文候选产品闭环可用，不授权 Canon Commit 或 Stage 5 长期自治。

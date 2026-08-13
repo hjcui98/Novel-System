@@ -1,6 +1,8 @@
 # Stage 3 总验收测试执行
 
-> 文档生命周期：`ACTIVE`
+> 文档生命周期：`SUPERSEDED`
+>
+> 后继：`docs/stage3_writer_context_loop_execution.md`
 >
 > 执行状态：`NOT_STARTED / WAITING_FOR_INTEGRATION_CANDIDATE`
 >

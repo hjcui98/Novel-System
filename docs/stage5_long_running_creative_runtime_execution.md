@@ -2,9 +2,9 @@
 
 > 文档生命周期：`ACTIVE`
 >
-> 执行状态：`STAGE345_ENGINEERING_CLOSED_LOOP_READY / REAL_MODEL_GATES_PENDING`
+> 执行状态：`VERTICAL_ENGINEERING_READY / REAL_MODEL_GATES_PENDING`
 >
-> 更新日期：2026-08-12
+> 更新日期：2026-08-13
 >
 > 阶段：Stage 5 — Long-running Creative Runtime
 >
@@ -189,6 +189,12 @@ external_hook_ingress=false
 skill_evolution=false
 temporal_adapter=false
 ```
+
+2026-08-13 contract note: `multi_worker_lease=false` in the old development manifest described A-layer
+admission before a caller existed. The long-running production dispatcher now provides that caller and the
+lease/heartbeat/suspicion/reclaim kernel is implemented. A production manifest update may set it true only
+when migration `0009_stage5_attempt_leases` is applied and at least two processes exercise the same command
+owner; the current offline evidence does not claim that deployment Gate.
 
 生产代码不得通过环境变量悄悄打开未准入项；未知 flag 或 manifest mismatch fail closed。
 
@@ -460,7 +466,8 @@ AUDIT_STUCK_OR_POISON_TASKS
 `RuntimeSupervisor` 第一版只输出 `SupervisorFinding` 和可选 `ControlCommandProposal`：
 
 - stuck duration；
-- current Attempt/liveness suspicion（A 层没有 lease/heartbeat，不自动 reclaim）；
+- current Attempt/lease liveness suspicion；expiry 先发 typed recovery command，effect reconciliation
+  完成前不 reclaim；
 - repeated failure fingerprint / poison loop；
 - exhausted retry/model/token budget；
 - pending effect / projection mismatch；
@@ -651,6 +658,58 @@ project single-writer lane 提交。当前 Writer 所依赖的 basis 不得在�
 
 formal runner 覆盖 manual、semi、auto 三种停点，但不允许 auto 跳过 safety gate。
 
+#### B5.0 2026-08-13 production closure
+
+G4/G5/G7/G8 已按纵向 Pilot 文档实现：
+
+- `ProductionStage4InvocationFactory` 生成 exact-basis `CHAPTER_SET` 请求；
+- `ProductionWritingRequestFactory` 生成 WritingTask、Stage 2M v2 WCP/EvidenceLedger、RecentProse 和 Stage 3
+  request；
+- `DRAFT_COMMIT` 经 `AtomicChapterSettlementAdapter` 调用 Stage 2W
+  `LocalMemoryWriteWorkflow(CHAPTER_REVEAL_ATOMIC)`，Stage 5 只在原 fence 下登记 accepted commit；
+- `VerticalCreativeRunner` 与 `runtime advance` 共用显式 production composition factory，不再内建 fake
+  Planner/Writer；versioned `Stage5VerticalRunReport` 只在目标 Draft freshness 成功后冻结。
+
+生产 admission 会核对 runtime、adapter、G4/G5 factory、materializer 和 settlement 的实际对象身份。仓库
+不提供使用 benchmark frozen inputs 的伪 production factory；部署/Pilot composition 负责注入现有 Stage 2M
+backend 和模型 endpoint。focused offline evidence 见纵向 Pilot §4.1/§6。8002 未调用。
+
+#### B5.0.1 固定拓扑的原子后继与 Chapter Settlement 恢复
+
+“当前 Task 成功”和“其唯一合法后继存在”属于同一个 Stage 5 reducer，不是两个可以分开提交的 service
+调用。以下边界必须在现有 RuntimeCommand transaction 中原子完成：
+
+```text
+PLAN/DRAFT_CANDIDATE success  + acceptance Task
+PLAN/DRAFT_ACCEPTANCE accept  + commit Task
+PLAN_COMMIT accepted           + projection Task
+PROJECTION_FRESHNESS success   + next foreground/background Task set
+```
+
+AUTO acceptance 仍然使用正常 acceptance command/receipt；区别只在 actor。Runner 恢复时若发现 pinned AUTO
+policy 允许且 acceptance 仍为 `WAITING_INPUT`，使用 candidate identity 生成同一个稳定 command 继续，不增设
+“auto accepted”旁路状态。
+
+Stage 2W `CHAPTER_REVEAL_ATOMIC` 在 Stage 5 数据库事务之外提交五 Root，因此按现有 outer-effect 合同处理：
+
+```text
+claim DRAFT_COMMIT + writer fence
+→ persist REQUESTED(effect identity scoped to the current Attempt)
+→ call Stage 2W under stable idempotency key chapter-settlement.<acceptance>
+→ persist terminal effect
+→ atomically settle original Attempt + create Projection successor
+```
+
+Stage 5 effect identity 用于记录“哪一个 Attempt 执行过”，Stage 2W idempotency key 才表示跨 Attempt 不变的
+业务请求；二者不得混为一行，否则一次确认未提交后的合法重试会撞上旧 Attempt 的 effect ownership。
+若进程在 Stage 2W 返回前后崩溃，resolver 只查询相同 project/idempotency key 的 Commit receipt：accepted receipt
+及其 manifest 必须证明 parent 正是 Task basis、当前 project commit 正是 resulting commit，才允许执行成功
+reducer；无 receipt 或非权威状态保留 `RECOVERY_PENDING` 交给安全恢复，不猜测结果、不重发不同请求。Stage 5
+只记录可恢复的 commit/receipt lineage，不伪造已经遗失的 Stage 2W validation/guardian 诊断 artifacts。
+
+Draft Freshness 后的 lookahead 也不是 foreground 的硬依赖。可晋升/可 replan 的候选照常使用；仍在执行的
+候选可以等待；死亡或缺失的 lookahead 必须回退到最新 exact snapshot 上的普通 rolling Planner task。
+
 #### B5.1 Dependency-aware bounded dispatcher
 
 扩展现有 `CreativeDispatcher`，不新增 scheduler service：
@@ -664,14 +723,18 @@ formal runner 覆盖 manual、semi、auto 三种停点，但不允许 auto 跳�
 - 每个 leaf 的模型调用继续由共享 endpoint-global admission 决定实际请求并发度；
 - 运行结束必须证明 task Attempt fence 和 model capacity lease 全部释放。
 
-开发/测试配置允许 `runtime_parallelism=1|2`。本轮默认目标是 2；`endpoint_request_limit` 仍由实际
-端点 manifest 和 KV 标定决定，不能因为 Runtime 有两条 lane 就强制模型同时生成两个长请求。
+单项目 `runtime_parallelism=1|2` 保持不变：它表达 foreground Draft 与只读 lookahead 的依赖语义。全局
+dispatcher admission 独立允许 `1/2/4/6/8`，只用于不同项目的 candidate leaf；同项目仍最多选择合法的
+Draft+lookahead 两条 lane，Commit/Freshness/acceptance/recovery 仍串行。`endpoint_request_limit` 继续由共享
+`ModelRequestAdmissionController` 的 request-count + KV-token capacity 决定，dispatcher 允许 8 个项目排队不
+等于单卡会同时生成 8 个长请求。上线值从 2 起，4/6/8 只有真实 capacity evidence 后才配置，不在代码里
+伪造吞吐结论。
 
 ## 6. C 层：按真实证据准入的扩展包
 
 ### C1. Multi-worker lease / heartbeat / reclaim
 
-触发条件：存在两个真实 dispatcher/worker 或跨进程长期执行需求。实现时：
+触发条件已经由 production long-running runner 和跨项目 dispatcher 成立。本轮实现：
 
 - 以独立 migration/contract version 增加 `heartbeat_at`、`lease_expires_at` 和 liveness policy；
 - claim 生成 lease，但 AttemptFence 永远必需；
@@ -680,7 +743,13 @@ formal runner 覆盖 manual、semi、auto 三种停点，但不允许 auto 跳�
 - liveness policy 区分 local process、remote job、provider request；
 - reclaim 前 effect reconciliation；
 - 旧 scanner/token 不能清理新 owner；
-- project writer takeover 先 CAS 新 owner，再 cancel 旧 owner。
+- project writer takeover 由新 Attempt claim/fence generation 完成；旧 callback/Commit 继续由现有 fence 拒绝。
+
+具体流程固定为 `claim(lease) → mark_started → periodic heartbeat → safe phase/effect settlement`。Heartbeat
+只续 matching current Attempt；scanner 看到 expiry 后先在同一事务把 task 置为 `RECOVERY_PENDING`。若当前
+Attempt 存在 `REQUESTED/UNCERTAIN` effect，则只能交给 effect reconciler；effect frontier 已明确 settled 时，
+reclaimer 才能结算旧 Attempt 为 `WAITING_RETRY`，随后普通 retry 创建新的 Attempt/token/fence。Lease expiry
+不是任务失败证据，不扣 failure budget，也不直接重发 provider/Commit 请求。
 
 不得只因表中已有 `lease_expires_at` 就宣称 multi-worker recovery 完成。
 
@@ -1090,6 +1159,11 @@ state 被下一章 Planner/Writer 正确读取。
 
 ## 17. 当前推荐的实际顺序
 
+真实小说 Stage 2～5 纵向闭环的新增输入合同、八项已确认断点、修复顺序和
+`20→5 / 60→5 / 100→10` Pilot 由
+`docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md` 统一负责。本文 B 层实现必须满足该文档，
+不能再以 fake Planner、手工 WCP 或 TextRoot-only Draft commit 作为真实 full-chain 完成证据。
+
 ```text
 现在（2026-08-12 用户授权）：
   冻结 Stage 2 executable/product semantics，不修改 Stage 2 owners
@@ -1097,15 +1171,21 @@ state 被下一章 Planner/Writer 正确读取。
   收敛唯一 shared Context Runtime 和真实 Planner/Writer leaf adapter
   完成可信 PlanRoot/TextRoot materializer 与 candidate-binding acceptance guard
   实现 B4 lookahead/background 两路有界并发与 basis revalidation
-  运行 focused deterministic/offline full-chain tests；8002 忙时不抢占，真实 API deferred
+  完成 G4/G5 production factory、G7 atomic settlement、G8 vertical runner
+  已运行 focused deterministic/offline closure tests；8002 忙时不抢占，真实 API deferred
 
-三个 leaf/runtime 工程闭环后：
+下一步（纵向 Pilot 文档为唯一执行参考）：
+  配置真实 ProductionRuntimeAssembly composition callable
+  先运行 C20→25 AUTO Pilot，再按结果决定 C60→65 和有界并发对照
+
+真实 Pilot 后：
   分别补 Stage 3 三方案、Stage 4 七模式和 Stage 5 多章真实 Gate
   Gate 全部完成后才形成 production clean identity
 
 真实长期运行后：
-  哪个 C 层 trigger 成立，就只实现和验收哪个能力
-  其余保持 deferred
+  用两个真实 worker 验证已实现的 lease/heartbeat/reclaim 部署 Gate
+  用实际 KV/latency/OOM 证据决定跨项目 dispatcher 是 2、4、6 还是 8
+  scheduled fire / Hook / Skill evolution / Temporal 仍按各自 trigger 单独准入
 ```
 
 这样先证明真实代码组合、固定事务拓扑和有界并发，而不把当前工程候选误报成语义/生产 PASS，也不

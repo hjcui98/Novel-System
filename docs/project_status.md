@@ -2,7 +2,7 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Status date: 2026-08-12 +08:00
+> Status date: 2026-08-13 +08:00
 >
 > Cross-cutting engineering constraint clarified: 2026-08-08 +08:00
 >
@@ -58,8 +58,54 @@ stable two-task ready batches and same-book Writer + Planner-lookahead overlap. 
 accepted until post-Draft exact Freshness promotes, replans or supersedes it. Product Plan→Write→Commit
 now crosses trusted PlanRoot/TextRoot materializers and the existing Commit/Projection/Freshness owner.
 The remaining condition is the real Stage 3/4 semantic and Stage 5 multi-chapter model Gate.
-Multi-worker lease/reclaim, scheduled fire, external Hook ingress, Skill evolution and Temporal remain
-evidence-triggered rather than pre-authorized platform work.
+Scheduled fire, external Hook ingress, Skill evolution and Temporal remain evidence-triggered rather
+than pre-authorized platform work.
+
+The 2026-08-13 production-path and long-running-runtime repair are engineering-closed for the first real
+Pilot. The working tree contains the real Stage 4 invocation factory, Stage 2M-v2→Stage 3 writing request
+factory, mandatory previous-chapter prose plus optional earlier trails, rolling Plan/Profile projection,
+Stage 2W atomic Chapter Settlement after Draft acceptance, and a general vertical runner shared with the CLI.
+Context streams are task/consumer scoped; Stage 3/4 slice exhaustion checkpoints and resumes instead of
+terminating the run; retry and Planner-Memory tranches are separate; retry exhaustion enters `BUDGET_REVIEW`.
+Production admission binds the declared factories/adapters/materializers to the objects actually used by the
+runtime, so a synthetic lambda cannot masquerade as the production path.
+
+Stage 5 now creates fixed-topology same-database successors in the predecessor transaction. AUTO acceptance
+is recoverable from durable `WAITING_INPUT`; Stage 2W Chapter Settlement is registered as an Attempt-scoped
+outer effect and reconciled against its stable Commit idempotency receipt; accepted external commit,
+Attempt settlement and Projection successor are reduced together. A failed or absent lookahead cannot strand
+the foreground chain: the runtime promotes/replans when valid and falls back to ordinary rolling planning when
+the background candidate is dead. Focused offline evidence covers the four atomic successor boundaries,
+external settlement recovery, AUTO runner recovery, lookahead promotion, Writer phase resume, C20→Draft21
+request construction and 21–25 planning projection. This remains
+`ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN`, not a real-model or creative-quality PASS. The only
+product-evidence next step is governed by `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md`.
+
+The 2026-08-13 autonomous-loop maturity increment is also engineering-closed without changing Stage 2.
+Stage 4 production Planner turns now consume `PLAN_READY | REQUEST_MEMORY`; requested questions pass
+through independent inquiry review, the existing inquiry-conditioned Need generator, Memory Gateway and
+Context Runtime before another Planner turn. Planner invocation checkpoints accumulate model call and
+input/output/reasoning token usage; `model_token_budget` is an aggregate soft slice, while the production
+request policy remains the per-call physical output ceiling. Need generation enforces a cross-question
+24-item tranche after goal-bound validation and returns explicit selected/deferred question lineage.
+
+Stage 3's existing Writing checkpoint now resumes at `EDITOR_PENDING`, `OBSERVER_PENDING` and
+`RECONCILIATION_PENDING` as well as reactive Memory. It persists the Draft's exact Editor Context and
+settled artifacts, so a later invocation skips already completed Writer/Editor/Observer calls without
+weakening their Gates. Stage 5 adds migration `0009_stage5_attempt_leases`: claim/heartbeat/expiry are
+durable, expiry first becomes `RECOVERY_PENDING`, and reclaim refuses unresolved effects before releasing
+the old Attempt to `WAITING_RETRY`; the old fence cannot heartbeat or write afterward and lease expiry does
+not consume creative failure budget. Global dispatcher admission accepts `1/2/4/6/8` cross-project
+candidate slots, while same-project semantic parallelism remains the proven Draft+lookahead maximum of two.
+Actual model concurrency is still bounded by the shared request-count/KV controller. Focused evidence is
+123 passed plus Stage 3/4 schema parity, Ruff and strict MyPy. No real API, 8002, Stage 2 benchmark or full
+repository Gate was run; therefore 4/6/8 capacity and multi-process deployment remain unclaimed until real
+operational evidence, and overall status remains `ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN`.
+
+The Stage 2M architecture-repair acceptance remains valid. Stage 2W's later default chapter-reveal identity
+requires the documented clean-Genesis benchmark rerun before claiming that every accepted checkpoint was
+rebuilt by that new executable path. The user reports that benchmark is currently running; this integration
+work did not call or preempt endpoint 8002.
 
 All permitted work is additionally constrained by minimum-sufficient engineering. Current repairs
 must extend the existing semantic owners, Model Gateway/scheduler boundary, artifact store, report
@@ -76,10 +122,10 @@ architecture decision. This does not relax any safety, quality, reproducibility,
 | Stage 2A | Development complete | CONDITIONAL_PASS | Freeze deterministic Memory Gateway |
 | Stage 2R | Complete | Physical index/basis gate passed | Maintenance only |
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
-| Stage 2M | Evidence-first package/readiness and bounded World/KG/R1/L1/L2 repair accepted; v33 frozen source retained | Architecture-repair PASS; deterministic quality and unified real gate PASS | Keep external scoring post-freeze; maintain accepted contracts |
-| Stage 3 | Engineering implementation complete at `bab4451` and present in the integration candidate | Deterministic quality reported; real model/infrastructure Gate conditional | Run the real semantic Gate when endpoint capacity is available |
-| Stage 4 | Seven-mode Planner Context Loop `0dcf17a` integrated through the real public adapter and trusted Plan materializer | Deterministic quality and focused root-commit closure reported; real seven-mode semantic Gate not run | Run the real semantic Gate when endpoint capacity is available |
-| Stage 5 | Stage 3/4/5 engineering closed loop ready; trusted Plan/Text roots and two-lane Writer/lookahead implemented | Earlier 220+9 integration evidence retained; focused real-adapter/root closure 1 passed, lookahead 1 passed, acceptance guards 2 passed; Ruff/strict MyPy clean; product Gate not run | Run one final real multi-chapter Gate without disturbing Stage 2 benchmark |
+| Stage 2M | Evidence-first package/readiness and bounded World/KG/R1/L1/L2 repair accepted; v33 frozen source retained | Architecture-repair PASS; deterministic quality and unified real gate PASS; new chapter-reveal executable benchmark still running | Do not preempt 8002; evaluate the clean-Genesis rerun when complete |
+| Stage 3 | Engineering candidate integrated; production factory supplies previous-chapter Canon prose, earlier trails, readable Plan/Profile and evidence-first WCP v2; reactive Memory phase supports checkpoint/yield/resume | Focused production request and cross-invocation resume tests pass; real model/infrastructure Gate conditional | Run the real semantic Gate through the production vertical assembly when endpoint capacity is available |
+| Stage 4 | Seven-mode Planner Context Loop integrated through the public adapter; rolling `CHAPTER_SET`, soft Context target, checkpoint continuation and independent Planner-Memory tranche implemented | Focused rolling/context/budget evidence passes; real seven-mode semantic Gate not run | Run the real semantic Gate through the production vertical assembly |
+| Stage 5 | Fixed topology, G4/G5 factories, Stage 2W atomic Chapter Settlement with outer-effect recovery, AUTO repair, bounded two-lane concurrency and general vertical runner implemented | `ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN`; focused atomic/recovery closure passes; real multi-chapter product Gate not run | Configure production assembly and run C20→25 when 8002 is free; do not call this product PASS before that evidence |
 
 ## 3. Accepted Stage 2A evidence
 

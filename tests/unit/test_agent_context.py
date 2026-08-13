@@ -720,3 +720,106 @@ def test_context_checkpoint_restores_view_and_replays_tail(
         trace_namespace="context-test",
     )
     assert replayed_projection == first_projection
+
+
+def test_context_runtime_isolates_task_streams_on_one_global_event_log(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    events, checkpoints = repositories
+    projector = AgentContextProjector(_count)
+    runtime = AgentContextRuntime(
+        projector,
+        ArtifactRepository(FilesystemObjectStore(tmp_path / "stream-objects")),
+        events,
+        checkpoints,
+        VERSION,
+    )
+    run_id = RunId("run.context.shared")
+    first_seed = _view(
+        run_id=run_id,
+        task_id=TaskId("task.context.first"),
+        basis_event_position=0,
+    )
+    second_seed = _view(
+        run_id=run_id,
+        task_id=TaskId("task.context.second"),
+        basis_event_position=0,
+    )
+    first_working = _item(
+        "stream-first",
+        layer=ContextLayer.WORKING,
+        kind=ContextItemKind.WORK_PLAN,
+        mandatory=True,
+    )
+    second_working = _item(
+        "stream-second",
+        layer=ContextLayer.WORKING,
+        kind=ContextItemKind.WORK_PLAN,
+        mandatory=True,
+    )
+
+    first = runtime.append_and_apply(
+        first_seed,
+        event_type=RunEventType.WRITER_WORK_PLAN_SETTLED,
+        payload=WriterWorkPlanSettledPayload(
+            work_plan_ref=_ref("1"),
+            working_item=first_working,
+        ).model_dump(mode="json"),
+        artifact_refs=(),
+        label="work-plan",
+        trace_namespace="context-test",
+    )
+    first_checkpoint = runtime.checkpoint(first, StableId("checkpoint.context.first"))
+
+    # Starting the second stream catches up over the first task's event without
+    # projecting its work plan, then appends at the global high watermark.
+    second = runtime.append_and_apply(
+        second_seed,
+        event_type=RunEventType.WRITER_WORK_PLAN_SETTLED,
+        payload=WriterWorkPlanSettledPayload(
+            work_plan_ref=_ref("2"),
+            working_item=second_working,
+        ).model_dump(mode="json"),
+        artifact_refs=(),
+        label="work-plan",
+        trace_namespace="context-test",
+    )
+    second_checkpoint = runtime.checkpoint(second, StableId("checkpoint.context.second"))
+
+    assert first_checkpoint.logical_stage == "stage3.context:writer:task.context.first"
+    assert second_checkpoint.logical_stage == "stage3.context:writer:task.context.second"
+    assert (
+        checkpoints.latest(run_id, logical_stage=first_checkpoint.logical_stage) == first_checkpoint
+    )
+    assert second.basis_event_position == 2
+    assert second.working_items == (second_working,)
+
+    restored_first = runtime.restore_latest(
+        run_id,
+        task_id=first_seed.task_id,
+        consumer=ContextConsumer.WRITER,
+    )
+    assert restored_first is not None
+    assert restored_first.basis_event_position == 2
+    assert restored_first.working_items == (first_working,)
+
+    advanced_first = runtime.append_and_apply(
+        restored_first,
+        event_type=RunEventType.TASK_STARTED,
+        payload={"started": True},
+        artifact_refs=(),
+        label="continue",
+        trace_namespace="context-test",
+    )
+    assert advanced_first.basis_event_position == 3
+    assert "task.context.first" in events.replay(run_id)[-1].idempotency_identity.root
+
+    restored_second = runtime.restore_latest(
+        run_id,
+        task_id=second_seed.task_id,
+        consumer=ContextConsumer.WRITER,
+    )
+    assert restored_second is not None
+    assert restored_second.basis_event_position == 3
+    assert restored_second.working_items == (second_working,)

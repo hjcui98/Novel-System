@@ -294,7 +294,6 @@
     },
     "generation": {
       "default": 1,
-      "maximum": 2,
       "minimum": 1,
       "title": "Generation",
       "type": "integer"

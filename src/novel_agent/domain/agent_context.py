@@ -37,6 +37,7 @@ class ContextItemKind(StrEnum):
     AUTHOR_INTENT = "author_intent"
     PLANNING_INQUIRY = "planning_inquiry"
     GOAL_PROPOSAL = "goal_proposal"
+    RECENT_PROSE = "recent_prose"
     MEMORY_CLAIM = "memory_claim"
     EVIDENCE_HANDLE = "evidence_handle"
     UNRESOLVED_NEED = "unresolved_need"

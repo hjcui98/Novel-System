@@ -39,9 +39,11 @@
     "PlanningLoopPhase": {
       "enum": [
         "preflight",
+        "inquiry_reviewed",
         "inquiry_accepted",
         "memory_resolved",
         "context_ready",
+        "planner_memory_pending",
         "plan_proposed",
         "plan_reviewed",
         "terminal"

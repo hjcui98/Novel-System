@@ -692,6 +692,10 @@ workflow execution adapter，不能成为业务真源。
 
 ## 16. Stage 5 最终验收
 
+Stage 2～5 面向真实小说的纵向闭环、最近正文合同、已确认工程断点及首轮宽松可用性 Pilot 统一见
+`docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md`。其中的 checkpoint 和窗口只是测试参数；
+Stage 5 产品入口仍必须支持任意合法 current chapter、target chapter 和 ProjectProfile rolling policy。
+
 ### 16.1 Runtime correctness
 
 - 双 worker claim race 只有一个 Task/Attempt/Event 原子组成功；

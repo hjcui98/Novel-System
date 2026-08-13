@@ -1,0 +1,552 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "CreativeRunResult": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        },
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "current_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "current_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "current_task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "next_legal_commands": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Next Legal Commands",
+          "type": "array"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "reason_code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Receipt Refs",
+          "type": "array"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "terminal": {
+          "$ref": "#/$defs/CreativeRunTerminal"
+        }
+      },
+      "required": [
+        "run_id",
+        "project_id",
+        "terminal",
+        "basis_commit",
+        "current_commit",
+        "reason_code"
+      ],
+      "title": "CreativeRunResult",
+      "type": "object"
+    },
+    "CreativeRunTerminal": {
+      "enum": [
+        "PROGRESSED",
+        "WAITING_PLAN_ACCEPTANCE",
+        "WAITING_DRAFT_ACCEPTANCE",
+        "WAITING_RETRY",
+        "BUDGET_REVIEW",
+        "RECOVERY_PENDING",
+        "REVIEW_REQUIRED",
+        "BLOCKED",
+        "COMPLETED",
+        "CANCELLED"
+      ],
+      "title": "CreativeRunTerminal",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "TaskKind": {
+      "enum": [
+        "plan_candidate",
+        "plan_acceptance",
+        "plan_commit",
+        "draft_candidate",
+        "draft_acceptance",
+        "draft_commit",
+        "projection_freshness",
+        "maintenance"
+      ],
+      "title": "TaskKind",
+      "type": "string"
+    },
+    "TaskPurpose": {
+      "enum": [
+        "normal",
+        "lookahead",
+        "replan",
+        "derived_maintenance"
+      ],
+      "title": "TaskPurpose",
+      "type": "string"
+    },
+    "TaskRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "affects_future_plan": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affects Future Plan"
+        },
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "block_cause": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Cause"
+        },
+        "cancel_requested": {
+          "default": false,
+          "title": "Cancel Requested",
+          "type": "boolean"
+        },
+        "candidate_binding_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "chapter_index": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "current_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dependency_task_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "title": "Dependency Task Ids",
+          "type": "array"
+        },
+        "failure_budget": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Failure Budget",
+          "type": "integer"
+        },
+        "horizon_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon End"
+        },
+        "horizon_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Horizon Start"
+        },
+        "input_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Input Artifact Refs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskKind"
+        },
+        "paused": {
+          "default": false,
+          "title": "Paused",
+          "type": "boolean"
+        },
+        "permission_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Permission Hash",
+          "type": "string"
+        },
+        "planner_memory_budget_extensions": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Planner Memory Budget Extensions",
+          "type": "integer"
+        },
+        "policy_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "priority": {
+          "default": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "projection_after": {
+          "anyOf": [
+            {
+              "pattern": "^(plan|draft)$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Projection After"
+        },
+        "protected_chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protected Chapter Index"
+        },
+        "purpose": {
+          "$ref": "#/$defs/TaskPurpose",
+          "default": "normal"
+        },
+        "retry_tranche_size": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Retry Tranche Size",
+          "type": "integer"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "scheduled_for": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled For"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "superseded": {
+          "default": false,
+          "title": "Superseded",
+          "type": "boolean"
+        },
+        "target_chapters": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Target Chapters",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "minimum": 0,
+          "title": "Task Revision",
+          "type": "integer"
+        },
+        "terminal_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Terminal Artifact Refs",
+          "type": "array"
+        },
+        "writer_generation": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Writer Generation",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "run_id",
+        "project_id",
+        "kind",
+        "task_revision",
+        "status",
+        "basis_commit",
+        "policy_hash",
+        "permission_hash"
+      ],
+      "title": "TaskRecord",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "pending",
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_retry",
+        "budget_review",
+        "recovery_pending",
+        "blocked",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    },
+    "VerticalRunStatus": {
+      "enum": [
+        "completed",
+        "waiting",
+        "recovery_pending",
+        "blocked",
+        "yielded"
+      ],
+      "title": "VerticalRunStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Frozen orchestration evidence from one real multi-chapter runtime execution.",
+  "properties": {
+    "completed_chapters": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Completed Chapters",
+      "type": "array"
+    },
+    "current_chapter": {
+      "minimum": 0,
+      "title": "Current Chapter",
+      "type": "integer"
+    },
+    "dispatch_slices": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Dispatch Slices",
+      "type": "integer"
+    },
+    "final_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "outputs_frozen": {
+      "title": "Outputs Frozen",
+      "type": "boolean"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "runtime_results": {
+      "items": {
+        "$ref": "#/$defs/CreativeRunResult"
+      },
+      "title": "Runtime Results",
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": "1.0.0"
+    },
+    "status": {
+      "$ref": "#/$defs/VerticalRunStatus"
+    },
+    "target_chapter": {
+      "minimum": 1,
+      "title": "Target Chapter",
+      "type": "integer"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/TaskRecord"
+      },
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "project_id",
+    "current_chapter",
+    "target_chapter",
+    "status",
+    "final_commit",
+    "runtime_results",
+    "tasks",
+    "outputs_frozen"
+  ],
+  "title": "Stage5VerticalRunReport",
+  "type": "object"
+}

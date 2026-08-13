@@ -20,7 +20,7 @@ from novel_agent.domain.changes import (
     CommitStatus,
     ValidationStatus,
 )
-from novel_agent.domain.ids import CommitId, ProjectId
+from novel_agent.domain.ids import CommitId, ProjectId, StableId
 
 
 class ProjectAlreadyExistsError(RuntimeError):
@@ -209,6 +209,22 @@ class CommitService:
             if project is None or project.current_commit_id is None:
                 raise ProjectNotFoundError(project_id.root)
             return CommitId(project.current_commit_id)
+
+    def result_for_idempotency(
+        self, project_id: ProjectId, idempotency_key: StableId
+    ) -> CommitResult | None:
+        """Read an authoritative prior result without executing the commit again."""
+
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(CommitReceiptRow).where(
+                    CommitReceiptRow.project_id == project_id.root,
+                    CommitReceiptRow.idempotency_key == idempotency_key.root,
+                )
+            )
+            if row is None:
+                return None
+            return CommitResult.model_validate_json(json.dumps(row.result_json))
 
     def load_manifest(self, commit_id: CommitId) -> RootManifest:
         with self._session_factory() as session:

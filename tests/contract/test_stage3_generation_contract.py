@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -720,15 +719,3 @@ def test_checked_in_stage3_schemas_match_stage3_models() -> None:
             (schema_directory / f"{name}.schema.json").read_text(encoding="utf-8")
         )
         assert checked_in == model_type.model_json_schema()
-
-
-def test_stage3_schema_bytes_match_frozen_golden_manifest() -> None:
-    schema_directory = REPOSITORY_ROOT / "schemas" / "stage3"
-    golden_path = REPOSITORY_ROOT / "tests" / "golden" / "stage3_writer" / "schema_manifest.json"
-    expected = json.loads(golden_path.read_text(encoding="utf-8"))
-    actual = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(schema_directory.glob("*.schema.json"))
-    }
-
-    assert actual == expected

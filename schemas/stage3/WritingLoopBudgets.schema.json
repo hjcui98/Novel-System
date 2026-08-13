@@ -37,16 +37,20 @@
       "title": "Max Memory Questions",
       "type": "integer"
     },
+    "max_post_draft_model_calls": {
+      "default": 5,
+      "minimum": 0,
+      "title": "Max Post Draft Model Calls",
+      "type": "integer"
+    },
     "max_reactive_memory_rounds": {
       "default": 1,
-      "maximum": 1,
       "minimum": 0,
       "title": "Max Reactive Memory Rounds",
       "type": "integer"
     },
     "max_writer_turns": {
       "default": 2,
-      "maximum": 2,
       "minimum": 1,
       "title": "Max Writer Turns",
       "type": "integer"

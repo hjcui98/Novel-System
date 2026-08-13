@@ -156,6 +156,7 @@
     "PlanningTerminalStatus": {
       "enum": [
         "PLAN_CANDIDATE_READY",
+        "YIELDED",
         "REVIEW_REQUIRED",
         "SUSPENDED",
         "BLOCKED"

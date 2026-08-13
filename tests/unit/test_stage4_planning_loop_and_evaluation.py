@@ -267,6 +267,7 @@ class _ModePlanner(_BootstrapPlanner):
         self._unresolved = unresolved
         self.inquiry_calls = 0
         self.plan_calls = 0
+        self.plan_requests: list[dict[str, object]] = []
 
     async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
         self.inquiry_calls += 1
@@ -274,7 +275,16 @@ class _ModePlanner(_BootstrapPlanner):
         inquiry = _inquiry(self._mode, source_artifacts[0])
         parent = cast(StableId | None, kwargs.get("parent_inquiry_id"))
         if parent is not None:
-            inquiry = inquiry.model_copy(update={"parent_inquiry_id": parent, "generation": 2})
+            inquiry = inquiry.model_copy(
+                update={
+                    "parent_inquiry_id": parent,
+                    "generation": cast(int, kwargs["generation"]),
+                    "planning_scope": (
+                        *inquiry.planning_scope,
+                        f"reviewed-revision-{self.inquiry_calls}",
+                    ),
+                }
+            )
         ref = self._artifacts.put(inquiry.model_dump_json().encode(), "application/json", VERSION)
         return (
             inquiry,
@@ -285,6 +295,7 @@ class _ModePlanner(_BootstrapPlanner):
 
     async def run(self, **kwargs: object) -> tuple[PlannerExecutionResult, ModelCallRecord]:
         self.plan_calls += 1
+        self.plan_requests.append(dict(kwargs))
         task = cast(PlanningTask, kwargs["task"])
         receipt = _receipt(self._mode, AgentType.PLANNER)
         proposal = PlanProposal(
@@ -293,7 +304,14 @@ class _ModePlanner(_BootstrapPlanner):
             mode=self._mode,
             strategy=task.strategy,
             base_commit=task.base_commit,
-            items=(),
+            items=(
+                ProposedItem(
+                    item_id=StableId(f"plan-item.{self._mode.value}.{self.plan_calls}"),
+                    kind="chapter_goal",
+                    payload={"revision": self.plan_calls},
+                    provenance=ProposalProvenance.PLANNER_PROPOSED,
+                ),
+            ),
             unresolved=self._unresolved,
             coverage=1.0,
             receipt=receipt,
@@ -318,16 +336,24 @@ class _FixtureMemory:
         artifacts: ArtifactRepository,
         *,
         stop_reason: ControllerStopReason = ControllerStopReason.SUFFICIENT,
+        stop_reasons: tuple[ControllerStopReason, ...] = (),
         blocked: bool = False,
+        mandatory_facets_total: int = 1,
+        mandatory_facets_closed: int = 1,
     ) -> None:
         self._artifacts = artifacts
         self._stop_reason = stop_reason
+        self._stop_reasons = stop_reasons
         self._blocked = blocked
+        self._mandatory_facets_total = mandatory_facets_total
+        self._mandatory_facets_closed = mandatory_facets_closed
         self.calls = 0
+        self.requests: list[object] = []
 
     def resolve(self, request: object, text_root: object, **kwargs: object) -> object:
         del text_root, kwargs
         self.calls += 1
+        self.requests.append(request)
         if self._blocked:
             raise MemoryGatewayBlockedError("blocked")
         typed_request = cast(SimpleNamespace, request)
@@ -347,8 +373,48 @@ class _FixtureMemory:
         return SimpleNamespace(
             context=package,
             frozen_context_artifact=ref,
-            selected_result=SimpleNamespace(stop_reason=self._stop_reason),
+            selected_result=SimpleNamespace(
+                stop_reason=(
+                    self._stop_reasons[min(self.calls - 1, len(self._stop_reasons) - 1)]
+                    if self._stop_reasons
+                    else self._stop_reason
+                ),
+                mandatory_need_facets_total=self._mandatory_facets_total,
+                mandatory_need_facets_closed=self._mandatory_facets_closed,
+            ),
         )
+
+
+class _NoProgressPlanner(_ModePlanner):
+    async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
+        result = await super().propose_inquiry(**kwargs)
+        parent = cast(StableId | None, kwargs.get("parent_inquiry_id"))
+        if parent is None:
+            return result
+        source_artifacts = cast(tuple[ArtifactRef, ...], kwargs["source_artifacts"])
+        inquiry = _inquiry(self._mode, source_artifacts[0]).model_copy(
+            update={
+                "inquiry_id": StableId(f"planning-inquiry.no-progress.{self.inquiry_calls}"),
+                "parent_inquiry_id": parent,
+                "generation": cast(int, kwargs["generation"]),
+            }
+        )
+        ref = self._artifacts.put(inquiry.model_dump_json().encode(), "application/json", VERSION)
+        return inquiry, ref, result[2], result[3]
+
+    async def run(self, **kwargs: object) -> tuple[PlannerExecutionResult, ModelCallRecord]:
+        result, call = await super().run(**kwargs)
+        if self.plan_calls == 1:
+            return result, call
+        proposal = result.plan_proposal.model_copy(
+            update={
+                "items": tuple(
+                    item.model_copy(update={"payload": {"revision": 1}})
+                    for item in result.plan_proposal.items
+                )
+            }
+        )
+        return result.model_copy(update={"plan_proposal": proposal}), call
 
 
 class _NeedFailure:
@@ -532,7 +598,11 @@ def test_shared_runtime_seeds_and_recovers_bootstrap_planner_context(tmp_path: P
     assert projection.basis_event_position == 1
     assert projection.seed_ref == package_ref
     assert not projection.suspended
-    restored = runtime.restore_latest(request.run_id)
+    restored = runtime.restore_latest(
+        request.run_id,
+        task_id=request.task_id,
+        consumer=ContextConsumer.PLANNER,
+    )
     assert restored is not None
     assert restored.consumer is ContextConsumer.PLANNER
     assert restored.base_commit is None
@@ -551,6 +621,18 @@ def test_shared_runtime_seeds_and_recovers_bootstrap_planner_context(tmp_path: P
             seed=package,
             seed_ref=package_ref,
         )
+    second_task_id = TaskId("task.stage4.bootstrap.second")
+    second_projection = adapter.start(
+        run_id=request.run_id,
+        task_id=second_task_id,
+        seed=package,
+        seed_ref=package_ref,
+    )
+    assert second_projection.basis_event_position == 2
+    first_projection = adapter.project(run_id=request.run_id, task_id=request.task_id)
+    assert first_projection.task_id == request.task_id
+    assert first_projection.basis_event_position == 2
+    assert adapter.project(run_id=request.run_id, task_id=second_task_id).task_id == second_task_id
     bootstrap_memory = PlannerContextItem(
         context_item_id=StableId("planner-context.bootstrap-memory"),
         section=PlannerContextSection.CURRENT_STATE,
@@ -659,7 +741,11 @@ def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: P
     )
     assert initial.generation == 1
     assert initial.compaction_receipt_ref is not None
-    view = runtime.restore_latest(initial.run_id)
+    view = runtime.restore_latest(
+        initial.run_id,
+        task_id=initial.task_id,
+        consumer=ContextConsumer.PLANNER,
+    )
     assert view is not None
     assert retired.context_item_id in view.compacted_item_ids
 
@@ -692,7 +778,11 @@ def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: P
     )
     assert new_item.context_item_id in updated.exposed_context_item_ids
     assert retired.context_item_id not in updated.exposed_context_item_ids
-    final_view = runtime.restore_latest(initial.run_id)
+    final_view = runtime.restore_latest(
+        initial.run_id,
+        task_id=initial.task_id,
+        consumer=ContextConsumer.PLANNER,
+    )
     assert final_view is not None
     assert tuple(item.item_id for item in final_view.active_memory_items) == (
         new_item.context_item_id,
@@ -1314,7 +1404,7 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
                 ArtifactRepository(FilesystemObjectStore(tmp_path / "placeholder-2")),
                 stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
             ),
-            PlanningLoopTerminal.MEMORY_INSUFFICIENT,
+            PlanningLoopTerminal.YIELDED,
         ),
         (
             "memory-conflict",
@@ -1380,7 +1470,7 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
             [ReviewDecision.ACCEPT, ReviewDecision.REVISE, ReviewDecision.REVISE],
             (),
             1,
-            PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
+            PlanningLoopTerminal.YIELDED,
         ),
         (
             "plan-degraded",
@@ -1439,8 +1529,9 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
             text_root=text_root,
         )
     )
-    assert no_gap.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
-    assert no_gap_planner.plan_calls == 2
+    assert no_gap.terminal is PlanningLoopTerminal.REVIEW_REVISION_REQUIRED
+    assert no_gap.diagnostic_codes == ("NO_VALID_REVIEWER_MEMORY_NEEDS",)
+    assert no_gap_planner.plan_calls == 1
     assert no_gap_memory.calls == 1
 
     revision_artifacts, _, revision_request = setup("revision")
@@ -1468,27 +1559,22 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
     assert revision_memory.calls == 2
     assert revised.proposal is not None and revised.proposal.parent_proposal_id is not None
 
-    checkpoints = []
-    for ref in revised.event_artifacts:
-        if "checkpoint" in ref.media_type:
-            checkpoints.append(
-                PlanningLoopCheckpoint.model_validate_json(revision_artifacts.read_verified(ref))
-            )
-    context_checkpoint = next(item for item in checkpoints if item.planner_context_ref is not None)
-    checkpoint_ref = next(
-        ref
-        for ref in revised.event_artifacts
-        if "checkpoint" in ref.media_type
-        and PlanningLoopCheckpoint.model_validate_json(
-            revision_artifacts.read_verified(ref)
-        ).checkpoint_id
-        == context_checkpoint.checkpoint_id
+    checkpoint_refs = tuple(
+        ref for ref in revised.event_artifacts if "checkpoint" in ref.media_type
     )
+    checkpoint_ref = checkpoint_refs[-1]
+    final_checkpoint = PlanningLoopCheckpoint.model_validate_json(
+        revision_artifacts.read_verified(checkpoint_ref)
+    )
+    assert final_checkpoint.execution_ref is not None
+    assert final_checkpoint.reviewer_memory_rounds_used == 1
+    assert len(final_checkpoint.reviewer_memory_review_ids) == 1
+    assert len(final_checkpoint.reviewer_context_refs) == 1
     resume_reviewer = _ScriptedReviewer(
         revision_artifacts,
-        [ReviewDecision.ACCEPT],
+        [],
     )
-    resume_service, _, _ = _post_genesis_service(
+    resume_service, resume_planner, resume_memory = _post_genesis_service(
         revision_artifacts,
         reviewer=resume_reviewer,
         runtime=revision_runtime,
@@ -1503,6 +1589,9 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
         )
     )
     assert resumed.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert resume_planner.inquiry_calls == 0
+    assert resume_planner.plan_calls == 0
+    assert resume_memory.calls == 0
     changed = revision_request.model_copy(
         update={"configuration_fingerprint": ArtifactId("sha256:" + "b" * 64)}
     )
@@ -1535,6 +1624,235 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
     )
     with pytest.raises(ValueError, match="not UTF-8"):
         asyncio.run(binary_service.run(request=binary_request, model_request=_model_request))
+
+
+def test_planning_work_slices_resume_progress_and_stop_identity_only_revisions(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+
+    def setup(name: str) -> tuple[ArtifactRepository, PlanningLoopRequest]:
+        artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / name))
+        source = _put(artifacts, "author source")
+        roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+        return artifacts, _request(
+            AgentMode.CHAPTER_SET,
+            source,
+            accepted=(roots[0], roots[1], roots[2]),
+        )
+
+    inquiry_artifacts, inquiry_request = setup("inquiry-slices")
+    inquiry_reviewer = _ScriptedReviewer(
+        inquiry_artifacts,
+        [
+            ReviewDecision.REVISE,
+            ReviewDecision.REVISE,
+            ReviewDecision.ACCEPT,
+            ReviewDecision.ACCEPT,
+        ],
+    )
+    inquiry_service, inquiry_planner, inquiry_memory = _post_genesis_service(
+        inquiry_artifacts,
+        reviewer=inquiry_reviewer,
+    )
+    inquiry_yield = asyncio.run(
+        inquiry_service.run(
+            request=inquiry_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert inquiry_yield.terminal is PlanningLoopTerminal.YIELDED
+    assert inquiry_yield.diagnostic_codes == ("INQUIRY_REVISION_SLICE_EXHAUSTED",)
+    inquiry_checkpoint = next(
+        ref for ref in reversed(inquiry_yield.event_artifacts) if "checkpoint" in ref.media_type
+    )
+    inquiry_ready = asyncio.run(
+        inquiry_service.run(
+            request=inquiry_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+            resume_checkpoint_ref=inquiry_checkpoint,
+        )
+    )
+    assert inquiry_ready.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert inquiry_planner.inquiry_calls == 3
+    assert inquiry_planner.plan_calls == 1
+    assert inquiry_memory.calls == 1
+
+    plan_artifacts, plan_request = setup("plan-slices")
+    plan_reviewer = _ScriptedReviewer(
+        plan_artifacts,
+        [
+            ReviewDecision.ACCEPT,
+            ReviewDecision.REVISE,
+            ReviewDecision.REVISE,
+            ReviewDecision.ACCEPT,
+        ],
+        memory_gap=True,
+    )
+    plan_service, plan_planner, plan_memory = _post_genesis_service(
+        plan_artifacts,
+        reviewer=plan_reviewer,
+    )
+    plan_yield = asyncio.run(
+        plan_service.run(
+            request=plan_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert plan_yield.terminal is PlanningLoopTerminal.YIELDED
+    assert plan_yield.diagnostic_codes == ("PLAN_REVISION_SLICE_EXHAUSTED",)
+    plan_checkpoint = next(
+        ref for ref in reversed(plan_yield.event_artifacts) if "checkpoint" in ref.media_type
+    )
+    plan_ready = asyncio.run(
+        plan_service.run(
+            request=plan_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+            resume_checkpoint_ref=plan_checkpoint,
+        )
+    )
+    assert plan_ready.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert plan_planner.inquiry_calls == 1
+    assert plan_planner.plan_calls == 3
+    assert plan_memory.calls == 3
+    final_trusted_context = cast(
+        tuple[ArtifactRef, ...], plan_planner.plan_requests[-1]["trusted_context_artifacts"]
+    )
+    assert len(final_trusted_context) == 5
+    final_plan_checkpoint_ref = next(
+        ref for ref in reversed(plan_ready.event_artifacts) if "checkpoint" in ref.media_type
+    )
+    final_plan_checkpoint = PlanningLoopCheckpoint.model_validate_json(
+        plan_artifacts.read_verified(final_plan_checkpoint_ref)
+    )
+    assert final_plan_checkpoint.reviewer_memory_rounds_used == 2
+    assert len(final_plan_checkpoint.reviewer_context_refs) == 2
+
+    inquiry_stall_artifacts, inquiry_stall_request = setup("inquiry-no-progress")
+    inquiry_stall_service, _, _ = _post_genesis_service(
+        inquiry_stall_artifacts,
+        reviewer=_ScriptedReviewer(inquiry_stall_artifacts, [ReviewDecision.REVISE]),
+        planner=_NoProgressPlanner(inquiry_stall_artifacts, AgentMode.CHAPTER_SET),
+    )
+    inquiry_stall = asyncio.run(
+        inquiry_stall_service.run(
+            request=inquiry_stall_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert inquiry_stall.terminal is PlanningLoopTerminal.INQUIRY_REVIEW_REQUIRED
+    assert inquiry_stall.diagnostic_codes == ("INQUIRY_REVISION_NO_PROGRESS",)
+
+    plan_stall_artifacts, plan_stall_request = setup("plan-no-progress")
+    plan_stall_service, _, _ = _post_genesis_service(
+        plan_stall_artifacts,
+        reviewer=_ScriptedReviewer(
+            plan_stall_artifacts,
+            [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
+        ),
+        planner=_NoProgressPlanner(plan_stall_artifacts, AgentMode.CHAPTER_SET),
+    )
+    plan_stall = asyncio.run(
+        plan_stall_service.run(
+            request=plan_stall_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert plan_stall.terminal is PlanningLoopTerminal.REVIEW_REVISION_REQUIRED
+    assert plan_stall.diagnostic_codes == ("PLAN_REVISION_NO_PROGRESS",)
+
+
+def test_planning_memory_budget_yields_checkpoint_and_incomplete_facets_never_ready(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+
+    def setup(name: str) -> tuple[ArtifactRepository, PlanningLoopRequest]:
+        artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / name))
+        source = _put(artifacts, "author source")
+        roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+        return artifacts, _request(
+            AgentMode.CHAPTER_SET,
+            source,
+            accepted=(roots[0], roots[1], roots[2]),
+        )
+
+    budget_artifacts, budget_request = setup("reviewer-memory-budget")
+    budget_memory = _FixtureMemory(
+        budget_artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.BUDGET_EXHAUSTED,
+        ),
+    )
+    budget_service, budget_planner, _ = _post_genesis_service(
+        budget_artifacts,
+        reviewer=_ScriptedReviewer(
+            budget_artifacts,
+            [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
+            memory_gap=True,
+        ),
+        memory=budget_memory,
+    )
+    yielded = asyncio.run(
+        budget_service.run(
+            request=budget_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert yielded.terminal is PlanningLoopTerminal.YIELDED
+    assert yielded.diagnostic_codes == ("REVIEWER_MEMORY_BUDGET_EXHAUSTED",)
+    checkpoint_ref = next(
+        ref for ref in reversed(yielded.event_artifacts) if "checkpoint" in ref.media_type
+    )
+    checkpoint = PlanningLoopCheckpoint.model_validate_json(
+        budget_artifacts.read_verified(checkpoint_ref)
+    )
+    assert checkpoint.execution_ref is not None
+    assert checkpoint.plan_review_ref is not None
+    assert budget_planner.plan_calls == 1
+
+    facet_artifacts, facet_request = setup("mandatory-facets")
+    facet_memory = _FixtureMemory(
+        facet_artifacts,
+        stop_reason=ControllerStopReason.SUFFICIENT,
+        mandatory_facets_total=2,
+        mandatory_facets_closed=1,
+    )
+    facet_service, facet_planner, _ = _post_genesis_service(
+        facet_artifacts,
+        reviewer=_ScriptedReviewer(facet_artifacts, [ReviewDecision.ACCEPT]),
+        memory=facet_memory,
+    )
+    incomplete = asyncio.run(
+        facet_service.run(
+            request=facet_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert incomplete.terminal is PlanningLoopTerminal.MEMORY_INSUFFICIENT
+    assert incomplete.diagnostic_codes == ("MANDATORY_MEMORY_FACETS_UNRESOLVED",)
+    assert facet_planner.plan_calls == 0
 
 
 def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(

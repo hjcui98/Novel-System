@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.memory import GraphPathReceipt, RetrievalUnit, Stage1ContextPackage
 from novel_agent.domain.planning import (
@@ -17,6 +18,7 @@ from novel_agent.domain.planning import (
     PlanningInquiry,
     PlanningLoopRequest,
 )
+from novel_agent.domain.stage2 import ProjectProfileRootDocument
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
@@ -75,16 +77,10 @@ class PlannerContextAssembler:
                     mandatory=True,
                 )
             )
+        if request.project_profile_ref is not None:
+            mandatory.append(self._project_profile_item(request.project_profile_ref))
         if request.accepted_plan_ref is not None:
-            mandatory.append(
-                self._artifact_item(
-                    StableId("planner-context.accepted-plan"),
-                    PlannerContextSection.ACCEPTED_PLAN,
-                    request.accepted_plan_ref,
-                    protected=True,
-                    mandatory=True,
-                )
-            )
+            mandatory.append(self._accepted_plan_item(request, request.accepted_plan_ref))
         for goal in inquiry.goal_proposals:
             mandatory.append(
                 PlannerContextItem(
@@ -174,10 +170,11 @@ class PlannerContextAssembler:
                     for graph_ref in unit_graph_refs:
                         graph_refs[graph_ref.artifact_id] = graph_ref
 
-        budget = request.budgets.context.token_budget
+        budget = (
+            request.budgets.planner_context_target_tokens
+            or request.budgets.context.token_budget
+        )
         mandatory_tokens = sum(item.token_count for item in mandatory)
-        if mandatory_tokens > budget:
-            raise PlannerContextAssemblyError("protected Planner context exceeds hard limit")
         selected = list(mandatory)
         selected_tokens = mandatory_tokens
         dropped: list[StableId] = []
@@ -231,6 +228,7 @@ class PlannerContextAssembler:
                 token_budget=budget,
                 mandatory_tokens=mandatory_tokens,
                 selected_tokens=selected_tokens,
+                soft_overflow_tokens=max(0, selected_tokens - budget),
                 dropped_item_ids=tuple(dropped),
                 drop_reasons=drop_reasons,
             ),
@@ -242,6 +240,106 @@ class PlannerContextAssembler:
             self._schema_version,
         )
         return package, artifact
+
+    def _accepted_plan_item(
+        self,
+        request: PlanningLoopRequest,
+        artifact: ArtifactRef,
+    ) -> PlannerContextItem:
+        raw = self._artifacts.read_verified(artifact)
+        try:
+            plan = PlanRootDocument.model_validate_json(raw)
+        except ValueError:
+            return self._artifact_item(
+                StableId("planner-context.accepted-plan"),
+                PlannerContextSection.ACCEPTED_PLAN,
+                artifact,
+                protected=True,
+                mandatory=True,
+            )
+
+        if request.horizon_start is None or request.horizon_end is None:
+            goals = plan.chapter_goals
+            nodes = plan.nodes
+        else:
+            lower = max(1, request.horizon_start - 1)
+            goals = tuple(
+                goal
+                for goal in plan.chapter_goals
+                if lower <= goal.chapter_index <= request.horizon_end
+            )
+            obligation_ids = {
+                obligation_id for goal in goals for obligation_id in goal.obligation_ids
+            }
+            by_id = {node.plan_node_id: node for node in plan.nodes}
+            selected_ids = {
+                node.plan_node_id
+                for node in plan.nodes
+                if node.parent_id is None
+                or bool(set(node.obligation_ids) & obligation_ids)
+            }
+            frontier = tuple(selected_ids)
+            while frontier:
+                parent_ids: set[StableId] = set()
+                for node_id in frontier:
+                    node = by_id.get(node_id)
+                    if node is not None and node.parent_id is not None:
+                        parent_ids.add(node.parent_id)
+                additions = {item for item in parent_ids if item not in selected_ids}
+                if not additions:
+                    break
+                selected_ids.update(additions)
+                frontier = tuple(additions)
+            nodes = tuple(node for node in plan.nodes if node.plan_node_id in selected_ids)
+
+        text = canonical_json_bytes(
+            {
+                "source_plan_root": artifact.artifact_id.root,
+                "horizon_start": request.horizon_start,
+                "horizon_end": request.horizon_end,
+                "chapter_goals": [goal.model_dump(mode="json") for goal in goals],
+                "relevant_plan_nodes": [node.model_dump(mode="json") for node in nodes],
+            }
+        ).decode("utf-8")
+        return PlannerContextItem(
+            context_item_id=StableId("planner-context.accepted-plan"),
+            section=PlannerContextSection.ACCEPTED_PLAN,
+            text=text,
+            protected=True,
+            mandatory=True,
+            token_count=self._tokens(text),
+            source_artifact_refs=(artifact,),
+        )
+
+    def _project_profile_item(self, artifact: ArtifactRef) -> PlannerContextItem:
+        raw = self._artifacts.read_verified(artifact)
+        try:
+            profile = ProjectProfileRootDocument.model_validate_json(raw)
+        except ValueError:
+            return self._artifact_item(
+                StableId("planner-context.project-profile"),
+                PlannerContextSection.AUTHOR_INTENT,
+                artifact,
+                protected=True,
+                mandatory=True,
+            )
+        text = canonical_json_bytes(
+            {
+                "source_project_profile": artifact.artifact_id.root,
+                "style_profile": profile.style_profile,
+                "capability_profile": profile.capability_profile,
+                "model_profiles": profile.model_profiles,
+            }
+        ).decode("utf-8")
+        return PlannerContextItem(
+            context_item_id=StableId("planner-context.project-profile"),
+            section=PlannerContextSection.AUTHOR_INTENT,
+            text=text,
+            protected=True,
+            mandatory=True,
+            token_count=self._tokens(text),
+            source_artifact_refs=(artifact,),
+        )
 
     def _artifact_item(
         self,

@@ -697,6 +697,7 @@
         "author_intent",
         "planning_inquiry",
         "goal_proposal",
+        "recent_prose",
         "memory_claim",
         "evidence_handle",
         "unresolved_need",
@@ -2751,6 +2752,17 @@
           "title": "Canon Mutated",
           "type": "boolean"
         },
+        "checkpoint_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "commit_called": {
           "const": false,
           "default": false,
@@ -2943,12 +2955,14 @@
     "WritingLoopTerminalStatus": {
       "enum": [
         "DRAFT_CANDIDATE_READY",
+        "YIELDED",
         "REVIEW_REQUIRED",
         "REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED",
         "REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED",
         "INPUT_NOT_READY",
         "MISSING_ACCEPTED_PLAN",
         "MEMORY_INSUFFICIENT",
+        "MEMORY_BUDGET_EXHAUSTED",
         "MEMORY_DENIED",
         "CONTEXT_LIMIT",
         "MODEL_UNAVAILABLE",

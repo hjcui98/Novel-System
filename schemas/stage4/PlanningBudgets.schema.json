@@ -85,7 +85,6 @@
     },
     "inquiry_revisions": {
       "default": 1,
-      "maximum": 1,
       "minimum": 0,
       "title": "Inquiry Revisions",
       "type": "integer"
@@ -98,9 +97,27 @@
     },
     "plan_revisions": {
       "default": 1,
-      "maximum": 1,
       "minimum": 0,
       "title": "Plan Revisions",
+      "type": "integer"
+    },
+    "planner_context_target_tokens": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Planner Context Target Tokens"
+    },
+    "planner_memory_rounds": {
+      "default": 1,
+      "minimum": 0,
+      "title": "Planner Memory Rounds",
       "type": "integer"
     },
     "retrieval": {
@@ -108,7 +125,6 @@
     },
     "reviewer_memory_rounds": {
       "default": 1,
-      "maximum": 1,
       "minimum": 0,
       "title": "Reviewer Memory Rounds",
       "type": "integer"

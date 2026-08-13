@@ -176,6 +176,12 @@
           "title": "Selected Tokens",
           "type": "integer"
         },
+        "soft_overflow_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Soft Overflow Tokens",
+          "type": "integer"
+        },
         "token_budget": {
           "minimum": 1,
           "title": "Token Budget",

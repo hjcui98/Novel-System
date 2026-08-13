@@ -74,7 +74,14 @@ class SharedPlannerContextRuntime:
         seed: PlannerContextPackage,
         seed_ref: ArtifactRef,
     ) -> PlannerContextProjection:
-        if self._runtime.restore_latest(run_id) is not None:
+        if (
+            self._runtime.restore_latest(
+                run_id,
+                task_id=task_id,
+                consumer=ContextConsumer.PLANNER,
+            )
+            is not None
+        ):
             raise PlannerContextRuntimeError("Planner Context stream already exists")
         protected, memory = self._split_items(seed.items)
         view = self._projector.seed(
@@ -211,7 +218,8 @@ class SharedPlannerContextRuntime:
         checkpoint = self._runtime.checkpoint(
             view,
             StableId(
-                f"checkpoint.stage4.{view.run_id.root}.{label}.{view.basis_event_position}"[:128]
+                f"checkpoint.stage4.{view.run_id.root}.{view.task_id.root}."
+                f"{label}.{view.basis_event_position}"[:128]
             ),
         )
         return self._projection(
@@ -222,7 +230,11 @@ class SharedPlannerContextRuntime:
         )
 
     def _view(self, run_id: RunId, task_id: TaskId) -> AgentContextView:
-        view = self._runtime.restore_latest(run_id)
+        view = self._runtime.restore_latest(
+            run_id,
+            task_id=task_id,
+            consumer=ContextConsumer.PLANNER,
+        )
         if view is None or view.task_id != task_id or view.consumer is not ContextConsumer.PLANNER:
             raise PlannerContextRuntimeError("Planner Context stream is unavailable")
         return view

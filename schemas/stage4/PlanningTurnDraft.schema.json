@@ -1,0 +1,308 @@
+{
+  "$defs": {
+    "AgentMode": {
+      "enum": [
+        "project_bootstrap",
+        "story",
+        "arc_volume",
+        "chapter",
+        "scene",
+        "replan",
+        "bootstrap",
+        "replay",
+        "curator_repair",
+        "bounded_r2",
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
+      ],
+      "title": "AgentMode",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BootstrapStrategy": {
+      "enum": [
+        "normalize_only",
+        "develop_candidates"
+      ],
+      "title": "BootstrapStrategy",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "PlanDeviationRecordCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_plan_item_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Affected Plan Item Ids",
+          "type": "array"
+        },
+        "deviation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "invalidated_artifact_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Invalidated Artifact Ids",
+          "type": "array"
+        },
+        "replacement_item_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Replacement Item Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviation_id",
+        "summary",
+        "affected_plan_item_ids"
+      ],
+      "title": "PlanDeviationRecordCandidate",
+      "type": "object"
+    },
+    "PlannerProposalDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "alternatives": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Coverage",
+          "type": "number"
+        },
+        "deviations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanDeviationRecordCandidate"
+          },
+          "title": "Deviations",
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "plan_items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProposedItem"
+          },
+          "title": "Plan Items",
+          "type": "array"
+        },
+        "profile_items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProposedItem"
+          },
+          "title": "Profile Items",
+          "type": "array"
+        },
+        "project_intent_items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProposedItem"
+          },
+          "title": "Project Intent Items",
+          "type": "array"
+        },
+        "selection_rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection Rationale"
+        },
+        "strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BootstrapStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "unresolved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        },
+        "world_design_items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProposedItem"
+          },
+          "title": "World Design Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode",
+        "coverage"
+      ],
+      "title": "PlannerProposalDraft",
+      "type": "object"
+    },
+    "PlanningTurnAction": {
+      "enum": [
+        "plan_ready",
+        "request_memory"
+      ],
+      "title": "PlanningTurnAction",
+      "type": "string"
+    },
+    "ProposalProvenance": {
+      "enum": [
+        "author_supplied",
+        "planner_proposed"
+      ],
+      "title": "ProposalProvenance",
+      "type": "string"
+    },
+    "ProposedItem": {
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProposalProvenance"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "item_id",
+        "kind",
+        "payload",
+        "provenance"
+      ],
+      "title": "ProposedItem",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Untrusted Planner response before trusted proposal lineage is attached.",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/PlanningTurnAction"
+    },
+    "assumptions": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "memory_questions": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Memory Questions",
+      "type": "array"
+    },
+    "plan_proposal_draft": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlannerProposalDraft"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "selected_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Skill Ids",
+      "type": "array"
+    },
+    "unresolved": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Unresolved",
+      "type": "array"
+    },
+    "used_context_item_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Used Context Item Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "title": "PlanningTurnDraft",
+  "type": "object"
+}

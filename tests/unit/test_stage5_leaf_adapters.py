@@ -192,6 +192,40 @@ def test_real_stage4_adapter_preserves_candidate_and_review_lineage(tmp_path: Pa
     assert result.candidate.basis_commit == simple.basis_commit
     assert review_ref in result.candidate.lineage_artifact_refs
     assert artifacts.read_verified(result.candidate.artifact_ref)
+    assert (
+        Stage4PlanningLeafAdapter._terminal(Stage4PlanningLoopTerminal.YIELDED)
+        is PlanningTerminalStatus.YIELDED
+    )
+    checkpoint_ref = artifacts.put(
+        b'{"checkpoint":true}',
+        "application/vnd.novel-agent.planning-loop-checkpoint+json",
+        SchemaVersion("1.0.0"),
+    )
+    yielded_result = Stage4PlanningLoopResult.model_construct(
+        request_id=detailed.request_id,
+        terminal=Stage4PlanningLoopTerminal.YIELDED,
+        event_artifacts=(checkpoint_ref,),
+        diagnostic_codes=("PLAN_REVISION_SLICE_EXHAUSTED",),
+        degraded=False,
+    )
+
+    class _YieldedStage4Loop:
+        async def run(self, **_: object) -> Stage4PlanningLoopResult:
+            return yielded_result
+
+    yielded_adapter = Stage4PlanningLeafAdapter(
+        cast(PlanningContextLoopService, _YieldedStage4Loop()),
+        artifacts,
+        lambda _: Stage4PlanningInvocation(
+            request=detailed,
+            model_request=lambda _phase, _mode, _attempt: cast(ModelRequest, object()),
+        ),
+        schema_version=SchemaVersion("1.0.0"),
+    )
+    yielded = asyncio.run(yielded_adapter.run(simple))
+    assert yielded.status is PlanningTerminalStatus.YIELDED
+    assert yielded.failure_code == "PLAN_REVISION_SLICE_EXHAUSTED"
+    assert yielded.artifact_refs == (checkpoint_ref,)
 
 
 def test_fault_writer_refuses_cross_task_injection() -> None:

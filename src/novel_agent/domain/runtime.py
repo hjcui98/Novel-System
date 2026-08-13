@@ -179,6 +179,7 @@ class TaskStatus(StrEnum):
     RUNNING = "running"
     WAITING_INPUT = "waiting_input"
     WAITING_RETRY = "waiting_retry"
+    BUDGET_REVIEW = "budget_review"
     RECOVERY_PENDING = "recovery_pending"
     BLOCKED = "blocked"
     SUCCEEDED = "succeeded"
@@ -195,6 +196,7 @@ class AttemptOutcome(StrEnum):
 
 class FailureClass(StrEnum):
     WORKER_STARTUP = "worker_startup"
+    WORKER_LEASE_EXPIRED = "worker_lease_expired"
     PROVIDER_TRANSIENT = "provider_transient"
     LEAF_REVIEW_REQUIRED = "leaf_review_required"
     BASIS_CHANGED = "basis_changed"
@@ -232,6 +234,9 @@ class FailurePolicy(DomainModel):
 _FAILURE_POLICIES: dict[FailureClass, FailurePolicy] = {
     FailureClass.WORKER_STARTUP: FailurePolicy(
         retry_owner=RetryOwner.RUNTIME, retryable=True, consumes_task_budget=True
+    ),
+    FailureClass.WORKER_LEASE_EXPIRED: FailurePolicy(
+        retry_owner=RetryOwner.RUNTIME, retryable=True, consumes_task_budget=False
     ),
     FailureClass.PROVIDER_TRANSIENT: FailurePolicy(
         retry_owner=RetryOwner.MODEL_GATEWAY, retryable=True, consumes_task_budget=False
@@ -317,6 +322,8 @@ class TaskRecord(DomainModel):
     terminal_artifact_refs: tuple[ArtifactRef, ...] = ()
     block_cause: str | None = Field(default=None, max_length=512)
     failure_budget: int = Field(default=3, ge=0)
+    retry_tranche_size: int = Field(default=3, ge=1)
+    planner_memory_budget_extensions: int = Field(default=0, ge=0)
     writer_generation: int = Field(default=0, ge=0)
     chapter_index: int = Field(default=0, ge=0)
     target_chapters: int = Field(default=1, ge=1)
@@ -363,12 +370,26 @@ class TaskAttempt(DomainModel):
     claim_token_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     fence_generation: int = Field(ge=1)
     claimed_at: datetime
+    heartbeat_at: datetime | None = None
+    lease_expires_at: datetime | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     source_checkpoint_id: StableId | None = None
     effect_frontier: tuple[StableId, ...] = ()
     outcome: AttemptOutcome | None = None
     failure_class: FailureClass | None = None
+
+    @model_validator(mode="after")
+    def validate_lease(self) -> TaskAttempt:
+        if (self.heartbeat_at is None) != (self.lease_expires_at is None):
+            raise ValueError("Attempt heartbeat and lease expiry must appear together")
+        if self.heartbeat_at is None or self.lease_expires_at is None:
+            return self
+        if self.heartbeat_at < self.claimed_at:
+            raise ValueError("Attempt heartbeat cannot precede claim")
+        if self.lease_expires_at <= self.heartbeat_at:
+            raise ValueError("Attempt lease must expire after its heartbeat")
+        return self
 
 
 def evaluate_task_eligibility(
@@ -382,6 +403,12 @@ def evaluate_task_eligibility(
 ) -> TaskEligibility:
     """Single pure eligibility definition shared by recompute, claim, and resume."""
 
+    if task.status is TaskStatus.BUDGET_REVIEW:
+        return TaskEligibility(
+            eligible=False,
+            status=TaskStatus.BUDGET_REVIEW,
+            reason_code="budget_extension_required",
+        )
     if task.status is not TaskStatus.READY:
         return TaskEligibility(
             eligible=False, status=task.status, reason_code="status_not_claimable"
@@ -396,7 +423,9 @@ def evaluate_task_eligibility(
         )
     if task.failure_budget <= 0:
         return TaskEligibility(
-            eligible=False, status=TaskStatus.FAILED, reason_code="failure_budget_exhausted"
+            eligible=False,
+            status=TaskStatus.BUDGET_REVIEW,
+            reason_code="failure_budget_exhausted",
         )
     if task.scheduled_for is not None and task.scheduled_for > now:
         return TaskEligibility(
@@ -476,6 +505,16 @@ class ControlIntentPayload(DomainModel):
     action: str = Field(min_length=1, max_length=64)
     actor_id: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=512)
+    additional_attempts: int = Field(default=0, ge=0)
+    additional_planner_memory_tranches: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_budget_extension(self) -> ControlIntentPayload:
+        if self.action == "extend_budget" and not (
+            self.additional_attempts or self.additional_planner_memory_tranches
+        ):
+            raise ValueError("budget extension must add a retry or Planner Memory tranche")
+        return self
 
 
 class AcceptanceRecordedPayload(DomainModel):

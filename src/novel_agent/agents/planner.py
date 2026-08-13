@@ -6,11 +6,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec
-from novel_agent.agents.runner import StructuredAgentRunner
+from novel_agent.agents.runner import PreparedAgentRun, StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
-from novel_agent.domain.planning import PlanningInquiry, PlanningInquiryDraft
+from novel_agent.domain.planning import (
+    PlanningInquiry,
+    PlanningInquiryDraft,
+    PlanningTurnAction,
+    PlanningTurnDraft,
+    PlanningTurnOutput,
+)
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -140,7 +146,14 @@ def build_planner_contract_bundle(
         contract_id=StableId("schema.planner-structured-output"),
         version=version,
         content_hash=content_id(
-            {"schemas": ("PlanningInquiryDraft", "PlannerProposalDraft"), "version": version.root}
+            {
+                "schemas": (
+                    "PlanningInquiryDraft",
+                    "PlannerProposalDraft",
+                    "PlanningTurnDraft",
+                ),
+                "version": version.root,
+            }
         ),
     )
     review_output = ContractRef(
@@ -277,7 +290,119 @@ class PlannerAgent:
             base_commit=task.base_commit,
         )
         execution = await self._runner.execute(prepared, PlannerProposalDraft)
+        result = self._materialize_plan(
+            version=version,
+            task=task,
+            draft=execution.output,
+            prepared=prepared,
+            model_call=execution.model_call,
+            reviewed_inquiry_ref=reviewed_inquiry_ref,
+            memory_need_ids=memory_need_ids,
+            evidence_refs=evidence_refs,
+            graph_path_receipt_refs=graph_path_receipt_refs,
+            parent_proposal_id=parent_proposal_id,
+        )
+        return result, execution.model_call
+
+    async def run_turn(
+        self,
+        *,
+        version: SchemaVersion,
+        task: PlanningTask,
+        source_payload: str,
+        source_artifacts: tuple[ArtifactRef, ...],
+        request: ModelRequest,
+        trusted_context_artifacts: tuple[ArtifactRef, ...] = (),
+        reviewed_inquiry_ref: ArtifactRef | None = None,
+        memory_need_ids: tuple[StableId, ...] = (),
+        evidence_refs: tuple[EvidenceRef, ...] = (),
+        graph_path_receipt_refs: tuple[ArtifactRef, ...] = (),
+        parent_proposal_id: StableId | None = None,
+    ) -> tuple[PlanningTurnOutput, PlannerExecutionResult | None, ModelCallRecord]:
+        """Run one autonomous Planner turn without granting direct retrieval access."""
+
+        if len(source_artifacts) != len(task.source_ids) or len(
+            {artifact.artifact_id for artifact in source_artifacts}
+        ) != len(source_artifacts):
+            raise PlannerInvocationError("PlanningTask sources require unique artifact bindings")
+        prepared = self._runner.prepare(
+            AgentType.PLANNER,
+            task.mode,
+            version.root,
+            request,
+            f"PLANNING_PHASE=plan_turn\nPLANNING_TASK={task.model_dump_json()}\n"
+            "Return PLAN_READY with plan_proposal_draft, or REQUEST_MEMORY with only "
+            f"memory_questions.\nSOURCE_DATA={source_payload}",
+            source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
+            input_artifacts=(*source_artifacts, *trusted_context_artifacts),
+            base_commit=task.base_commit,
+        )
+        execution = await self._runner.execute(prepared, PlanningTurnDraft)
         draft = execution.output
+        if draft.action is PlanningTurnAction.REQUEST_MEMORY:
+            output_artifact = self._artifacts.put(
+                canonical_json_bytes(draft.model_dump(mode="json")),
+                "application/vnd.novel-agent.planning-turn-draft+json",
+                version,
+            )
+            self._runner.receipt(
+                prepared,
+                execution.model_call,
+                output_artifacts=(output_artifact,),
+                unresolved=draft.unresolved,
+            )
+            return (
+                PlanningTurnOutput(
+                    action=draft.action,
+                    memory_questions=draft.memory_questions,
+                    assumptions=draft.assumptions,
+                    unresolved=draft.unresolved,
+                    selected_skill_ids=draft.selected_skill_ids,
+                    used_context_item_ids=draft.used_context_item_ids,
+                ),
+                None,
+                execution.model_call,
+            )
+        assert draft.plan_proposal_draft is not None
+        result = self._materialize_plan(
+            version=version,
+            task=task,
+            draft=draft.plan_proposal_draft,
+            prepared=prepared,
+            model_call=execution.model_call,
+            reviewed_inquiry_ref=reviewed_inquiry_ref,
+            memory_need_ids=memory_need_ids,
+            evidence_refs=evidence_refs,
+            graph_path_receipt_refs=graph_path_receipt_refs,
+            parent_proposal_id=parent_proposal_id,
+        )
+        return (
+            PlanningTurnOutput(
+                action=PlanningTurnAction.PLAN_READY,
+                plan_proposal=result.plan_proposal,
+                assumptions=draft.assumptions,
+                unresolved=draft.unresolved,
+                selected_skill_ids=draft.selected_skill_ids,
+                used_context_item_ids=draft.used_context_item_ids,
+            ),
+            result,
+            execution.model_call,
+        )
+
+    def _materialize_plan(
+        self,
+        *,
+        version: SchemaVersion,
+        task: PlanningTask,
+        draft: PlannerProposalDraft,
+        prepared: PreparedAgentRun,
+        model_call: ModelCallRecord,
+        reviewed_inquiry_ref: ArtifactRef | None,
+        memory_need_ids: tuple[StableId, ...],
+        evidence_refs: tuple[EvidenceRef, ...],
+        graph_path_receipt_refs: tuple[ArtifactRef, ...],
+        parent_proposal_id: StableId | None,
+    ) -> PlannerExecutionResult:
         if draft.mode is not task.mode or draft.strategy is not task.strategy:
             raise PlannerInvocationError("Planner draft mode/strategy differs from trusted task")
         allowed_sources = set(task.source_ids)
@@ -300,7 +425,7 @@ class PlannerAgent:
         )
         receipt = self._runner.receipt(
             prepared,
-            execution.model_call,
+            model_call,
             output_artifacts=(output_artifact,),
             unresolved=draft.unresolved,
         )
@@ -354,18 +479,15 @@ class PlannerAgent:
             if draft.profile_items
             else None
         )
-        return (
-            PlannerExecutionResult(
-                mode=task.mode,
-                project_intent=intent,
-                plan_proposal=plan,
-                world_design=world,
-                project_profile=profile,
-                deviations=draft.deviations,
-                output_artifact=output_artifact,
-                receipt=receipt,
-            ),
-            execution.model_call,
+        return PlannerExecutionResult(
+            mode=task.mode,
+            project_intent=intent,
+            plan_proposal=plan,
+            world_design=world,
+            project_profile=profile,
+            deviations=draft.deviations,
+            output_artifact=output_artifact,
+            receipt=receipt,
         )
 
     async def propose_inquiry(
@@ -380,6 +502,7 @@ class PlannerAgent:
         horizon_end: int | None = None,
         explicit_overrides: tuple[str, ...] = (),
         parent_inquiry_id: StableId | None = None,
+        generation: int | None = None,
     ) -> tuple[PlanningInquiry, ArtifactRef, AgentExecutionReceipt, ModelCallRecord]:
         if len(source_artifacts) != len(task.source_ids) or len(
             {artifact.artifact_id for artifact in source_artifacts}
@@ -426,6 +549,14 @@ class PlannerAgent:
                 "parent": None if parent_inquiry_id is None else parent_inquiry_id.root,
             }
         ).root.removeprefix("sha256:")[:24]
+        if parent_inquiry_id is None:
+            if generation not in {None, 1}:
+                raise PlannerInvocationError("Initial planning inquiry must use generation 1")
+            resolved_generation = 1
+        else:
+            resolved_generation = 2 if generation is None else generation
+        if resolved_generation < 1 or (parent_inquiry_id is not None and resolved_generation < 2):
+            raise PlannerInvocationError("Planning inquiry generation is inconsistent")
         inquiry = PlanningInquiry(
             inquiry_id=StableId(f"planning-inquiry.{identity}"),
             project_id=task.project_id,
@@ -443,7 +574,7 @@ class PlannerAgent:
             expected_output_shape=draft.expected_output_shape,
             human_choices=draft.human_choices,
             parent_inquiry_id=parent_inquiry_id,
-            generation=1 if parent_inquiry_id is None else 2,
+            generation=resolved_generation,
         )
         output_artifact = self._artifacts.put(
             canonical_json_bytes(inquiry.model_dump(mode="json")),

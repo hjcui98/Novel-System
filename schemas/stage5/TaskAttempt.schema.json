@@ -13,6 +13,7 @@
     "FailureClass": {
       "enum": [
         "worker_startup",
+        "worker_lease_expired",
         "provider_transient",
         "leaf_review_required",
         "basis_changed",
@@ -97,6 +98,32 @@
       "minimum": 1,
       "title": "Fence Generation",
       "type": "integer"
+    },
+    "heartbeat_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Heartbeat At"
+    },
+    "lease_expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lease Expires At"
     },
     "outcome": {
       "anyOf": [

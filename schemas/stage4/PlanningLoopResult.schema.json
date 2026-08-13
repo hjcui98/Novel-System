@@ -474,6 +474,7 @@
         "degraded_not_promotable",
         "review_required",
         "suspended",
+        "yielded",
         "blocked"
       ],
       "title": "PlanningLoopTerminal",

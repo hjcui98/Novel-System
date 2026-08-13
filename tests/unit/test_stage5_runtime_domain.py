@@ -105,6 +105,14 @@ def test_task_eligibility_has_one_fail_closed_definition() -> None:
         (_task(superseded=True), (), COMMIT, HASH, 0, "paused_or_superseded"),
         (_task(failure_budget=0), (), COMMIT, HASH, 0, "failure_budget_exhausted"),
         (
+            _task(status=TaskStatus.BUDGET_REVIEW, failure_budget=0),
+            (),
+            COMMIT,
+            HASH,
+            0,
+            "budget_extension_required",
+        ),
+        (
             _task(scheduled_for=NOW + timedelta(seconds=1)),
             (),
             COMMIT,
@@ -302,6 +310,17 @@ def test_modes_only_enable_pinned_auto_acceptance() -> None:
     )
     assert automatic.auto_accept_draft
 
+    elastic = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        max_task_attempts=21,
+        max_tasks_per_advance=11,
+        planning_horizon=25,
+        lookahead_horizon=13,
+    )
+    assert elastic.planning_horizon == 25
+
 
 def test_commit_task_from_acceptance_rejects_unsettled_and_mismatched_receipts() -> None:
     from novel_agent.domain.creative_runtime import commit_task_from_acceptance
@@ -356,9 +375,12 @@ def test_commit_task_from_acceptance_rejects_unsettled_and_mismatched_receipts()
         task_id=TaskId("task.accept.commit"),
         kind=TaskKind.PLAN_ACCEPTANCE,
         status=TaskStatus.SUCCEEDED,
+        failure_budget=0,
+        retry_tranche_size=7,
     )
     commit_task = commit_task_from_acceptance(settled, receipt)
     assert commit_task.kind is TaskKind.PLAN_COMMIT
+    assert commit_task.failure_budget == 7
     with pytest.raises(ValueError, match="only an accepted, settled"):
         commit_task_from_acceptance(
             _task(task_id=TaskId("task.accept.commit"), kind=TaskKind.PLAN_ACCEPTANCE),

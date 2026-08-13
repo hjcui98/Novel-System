@@ -18,6 +18,7 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
+from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.adapters.runtime.isolated import StrictDeterministicCandidateMaterializer
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.changes import CommitRequest, CommitStatus
@@ -39,6 +40,7 @@ from novel_agent.domain.runtime import (
     AttemptOutcome,
     EffectReceipt,
     EffectStatus,
+    FailureClass,
     ResumabilityStatus,
     RunCheckpoint,
     TaskKind,
@@ -63,7 +65,10 @@ from novel_agent.services.runtime_maintenance import (
     RuntimeMaintenanceService,
     RuntimeSupervisor,
 )
-from novel_agent.services.runtime_projection import project_runtime_events
+from novel_agent.services.runtime_projection import (
+    assert_task_projection_matches,
+    project_runtime_events,
+)
 from novel_agent.services.runtime_recovery import RuntimeRecoveryService
 from tests.factories import make_commit_request, make_manifest
 
@@ -856,7 +861,67 @@ def test_supervisor_finds_budget_exhausted_and_effect_unresolved(
             "failure_budget": 0,
         }
     budget_findings = RuntimeSupervisor(factory, stuck_after=timedelta(hours=1)).inspect()
-    assert any(finding.code == "runtime_failure_budget_exhausted" for finding in budget_findings)
+    assert any(
+        finding.code == "runtime_failure_budget_exhausted"
+        and finding.proposed_command == "extend_budget"
+        for finding in budget_findings
+    )
+
+
+def test_retry_budget_exhaustion_waits_for_explicit_extension(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _, _, events, commands, base = edge_kernel
+    policy = _policy().model_copy(update={"max_task_attempts": 1})
+    task = commands.create_run_and_initial_task(
+        _request("run.budget-review", base).model_copy(update={"policy": policy})
+    )
+    _, fence = commands.claim(task.task_id, worker_id="worker")
+    commands.mark_started(fence)
+    exhausted = commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.WAITING_RETRY,
+        failure_class=FailureClass.PROJECTION_FAILED,
+    )
+    assert exhausted.status is TaskStatus.BUDGET_REVIEW
+    assert exhausted.failure_budget == 0
+
+    with pytest.raises(
+        RuntimeCommandConflictError,
+        match="positive retry budget",
+    ):
+        commands.extend_budget(
+            task.task_id,
+            command_id=StableId("extend-memory-only.command"),
+            actor_id="operator",
+            reason="memory alone cannot revive an exhausted retry tranche",
+            additional_planner_memory_tranches=1,
+        )
+
+    extended = commands.extend_budget(
+        task.task_id,
+        command_id=StableId("extend-budget.command"),
+        actor_id="operator",
+        reason="provider capacity restored",
+        additional_attempts=2,
+        additional_planner_memory_tranches=1,
+    )
+    assert extended.status is TaskStatus.READY
+    assert extended.failure_budget == 2
+    assert extended.retry_tranche_size == 1
+    assert extended.planner_memory_budget_extensions == 1
+    assert_task_projection_matches(
+        events.replay(task.run_id),
+        RuntimeTaskQueryRepository(factory).list_run(task.run_id),
+    )
 
 
 def test_acceptance_rejects_stale_commit_and_unpinned_auto_and_bad_lineage(
@@ -1306,3 +1371,56 @@ def test_complete_waiting_task_rejects_wrong_state_and_unbound_candidate(
         commands.complete_waiting_task(
             non_acceptance.task_id, receipt=receipt, receipt_ref=candidate_ref
         )
+
+
+def test_expired_attempt_requires_suspicion_and_settled_effect_frontier(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _, _, _, _, commands, base = edge_kernel
+    task = commands.create_run_and_initial_task(_request("run.lease-reclaim", base))
+    _, fence = commands.claim(task.task_id, worker_id="worker")
+    expired_at = datetime.now(UTC) + timedelta(minutes=10)
+    suspected = commands.suspect_expired_attempt(
+        task.task_id,
+        command_id=StableId("command.lease-suspect"),
+        actor_id="supervisor",
+        reason="heartbeat expired",
+        observed_revision=fence.task_revision,
+        now=expired_at,
+    )
+    assert suspected.status is TaskStatus.RECOVERY_PENDING
+    commands.record_effect_requested(fence, _effect("effect.lease-reclaim"))
+    with pytest.raises(RuntimeCommandConflictError, match="requires reconciliation"):
+        commands.reclaim_expired_attempt(
+            task.task_id,
+            command_id=StableId("command.lease-reclaim.blocked"),
+            actor_id="supervisor",
+            reason="worker gone",
+            observed_revision=suspected.task_revision,
+            now=expired_at,
+        )
+    commands.record_effect_terminal(
+        fence,
+        _effect("effect.lease-reclaim").model_copy(
+            update={"status": EffectStatus.COMPENSATED, "completed_at": expired_at}
+        ),
+    )
+    reclaimed = commands.reclaim_expired_attempt(
+        task.task_id,
+        command_id=StableId("command.lease-reclaim.safe"),
+        actor_id="supervisor",
+        reason="effect settled and worker gone",
+        observed_revision=suspected.task_revision,
+        now=expired_at,
+    )
+    assert reclaimed.status is TaskStatus.WAITING_RETRY
+    assert reclaimed.failure_budget == task.failure_budget
+    with pytest.raises(StaleAttemptFenceError):
+        commands.heartbeat(fence)

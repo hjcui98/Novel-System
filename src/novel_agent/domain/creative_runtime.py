@@ -29,6 +29,7 @@ class CandidateKind(StrEnum):
 
 class PlanningTerminalStatus(StrEnum):
     PLAN_CANDIDATE_READY = "PLAN_CANDIDATE_READY"
+    YIELDED = "YIELDED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     SUSPENDED = "SUSPENDED"
     BLOCKED = "BLOCKED"
@@ -51,6 +52,7 @@ class CreativeRunTerminal(StrEnum):
     WAITING_PLAN_ACCEPTANCE = "WAITING_PLAN_ACCEPTANCE"
     WAITING_DRAFT_ACCEPTANCE = "WAITING_DRAFT_ACCEPTANCE"
     WAITING_RETRY = "WAITING_RETRY"
+    BUDGET_REVIEW = "BUDGET_REVIEW"
     RECOVERY_PENDING = "RECOVERY_PENDING"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     BLOCKED = "BLOCKED"
@@ -64,11 +66,12 @@ class CreativeRunPolicy(DomainModel):
     permission_hash: Hash
     auto_accept_plan: bool = False
     auto_accept_draft: bool = False
-    max_task_attempts: int = Field(default=3, ge=1, le=20)
-    max_tasks_per_advance: int = Field(default=1, ge=1, le=10)
+    max_task_attempts: int = Field(default=3, ge=1)
+    max_tasks_per_advance: int = Field(default=1, ge=1)
+    planning_horizon: int = Field(default=5, ge=1)
     runtime_parallelism: Literal[1, 2] = 1
     enable_planner_lookahead: bool = False
-    lookahead_horizon: int = Field(default=3, ge=1, le=12)
+    lookahead_horizon: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def validate_auto_policy(self) -> CreativeRunPolicy:
@@ -88,7 +91,14 @@ class CreativeRunRequest(DomainModel):
     basis_snapshot: StableId | None = None
     policy: CreativeRunPolicy
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
+    current_chapter: int = Field(default=0, ge=0, le=9999)
     target_chapters: int = Field(default=1, ge=1, le=10000)
+
+    @model_validator(mode="after")
+    def validate_chapter_range(self) -> CreativeRunRequest:
+        if self.target_chapters <= self.current_chapter:
+            raise ValueError("creative run target chapter must follow the current chapter")
+        return self
 
 
 class CreativeTaskSpec(DomainModel):
@@ -138,6 +148,8 @@ class PlanningLoopRequest(DomainModel):
     basis_commit: CommitId
     basis_snapshot: StableId | None = None
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
+    continuation_artifact_refs: tuple[ArtifactRef, ...] = ()
+    planner_memory_budget_extensions: int = Field(default=0, ge=0)
     purpose: TaskPurpose = TaskPurpose.NORMAL
     chapter_index: int = Field(default=0, ge=0)
     horizon_start: int | None = Field(default=None, ge=1)
@@ -267,6 +279,18 @@ class RetryCommand(_OperatorCommand):
     kind: Literal["retry"] = "retry"
 
 
+class ExtendBudgetCommand(_OperatorCommand):
+    kind: Literal["extend_budget"] = "extend_budget"
+    additional_attempts: int = Field(default=0, ge=0)
+    additional_planner_memory_tranches: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_extension(self) -> ExtendBudgetCommand:
+        if not (self.additional_attempts or self.additional_planner_memory_tranches):
+            raise ValueError("budget extension must add a retry or Planner Memory tranche")
+        return self
+
+
 class UnblockCommand(_OperatorCommand):
     kind: Literal["unblock"] = "unblock"
     block_cause_fingerprint: Hash
@@ -279,6 +303,7 @@ CreativeRuntimeCommand = Annotated[
     | ResumeCommand
     | CancelCommand
     | RetryCommand
+    | ExtendBudgetCommand
     | UnblockCommand,
     Field(discriminator="kind"),
 ]
@@ -366,7 +391,8 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
         permission_hash=previous.permission_hash,
         input_artifact_refs=previous.terminal_artifact_refs,
         dependency_task_ids=(previous.task_id,),
-        failure_budget=previous.failure_budget,
+        failure_budget=previous.retry_tranche_size,
+        retry_tranche_size=previous.retry_tranche_size,
         chapter_index=previous.chapter_index,
         target_chapters=previous.target_chapters,
         purpose=previous.purpose,
@@ -391,6 +417,7 @@ __all__ = [
     "CreativeRunResult",
     "CreativeRunTerminal",
     "CreativeTaskSpec",
+    "ExtendBudgetCommand",
     "LookaheadRevalidationOutcome",
     "LookaheadRevalidationReceipt",
     "PlanningLoopRequest",

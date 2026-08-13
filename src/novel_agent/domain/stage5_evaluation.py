@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import Field
 
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion
+from novel_agent.domain.creative_runtime import CreativeRunResult
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, SchemaVersion
 from novel_agent.domain.runtime import EffectReceipt, RunEvent, TaskAttempt, TaskRecord
 
 
@@ -62,9 +63,40 @@ class Stage5RuntimeAuditReport(DomainModel):
     production_activation: Literal["BLOCKED"] = "BLOCKED"
 
 
+class VerticalRunStatus(StrEnum):
+    COMPLETED = "completed"
+    WAITING = "waiting"
+    RECOVERY_PENDING = "recovery_pending"
+    BLOCKED = "blocked"
+    YIELDED = "yielded"
+
+
+class Stage5VerticalRunReport(DomainModel):
+    """Frozen orchestration evidence from one real multi-chapter runtime execution."""
+
+    schema_version: SchemaVersion = SchemaVersion("1.0.0")
+    run_id: RunId
+    project_id: ProjectId
+    current_chapter: int = Field(ge=0)
+    target_chapter: int = Field(ge=1)
+    status: VerticalRunStatus
+    final_commit: CommitId
+    completed_chapters: tuple[int, ...] = ()
+    dispatch_slices: int = Field(default=0, ge=0)
+    runtime_results: tuple[CreativeRunResult, ...]
+    tasks: tuple[TaskRecord, ...]
+    outputs_frozen: bool
+
+    @property
+    def generated_chapter_count(self) -> int:
+        return len(self.completed_chapters)
+
+
 __all__ = [
     "IsolatedKernelStatus",
     "Stage5IsolatedKernelReport",
     "Stage5RuntimeAuditReport",
     "Stage5ScenarioEvidence",
+    "Stage5VerticalRunReport",
+    "VerticalRunStatus",
 ]

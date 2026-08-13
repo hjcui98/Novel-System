@@ -1,6 +1,8 @@
 # Stage 3 Writing Core 迁移与完善开发执行
 
-> 文档生命周期：`ACTIVE`
+> 文档生命周期：`SUPERSEDED`
+>
+> 后继：`docs/stage3_writer_context_loop_execution.md`
 >
 > 工作流：B
 >

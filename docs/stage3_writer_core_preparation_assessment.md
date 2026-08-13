@@ -1,6 +1,8 @@
 # Stage 3 Writer Core preparation assessment
 
-> Lifecycle: `ACTIVE`
+> Lifecycle: `HISTORICAL_ASSESSMENT`
+>
+> Successor: `docs/stage3_writer_core_overall_design.md`
 >
 > Date: 2026-07-31
 >

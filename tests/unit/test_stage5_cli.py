@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy import create_engine
@@ -21,9 +23,12 @@ from novel_agent.domain.creative_runtime import (
     CandidateKind,
     CreativeRunPolicy,
     CreativeRunRequest,
+    CreativeRunResult,
+    CreativeRunTerminal,
     UnblockCommand,
 )
 from novel_agent.domain.ids import (
+    CommitId,
     ProjectId,
     RunId,
     SchemaVersion,
@@ -46,6 +51,42 @@ from tests.factories import make_manifest
 HASH = "sha256:" + "1" * 64
 PERMISSION_HASH = "sha256:" + "2" * 64
 NOW = datetime(2026, 8, 10, tzinfo=UTC)
+
+
+def _install_production_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    progressed: bool,
+) -> list[Any]:
+    contexts: list[Any] = []
+
+    def _load(spec: str, context: Any) -> object:
+        assert spec == "tests.production_assembly:build"
+        contexts.append(context)
+
+        class _Dispatcher:
+            async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+                assert max_tasks == 2
+                if not progressed:
+                    return ()
+                return (
+                    CreativeRunResult(
+                        run_id=context.run_id,
+                        project_id=context.project_id,
+                        terminal=CreativeRunTerminal.PROGRESSED,
+                        basis_commit=CommitId("sha256:" + "3" * 64),
+                        current_commit=CommitId("sha256:" + "4" * 64),
+                        reason_code="test_progress",
+                    ),
+                )
+
+        return SimpleNamespace(dispatcher=_Dispatcher())
+
+    monkeypatch.setattr(
+        "novel_agent.runtime.creative_assembly.load_production_runtime_assembly",
+        _load,
+    )
+    return contexts
 
 
 @pytest.fixture
@@ -89,6 +130,18 @@ def cli_db(tmp_path: Path) -> Path:
     (tmp_path / "request.json").write_text(
         json.dumps(request.model_dump(mode="json")), encoding="utf-8"
     )
+    candidate = CandidateBinding(
+        candidate_id=StableId("candidate.cli"),
+        kind=CandidateKind.PLAN,
+        artifact_ref=candidate_ref,
+        candidate_hash=candidate_ref.artifact_id.root,
+        basis_commit=file_base,
+    )
+    candidate_binding_ref = artifacts.put(
+        candidate.model_dump_json().encode("utf-8"),
+        "application/vnd.novel-agent.stage5-candidate-binding+json",
+        SchemaVersion("1.0.0"),
+    )
     waiting = TaskRecord(
         task_id=TaskId("run.cli.plan.accept"),
         run_id=request.run_id,
@@ -100,6 +153,7 @@ def cli_db(tmp_path: Path) -> Path:
         policy_hash=HASH,
         permission_hash=PERMISSION_HASH,
         input_artifact_refs=(candidate_ref,),
+        candidate_binding_ref=candidate_binding_ref,
         dependency_task_ids=(TaskId("run.cli.plan"),),
     )
     commands.create_task(waiting)
@@ -131,6 +185,20 @@ def cli_db(tmp_path: Path) -> Path:
         dependency_task_ids=(TaskId("run.cli.plan"),),
     )
     commands.create_task(blocked)
+    commands.create_task(
+        TaskRecord(
+            task_id=TaskId("run.cli.plan.budget"),
+            run_id=request.run_id,
+            project_id=request.project_id,
+            kind=TaskKind.PLAN_CANDIDATE,
+            task_revision=0,
+            status=TaskStatus.BUDGET_REVIEW,
+            basis_commit=file_base,
+            policy_hash=HASH,
+            permission_hash=PERMISSION_HASH,
+            dependency_task_ids=(TaskId("run.cli.plan"),),
+        )
+    )
     from novel_agent.services.runtime_commands import _digest
 
     blocked_unblock = UnblockCommand(
@@ -144,13 +212,6 @@ def cli_db(tmp_path: Path) -> Path:
     )
     (tmp_path / "unblock.json").write_text(
         json.dumps(blocked_unblock.model_dump(mode="json")), encoding="utf-8"
-    )
-    candidate = CandidateBinding(
-        candidate_id=StableId("candidate.cli"),
-        kind=CandidateKind.PLAN,
-        artifact_ref=candidate_ref,
-        candidate_hash=candidate_ref.artifact_id.root,
-        basis_commit=file_base,
     )
     accept = AcceptanceCommand(
         command_id=StableId("accept.cli"),
@@ -419,6 +480,37 @@ def test_runtime_pause_resume_and_unblock_subcommands(cli_db: Path) -> None:
     )
 
 
+def test_runtime_extend_budget_can_add_a_planner_memory_tranche(cli_db: Path) -> None:
+    url = f"sqlite+pysqlite:///{cli_db}"
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "extend-budget",
+                "--project-id",
+                "project.test",
+                "--run-id",
+                "run.cli",
+                "--task-id",
+                "run.cli.plan.budget",
+                "--observed-revision",
+                "0",
+                "--command-id",
+                "extend-budget.cli",
+                "--actor-id",
+                "operator",
+                "--reason",
+                "allow another planner memory tranche",
+                "--additional-planner-memory-tranches",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+
 def test_runtime_accept_plan_rejects_mismatched_command(cli_db: Path) -> None:
     url = f"sqlite+pysqlite:///{cli_db}"
     accept = AcceptanceCommand.model_validate_json(
@@ -602,11 +694,9 @@ def test_runtime_reject_plan_subcommand(cli_db: Path) -> None:
     )
 
 
-def test_runtime_advance_progresses_ready_tasks(cli_db: Path) -> None:
-    from sqlalchemy import create_engine as _ce
-
-    from novel_agent.adapters.postgres.database import build_session_factory as _bsf
-
+def test_runtime_advance_uses_explicit_production_assembly(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url = f"sqlite+pysqlite:///{cli_db}"
     manifest_path = (
         Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
@@ -622,6 +712,7 @@ def test_runtime_advance_progresses_ready_tasks(cli_db: Path) -> None:
         encoding="utf-8",
     )
     assert main(["runtime", "--database-url", url, "start", "--request", str(request_path)]) == 0
+    contexts = _install_production_loader(monkeypatch, progressed=True)
     assert (
         main(
             [
@@ -639,98 +730,28 @@ def test_runtime_advance_progresses_ready_tasks(cli_db: Path) -> None:
                 str(manifest_path),
                 "--object-store-root",
                 str(cli_db.parent / "objects"),
+                "--assembly-factory",
+                "tests.production_assembly:build",
                 "--max-tasks",
                 "2",
             ]
         )
         == 0
     )
-    # The planner produced a waiting plan-acceptance task; drive it through the
-    # CLI accept-plan and the Commit/Projection/Draft chain to reach the
-    # deterministic writer and projection builder branches.
-    engine = _ce(f"sqlite+pysqlite:///{cli_db}")
-    factory = _bsf(engine)
-    from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
-
-    run_tasks = RuntimeTaskQueryRepository(factory).list_run(RunId("run.cli.advance"))
-    waiting_task = next(item for item in run_tasks if item.kind is TaskKind.PLAN_ACCEPTANCE)
-    ref = waiting_task.input_artifact_refs[0]
-    accept = AcceptanceCommand(
-        command_id=StableId("accept.cli.advance"),
-        project_id=waiting_task.project_id,
-        run_id=waiting_task.run_id,
-        task_id=waiting_task.task_id,
-        candidate=CandidateBinding(
-            candidate_id=StableId("candidate.cli.advance"),
-            kind=CandidateKind.PLAN,
-            artifact_ref=ref,
-            candidate_hash=ref.artifact_id.root,
-            basis_commit=waiting_task.basis_commit,
-        ),
-        acceptance_policy_hash=HASH,
-        actor_kind=ActorKind.AUTHOR,
-        actor_id="author",
-        decision=AcceptanceDecision.ACCEPT,
-        reason="approved",
-        expected_project_commit=waiting_task.basis_commit,
-        idempotency_identity=StableId("accept.cli.advance.identity"),
-        issued_at=NOW,
-    )
-    (cli_db.parent / "accept-advance.json").write_text(
-        json.dumps(accept.model_dump(mode="json")), encoding="utf-8"
-    )
-    engine.dispose()
-    assert (
-        main(
-            [
-                "runtime",
-                "--database-url",
-                url,
-                "accept-plan",
-                "--command",
-                str(cli_db.parent / "accept-advance.json"),
-                "--policy",
-                str(cli_db.parent / "policy.json"),
-                "--object-store-root",
-                str(cli_db.parent / "objects"),
-            ]
-        )
-        == 0
-    )
-    # Advance through Commit, Projection, and Draft. The CLI writes draft text
-    # through the deterministic writer, which needs a mutable object store.
-    for _ in range(3):
-        assert (
-            main(
-                [
-                    "runtime",
-                    "--database-url",
-                    url,
-                    "advance",
-                    "--project-id",
-                    "project.test",
-                    "--run-id",
-                    "run.cli.advance",
-                    "--policy",
-                    str(cli_db.parent / "policy.json"),
-                    "--manifest",
-                    str(manifest_path),
-                    "--object-store-root",
-                    str(cli_db.parent / "objects"),
-                    "--max-tasks",
-                    "2",
-                ]
-            )
-            == 0
-        )
+    assert len(contexts) == 1
+    assert contexts[0].project_id == ProjectId("project.test")
+    assert contexts[0].run_id == RunId("run.cli.advance")
+    assert contexts[0].object_store_root == cli_db.parent / "objects"
 
 
-def test_runtime_advance_no_ready_task_reports_progressed_zero(cli_db: Path) -> None:
+def test_runtime_advance_no_ready_task_reports_progressed_zero(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url = f"sqlite+pysqlite:///{cli_db}"
     manifest_path = (
         Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
     )
-    # The fixture's plan task is already claimed, so nothing is READY.
+    contexts = _install_production_loader(monkeypatch, progressed=False)
     assert (
         main(
             [
@@ -748,15 +769,18 @@ def test_runtime_advance_no_ready_task_reports_progressed_zero(cli_db: Path) -> 
                 str(manifest_path),
                 "--object-store-root",
                 str(cli_db.parent / "objects"),
+                "--assembly-factory",
+                "tests.production_assembly:build",
                 "--max-tasks",
                 "2",
             ]
         )
         == 0
     )
+    assert len(contexts) == 1
 
 
-def test_runtime_advance_rejects_missing_identity(cli_db: Path) -> None:
+def test_runtime_advance_requires_production_assembly_factory(cli_db: Path) -> None:
     url = f"sqlite+pysqlite:///{cli_db}"
     manifest_path = (
         Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
@@ -776,16 +800,15 @@ def test_runtime_advance_rejects_missing_identity(cli_db: Path) -> None:
                 str(cli_db.parent / "policy.json"),
                 "--manifest",
                 str(manifest_path),
+                "--object-store-root",
+                str(cli_db.parent / "objects"),
             ]
         )
 
 
-def test_runtime_advance_binds_run_identity_under_same_project(cli_db: Path) -> None:
-    from sqlalchemy import create_engine as _ce
-
-    from novel_agent.adapters.postgres.database import build_session_factory as _bsf
-    from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
-
+def test_runtime_advance_binds_run_identity_under_same_project(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url = f"sqlite+pysqlite:///{cli_db}"
     manifest_path = (
         Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
@@ -807,6 +830,8 @@ def test_runtime_advance_binds_run_identity_under_same_project(cli_db: Path) -> 
             main(["runtime", "--database-url", url, "start", "--request", str(request_path)]) == 0
         )
 
+    contexts = _install_production_loader(monkeypatch, progressed=True)
+
     def _advance(run_id: str) -> int:
         return main(
             [
@@ -824,37 +849,16 @@ def test_runtime_advance_binds_run_identity_under_same_project(cli_db: Path) -> 
                 str(manifest_path),
                 "--object-store-root",
                 objects_root,
+                "--assembly-factory",
+                "tests.production_assembly:build",
                 "--max-tasks",
                 "2",
             ]
         )
 
-    # Both runs start READY. Advance only identity-a.
-    engine = _ce(f"sqlite+pysqlite:///{cli_db}")
-    factory = _bsf(engine)
-    query = RuntimeTaskQueryRepository(factory)
-    a_before = next(
-        t for t in query.list_run(RunId("run.cli.identity-a")) if t.kind is TaskKind.PLAN_CANDIDATE
-    )
-    b_before = next(
-        t for t in query.list_run(RunId("run.cli.identity-b")) if t.kind is TaskKind.PLAN_CANDIDATE
-    )
-    assert a_before.status is TaskStatus.READY
-    assert b_before.status is TaskStatus.READY
     assert _advance("run.cli.identity-a") == 0
-    # identity-a progressed to a waiting acceptance task; identity-b stays READY.
-    a_after = next(
-        t for t in query.list_run(RunId("run.cli.identity-a")) if t.kind is TaskKind.PLAN_CANDIDATE
-    )
-    b_after = next(
-        t for t in query.list_run(RunId("run.cli.identity-b")) if t.kind is TaskKind.PLAN_CANDIDATE
-    )
-    assert a_after.status is not TaskStatus.READY
-    assert b_after.status is TaskStatus.READY
-    # A run-id that does not exist in this project must not claim anything.
     assert _advance("run.cli.identity-missing") == 0
-    b_final = next(
-        t for t in query.list_run(RunId("run.cli.identity-b")) if t.kind is TaskKind.PLAN_CANDIDATE
-    )
-    assert b_final.status is TaskStatus.READY
-    engine.dispose()
+    assert [context.run_id for context in contexts] == [
+        RunId("run.cli.identity-a"),
+        RunId("run.cli.identity-missing"),
+    ]

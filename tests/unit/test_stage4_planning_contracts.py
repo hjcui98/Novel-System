@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.agents.planner import PLANNER_MODES, build_planner_contract_bundle
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument
 from novel_agent.domain.ids import (
     ArtifactId,
     CommitId,
@@ -75,9 +76,12 @@ from novel_agent.domain.stage2 import (
     ExecutionStatus,
     PlanningTask,
     PlanProposal,
+    ProjectProfileRootDocument,
+    PromptContractRef,
     RetrievalBudget,
+    SkillContractRef,
 )
-from novel_agent.domain.world import StoryTime
+from novel_agent.domain.world import PlanNode, StoryTime
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.planner_context_assembler import PlannerContextAssembler
 from novel_agent.services.planning_inquiry_need_generation import (
@@ -291,6 +295,55 @@ def test_reviewed_inquiry_generates_stable_author_planning_needs_and_query_bundl
             run_id=RunId("run.stage4"),
             task_id=TaskId("task.stage4"),
         )
+
+
+def test_planner_need_budget_returns_current_tranche_and_deferred_questions(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source = _put(repo, "author")
+    base = _inquiry(AgentMode.CHAPTER_SET, source)
+    seed = base.questions[0]
+    questions = tuple(
+        seed.model_copy(
+            update={
+                "question_id": StableId(f"question.tranche.{index}"),
+                "question": f"林澈此前第 {index} 次与北塔的状态如何?",
+                "blocking": index % 2 == 0,
+            }
+        )
+        for index in range(5)
+    )
+    inquiry = base.model_copy(update={"questions": questions})
+    inquiry_ref = _put(repo, inquiry.model_dump_json(), "application/json")
+    review = PlanReview(
+        review_id=StableId("review.tranche"),
+        target_kind=ReviewTargetKind.INQUIRY,
+        target_artifact_ref=inquiry_ref,
+        decision=ReviewDecision.ACCEPT,
+        receipt=_receipt(AgentMode.CHAPTER_SET, AgentType.PLAN_REVIEWER),
+    )
+    review_ref = _put(repo, review.model_dump_json(), "application/json")
+    result = PlanningInquiryConditionedNeedGenerator(max_total_needs=2).generate(
+        inquiry=inquiry,
+        inquiry_ref=inquiry_ref,
+        review=review,
+        review_ref=review_ref,
+        world=make_synthetic_bundle().world_roots[0],
+        run_id=RunId("run.tranche"),
+        task_id=TaskId("task.tranche"),
+    )
+    assert len(result.needs) == 2
+    assert result.selected_question_ids == (
+        StableId("question.tranche.0"),
+        StableId("question.tranche.2"),
+    )
+    assert result.deferred_question_ids == (
+        StableId("question.tranche.4"),
+        StableId("question.tranche.1"),
+        StableId("question.tranche.3"),
+    )
+    assert not set(result.deferred_question_ids) & set(result.rejected_question_ids)
 
 
 def test_planner_need_generator_covers_question_kinds_rejections_and_review_binding(
@@ -964,15 +1017,18 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
     assert tight.budget_report.dropped_item_ids
     assert set(tight.budget_report.drop_reasons.values()) == {"optional_token_budget"}
 
-    tiny_budgets = request.budgets.model_copy(update={"context": ContextBudget(token_budget=1)})
-    with pytest.raises(ValueError, match="protected Planner context"):
-        assembler.assemble(
-            request=request.model_copy(update={"budgets": tiny_budgets}),
-            inquiry=inquiry,
-            inquiry_ref=inquiry_ref,
-            stage1_context=context,
-            stage1_context_ref=context_ref,
-        )
+    tiny_budgets = request.budgets.model_copy(
+        update={"planner_context_target_tokens": 1}
+    )
+    overflow, _ = assembler.assemble(
+        request=request.model_copy(update={"budgets": tiny_budgets}),
+        inquiry=inquiry,
+        inquiry_ref=inquiry_ref,
+        stage1_context=context,
+        stage1_context_ref=context_ref,
+    )
+    assert overflow.budget_report.soft_overflow_tokens > 0
+    assert overflow.budget_report.selected_tokens > overflow.budget_report.token_budget
     with pytest.raises(ValueError, match="differs from loop request"):
         assembler.assemble(
             request=request,
@@ -1000,3 +1056,119 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
             inquiry=_inquiry(AgentMode.PROJECT_BOOTSTRAP, binary),
             inquiry_ref=inquiry_ref,
         )
+
+
+def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source = _put(repo, "author brief")
+    root_node = PlanNode(
+        plan_node_id=StableId("plan.root"),
+        node_type="story",
+        title="Long direction",
+        summary="Keep the tower conflict central.",
+    )
+    near_node = PlanNode(
+        plan_node_id=StableId("plan.near"),
+        node_type="chapter_set",
+        title="Near obligation",
+        summary="Resolve the injured arm constraint.",
+        parent_id=root_node.plan_node_id,
+        obligation_ids=(StableId("obligation.near"),),
+    )
+    far_node = PlanNode(
+        plan_node_id=StableId("plan.far"),
+        node_type="chapter_set",
+        title="FAR_PLAN_SHOULD_NOT_BE_RENDERED",
+        summary="A distant arc.",
+        parent_id=root_node.plan_node_id,
+        obligation_ids=(StableId("obligation.far"),),
+    )
+    plan = PlanRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        nodes=(root_node, near_node, far_node),
+        chapter_goals=(
+            ChapterGoal(
+                goal_id=StableId("goal.chapter.21"),
+                chapter_index=21,
+                summary="Enter the tower.",
+                obligation_ids=(StableId("obligation.near"),),
+            ),
+            ChapterGoal(
+                goal_id=StableId("goal.chapter.99"),
+                chapter_index=99,
+                summary="FAR_GOAL_SHOULD_NOT_BE_RENDERED",
+                obligation_ids=(StableId("obligation.far"),),
+            ),
+        ),
+    )
+    plan_ref = _put(repo, plan.model_dump_json(), "application/json")
+    world_ref = _put(repo, "world")
+    text_ref = _put(repo, "text")
+    contract = ContractRef(
+        contract_id=StableId("agent.planner"),
+        version=VERSION,
+        content_hash=HASH,
+    )
+    profile = ProjectProfileRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        style_profile={"pov": "third person limited"},
+        capability_profile={"planning": True},
+        agent_specs=(contract,),
+        prompt_contracts=(
+            PromptContractRef(**contract.model_dump(mode="python"), render_fingerprint=HASH),
+        ),
+        skill_contracts=(SkillContractRef(**contract.model_dump(mode="python")),),
+        tool_policies=(contract,),
+        model_profiles=("offline-v1",),
+    )
+    profile_ref = _put(repo, profile.model_dump_json(), "application/json")
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(plan_ref, world_ref, text_ref),
+    ).model_copy(
+        update={
+            "project_profile_ref": profile_ref,
+            "budgets": PlanningBudgets(
+                retrieval=RetrievalBudget(),
+                context=ContextBudget(token_budget=8_000),
+                planner_context_target_tokens=1,
+            ),
+        }
+    )
+    inquiry = _inquiry(AgentMode.CHAPTER_SET, source)
+    inquiry_ref = _put(repo, inquiry.model_dump_json(), "application/json")
+    memory = Stage1ContextPackage(
+        context_id=StableId("context.plan-projection"),
+        base_commit=BASE,
+        snapshot_id=StableId("snapshot.stage4"),
+        task_contract="stage4",
+        budget_report=ContextBudgetReport(
+            token_budget=8_000,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    memory_ref = _put(repo, memory.model_dump_json(), "application/json")
+
+    package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+        request=request,
+        inquiry=inquiry,
+        inquiry_ref=inquiry_ref,
+        stage1_context=memory,
+        stage1_context_ref=memory_ref,
+    )
+
+    rendered = package.rendered_context
+    assert "Enter the tower" in rendered
+    assert "Near obligation" in rendered
+    assert "Long direction" in rendered
+    assert "FAR_GOAL_SHOULD_NOT_BE_RENDERED" not in rendered
+    assert "FAR_PLAN_SHOULD_NOT_BE_RENDERED" not in rendered
+    assert "third person limited" in rendered
+    assert package.budget_report.soft_overflow_tokens > 0
