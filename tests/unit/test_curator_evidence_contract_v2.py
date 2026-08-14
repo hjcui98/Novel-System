@@ -397,6 +397,59 @@ def test_v2_places_mandatory_repair_contract_at_absolute_prompt_tail() -> None:
     assert "Never reference a new entity from a state, event, or obligation" in prompt
 
 
+def test_v2_contract_requires_subject_bearing_evidence_quotes() -> None:
+    """2026-08-14 repair §28.8: state quotes must name their subject.
+
+    ch1 smoke showed state operations rejected by the support gate because the
+    model quoted subject-less fragments (e.g. only "十四岁。").  The gate is
+    correct; the ordinary Curator contract must demand subject-bearing full
+    sentences so exact evidence alone identifies who the fact is about.
+    """
+    text = "陈长生今年十四岁 是御东神将府的客人。"
+    root = _root_with(text)
+    generator = EvidenceCandidateGenerator()
+    candidate = next(item for item in generator.generate(root, 21) if "十四岁" in item.text)
+    draft = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.age"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.chen"),
+                    predicate="age",
+                    value="fourteen",
+                    valid_time=CuratorStoryTime(worldline="main"),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                evidence_quotes=(candidate.text,),
+            ),
+        ),
+    )
+    gateway = _FakeGateway(draft)
+    curator = ModelCurator(
+        gateway,
+        evidence_generator=generator,
+        enforce_support_gate=False,
+    )
+    asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.subject-bearing"),
+        )
+    )
+    prompt = gateway.requests[0].prompt
+    assert "subject-bearing full sentence" in prompt
+    assert "names the record's subject entity" in prompt
+    assert "bare value fragment such as a lone number" in prompt
+    assert "propose every durable delta the chapter establishes" in prompt
+    assert "cannot support the record" in prompt
+
+
 def test_replay_agent_uses_candidate_v2() -> None:
     """CuratorReplayAgent must default to the CANDIDATE_ID_V2 evidence contract."""
     from novel_agent.agents.curator import CuratorReplayAgent

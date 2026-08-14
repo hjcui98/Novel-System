@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -88,7 +88,7 @@ class TaskPlanConditionedNeedGenerator:
     """Generate needs from the bounded FocusSet, never by enumerating WorldRoot."""
 
     profile = "task_plan_conditioned_v1"
-    version = "task_plan_conditioned_need.v23"
+    version = "task_plan_conditioned_need.v24"
     completion_spec_version = "need_completion_spec.v1"
 
     _CAPABILITY_PREDICATE_KEYWORDS: ClassVar[tuple[str, ...]] = (
@@ -373,6 +373,7 @@ class TaskPlanConditionedNeedGenerator:
             ),
             query_hints: tuple[str, ...] = (),
             predicates: tuple[str, ...] = (),
+            predicates_by_facet: Mapping[NeedFacetKind, tuple[str, ...]] | None = None,
         ) -> None:
             need_id = StableId(f"need.stage2m.{identity}"[:128])
             # Entity-mention closure over this fallback Need's own text so the
@@ -391,6 +392,7 @@ class TaskPlanConditionedNeedGenerator:
                 focus=focus,
                 allow_plan=allow_plan,
                 mandatory=mandatory,
+                predicates_by_facet=predicates_by_facet,
             )
             candidates.append(
                 Stage1MemoryNeed(
@@ -558,6 +560,9 @@ class TaskPlanConditionedNeedGenerator:
                         ),
                         pools=(CandidatePool.R1, CandidatePool.ANCHOR, CandidatePool.GROUNDED),
                         predicates=tuple(predicates[:16]),
+                        predicates_by_facet={
+                            NeedFacetKind.CURRENT_STATE: tuple(predicates[:16]),
+                        },
                     )
                 if is_primary_entity:
                     label = entity.internal_label
@@ -579,6 +584,13 @@ class TaskPlanConditionedNeedGenerator:
                             CandidatePool.ANCHOR,
                             CandidatePool.GROUNDED,
                         ),
+                        # Continuity binds current-state anchors of the entity;
+                        # declare its state predicates so the facet evaluator
+                        # can bind by predicate (2026-08-14 review P1).
+                        predicates=predicates,
+                        predicates_by_facet={
+                            NeedFacetKind.CURRENT_STATE: tuple(predicates),
+                        },
                     )
                     add(
                         identity=f"entity.{entity.entity_id.root}.capability-boundary",
@@ -602,6 +614,14 @@ class TaskPlanConditionedNeedGenerator:
                             predicates,
                             self._CAPABILITY_PREDICATE_KEYWORDS,
                         ),
+                        predicates_by_facet={
+                            NeedFacetKind.CAPABILITY_STATUS: self._predicates_by_keywords(
+                                predicates, self._CAPABILITY_PREDICATE_KEYWORDS
+                            ),
+                            NeedFacetKind.LIMITATION: self._predicates_by_keywords(
+                                predicates, self._CAPABILITY_PREDICATE_KEYWORDS
+                            ),
+                        },
                     )
                     # Retrieval is intentionally coarser than the conclusion
                     # contract.  Before retrieval we cannot know whether the
@@ -646,6 +666,23 @@ class TaskPlanConditionedNeedGenerator:
                             CandidatePool.ANCHOR,
                             CandidatePool.GROUNDED,
                         ),
+                        # History binds event/state change predicates of the
+                        # entity plus relation predicates (causal chain).
+                        predicates_by_facet={
+                            NeedFacetKind.CAUSAL_HISTORY: tuple(
+                                dict.fromkeys(
+                                    (
+                                        *predicates,
+                                        *relation_predicates,
+                                        *(
+                                            event.event_type
+                                            for event in world.events
+                                            if entity.entity_id in event.participant_ids
+                                        ),
+                                    )
+                                )
+                            )[:16],
+                        },
                     )
                     add(
                         identity=f"entity.{entity.entity_id.root}.relationship",
@@ -666,6 +703,9 @@ class TaskPlanConditionedNeedGenerator:
                             CandidatePool.GROUNDED,
                         ),
                         predicates=tuple(relation_predicates),
+                        predicates_by_facet={
+                            NeedFacetKind.RELATION_STATE: tuple(relation_predicates),
+                        },
                     )
                     add(
                         identity=f"entity.{entity.entity_id.root}.knowledge",
@@ -686,6 +726,11 @@ class TaskPlanConditionedNeedGenerator:
                             predicates,
                             self._KNOWLEDGE_PREDICATE_KEYWORDS,
                         ),
+                        predicates_by_facet={
+                            NeedFacetKind.KNOWLEDGE_BOUNDARY: self._predicates_by_keywords(
+                                predicates, self._KNOWLEDGE_PREDICATE_KEYWORDS
+                            ),
+                        },
                     )
                     add(
                         identity=f"entity.{entity.entity_id.root}.callback",
@@ -700,6 +745,23 @@ class TaskPlanConditionedNeedGenerator:
                         section=WriterContextSection.LONG_RANGE_CALLBACKS,
                         mandatory=bool(target_plan_text),
                         priority=97 if target_plan_text else 95,
+                        # Callbacks bind setup (event/early-establishment) and
+                        # unresolved-status predicates of the entity.
+                        predicates_by_facet={
+                            NeedFacetKind.SETUP: tuple(
+                                dict.fromkeys(
+                                    (
+                                        *predicates,
+                                        *(
+                                            event.event_type
+                                            for event in world.events
+                                            if entity.entity_id in event.participant_ids
+                                        ),
+                                    )
+                                )
+                            )[:16],
+                            NeedFacetKind.UNRESOLVED_STATUS: tuple(predicates[:16]),
+                        },
                     )
                     if target_plan_text:
                         add(
@@ -716,6 +778,21 @@ class TaskPlanConditionedNeedGenerator:
                             section=WriterContextSection.CAUSAL_HISTORY,
                             mandatory=True,
                             priority=97,
+                            predicates_by_facet={
+                                NeedFacetKind.CAUSAL_HISTORY: tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *predicates,
+                                            *relation_predicates,
+                                            *(
+                                                event.event_type
+                                                for event in world.events
+                                                if entity.entity_id in event.participant_ids
+                                            ),
+                                        )
+                                    )
+                                )[:16],
+                            },
                         )
             elif focus.focus_type is TaskFocusType.STATE:
                 state = state_by_id.get(focus.canonical_id)
@@ -731,6 +808,9 @@ class TaskPlanConditionedNeedGenerator:
                         mandatory=True,
                         priority=95,
                         pools=(CandidatePool.R1, CandidatePool.ANCHOR),
+                        predicates_by_facet={
+                            NeedFacetKind.CURRENT_STATE: (state.predicate,),
+                        },
                     )
             elif focus.focus_type is TaskFocusType.RELATION:
                 relation = relation_by_id.get(focus.canonical_id)
@@ -762,6 +842,9 @@ class TaskPlanConditionedNeedGenerator:
                         mandatory=False,
                         priority=65,
                         pools=(CandidatePool.R1, CandidatePool.ANCHOR, CandidatePool.GRAPH),
+                        predicates_by_facet={
+                            NeedFacetKind.RELATION_STATE: (relation.predicate,),
+                        },
                     )
             elif focus.focus_type is TaskFocusType.EVENT:
                 event = event_by_id.get(focus.canonical_id)
@@ -796,6 +879,9 @@ class TaskPlanConditionedNeedGenerator:
                         mandatory=False,
                         priority=60,
                         pools=(CandidatePool.ANCHOR, CandidatePool.GRAPH, CandidatePool.GROUNDED),
+                        predicates_by_facet={
+                            NeedFacetKind.CAUSAL_HISTORY: (event.event_type,),
+                        },
                     )
             elif focus.focus_type is TaskFocusType.OBLIGATION:
                 obligation = obligation_by_id.get(focus.canonical_id)
@@ -819,6 +905,15 @@ class TaskPlanConditionedNeedGenerator:
                         mandatory=True,
                         priority=96,
                         pools=(CandidatePool.R1, CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+                        # Durable obligations project to PLAN_ANCHOR units whose
+                        # predicate is the obligation kind; declare it so the
+                        # facet evaluator can bind commitment facets by
+                        # predicate (2026-08-14 review follow-up P1).
+                        predicates=(obligation.kind.value,),
+                        predicates_by_facet={
+                            NeedFacetKind.COMMITMENT: (obligation.kind.value,),
+                            NeedFacetKind.UNRESOLVED_STATUS: (obligation.kind.value,),
+                        },
                     )
             else:
                 # TaskFocusType is exhaustive; the remaining variant is PLAN_INTENT.
@@ -845,6 +940,11 @@ class TaskPlanConditionedNeedGenerator:
                         priority=100 if target_relevant else 50,
                         allow_plan=True,
                         pools=(CandidatePool.ANCHOR,),
+                        predicates_by_facet={
+                            NeedFacetKind.PLAN_NODE: (
+                                getattr(node, "node_type", "plan_node"),
+                            ),
+                        },
                     )
                     for facet_index, facet in enumerate(
                         self._plan_history_facets(plan_query),
@@ -1251,6 +1351,7 @@ class TaskPlanConditionedNeedGenerator:
             return None
         placeholder_hash = ArtifactId("sha256:" + "0" * 64)
         placeholder_ref = ArtifactId("sha256:" + "0" * 64)
+        canonical_goals = {goal.chapter_index: goal.summary for goal in context.chapter_goals}
         provisional_needs = tuple(
             self._build_planner_need(
                 task=task,
@@ -1260,6 +1361,7 @@ class TaskPlanConditionedNeedGenerator:
                 focus_set=focus_set,
                 artifact_ref=placeholder_ref,
                 validated_hash=placeholder_hash,
+                canonical_goals=canonical_goals,
             )
             for draft in accepted
         )
@@ -1389,6 +1491,9 @@ class TaskPlanConditionedNeedGenerator:
             self._frozen_fallback_artifact = frozen_planner_artifact
             return None
         placeholder = ArtifactId("sha256:" + "0" * 64)
+        canonical_goals = {
+            goal.chapter_index: goal.summary for goal in planning_context.chapter_goals
+        }
         provisional = tuple(
             self._build_planner_need(
                 task=task,
@@ -1398,6 +1503,7 @@ class TaskPlanConditionedNeedGenerator:
                 focus_set=focus_set,
                 artifact_ref=placeholder,
                 validated_hash=placeholder,
+                canonical_goals=canonical_goals,
             )
             for draft in accepted
         )
@@ -1619,6 +1725,9 @@ class TaskPlanConditionedNeedGenerator:
         ):
             raise ValueError("Planner artifact replay validation outcome mismatch")
         placeholder = ArtifactId("sha256:" + "0" * 64)
+        canonical_goals = {
+            goal.chapter_index: goal.summary for goal in planning_context.chapter_goals
+        }
         provisional = tuple(
             self._build_planner_need(
                 task=task,
@@ -1628,6 +1737,7 @@ class TaskPlanConditionedNeedGenerator:
                 focus_set=focus_set,
                 artifact_ref=placeholder,
                 validated_hash=placeholder,
+                canonical_goals=canonical_goals,
             )
             for draft in accepted
         )
@@ -1684,10 +1794,20 @@ class TaskPlanConditionedNeedGenerator:
         focus_set: FocusSet,
         artifact_ref: ArtifactId,
         validated_hash: ArtifactId,
+        canonical_goals: Mapping[int, str] | None = None,
     ) -> Stage1MemoryNeed:
         entity_ids = self._grounder.grounded_entity_ids(draft)
         sanitized = NeedValidator.sanitize_draft_id(draft.draft_id)
         need_id = StableId(f"need.stage2m.planner.{sanitized}"[:128])
+        # Host-verified canonical goal binding: the model's trigger_plan_goal
+        # stays an auditable explanation; the Need carries the plan's canonical
+        # goal text per trigger chapter (complete binding only).
+        canonical_goal_by_chapter = (
+            {chapter: canonical_goals[chapter] for chapter in draft.trigger_plan_chapters}
+            if canonical_goals is not None
+            and all(chapter in canonical_goals for chapter in draft.trigger_plan_chapters)
+            else {}
+        )
         focus_by_canonical = {
             item.canonical_id: item.focus_id
             for item in focus_set.focuses
@@ -1720,6 +1840,63 @@ class TaskPlanConditionedNeedGenerator:
         intent = self._INTENT_BY_NEED_TYPE[need_type]
         section = self._SECTION_BY_NEED_TYPE[need_type]
         pools = self._POOLS_BY_NEED_TYPE[need_type]
+        # Facet-level predicate binding: derive, per facet kind, the predicates
+        # of the matching world-record kinds for the grounded entities, so a
+        # state predicate never closes knowledge/capability facets and
+        # relation/event/obligation anchors can close their own facets
+        # (2026-08-14 review second follow-up P1).
+        state_predicates = tuple(
+            dict.fromkeys(
+                state.predicate
+                for state in world.states
+                if state.subject_id in entity_ids and state.predicate
+            )
+        )[:16]
+        relation_predicates = tuple(
+            dict.fromkeys(
+                relation.predicate
+                for relation in world.relations
+                if relation.predicate
+                and bool(
+                    set((relation.subject_id, relation.object_id)) & set(entity_ids)
+                )
+            )
+        )[:16]
+        event_predicates = tuple(
+            dict.fromkeys(
+                event.event_type
+                for event in world.events
+                if event.event_type
+                and set(event.participant_ids) & set(entity_ids)
+            )
+        )[:16]
+        obligation_predicates = tuple(
+            dict.fromkeys(
+                obligation.kind.value
+                for obligation in world.obligations
+                if set(obligation.owner_ids) & set(entity_ids)
+            )
+        )[:16]
+        facet_predicates: dict[NeedFacetKind, tuple[str, ...]] = {
+            NeedFacetKind.CURRENT_STATE: state_predicates,
+            NeedFacetKind.CAPABILITY_STATUS: self._predicates_by_keywords(
+                state_predicates, self._CAPABILITY_PREDICATE_KEYWORDS
+            ),
+            NeedFacetKind.LIMITATION: self._predicates_by_keywords(
+                state_predicates, self._CAPABILITY_PREDICATE_KEYWORDS
+            ),
+            NeedFacetKind.KNOWLEDGE_BOUNDARY: self._predicates_by_keywords(
+                state_predicates, self._KNOWLEDGE_PREDICATE_KEYWORDS
+            ),
+            NeedFacetKind.RELATION_STATE: relation_predicates,
+            NeedFacetKind.CAUSAL_HISTORY: tuple(
+                dict.fromkeys((*state_predicates, *event_predicates))
+            ),
+            NeedFacetKind.SETUP: tuple(dict.fromkeys((*state_predicates, *event_predicates))),
+            NeedFacetKind.COMMITMENT: obligation_predicates,
+            NeedFacetKind.UNRESOLVED_STATUS: obligation_predicates,
+            NeedFacetKind.PLAN_NODE: (),
+        }
         facets, completion_spec = self._completion_contract(
             need_id=need_id,
             need_type=need_type,
@@ -1729,6 +1906,14 @@ class TaskPlanConditionedNeedGenerator:
             allow_plan=False,
             mandatory=True,
             facet_kinds_override=facet_kinds,
+            predicates_by_facet=facet_predicates,
+        )
+        need_predicates = tuple(
+            dict.fromkeys(
+                predicate
+                for facet_kind in facet_kinds
+                for predicate in facet_predicates.get(facet_kind, ())
+            )
         )
         hints = tuple(
             dict.fromkeys(hint for hint in draft.query_hints if hint != draft.semantic_question)
@@ -1745,7 +1930,9 @@ class TaskPlanConditionedNeedGenerator:
             semantic_question=draft.semantic_question,
             trigger_plan_chapters=draft.trigger_plan_chapters,
             trigger_plan_goal=draft.trigger_plan_goal,
+            canonical_goal_by_chapter=canonical_goal_by_chapter,
             entity_ids=entity_ids,
+            predicates=need_predicates,
             access_scope="writer_safe",
             allow_plan=False,
             planner_may_read_plan=True,
@@ -1870,6 +2057,7 @@ class TaskPlanConditionedNeedGenerator:
         allow_plan: bool,
         mandatory: bool,
         facet_kinds_override: tuple[NeedFacetKind, ...] | None = None,
+        predicates_by_facet: Mapping[NeedFacetKind, tuple[str, ...]] | None = None,
     ) -> tuple[tuple[NeedFacet, ...], NeedCompletionSpec]:
         facet_kinds: tuple[NeedFacetKind, ...]
         if facet_kinds_override is not None:
@@ -1947,6 +2135,14 @@ class TaskPlanConditionedNeedGenerator:
             gap_policy=NeedGapPolicy.FAIL_MANDATORY,
             producer="TaskPlanConditionedNeedGenerator",
             producer_version=cls.version,
+            # Facet-level predicate binding: each facet declares only the
+            # predicates that can serve it (2026-08-14 review second P1).
+            predicates_by_facet={
+                facet.need_facet_id.root: tuple(
+                    dict.fromkeys((predicates_by_facet or {}).get(facet.facet_kind, ()))
+                )
+                for facet in facets
+            },
         )
 
     @staticmethod

@@ -1,5 +1,273 @@
 # Codex acceptance review
 
+## Stage 2M semantic repair implementation acceptance (2026-08-14)
+
+- Outcome: `PASS / IMPLEMENTATION_REPAIR_ACCEPTED / PRODUCT_GATE_HOLD`
+- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
+- Scope: sections 28.25-28.31 and all review-driven repairs through Stage 1 schema synchronization
+
+### Decision
+
+The implementation repair is accepted. The Need-admission, facet-loop retrieval, exact-L0 packing
+and structured State/Relation/Event/Obligation support path now has one fail-closed semantic owner:
+predicate support is bound per required facet, grounded and identity-only units cannot fabricate
+closure, package assembly preserves unsupported facets as typed gaps, and mechanical delivery is
+reported separately from mandatory semantic completion.
+
+The final Stage 2M product gate remains `HOLD`, not because another implementation repair is known,
+but because the active acceptance document requires the fixed-commit, single-identity clean-Genesis
+C1-C95 P001-P005 run. That run must demonstrate every mandatory facet closed by dereferenceable
+exact L0 evidence with no unresolved, insufficient or transport outcome before product `PASS`.
+
+### Accepted Evidence
+
+- Multi-facet predicate bindings are explicit in `NeedCompletionSpec.predicates_by_facet`; the
+  Need-level predicate set is only their retrieval union.
+- Planner and template generation populate facet bindings from matching State, Relation, Event and
+  Obligation record kinds, with focused multi-facet and cross-kind regressions.
+- The shared evaluator, retrieval traces and assembler consume the same facet support ids; empty
+  support no longer expands to every facet.
+- `mandatory_facet_closure` is required and fail-closed in runtime models and formal package
+  schemas; driver case and aggregate semantic status are covered through production helpers.
+- Stage 1, Stage 2 and Stage 3 checked-in schemas now contain the facet contract. The new Stage 1
+  contract test compares all four defining/embedding schemas directly with current model-generated
+  schemas and pins the embedded field.
+- The submitted final quality evidence is `2290 passed` with three documented pre-existing Stage 5
+  integration failures. It was not rerun during this review.
+
+### Remaining Gate
+
+Freeze one implementation commit and run the already-defined clean-Genesis C1-C95 P001-P005
+campaign. Preserve mechanical and semantic status separately, stop on any mandatory facet gap,
+and use that single-identity artifact set for the final product acceptance decision. The older C20
+output remains useful honest diagnostic evidence but cannot substitute for this gate.
+
+## Stage 2M facet-binding contract follow-up (2026-08-14)
+
+- Outcome: `REPAIR / STAGE1_SCHEMA_EXPORT_MISSING`
+- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
+- Scope: section 28.30 facet-level binding and exported contracts
+
+The facet-level implementation is accepted. `NeedCompletionSpec.predicates_by_facet` is consumed
+per facet, the Need-level predicate set is only the retrieval union, and the new multi-facet plus
+Relation/Event/Obligation generator tests cover the previously open main-path error.
+
+### Finding
+
+1. **P1 - the Stage 1 public schemas still reject the new Need contract.**
+   `NeedCompletionSpec` is a Stage 1 boundary, but none of the four Stage 1 schemas that define or
+   embed it contains `predicates_by_facet`: `NeedCompletionSpec`, `Stage1MemoryNeed`,
+   `HorizonNeedSet` and `Stage1ContextPackage`. Those schemas use `additionalProperties=false`, so
+   a Need produced by the repaired code is invalid at the Stage 1 JSON boundary even though the
+   Stage 2 and Stage 3 embedded copies were refreshed. This is a reachable contract failure, not a
+   documentation-only mismatch.
+
+### Accepted Evidence
+
+- A predicate now closes only the facet whose explicit binding contains it; same-kind predicates
+  no longer cross-close a multi-facet Need.
+- Planner/template generation derives separate State, Relation, Event and Obligation bindings and
+  retains their union only for R1 candidate retrieval.
+- The assembler, manifest and aggregate-status repairs from the previous reviews remain accepted.
+- The reported quality run is implementation evidence and was not rerun during this review.
+- The existing C20 output remains an honest historical `mechanical PASS / semantic INCOMPLETE`
+  checkpoint; final product PASS still requires the planned clean-Genesis P001-P005 run.
+
+### Required Repair Direction
+
+Use the existing `scripts/export_stage1_schemas.py` owner to regenerate all Stage 1 schemas that
+define or embed `NeedCompletionSpec`, and extend the Stage 1 contract check to assert the new field
+is present with the same shape as the Stage 2/3 copies. No implementation, model, retrieval or
+benchmark change is required.
+
+## Stage 2M predicate-binding second follow-up (2026-08-14)
+
+- Outcome: `REPAIR / NEED_LEVEL_PREDICATE_OR_SET_IS_NOT_FACET_BINDING`
+- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
+- Scope: section 28.29, refreshed focused tests and refreshed C20 artifacts
+
+The assembler fallback, manifest fail-closed contract and aggregate-helper repairs are accepted.
+The remaining blocker is one main-path semantic error: predicate membership is recorded per Need,
+but closure is claimed per facet.
+
+### Finding
+
+1. **P1 - a multi-facet Need still lets any declared predicate close every same-kind facet.**
+   `_matching_facets` checks `unit.predicate in need.predicates` once and then returns every facet
+   whose broad unit kind matches. `_build_planner_need` populates that Need-level OR-set with every
+   state predicate of every grounded entity, independent of the semantic question and suggested
+   facet. Consequently a fresh version of the real P001 knowledge/capability Need can again let a
+   location predicate close both `knowledge_boundary` and `capability_status`; the blanket moved
+   from evaluator kind membership into Need generation. The new regression does not expose this:
+   it uses a unit predicate absent from the Need OR-set, rather than putting two valid predicates
+   in one multi-facet Need and asserting that each closes only its bound facet.
+
+   The same generation rule causes the opposite failure for non-state facets. Planner Needs with
+   `relation_state`, `causal_history`, `setup`, `commitment` or `unresolved_status` receive only
+   state predicates, so matching Relation/Event/Obligation anchors cannot close them even when the
+   exact record exists. This would keep P003 and the stated Event/Obligation/Relation path broken
+   in the clean-Genesis run.
+
+### Accepted Evidence
+
+- Grounded slices and `FACT_ANCHOR` no longer act as semantic witnesses.
+- The assembler now preserves an empty `supported_facet_ids` set instead of expanding it to every
+  Need facet.
+- Obligation and plan-provenance branches are reachable and have direct unit coverage under the
+  current projection metadata contract.
+- `mandatory_facet_closure` is required and limited to `COMPLETE | INCOMPLETE` in both runtime
+  models and the exported schema.
+- The driver uses tested production aggregate helpers. The refreshed C20 artifacts consistently
+  report 14 gaps, mechanical `PASS` and semantic `INCOMPLETE`.
+- The submitted quality result is recorded as implementation evidence and was not rerun here.
+
+### Required Repair Direction
+
+Bind predicates at the facet boundary, not as one Need-wide OR-set. The minimum-sufficient owner is
+the existing `NeedFacet`/`NeedCompletionSpec` contract: retain, for each required facet id, the
+exact predicates that can serve it, and make `_matching_facets` consult that binding. Populate
+state, relation, event and obligation predicates from the matching record kinds and grounded
+entities; do not copy every entity state predicate into every Planner Need. Add one real regression
+with a multi-facet Need containing both a knowledge predicate and a capability predicate, proving
+that each anchor closes only its own facet, plus Relation/Event/Obligation Planner-Need cases.
+No new service, model call or scoring layer is required.
+
+## Stage 2M semantic repair follow-up review (2026-08-14)
+
+- Outcome: `REPAIR / PREDICATE_BINDING_STILL_OPEN`
+- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
+- Scope: section 28.28 repair, focused tests and the refreshed C20 formal artifacts
+
+The reporting repair and frozen read-boundary repair are accepted. The current artifact now
+correctly says `mechanical PASS / semantic INCOMPLETE`. Product acceptance remains open because
+the facet evaluator still closes semantic facets by broad unit kind rather than the predicate the
+Need asked for.
+
+### Findings
+
+1. **P1 - the same false-closure bug remains for structured anchors.**
+   `_facets_for_unit` now rejects grounded slices, but it never compares
+   `Stage1MemoryNeed.predicates` with `RetrievalUnit.predicate`. Every state anchor for the same
+   entity therefore closes every state-shaped facet, and `FACT_ANCHOR` is allowed to close nearly
+   every non-plan semantic facet. This is not hypothetical: the refreshed P001 case closes both
+   `knowledge_boundary` and `capability_status` with the identical set of state anchors, including
+   location, enrollment, recommendation possession and unrelated belief records. The test named
+   `test_same_entity_different_predicate_does_not_close_facet` does not set either predicate; it
+   only proves that a state unit kind does not close a relation facet. It therefore does not cover
+   the requested same-kind/different-predicate regression.
+
+2. **P1 - obligation anchors are prevented from closing obligation facets.**
+   `_STRUCTURED_KINDS_BY_FACET` assigns `PLAN_ANCHOR` to `COMMITMENT` and
+   `UNRESOLVED_STATUS`, correctly noting that durable obligations project to that kind. The later
+   `PLAN_ANCHOR` special case bypasses the table and returns only `PLAN_NODE` facets. R1 does
+   project `WorldRecordKind.OBLIGATION` as `PLAN_ANCHOR`, so the accepted mapping is currently
+   unreachable on the real product path. This is a direct false negative for the stated
+   Obligation write/retrieve goal.
+
+3. **P1 - the manifest contract still defaults missing semantic evidence to COMPLETE.**
+   `EvidenceFirstPackageManifest.mandatory_facet_closure` is an unrestricted string with default
+   `COMPLETE`, and the exported schema does not require it. The formal driver supplies the field,
+   so the refreshed C20 artifact is correct, but any omitted value validates as product-complete.
+   The new contract should be required and limited to `COMPLETE | INCOMPLETE`; absence must not
+   silently select the success state. The assembly result should likewise not carry a success
+   default when its owner always computes the value.
+
+4. **P2 - the aggregate regression test does not exercise production code.**
+   `test_aggregate_semantic_status_requires_all_complete` constructs two local lists and tests a
+   local `all(...)` expression. It would continue passing if the driver's aggregate implementation
+   were removed or inverted. Extract the existing expression to one small production helper and
+   call that helper from both the driver and the test.
+
+### Accepted Evidence
+
+- Grounded block/span units no longer close semantic facets, and the two direct negative tests pin
+  that behavior.
+- The package manifest, case record and output index now retain mandatory closure. The reviewed C20
+  output consistently reports `READY`, aggregate mechanical `PASS` and semantic `INCOMPLETE`, with
+  the four unsupported receipts still visible.
+- `_parse_frozen_comparison` and `_load_checkpoint_index` have meaningful focused coverage for
+  canonical acceptance, drift rejection, Need/context commit mismatch, missing Planner reference
+  and strict Planner reading.
+- The submitted `2274 passed / 3 pre-existing Stage 5 failures` result is recorded as OpenCode
+  evidence; it was not rerun during this review and is not the reason the verdict remains open.
+
+### Required Repair Direction
+
+Keep the shared evaluator and existing models. Bind structured support using the already-present
+Need and unit predicate fields: a same-kind anchor with an absent or mismatched predicate must not
+close the facet. Remove `FACT_ANCHOR` as a universal semantic witness. Distinguish observed durable
+obligations from plan provenance using existing retrieval-unit metadata so obligation anchors close
+`COMMITMENT`/`UNRESOLVED_STATUS` while plan nodes close `PLAN_NODE`. Add the actual same-kind,
+different-predicate and obligation regressions. Finally make manifest closure required/fail-closed
+and test the driver's aggregate helper itself. No new service, model call or framework is needed.
+
+## Stage 2M semantic repair review (2026-08-14)
+
+- Outcome: `REPAIR / PRODUCT_COMPLETION_NOT_ACCEPTED`
+- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
+- Scope: current dirty-worktree implementation, frozen C20 artifacts and
+  `.agent/implementation.md` sections 28.25-28.27
+
+This decision governs the current semantic-repair completion claim. The frozen-driver read fix is
+accepted as a valid local repair, but the evidence does not establish the product completion gate
+defined by `.agent/plan.md` and the active semantic-repair execution document.
+
+### Findings
+
+1. **P1 - exact evidence is still being confused with semantic facet support.**
+   `FacetSupportEvaluator._facets_for_unit` treats any `GROUNDED_BLOCK` or `GROUNDED_SPAN` with an
+   evidence reference and overlapping entity as support for every non-plan facet on the Need. A
+   slice can therefore close `setup`, `causal_history`, `relation_state` or `unresolved_status`
+   without supporting that predicate. This is the main-path version of the original false-closure
+   problem, and it makes the template smoke's `mandatory_facet_closure=COMPLETE` insufficient as
+   semantic evidence. The repair must remove blanket closure and bind grounded slices only to the
+   facet semantics actually established by retrieval/rerank output. Add negative regression cases
+   where an exact slice about the same entity but a different predicate does not close the facet.
+
+2. **P1 - the frozen driver computes mandatory closure and then drops it from the formal result.**
+   `EvidenceFirstAssemblyResult.mandatory_facet_closure` is not written to the package manifest,
+   case record or output index. Driver readiness and aggregate status consider assembly,
+   mechanical failures and leakage only, so the real C20 run is reported as `READY` / aggregate
+   mechanical `PASS` even though four mandatory facet receipts are `unsupported`. Mechanical PASS
+   is legitimate and should remain separate; campaign/product status must be `INCOMPLETE` whenever
+   any mandatory facet is unsupported, unresolved, insufficient or transport-failed. Persist the
+   closure in all three artifacts and cover the aggregate behavior with a focused regression test.
+
+3. **P1 - the claimed end-to-end goal is not demonstrated by the submitted real evidence.**
+   The reviewed formal artifact contains one P001/C20 case, one package gap and four unsupported
+   mandatory facets. The real C1-C20 world has zero Event records, so Event write/retrieval is not
+   proven on real data. The required fixed-identity clean-Genesis C1-C95 P001-P005 run has not
+   occurred. Under the active completion predicate, that run is acceptance evidence, not a
+   post-completion administrative step. Sections 28.25-28.27 may claim the driver mechanism works
+   and faithfully reproduces the frozen C20 state; they must not mark the Stage 2M semantic product
+   goal complete.
+
+4. **P2 - the driver bug fix has no focused regression test.**
+   The real run demonstrates successful canonical input, but there is no automated coverage for
+   checkpoint-index loading, accepted canonical JSON, rejected canonical drift or commit mismatch.
+   Add one focused test around this read boundary; no broader framework is needed.
+
+### Accepted Evidence
+
+- The `strict=False` parse followed by canonical byte equality is a sound minimal workaround for
+  this Pydantic model family's JSON/tuple validation behavior and preserves fail-closed drift
+  detection.
+- The checkpoint-index route faithfully reproduced the frozen C20 deterministic receipts, made no
+  forbidden Planner/Claim/verifier/evaluator model calls and introduced no future leakage.
+- The four unsupported receipts are useful evidence: they correctly expose missing C20 support
+  instead of fabricating it. They are a reason to keep the product gate open, not a driver defect.
+- The three reported Stage 5 deterministic-suite failures are outside this Stage 2M change and are
+  not the reason for this verdict.
+
+### Required Repair Direction
+
+Keep the current architecture and owners. Repair the two false-success paths: make facet support
+predicate-specific, then propagate mandatory closure into the driver artifacts and campaign
+status. After focused regression coverage, preserve the current C20 result as an honest
+`mechanical PASS / semantic INCOMPLETE` checkpoint. Only a later fixed-commit, single-identity
+clean-Genesis P001-P005 run with every mandatory facet closed by dereferenceable exact L0 evidence
+can change this review to `PASS`.
+
 ## Final Memory workflow integration acceptance (2026-08-12)
 
 - Outcome: `PASS / STAGE2M_FINAL_ENGINEERING_ACCEPTANCE`

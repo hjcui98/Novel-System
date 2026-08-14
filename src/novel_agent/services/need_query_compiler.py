@@ -16,7 +16,7 @@ class NeedQueryCompiler:
     provides.
     """
 
-    version = "need_query_compiler.v1"
+    version = "need_query_compiler.v2"
 
     def compile(self, need: Stage1MemoryNeed) -> RetrievalQueryBundle:
         semantic_query = need.semantic_question or need.query_text
@@ -24,13 +24,18 @@ class NeedQueryCompiler:
             dict.fromkeys(query for query in (need.query_text, *need.query_hints) if query.strip())
         ) or (need.query_text,)
         excluded_information_labels = () if need.retrieval_may_return_plan else ("plan",)
+        # Graph predicates are compiled from the Need's public predicates
+        # (registry names, e.g. ``mentor_of``) instead of a hard-coded empty
+        # set; unresolved lexical anchors keep lexical/dense eligible while
+        # exact/graph fail closed on the missing seed (eligible_channels).
+        graph_relations = tuple(dict.fromkeys(need.predicates))
         return RetrievalQueryBundle(
             semantic_query=semantic_query,
             lexical_queries=lexical_queries,
             exact_entity_ids=need.entity_ids,
             exact_predicates=need.predicates,
             graph_seeds=need.entity_ids,
-            graph_relations=(),
+            graph_relations=graph_relations,
             time_scope=need.time_scope,
             excluded_information_labels=excluded_information_labels,
         )

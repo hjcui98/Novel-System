@@ -21,7 +21,7 @@ from novel_agent.adapters.memory_write.teacher_forced import (
     _basis_manifest,
     _validate_durable_commit_request,
 )
-from novel_agent.adapters.model import FakeModelEndpoint
+from novel_agent.adapters.model import FakeModelEndpoint, ScriptedModelEndpoint
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import ChapterChangeDraft, ObservedChangeSet, WorldRecordKind
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
@@ -50,7 +50,10 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
-from novel_agent.domain.world import WorldGraphCandidateBatch
+from novel_agent.domain.world import (
+    GraphCandidatePageDraft,
+    WorldGraphCandidateBatch,
+)
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
     CuratorProposalRequest,
@@ -708,6 +711,7 @@ def test_curator_proposal_attempt_runs_graph_profile_concurrently_and_merges_rel
             base_commit: CommitId,
             _world: WorldRootDocument,
             model_request: ModelRequest,
+            repair_feedback: str | None = None,
         ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[()]]:
             self.request = model_request
             await rendezvous()
@@ -801,7 +805,9 @@ def test_curator_proposal_cancels_graph_profile_when_replay_fails() -> None:
         def __init__(self) -> None:
             self.gateway = gateway
 
-        async def extract_graph_candidates(self, *_: object) -> None:
+        async def extract_graph_candidates(
+            self, *_: object, repair_feedback: str | None = None
+        ) -> None:
             nonlocal graph_cancelled
             started.set()
             try:
@@ -868,6 +874,7 @@ def test_curator_proposal_maps_graph_basis_mismatch_to_contract_failure() -> Non
             _base_commit: CommitId,
             _world: WorldRootDocument,
             model_request: ModelRequest,
+            repair_feedback: str | None = None,
         ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[()]]:
             return (
                 (
@@ -995,6 +1002,66 @@ def test_typed_proposal_receipt_counts_semantic_verifier_child_call() -> None:
         StableId(f"{model_request.request_id.root}.semantic-verifier"),
     )
     assert outcome.attempt_receipt.prompt_fingerprint == ArtifactId("sha256:" + "8" * 64)
+
+
+def test_typed_proposal_rejection_draft_ref_uses_primary_curator_response() -> None:
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.primary-draft"))
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=ScriptedModelEndpoint(
+                    lambda request: verifier_raw
+                    if request.request_id.root.endswith(".semantic-verifier")
+                    else primary_raw
+                ),
+            ),
+        )
+    )
+    primary_raw = '{"operations":[{"operation":"create"}]}'
+    verifier_raw = (
+        '{"decisions":[{"operation_index":1,"disposition":"supports",'
+        '"reason_code":"direct_support"}]}'
+    )
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **kwargs: object) -> None:
+            parent = cast(ModelRequest, kwargs["request"])
+            await gateway.generate_text(parent)
+            verifier = parent.model_copy(
+                update={"request_id": StableId(f"{parent.request_id.root}.semantic-verifier")}
+            )
+            await gateway.generate_text(verifier)
+            raise CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_EVIDENCE_UNSUPPORTED",
+                (),
+                safe_feedback=("semantic verifier rejected evidence",),
+            )
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(_proposal_attempt_request(artifacts, model_request.request_id))
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.rejection.raw_draft_ref is not None
+    assert artifacts.read_verified(outcome.rejection.raw_draft_ref).decode("utf-8") == primary_raw
+    assert outcome.rejection.output_hash == sha256_id(primary_raw.encode("utf-8"))
+    assert len(outcome.attempt_receipt.raw_response_refs) == 2
+    assert (
+        artifacts.read_verified(outcome.attempt_receipt.raw_response_refs[-1]).decode("utf-8")
+        == verifier_raw
+    )
 
 
 def test_typed_proposal_receipt_preserves_failed_verifier_ledger_entry() -> None:
@@ -1240,6 +1307,68 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
         assert len(outcome.attempt_receipt.model_call_receipt_refs) == 1
         if outcome.rejection.reason_code == "CURATOR_PROPOSAL_INVALID_EVIDENCE":
             assert "require 0 <= start < end" in outcome.rejection.safe_feedback[0]
+
+
+def test_schema_rejection_feedback_names_semantic_rule_messages() -> None:
+    """2026-08-14 corridor repair: semantic model-validator failures must name the rule.
+
+    ch10 receipts showed the graph page semantic rule ("entity candidate must be a
+    relation endpoint in the same page") was reported only as generic "failed the
+    structured domain contract", so the model repeated the defect into a poison
+    loop.  The rejection feedback must surface the actual rule message.
+    """
+    payload = {
+        "status": "complete",
+        "candidates": [
+            {
+                "kind": "entity",
+                "surface": "陈长生",
+                "entity_type": "person",
+                "evidence_quotes": ["quote"],
+            }
+        ],
+        "no_graph_candidate_reason": None,
+    }
+    with pytest.raises(ValidationError) as raised:
+        GraphCandidatePageDraft.model_validate_json(canonical_json_bytes(payload))
+    semantic_error = raised.value
+    assert any(
+        item["type"] == "value_error"
+        for item in semantic_error.errors(include_url=False, include_input=False)
+    )
+
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.rule-message"))
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=FakeModelEndpoint("raw rejected response"),
+            ),
+        )
+    )
+    asyncio.run(gateway.generate_text(model_request))
+    replay = SimpleNamespace(curator=SimpleNamespace(gateway=gateway))
+    port = TeacherForcedCuratorPort(
+        cast(Any, replay),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_, request=model_request: request),
+    )
+    outcome = port._proposal_rejected(
+        _proposal_attempt_request(artifacts, model_request.request_id),
+        model_request,
+        semantic_error,
+        datetime.now(UTC),
+        _manifest().schema_version,
+    )
+    assert outcome.rejection.stage is ProposalRejectionStage.STRUCTURED_SCHEMA
+    assert outcome.rejection.kind is ProposalRejectionKind.SCHEMA_REJECTED
+    assert any(
+        "relation endpoint in the same page" in line for line in outcome.rejection.safe_feedback
+    )
 
 
 def test_typed_proposal_attempt_wraps_transport_and_preserves_safe_feedback() -> None:

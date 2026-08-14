@@ -1104,6 +1104,9 @@ class LocalMemoryWriteWorkflow:
                     None if rejection.output_hash is None else rejection.output_hash.root
                 ),
                 "safe_feedback": rejection.safe_feedback,
+                "validation_error_paths": rejection.validation_error_paths,
+                "json_pointers": rejection.json_pointers,
+                "violation_rule": rejection.violation_rule,
                 "mutable_operation_indexes": directive.scope.mutable_operation_indexes,
                 "allow_complete_replacement": directive.scope.allow_complete_replacement,
                 "immutable_operation_semantic_hashes": tuple(

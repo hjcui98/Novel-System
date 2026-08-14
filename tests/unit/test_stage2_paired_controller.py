@@ -25,6 +25,7 @@ from novel_agent.domain.memory import (
     RequirementLevel,
     ResolutionPath,
     RetrievalChannel,
+    RetrievalStopReason,
     RetrievalUnit,
     RetrievalUnitKind,
     Stage1MemoryNeed,
@@ -1728,3 +1729,205 @@ def test_legacy_fairness_marks_later_need_unexecuted_after_global_budget() -> No
     assert result.context.retrieval_traces[1].need_execution_status is (
         NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
     )
+
+
+def test_route_plan_mixed_fallback_conditions_and_repeated_channel_window() -> None:
+    """One applying and one non-applying fallback; duplicate channel re-search skip."""
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "allowed_candidate_pools": (
+                CandidatePool.ANCHOR,
+                CandidatePool.GROUNDED,
+            )
+        }
+    )
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.GROUNDED_BM25,
+            RetrievalChannel.GROUNDED_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    applying, non_applying = plan.conditional_fallbacks[0], plan.conditional_fallbacks[0]
+    mixed = plan.model_copy(
+        update={
+            "conditional_fallbacks": (
+                applying,
+                non_applying.model_copy(update={"condition": "plan_anchor_insufficient"}),
+            ),
+            "mandatory_steps": (plan.primary_groups[0].steps[0],),
+        }
+    )
+    trace = PairedMemoryControllerRunner._retrieve_route_plan(
+        _HitBackend(),
+        item,
+        mixed,
+        per_channel_limit=2,
+    )
+    # The applying fallback runs once; the non-applying one is skipped; the
+    # duplicated anchor channel is searched once and re-use skipped.
+    assert trace.fallback_used is True
+    assert trace.allowed_channels.count(RetrievalChannel.ANCHOR_BM25) == 1
+    assert trace.allowed_channels.count(RetrievalChannel.GROUNDED_BM25) == 1
+
+
+class _PagedFacetBackend(_EmptyBackend):
+    """Returns the relation anchor only when the window is wide enough."""
+
+    def __init__(self, state_unit: RetrievalUnit, relation_unit: RetrievalUnit) -> None:
+        self._state_unit = state_unit
+        self._relation_unit = relation_unit
+
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        if channel not in {RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE}:
+            return ()
+        if limit < 2:
+            return (
+                ChannelHit(
+                    unit=self._state_unit,
+                    channel=channel,
+                    channel_rank=1,
+                    raw_score=1.0,
+                    candidate_count=2,
+                    hit_reason="hit",
+                ),
+            )
+        return (
+            ChannelHit(
+                unit=self._state_unit,
+                channel=channel,
+                channel_rank=1,
+                raw_score=1.0,
+                candidate_count=2,
+                hit_reason="hit",
+            ),
+            ChannelHit(
+                unit=self._relation_unit,
+                channel=channel,
+                channel_rank=2,
+                raw_score=1.0,
+                candidate_count=2,
+                hit_reason="hit",
+            ),
+        )
+
+
+def test_route_plan_expands_window_until_mandatory_facet_closes() -> None:
+    """2026-08-13 repair C: paired route keeps widening until facet closure."""
+    from novel_agent.domain.memory import (
+        ExpectedClaimScope,
+        FacetClosureStatus,
+        FacetEvidenceRequirement,
+        NeedCompletionSpec,
+        NeedFacet,
+        NeedFacetKind,
+        NeedGapPolicy,
+        NeedUncertaintyPolicy,
+    )
+
+    item = need(intent=Stage1QueryIntent.RELATED_EVENT).model_copy(
+        update={
+            "allowed_candidate_pools": (CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+            "predicates": ("location", "possesses"),
+        }
+    )
+    facet = NeedFacet(
+        need_facet_id=StableId("need-facet.paired.state"),
+        need_id=item.need_id,
+        facet_kind=NeedFacetKind.CURRENT_STATE,
+        expected_claim_scope=ExpectedClaimScope.CURRENT,
+        derivation_refs=(item.need_id,),
+        producer="test",
+        producer_version="v1",
+        information_scope="cutoff_safe",
+    )
+    relation_facet = facet.model_copy(
+        update={
+            "need_facet_id": StableId("need-facet.paired.relation"),
+            "facet_kind": NeedFacetKind.RELATION_STATE,
+        }
+    )
+    spec = NeedCompletionSpec(
+        need_id=item.need_id,
+        required_need_facet_ids=(facet.need_facet_id, relation_facet.need_facet_id),
+        irreducible_need_facet_ids=(facet.need_facet_id, relation_facet.need_facet_id),
+        evidence_requirement_by_facet={
+            facet.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE,
+            relation_facet.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE,
+        },
+        min_distinct_evidence_sources=1,
+        min_distinct_chapters=1,
+        uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+        gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+        producer="test",
+        producer_version="v1",
+        predicates_by_facet={
+            facet.need_facet_id.root: ("location",),
+            relation_facet.need_facet_id.root: ("possesses",),
+        },
+    )
+    item = item.model_copy(update={"need_facets": (facet, relation_facet), "completion_spec": spec})
+    capability = SnapshotCapability(
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        status=SnapshotCapabilityStatus.EXACT,
+        available_channels=(
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        ),
+    )
+    plan = DeterministicChannelPlanner().plan(item, capability)
+    state_unit = unit().model_copy(
+        update={
+            "unit_id": StableId("anchor.paged.state"),
+            "predicate": "location",
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.paged.state"),
+                    root_hash="sha256:" + "c" * 64,
+                    object_hash="sha256:" + "c" * 64,
+                    span=TextSpanRef(block_id=StableId("block.paged"), start=0, end=4),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    relation_unit = state_unit.model_copy(
+        update={
+            "unit_id": StableId("anchor.paged.relation"),
+            "unit_kind": RetrievalUnitKind.RELATION_ANCHOR,
+            "predicate": "possesses",
+            "evidence_refs": (
+                EvidenceRef(
+                    evidence_id=StableId("evidence.paged.relation"),
+                    root_hash="sha256:" + "d" * 64,
+                    object_hash="sha256:" + "d" * 64,
+                    span=TextSpanRef(block_id=StableId("block.paged"), start=0, end=4),
+                    support_status=EvidenceSupportStatus.CURRENT,
+                    resolved_at_commit=COMMIT,
+                ),
+            ),
+        }
+    )
+    trace = PairedMemoryControllerRunner._retrieve_route_plan(
+        _PagedFacetBackend(state_unit, relation_unit),
+        item,
+        plan,
+        per_channel_limit=1,
+    )
+    assert trace.retrieval_pages == 2
+    assert trace.stop_reason is RetrievalStopReason.EXACT_SATISFIED
+    by_kind = {receipt.facet_kind: receipt for receipt in trace.facet_receipts}
+    assert by_kind[NeedFacetKind.RELATION_STATE].status is FacetClosureStatus.SUPPORTED
+    assert set(trace.closed_need_facet_ids) == set(trace.required_need_facet_ids)

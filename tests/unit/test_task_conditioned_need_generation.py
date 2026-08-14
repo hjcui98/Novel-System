@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from novel_agent.domain.ids import StableId
+from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory import (
     CandidatePool,
     ObligationKind,
@@ -187,7 +187,14 @@ def test_entity_need_predicates_are_filled_by_need_type() -> None:
     assert relationship.predicates == ("trusts",)
     callback = by_type["long_range_callback"]
     assert callback.predicates == ()
-    assert by_type["continuity_constraint"].predicates == ()
+    # Continuity binds current-state anchors of the entity, so it declares the
+    # entity's state predicates (2026-08-14 review follow-up P1).
+    assert set(by_type["continuity_constraint"].predicates) == {
+        "injury",
+        "cultivation_stage",
+        "knows_secret",
+        "mood",
+    }
     assert all(
         item.need_type != item.need_type or True for item in needs
     )  # all constructed needs remain valid
@@ -636,3 +643,277 @@ def test_query_value_serializes_only_bounded_structured_world_values() -> None:
     assert query_value({"state": ["ready", 2]}) == "state ready 2"
     assert query_value(object()) == ""
     assert len(query_value("x" * 300)) == 240
+
+
+def test_planner_need_declares_entity_state_predicates() -> None:
+    # Planner Needs must declare the entity's state predicates so the facet
+    # evaluator can bind structured anchors by predicate (2026-08-14 review
+    # follow-up P1); without them no same-kind anchor can close a facet.
+    from novel_agent.domain.planning_memory import (
+        GroundedEntityMention,
+        GroundedNeedDraft,
+        GroundingStatus,
+    )
+    from novel_agent.domain.stage2 import BenchmarkInformationProfile
+    from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    task = build_safe_task_contract(
+        case_id=StableId("case.predicates"),
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="测试",
+    )
+    draft = GroundedNeedDraft(
+        draft_id="planner.draft.one",
+        semantic_question="林澈当前状态如何",
+        entity_mentions=(
+            GroundedEntityMention(
+                mention="林澈",
+                entity_id=entity.entity_id,
+                grounding_status=GroundingStatus.GROUNDED,
+                canonical_label="林澈",
+                grounding_method="exact_label",
+                confidence=1.0,
+            ),
+        ),
+        why_needed="fixture planner draft",
+        suggested_facets=("CURRENT_STATE",),
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.planner.draft"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity.entity_id,
+                source=TaskFocusSource.TASK,
+                reason="fixture planner draft",
+            ),
+        ),
+    )
+    need = TaskPlanConditionedNeedGenerator()._build_planner_need(
+        task=task,
+        world=world,
+        draft=draft,
+        need_type="current_state",
+        focus_set=focus_set,
+        artifact_ref=ArtifactId("sha256:" + "a" * 64),
+        validated_hash=ArtifactId("sha256:" + "b" * 64),
+    )
+    world_predicates = {
+        state.predicate for state in world.states if state.subject_id == entity.entity_id
+    }
+    assert need.completion_spec is not None
+    # CURRENT_STATE facet binds the entity's state predicates.
+    current_binding = need.completion_spec.predicates_by_facet[
+        need.need_facets[0].need_facet_id.root
+    ]
+    assert set(current_binding) == world_predicates
+    # The Need-wide OR-set is the union over its facet bindings.
+    assert set(need.predicates) == set(current_binding)
+
+
+def test_planner_need_relation_facet_binds_relation_predicate() -> None:
+    # Review second follow-up P1: a Planner Need with relation_state must bind
+    # the relation predicate, so a matching RELATION_ANCHOR can close it.
+    from novel_agent.domain.planning_memory import (
+        GroundedEntityMention,
+        GroundedNeedDraft,
+        GroundingStatus,
+    )
+    from novel_agent.domain.stage2 import BenchmarkInformationProfile
+    from novel_agent.domain.world import RelationRecord, StoryTime, TruthClass
+    from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    relation = RelationRecord(
+        relation_id=StableId("relation.synthetic.enrolled"),
+        subject_id=entity.entity_id,
+        predicate="enrolled_in",
+        object_id=StableId("entity.synthetic.academy"),
+        valid_time=StoryTime(worldline="main", start_ordinal=10),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = world.model_copy(update={"relations": (relation,)})
+    task = build_safe_task_contract(
+        case_id=StableId("case.relation"),
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="测试",
+    )
+    draft = GroundedNeedDraft(
+        draft_id="planner.draft.relation",
+        semantic_question="林澈与国教学院的关系",
+        entity_mentions=(
+            GroundedEntityMention(
+                mention="林澈",
+                entity_id=entity.entity_id,
+                grounding_status=GroundingStatus.GROUNDED,
+                canonical_label="林澈",
+                grounding_method="exact_label",
+                confidence=1.0,
+            ),
+        ),
+        why_needed="fixture relation draft",
+        suggested_facets=("RELATION_STATE",),
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.planner.relation"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity.entity_id,
+                source=TaskFocusSource.TASK,
+                reason="fixture relation draft",
+            ),
+        ),
+    )
+    need = TaskPlanConditionedNeedGenerator()._build_planner_need(
+        task=task,
+        world=world,
+        draft=draft,
+        need_type="relationship_emotion",
+        focus_set=focus_set,
+        artifact_ref=ArtifactId("sha256:" + "c" * 64),
+        validated_hash=ArtifactId("sha256:" + "d" * 64),
+    )
+    assert need.completion_spec is not None
+    binding = need.completion_spec.predicates_by_facet[need.need_facets[0].need_facet_id.root]
+    assert "enrolled_in" in binding
+    assert "injury" not in binding  # state predicate must not leak into relation facet
+
+
+def test_planner_need_event_facet_binds_event_type() -> None:
+    # Review second follow-up P1: a causal_history Planner Need binds the event
+    # type, so an EVENT_ANCHOR can close it.
+    from novel_agent.domain.planning_memory import (
+        GroundedEntityMention,
+        GroundedNeedDraft,
+        GroundingStatus,
+    )
+    from novel_agent.domain.stage2 import BenchmarkInformationProfile
+    from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    task = build_safe_task_contract(
+        case_id=StableId("case.event"),
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="测试",
+    )
+    draft = GroundedNeedDraft(
+        draft_id="planner.draft.event",
+        semantic_question="林澈旧誓言的前因后果",
+        entity_mentions=(
+            GroundedEntityMention(
+                mention="林澈",
+                entity_id=entity.entity_id,
+                grounding_status=GroundingStatus.GROUNDED,
+                canonical_label="林澈",
+                grounding_method="exact_label",
+                confidence=1.0,
+            ),
+        ),
+        why_needed="fixture event draft",
+        suggested_facets=("CAUSAL_HISTORY",),
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.planner.event"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity.entity_id,
+                source=TaskFocusSource.TASK,
+                reason="fixture event draft",
+            ),
+        ),
+    )
+    need = TaskPlanConditionedNeedGenerator()._build_planner_need(
+        task=task,
+        world=world,
+        draft=draft,
+        need_type="entity_history",
+        focus_set=focus_set,
+        artifact_ref=ArtifactId("sha256:" + "e" * 64),
+        validated_hash=ArtifactId("sha256:" + "f" * 64),
+    )
+    assert need.completion_spec is not None
+    binding = need.completion_spec.predicates_by_facet[need.need_facets[0].need_facet_id.root]
+    assert "promise_remembered" in binding  # the synthetic event type
+
+
+def test_planner_need_obligation_facet_binds_obligation_kind() -> None:
+    # Review second follow-up P1: a commitment/unresolved-status Planner Need
+    # binds the obligation kind, so the obligation PLAN_ANCHOR can close it.
+    from novel_agent.domain.planning_memory import (
+        GroundedEntityMention,
+        GroundedNeedDraft,
+        GroundingStatus,
+    )
+    from novel_agent.domain.stage2 import BenchmarkInformationProfile
+    from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    entity = world.entities[0]
+    task = build_safe_task_contract(
+        case_id=StableId("case.obligation"),
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="测试",
+    )
+    draft = GroundedNeedDraft(
+        draft_id="planner.draft.obligation",
+        semantic_question="林澈的承诺与未决状态",
+        entity_mentions=(
+            GroundedEntityMention(
+                mention="林澈",
+                entity_id=entity.entity_id,
+                grounding_status=GroundingStatus.GROUNDED,
+                canonical_label="林澈",
+                grounding_method="exact_label",
+                confidence=1.0,
+            ),
+        ),
+        why_needed="fixture obligation draft",
+        suggested_facets=("COMMITMENT", "UNRESOLVED_STATUS"),
+    )
+    focus_set = FocusSet(
+        task_id=task.task_id,
+        focuses=(
+            TaskFocus(
+                focus_id=StableId("focus.planner.obligation"),
+                focus_type=TaskFocusType.ENTITY,
+                canonical_id=entity.entity_id,
+                source=TaskFocusSource.TASK,
+                reason="fixture obligation draft",
+            ),
+        ),
+    )
+    need = TaskPlanConditionedNeedGenerator()._build_planner_need(
+        task=task,
+        world=world,
+        draft=draft,
+        need_type="unresolved_obligation",
+        focus_set=focus_set,
+        artifact_ref=ArtifactId("sha256:" + "9" * 64),
+        validated_hash=ArtifactId("sha256:" + "8" * 64),
+    )
+    assert need.completion_spec is not None
+    for facet in need.need_facets:
+        binding = need.completion_spec.predicates_by_facet[facet.need_facet_id.root]
+        assert "objective" in binding  # the synthetic obligation kind
+        assert "injury" not in binding  # state predicate must not leak

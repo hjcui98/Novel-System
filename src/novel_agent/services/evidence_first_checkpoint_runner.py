@@ -56,6 +56,7 @@ from novel_agent.services.evidence_first_writer_context_assembler import (
     SliceSelectionTrace,
 )
 from novel_agent.services.evidence_slice_resolver import EvidenceSliceResolver
+from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
 from novel_agent.services.need_draft_grounder import NeedDraftGrounder
 from novel_agent.services.need_query_compiler import NeedQueryCompiler
@@ -327,6 +328,7 @@ class EvidenceFirstCheckpointRunner:
                     key=lambda candidate: (candidate.fused_rank, candidate.unit.unit_id.root),
                 )
             )
+            receipts = FacetSupportEvaluator.evaluate(need, selected)
             slice_by_id: dict[StableId, Any] = {}
             slice_traces: list[SliceSelectionTrace] = []
             graph_receipts = tuple(
@@ -379,6 +381,9 @@ class EvidenceFirstCheckpointRunner:
                                     f"rrf={candidate.rrf_score:.6f};hit_reason={first_hit.hit_reason}"
                                 ),
                                 evidence_ref=evidence,
+                                supported_facet_ids=FacetSupportEvaluator.supporting_facet_ids(
+                                    need, candidate.unit
+                                ),
                             )
                         )
             selections.append(
@@ -386,6 +391,7 @@ class EvidenceFirstCheckpointRunner:
                     need=need,
                     selections=tuple(slice_traces),
                     slices=tuple(slice_by_id.values()),
+                    facet_receipts=receipts,
                 )
             )
             trace_records.append(
@@ -433,6 +439,23 @@ class EvidenceFirstCheckpointRunner:
                     "fallback_used": trace.fallback_used,
                     "fallback_reason": trace.fallback_reason,
                     "stop_reason": trace.stop_reason.value,
+                    "retrieval_pages": trace.retrieval_pages,
+                    "facet_receipts": [
+                        {
+                            "need_facet_id": receipt.need_facet_id.root,
+                            "facet_kind": receipt.facet_kind.value,
+                            "mandatory": receipt.mandatory,
+                            "status": receipt.status.value,
+                            "supporting_unit_ids": [
+                                unit_id.root for unit_id in receipt.supporting_unit_ids
+                            ],
+                            "stop_reason": receipt.stop_reason,
+                        }
+                        for receipt in receipts
+                    ],
+                    "closed_need_facet_ids": [
+                        facet_id.root for facet_id in trace.closed_need_facet_ids
+                    ],
                     "selected_candidates": [
                         {
                             "unit_id": candidate.unit.unit_id.root,

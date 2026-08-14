@@ -38,7 +38,12 @@ from novel_agent.domain.changes import (
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import WorldRootDocument
-from novel_agent.domain.memory_write import ProposalConflict, ProposalEvidenceMergeReceipt
+from novel_agent.domain.memory_write import (
+    CuratorRecordKindCounts,
+    CuratorRecordKindCoverageReceipt,
+    ProposalConflict,
+    ProposalEvidenceMergeReceipt,
+)
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
 from novel_agent.domain.world import (
@@ -209,6 +214,8 @@ class ModelCurator:
         self.last_no_op_verification: tuple[bool, str] | None = None
         self.last_prompt_fingerprint: ArtifactId | None = None
         self.last_operation_filter_receipts: tuple[ProposalOperationFilterReceipt, ...] = ()
+        self.last_record_kind_coverage: CuratorRecordKindCoverageReceipt | None = None
+        self._pending_record_kind_proposed: dict[WorldRecordKind, int] = {}
 
     @property
     def gateway(self) -> ModelGateway:
@@ -249,6 +256,15 @@ class ModelCurator:
                     contract + "Extract ChapterChangeDraft JSON from this revealed chapter only. "
                     "Every operation must cite exact EvidenceRef spans from the supplied chapter; "
                     "preserve assertion/rumor/dream truth classes and do not infer future events.\n"
+                    "DURABLE_EVENT means an occurrence that changes later state, relations or "
+                    "obligations (a departure, duel, rescue, death, migration, public decision, "
+                    "disclosure, promise made, conflict started or resolved). Short meetings, "
+                    "momentary emotions and ordinary actions are NOT events and stay in the "
+                    "source text only. OPEN_OBLIGATION means a promise, goal, foreshadowing or "
+                    "unresolved conflict that future writing must honor; a resolved or spent "
+                    "obligation is recorded with status=resolved. Do not fill every chapter with "
+                    "events or obligations: a chapter with no durable change emits "
+                    "no_durable_delta_reason and no operations.\n"
                     '<CURATOR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
                     "WORLD="
@@ -527,6 +543,16 @@ class ModelCurator:
                     "when the subject entity already exists in WORLD: the quoted sentences "
                     "must support the new state, relation, or event being encoded. Never "
                     "invent, paraphrase, or reuse a quote from another chapter. "
+                    "Every evidence_quote must be a subject-bearing full sentence that "
+                    "names the record's subject entity (its WORLD internal_label or an "
+                    "unambiguous alias or pronoun in the same sentence) together with the "
+                    "predicate and value, so the quote alone identifies who the fact is "
+                    "about. Quote the full catalog sentence that contains the subject's "
+                    "name; a bare value fragment such as a lone number or short phrase "
+                    "cannot support the record. The quote requirement governs how "
+                    "operations are evidenced, not whether they are proposed: propose "
+                    "every durable delta the chapter establishes and back it with "
+                    "subject-bearing full-sentence quotes. "
                     "When operations is non-empty, no_durable_delta_reason MUST be null and "
                     "no_op_evidence_quotes MUST be an empty array. Those two no-op "
                     "proof fields may be populated only when operations is empty.\n"
@@ -568,6 +594,9 @@ class ModelCurator:
         draft, merge_receipts = self._merge_normalized_collisions_v2(draft, base_commit)
         self.last_evidence_merge_receipts = merge_receipts
         proposed_operation_count = len(draft.operations)
+        self._pending_record_kind_proposed = self._count_record_kinds(
+            tuple(item.record_kind for item in draft.operations)
+        )
         self._reject_dangling_entity_references(draft, current_world)
         draft = self._filter_existing_semantic_duplicates(
             draft,
@@ -863,6 +892,14 @@ class ModelCurator:
                 )
             )
         source_bytes = canonical_json_bytes(chapter.model_dump(mode="json"))
+        self.last_record_kind_coverage = self._build_record_kind_coverage(
+            chapter_id=chapter.chapter_id,
+            base_commit=base_commit,
+            request_id=request.request_id,
+            draft=draft,
+            accepted_kinds=tuple(item.record_kind for item in draft.operations),
+        )
+        self._pending_record_kind_proposed = {}
         return (
             ObservedChangeSet(
                 change_set_id=StableId(
@@ -889,9 +926,9 @@ class ModelCurator:
         base_commit: CommitId,
         current_world: WorldRootDocument,
         request: ModelRequest,
+        repair_feedback: str | None = None,
     ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[ModelCallRecord, ...]]:
         """Run stable graph source units concurrently and continuation pages serially."""
-
         candidates = self._evidence_generator.generate(text_root, chapter_index)
         self.last_evidence_candidates = candidates
         units = self._graph_source_units(text_root, chapter_index, base_commit, candidates)
@@ -921,6 +958,7 @@ class ModelCurator:
                         unit=unit,
                         page_index=page_index,
                         emitted_keys=tuple(emitted_keys),
+                        repair_feedback=repair_feedback,
                     )
                     calls.append(call)
                     new_keys = tuple(key for key in page_keys if key not in emitted_keys)
@@ -969,6 +1007,7 @@ class ModelCurator:
         unit: _GraphSourceUnit,
         page_index: int,
         emitted_keys: tuple[str, ...],
+        repair_feedback: str | None = None,
     ) -> tuple[WorldGraphCandidateBatch, ModelCallRecord, tuple[str, ...], bool]:
         """Propose one bounded, evidence-bound graph-repair page.
 
@@ -1003,6 +1042,25 @@ class ModelCurator:
         evidence_views = canonical_json_bytes(
             [item.model_dump(mode="json") for item in views]
         ).decode("utf-8")
+        repair_contract = (
+            "\n"
+            '<MANDATORY_GRAPH_REPAIR_CONTRACT trusted="true">\n'
+            "The previous GRAPH_CANDIDATE_PAGE was rejected. Return a complete replacement "
+            "page JSON, not a patch. Treat every validation_error_path, json_pointer, and "
+            "violation_rule in FEEDBACK as a mandatory correction. In particular every item "
+            "in candidates must carry the exact kind discriminator (kind=entity or "
+            "kind=relation), valid_time must use worldline=main with start_ordinal and "
+            "end_ordinal, and source_truth_class must be one of the exact enum literals "
+            "listed in the schema. Every entity candidate must be an endpoint of a "
+            "relation candidate inside the SAME page; never emit a standalone entity "
+            "candidate, and never emit an entity candidate for a surface that already "
+            "matches a WORLD entity label or alias. Never repeat a rejected field shape; "
+            "do not move the defect into no_graph_candidate_reason.\n"
+            f"FEEDBACK={repair_feedback}\n"
+            "</MANDATORY_GRAPH_REPAIR_CONTRACT>"
+            if repair_feedback is not None
+            else ""
+        )
         safe_request = request.model_copy(
             update={
                 "enable_thinking": False,
@@ -1040,7 +1098,7 @@ class ModelCurator:
                     f"{canonical_json_bytes(emitted_keys).decode('utf-8')}\n"
                     "EVIDENCE_CANDIDATES="
                     f"{evidence_views}\n"
-                    "</GRAPH_REPAIR_INPUT>"
+                    "</GRAPH_REPAIR_INPUT>" + repair_contract
                 ),
             }
         )
@@ -1558,6 +1616,52 @@ class ModelCurator:
             f"{str(error)[:160]} - quote a longer verbatim/full-sentence fragment "
             "from the chapter text"
         )[:_QUOTE_HINT_TOTAL_CHARS]
+
+    @staticmethod
+    def _count_record_kinds(kinds: tuple[WorldRecordKind, ...]) -> dict[WorldRecordKind, int]:
+        counts: dict[WorldRecordKind, int] = {}
+        for kind in kinds:
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    def _build_record_kind_coverage(
+        self,
+        *,
+        chapter_id: StableId,
+        base_commit: CommitId,
+        request_id: StableId,
+        draft: ChapterChangeDraftV2,
+        accepted_kinds: tuple[WorldRecordKind, ...],
+    ) -> CuratorRecordKindCoverageReceipt:
+        """Host-side proposed/accepted/rejected accounting for one Curator pass."""
+        accepted = self._count_record_kinds(accepted_kinds)
+        proposed = dict(self._pending_record_kind_proposed)
+        kinds = tuple(dict.fromkeys((*proposed, *accepted)))
+        counts = tuple(
+            CuratorRecordKindCounts(
+                record_kind=kind,
+                proposed=proposed.get(kind, 0),
+                accepted=accepted.get(kind, 0),
+                rejected=proposed.get(kind, 0) - accepted.get(kind, 0),
+            )
+            for kind in kinds
+        )
+        digest = self._digest(
+            base_commit.root.encode(),
+            chapter_id.root.encode(),
+            canonical_json_bytes([item.model_dump(mode="json") for item in counts]),
+        )
+        return CuratorRecordKindCoverageReceipt(
+            receipt_id=StableId(f"record-kind-coverage.{digest}"),
+            workflow_request_id=request_id,
+            base_commit=base_commit,
+            chapter_id=chapter_id,
+            source_unit_id=chapter_id,
+            no_durable_delta=not draft.operations,
+            no_durable_delta_reason=draft.no_durable_delta_reason,
+            counts=counts,
+            producer_version="stage2m-model-curator.v2",
+        )
 
     @staticmethod
     def _normalize_entity_reference_aliases(

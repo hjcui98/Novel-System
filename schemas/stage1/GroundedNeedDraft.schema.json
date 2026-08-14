@@ -37,6 +37,19 @@
           "minLength": 1,
           "title": "Mention",
           "type": "string"
+        },
+        "mention_source": {
+          "default": "explicit",
+          "title": "Mention Source",
+          "type": "string"
+        },
+        "mention_source_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Mention Source Fields",
+          "type": "array"
         }
       },
       "required": [

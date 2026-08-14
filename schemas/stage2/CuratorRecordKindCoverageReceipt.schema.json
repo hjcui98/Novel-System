@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "CuratorRecordKindCounts": {
+      "additionalProperties": false,
+      "description": "Host-side proposed/accepted accounting for one durable record kind.",
+      "properties": {
+        "accepted": {
+          "minimum": 0,
+          "title": "Accepted",
+          "type": "integer"
+        },
+        "proposed": {
+          "minimum": 0,
+          "title": "Proposed",
+          "type": "integer"
+        },
+        "record_kind": {
+          "$ref": "#/$defs/WorldRecordKind"
+        },
+        "rejected": {
+          "minimum": 0,
+          "title": "Rejected",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_kind",
+        "proposed",
+        "accepted",
+        "rejected"
+      ],
+      "title": "CuratorRecordKindCounts",
+      "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "WorldRecordKind": {
+      "enum": [
+        "entity",
+        "event",
+        "state",
+        "relation",
+        "obligation"
+      ],
+      "title": "WorldRecordKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Per-source-unit durable record coverage for one ordinary Curator pass.\n\nDistinguishes \"the model proposed nothing\", \"the host rejected proposals\"\nand \"the chapter genuinely has no durable change\" (no-durable-delta), so a\nwhole-novel Event/Obligation count of zero can be diagnosed instead of\nsilently accepted.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "chapter_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "counts": {
+      "items": {
+        "$ref": "#/$defs/CuratorRecordKindCounts"
+      },
+      "title": "Counts",
+      "type": "array"
+    },
+    "no_durable_delta": {
+      "title": "No Durable Delta",
+      "type": "boolean"
+    },
+    "no_durable_delta_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "No Durable Delta Reason"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_unit_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "workflow_request_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "workflow_request_id",
+    "base_commit",
+    "chapter_id",
+    "source_unit_id",
+    "no_durable_delta",
+    "counts",
+    "producer_version"
+  ],
+  "title": "CuratorRecordKindCoverageReceipt",
+  "type": "object"
+}

@@ -2577,3 +2577,962 @@ teacher-forced agent 请求（genesis planner/curator + 每章 replay curator）
   P005 repair and five-point package evidence remain valid historical acceptance artifacts; a final
   real-model product benchmark must rebuild C1-C95 from Genesis under this committed code and then
   retrieve/package at C20/C40/C60/C80/C95. It has not been represented as completed here.
+
+## 28. Stage 2M semantic repair implementation (2026-08-13)
+
+Authority: `docs/stage2_memory_semantic_repair_execution_20260813.md` (A -> E) and the refreshed
+`.agent/plan.md`. Working tree: HEAD `e84f3b0` plus this round's Stage 2M changes (uncommitted,
+identity freeze deferred to Codex per §10.1).
+
+### 28.1 Changed owners and behavior
+
+- Need admission (B): `need_validator.py` v3 removes the `trigger_goal_mismatch` full-text equality
+  gate; the model's `trigger_plan_goal` is now only an auditable explanation. Chapter-range,
+  missing-binding, plan-as-fact and future-factualization gates are kept; an empty goal text no
+  longer poisons the plan-as-fact check. `Stage1MemoryNeed` gains host-verified
+  `canonical_goal_by_chapter`; `task_conditioned_need_generation.py` v24 binds the plan's canonical
+  goal text onto every planner-derived Need (complete binding only). P001/P003/P005 drafts that
+  restate goals in equivalent words are no longer rejected wholesale.
+- Facet-driven retrieval (C): new `services/facet_support.py`
+  (`FacetSupportEvaluator`) computes per-required-facet receipts from selected candidates'
+  exact L0 evidence (structured kind map, grounded slices, entity overlap; navigation anchors never
+  close). `RetrievalTrace` carries `facet_receipts` + `retrieval_pages`, and `closed_need_facet_ids`
+  must equal the supported receipts. `retrieval.py` and `paired_controller.py` loop: windows grow
+  20 -> 100 until mandatory facets close or the ceiling/exhaustion; fallbacks run on the plan
+  conditions; `EXACT_SATISFIED`/`BUDGET_SATISFIED` require closure. `need_query_compiler.py` v2
+  compiles `graph_relations` from the Need's public predicates instead of a hard-coded empty set.
+  Obligation anchors (`PLAN_ANCHOR` units) now close COMMITMENT/UNRESOLVED_STATUS facets.
+- Exact-L0 fair packing (D): `EvidenceFirstWriterContextAssembler` two-pass packing: pass 1
+  round-robins one minimal exact slice per required facet across Needs (no early-Need ledger
+  starvation), pass 2 fills remaining slices by priority; `SliceSelectionTrace` carries
+  `supported_facet_ids` and ledger entries carry per-facet bindings; mandatory facets with no exact
+  evidence emit per-facet typed gaps. Package status is the ADR-0008 mechanical READY (typed gaps
+  allowed); `mandatory_facet_closure` (`COMPLETE`/`INCOMPLETE`) is the repair-campaign gate.
+- Diagnostics (A): `teacher_forced_benchmark_e2e.py` now passes the ancestry-aware
+  `GoldEvidenceMatcher` into `StageLossDiagnosticBuilder` (cross-root evidence no longer misreported
+  as F-NEED); `stage2_paired_pilot.py` no longer lets legacy claim-support completion override an
+  evidence-first trace's own facet closure.
+- World write/retrieval (E): ordinary Curator prompt now defines durable Event/Obligation categories
+  with negative criteria (no per-chapter quota); new `CuratorRecordKindCoverageReceipt` records
+  per-source-unit proposed/accepted/rejected per record kind plus the no-durable-delta flag, and is
+  persisted by the memory workflow as
+  `application/vnd.novel-agent.proposal-record-kind-coverage+json`.
+
+### 28.2 Verification
+
+- `tests/unit` 2100 passed (was 2095); `tests/contract` 94 passed (schemas regenerated for
+  `schemas/stage1`, `schemas/stage2`, `schemas/stage3` after the domain changes).
+- New focused tests: `test_facet_support.py` (8), `test_facet_driven_retrieval_loop.py` (4: stop
+  on closure, window expansion, exhaustion receipts, no-evidence no-closure),
+  goal-binding tests in `test_plan_conditioned_planner.py`, record-kind coverage in
+  `test_model_curation.py`, READY/closure split in `test_evidence_first_writer_context.py`.
+- Ruff and strict MyPy PASS on all changed source files; full `make quality` result recorded at the
+  end of this section.
+
+### 28.3 Status and stop-condition decision
+
+- Stop conditions met: no parallel retrieval/packing/graph path; no Gold/future reads; claim-first
+  remains diagnostic-only; Stage 3/4/5 code untouched (only generated schema exports refreshed).
+- Real-model evidence as of 2026-08-14: early-chapter smoke (genesis + ch1 committed, ch2
+  quarantined with receipts analyzed, §28.6-28.8); offline evidence-first verification on the real
+  ch1 snapshot (Need admission -> facet loop -> exact-L0 packing, §28.9); ordinary Curator
+  state-write repair verified on the real model with the unchanged support gate (state proposed=3
+  accepted=3 rejected=0, §28.10); full write -> commit -> retrieve loop on a fresh diagnostic
+  identity (ch1 committed with 2 durable states through the unchanged gate, then those states
+  retrieved and closing mandatory facets via R1 exact, §28.11); mid-chapter ch10 corridor probe
+  (all fail-closed gates confirmed on real mid text, §28.12); ch2 under the repaired prompt
+  (quarantine -> budget_exhausted with 0 poison loops, all rejections receipted, §28.13);
+  entity-split prevention verified on both fresh committed worlds (zero duplicate labels, alias
+  policy wired with typed receipts).
+- Per plan.md, when the implementation is stable the round records
+  `READY_FOR_IDENTITY_FREEZE`: the Stage 2M priority chain
+  (Need admission -> facet 循环检索 -> exact L0 公平装箱 -> State/Event/Obligation/Relation 可写
+  可检索) is implemented and verified on real data.  Identity freeze is Codex/human-owned
+  (authority §10.1); the formal clean-Genesis C1-C95 rerun under that single identity, its
+  mandatory-facet closure, and post-freeze semantic scoring remain the campaign PASS/HOLD decision,
+  which stays HOLD until then.  No mechanical gate is claimed as product completion.
+
+### 28.4 Final gate evidence (end of implementation round)
+
+- `tests/unit` + `tests/contract`: 2205 passed, 0 failed (108.1s; latest run 2026-08-14).
+- Full quality pytest (`-m "not model_required and not integration"`): 2261 passed, 9 deselected,
+  3 pre-existing Stage 5 integration failures (files unchanged from HEAD and failing at HEAD:
+  `test_stage5_creative_runtime.py`, `test_stage5_runtime_kernel.py`); re-verified 2026-08-14.
+- Changed-file gates: Ruff check and strict MyPy PASS on all changed source files and the new smoke
+  probe scripts; ruff format drift remains only in pre-existing Stage 3/5 files (25 files, none
+  modified by the Stage 2M round — verified via `git status`).
+- Pre-existing (HEAD) quality debt outside Stage 2M scope: ruff format drift in Stage 3/5 files,
+  strict MyPy errors in 5 Stage 5 test files, 3 failing Stage 5 integration tests, and sub-100%
+  coverage in Stage 3/5 files (`writer_context_loop` 92%, `runtime_maintenance` 96%). None of these
+  files were modified by this round (verified via `git diff`); they must be repaired by their Stage
+  owners, not by the Stage 2M round.
+- Schema exports regenerated for `schemas/stage1`, `schemas/stage2`, `schemas/stage3`
+  (contract tests `test_checked_in_*_schemas_match_models` PASS).
+
+### 28.5 Identity and next steps
+
+- Working tree remains uncommitted (HEAD `e84f3b0` + this round). Per authority §10.1 the identity
+  freeze is Codex/human-owned after `READY_FOR_IDENTITY_FREEZE` (recorded in §28.3).
+- Next required evidence (not part of this round's code closure): the formal clean-Genesis C1-C95
+  rerun with five checkpoint freezes under one fixed Stage 2M source identity — the mid/late
+  chapter smoke (Event/Obligation materialization, truth classes, facet-loop convergence) is part
+  of that formal rerun; then post-freeze semantic scoring and the repair-campaign PASS/HOLD
+  decision on `mandatory_facet_closure`.
+
+### 28.6 Real-model smoke (2026-08-14, early chapters) — interim evidence
+
+Identity: output `/home/cuihengjia/agent/novel/NS/tmp/smoke-20260813-v1`, DB
+`na_s2m_gpu1_8003_20260813_smoke_v1`, endpoint 8003 `qwen36-27b-nvfp4`, `--arms A --max-chapter 2
+--allow-dirty-diagnostic` (diagnostic only; not the formal identity). Genesis + ch1 committed;
+ch2 in progress with transport-pause/resume (the documented persisted-chapter-checkpoint path
+exercised twice on vLLM HTTP 500s; resume works).
+
+Findings from committed ch1 WorldRoot and receipts:
+
+1. Graph extraction works: ch1 World gained 4 `entity.graph.*` entities (神将府、婚书、《华庭经》、
+   这座府邸) and 1 relation whose `truth_class` is `assertion` — the model's epistemic
+   classification is now preserved end-to-end (no host promotion).
+2. `CuratorRecordKindCoverageReceipt` works as designed: ch1 receipt shows entity proposed 2 /
+   accepted 2; state proposed 2 / accepted 0 / rejected 2; no event/obligation rows (model did
+   not propose any). The receipt therefore distinguishes "model did not propose" from "host
+   rejected" — the repair E diagnostic is live.
+3. Host-side state admission is the current first blocker for "State 可写": the two proposed
+   states (`state.bootstrap.chen-changsheng-cultivation`, `state.bootstrap.chen-changsheng-age`)
+   were rejected by the evidence support gate with `evidence_support_rejected /
+   unrelated / no_material_support`. Follow-up: inspect the model's evidence quotes vs the
+   candidate catalog for these operations (support gate strictness vs quote quality) before
+   concluding whether the gate or the extraction needs adjustment.
+4. Events/Obligations were not proposed for ch1 despite the strengthened durable-category prompt.
+   Ch1 is an intro chapter (marriage contract 婚书 present but extracted as an entity/assertion
+   relation, not an obligation). Whether mid/late chapters produce them must be confirmed by the
+   longer replay; the receipt will make a whole-novel zero explicit.
+5. Multiple `CURATOR_PROPOSAL_SCHEMA_REJECTED` retries (documented retryable corridor) plus two
+   transport 500 pauses; both pauses resumed from the persisted checkpoint without identity
+   corruption (chain stays genesis -> ch1 -> ...).
+
+Remaining smoke scope: ch2 completion, then the mid/late segments and checkpoint retrieval
+(facet-loop convergence) require the full replay — deferred to the next round(s), as is the formal
+clean-Genesis rerun under the fixed identity.
+
+### 28.7 Real-model smoke ch2 outcome (2026-08-14)
+
+ch2 was quarantined after 5 proposal attempts (`memory_write_proposal_poison_loops: 1`,
+`retry_counts: {"quarantined": 4}`, terminal status `quarantined`), pausing the run at
+`paused_chapter: 2` with a persisted checkpoint. Rejection receipts show:
+
+- repeated `CURATOR_PROPOSAL_SCHEMA_REJECTED` (structured domain contract) and
+- `CURATOR_PROPOSAL_INVALID_EVIDENCE` where the model's evidence quote differs from the source
+  catalog only in leading whitespace/quote characters (e.g. model `” 陈长生问道：“长生宗和秋山家？`
+  vs catalog `”\n\u3000\u3000陈长生问道：“长生宗和秋山家？`). The strict exact-quote binding is
+  doing its job (verbatim substring only); the 27B model cannot clear the retry corridor for this
+  chapter's draft size (15,249 text bytes / 84 candidates) within the 5-attempt budget.
+
+This is model-output quality, not a host logic failure: ch1 succeeded under the same code, the
+mechanisms (exact-quote feedback, resume checkpoints, poison-loop quarantine fail-closed) all
+behaved as documented. Per authority §11.2 ("若失败，先分析 receipt，不反复调测试样例"), no
+case-specific tuning was applied. Mid/late segments, checkpoint retrieval (facet-loop
+convergence), and the formal clean-Genesis rerun remain pending the long replay under a fixed
+identity; the smoke evidence so far is diagnostic-only and does not change the campaign status
+(`HOLD / semantic product gate not PASS`).
+
+Smoke artifacts (diagnostic identity): output
+`/home/cuihengjia/agent/novel/NS/tmp/smoke-20260813-v1`, DB
+`na_s2m_gpu1_8003_20260813_smoke_v1` (genesis + ch1 committed, ch2 quarantined/paused).
+
+### 28.8 State-rejection root cause (from smoke receipts)
+
+Inspection of the raw ch1 curator draft shows the two rejected state operations carried
+subject-less evidence fragments: `state.bootstrap.chen-changsheng-age` quoted only `"十四岁。"` and
+`state.bootstrap.chen-changsheng-cultivation` quoted a similarly bare fragment. The host support
+gate's `unrelated / no_material_support` disposition is therefore CORRECT: a quote without the
+subject ("陈长生今年十四岁…") does not materially support the operation. The repair direction this
+implies is curator evidence-quote quality for state operations (require subject-bearing full
+sentences), NOT a support-gate relaxation. Per authority §11.2 no prompt tuning was applied in
+this round; the receipts make the next repair decision evidence-based.
+
+The ordinary curator also proposed events/obligations candidates? None were present in the raw
+drafts for ch1/ch2 — the durable-category prompt has not yet elicited them from this model on
+early chapters; mid/late chapters and the receipt-driven count will decide whether the category
+definitions or the model need adjustment.
+
+### 28.9 Offline evidence-first verification on the real ch1 smoke project (2026-08-14)
+
+`scripts/smoke_evidence_first_ch1.py` runs the full repaired chain offline (no Planner/Claim/
+evaluator model calls) against the REAL ch1 smoke WorldRoot/TextRoot/PlanRoot, the R1 records and
+the real-hybrid OpenSearch indexes of the 2026-08-13 smoke DB, using the deterministic template
+Need path and the same machinery as `EvidenceFirstCheckpointRunner`:
+
+- basis commit `sha256:4d1d24593e364…` (genesis + ch1), WorldRoot rebound to the basis commit
+  (genesis worlds are authored pre-commit, so Needs bind to the exact snapshot);
+- 23 template Needs admitted and routed; attestation exact with all 8 channels;
+- result: `stop_reason=budget_exhausted` (run-level budget), `retrieval_call_count=48`,
+  `future_leakage_count=0`, `assembly.status=READY`, `mandatory_facet_closure=COMPLETE`,
+  `diagnostics=()`, 23 package items (one per Need);
+- per-Need receipts: `retrieval_pages=1` for all (mandatory facets closed on the first page, so
+  the window 20→100 escalation did not trigger — correct), stop reasons
+  `budget_satisfied`/`exact_satisfied`, facet `causal_history` with `supported` on mandatory Needs
+  and `unsupported` only on OPTIONAL Needs (vacuous mandatory closure — consistent with the
+  receipt↔stop validator, which is why `mandatory_facet_closure=COMPLETE` still holds).
+
+This is the first end-to-end verification of the facet-driven retrieval loop and exact-L0 packing
+on the real ch1 snapshot: Need admission → facet loop → fair packing → READY package with
+complete mandatory-facet closure, zero future leakage. Ch2/model-write gate behavior is unchanged
+(§28.7/§28.8).
+
+### 28.10 State-write quote-quality repair on the real model (2026-08-14)
+
+§28.8 identified the state-write blocker as curator evidence-quote quality: ch1's two state
+operations were rejected because the model quoted subject-less fragments (e.g. only `"十四岁。"`),
+and the support gate's `no_material_support` disposition was CORRECT.  This round implemented the
+documented repair direction in the ordinary Curator v2 output contract
+(`src/novel_agent/services/model_curation.py`, `extract_reported_v2`): every evidence_quote must
+be a subject-bearing full sentence that names the record's subject entity together with the
+predicate and value; bare value fragments cannot support a record.  The wording explicitly says
+the quote requirement governs HOW operations are evidenced, not whether they are proposed, so the
+model does not retreat to empty deltas.  The host support gate is unchanged.
+
+Deterministic coverage: `tests/unit/test_curator_evidence_contract_v2.py`
+`test_v2_contract_requires_subject_bearing_evidence_quotes` pins the contract text (subject-bearing
+full sentence / names the subject / bare fragment rejected / propose every durable delta).
+
+Real-model probe `scripts/smoke_curator_ch1_state_quotes.py` replays the ordinary Curator on the
+real ch1 chapter/world (smoke DB, endpoint 8003 `qwen36-27b-nvfp4`) with the proposal repair
+corridor (rejection feedback -> complete replacement draft):
+
+- attempt 1: the model returned an empty delta; the trusted no-op verifier rejected it with
+  `CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED` / `DURABLE_DELTA_DETECTED` — ch1 does contain durable
+  changes, and the host fail-closed correctly refuses the no-op claim.
+- attempt 2 (with feedback): the model returned 4 operations — 1 entity CREATE + 3 state CREATEs —
+  with subject-bearing full-sentence quotes from the chapter catalog (e.g. the appearance/age
+  sentences).  Support gate: 5 PARTIAL (needs verifier) + 1 SUPPORTS; the semantic verifier
+  accepted all.  Coverage receipt: entity proposed=1 accepted=1 rejected=0; **state proposed=3
+  accepted=3 rejected=0** (previously 2/0/2), no_durable_delta=False; 4 world operations
+  materialized with exact evidence spans.
+
+This is the first real-model confirmation that State 可写 works through the unchanged support gate
+once the extraction contract demands subject-bearing quotes: the repair direction from §28.8 is
+validated on real ch1 data.  Events/Obligations still not elicited on ch1 (chapter has none per
+receipt); mid/late-chapter smoke remains the arbiter.  Formal clean-Genesis rerun still pending
+identity freeze.
+
+### 28.11 Full write -> commit -> retrieve loop verified on real data (2026-08-14)
+
+Fresh diagnostic identity (new DB `na_s2m_gpu1_8003_20260814_repair_v1`, output
+`tmp/smoke-20260814-repair-v1`, experiment `stage2m-repair-smoke-v1-20260814`, same bundle and
+endpoint 8003 `qwen36-27b-nvfp4`, `--max-chapter 1 --allow-dirty-diagnostic`) — the previous smoke
+identity pinned the pre-repair code tree, so the new prompt required a fresh manifest.
+
+The e2e committed genesis + ch1 under the repaired ordinary-Curator prompt.  ch1 WorldRoot
+(`sha256:a79ab459…`, 16 entities) now contains the two durable states that the original smoke
+rejected:
+
+- `state.bootstrap.chen-changsheng-age` = 14
+- `state.bootstrap.chen-changsheng-cultivation` = uninitiated
+
+The persisted `proposal-record-kind-coverage` receipt confirms the change:
+state proposed=2 accepted=2 rejected=0 (was 2/0/2), entity proposed=2 accepted=2 rejected=0,
+no_durable_delta=false.  This is the first real-data commit of State records through the
+UNCHANGED support gate after the §28.10 quote-quality repair.
+
+Retrieval side (`scripts/smoke_evidence_first_ch1.py` against the new identity): 23 template
+Needs admitted; `stop_reason=budget_exhausted`, `retrieval_call_count=48`,
+`future_leakage_count=0`, `assembly.status=READY`, `mandatory_facet_closure=COMPLETE`, 23 package
+items.  Critically, the committed states close their facets via exact L0 evidence:
+
+- `need.stage2m.state.state.bootstrap.chen-changsheng-age` -> `stop=exact_satisfied`,
+  `current_state:supported`
+- capability-boundary need -> `capability_status:supported, limitation:supported`
+- knowledge need -> `knowledge_boundary:supported`
+
+This closes the full product chain on real data: Need admission -> facet 循环检索 -> exact L0
+公平装箱 -> State 可写 (committed through the unchanged gate) -> State 可检索 (R1 exact closes
+mandatory facets).  The run's terminal lifecycle blockers ("not all declared checkpoints were
+built", "checkpoint freeze/evaluator lifecycle is incomplete") are the expected
+`--max-chapter 1` artifact (declared checkpoints are C20+); chapter receipts for 0/1 are complete
+with chain hashes.
+
+Remaining: Event/Obligation elicitation on mid/late chapters (ch1 has none per receipt) and the
+formal clean-Genesis C1-C95 rerun with five freezes — both gated on Codex/human identity freeze
+(§28.3/§28.5).
+
+### 28.12 Mid-chapter curator corridor probe (2026-08-14)
+
+Authority §11.2's remaining smoke segment asks whether the model actually produces durable
+Event/Obligation records on mid chapters.  `scripts/smoke_curator_mid_chapter_events.py` probes
+the ordinary Curator (repaired subject-bearing quote contract, unchanged gates) on the REAL pilot
+bundle chapter 10 (chapter.ZTJ-P001.10, 67 evidence candidates) against the committed repair-smoke
+world (16 entities / 2 states).  Diagnostic only; nothing committed.
+
+All three attempts were rejected by the host fail-closed corridor, each with a distinct, correct
+receipt:
+
+1. attempt 1 -> `CURATOR_PROPOSAL_INVALID_EVIDENCE`: the model's quote differed from the catalog
+   only in leading whitespace (`徐夫人……说道：「……` vs `所以这事要办的小心谨慎些……`); the exact-quote
+   binding rejected it and offered the exact copyable catalog literal.  The §28.8 quote binding
+   behaves identically on mid chapters.
+2. attempt 2 -> `CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED` / `UNMODELED_DURABLE_CHANGE`: the model
+   claimed no-durable-delta, but the trusted no-op verifier found unmodeled durable change in the
+   chapter (the marriage-contract/assassination plot thread is real chapter content).  The host
+   correctly refused the false empty claim.
+3. attempt 3 -> `CURATOR_PROPOSAL_DANGLING_ENTITY_REFERENCE`: the model referenced
+   `entity.graph.qiu-shan-jun` without a CREATE; the dangling-entity gate rejected with the known
+   WORLD entity list and required-repair instructions.
+
+Interpretation per authority §11.2 ("若失败，先分析 receipt"): the receipts show the chapter
+contains durable change the model recognizes but cannot yet model validly against the 16-entity
+smoke world (mid-chapter entities are absent from a ch1-only world).  This is a world-completeness
+constraint of the diagnostic probe, not a host logic failure: every rejection is the documented
+fail-closed behavior with a precise repair hint, and the same corridor committed states on ch1
+(§28.11).  The definitive mid/late Event/Obligation elicitation therefore requires the accumulated
+world of the formal clean-Genesis rerun (identity-gated, §28.3/§28.5); the corridor's fail-closed
+machinery is confirmed on mid-chapter real text.
+
+### 28.13 ch2 under the repaired prompt (2026-08-14, fresh identity repair2)
+
+To confirm the §28.10 repair's effect on the previously quarantined ch2, a second fresh diagnostic
+identity (`na_s2m_gpu1_8003_20260814_repair2_v1`, `tmp/smoke-20260814-repair2-v1`,
+`--max-chapter 2 --allow-dirty-diagnostic`) ran genesis + ch1 + ch2 with the repaired ordinary
+Curator prompt.  The repair1 identity could not be resumed because the experiment manifest pins the
+exact code tree (the new probe scripts changed the fingerprint) — by design, not a fault.
+
+Outcome change vs the old identity (§28.7): ch2 no longer quarantines with a poison loop.
+`memory_write_proposal_poison_loops: 0` (was 1), `retry_counts: {"budget_exhausted": 4,
+"committed": 2}`, terminal `budget_exhausted` at `paused_chapter: 2` after 5 proposal attempts
+(43 structured generation calls, 117,613 tokens, 646s).  ch1 in this run committed 11 entities /
+0 states (the state write is model-nondeterministic across runs: repair1's ch1 committed the 2
+states, §28.11 — the §28.10 fix makes states *possible*, not guaranteed, per run).
+
+ch2 rejection receipts (all retryable, precise, distinct signatures): attempts 1/3/4 ->
+`CURATOR_PROPOSAL_SCHEMA_REJECTED` at `$` (strict v2 contract), attempt 2 ->
+`CURATOR_PROPOSAL_SCHEMA_REJECTED` at `candidates.*` (the model emitted the legacy `candidates`
+field; `extra_forbidden` on the v2 shape), attempt 5 -> `CURATOR_PROPOSAL_SEMANTIC_REJECTED`
+(scope violation).  Attempt 1's stored raw draft validates under `model_validate_json` — the
+rejection came from an earlier provider call within the attempt (the stored raw ref is the last
+call), and the repeat of signature `001cf8ca` on attempts 1/3/4 was terminated by the proposal
+budget before the poison-loop threshold.  The model still cannot clear ch2's strict v2 contract in
+5 attempts — model-output quality, not host logic; every rejection is the documented fail-closed
+receipt with repair feedback.  Per §11.2 no case-specific tuning was applied.
+
+This closes the diagnostic evidence set: early (ch1/ch2) and mid (ch10 corridor, §28.12) chapters
+are covered; the formal clean-Genesis rerun under the frozen identity remains the arbiter for
+mid/late Event/Obligation elicitation and five-point closure.
+
+### 28.14 ch2 root cause pinned: graph profile missing `kind` discriminator (2026-08-14)
+
+Follow-up receipt forensics on the repair2 ch2 run (§28.13) pin the exact failing shape.  The
+schema rejections at `candidates.*` / `$` come from the GRAPH profile page drafts
+(`GraphCandidatePageDraft`), not from the ordinary curator's v2 evidence draft: the model omitted
+the required `kind` discriminator on relation candidates (`{subject_surface, predicate,
+object_surface, ...}` without `kind: "relation"`), used `worldline: "default"` (enum value is
+`main`), and `source_truth_class: "not_applicable"` (enum `TruthClass`).  The strict
+discriminated-union schema correctly rejected these at `candidates.0..3` / `$`; the raw graph
+page stored for the same attempts validates cleanly when `kind` is present, proving the rejection
+is model compliance, not a host schema gap.  Per-attempt missing-kind graph pages: 2/9, 3/3, 0/1,
+2/6, 2/14 — the defect repeats across attempts and dominates the ch2 budget exhaustion (the graph
+profile runs jointly with the ordinary curator in one proposal; a graph page validation failure
+rejects the whole attempt, so ch2's state/quote path never got a standalone chance).
+
+The graph profile prompt already states "Every item must carry kind=entity or kind=relation" and
+lists the exact enum values; the 27B model still ignores it on ch2's 15,249-byte draft.  Per
+§11.2 ("若失败，先分析 receipt，不反复调测试样例") no prompt re-tuning was applied; the receipt
+now names the precise defect and its owner (graph profile model compliance), which is the evidence
+the formal rerun and any later prompt repair decision need.  ch1 commits under the same code
+(§28.11) — the graph page contract and its strict validation are correct; the failure is model
+output quality on a larger draft.
+
+### 28.15 Formal-rerun driver binding (2026-08-14)
+
+`scripts/run_evidence_first_frozen_checkpoints.py` (the five-checkpoint evidence-first driver
+referenced by plan.md §6) is verified consistent with the current `EvidenceFirstCheckpointRunner`
+signature and imports/`--help` cleanly.  Its `CASES` dict still binds P001-P005 to the OLD
+phase4-v33 identity commits (`sha256:9ad34064…`/`378d71e6…`/`86c060c6…`/`ba7c17cd…`/`8bb66f7d…`)
+and their paired-comparison refs — the authority §10.1 formal rerun requires a fresh clean-Genesis
+identity, so after Codex/human identity freeze and the clean-Genesis run, the driver's `CASES`
+commits and `--checkpoint-index` must be rebound to the new identity's frozen commits.  This is a
+handoff item for the formal rerun, not a Stage 2M implementation gap (the driver mechanics are
+current; only the identity constants are historical).
+
+### 28.16 Corridor feedback repairs: precise paths + graph profile feedback (2026-08-14)
+
+ch2 receipts (§28.14) exposed two host-side corridor defects that amplified the model-compliance
+failure into a blind retry loop:
+
+1. **Retry feedback dropped the precise error paths.**  `MemoryWriteWorkflow` PROPOSAL_RETRY built
+   the repair FEEDBACK payload without `validation_error_paths`, `json_pointers` or
+   `violation_rule` — even though `CuratorProposalRejection` records them and the
+   MANDATORY_PROPOSAL_REPAIR_CONTRACT promises "Treat every json_pointer and violation_rule in
+   FEEDBACK as a mandatory correction".  The model therefore received only generic "Curator Draft
+   failed the structured domain contract" and could not learn that `kind` was missing.
+   Fix: `src/novel_agent/services/memory_write_workflow.py` now includes
+   `validation_error_paths` / `json_pointers` / `violation_rule` in the feedback artifact.
+
+2. **The graph profile never received feedback.**  `TeacherForcedCuratorPort._run_proposal_profiles`
+   passed `proposal_feedback` only to the ordinary curator; `ModelCurator.extract_graph_candidates`
+   had no feedback parameter, so each retry sent an identical graph page prompt.  The missing-`kind`
+   discriminator defect therefore repeated on every attempt (2/9, 3/3, 0/1, 2/6, 2/14 pages).
+   Fix: `extract_graph_candidates` / `_extract_graph_page` accept `repair_feedback` and embed a
+   MANDATORY_GRAPH_REPAIR_CONTRACT (after `</GRAPH_REPAIR_INPUT>`) that names the exact enum
+   literals (`kind=entity|relation`, `worldline=main`, `source_truth_class` enum) and treats the
+   FEEDBACK paths as mandatory corrections; the adapter passes `proposal_feedback` through.
+
+Deterministic coverage: `test_proposal_retry_feedback_carries_precise_validation_paths`
+(memory_write_workflow) asserts the feedback artifact carries paths/pointers/rule;
+`test_graph_profile_embeds_repair_feedback_in_page_prompt` (world_graph_repair) asserts the graph
+page prompt embeds the repair contract with the feedback content; adapter stubs updated for the
+new parameter.  This is a corridor completeness repair within the documented direction (feedback
+must tell the model what to fix) — not case-specific tuning; the receipts drove it.
+
+### 28.17 ch2 committed under the corridor-feedback repair (2026-08-14)
+
+The §28.16 corridor repairs were verified on the real model with a fresh diagnostic identity
+(`na_s2m_gpu1_8003_20260814_repair3_v1`, `tmp/smoke-20260814-repair3-v1`,
+`--max-chapter 2 --allow-dirty-diagnostic`).  For the first time, ch2 COMMITTED
+(`sha256:f02e1d9cd…`, ch2 curator task `replay.2.proposal-2` = attempt 2, status succeeded),
+closing the blind-retry loop that had previously exhausted the proposal budget on the missing-`kind`
+graph defect (§28.13/§28.14).
+
+Commit chain: genesis (`f4b595019…`) -> ch1 (`4d392b124…`, same content as repair1: 2 states
+committed) -> ch2 (`f02e1d9cd…`) with full projection snapshot and chain hash; progress manifest
+`last_accepted_chapter: 2`, completed chapters [0, 1, 2].  The terminal lifecycle blockers
+("not all declared checkpoints were built") are the expected `--max-chapter 2` artifact (declared
+checkpoints are C20+).
+
+ch2 receipts:
+- record-kind coverage: entity proposed=3 accepted=3 rejected=0; state proposed=1 accepted=0
+  rejected=1; no_durable_delta=false.  The state rejection is the deterministic duplicate filter
+  (`existing_semantic_duplicate`: the model proposed a cultivation-confirmed state duplicating
+  ch1's committed state) — correct, not a support-gate failure.
+- ch2 WorldRoot (20 entities): gained 徐有容, 霜儿, 秋山君 etc.; the entities lost to the old
+  blind-retry loop are now durable.
+- graph extraction receipt: alias policy resolved 陈长生 -> entity.bootstrap.chen-changsheng,
+  霜儿 -> entity.graph.shuang-er, 徐有容 -> entity.graph.xu-yourong all with
+  `status: unique_label` / `match_basis: exact_internal_label` (zero splits); 小姐 correctly typed
+  `missing` (label/alias absent) with a typed alias-receipt; no incomplete source units.
+- graph page drafts were schema-valid on the committed attempt — the MANDATORY_GRAPH_REPAIR_CONTRACT
+  feedback (kind/worldline/truth_class literals + precise FEEDBACK paths) resolved the
+  discriminator defect on real data.
+
+This is the first real-data confirmation that the graph-profile feedback corridor repair changes
+the outcome: the same chapter that exhausted 5 attempts in repair2 committed in attempt 2 under
+repair3.  State/Relation write path, entity-split prevention, and the fail-closed corridor are all
+verified across two committed chapters; Event/Obligation elicitation remains for the formal rerun
+(identity-gated).
+
+### 28.18 ch10/ch6 semantic-rule feedback verified on the real model (2026-08-14)
+
+repair3 extended to ch12 (resume with the accumulated world): ch7-ch9 committed on attempt 1
+(world grew to 33 entities / 24 states), then ch10 quarantined after 4 attempts with a NEW,
+precisely identified graph-page defect — the semantic rule "entity candidate must be a relation
+endpoint in the same page" (attempt 2/3/4 repeated `$`-root schema rejections -> poison loop).
+Unlike the (fixed) missing-`kind` discriminator, this is the page-semantic validator rule
+(`GraphCandidatePageDraft.validate_page_semantics`), which had been reported to the model only as
+generic "failed the structured domain contract" — a blind retry again.
+
+Two corridor repairs (same documented direction: feedback must name what to fix):
+- `teacher_forced.py`: schema-rejection `safe_feedback` now includes the actual pydantic
+  `value_error` rule messages (e.g. "entity candidate must be a relation endpoint in the same
+  page") instead of the generic text.
+- `model_curation.py`: MANDATORY_GRAPH_REPAIR_CONTRACT now also names the page-semantic rules
+  (entity must be a relation endpoint in the same page; never standalone; never a WORLD-matched
+  surface).
+
+Deterministic coverage: `test_schema_rejection_feedback_names_semantic_rule_messages` (adapter)
+asserts the rejection feedback carries the rule message; the graph repair contract test updated.
+
+Real-model verification (fresh identity repair4, `--max-chapter 12`): ch3-ch5 committed on
+attempt 1; ch6 quarantined after 3 attempts whose receipts now name each exact rule:
+(1) "non-empty graph candidate page cannot carry a no-op reason",
+(2) "empty graph candidate page must be complete and carry a reason",
+(3) "entity candidate must be a relation endpoint in the same page" — three distinct, precise
+failures instead of the old generic blind loop; two vLLM transport 500s were survived by the
+persisted-checkpoint resume path (documented corridor behavior).  The model's compliance on
+larger chapters (ch6/ch10 graph pages) remains limited — receipts now make each defect precise
+and actionable for the formal rerun; no case-specific tuning applied per §11.2.
+
+### 28.19 Ten-chapter continuous write path with Relation 可写 verified (2026-08-14)
+
+Fresh identity repair5 (`na_s2m_gpu1_8003_20260814_repair5_v1`, `--max-chapter 12`,
+`--allow-dirty-diagnostic`, current tree including the §28.18 semantic-rule feedback) ran
+genesis + ch1-ch9 continuously: **10 commits, all chapters committed**, then ch10 paused at
+`budget_exhausted` (5 attempts, **0 poison loops** — down from repair3's ch10 quarantine with a
+poison loop; the precise rule feedback changed the failure mode for the better).
+
+Head WorldRoot (after ch9): **24 entities / 24 states / 6 relations / 0 events / 0 obligations**,
+zero entity splits.  The 6 committed relations (owns / possesses / enrolled_in x3 /
+knows_about) all carry `truth_class: assertion` — the graph profile's epistemic classification
+is preserved end-to-end (no host promotion), closing the Relation 可写 link on real data via the
+ordinary/graph single-owner corridor.
+
+Per-chapter record-kind coverage receipts (proposed/accepted/rejected): ch1 entity 2/2/0 state
+2/0/2 (the §28.10 quote fix makes state writes possible per run, not guaranteed — documented
+model nondeterminism; durable states are carried by later chapters), ch2 entity 3/3/0 state 1/1/0,
+ch3 state 4/4/0, ch4 state 4/4/0, ch5 entity 1/1/0 state 3/3/0, ch6 entity 1/1/0 state 2/2/0,
+ch7 state 4/4/0, ch8 entity 1/1/0 state 3/2/1 (one state support-gate rejection), ch9 state
+4/4/0.  Rejections are rare and typed (support gate or duplicate filter); poison loops are 0.
+
+Summary of the full priority chain on real data (repair3/repair5 identities, 10 committed
+chapters): Need admission -> facet 循环检索 -> exact L0 公平装箱 verified offline on the real
+snapshots (§28.9/§28.11); State 可写 verified across chapters (§28.11/§28.17/§28.19); State
+可检索 verified via R1 exact closing mandatory facets (§28.11); Relation 可写 verified (§28.19);
+实体分裂防护 verified (zero splits across all committed worlds); corridor fail-closed verified
+with precise feedback (§28.14-28.18).  Events/Obligations remain 0 on ch1-9 per receipts
+(distinguishing "model did not propose" — no durable change in these chapters per the model);
+mid/late chapters and the formal clean-Genesis rerun remain identity-gated.
+
+### 28.20 Full pilot scenario completes end-to-end (2026-08-14, repair5)
+
+Resuming repair5 through `--max-chapter 20` completed the ENTIRE pilot scenario under one
+identity: `teacher_forced_real_hybrid_completed`, `scenario_run_completed: True`,
+`total_commit_count: 21` (genesis + ch1-ch20), `last_revealed_chapter: 20`, progress manifest
+completed chapters [0..20].  This is the first complete real-model run of the whole pilot
+history with the repaired corridor.
+
+Highlights:
+- `need_planner_invocation_count: 1`, `need_planner_fallback_count: 0`,
+  `need_planner_grounded_status_counts: [13, 0, 1]` — the Planner ran (not the fallback path),
+  grounding 13 needs with 0 failures; Need admission + grounding works on the accumulated world.
+- Checkpoint C20 case built (`stage2m_case_C20_A.json`): `assembly_status: READY`,
+  `selected_unit_count: 47`, 8 observed claims (weight 18.0), freeze receipt
+  `freeze.pair.request.stage2-e2e.ZTJ-P001.author-plan-conditioned`, evaluator ran with 13 Gold
+  comparisons, `single_arm_evaluation_status: COMPLETED`.
+- Evaluation is HONEST: `weighted_coverage: 0.0556`, `mandatory_hit_rate: 0.0`,
+  `untraceable_rate: 0.375`, `contradiction_rate: 0.0`; five-segment diagnostics:
+  `plan_goal_coverage: 1.0` (5/5), `need_recall: 0.714` (5/7), `evidence_recall: 0.286`.  Low
+  coverage is expected on the diagnostic pilot (not the formal v0.5 benchmark) and keeps the
+  campaign HOLD — mechanical READY is not claimed as product completion.
+- Mid-chapter durable records (previous rounds) confirmed in the accumulated world: ch16
+  committed the first Obligation (`obligation.graph.chen-changsheng-silence-marriage`,
+  promise "不得把婚约的事情告诉任何人", proposed=1 accepted=1 rejected=0) plus entity/state rows;
+  relations (6) and states (44) persist with correct truth classes; zero entity splits across
+  all 21 commits; poison loops 0; the two transport pauses (vLLM 500 / output-length
+  truncation) were survived by the persisted-checkpoint resume path.
+
+This closes the §11.2 three-segment smoke requirement for the pilot history (early ch1-9,
+mid ch10-18, late ch19-20 all committed) and validates the complete mechanics of the formal
+rerun (write -> projection -> checkpoint freeze -> post-freeze evaluation) on real data.  The
+formal clean-Genesis C1-C95 rerun under the frozen identity and its five-point semantic scoring
+remain identity-gated (§28.3/§28.15).
+
+### 28.21 C20 diagnostic evaluation interpretation (2026-08-14)
+
+The C20 single-arm evaluation produced by the repair5 full-scenario run
+(`stage2m_case_C20_A.json`) must be read with its assembly owner in mind:
+`comparable: False` (agentic arm skipped via `agentic_not_run_deterministic_gate`),
+and the deterministic arm ran the LEGACY `WriterContextAssembler` path
+(`Stage2PairedPilotRunner`, `writer_context_assembler.py`), NOT the repaired
+`EvidenceFirstWriterContextAssembler` (`EvidenceFirstCheckpointRunner` uses the repaired
+assembler; the frozen five-checkpoint driver `run_evidence_first_frozen_checkpoints.py` is the
+formal path).
+
+Consequently the diagnostic's low scores (weighted_coverage 0.0556, mandatory_hit_rate 0.0,
+evidence_recall 0.286) and its stage-loss pattern (rank_selected matched 2-3 complete Gold refs,
+stage1_selected matched 0, `primary_failure: F-ASSEMBLY` for every observed Gold) quantify the
+LEGACY assembly loss that the repair targets — they are expected historical behavior, not a
+regression of the repaired pipeline.  The repaired evidence-first chain was verified separately
+on the real ch1 snapshot (§28.9/§28.11): READY assembly, mandatory_facet_closure=COMPLETE,
+future_leakage 0, 23 package items, committed states retrieved and closing facets via R1 exact.
+Five-segment positives in the diagnostic that DO reflect current code: plan_goal_coverage 1.0,
+need_recall 0.714, planner_fallback_rate 0.0, grounding_success_rate 0.9286, future_leakage 0,
+zero plan leakage/citations — Need admission and grounding are working.
+
+The campaign remains HOLD per authority §11/§10: the formal five-point semantic scoring must run
+the repaired evidence-first path on the frozen identity (identity-gated, §28.3/§28.15); the
+legacy-assembler diagnostic cannot be used to judge the repair.
+
+### 28.22 Repaired evidence-first pipeline on the real accumulated C20 world (2026-08-14)
+
+The offline evidence-first verification (`scripts/smoke_evidence_first_ch1.py`, parameterized for
+checkpoint 20 / target 21-25) was run against the repair5 identity's REAL accumulated world
+(basis `sha256:854934efe5…`, ch20 head: 37 entities / 49 states / 6 relations / 1 obligation, 22
+commits) with the real-hybrid snapshot attestation for that exact commit.
+
+Result: `stop_reason=budget_exhausted` (run budget), `retrieval_call_count=48`,
+`future_leakage_count=0`, `assembly.status=READY`, `mandatory_facet_closure=COMPLETE`,
+`diagnostics=()`, 23 package items.  Decisive new evidence — the template need generator now
+derives Needs FROM the committed durable records, closing the write->retrieve loop on real data:
+
+- `need.stage2m.obligation.obligation.graph.chen-changsheng-silence-marriage` (intent=known_id)
+  — the ch16 obligation (28.20) is a first-class Need;
+- `need.stage2m.relation.relation.graph.{28987c15,70548917,e0b412c2}...` (intent=relation_chain)
+  — committed relations generate Needs;
+- entity Needs bound to 陈长生 with facets closing via exact L0:
+  `current_state:supported`, `capability_status:supported`, `limitation:supported`,
+  `knowledge_boundary:supported`, `relation_state:supported`.
+
+Fail-closed correctness preserved: the obligation Need's `commitment/unresolved_status` are
+`unsupported` and the relation_chain Needs stop at `candidates_exhausted` with
+`relation_state:exhausted` — the committed relations carry `truth_class: assertion`, and R1
+correctly does not traverse assertions as accepted facts (§7 P004 semantics), so retrieval
+exhausts rather than fabricating closure.  These are OPTIONAL template Needs; mandatory closure
+is COMPLETE with zero future leakage.
+
+This verifies the full product loop on the real 20-chapter world: written durable records
+(State/Obligation/Relation) are retrievable as Needs and their facets close via exact L0 where
+the evidence exists, while assertion relations stay correctly non-traversable.  Events remain 0
+(receipts distinguish "not proposed"); the formal five-point rerun remains identity-gated.
+
+### 28.23 Freeze-readiness certification (2026-08-14, final gate snapshot)
+
+Re-certified the working tree for the identity freeze handoff (HEAD `e84f3b0` + this round's
+changes, 80 dirty files, all Stage 2M-owned):
+
+- Ruff check: all changed source/test/smoke-script files PASS (including the parameterized
+  `smoke_evidence_first_ch1.py` used for §28.22).
+- Strict MyPy: PASS on all 8 Stage 2M owner files (`model_curation`, `teacher_forced`,
+  `memory_write_workflow`, `evidence_first_checkpoint_runner`,
+  `evidence_first_writer_context_assembler`, `facet_support`, `retrieval`, `paired_controller`).
+- Full deterministic pytest: **2264 passed**, 9 deselected, only the 3 pre-existing Stage 5
+  integration failures remain (untouched files, failing at HEAD, out of Stage 2M scope).
+- Schema contract tests (`test_checked_in_*_schemas_match_models` family): **6 passed** — the
+  checked-in `schemas/stage1|2|3` JSON contracts are in sync with the models.
+
+This is the same result as §28.4 with the round-14/15 corridor feedback additions folded in
+(2263 -> 2264 tests, +1 for the semantic-rule feedback test).  The tree is stable and
+freeze-ready; identity freeze, the formal clean-Genesis C1-C95 rerun under that single identity,
+and post-freeze five-point semantic scoring remain Codex/human-gated (§28.3/§28.5/§28.15).
+
+### 28.24 Repaired-path evaluation ownership (2026-08-14)
+
+The §28.21 finding (C20 diagnostic used the legacy `WriterContextAssembler`) raises the question
+of where the repaired pipeline's Gold evaluation lives.  Ownership is now pinned:
+
+- The repaired `EvidenceFirstWriterContextAssembler` emits `WriterContextPackageV2` +
+  `EvidenceLedgerV2`; the pilot C20 case-arm evaluation wired in
+  `TeacherForcedBenchmarkE2ERunner` consumes the legacy v1 package type from the paired-pilot
+  comparison flow, so the C20 diagnostic cannot be re-pointed at the repaired package without a
+  bespoke type adapter — not built (would be speculative machinery).
+- The designed owner of repaired-path evaluation is
+  `scripts/run_evidence_first_frozen_checkpoints.py`: it drives `EvidenceFirstCheckpointRunner`
+  (repaired assembler) per case and emits package/ledger/manifest with
+  `immutable_root_hashes`/`assembly_status`/`mandatory_facet_closure` and the repaired assembler
+  version.  It is bound to the frozen identity's commits/needs/planner
+  (`CASES` + `--checkpoint-index`), which exist only after the Codex/human identity freeze
+  (§10.1/§28.15).
+- The §28.22 offline run already exercised the identical repaired chain (same
+  `EvidenceFirstCheckpointRunner` + repaired assembler) on the real C20 world: READY,
+  `mandatory_facet_closure=COMPLETE`, zero future leakage, committed records retrievable as
+  Needs.  The formal five-point Gold scoring on the repaired path therefore remains
+  identity-gated; the legacy diagnostic is evidence of the historical loss the repair targets,
+  not a measure of the repair.
+
+No code change is warranted this round: the repaired-path evaluation is complete by design on
+the frozen identity, and building an adapter to force the legacy diagnostic onto the repaired
+package would violate minimum-sufficient engineering.
+
+### 28.25 Frozen driver now runs on the real repair5 C20 world (2026-08-14)
+
+Closed the §28.24 ownership loop in practice: `scripts/run_evidence_first_frozen_checkpoints.py`
+with `--checkpoint-index` now executes the repaired evidence-first path on the REAL repair5 C20
+world — the same frozen commit/needs/planner the model pilot produced — and its receipts match
+the frozen comparison exactly.
+
+**Driver bug fixed first.**  The driver read the frozen `frozen-paired-context` artifact with
+`PairedContextComparison.model_validate_json(..., strict=True)`, which can never succeed for
+this model family: `RetrievalTrace` carries a `mode="before"` validator
+(`infer_legacy_execution_diagnostics`), and pydantic v2 then validates JSON through the python
+path, where strict tuple fields (`allowed_channels`, `candidates`, `facet_receipts`, …) reject
+JSON arrays (112 `tuple_type` errors, reproducible on the minimal model — a plain `tuple` field
+round-trips strict, adding any `mode="before"`/`"wrap"` validator breaks it, `mode="after"`
+does not).  The stored artifact is a perfect canonical dump (`model_validate_json(strict=False)`
+re-dumps byte-identically, sha256 `1449b89c…`), so the fix keeps the driver's drift-detection
+intent with a strictly stronger check:
+
+```python
+comparison = PairedContextComparison.model_validate_json(comparison_bytes, strict=False)
+if canonical_json_bytes(comparison.model_dump(mode="json")) != comparison_bytes:
+    raise ValueError("frozen comparison is not a canonical dump of the current schema")
+```
+
+**Run.**  `--checkpoint-index tmp/evidence-first-c20-20260814-v1-index/checkpoint_index.json`
+(pins case ZTJ-P001, chapter 20, commit `sha256:854934efe5…`, comparison `sha256:1449b89c…`),
+frozen DB `na_s2m_gpu1_8003_20260814_repair5_v1`, real-hybrid backend with the frozen snapshot
+attestation + existing OpenSearch indexes (embedding/reranker on 8081/8082, the repair5 ports).
+
+Result (output root `tmp/evidence-first-c20-20260814-v1-output/`, exit 0):
+
+- `assembly_status=READY`, `readiness_status=READY`, `aggregate_mechanical_status=PASS`;
+  `future_leakage_count=0`, dereference/scope/cutoff failures all 0, roots unchanged
+  (`root_hashes_unchanged=True`).
+- 7 frozen planner Needs, 8 package items (7 evidence + 1 typed gap
+  `no_selected_evidence`), 59 ledger entries, 908/681 writer/ledger tokens, 19 retrieval calls,
+  5 embedding + 5 rerank calls, **zero** Planner/Claim/whole-verifier/evaluator model calls.
+- Repaired assembler version pinned: `evidence_first_writer_context_assembler.v1` /
+  `evidence_first_checkpoint_runner.v1`.
+
+**Receipt fidelity is the decisive evidence.**  The driver's per-Need facet receipts,
+`channel_candidate_counts`, stop reasons and selected candidates reproduce the frozen
+comparison's deterministic context **exactly** (need sets equal; cc equal on all 7 Needs).  The
+four `unsupported` mandatory facets — `causal_history` (d22_01, d23_01), `setup` (d22_02),
+`relation_state` (d25_03) — carry the same `no_exact_evidence_for_facet` stop reason in the
+frozen comparison's deterministic AND agentic arms.  So the repaired offline path is faithful to
+the real model run on the same world; the gaps are the honest C20 world state (0 events;
+relation_state facets have no exact L0 evidence under §7 P004 assertion non-traversability),
+fail-closed by receipt rather than fabricated — not a regression introduced by the repaired path.
+
+Note: the §28.22 smoke run reported `mandatory_facet_closure=COMPLETE` because it used
+deterministic template Needs; the frozen driver uses the REAL planner Needs (which demand
+causal_history/setup/relation_state facets the C20 world cannot serve).  Both results are
+correct for their Need source; the driver run is the identity-gated-style evaluation on real
+data, now unblocked before the formal clean-Genesis rerun.
+
+### 28.26 Evidence stability re-verification + driver usage docs (2026-08-14)
+
+Re-verified the §28.22/§28.25 evidence on the current tree (HEAD `e84f3b0` + this round's
+changes, still no commit — OpenCode never commits/merges):
+
+- Re-ran `scripts/smoke_evidence_first_ch1.py` (checkpoint 20 / target 21-25, repair5 identity
+  `na_s2m_gpu1_8003_20260814_repair5_v1`, basis `sha256:854934efe5…`): byte-for-byte the §28.22
+  result — `stop_reason=budget_exhausted`, `retrieval_call_count=48`,
+  `future_leakage_count=0`, `assembly.status=READY`, `mandatory_facet_closure=COMPLETE`,
+  `diagnostics=()`, 23 package items, world 37 entities / 49 states / 6 relations / 1
+  obligation / 0 events.  The COMPLETE template-need closure evidence is stable on the tree.
+- The §28.25 frozen-driver run output (`tmp/evidence-first-c20-20260814-v1-output/`) is intact:
+  READY / PASS / zero leakage / 59 ledger entries / 7 planner Needs, receipts identical to the
+  frozen comparison.
+- Docstring fix: `run_evidence_first_frozen_checkpoints.py` Usage now documents the
+  `--checkpoint-index` path (case_id/checkpoint_chapter/commit/comparison_ref) and the
+  loopback model endpoint overrides used for the repair5 identity (ports 8081/8082), so the
+  §28.25 owner mechanism is self-documenting for the post-freeze formal rerun.
+- Quality gates unchanged: ruff check + format PASS on the driver; mypy project run 0 errors
+  in the driver; full deterministic pytest 2264 passed / 3 pre-existing Stage 5 integration
+  failures (untouched, failing at HEAD, out of Stage 2M scope).
+
+State: tree freeze-ready, evidence chain closed on real data through both the template-need
+path (§28.22, COMPLETE closure) and the real-planner-need path via the designed evaluation
+owner (§28.25, receipts identical to the frozen comparison).  The formal clean-Genesis C1-C95
+five-point rerun remains Codex/human-gated (identity freeze + merge are human decisions; the
+`--checkpoint-index` mechanism it needs is now proven on real data).
+
+### 28.27 Objective-completion record (2026-08-14)
+
+Objective chain verified closed on real data, both need paths:
+
+1. Need admission: frozen planner Needs admitted and executed (7, §28.25); template Needs
+   derived FROM committed durable records (§28.22).
+2. Facet loop retrieval: per-Need facet receipts / channel counts / stop reasons, identical
+   to the frozen comparison's deterministic context (§28.25).
+3. Exact L0 fair packing: READY / PASS / 59 ledger entries / zero leakage / 0 model calls
+   (§28.25); template path COMPLETE closure, 23 items, 0 leakage (§28.22/§28.26).
+4. State/Event/Obligation/Relation 可写可检索: 20-chapter write path with Relation/State/
+   Obligation durable (§28.19-§28.20); obligation + relation Needs retrievable (§28.22);
+   assertion relations correctly non-traversable under §7 P004.
+
+Doc items from the objective are in place: `project_status.md` semantic gate
+`HOLD / IMPLEMENTATION_NOT_STARTED`; `README.md:71` marks the 2026-08-13 document the sole
+current Stage 2M repair entry; repair doc keeps package READY semantics vs mandatory-facet
+gate separation.
+
+Remaining formal step — the clean-Genesis C1-C95 five-point rerun under one frozen identity —
+is Codex/human-gated (identity freeze and merge are human decisions; OpenCode never commits or
+merges, AGENTS.md).  Its required `--checkpoint-index` evaluation mechanism is now proven on
+real data (§28.25), so the gate is a human decision, not an implementation gap.
+
+### 28.28 Review-driven repair: predicate-bound facet support + honest closure reporting (2026-08-14)
+
+Codex review (`.agent/review.md`, `REPAIR / PRODUCT_COMPLETION_NOT_ACCEPTED`) found two
+false-success paths.  Both are now repaired with focused regression coverage; the C20 world
+re-run now reports honestly `mechanical PASS / semantic INCOMPLETE`.
+
+**P1-1 — grounded exact slices no longer close semantic facets.**
+`FacetSupportEvaluator._facets_for_unit` previously bound any `GROUNDED_BLOCK`/`GROUNDED_SPAN`
+with an evidence ref and overlapping entity to EVERY non-plan facet of the Need.  Grounded
+units carry no world-record predicate (all `predicate=None` in the real C20 candidates), so
+"retrieved evidence" was being treated as "evidence supports that predicate" — the template
+smoke's `causal_history:supported` in a 0-event world was exactly this false closure.
+
+Fix (`src/novel_agent/services/facet_support.py`): grounded slices now close no facet; only
+structured anchors (STATE/RELATION/EVENT/PLAN/FACT anchors, which project world records with
+explicit predicates) close facets via `_STRUCTURED_KINDS_BY_FACET`.  The shared evaluator is
+the single owner used by `retrieval.py`, `paired_controller.py` and
+`evidence_first_checkpoint_runner.py`, so one change covers all main paths.
+
+Verification on real data (repair5 C20, checkpoint 20 / target 21-25):
+- Template-need smoke re-run: `causal_history:supported` dropped from several plan-history
+  needs to **0**; those facets now honestly `unsupported` (0 Event records exist at C20).
+  Entity-need facets stay `supported` via real state/relation anchors; the three assertion
+  relations remain `relation_state:exhausted` (§7 P004 non-traversability preserved).
+- Frozen-driver re-run on the same C20 world: all 7 planner-Need receipts (facet kinds +
+  statuses), channel candidate counts and stop reasons remain **identical** to the frozen
+  comparison — the supported receipts were already structured-anchor backed, so the repair
+  removed only the false path, not any real closure.
+
+**P1-2 — mandatory closure is now persisted and gates the product status.**
+`EvidenceFirstAssemblyResult.mandatory_facet_closure` was computed but dropped from the
+driver's formal artifacts; readiness/aggregate considered only mechanical delivery.  Now:
+- `EvidenceFirstPackageManifest` gains `mandatory_facet_closure` (schema exported, contract
+  test extended).
+- Driver writes it to all three artifacts: package manifest, case record (readiness +
+  top-level `semantic_status`), and output index per-case entries.
+- New `_semantic_status()` keeps mechanical delivery and semantic product status separate;
+  aggregate `aggregate_semantic_status` is `INCOMPLETE` whenever any case leaves any
+  mandatory facet unsupported, unresolved, insufficient or transport-failed.
+- Real C20 driver run now reports: `aggregate_mechanical_status=PASS`,
+  `aggregate_semantic_status=INCOMPLETE`, case `READY` / `semantic_status=INCOMPLETE`, with
+  the four unsupported mandatory facets (causal_history ×2, setup, relation_state) visible in
+  the manifest, case record and index.  §28.22's COMPLETE claim is superseded: template-need
+  mandatory closure is COMPLETE only via structured-anchor support; the driver run with real
+  planner Needs is the honest C20 checkpoint (mechanical PASS / semantic INCOMPLETE).
+
+**P2 — focused read-boundary regression test.**
+New `tests/unit/test_frozen_checkpoint_read_boundary.py` (10 tests) pins: accepted canonical
+comparison reads lax and round-trips byte-identically (before-validator path), rejected
+non-canonical drift (reordered keys), rejected commit mismatch (Needs and context basis),
+missing planner ref rejection, checkpoint-index loading acceptance/rejection, planner artifact
+strict read stays valid, and semantic-status separation.  The comparison-parse/verify logic
+was extracted to `_parse_frozen_comparison()` so the boundary is unit-testable without a
+database.
+
+Quality gates: ruff check + format PASS on all changed files; mypy 0 errors in the new test
+and driver (working tree 30 errors vs 53 at HEAD baseline, remaining are pre-existing Stage 5
+integration tests); full deterministic suite **2274 passed** / 3 failed (the same 3
+pre-existing Stage 5 integration failures, untouched, failing at HEAD).  Schema contract test
+PASS after `export_stage2_schemas.py`.
+
+State: the two false-success paths are closed with focused coverage; C20 is now an honest
+`mechanical PASS / semantic INCOMPLETE` checkpoint.  The formal clean-Genesis C1-C95 P001-P005
+rerun with every mandatory facet closed by dereferenceable exact L0 evidence remains
+Codex/human-gated and is the acceptance evidence for PASS (review 2026-08-14).
+
+### 28.29 Review follow-up: predicate-bound structured anchors (2026-08-14)
+
+Codex follow-up review (`.agent/review.md`, `REPAIR / PREDICATE_BINDING_STILL_OPEN`) found
+that structured anchors still closed facets by unit kind alone: same-kind state anchors with
+different predicates (location/enrollment/possession/belief) closed knowledge_boundary and
+capability_status together in real P001; the PLAN_ANCHOR special case made the accepted
+obligation mapping unreachable; manifest closure defaulted to COMPLETE; and the aggregate test
+did not exercise production code.  All four are now repaired.
+
+**P1 - predicate binding for structured anchors.**  `FacetSupportEvaluator._facets_for_unit`
+now requires BOTH the unit kind to stand for the facet semantics AND the unit's predicate to be
+declared in `need.predicates`.  A same-kind anchor with an absent or mismatched predicate never
+closes the facet; an empty `need.predicates` cannot prove support and is fail-closed.  This is
+the already-present Need/unit contract (`R1` uses `need.predicates` as an OR-set SQL filter).
+
+- `FACT_ANCHOR` (entity identity) is removed as a semantic witness for every facet.
+- `PLAN_ANCHOR` resolves provenance by `access_scope`: durable obligations (`writer_safe`,
+  predicate = obligation kind) close `COMMITMENT`/`UNRESOLVED_STATUS`; plan provenance
+  (`author_planning`) closes only `PLAN_NODE`.  The accepted obligation mapping is now
+  reachable.
+- Need generation now declares predicates where the semantic contract demands them:
+  `continuity_constraint` inherits the entity's state predicates; `unresolved_obligation`
+  declares the obligation kind; planner-produced Needs (`_build_planner_need`) declare the
+  grounded entities' state predicates.  Without these, predicate binding would starve every
+  mandatory Need (fail-closed but unusable); with them, real retrieval can close facets by
+  predicate.
+- **Real-data verification (repair5 C20)**: the obligation Need's
+  `commitment`/`unresolved_status` now close via the obligation kind predicate
+  (previously unsupported); capability facets close via `skill_boundary`; the three assertion
+  relations remain `relation_state:exhausted` (§7 P004 preserved).  Template smoke:
+  `mandatory_facet_closure=COMPLETE` with 23 supported receipts, zero leakage.
+
+**P1 - assembler blanket fallback removed.**  `EvidenceFirstWriterContextAssembler` previously
+fell back to "entry serves every facet of its Need" when `supported_facet_ids` was empty — the
+same blanket closure in the packaging path.  An empty supported set is now an honest "no
+semantic support"; the assembler only credits the facets the unit's predicate established.  The
+frozen-driver C20 run now reports `gaps=14` (all `no_selected_evidence`) instead of the false
+`gaps=0`: `mechanical PASS / semantic INCOMPLETE`, with every unsupported mandatory facet
+visible in the manifest, case record and output index.
+
+**P1 - manifest closure required and fail-closed.**  `mandatory_facet_closure` is now a
+required `Literal["COMPLETE", "INCOMPLETE"]` on `EvidenceFirstPackageManifest` (schema
+exported, contract test extended) and on `EvidenceFirstAssemblyResult` (no success default):
+an omitted value is a validation error, never a silent COMPLETE.
+
+**P2 - aggregate helpers extracted.**  The driver's aggregate expressions are now
+`_aggregate_mechanical_status` / `_aggregate_semantic_status` module functions; the regression
+test calls the production helpers directly (mechanical PASS/FAIL and semantic
+COMPLETE/INCOMPLETE cases), so removing or inverting the driver implementation fails the test.
+
+**Regression coverage.**  New tests: same-kind matching predicate closes; same-kind different
+predicate does not close (both predicates set); absent unit predicate does not close; empty
+need predicates does not close; FACT_ANCHOR not a witness; obligation anchor closes commitment
+(not PLAN_NODE); plan provenance closes PLAN_NODE only; planner Need declares entity state
+predicates; manifest closure required/default-COMPLETE contract; aggregate helper tests.  The
+synthetic bundle fixture gained `knowledge_secret`/`skill_boundary` states so template Needs
+can bind predicates; affected r1/stage2_evaluation counts updated to the richer world.
+
+Quality gates: ruff check + format PASS on all changed files; mypy 0 errors in changed files
+(project run 30 errors vs 53 at HEAD baseline, all pre-existing Stage 5 integration tests);
+full deterministic suite **2284 passed** / 3 failed (the same 3 pre-existing Stage 5
+integration failures, untouched, failing at HEAD); schema contract test PASS.
+
+C20 remains an honest `mechanical PASS / semantic INCOMPLETE` checkpoint: the frozen planner
+Needs carry no declared predicates (a historical artifact), so predicate binding correctly
+reports every mandatory facet unsupported rather than fabricating closure.  The formal
+clean-Genesis C1-C95 rerun under new code (which declares predicates on planner Needs) remains
+Codex/human-gated acceptance evidence.
+
+### 28.30 Review follow-up: facet-level predicate binding (2026-08-14)
+
+Codex third review (`.agent/review.md`, `REPAIR / NEED_LEVEL_PREDICATE_OR_SET_IS_NOT_FACET_BINDING`)
+found that predicate membership was recorded per Need (one OR-set) while closure is claimed per
+facet, so a location predicate could still close both knowledge_boundary and capability_status,
+and Relation/Event/Obligation Planner Needs received only state predicates and could never close.
+Repaired by moving the binding to the facet boundary.
+
+**Facet-level binding on NeedCompletionSpec.**  New `predicates_by_facet:
+dict[facet_id_root, tuple[str, ...]]` on `NeedCompletionSpec` (required to cover every required
+facet when non-empty; empty means fail-closed no-close).  `FacetSupportEvaluator._matching_facets`
+now consults that per-facet binding: a unit predicate closes only the facets whose binding
+contains it -- never every same-kind facet of the Need.  `Stage1MemoryNeed.predicates` remains the
+Need-wide OR-set used by R1 exact retrieval, now derived as the union of the facet bindings.
+
+**Generation populates per-facet bindings from matching record kinds.**
+- Template `add()` sites bind: CURRENT_STATE → entity state predicates; CAPABILITY_STATUS and
+  LIMITATION → capability-keyword-filtered state predicates; KNOWLEDGE_BOUNDARY →
+  knowledge-keyword-filtered state predicates; RELATION_STATE → relation predicates;
+  CAUSAL_HISTORY and SETUP → entity state + event-type predicates; COMMITMENT and
+  UNRESOLVED_STATUS → obligation kind; PLAN_NODE → plan node type.
+- `_build_planner_need` derives state/relation/event/obligation predicate sets from the grounded
+  entities' matching world records and binds each suggested facet to its own set; the Need-wide
+  OR-set is the union.  State predicates no longer leak into knowledge/capability facets, and
+  Relation/Event/Obligation anchors can now close their own facets.
+- Fixed `set(relation.subject_id, relation.object_id)` → `set((...))` (TypeError in the new
+  relation-predicate derivation) and `getattr(node, "node_type", "plan_node")` for goal nodes.
+
+**Real-data verification (repair5 C20 template smoke).**  knowledge_boundary and
+relation_state now close via their own predicates (knowledge_secret / relation predicates);
+the obligation Need closes commitment/unresolved_status via the obligation kind; the three
+assertion relations stay relation_state:exhausted (§7 P004 preserved).  Mandatory closure is
+honestly INCOMPLETE with typed gaps; the package grew to 30 items (more facets provably
+closed), which exceeds the smoke runner's fixed 4000-token writer budget and is reported as
+CONTEXT_BUDGET_INSUFFICIENT -- a true signal that more evidence is now admitted, not a
+regression.
+
+**Regression coverage.**  New tests: multi-facet Need with a knowledge predicate and a
+capability predicate, each closing only its own facet (both single-anchor and both-anchor
+cases); Planner Need with relation_state binds the relation predicate (state predicate does not
+leak); Planner Need with causal_history binds the event type; Planner Need with
+commitment/unresolved_status binds the obligation kind (state predicate does not leak); facet
+binding covers every required facet (contract); unbound spec cannot close (fail-closed).
+
+Quality gates: ruff check + format PASS; mypy 0 errors in changed files (project run 33 errors,
+all pre-existing Stage 5 integration tests; baseline at HEAD is 53); full deterministic suite
+**2288 passed** / 3 failed (the same 3 pre-existing Stage 5 integration failures); stage2 +
+stage3 schema contract tests PASS after exporting the NeedCompletionSpec field into both
+schema sets (stage3 schemas embed the spec).
+
+### 28.31 Review follow-up: Stage 1 schema synchronization (2026-08-14)
+
+Codex accepted the facet-level binding semantics but flagged a real boundary blocker: the Stage
+1 JSON contracts (which use `additionalProperties=false`) had not been re-exported after
+`NeedCompletionSpec.predicates_by_facet` was added, so new-code Needs would be rejected at the
+Stage 1 JSON contract boundary.  Repaired by re-exporting and pinning the contract.
+
+- Re-ran `scripts/export_stage1_schemas.py`: `NeedCompletionSpec`,
+  `Stage1MemoryNeed`, `HorizonNeedSet` and `Stage1ContextPackage` schemas now carry
+  `predicates_by_facet` (verified present in all four; export is idempotent).
+- Added `test_checked_in_stage1_memory_schemas_match_models` to
+  `tests/contract/test_stage1_benchmark_contract.py`: pins the four memory schemas against
+  `model.model_json_schema()` and asserts the field is present in the exported
+  `NeedCompletionSpec` properties and the `Stage1MemoryNeed` embedded `$defs`.
+- Verified a new-code Need (generated with facet-level bindings) round-trips
+  `NeedCompletionSpec.model_dump(mode="json")` → strict `model_validate_json` with the binding
+  intact, which is the Stage 1 contract boundary behavior.
+
+The other eight stage1 schema files changed by the export are idempotent regenerations (no new
+field; no contract test references them; content matches `model_json_schema()`).
+
+Quality gates: ruff check + format PASS; mypy 0 errors in the new test; contract tests
+(stage1 benchmark + stage1 memory + stage2) PASS.  Full deterministic suite result recorded at
+the end of this round.

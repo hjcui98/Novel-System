@@ -558,6 +558,48 @@ class ProposalConflict(DomainModel):
         return self
 
 
+class CuratorRecordKindCounts(DomainModel):
+    """Host-side proposed/accepted accounting for one durable record kind."""
+
+    record_kind: WorldRecordKind
+    proposed: int = Field(ge=0)
+    accepted: int = Field(ge=0)
+    rejected: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> CuratorRecordKindCounts:
+        if self.accepted > self.proposed or self.rejected > self.proposed:
+            raise ValueError("accepted/rejected counts cannot exceed proposed operations")
+        return self
+
+
+class CuratorRecordKindCoverageReceipt(DomainModel):
+    """Per-source-unit durable record coverage for one ordinary Curator pass.
+
+    Distinguishes "the model proposed nothing", "the host rejected proposals"
+    and "the chapter genuinely has no durable change" (no-durable-delta), so a
+    whole-novel Event/Obligation count of zero can be diagnosed instead of
+    silently accepted.
+    """
+
+    receipt_id: StableId
+    workflow_request_id: StableId
+    base_commit: CommitId
+    chapter_id: StableId
+    source_unit_id: StableId
+    no_durable_delta: bool
+    no_durable_delta_reason: str | None = None
+    counts: tuple[CuratorRecordKindCounts, ...]
+    producer_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_kinds(self) -> CuratorRecordKindCoverageReceipt:
+        kinds = [item.record_kind for item in self.counts]
+        if len(kinds) != len(set(kinds)):
+            raise ValueError("record kind coverage counts must be unique per kind")
+        return self
+
+
 class CuratorProposalRejection(DomainModel):
     rejection_id: StableId
     attempt_id: StableId

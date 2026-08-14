@@ -521,3 +521,121 @@ def test_v2_normalized_collisions_merge_evidence_and_reject_conflicts() -> None:
     ) as overflow_rejection:
         ModelCurator._merge_normalized_collisions_v2(overflow, base_commit)
     assert overflow_rejection.value.violation_rule == "normalized_target_evidence_must_be_bounded"
+
+
+def test_record_kind_coverage_receipt_accounts_proposed_accepted_rejected() -> None:
+    """2026-08-13 repair E: per-source-unit durable record coverage receipt."""
+    base_commit = make_synthetic_bundle().world_roots[0].source_commit
+    event = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.EVENT,
+        target_id=StableId("event.coverage"),
+        record=CuratorEventRecord(
+            event_type="arrives",
+            participant_ids=(),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        evidence_candidate_ids=(StableId("candidate.one"),),
+    )
+    state = CuratedOperationDraftV2(
+        operation=ChangeOperationType.CREATE,
+        record_kind=WorldRecordKind.STATE,
+        target_id=StableId("state.coverage"),
+        record=CuratorStateRecord(
+            predicate="injury",
+            subject_id=StableId("entity.coverage"),
+            value="healing",
+            valid_time=CuratorStoryTime(worldline="main", start_ordinal=23),
+            truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+        ),
+        evidence_candidate_ids=(StableId("candidate.two"),),
+    )
+    curator = ModelCurator(
+        _gateway(ChapterChangeDraft(chapter_index=23, operations=(), coverage=0.0))[0]
+    )
+    # Two events and one state proposed; one event and the state accepted.
+    curator._pending_record_kind_proposed = {
+        WorldRecordKind.EVENT: 2,
+        WorldRecordKind.STATE: 1,
+    }
+    receipt = curator._build_record_kind_coverage(
+        chapter_id=StableId("chapter.coverage"),
+        base_commit=base_commit,
+        request_id=StableId("request.coverage"),
+        draft=ChapterChangeDraftV2(chapter_index=23, operations=(event, state)),
+        accepted_kinds=(WorldRecordKind.EVENT, WorldRecordKind.STATE),
+    )
+    by_kind = {item.record_kind: item for item in receipt.counts}
+    assert by_kind[WorldRecordKind.EVENT].proposed == 2
+    assert by_kind[WorldRecordKind.EVENT].accepted == 1
+    assert by_kind[WorldRecordKind.EVENT].rejected == 1
+    assert by_kind[WorldRecordKind.STATE].proposed == 1
+    assert by_kind[WorldRecordKind.STATE].accepted == 1
+    assert by_kind[WorldRecordKind.STATE].rejected == 0
+    assert receipt.no_durable_delta is False
+    assert receipt.receipt_id.root.startswith("record-kind-coverage.")
+
+    curator._pending_record_kind_proposed = {}
+    empty = curator._build_record_kind_coverage(
+        chapter_id=StableId("chapter.no-op"),
+        base_commit=base_commit,
+        request_id=StableId("request.no-op"),
+        draft=ChapterChangeDraftV2(
+            chapter_index=23,
+            operations=(),
+            no_durable_delta_reason="chapter has no durable change",
+        ),
+        accepted_kinds=(),
+    )
+    assert empty.no_durable_delta is True
+    assert empty.counts == ()
+    assert empty.no_durable_delta_reason == "chapter has no durable change"
+
+
+def test_record_kind_coverage_receipt_validates_counts_and_uniqueness() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from novel_agent.domain.memory_write import (
+        CuratorRecordKindCounts,
+        CuratorRecordKindCoverageReceipt,
+    )
+
+    with pytest.raises(ValidationError, match="cannot exceed proposed"):
+        CuratorRecordKindCounts(
+            record_kind=WorldRecordKind.EVENT,
+            proposed=1,
+            accepted=2,
+            rejected=0,
+        )
+    with pytest.raises(ValidationError, match="unique per kind"):
+        base = make_synthetic_bundle().world_roots[0].source_commit
+        counts = (
+            CuratorRecordKindCounts(
+                record_kind=WorldRecordKind.EVENT, proposed=1, accepted=1, rejected=0
+            ),
+            CuratorRecordKindCounts(
+                record_kind=WorldRecordKind.EVENT, proposed=1, accepted=0, rejected=1
+            ),
+        )
+        CuratorRecordKindCoverageReceipt(
+            receipt_id=StableId("receipt.dup"),
+            workflow_request_id=StableId("request.dup"),
+            base_commit=base,
+            chapter_id=StableId("chapter.dup"),
+            source_unit_id=StableId("chapter.dup"),
+            no_durable_delta=False,
+            counts=counts,
+            producer_version="test",
+        )
+
+
+def test_model_curator_constructor_validates_graph_parameters() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="max_concurrent_graph_units"):
+        ModelCurator(_gateway(_draft())[0], max_concurrent_graph_units=0)
+    with pytest.raises(ValueError, match="max_pages_per_graph_unit"):
+        ModelCurator(_gateway(_draft())[0], max_pages_per_graph_unit=0)
+    with pytest.raises(ValueError, match="graph_source_unit_tokens"):
+        ModelCurator(_gateway(_draft())[0], graph_source_unit_tokens=0)

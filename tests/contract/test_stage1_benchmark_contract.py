@@ -138,3 +138,38 @@ def test_checked_in_stage1_schemas_match_models() -> None:
             (schema_directory / f"{model.__name__}.schema.json").read_text(encoding="utf-8")
         )
         assert actual == model.model_json_schema()
+
+
+def test_checked_in_stage1_memory_schemas_match_models() -> None:
+    # Stage 1 memory-contract schemas embed NeedCompletionSpec (including
+    # predicates_by_facet) in Need, HorizonNeedSet and ContextPackage.  These
+    # schemas use additionalProperties=false, so a stale export would reject
+    # new-code Needs at the Stage 1 JSON contract boundary.
+    schema_directory = Path(__file__).parents[2] / "schemas" / "stage1"
+    from novel_agent.domain.memory import (
+        HorizonNeedSet,
+        NeedCompletionSpec,
+        Stage1ContextPackage,
+        Stage1MemoryNeed,
+    )
+
+    for model in (
+        NeedCompletionSpec,
+        Stage1MemoryNeed,
+        HorizonNeedSet,
+        Stage1ContextPackage,
+    ):
+        actual = json.loads(
+            (schema_directory / f"{model.__name__}.schema.json").read_text(encoding="utf-8")
+        )
+        assert actual == model.model_json_schema()
+    # The facet-level predicate binding must be present in the exported
+    # contracts that would otherwise reject new-code Needs.
+    spec_schema = json.loads(
+        (schema_directory / "NeedCompletionSpec.schema.json").read_text(encoding="utf-8")
+    )
+    assert "predicates_by_facet" in spec_schema["properties"]
+    need_schema = json.loads(
+        (schema_directory / "Stage1MemoryNeed.schema.json").read_text(encoding="utf-8")
+    )
+    assert "predicates_by_facet" in need_schema["$defs"]["NeedCompletionSpec"]["properties"]

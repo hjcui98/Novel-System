@@ -524,9 +524,10 @@ Stage 2M may:
   budgets; ADR-0008 replaces the claim-first semantic-call path;
 - preserve the accepted chapter-32 repair and the focused chapter-9 relevant-literal repair; do not
   weaken strict evidence binding;
-- execute the active `.agent/plan.md` Grounder/summary repair and evidence-first materialization
-  without rebuilding ch0-95; reuse frozen C20/C40/C60/C80/C95 and keep every package/ledger/manifest
-  independently addressable;
+- execute the active `.agent/plan.md` and
+  `stage2_memory_semantic_repair_execution_20260813.md` as one Stage 2M repair round: fix Need admission,
+  facet-driven retrieval, exact-L0 evidence packing and durable World Event/Obligation/identity quality,
+  then rebuild ch0-95 from clean Genesis under one fixed Stage 2M source identity;
 - stop the default runner at package freeze; do not call Claim Support or semantic evaluator and do
   not treat legacy Claim MISS/UNTRACEABLE as a package failure;
 - hand the five readable packages and cited evidence ledgers to the user for independent model or
@@ -546,6 +547,13 @@ fresh joint output `/tmp/ns-stage2m-evidence-first-joint-20260812-v4/output_inde
 aggregate `PASS`, P001-P005 all `READY`, zero gap/dereference/scope/cutoff/leakage failures, unchanged
 roots, and `joint_repair=true` for P005. Final status:
 `STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`.
+
+Stage 2M semantic-product update (2026-08-13): the 2026-08-12 result remains accepted historical
+mechanical evidence, but the real-novel P001-P005 audit found systematic losses across Need admission,
+facet completion, exact-L0 packing and durable World Event/Obligation coverage. The active semantic
+product gate is therefore `HOLD / IMPLEMENTATION_NOT_STARTED`; package mechanical `READY` remains the
+ADR-0008 delivery status and does not by itself promote the repair campaign. The next formal evidence is
+one fixed Stage 2M source identity rebuilt from clean Genesis under the active 2026-08-13 execution design.
 
 Stage 4 may continue in its independent worktree under
 `stage4_planner_context_loop_execution.md` and finish all code before its unified quality/real-model

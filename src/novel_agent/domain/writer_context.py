@@ -649,6 +649,9 @@ class EvidenceFirstPackageManifest(DomainModel):
     rerank_call_count: int = Field(default=0, ge=0)
     markdown_hash: ArtifactId | None = None
     assembly_status: str = Field(min_length=1)
+    # Required and fail-closed: an omitted closure must not silently select
+    # the success state (2026-08-14 review follow-up P1).
+    mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     projection_attestation_id: StableId | None = None
     graph_edge_count: int = Field(default=0, ge=0)
     graph_readiness_by_need: dict[str, str] = Field(default_factory=dict)

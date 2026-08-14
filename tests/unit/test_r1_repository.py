@@ -81,11 +81,11 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
     world = make_synthetic_bundle().world_roots[0]
     repository = R1WorldRepository(factory)
 
-    assert repository.materialize(ProjectId("project.test"), commit_id, world) == 4
-    assert repository.materialize(ProjectId("project.test"), commit_id, world) == 4
+    assert repository.materialize(ProjectId("project.test"), commit_id, world) == 6
+    assert repository.materialize(ProjectId("project.test"), commit_id, world) == 6
     with factory() as session:
-        assert session.scalar(select(func.count()).select_from(R1RecordRow)) == 4
-        assert session.scalar(select(func.count()).select_from(R1RecordEntityRow)) == 4
+        assert session.scalar(select(func.count()).select_from(R1RecordRow)) == 6
+        assert session.scalar(select(func.count()).select_from(R1RecordEntityRow)) == 6
 
     entity_id = world.entities[0].entity_id
     current = repository.exact(
@@ -133,7 +133,7 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
                 limit=10,
             )
         )
-        == 4
+        == 6
     )
     assert (
         len(
@@ -155,7 +155,7 @@ def test_r1_materialization_is_versioned_idempotent_and_queryable(
                 limit=10,
             )
         )
-        == 2
+        == 4
     )
     with pytest.raises(ValueError, match="positive"):
         repository.exact(_need(commit_id, Stage1QueryIntent.KNOWN_ID), temporal=False, limit=0)

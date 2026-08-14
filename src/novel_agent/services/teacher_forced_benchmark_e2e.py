@@ -235,8 +235,8 @@ def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
     The proposal budget is raised above the historical default because the
     local endpoint in json_object framing can need several contract-feedback
     retries on complex chapters before producing a valid draft.  One proposal
-    attempt now has two concurrent Curator profiles, so the call and token caps
-    retain the same five-attempt repair corridor.
+    attempt can fan out across dynamic graph source units and semantic checks,
+    so the call cap must leave the five-attempt repair corridor reachable.
     """
 
     return MemoryWriteBudget(
@@ -244,7 +244,7 @@ def _quality_repair_memory_write_budget() -> MemoryWriteBudget:
         max_curator_proposal_rejections=5,
         same_content_hash_limit=3,
         same_finding_signature_limit=3,
-        max_total_model_calls=20,
+        max_total_model_calls=64,
         token_budget=192_000,
         wall_clock_budget_ms=900_000,
     )
@@ -980,6 +980,21 @@ class TeacherForcedBenchmarkE2ERunner:
                 "checkpoint_chapters": [item.last_revealed_chapter for item in checkpoints]
                 if checkpoints
                 else [],
+                "frozen_checkpoint_inputs": [
+                    {
+                        "case_id": case_id.root,
+                        "checkpoint_chapter": next(
+                            case.history_range[1]
+                            for case in bundle.case_manifests
+                            if case.case_id == case_id
+                        ),
+                        "commit": transition.states[case_id].commit.root,
+                        "comparison_ref": comparison_ref.model_dump(mode="json"),
+                    }
+                    for case_id, comparison_ref in sorted(
+                        freezer.comparison_refs.items(), key=lambda item: item[0].root
+                    )
+                ],
                 "checkpoint_chain_consistent": chain_consistent,
                 "scenario_run_completed": scenario_result.completed,
                 "checkpoint_scenario_status": cast(
@@ -2904,6 +2919,7 @@ class _E2EContextFreezer:
         self.frozen_planner_artifact = frozen_planner_artifact
         self.support_transport_config = support_transport_config
         self.comparisons: dict[StableId, PairedContextComparison] = {}
+        self.comparison_refs: dict[StableId, ArtifactRef] = {}
         self._latest_attestation: ProjectionAttestation | None = None
 
     @property
@@ -3032,12 +3048,14 @@ class _E2EContextFreezer:
                     ),
                 }
             )
-        self.comparisons[case.case_id] = comparison
-        return self.artifacts.put(
+        comparison_ref = self.artifacts.put(
             canonical_json_bytes(comparison.model_dump(mode="json")),
             "application/vnd.novel-agent.frozen-paired-context+json",
             VERSION,
         )
+        self.comparisons[case.case_id] = comparison
+        self.comparison_refs[case.case_id] = comparison_ref
+        return comparison_ref
 
 
 class _E2EEvaluator:
@@ -3331,7 +3349,7 @@ class _E2EEvaluator:
                 comparison.arm_c_evidence_ledger,
             ),
         )
-        diagnostic_builder = StageLossDiagnosticBuilder()
+        diagnostic_builder = StageLossDiagnosticBuilder(matcher=evidence_matcher)
         score_artifacts.append(evaluator_manifest_ref)
         for binding in metric_descriptors.values():
             score_artifacts.extend(

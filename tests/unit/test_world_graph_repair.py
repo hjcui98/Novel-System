@@ -380,6 +380,69 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
     assert "Never emit a standalone entity candidate" in endpoint.requests[0].prompt
 
 
+def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
+    """2026-08-14 corridor repair: graph pages must receive rejection feedback.
+
+    ch2 receipts (§28.14) showed the graph profile repeated the missing-`kind`
+    discriminator defect on every attempt because the retry sent an identical
+    prompt with no feedback.  The graph page prompt must carry the repair
+    contract with the precise validation paths when feedback is present.
+    """
+    world, text, _, _ = _teacher_world()
+    response = json.dumps(
+        {
+            "status": "complete",
+            "candidates": [],
+            "no_graph_candidate_reason": "no durable relation in unit",
+        },
+        ensure_ascii=False,
+    )
+    endpoint = FakeModelEndpoint(response)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph",
+                model_name="fake.graph",
+                adapter=endpoint,
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph-repair"),
+        run_id=RunId("run.graph-repair"),
+        task_id=TaskId("task.graph-repair"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph-repair",
+        prompt="",
+    )
+    feedback = (
+        '{"reason_code":"CURATOR_PROPOSAL_SCHEMA_REJECTED",'
+        '"validation_error_paths":["candidates.0","candidates.1"],'
+        '"json_pointers":["/candidates/0","/candidates/1"],'
+        '"violation_rule":"kind_discriminator_required"}'
+    )
+    asyncio.run(
+        ModelCurator(gateway).extract_graph_candidates(
+            text,
+            5,
+            world.source_commit,
+            world,
+            request,
+            repair_feedback=feedback,
+        )
+    )
+    prompt = endpoint.requests[0].prompt
+    assert "MANDATORY_GRAPH_REPAIR_CONTRACT" in prompt
+    assert prompt.rfind("<MANDATORY_GRAPH_REPAIR_CONTRACT") > prompt.rfind("</GRAPH_REPAIR_INPUT>")
+    assert "kind=entity or kind=relation" in prompt
+    assert "worldline=main" in prompt
+    assert "CURATOR_PROPOSAL_SCHEMA_REJECTED" in prompt
+    assert "/candidates/0" in prompt
+    assert "kind_discriminator_required" in prompt
+
+
 def test_model_graph_profile_support_gate_and_audit_paths() -> None:
     world, text, _, _ = _teacher_world()
     quote = text.chapters[4].scenes[0].blocks[0].text

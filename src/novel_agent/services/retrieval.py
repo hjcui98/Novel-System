@@ -12,6 +12,7 @@ from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
+    FacetEvidenceReceipt,
     FusedCandidate,
     NeedExecutionStatus,
     RetrievalChannel,
@@ -22,6 +23,7 @@ from novel_agent.domain.memory import (
     Stage1MemoryNeed,
     Stage1QueryIntent,
 )
+from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.need_query_compiler import NeedQueryCompiler, compile_need_query
 
 ANCHOR_KINDS = frozenset(
@@ -325,14 +327,20 @@ class RetrievalOrchestrator:
         *,
         per_channel_limit: int = 20,
         fused_limit: int = 20,
+        window_step: int = 20,
+        max_window: int = 100,
         reranker: RerankService | None = None,
     ) -> None:
         if per_channel_limit < 1 or fused_limit < 1:
             raise ValueError("retrieval limits must be positive")
+        if window_step < 1 or max_window < per_channel_limit:
+            raise ValueError("retrieval window step and ceiling must be positive and ordered")
         self._backend = backend
         self._fusion = fusion
         self._per_channel_limit = per_channel_limit
         self._fused_limit = fused_limit
+        self._window_step = window_step
+        self._max_window = max_window
         self._reranker = reranker
 
     def retrieve(self, need: Stage1MemoryNeed) -> RetrievalTrace:
@@ -361,43 +369,67 @@ class RetrievalOrchestrator:
                 compiled_query_bundle=bundle.model_dump(mode="json"),
                 effective_channels=(),
                 query_unavailable_reasons=unavailable,
+                facet_receipts=FacetSupportEvaluator.not_executed(need),
             )
-        primary = self._run_channels(need, primary_channels)
-        candidates = self._combine(primary, fusion=route.fusion)
-        rerank_used = (
-            route.fusion
-            and self._reranker is not None
-            and any(
-                candidate.selected and candidate.unit.unit_kind in ANCHOR_KINDS
-                for candidate in candidates
-            )
-        )
-        if rerank_used:
-            assert self._reranker is not None
-            candidates = self._reranker.rerank(need, candidates, limit=self._fused_limit)
-        selected = tuple(candidate for candidate in candidates if candidate.selected)
+        all_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
+        candidates: tuple[FusedCandidate, ...] = ()
+        selected: tuple[FusedCandidate, ...] = ()
+        receipts: tuple[FacetEvidenceReceipt, ...] = ()
         fallback_used = False
         fallback_reason: str | None = None
-        all_results = dict(primary)
+        rerank_used = False
+        window = self._per_channel_limit
+        while True:
+            primary = self._run_channels(need, primary_channels, limit=window)
+            all_results.update(primary)
+            candidates = self._combine(primary, fusion=route.fusion, limit=window)
+            rerank_used = (
+                route.fusion
+                and self._reranker is not None
+                and any(
+                    candidate.selected and candidate.unit.unit_kind in ANCHOR_KINDS
+                    for candidate in candidates
+                )
+            )
+            if rerank_used:
+                assert self._reranker is not None
+                candidates = self._reranker.rerank(need, candidates, limit=window)
+            selected = tuple(candidate for candidate in candidates if candidate.selected)
+            receipts = FacetSupportEvaluator.evaluate(need, selected)
+            if FacetSupportEvaluator.mandatory_closed(need, receipts) or window >= self._max_window:
+                break
+            window = min(window + self._window_step, self._max_window)
+        pages = (window - self._per_channel_limit) // self._window_step + 1
         fallback_channels = tuple(
             channel for channel in route.fallback_channels if channel in query_eligible
         )
-        if not selected and fallback_channels:
+        satisfied = FacetSupportEvaluator.mandatory_closed(need, receipts)
+        if (not satisfied or not selected) and fallback_channels:
             fallback_used = True
-            fallback_reason = "primary_anchor_candidates_empty"
-            fallback = self._run_channels(need, fallback_channels)
+            fallback_reason = (
+                "mandatory_facets_unresolved"
+                if not satisfied
+                else "primary_anchor_candidates_empty"
+            )
+            fallback = self._run_channels(need, fallback_channels, limit=self._max_window)
             all_results.update(fallback)
-            candidates = self._combine(fallback, fusion=len(fallback) > 1)
+            candidates = self._combine(fallback, fusion=len(fallback) > 1, limit=self._max_window)
             selected = tuple(candidate for candidate in candidates if candidate.selected)
-        stop_reason = (
-            RetrievalStopReason.EXACT_SATISFIED
-            if selected and not route.fusion and not fallback_used
-            else RetrievalStopReason.BUDGET_SATISFIED
-            if selected
-            else RetrievalStopReason.FALLBACK_EXHAUSTED
-            if fallback_used
-            else RetrievalStopReason.CANDIDATES_EXHAUSTED
-        )
+            receipts = FacetSupportEvaluator.evaluate(need, selected)
+        closed = FacetSupportEvaluator.closed_facet_ids(receipts)
+        satisfied = FacetSupportEvaluator.mandatory_closed(need, receipts)
+        if satisfied and selected:
+            stop_reason = (
+                RetrievalStopReason.EXACT_SATISFIED
+                if not route.fusion and not fallback_used
+                else RetrievalStopReason.BUDGET_SATISFIED
+            )
+        else:
+            stop_reason = (
+                RetrievalStopReason.FALLBACK_EXHAUSTED
+                if fallback_used
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            )
         channels = (
             *primary_channels,
             *((RetrievalChannel.RERANK,) if rerank_used else ()),
@@ -422,26 +454,34 @@ class RetrievalOrchestrator:
                 dict.fromkeys((*primary_channels, *(fallback_channels if fallback_used else ())))
             ),
             query_unavailable_reasons=unavailable,
+            required_need_facet_ids=(
+                need.completion_spec.required_need_facet_ids
+                if need.completion_spec is not None
+                else ()
+            ),
+            closed_need_facet_ids=closed,
+            facet_receipts=receipts,
+            retrieval_pages=pages,
         )
 
     def _run_channels(
         self,
         need: Stage1MemoryNeed,
         channels: tuple[RetrievalChannel, ...],
+        *,
+        limit: int,
     ) -> dict[RetrievalChannel, tuple[ChannelHit, ...]]:
-        return {
-            channel: self._backend.search(need, channel, self._per_channel_limit)
-            for channel in channels
-        }
+        return {channel: self._backend.search(need, channel, limit) for channel in channels}
 
     def _combine(
         self,
         results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
         *,
         fusion: bool,
+        limit: int,
     ) -> tuple[FusedCandidate, ...]:
         if fusion:
-            return self._fusion.fuse(results, limit=self._fused_limit)
+            return self._fusion.fuse(results, limit=limit)
         hits: list[ChannelHit] = []
         seen: set[str] = set()
         for channel_hits in results.values():
@@ -455,11 +495,9 @@ class RetrievalOrchestrator:
                 fused_rank=rank,
                 rrf_score=1.0 / rank,
                 channel_hits=(hit,),
-                selected=rank <= self._fused_limit or hit.unit.mandatory,
+                selected=rank <= limit or hit.unit.mandatory,
                 rejection_reason=(
-                    None
-                    if rank <= self._fused_limit or hit.unit.mandatory
-                    else "direct_result_limit"
+                    None if rank <= limit or hit.unit.mandatory else "direct_result_limit"
                 ),
             )
             for rank, hit in enumerate(hits, start=1)

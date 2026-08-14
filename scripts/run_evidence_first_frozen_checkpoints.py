@@ -16,6 +16,13 @@ Usage:
     --database-url postgresql+psycopg://...@127.0.0.1:5432/na_s2m_phase4_v33_apc_v1 \
     --experiment-id stage2m-evidence-first-v1-20260811 \
     --case P001 --case P002 --case P003 --case P004 --case P005
+
+To evaluate the repaired path against a real frozen comparison (the §28.25
+evidence-first owner), point --checkpoint-index at a JSON index of
+frozen_checkpoint_inputs (case_id/checkpoint_chapter/commit/comparison_ref)
+and override the loopback model endpoints when the frozen identity used
+non-default ports (e.g. --embedding-url http://127.0.0.1:8081/v1/embeddings
+--reranker-url http://127.0.0.1:8082/rerank).
 """
 
 from __future__ import annotations
@@ -56,7 +63,7 @@ from novel_agent.domain.memory import Stage1MemoryNeed, WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning_memory import PlannerInvocationArtifact
 from novel_agent.domain.retrieval_routing import SnapshotCapabilityStatus
-from novel_agent.domain.stage2 import BenchmarkInformationProfile
+from novel_agent.domain.stage2 import BenchmarkInformationProfile, PairedContextComparison
 from novel_agent.domain.writer_context import (
     EvidenceFirstPackageManifest,
     EvidenceLedgerV2,
@@ -330,6 +337,7 @@ def _checkpoint_state(
     case_spec: dict[str, str],
     project_directory: Path,
     bundle: BenchmarkBundle,
+    comparison_ref: ArtifactRef | None = None,
 ) -> tuple[
     CommitId,
     WorldRootDocument,
@@ -361,33 +369,97 @@ def _checkpoint_state(
     world = world.model_copy(update={"source_commit": commit})
     case = next(item for item in bundle.case_manifests if item.case_id.root == case_spec["case_id"])
     plan = next(root for root in bundle.plan_roots if root.root_hash == case.input_plan_root)
-    paired = json.loads(_read_object(objects_root, case_spec["paired"]).decode("utf-8"))
-    needs = tuple(
-        Stage1MemoryNeed.model_validate_json(json.dumps(item))
-        for item in (paired.get("generated_needs") or ())
-    )
-    planner_payload = paired.get("planner_artifact_ref") or {}
-    planner_id = planner_payload.get("artifact_id")
-    if not planner_id:
-        raise ValueError(
-            f"frozen paired artifact has no planner artifact ref: {case_spec['case_id']}"
+    if comparison_ref is not None:
+        comparison_bytes = repository.read_verified(comparison_ref)
+        _, needs, planner_ref = _parse_frozen_comparison(comparison_bytes, commit)
+    else:
+        paired = json.loads(_read_object(objects_root, case_spec["paired"]).decode("utf-8"))
+        needs = tuple(
+            Stage1MemoryNeed.model_validate_json(json.dumps(item))
+            for item in (paired.get("generated_needs") or ())
         )
-    planner_ref = ArtifactRef.model_validate_json(
-        json.dumps(
-            {
-                "artifact_id": planner_id,
-                "media_type": planner_payload.get(
-                    "media_type", "application/vnd.novel-agent.planner-invocation+json"
-                ),
-                "byte_length": planner_payload.get("byte_length", 1),
-                "schema_version": planner_payload.get("schema_version", "1.0.0"),
-            }
+        planner_payload = paired.get("planner_artifact_ref") or {}
+        planner_id = planner_payload.get("artifact_id")
+        if not planner_id:
+            raise ValueError(
+                f"frozen paired artifact has no planner artifact ref: {case_spec['case_id']}"
+            )
+        planner_ref = ArtifactRef.model_validate_json(
+            json.dumps(
+                {
+                    "artifact_id": planner_id,
+                    "media_type": planner_payload.get(
+                        "media_type", "application/vnd.novel-agent.planner-invocation+json"
+                    ),
+                    "byte_length": planner_payload.get("byte_length", 1),
+                    "schema_version": planner_payload.get("schema_version", "1.0.0"),
+                }
+            )
         )
-    )
     planner = PlannerInvocationArtifact.model_validate_json(
         repository.read_verified(planner_ref), strict=True
     )
     return commit, world, text_root_doc, plan, needs, planner
+
+
+def _parse_frozen_comparison(
+    comparison_bytes: bytes,
+    commit: CommitId,
+) -> tuple[
+    PairedContextComparison,
+    tuple[Stage1MemoryNeed, ...],
+    ArtifactRef,
+]:
+    """Parse and verify the frozen paired comparison against the checkpoint.
+
+    strict=True is impossible for this model family: RetrievalTrace carries
+    a mode="before" validator (legacy execution diagnostics inference), which
+    makes pydantic validate JSON through the python path, where strict tuple
+    fields reject JSON arrays.  Read lax and instead require the artifact to
+    re-dump to the exact stored bytes: this is strictly stronger than strict
+    parsing at detecting stale or drifted formats.
+    """
+    comparison = PairedContextComparison.model_validate_json(comparison_bytes, strict=False)
+    if canonical_json_bytes(comparison.model_dump(mode="json")) != comparison_bytes:
+        raise ValueError("frozen comparison is not a canonical dump of the current schema")
+    needs = comparison.generated_needs
+    if not needs or any(need.base_commit != commit for need in needs):
+        raise ValueError("frozen checkpoint Needs do not match the checkpoint commit")
+    if (
+        comparison.deterministic.context.base_commit != commit
+        or comparison.agentic.context.base_commit != commit
+    ):
+        raise ValueError("frozen comparison does not match the checkpoint commit")
+    planner_ref = comparison.planner_artifact_ref
+    if planner_ref is None:
+        raise ValueError("frozen checkpoint comparison has no Planner artifact ref")
+    return comparison, needs, planner_ref
+
+
+def _load_checkpoint_index(path: Path) -> dict[str, tuple[int, str, ArtifactRef]]:
+    payload = json.loads(path.read_text("utf-8"))
+    entries = payload.get("frozen_checkpoint_inputs") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("checkpoint index lacks frozen_checkpoint_inputs")
+    resolved: dict[str, tuple[int, str, ArtifactRef]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("checkpoint index entry must be an object")
+        case_id = entry.get("case_id")
+        chapter = entry.get("checkpoint_chapter")
+        commit = entry.get("commit")
+        comparison = entry.get("comparison_ref")
+        if (
+            not isinstance(case_id, str)
+            or not isinstance(chapter, int)
+            or not isinstance(commit, str)
+            or not isinstance(comparison, dict)
+        ):
+            raise ValueError("checkpoint index entry is incomplete")
+        if case_id in resolved:
+            raise ValueError(f"checkpoint index repeats case: {case_id}")
+        resolved[case_id] = (chapter, commit, ArtifactRef.model_validate(comparison))
+    return resolved
 
 
 def _render_markdown(
@@ -495,9 +567,50 @@ def _readiness_status(
     return "READY"
 
 
+def _semantic_status(mandatory_facet_closure: str) -> str:
+    """Campaign/product status: COMPLETE only when every mandatory facet closed.
+
+    Mechanical READY and semantic closure stay separate (review 2026-08-14
+    P1-2): a READY package may legitimately carry typed mandatory-facet gaps,
+    and the product gate must read INCOMPLETE whenever any mandatory facet is
+    unsupported, unresolved, insufficient or transport-failed.
+    """
+    if mandatory_facet_closure == "COMPLETE":
+        return "COMPLETE"
+    return "INCOMPLETE"
+
+
+def _aggregate_mechanical_status(index_entries: list[dict[str, object]]) -> str:
+    """Aggregate mechanical delivery status across case index entries."""
+    if all(
+        item["readiness_status"] == "READY"
+        and item["dereference_failures"] == 0
+        and item["scope_failures"] == 0
+        and item["cutoff_failures"] == 0
+        and item["leakage_failures"] == 0
+        and item["root_hashes_unchanged"] is True
+        for item in index_entries
+    ):
+        return "PASS"
+    return "FAIL"
+
+
+def _aggregate_semantic_status(index_entries: list[dict[str, object]]) -> str:
+    """Aggregate semantic product gate: INCOMPLETE on any mandatory gap.
+
+    Stays separate from mechanical delivery (review 2026-08-14 P1-2): a
+    mechanically PASSing run with any unsupported, unresolved, insufficient or
+    transport-failed mandatory facet is semantically INCOMPLETE.
+    """
+    if all(item["semantic_status"] == "COMPLETE" for item in index_entries):
+        return "COMPLETE"
+    return "INCOMPLETE"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-project", type=Path, required=True)
+    parser.add_argument("--checkpoint-index", type=Path)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--repair-workspace", type=Path)
     parser.add_argument("--repair-case", choices=tuple(CASES), default="P005")
@@ -519,6 +632,8 @@ def main() -> int:
         raise ValueError("evidence-first cases must be unique")
     if args.repair_workspace is not None and args.repair_case not in args.case:
         raise ValueError("repair-case must be included when repair-workspace is configured")
+    if args.checkpoint_index is not None and args.repair_workspace is not None:
+        raise ValueError("a rebuilt checkpoint chain must not be combined with a repair workspace")
 
     try:
         from scripts.native_models import assert_model_service, load_model_lock
@@ -545,6 +660,11 @@ def main() -> int:
             Path("benchmarks/private/ztj_memory_pilot_v0.1").resolve()
         )
         repository = ArtifactRepository(FilesystemObjectStore(objects_root))
+        checkpoint_inputs = (
+            _load_checkpoint_index(args.checkpoint_index.resolve())
+            if args.checkpoint_index is not None
+            else None
+        )
         model_lock = load_model_lock()
         embedding_model = model_lock.models["embedding"]
         reranker_model = model_lock.models["reranker"]
@@ -622,7 +742,16 @@ def main() -> int:
         assembler_version: str | None = None
         case_fingerprints: list[ArtifactId] = []
         for short in args.case:
-            case_spec = CASES[short]
+            case_spec = dict(CASES[short])
+            comparison_ref: ArtifactRef | None = None
+            if checkpoint_inputs is not None:
+                indexed = checkpoint_inputs.get(case_spec["case_id"])
+                if indexed is None:
+                    raise ValueError(f"checkpoint index lacks requested case: {short}")
+                chapter, indexed_commit, comparison_ref = indexed
+                if chapter != int(case_spec["chapter"]):
+                    raise ValueError(f"checkpoint chapter disagrees with benchmark case: {short}")
+                case_spec["commit"] = indexed_commit
             case = next(
                 item for item in bundle.case_manifests if item.case_id.root == case_spec["case_id"]
             )
@@ -632,6 +761,7 @@ def main() -> int:
                 case_spec,
                 project_directory,
                 bundle,
+                comparison_ref,
             )
             basis = _select_case_basis(
                 short_case=short,
@@ -841,6 +971,7 @@ def main() -> int:
                 embedding_call_count=embedding_calls,
                 rerank_call_count=rerank_calls,
                 assembly_status=result.assembly.status.value,
+                mandatory_facet_closure=result.assembly.mandatory_facet_closure,
                 projection_attestation_id=backend_bundle.attestation.attestation_id,
                 graph_edge_count=backend_bundle.attestation.graph_edge_count,
                 graph_readiness_by_need=graph_readiness,
@@ -931,6 +1062,8 @@ def main() -> int:
                 },
                 "readiness": {
                     "package_status": result.assembly.status.value,
+                    "mandatory_facet_closure": result.assembly.mandatory_facet_closure,
+                    "semantic_status": _semantic_status(result.assembly.mandatory_facet_closure),
                     "gap_codes": list(gap_codes),
                     "ledger_entry_count": len(ledger.entries),
                     "evidence_item_count": package.budget_report.evidence_item_count,
@@ -980,6 +1113,8 @@ def main() -> int:
                     "manifest_ref": manifest_ref.artifact_id.root,
                     "manifest_id": manifest.manifest_id.root,
                     "assembly_status": result.assembly.status.value,
+                    "mandatory_facet_closure": result.assembly.mandatory_facet_closure,
+                    "semantic_status": _semantic_status(result.assembly.mandatory_facet_closure),
                     "readiness_status": _readiness_status(
                         result.assembly.status.value,
                         mechanical,
@@ -1020,19 +1155,11 @@ def main() -> int:
             raise RuntimeError("repair workspace roots changed during the evidence-first run")
         if runner_version is None or assembler_version is None or not case_fingerprints:
             raise RuntimeError("evidence-first run produced no cases")
-        aggregate_mechanical_status = (
-            "PASS"
-            if all(
-                item["readiness_status"] == "READY"
-                and item["dereference_failures"] == 0
-                and item["scope_failures"] == 0
-                and item["cutoff_failures"] == 0
-                and item["leakage_failures"] == 0
-                and item["root_hashes_unchanged"] is True
-                for item in index_entries
-            )
-            else "FAIL"
-        )
+        aggregate_mechanical_status = _aggregate_mechanical_status(index_entries)
+        # Semantic product gate stays separate from mechanical delivery: it is
+        # INCOMPLETE whenever any case leaves any mandatory facet unsupported,
+        # unresolved, insufficient or transport-failed (review 2026-08-14 P1-2).
+        aggregate_semantic_status = _aggregate_semantic_status(index_entries)
         parsed_database = urlparse(database_url)
         aggregate_config_hash = content_id(
             {
@@ -1053,6 +1180,11 @@ def main() -> int:
                     "started_at": started_at,
                     "completed_at": datetime.now(UTC).isoformat(),
                     "source_project": str(project_directory),
+                    "checkpoint_index": (
+                        str(args.checkpoint_index.resolve())
+                        if args.checkpoint_index is not None
+                        else None
+                    ),
                     "frozen_database": {
                         "host": parsed_database.hostname,
                         "port": parsed_database.port,
@@ -1060,6 +1192,7 @@ def main() -> int:
                     },
                     "profile": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
                     "aggregate_mechanical_status": aggregate_mechanical_status,
+                    "aggregate_semantic_status": aggregate_semantic_status,
                     "immutable_roots": roots_after,
                     "repair_workspace": (
                         str(args.repair_workspace.resolve())

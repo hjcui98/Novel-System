@@ -66,6 +66,16 @@
     "need_id": {
       "$ref": "#/$defs/StableId"
     },
+    "predicates_by_facet": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Predicates By Facet",
+      "type": "object"
+    },
     "producer": {
       "minLength": 1,
       "title": "Producer",

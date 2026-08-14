@@ -51,6 +51,14 @@
           "title": "Channel Rank",
           "type": "integer"
         },
+        "graph_path_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GraphPathReceipt"
+          },
+          "title": "Graph Path Receipts",
+          "type": "array"
+        },
         "hit_reason": {
           "minLength": 1,
           "title": "Hit Reason",
@@ -163,6 +171,120 @@
       ],
       "title": "EvidenceSupportStatus",
       "type": "string"
+    },
+    "GraphPathDereferenceStatus": {
+      "enum": [
+        "relation_rows_verified",
+        "l0_verified"
+      ],
+      "title": "GraphPathDereferenceStatus",
+      "type": "string"
+    },
+    "GraphPathReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "dereference_status": {
+          "$ref": "#/$defs/GraphPathDereferenceStatus"
+        },
+        "directions": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Directions",
+          "type": "array"
+        },
+        "edge_semantics": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Edge Semantics",
+          "type": "array"
+        },
+        "entity_path": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 2,
+          "title": "Entity Path",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "path_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicates": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Predicates",
+          "type": "array"
+        },
+        "relation_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Relation Ids",
+          "type": "array"
+        },
+        "relation_row_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Relation Row Ids",
+          "type": "array"
+        },
+        "seed_entity_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Seed Entity Ids",
+          "type": "array"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "valid_time": {
+          "items": {
+            "$ref": "#/$defs/StoryTime"
+          },
+          "minItems": 1,
+          "title": "Valid Time",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path_id",
+        "source_commit",
+        "snapshot_id",
+        "seed_entity_ids",
+        "relation_row_ids",
+        "relation_ids",
+        "entity_path",
+        "predicates",
+        "directions",
+        "valid_time",
+        "edge_semantics",
+        "evidence_refs",
+        "dereference_status"
+      ],
+      "title": "GraphPathReceipt",
+      "type": "object"
     },
     "QuoteHash": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -464,6 +586,57 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
+    },
+    "StoryTime": {
+      "additionalProperties": false,
+      "properties": {
+        "end_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ordinal"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "start_ordinal": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ordinal"
+        },
+        "worldline": {
+          "minLength": 1,
+          "title": "Worldline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worldline"
+      ],
+      "title": "StoryTime",
+      "type": "object"
     },
     "TextSpanRef": {
       "additionalProperties": false,

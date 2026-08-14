@@ -212,6 +212,24 @@ def make_synthetic_bundle() -> BenchmarkBundle:
                 evidence_refs=(_evidence(history, 20, "受伤仍未痊愈"),),
                 truth_class=TruthClass.ACCEPTED_WORLD_FACT,
             ),
+            StateRecord(
+                state_id=StableId("state.synthetic.knowledge-secret"),
+                subject_id=character_id,
+                predicate="knowledge_secret",
+                value="hidden",
+                valid_time=StoryTime(worldline="main", start_ordinal=15),
+                evidence_refs=(_evidence(history, 5, "旧誓言"),),
+                truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+            ),
+            StateRecord(
+                state_id=StableId("state.synthetic.skill-boundary"),
+                subject_id=character_id,
+                predicate="skill_boundary",
+                value="limited",
+                valid_time=StoryTime(worldline="main", start_ordinal=18),
+                evidence_refs=(_evidence(history, 5, "旧誓言"),),
+                truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+            ),
         ),
         obligations=(
             PlanObligation(

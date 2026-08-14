@@ -19,6 +19,7 @@ from novel_agent.agents.curator import CuratorReplayAgent
 from novel_agent.agents.curator_repair import CuratorRepairAgent
 from novel_agent.agents.guardian import GuardianRiskReviewAgent
 from novel_agent.domain.artifacts import ArtifactRef, RootManifest
+from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import (
     ObservedChangeSet,
@@ -478,26 +479,32 @@ class TeacherForcedCuratorPort:
             manifest.schema_version,
         )
         changes_ref = self._persist_changes(result.observed_changes, manifest.schema_version)
+        coverage_receipt = getattr(self._replay.curator, "last_record_kind_coverage", None)
+        curator_receipt_sources: tuple[tuple[tuple[DomainModel, ...], str], ...] = (
+            (
+                self._replay.curator.last_evidence_merge_receipts,
+                "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
+            ),
+            (
+                getattr(
+                    self._replay.curator,
+                    "last_operation_filter_receipts",
+                    (),
+                ),
+                "application/vnd.novel-agent.proposal-operation-filter-receipt+json",
+            ),
+            (
+                (coverage_receipt,) if coverage_receipt is not None else (),
+                "application/vnd.novel-agent.proposal-record-kind-coverage+json",
+            ),
+        )
         curator_transform_refs = tuple(
             self._artifacts.put(
                 canonical_json_bytes(transform.model_dump(mode="json")),
                 media_type,
                 manifest.schema_version,
             )
-            for transforms, media_type in (
-                (
-                    self._replay.curator.last_evidence_merge_receipts,
-                    "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
-                ),
-                (
-                    getattr(
-                        self._replay.curator,
-                        "last_operation_filter_receipts",
-                        (),
-                    ),
-                    "application/vnd.novel-agent.proposal-operation-filter-receipt+json",
-                ),
-            )
+            for transforms, media_type in curator_receipt_sources
             for transform in transforms
         )
         graph_transform_refs = (
@@ -614,6 +621,7 @@ class TeacherForcedCuratorPort:
                 base_commit,
                 current_world,
                 graph_request,
+                repair_feedback=proposal_feedback,
             )
         )
         try:
@@ -744,6 +752,10 @@ class TeacherForcedCuratorPort:
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries), version
         )
+        primary_entries = tuple(
+            entry for entry in entries if entry.request_id == model_request.request_id
+        )
+        primary_raw_refs = self._persist_raw_responses((model_request.request_id,), version)
         if isinstance(error, ValidationError):
             errors = error.errors(include_url=False, include_input=False)
             paths = tuple(".".join(str(part) for part in item["loc"]) or "$" for item in errors)
@@ -761,6 +773,17 @@ class TeacherForcedCuratorPort:
                 if extra_fields
                 else "Curator Draft failed the structured domain contract"
             )
+            rule_messages = sorted(
+                {
+                    str(item["msg"])
+                    for item in error.errors(include_url=False)
+                    if item["type"] == "value_error"
+                }
+            )
+            if rule_messages:
+                detail = "Curator Draft failed the structured domain contract: " + "; ".join(
+                    rule_messages
+                )
             kind = ProposalRejectionKind.SCHEMA_REJECTED
             stage = ProposalRejectionStage.STRUCTURED_SCHEMA
             reason_code = "CURATOR_PROPOSAL_SCHEMA_REJECTED"
@@ -826,7 +849,7 @@ class TeacherForcedCuratorPort:
         output_hash = next(
             (
                 entry.raw_response_hash
-                for entry in reversed(entries)
+                for entry in primary_entries
                 if entry.raw_response_hash is not None
             ),
             None,
@@ -870,7 +893,7 @@ class TeacherForcedCuratorPort:
             operation_indexes=operation_indexes,
             json_pointers=json_pointers,
             violation_rule=violation_rule,
-            raw_draft_ref=raw_refs[-1] if raw_refs else None,
+            raw_draft_ref=primary_raw_refs[-1] if primary_raw_refs else None,
             created_at=datetime.now(UTC),
         )
         rejection_ref = self._artifacts.put(

@@ -183,6 +183,7 @@ def test_public_need_retrieval_and_lineage_contract_edges() -> None:
             "evidence_requirement_by_facet": {
                 unknown_facet.root: next(iter(spec.evidence_requirement_by_facet.values()))
             },
+            "predicates_by_facet": {unknown_facet.root: ()},
         }
     )
     for need_update, message in (

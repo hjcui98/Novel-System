@@ -184,3 +184,81 @@ def test_projection_failure_after_commit_never_claims_rollback() -> None:
     assert result.status is MemoryWriteWorkflowStatus.FATAL
     assert result.workflow_phase is MemoryWriteWorkflowPhase.CANON_COMMITTED
     assert result.canonical_commit_accepted is True
+
+
+def test_proposal_retry_feedback_carries_precise_validation_paths() -> None:
+    """2026-08-14 corridor repair: FEEDBACK must include json_pointers etc.
+
+    ch2 receipts (§28.14) showed the model repeated the same schema defect
+    because the retry feedback dropped validation_error_paths, json_pointers
+    and violation_rule even though the repair contract promises to treat them
+    as mandatory corrections.
+    """
+    import json as _json
+    from datetime import UTC, datetime
+
+    from novel_agent.domain.memory_write import (
+        CuratorProposalRejection,
+        MemoryWriteBudget,
+        MemoryWriteBudgetRemaining,
+        ProposalRejectionKind,
+        ProposalRejectionStage,
+    )
+    from novel_agent.services.pre_candidate_repair import (
+        BoundedPreCandidateRepairPolicy,
+        proposal_rejection_signature,
+    )
+
+    workflow, data = _workflow_and_data()
+    rejection = CuratorProposalRejection(
+        rejection_id=StableId("rejection.retry-feedback"),
+        attempt_id=StableId("attempt.retry-feedback"),
+        workflow_request_id=data.request.request_id,
+        base_commit=BASE,
+        stage=ProposalRejectionStage.STRUCTURED_SCHEMA,
+        kind=ProposalRejectionKind.SCHEMA_REJECTED,
+        reason_code="CURATOR_PROPOSAL_SCHEMA_REJECTED",
+        retryable=True,
+        rejection_signature=proposal_rejection_signature(
+            {"reason": "schema", "paths": ("candidates.0",)}
+        ),
+        validation_error_paths=("candidates.0", "candidates.1"),
+        json_pointers=("/candidates/0", "/candidates/1"),
+        violation_rule="kind_discriminator_required",
+        safe_feedback=("Curator Draft failed the structured domain contract",),
+        created_at=datetime.now(UTC),
+    )
+    policy = BoundedPreCandidateRepairPolicy()
+    directive = policy.decide(
+        rejection=rejection,
+        attempt_count=2,
+        rejection_count=2,
+        same_output_count=0,
+        same_rejection_count=1,
+        budget=MemoryWriteBudget(),
+        remaining=MemoryWriteBudgetRemaining(
+            candidate_revisions=1,
+            curator_repairs=1,
+            normalization_passes=1,
+            guardian_reviews=1,
+            context_refreshes=1,
+            total_model_calls=2,
+            token_budget=12_000,
+            wall_clock_budget_ms=90_000,
+        ),
+    )
+    data.state = MemoryWriteState.PROPOSAL_RETRY
+    data.proposal_rejections = [rejection]
+    data.proposal_directive = directive
+    data.candidate = None
+    assert asyncio.run(workflow._step(data)) is None
+    assert data.state is MemoryWriteState.CURATE_ATTEMPT_PREPARE
+    assert data.proposal_feedback_ref is not None
+    feedback = _json.loads(
+        workflow._artifacts.read_verified(data.proposal_feedback_ref).decode("utf-8")
+    )
+    assert feedback["reason_code"] == "CURATOR_PROPOSAL_SCHEMA_REJECTED"
+    assert feedback["validation_error_paths"] == ["candidates.0", "candidates.1"]
+    assert feedback["json_pointers"] == ["/candidates/0", "/candidates/1"]
+    assert feedback["violation_rule"] == "kind_discriminator_required"
+    assert feedback["mutable_operation_indexes"] == list(directive.scope.mutable_operation_indexes)

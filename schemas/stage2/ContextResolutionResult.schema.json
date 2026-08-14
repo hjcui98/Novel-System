@@ -151,7 +151,14 @@
         "replay",
         "curator_repair",
         "bounded_r2",
-        "risk_review"
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
       ],
       "title": "AgentMode",
       "type": "string"
@@ -161,7 +168,11 @@
         "planner",
         "memory_curator",
         "memory_controller",
-        "memory_guardian"
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
       ],
       "title": "AgentType",
       "type": "string"
@@ -598,6 +609,16 @@
         "need_id": {
           "$ref": "#/$defs/StableId"
         },
+        "predicates_by_facet": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Predicates By Facet",
+          "type": "object"
+        },
         "producer": {
           "minLength": 1,
           "title": "Producer",
@@ -964,6 +985,13 @@
         },
         "base_commit": {
           "$ref": "#/$defs/CommitId"
+        },
+        "canonical_goal_by_chapter": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Canonical Goal By Chapter",
+          "type": "object"
         },
         "chapter_target": {
           "anyOf": [

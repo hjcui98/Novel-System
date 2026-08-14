@@ -77,6 +77,16 @@
         "need_id": {
           "$ref": "#/$defs/StableId"
         },
+        "predicates_by_facet": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Predicates By Facet",
+          "type": "object"
+        },
         "producer": {
           "minLength": 1,
           "title": "Producer",
@@ -358,6 +368,13 @@
     },
     "base_commit": {
       "$ref": "#/$defs/CommitId"
+    },
+    "canonical_goal_by_chapter": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Canonical Goal By Chapter",
+      "type": "object"
     },
     "chapter_target": {
       "anyOf": [

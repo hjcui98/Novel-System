@@ -851,10 +851,15 @@ class Stage2PairedPilotRunner:
                     "retrieval_traces": tuple(
                         trace.model_copy(
                             update={
+                                # Evidence-first traces carry their own facet
+                                # receipts; claim-support completion is a legacy
+                                # diagnostic and must not override them (the
+                                # route/package facet contradiction fix).
                                 "closed_need_facet_ids": (
                                     completion_by_need[trace.need_id].closed_need_facet_ids
                                     if trace.need_id in completion_by_need
-                                    else ()
+                                    and not trace.facet_receipts
+                                    else trace.closed_need_facet_ids
                                 )
                             }
                         )

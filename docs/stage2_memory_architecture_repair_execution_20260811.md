@@ -1,6 +1,6 @@
 # Stage 2 Memory 架构大修执行设计：Evidence-first Writing Package、L0 证据与 KG/Graph 修复
 
-- Lifecycle: `ACCEPTED_REPAIR_EXECUTION`
+- Lifecycle: `ACCEPTED`
 - Status: `PASS / STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`
 - Date: `2026-08-11 +08:00`
 - Stage: `Stage 2 Memory Foundation / Stage 2M repair supersession`

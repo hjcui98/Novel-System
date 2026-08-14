@@ -72,7 +72,7 @@ class NeedValidator:
     canonical completion contracts.
     """
 
-    version = "need_validator.v2"
+    version = "need_validator.v3"
 
     def __init__(self, *, max_total_needs: int = 32) -> None:
         if max_total_needs < 1:
@@ -120,11 +120,6 @@ class NeedValidator:
         rejected_reasons: dict[str, str] = {}
         deduplicated_ids: list[str] = []
         seen: set[tuple[str, tuple[str, ...], str]] = set()
-        canonical_goals = goal_bindings or (
-            {goal.chapter_index: _normalize(goal.summary) for goal in plan.chapter_goals}
-            if plan is not None
-            else {}
-        )
         world_entity_ids = {entity.entity_id for entity in world.entities}
         for draft in drafts:
             unknown_facets = tuple(
@@ -171,24 +166,17 @@ class NeedValidator:
                 rejected_ids.append(draft.draft_id)
                 rejected_reasons[draft.draft_id] = "missing_trigger_goal_binding"
                 continue
-            normalized_trigger_goal = _normalize(draft.trigger_plan_goal)
-            if not normalized_trigger_goal or any(
-                canonical_goals.get(chapter) != normalized_trigger_goal
-                for chapter in draft.trigger_plan_chapters
-            ):
-                rejected_ids.append(draft.draft_id)
-                rejected_reasons[draft.draft_id] = "trigger_goal_mismatch"
-                continue
             if draft.historical_time_scope not in _VALID_WORLDLINES:
                 rejected_ids.append(draft.draft_id)
                 rejected_reasons[draft.draft_id] = "unknown_time_scope"
                 continue
             normalized_question = _normalize(draft.semantic_question)
-            if (
+            normalized_trigger_goal = _normalize(draft.trigger_plan_goal)
+            goal_restated = bool(normalized_trigger_goal) and (
                 normalized_question == normalized_trigger_goal
                 or normalized_trigger_goal in normalized_question
-                or self._looks_future_factualized(draft.semantic_question)
-            ):
+            )
+            if goal_restated or self._looks_future_factualized(draft.semantic_question):
                 rejected_ids.append(draft.draft_id)
                 rejected_reasons[draft.draft_id] = "plan_goal_as_fact"
                 continue

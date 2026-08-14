@@ -260,6 +260,13 @@ class NeedCompletionSpec(DomainModel):
     gap_policy: NeedGapPolicy
     producer: str = Field(min_length=1)
     producer_version: str = Field(min_length=1)
+    # Facet-level predicate binding (2026-08-14 review second follow-up P1):
+    # for each required facet id, the exact predicates that can serve that
+    # facet.  Distinct from Stage1MemoryNeed.predicates, which remains the
+    # Need-wide OR-set used by R1 exact retrieval.  A facet without a binding
+    # cannot be closed (fail-closed); a unit predicate closes only the facets
+    # whose binding contains it.
+    predicates_by_facet: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_facets(self) -> NeedCompletionSpec:
@@ -275,6 +282,10 @@ class NeedCompletionSpec(DomainModel):
             item.root for item in self.required_need_facet_ids
         }:
             raise ValueError("evidence requirements must cover every required NeedFacet")
+        if self.predicates_by_facet and set(self.predicates_by_facet) != {
+            item.root for item in self.required_need_facet_ids
+        }:
+            raise ValueError("facet predicate bindings must cover every required NeedFacet")
         return self
 
 
@@ -321,6 +332,10 @@ class Stage1MemoryNeed(DomainModel):
     semantic_question: str = ""
     trigger_plan_chapters: tuple[int, ...] = ()
     trigger_plan_goal: str = ""
+    # Host-verified canonical goal text per trigger chapter (ADR-0008 public
+    # binding).  The model's ``trigger_plan_goal`` is only an auditable
+    # explanation and is never used as the binding identity again.
+    canonical_goal_by_chapter: dict[int, str] = Field(default_factory=dict)
     planner_artifact_ref: ArtifactId | None = None
     planned_draft_id: str | None = Field(default=None, min_length=1)
     validated_need_set_hash: ArtifactId | None = None
@@ -355,8 +370,19 @@ class Stage1MemoryNeed(DomainModel):
             lineage_complete
         ):
             raise ValueError("planner-derived need requires complete planner lineage")
-        if lineage_complete and self.trigger_plan_chapters and not self.trigger_plan_goal:
-            raise ValueError("planner-derived trigger chapters require the canonical goal text")
+        if (
+            lineage_complete
+            and self.trigger_plan_chapters
+            and not (self.trigger_plan_goal or self.canonical_goal_by_chapter)
+        ):
+            raise ValueError(
+                "planner-derived trigger chapters require the canonical goal text or binding"
+            )
+        if self.canonical_goal_by_chapter and (
+            set(self.canonical_goal_by_chapter) != set(self.trigger_plan_chapters)
+            or any(not goal.strip() for goal in self.canonical_goal_by_chapter.values())
+        ):
+            raise ValueError("canonical goal binding must cover exactly the trigger chapters")
         if bool(self.need_facets) != (self.completion_spec is not None):
             raise ValueError("NeedFacet and NeedCompletionSpec must appear together")
         if self.completion_spec is not None:
@@ -498,6 +524,32 @@ class RetrievalStopReason(StrEnum):
     NO_EXECUTABLE_QUERY = "no_executable_query"
 
 
+class FacetClosureStatus(StrEnum):
+    """Per-facet evidence closure state shared by route, support and package."""
+
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    EXHAUSTED = "exhausted"
+    NOT_EXECUTED = "not_executed"
+
+
+class FacetEvidenceReceipt(DomainModel):
+    """One required NeedFacet's closure against exact L0 evidence.
+
+    Computed once from the selected retrieval candidates and reused by route
+    stop reasons, support diagnostics and the package gap report, so a route
+    can never claim ``exact_satisfied`` for a facet the package marks as a gap.
+    """
+
+    need_id: StableId
+    need_facet_id: StableId
+    facet_kind: NeedFacetKind
+    mandatory: bool
+    status: FacetClosureStatus
+    supporting_unit_ids: tuple[StableId, ...] = ()
+    stop_reason: str = ""
+
+
 class NeedExecutionStatus(StrEnum):
     """Whether a legal Need actually received retrieval budget."""
 
@@ -526,6 +578,10 @@ class RetrievalTrace(DomainModel):
     required_need_facet_ids: tuple[StableId, ...] = ()
     irreducible_need_facet_ids: tuple[StableId, ...] = ()
     closed_need_facet_ids: tuple[StableId, ...] = ()
+    # Facet-driven retrieval: one receipt per required facet, computed from
+    # exact L0 evidence before any claim/support layer runs.
+    facet_receipts: tuple[FacetEvidenceReceipt, ...] = ()
+    retrieval_pages: int = Field(default=1, ge=1)
     anchors_expanded: int = Field(default=0, ge=0)
     spans_expanded: int = Field(default=0, ge=0)
     l0_tokens: int = Field(default=0, ge=0)
@@ -570,6 +626,18 @@ class RetrievalTrace(DomainModel):
             raise ValueError("empty execution status cannot contain candidates")
         if not set(self.closed_need_facet_ids).issubset(self.required_need_facet_ids):
             raise ValueError("closed Need facets must be required facets")
+        if self.facet_receipts and any(
+            receipt.need_id != self.need_id
+            or receipt.need_facet_id not in self.required_need_facet_ids
+            for receipt in self.facet_receipts
+        ):
+            raise ValueError("facet receipts must belong to this Need's required facets")
+        if self.facet_receipts and set(self.closed_need_facet_ids) != {
+            receipt.need_facet_id
+            for receipt in self.facet_receipts
+            if receipt.status is FacetClosureStatus.SUPPORTED
+        }:
+            raise ValueError("closed Need facets must match supported facet receipts")
         return self
 
 

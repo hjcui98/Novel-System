@@ -509,7 +509,10 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
     draft_scope = _draft("scope", "question?", historical_time_scope="future-line")
     draft_unknown_facet = _draft("unknown-facet", "question?", facets=("UNKNOWN",))
     draft_missing_goal_binding = _draft("missing-goal", "question?", chapters=())
-    draft_goal_mismatch = _draft("goal-mismatch", "question?", goal="not canonical")
+    # The model's trigger_plan_goal is only an auditable explanation after the
+    # 2026-08-13 repair: a semantically different restatement must not reject
+    # an otherwise legal draft (P001/P003/P005 root cause).
+    draft_goal_mismatch = _draft("goal-mismatch", "teacher 是否痊愈?", goal="not canonical")
     draft_no_mention = PlannedNeedDraft(
         draft_id="no-mention",
         semantic_question="历史状态与当前状态是否一致?",
@@ -543,14 +546,13 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
         focus_set=focus_set,
         plan=make_synthetic_bundle().plan_roots[0],
     )
-    assert [draft.draft_id for draft in result.accepted_drafts] == ["a"]
+    assert [draft.draft_id for draft in result.accepted_drafts] == ["a", "goal-mismatch"]
     assert set(result.rejected_draft_ids) == {
         "out",
         "fact",
         "scope",
         "unknown-facet",
         "missing-goal",
-        "goal-mismatch",
         "no-mention",
     }
     assert result.rejected_reasons["out"] == "out_of_range_chapters"
@@ -558,7 +560,6 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
     assert result.rejected_reasons["scope"] == "unknown_time_scope"
     assert result.rejected_reasons["unknown-facet"] == "unknown_or_empty_scope_facet"
     assert result.rejected_reasons["missing-goal"] == "missing_trigger_goal_binding"
-    assert result.rejected_reasons["goal-mismatch"] == "trigger_goal_mismatch"
     assert result.rejected_reasons["no-mention"] == "no_anchoring_mention"
     assert result.deduplicated_draft_ids == ("b",)
     assert result.grounded_entity_count >= 1
@@ -575,6 +576,55 @@ def test_validator_rejects_dedupes_and_truncates() -> None:
     )
     assert [draft.draft_id for draft in result.accepted_drafts] == ["a"]
     assert result.truncated_draft_ids == ("c",)
+
+
+def test_validator_accepts_semantically_equivalent_and_empty_goal_explanation() -> None:
+    """2026-08-13 repair: trigger_plan_goal is explanation, not binding identity."""
+    task = _task()
+    world = _entity_world()
+    grounder = NeedDraftGrounder()
+    focus_set = TaskFocusExtractor().extract(task, world)
+    paraphrase = grounder.ground(
+        _draft("paraphrase", "teacher 伤势是否痊愈?", goal="与正文章节目标语义等价的不同表述"),
+        world,
+    )
+    no_explanation = grounder.ground(
+        _draft("no-goal-text", "teacher 当前伤势状态?", goal=""),
+        world,
+    )
+    result = NeedValidator().validate(
+        drafts=(paraphrase, no_explanation),
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert [draft.draft_id for draft in result.accepted_drafts] == [
+        "paraphrase",
+        "no-goal-text",
+    ]
+    assert result.rejected_reasons == {}
+
+
+def test_planner_need_binds_canonical_goal_by_chapter() -> None:
+    """The host binds the plan's canonical goal text onto planner-derived Needs."""
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    gateway = _gateway(_PlannerEndpoint((_planner_payload(),)))
+    result = TaskPlanConditionedNeedGenerator(planner_gateway=gateway).generate_with_lineage(
+        task,
+        world,
+        plan,
+        context,
+    )
+    planner_needs = tuple(need for need in result.needs if need.trigger_plan_chapters)
+    assert planner_needs
+    for need in planner_needs:
+        assert need.canonical_goal_by_chapter
+        assert set(need.canonical_goal_by_chapter) == set(need.trigger_plan_chapters)
+        assert all(goal.strip() for goal in need.canonical_goal_by_chapter.values())
 
 
 def test_validator_need_type_mapping_and_sanitization() -> None:

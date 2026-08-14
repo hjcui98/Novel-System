@@ -196,6 +196,19 @@
           "minLength": 1,
           "title": "Mention",
           "type": "string"
+        },
+        "mention_source": {
+          "default": "explicit",
+          "title": "Mention Source",
+          "type": "string"
+        },
+        "mention_source_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Mention Source Fields",
+          "type": "array"
         }
       },
       "required": [
@@ -794,6 +807,40 @@
       "title": "PlannerStateSummary",
       "type": "object"
     },
+    "PlannerTargetStateCoverage": {
+      "additionalProperties": false,
+      "description": "Per-target-entity state coverage in the planner world summary.\n\nRecords how many of the target entity's states existed at the checkpoint,\nhow many were selected into the bounded summary and how many were\ntruncated, so the planner view can be audited per target without\nserializing the whole World.",
+      "properties": {
+        "available": {
+          "minimum": 0,
+          "title": "Available",
+          "type": "integer"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "selected": {
+          "minimum": 0,
+          "title": "Selected",
+          "type": "integer"
+        },
+        "truncated": {
+          "minimum": 0,
+          "title": "Truncated",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label",
+        "available",
+        "selected",
+        "truncated"
+      ],
+      "title": "PlannerTargetStateCoverage",
+      "type": "object"
+    },
     "PlannerWorldSummary": {
       "additionalProperties": false,
       "description": "Deterministic, bounded world projection shown to the LLM Planner.\n\nAll collections are capped and every string is length-bounded so the\nprompt stays within the serialized request budget; truncation is explicit\nin the field names.",
@@ -885,6 +932,14 @@
             }
           ],
           "title": "Target Range",
+          "type": "array"
+        },
+        "target_state_coverage": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerTargetStateCoverage"
+          },
+          "title": "Target State Coverage",
           "type": "array"
         },
         "task_intent": {
@@ -1046,6 +1101,16 @@
       "title": "Attempts",
       "type": "array"
     },
+    "canonical_scope_by_draft": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Canonical Scope By Draft",
+      "type": "object"
+    },
     "deduplicated_draft_ids": {
       "default": [],
       "items": {
@@ -1100,6 +1165,35 @@
       ],
       "default": null
     },
+    "missing_goal_chapters": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Missing Goal Chapters",
+      "type": "array"
+    },
+    "missing_goal_entities": {
+      "default": [],
+      "items": {
+        "maxItems": 3,
+        "minItems": 3,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "type": "array"
+      },
+      "title": "Missing Goal Entities",
+      "type": "array"
+    },
     "parsed_drafts": {
       "default": [],
       "items": {
@@ -1116,11 +1210,28 @@
       "title": "Raw Response",
       "type": "string"
     },
+    "raw_scope_by_draft": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Raw Scope By Draft",
+      "type": "object"
+    },
     "rejected_reasons": {
       "additionalProperties": {
         "type": "string"
       },
       "title": "Rejected Reasons",
+      "type": "object"
+    },
+    "scope_normalization_reasons": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Scope Normalization Reasons",
       "type": "object"
     },
     "truncated_draft_ids": {

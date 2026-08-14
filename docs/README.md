@@ -2,7 +2,7 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-08-11
+> Updated: 2026-08-13
 >
 > Current progress source: `docs/project_status.md`
 >
@@ -39,10 +39,10 @@ reproducibility, and active Gates remain mandatory.
 | Stage 2A | Memory Agent Harness and Real-Project Validation | `DEVELOPMENT_COMPLETE / CONDITIONAL_PASS` |
 | Stage 2R | Stage 2A real hybrid retrieval workstream | `COMPLETE` |
 | Stage 2W | Stage 2A memory write and repair workstream | `COMPLETE` |
-| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ACTIVE / M4_REPAIR` |
-| Stage 3 | Writer Agent and Writing Context Loop | `ENGINEERING_COMPLETE_IN_ISOLATED_BRANCH / CONDITIONAL_GATE` |
-| Stage 4 | Planner Agent and Planning Context Loop | `IMPLEMENTATION_ACTIVE_IN_ISOLATED_BRANCH` |
-| Stage 5 | Long-running Creative Runtime | `ISOLATED_KERNEL_DESIGN_READY / IMPLEMENTATION_NOT_STARTED` |
+| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ARCHITECTURE_REPAIR_ACCEPTED / NEW_EXECUTABLE_BENCHMARK_RUNNING` |
+| Stage 3 | Writer Agent and Writing Context Loop | `ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING` |
+| Stage 4 | Planner Agent and Planning Context Loop | `ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING` |
+| Stage 5 | Long-running Creative Runtime | `ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN` |
 
 ADR-0006 supersedes ADR-0005 only for Stage 3 and later: Writer and Planner are independent Stage 3/4
 products over the shared Stage 2 Memory foundation, and Stage 5 integrates them into long-running
@@ -68,7 +68,8 @@ canonical project `Stage` numbering.
 | Document | Lifecycle | Current use |
 |---|---|---|
 | `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; current exact paragraph/window slicing and evidence-first Writer package/Ledger delivery |
-| `docs/stage2_memory_architecture_repair_execution_20260811.md` | `ACTIVE_REPAIR_EXECUTION_PLAN` | Codex-reviewed Stage 2 repair roadmap: evidence-first Writer package first, then admitted Need/KG/R1/L1/L2/benchmark repairs |
+| `docs/stage2_memory_architecture_repair_execution_20260811.md` | `ACCEPTED` | Accepted mechanical architecture-repair baseline and historical §29 evidence; current semantic repair direction is the 2026-08-13 document |
+| `docs/stage2_memory_semantic_repair_execution_20260813.md` | `ACTIVE` | Current Stage 2M repair authority: make Need, facet retrieval, exact-L0 packing and durable World memory work together, then verify from clean Genesis |
 | `docs/stage2m_support_closure_campaign_20260802.md` | `ACTIVE` | 2026-08-02 support-closure campaign execution log: quality closure + real C60 ×3 (A0/A1/A2, producer v25→v27) + first-loss repairs; ended `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED` (mechanism gain confirmed, G06/G09 complete claims not formed) |
 | `docs/stage3_writer_core_overall_design.md` | `ACTIVE` | Writer product, plan-conditioned Memory, dynamic Context View, Skills and candidate Gate |
 | `docs/stage3_writer_context_loop_execution.md` | `ACTIVE` | Implemented Stage 3 Writer/Editor/Observer/Context loop; current accepted-identity convergence and real infrastructure/model Gates remain |
@@ -76,6 +77,7 @@ canonical project `Stage` numbering.
 | `docs/stage4_planner_context_loop_execution.md` | `ACTIVE` | Active Stage 4 implementation path: inquiry-conditioned Memory, Planner Context, Reviewer, conditional Graph adoption, then final unified testing |
 | `docs/stage5_long_running_creative_runtime_overall_design.md` | `ACTIVE` | Fixed Plan/Write/Accept/Commit topology, Task/Attempt, recovery, maintenance, controlled evolution and admission boundaries |
 | `docs/stage5_long_running_creative_runtime_execution.md` | `ACTIVE` | Detailed Stage 5 implementation path: isolated Runtime Kernel now, real Stage 4 integration after its Gate, evidence-triggered operations/evolution later |
+| `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md` | `ACTIVE` | Current next-development authority: production Stage 2～5 vertical loop, completed G1～G8 engineering closure, composition contract and real-novel Pilot procedure |
 
 ## 5. Accepted decisions, baselines, and gate evidence
 

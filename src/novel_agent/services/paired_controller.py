@@ -10,6 +10,7 @@ from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.memory import (
     ChannelHit,
+    FacetEvidenceReceipt,
     FusedCandidate,
     NeedExecutionStatus,
     NeedRisk,
@@ -36,6 +37,7 @@ from novel_agent.runtime.memory_controller import (
     BoundedMemoryController,
     ControllerPolicy,
 )
+from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.memory_pipeline import ContextCompiler
 from novel_agent.services.retrieval import (
     FusionService,
@@ -634,93 +636,156 @@ class PairedMemoryControllerRunner:
         results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
         candidates: tuple[FusedCandidate, ...] = ()
         called: list[RetrievalChannel] = []
+        limit_by_channel: dict[RetrievalChannel, int] = {}
+        window = per_channel_limit
+        max_window = max(per_channel_limit, 100)
+        window_step = max(1, per_channel_limit)
 
         def execute(
             channels: tuple[RetrievalChannel, ...],
             *,
             use_rrf: bool,
+            limit: int,
             reserve_incoming: bool = False,
             expand_historical_query: bool = False,
         ) -> None:
             nonlocal candidates
             group_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
             for channel in channels:
-                if channel in results:
+                if channel in results and limit_by_channel.get(channel, 0) >= limit:
                     continue
                 query_need = (
                     PairedMemoryControllerRunner._historical_fallback_need(need)
                     if expand_historical_query
                     else need
                 )
-                hits = backend.search(query_need, channel, per_channel_limit)
+                hits = backend.search(query_need, channel, limit)
                 results[channel] = hits
+                limit_by_channel[channel] = limit
                 group_results[channel] = hits
-                called.append(channel)
+                if channel not in called:
+                    called.append(channel)
             if not group_results:
                 return
             group_candidates = (
-                fusion.fuse(group_results, limit=per_channel_limit)
+                fusion.fuse(group_results, limit=limit)
                 if use_rrf and len(group_results) > 1
-                else PairedMemoryControllerRunner._direct_candidates(
-                    group_results, limit=per_channel_limit
-                )
+                else PairedMemoryControllerRunner._direct_candidates(group_results, limit=limit)
             )
             candidates = PairedMemoryControllerRunner._merge_candidates(
                 candidates,
                 group_candidates,
-                limit=per_channel_limit,
+                limit=limit,
                 reserve_incoming=reserve_incoming,
             )
 
-        execute(tuple(step.channel for step in plan.mandatory_steps), use_rrf=False)
-        for group in plan.primary_groups:
+        def primary_window(limit: int) -> tuple[FusedCandidate, ...]:
             execute(
-                tuple(step.channel for step in group.steps),
-                use_rrf=group.fusion_profile is not None,
+                tuple(step.channel for step in plan.mandatory_steps),
+                use_rrf=False,
+                limit=limit,
             )
+            for group in plan.primary_groups:
+                execute(
+                    tuple(step.channel for step in group.steps),
+                    use_rrf=group.fusion_profile is not None,
+                    limit=limit,
+                )
+            return candidates
 
         fallback_used = False
         fallback_reason: str | None = None
-        for fallback in plan.conditional_fallbacks:
-            if not PairedMemoryControllerRunner._fallback_applies(
+        rerank_applied = False
+        rerank_failure: str | None = None
+        receipts: tuple[FacetEvidenceReceipt, ...] = ()
+
+        def rerank_and_select(limit: int) -> tuple[FusedCandidate, ...]:
+            nonlocal rerank_applied, rerank_failure
+            fusion_applied = any(
+                group.fusion_profile is not None for group in plan.primary_groups
+            ) or (
+                fallback_used
+                and any(item.fusion_profile is not None for item in plan.conditional_fallbacks)
+            )
+            if fusion_applied and reranker is not None:
+                try:
+                    ranking_need = (
+                        PairedMemoryControllerRunner._historical_fallback_need(need)
+                        if fallback_used
+                        else need
+                    )
+                    ranked = reranker.rerank(ranking_need, candidates, limit=limit)
+                    rerank_applied = True
+                    return ranked
+                except Exception as error:
+                    rerank_failure = f"reranker_degraded:{type(error).__name__}"
+            return candidates
+
+        while True:
+            primary_window(window)
+            candidates = rerank_and_select(window)
+            candidates = PairedMemoryControllerRunner._protect_historical_evidence(
+                need,
+                candidates,
+                limit=window,
+            )
+            selected = tuple(candidate for candidate in candidates if candidate.selected)
+            receipts = FacetSupportEvaluator.evaluate(need, selected)
+            if FacetSupportEvaluator.mandatory_closed(need, receipts) or window >= max_window:
+                break
+            window = min(window + window_step, max_window)
+        pages = (window - per_channel_limit) // window_step + 1
+
+        satisfied = FacetSupportEvaluator.mandatory_closed(need, receipts)
+        fallback_applies = any(
+            PairedMemoryControllerRunner._fallback_applies(
                 fallback.condition,
                 candidates,
                 need=need,
-            ):
-                continue
-            fallback_used = True
-            fallback_reason = fallback.condition
-            steps = tuple(step.channel for step in fallback.steps)
-            execute(
-                steps,
-                use_rrf=fallback.fusion_profile is not None,
-                reserve_incoming=True,
-                expand_historical_query=True,
             )
-
-        fusion_applied = any(group.fusion_profile is not None for group in plan.primary_groups) or (
-            fallback_used
-            and any(item.fusion_profile is not None for item in plan.conditional_fallbacks)
+            for fallback in plan.conditional_fallbacks
         )
-        rerank_applied = False
-        rerank_failure: str | None = None
-        if fusion_applied and reranker is not None:
-            try:
-                ranking_need = (
-                    PairedMemoryControllerRunner._historical_fallback_need(need)
-                    if fallback_used
-                    else need
+        if fallback_applies:
+            for fallback in plan.conditional_fallbacks:
+                if not PairedMemoryControllerRunner._fallback_applies(
+                    fallback.condition,
+                    candidates,
+                    need=need,
+                ):
+                    continue
+                fallback_used = True
+                fallback_reason = fallback.condition
+                steps = tuple(step.channel for step in fallback.steps)
+                execute(
+                    steps,
+                    use_rrf=fallback.fusion_profile is not None,
+                    limit=max_window,
+                    reserve_incoming=True,
+                    expand_historical_query=True,
                 )
-                candidates = reranker.rerank(ranking_need, candidates, limit=per_channel_limit)
-                rerank_applied = True
-            except Exception as error:
-                rerank_failure = f"reranker_degraded:{type(error).__name__}"
-        candidates = PairedMemoryControllerRunner._protect_historical_evidence(
-            need,
-            candidates,
-            limit=per_channel_limit,
-        )
-        selected = tuple(candidate for candidate in candidates if candidate.selected)
+            candidates = rerank_and_select(max_window)
+            candidates = PairedMemoryControllerRunner._protect_historical_evidence(
+                need,
+                candidates,
+                limit=max_window,
+            )
+            selected = tuple(candidate for candidate in candidates if candidate.selected)
+            receipts = FacetSupportEvaluator.evaluate(need, selected)
+
+        closed = FacetSupportEvaluator.closed_facet_ids(receipts)
+        satisfied = FacetSupportEvaluator.mandatory_closed(need, receipts)
+        if satisfied and selected:
+            stop_reason = (
+                RetrievalStopReason.EXACT_SATISFIED
+                if not fallback_used
+                else RetrievalStopReason.BUDGET_SATISFIED
+            )
+        else:
+            stop_reason = (
+                RetrievalStopReason.FALLBACK_EXHAUSTED
+                if fallback_used
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            )
         return RetrievalTrace(
             need_id=need.need_id,
             intent=need.query_intent,
@@ -729,7 +794,11 @@ class PairedMemoryControllerRunner:
                 channel: hits[0].candidate_count if hits else 0 for channel, hits in results.items()
             },
             candidates=candidates,
-            fusion_applied=fusion_applied,
+            fusion_applied=any(group.fusion_profile is not None for group in plan.primary_groups)
+            or (
+                fallback_used
+                and any(item.fusion_profile is not None for item in plan.conditional_fallbacks)
+            ),
             rerank_applied=rerank_applied,
             channel_failures=(
                 {RetrievalChannel.RERANK: rerank_failure} if rerank_failure is not None else {}
@@ -739,15 +808,10 @@ class PairedMemoryControllerRunner:
             compiled_query_bundle=plan.compiled_query_bundle.model_dump(mode="json"),
             effective_channels=plan.effective_channels,
             query_unavailable_reasons=plan.query_unavailable_reasons,
-            stop_reason=(
-                RetrievalStopReason.EXACT_SATISFIED
-                if selected and not fallback_used
-                else RetrievalStopReason.BUDGET_SATISFIED
-                if selected
-                else RetrievalStopReason.FALLBACK_EXHAUSTED
-                if fallback_used
-                else RetrievalStopReason.CANDIDATES_EXHAUSTED
-            ),
+            stop_reason=stop_reason,
+            closed_need_facet_ids=closed,
+            facet_receipts=receipts,
+            retrieval_pages=pages,
             **PairedMemoryControllerRunner._trace_diagnostics(
                 need,
                 allocated=len(called),
@@ -851,6 +915,21 @@ class PairedMemoryControllerRunner:
             limit=per_channel_limit,
         )
         selected = tuple(candidate for candidate in candidates if candidate.selected)
+        receipts = FacetSupportEvaluator.evaluate(need, selected)
+        closed = FacetSupportEvaluator.closed_facet_ids(receipts)
+        satisfied = FacetSupportEvaluator.mandatory_closed(need, receipts)
+        if satisfied and selected:
+            stop_reason = (
+                RetrievalStopReason.EXACT_SATISFIED
+                if not fallback_used
+                else RetrievalStopReason.BUDGET_SATISFIED
+            )
+        else:
+            stop_reason = (
+                RetrievalStopReason.FALLBACK_EXHAUSTED
+                if fallback_used
+                else RetrievalStopReason.CANDIDATES_EXHAUSTED
+            )
         return RetrievalTrace(
             need_id=need.need_id,
             intent=need.query_intent,
@@ -869,15 +948,9 @@ class PairedMemoryControllerRunner:
             compiled_query_bundle=plan.compiled_query_bundle.model_dump(mode="json"),
             effective_channels=plan.effective_channels,
             query_unavailable_reasons=plan.query_unavailable_reasons,
-            stop_reason=(
-                RetrievalStopReason.EXACT_SATISFIED
-                if selected and not fallback_used
-                else RetrievalStopReason.BUDGET_SATISFIED
-                if selected
-                else RetrievalStopReason.FALLBACK_EXHAUSTED
-                if fallback_used
-                else RetrievalStopReason.CANDIDATES_EXHAUSTED
-            ),
+            stop_reason=stop_reason,
+            closed_need_facet_ids=closed,
+            facet_receipts=receipts,
             **PairedMemoryControllerRunner._trace_diagnostics(
                 need,
                 allocated=len(results),

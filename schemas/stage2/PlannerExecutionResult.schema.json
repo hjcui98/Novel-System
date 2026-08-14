@@ -142,7 +142,14 @@
         "replay",
         "curator_repair",
         "bounded_r2",
-        "risk_review"
+        "risk_review",
+        "draft",
+        "continue",
+        "major_rewrite",
+        "review",
+        "local_repair",
+        "observe",
+        "chapter_set"
       ],
       "title": "AgentMode",
       "type": "string"
@@ -152,7 +159,11 @@
         "planner",
         "memory_curator",
         "memory_controller",
-        "memory_guardian"
+        "memory_guardian",
+        "writer",
+        "editor",
+        "candidate_observer",
+        "plan_reviewer"
       ],
       "title": "AgentType",
       "type": "string"
@@ -225,6 +236,90 @@
       ],
       "title": "ContractRef",
       "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
     },
     "ExecutionStatus": {
       "enum": [
@@ -301,6 +396,22 @@
           "title": "Coverage",
           "type": "number"
         },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "graph_path_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Graph Path Receipt Refs",
+          "type": "array"
+        },
         "items": {
           "items": {
             "$ref": "#/$defs/ProposedItem"
@@ -308,8 +419,27 @@
           "title": "Items",
           "type": "array"
         },
+        "memory_need_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Memory Need Ids",
+          "type": "array"
+        },
         "mode": {
           "$ref": "#/$defs/AgentMode"
+        },
+        "parent_proposal_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "project_id": {
           "$ref": "#/$defs/ProjectId"
@@ -319,6 +449,28 @@
         },
         "receipt": {
           "$ref": "#/$defs/AgentExecutionReceipt"
+        },
+        "reviewed_inquiry_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reviewer_receipt_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "strategy": {
           "anyOf": [
@@ -488,6 +640,18 @@
       "title": "ProposedItem",
       "type": "object"
     },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
     "RunId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "RunId",
@@ -649,6 +813,35 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "TaskId",
       "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
     },
     "WorldDesignProposal": {
       "additionalProperties": false,

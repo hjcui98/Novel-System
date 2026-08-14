@@ -41,6 +41,19 @@ def test_real_ztj_teacher_forced_flow_builds_genesis_and_five_frozen_cases(
     assert summary["chapter_commit_count"] == 96
     assert summary["curator_replay_agent_calls"] == 95
     assert summary["checkpoint_chapters"] == [20, 40, 60, 80, 95]
+    frozen_inputs = summary["frozen_checkpoint_inputs"]
+    assert [item["checkpoint_chapter"] for item in frozen_inputs] == [20, 40, 60, 80, 95]
+    assert all(item["commit"] for item in frozen_inputs)
+    assert all(
+        (
+            output
+            / "objects"
+            / "sha256"
+            / item["comparison_ref"]["artifact_id"][7:9]
+            / item["comparison_ref"]["artifact_id"][7:]
+        ).is_file()
+        for item in frozen_inputs
+    )
     assert summary["paired_results_count"] == 0
     assert summary["paired_comparison_status"] == "NOT_RUN"
     # Scripted smoke does not carry trusted semantic support receipts for the

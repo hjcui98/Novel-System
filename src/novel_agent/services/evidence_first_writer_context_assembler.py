@@ -21,6 +21,7 @@ from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
     ExpectedClaimScope,
+    FacetEvidenceReceipt,
     NeedFacet,
     RequirementLevel,
     Stage1MemoryNeed,
@@ -63,6 +64,9 @@ class SliceSelectionTrace(DomainModel):
     rerank_score: float | None = Field(default=None, ge=0.0, le=1.0)
     selection_reason: str = Field(min_length=1)
     evidence_ref: EvidenceRef | None = None
+    # Facet ids of the public Need this slice's retrieval unit can serve with
+    # exact evidence; the package gap report and route receipts share this.
+    supported_facet_ids: tuple[StableId, ...] = ()
 
 
 class NeedEvidenceSelection(DomainModel):
@@ -71,6 +75,7 @@ class NeedEvidenceSelection(DomainModel):
     need: Stage1MemoryNeed
     selections: tuple[SliceSelectionTrace, ...] = ()
     slices: tuple[EvidenceSlice, ...] = ()
+    facet_receipts: tuple[FacetEvidenceReceipt, ...] = ()
 
 
 class EvidenceFirstAssemblyResult(DomainModel):
@@ -79,6 +84,9 @@ class EvidenceFirstAssemblyResult(DomainModel):
     evidence_ledger: EvidenceLedgerV2
     diagnostic_codes: tuple[str, ...] = ()
     mechanical_failure_counts: dict[str, int] = Field(default_factory=dict)
+    # Required, no success default: the assembler always computes it
+    # (2026-08-14 review follow-up P1).
+    mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     assembler_version: str = Field(min_length=1)
 
 
@@ -152,14 +160,10 @@ class EvidenceFirstWriterContextAssembler:
             "scope": 0,
             "cutoff": 0,
         }
-        facet_by_need: dict[StableId, tuple[NeedFacet, ...]] = {
-            selection.need.need_id: selection.need.need_facets for selection in selections
-        }
         need_by_id = {selection.need.need_id: selection.need for selection in selections}
         ledger_by_span: dict[tuple[str, int, int], EvidenceLedgerEntryV2] = {}
         ledger_order: list[tuple[str, int, int]] = []
         dropped_slice_reasons: dict[str, str] = {}
-        items: list[WriterContextEvidenceItem] = []
 
         ledger_tokens = 0
 
@@ -169,6 +173,7 @@ class EvidenceFirstWriterContextAssembler:
             evidence_refs: tuple[EvidenceRef, ...],
             unit_ids: tuple[StableId, ...],
             need_id: StableId,
+            facet_ids: tuple[StableId, ...],
         ) -> StableId:
             nonlocal ledger_tokens
             existing = ledger_by_span.get(span_key)
@@ -177,15 +182,7 @@ class EvidenceFirstWriterContextAssembler:
                     update={
                         "need_ids": tuple(dict.fromkeys((*existing.need_ids, need_id))),
                         "need_facet_ids": tuple(
-                            dict.fromkeys(
-                                (
-                                    *existing.need_facet_ids,
-                                    *(
-                                        facet.need_facet_id
-                                        for facet in facet_by_need.get(need_id, ())
-                                    ),
-                                )
-                            )
+                            dict.fromkeys((*existing.need_facet_ids, *facet_ids))
                         ),
                         "retrieval_unit_ids": tuple(
                             dict.fromkeys((*existing.retrieval_unit_ids, *unit_ids))
@@ -215,15 +212,18 @@ class EvidenceFirstWriterContextAssembler:
                 quote_hash=slice_.quote_hash,
                 dereference_receipt="verified_read",
                 need_ids=(need_id,),
-                need_facet_ids=tuple(
-                    facet.need_facet_id for facet in facet_by_need.get(need_id, ())
-                ),
+                need_facet_ids=facet_ids,
             )
             ledger_by_span[span_key] = entry
             ledger_order.append(span_key)
             ledger_tokens += self._count(entry.evidence_text)
             return entry_id
 
+        # Per-Need ordered packing plans: (trace, ledger id, served facet ids).
+        need_plans: dict[
+            StableId,
+            tuple[tuple[SliceSelectionTrace, StableId, tuple[StableId, ...]], ...],
+        ] = {}
         for selection in selections:
             need = selection.need
             seen_spans: dict[tuple[str, int, int], SliceSelectionTrace] = {}
@@ -250,23 +250,176 @@ class EvidenceFirstWriterContextAssembler:
                     key=lambda trace: (trace.fused_rank, trace.slice_id.root),
                 )
             )
-            ledger_ids: list[StableId] = []
+            plans: list[tuple[SliceSelectionTrace, StableId, tuple[StableId, ...]]] = []
             for trace in ordered:
                 slice_ = slice_by_id[trace.slice_id]
                 span_key = self._span_key(slice_)
                 evidence_refs = (trace.evidence_ref,) if trace.evidence_ref is not None else ()
                 unit_ids = (trace.unit_id,)
-                ledger_ids.append(
-                    add_ledger_entry(
-                        span_key,
-                        slice_,
-                        evidence_refs,
-                        unit_ids,
-                        need.need_id,
-                    )
+                # Facet support is predicate-bound (2026-08-14 review P1): an
+                # entry serves exactly the facets its unit's predicate
+                # established.  An empty supported set is an honest "no
+                # semantic support" and must NOT fall back to serving every
+                # facet of the Need (that was the blanket-closure false
+                # success).
+                entry_facet_ids = trace.supported_facet_ids
+                entry_id = add_ledger_entry(
+                    span_key,
+                    slice_,
+                    evidence_refs,
+                    unit_ids,
+                    need.need_id,
+                    entry_facet_ids,
                 )
+                plans.append((trace, entry_id, entry_facet_ids))
+            need_plans[need.need_id] = tuple(plans)
+
+        required_facets: dict[StableId, tuple[StableId, ...]] = {
+            selection.need.need_id: (
+                selection.need.completion_spec.required_need_facet_ids
+                if selection.need.completion_spec is not None
+                else tuple(facet.need_facet_id for facet in selection.need.need_facets)
+            )
+            for selection in selections
+        }
+        mandatory_need_ids = {
+            selection.need.need_id
+            for selection in selections
+            if selection.need.requirement is RequirementLevel.MANDATORY
+        }
+        # Pass 1: round-robin over Needs, one minimal exact slice per required
+        # facet, so early Needs cannot starve later mandatory facets of ledger
+        # tokens.  Pass 2: remaining slices by Need priority and route rank.
+        packed_entries: dict[StableId, list[StableId]] = {need_id: [] for need_id in need_plans}
+        packed_span_keys: set[tuple[str, int, int]] = set()
+        used_writer_tokens = 0
+        used_ledger_tokens = 0
+        budget_exhausted = False
+
+        def span_key_for(entry_id: StableId) -> tuple[str, int, int]:
+            return next(
+                span_key
+                for span_key, entry in ledger_by_span.items()
+                if entry.ledger_id == entry_id
+            )
+
+        def new_ledger_tokens(entry_id: StableId) -> int:
+            span_key = span_key_for(entry_id)
+            if span_key in packed_span_keys:
+                return 0
+            return self._count(ledger_by_span[span_key].evidence_text)
+
+        def item_tokens(need: Stage1MemoryNeed, entry_ids: tuple[StableId, ...]) -> int:
+            texts = tuple(
+                ledger_by_span[span_key_for(entry_id)].evidence_text for entry_id in entry_ids
+            )
+            preview, truncated = self._preview(texts)
+            section = (need.expected_section or WriterContextSection.CONTINUITY_CONSTRAINTS).value
+            return self._count(
+                f"[{section}] {self._purpose(need)}\n"
+                f"  {preview}{' [truncated]' if truncated else ''}"
+            )
+
+        def fits(need: Stage1MemoryNeed, entry_id: StableId) -> bool:
+            nonlocal used_writer_tokens, used_ledger_tokens
+            cost_writer = item_tokens(need, (*packed_entries[need.need_id], entry_id)) - (
+                item_tokens(need, tuple(packed_entries[need.need_id]))
+                if packed_entries[need.need_id]
+                else 0
+            )
+            cost_ledger = new_ledger_tokens(entry_id)
+            if (
+                used_writer_tokens + cost_writer <= writer_token_budget
+                and used_ledger_tokens + cost_ledger <= evidence_ledger_token_budget
+            ):
+                used_writer_tokens += cost_writer
+                used_ledger_tokens += cost_ledger
+                span_key = span_key_for(entry_id)
+                packed_span_keys.add(span_key)
+                packed_entries[need.need_id].append(entry_id)
+                return True
+            return False
+
+        satisfied_facets: dict[StableId, set[StableId]] = {need_id: set() for need_id in need_plans}
+        # Best plan index per (need, facet); facets without any serving plan
+        # stay unsatisfied and become typed gaps.
+        facet_plan_index: dict[tuple[StableId, StableId], int] = {}
+        for need_id, need_plans_for_need in need_plans.items():
+            for facet_id in required_facets.get(need_id, ()):
+                index = next(
+                    (
+                        index
+                        for index, plan in enumerate(need_plans_for_need)
+                        if facet_id in plan[2]
+                    ),
+                    None,
+                )
+                if index is not None:
+                    facet_plan_index[(need_id, facet_id)] = index
+
+        need_order = tuple(
+            sorted(
+                need_plans,
+                key=lambda need_id: (
+                    need_id not in mandatory_need_ids,
+                    -need_by_id[need_id].priority,
+                    need_id.root,
+                ),
+            )
+        )
+        # Pass 1: round-robin cycles, one facet slice per Need per cycle.
+        while not budget_exhausted:
+            progressed = False
+            for need_id in need_order:
+                if budget_exhausted:
+                    break
+                next_facet = next(
+                    (
+                        facet_id
+                        for facet_id in required_facets.get(need_id, ())
+                        if facet_id not in satisfied_facets[need_id]
+                        and (need_id, facet_id) in facet_plan_index
+                    ),
+                    None,
+                )
+                if next_facet is None:
+                    continue
+                plan = need_plans[need_id][facet_plan_index[(need_id, next_facet)]]
+                if fits(need_by_id[need_id], plan[1]):
+                    satisfied_facets[need_id].update(
+                        facet_id
+                        for facet_id in plan[2]
+                        if facet_id in required_facets.get(need_id, ())
+                    )
+                    progressed = True
+                else:
+                    budget_exhausted = True
+            if not progressed:
+                break
+        # Pass 2: remaining slices by Need priority then route rank.
+        if not budget_exhausted:
+            for need_id in need_order:
+                if budget_exhausted:
+                    break
+                for plan in need_plans[need_id]:
+                    if plan[1] in packed_entries[need_id]:
+                        continue
+                    if fits(need_by_id[need_id], plan[1]):
+                        satisfied_facets[need_id].update(
+                            facet_id
+                            for facet_id in plan[2]
+                            if facet_id in required_facets.get(need_id, ())
+                        )
+                    else:
+                        budget_exhausted = True
+                        break
+
+        items: list[WriterContextEvidenceItem] = []
+        for selection in selections:
+            need = selection.need
+            entries = packed_entries.get(need.need_id, ())
             facet_ids = tuple(facet.need_facet_id for facet in need.need_facets)
-            if not ledger_ids:
+            if not entries:
                 gap = EvidenceFirstGap(
                     gap_id=StableId(f"gap.{need.need_id.root}.no-evidence"[:128]),
                     need_ids=(need.need_id,),
@@ -287,13 +440,15 @@ class EvidenceFirstWriterContextAssembler:
                     )
                 )
                 continue
-            preview, truncated = self._preview(
-                tuple(
-                    ledger_by_span[self._span_key(slice_by_id[trace.slice_id])].evidence_text
-                    for trace in ordered
-                )
+            texts = tuple(
+                ledger_by_span[span_key_for(entry_id)].evidence_text for entry_id in entries
             )
-            top = ordered[0]
+            preview, truncated = self._preview(texts)
+            top = next(
+                trace
+                for trace, _entry_id, _facets in need_plans[need.need_id]
+                if _entry_id == entries[0]
+            )
             validity = self._validity_from_facets(need.need_facets)
             items.append(
                 WriterContextEvidenceItem(
@@ -302,7 +457,7 @@ class EvidenceFirstWriterContextAssembler:
                     need_ids=(need.need_id,),
                     need_facet_ids=facet_ids,
                     purpose=self._purpose(need),
-                    evidence_ledger_ids=tuple(dict.fromkeys(ledger_ids)),
+                    evidence_ledger_ids=tuple(dict.fromkeys(entries)),
                     raw_preview=preview,
                     preview_truncated=truncated,
                     source_scope=need.access_scope,
@@ -315,6 +470,36 @@ class EvidenceFirstWriterContextAssembler:
                     ),
                 )
             )
+            # Per-facet typed gaps for mandatory facets with no exact evidence,
+            # using the same facet language the route recorded.
+            if need.need_id in mandatory_need_ids:
+                for facet in need.need_facets:
+                    if facet.need_facet_id in satisfied_facets.get(need.need_id, ()):
+                        continue
+                    gap = EvidenceFirstGap(
+                        gap_id=StableId(
+                            f"gap.{need.need_id.root}.facet.{facet.facet_kind.value}"[:128]
+                        ),
+                        need_ids=(need.need_id,),
+                        need_facet_ids=(facet.need_facet_id,),
+                        kind=EvidenceGapKind.NO_SELECTED_EVIDENCE,
+                        reason="mandatory facet closed by no exact L0 evidence",
+                    )
+                    items.append(
+                        WriterContextEvidenceItem(
+                            item_id=StableId(
+                                f"context-item.{need.need_id.root}.{facet.facet_kind.value}"[:128]
+                            ),
+                            section=need.expected_section
+                            or WriterContextSection.CONTINUITY_CONSTRAINTS,
+                            need_ids=(need.need_id,),
+                            need_facet_ids=(facet.need_facet_id,),
+                            purpose=f"{self._purpose(need)} [{facet.facet_kind.value}]",
+                            mandatory=True,
+                            gap=gap,
+                        )
+                    )
+                    diagnostics.append(f"MANDATORY_FACET_GAP:{facet.facet_kind.value}")
 
         ordered_items = tuple(
             sorted(
@@ -326,7 +511,7 @@ class EvidenceFirstWriterContextAssembler:
                 ),
             )
         )
-        packed, dropped = self._pack(
+        packed, dropped = self._pack_items(
             ordered_items,
             ledger_by_span,
             writer_token_budget=writer_token_budget,
@@ -391,9 +576,17 @@ class EvidenceFirstWriterContextAssembler:
         ):  # pragma: no branch - pack keeps the ledger within budget
             status = ContextAssemblyStatus.EVIDENCE_INSUFFICIENT  # pragma: no cover
             diagnostics.append("EVIDENCE_LEDGER_BUDGET_EXCEEDED")  # pragma: no cover
-        elif any(item.gap is not None and item.mandatory for item in packed_items):
-            status = ContextAssemblyStatus.EVIDENCE_INSUFFICIENT
-            diagnostics.append("MANDATORY_NEED_EVIDENCE_GAP")
+        # Package status is the ADR-0008 mechanical delivery status: typed gaps
+        # may coexist with READY.  Mandatory-facet closure is reported
+        # separately and is the repair-campaign gate, never the mechanical one.
+        mandatory_gap_items = tuple(
+            item for item in packed_items if item.gap is not None and item.mandatory
+        )
+        mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = (
+            "INCOMPLETE" if mandatory_gap_items else "COMPLETE"
+        )
+        if mandatory_gap_items:
+            diagnostics.append("MANDATORY_FACET_CLOSURE_INCOMPLETE")
         budget_report = WriterContextBudgetReportV2(
             tokenizer=self._tokenizer_name,
             tokenizer_version=self._tokenizer_version,
@@ -445,10 +638,11 @@ class EvidenceFirstWriterContextAssembler:
             evidence_ledger=ledger,
             diagnostic_codes=tuple(dict.fromkeys(diagnostics)),
             mechanical_failure_counts=mechanical_failure_counts,
+            mandatory_facet_closure=mandatory_facet_closure,
             assembler_version=self.version,
         )
 
-    def _pack(
+    def _pack_items(
         self,
         items: tuple[WriterContextEvidenceItem, ...],
         ledger_by_span: Mapping[tuple[str, int, int], EvidenceLedgerEntryV2],

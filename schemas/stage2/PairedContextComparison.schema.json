@@ -1220,6 +1220,61 @@
       "title": "ExpectedClaimScope",
       "type": "string"
     },
+    "FacetClosureStatus": {
+      "description": "Per-facet evidence closure state shared by route, support and package.",
+      "enum": [
+        "supported",
+        "unsupported",
+        "exhausted",
+        "not_executed"
+      ],
+      "title": "FacetClosureStatus",
+      "type": "string"
+    },
+    "FacetEvidenceReceipt": {
+      "additionalProperties": false,
+      "description": "One required NeedFacet's closure against exact L0 evidence.\n\nComputed once from the selected retrieval candidates and reused by route\nstop reasons, support diagnostics and the package gap report, so a route\ncan never claim ``exact_satisfied`` for a facet the package marks as a gap.",
+      "properties": {
+        "facet_kind": {
+          "$ref": "#/$defs/NeedFacetKind"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "status": {
+          "$ref": "#/$defs/FacetClosureStatus"
+        },
+        "stop_reason": {
+          "default": "",
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "supporting_unit_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supporting Unit Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "need_id",
+        "need_facet_id",
+        "facet_kind",
+        "mandatory",
+        "status"
+      ],
+      "title": "FacetEvidenceReceipt",
+      "type": "object"
+    },
     "FacetEvidenceRequirement": {
       "enum": [
         "traceable_cutoff_source",
@@ -1623,6 +1678,16 @@
         },
         "need_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "predicates_by_facet": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Predicates By Facet",
+          "type": "object"
         },
         "producer": {
           "minLength": 1,
@@ -2127,6 +2192,14 @@
           "title": "Effective Channels",
           "type": "array"
         },
+        "facet_receipts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FacetEvidenceReceipt"
+          },
+          "title": "Facet Receipts",
+          "type": "array"
+        },
         "fallback_reason": {
           "anyOf": [
             {
@@ -2200,6 +2273,12 @@
           "default": false,
           "title": "Rerank Applied",
           "type": "boolean"
+        },
+        "retrieval_pages": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Retrieval Pages",
+          "type": "integer"
         },
         "scenes_expanded": {
           "default": 0,
@@ -2669,6 +2748,13 @@
         },
         "base_commit": {
           "$ref": "#/$defs/CommitId"
+        },
+        "canonical_goal_by_chapter": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Canonical Goal By Chapter",
+          "type": "object"
         },
         "chapter_target": {
           "anyOf": [

@@ -200,6 +200,14 @@
       "title": "Ledger Tokens",
       "type": "integer"
     },
+    "mandatory_facet_closure": {
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE"
+      ],
+      "title": "Mandatory Facet Closure",
+      "type": "string"
+    },
     "manifest_id": {
       "$ref": "#/$defs/StableId"
     },
@@ -292,7 +300,8 @@
     "ledger_entry_count",
     "ledger_tokens",
     "budget_status",
-    "assembly_status"
+    "assembly_status",
+    "mandatory_facet_closure"
   ],
   "title": "EvidenceFirstPackageManifest",
   "type": "object"

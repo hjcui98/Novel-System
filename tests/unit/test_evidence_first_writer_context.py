@@ -365,7 +365,10 @@ class TestEvidenceFirstWriterContextAssembler:
     def test_unselected_need_becomes_typed_gap(self) -> None:
         mandatory = _need()
         result = self._assembly(NeedEvidenceSelection(need=mandatory, selections=(), slices=()))
-        assert result.status is ContextAssemblyStatus.EVIDENCE_INSUFFICIENT
+        # Typed gaps do not block the ADR-0008 mechanical package READY; they
+        # mark the mandatory-facet closure INCOMPLETE (the repair-campaign gate).
+        assert result.status is ContextAssemblyStatus.READY
+        assert result.mandatory_facet_closure == "INCOMPLETE"
         assert len(result.package.items) == 1
         item = result.package.items[0]
         assert item.gap is not None
@@ -375,6 +378,7 @@ class TestEvidenceFirstWriterContextAssembler:
         optional = _need("need.test.opt", mandatory=False)
         result = self._assembly(NeedEvidenceSelection(need=optional, selections=(), slices=()))
         assert result.status is ContextAssemblyStatus.READY
+        assert result.mandatory_facet_closure == "COMPLETE"
         assert result.package.items[0].gap is not None
 
     def test_same_slice_serves_multiple_needs_with_one_ledger_entry(self) -> None:
@@ -540,6 +544,7 @@ class TestEvidenceFirstWriterContextAssembler:
             future_leakage_count=0,
             budget_status="READY",
             assembly_status="READY",
+            mandatory_facet_closure=result.mandatory_facet_closure,
         )
         first = _render_markdown(result.package, result.evidence_ledger, manifest)
         second = _render_markdown(result.package, result.evidence_ledger, manifest)
@@ -845,11 +850,108 @@ class TestEvidenceFirstAssemblerCoverage:
             arm="A",
             evidence_ledger_token_budget=100,
         )
-        assert result.status is not ContextAssemblyStatus.READY
+        # A ledger budget too small for the mandatory evidence produces a typed
+        # gap: mechanical READY with mandatory-facet closure INCOMPLETE.
+        assert result.status is ContextAssemblyStatus.READY
+        assert result.mandatory_facet_closure == "INCOMPLETE"
+        assert any(item.gap is not None for item in result.package.items)
         assert any(
-            code.startswith(("EVIDENCE_LEDGER_BUDGET_EXCEEDED", "MANDATORY_NEED_EVIDENCE_GAP"))
+            code.startswith(
+                ("EVIDENCE_LEDGER_BUDGET_EXCEEDED", "MANDATORY_FACET_CLOSURE_INCOMPLETE")
+            )
             for code in result.diagnostic_codes
         )
+
+    def test_two_pass_packing_emits_per_facet_gap_for_unserved_mandatory_facet(
+        self,
+    ) -> None:
+        """2026-08-13 repair D: fair two-pass packing with per-facet typed gaps."""
+        from novel_agent.domain.memory import (
+            ExpectedClaimScope,
+            FacetEvidenceRequirement,
+            NeedCompletionSpec,
+            NeedFacet,
+            NeedFacetKind,
+            NeedGapPolicy,
+            NeedUncertaintyPolicy,
+        )
+
+        text_root = _text_root((_block("第一段。\n第二段,陈长生伤势未愈。\n第三段。"),))
+        slice_ = TestEvidenceFirstWriterContextAssembler()._slice(text_root)
+        need = _need("need.test.facets")
+        facet_a = NeedFacet(
+            need_facet_id=StableId("need-facet.a"),
+            need_id=need.need_id,
+            facet_kind=NeedFacetKind.CURRENT_STATE,
+            expected_claim_scope=ExpectedClaimScope.CURRENT,
+            derivation_refs=(need.need_id,),
+            producer="test",
+            producer_version="v1",
+            information_scope="cutoff_safe",
+        )
+        facet_b = NeedFacet(
+            need_facet_id=StableId("need-facet.b"),
+            need_id=need.need_id,
+            facet_kind=NeedFacetKind.RELATION_STATE,
+            expected_claim_scope=ExpectedClaimScope.CURRENT,
+            derivation_refs=(need.need_id,),
+            producer="test",
+            producer_version="v1",
+            information_scope="cutoff_safe",
+        )
+        spec = NeedCompletionSpec(
+            need_id=need.need_id,
+            required_need_facet_ids=(facet_a.need_facet_id, facet_b.need_facet_id),
+            irreducible_need_facet_ids=(facet_a.need_facet_id, facet_b.need_facet_id),
+            evidence_requirement_by_facet={
+                facet_a.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE,
+                facet_b.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE,
+            },
+            min_distinct_evidence_sources=1,
+            min_distinct_chapters=1,
+            uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+            gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+            producer="test",
+            producer_version="v1",
+        )
+        need = need.model_copy(update={"need_facets": (facet_a, facet_b), "completion_spec": spec})
+        selection = NeedEvidenceSelection(
+            need=need,
+            selections=(
+                SliceSelectionTrace(
+                    slice_id=slice_.slice_id,
+                    unit_id=StableId("unit.test.facets"),
+                    route_channel="r1_exact",
+                    fused_rank=1,
+                    rerank_score=0.9,
+                    selection_reason="test",
+                    evidence_ref=None,
+                    supported_facet_ids=(facet_a.need_facet_id,),
+                ),
+            ),
+            slices=(slice_,),
+            facet_receipts=(),
+        )
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=_task(),
+            selections=(selection,),
+            text_root=text_root,
+            basis_commit_id=COMMIT,
+            basis_snapshot_id=SNAPSHOT,
+            arm="A",
+        )
+        # Facet A is closed by exact evidence; facet B has no serving slice and
+        # becomes a per-facet typed gap: mechanical READY, closure INCOMPLETE.
+        assert result.status is ContextAssemblyStatus.READY
+        assert result.mandatory_facet_closure == "INCOMPLETE"
+        evidence_items = tuple(item for item in result.package.items if item.gap is None)
+        gap_items = tuple(item for item in result.package.items if item.gap is not None)
+        assert len(evidence_items) == 1
+        assert evidence_items[0].need_facet_ids == (facet_a.need_facet_id, facet_b.need_facet_id)
+        assert len(gap_items) == 1
+        assert gap_items[0].need_facet_ids == (facet_b.need_facet_id,)
+        assert gap_items[0].mandatory is True
+        assert any(code.startswith("MANDATORY_FACET_GAP") for code in result.diagnostic_codes)
 
     def test_validity_mapping_and_prelude_chapter(self) -> None:
         from novel_agent.domain.memory import (
@@ -1036,7 +1138,11 @@ class TestEvidenceFirstAssemblerCoverage:
         )
 
         def manifest(**updates: Any) -> EvidenceFirstPackageManifest:
-            kwargs: dict[str, Any] = {"budget_status": "READY", "assembly_status": "READY"}
+            kwargs: dict[str, Any] = {
+                "budget_status": "READY",
+                "assembly_status": "READY",
+                "mandatory_facet_closure": "COMPLETE",
+            }
             kwargs.update(updates)
             return EvidenceFirstPackageManifest(
                 manifest_id=StableId("manifest.ready"),
@@ -1096,6 +1202,13 @@ class TestEvidenceFirstAssemblerCoverage:
             verified_graph_path_receipt_ids=(StableId("graph-path.x"),),
         )
         assert graph_ready.graph_readiness_by_need == {"need.x": "ready"}
+        # mandatory-facet closure is persisted on the manifest and defaults to
+        # COMPLETE; INCOMPLETE must be explicit when any mandatory facet gap
+        # exists (review 2026-08-14 P1-2).
+        assert manifest().mandatory_facet_closure == "COMPLETE"
+        assert manifest(mandatory_facet_closure="INCOMPLETE").mandatory_facet_closure == (
+            "INCOMPLETE"
+        )
         # non-READY manifests may carry typed failures.
         failed = manifest(
             assembly_status="EVIDENCE_INSUFFICIENT",
@@ -1212,6 +1325,7 @@ class TestEvidenceFirstAssemblerCoverage:
                 future_leakage_count=0,
                 budget_status="READY",
                 assembly_status="READY",
+                mandatory_facet_closure="COMPLETE",
             )
         with pytest.raises(ValueError, match="item gap bindings"):
             gapped = (
@@ -1669,6 +1783,7 @@ def package_manifest_ok() -> Any:
         future_leakage_count=0,
         budget_status="READY",
         assembly_status="READY",
+        mandatory_facet_closure="COMPLETE",
     )
 
 
@@ -1757,3 +1872,119 @@ class TestEvidenceSliceWindowBranches:
         window = slices[0]
         assert window.slice_kind is EvidenceSliceKind.SENTENCE_WINDOW
         assert block.text[window.start : window.end] == window.text
+
+    def test_two_pass_packing_budget_exhaustion_in_pass_one(self) -> None:
+        """A ledger budget that fits only the first Need exhausts pass 1 mid-cycle."""
+        from novel_agent.domain.memory import (
+            ExpectedClaimScope,
+            FacetEvidenceRequirement,
+            NeedCompletionSpec,
+            NeedFacet,
+            NeedFacetKind,
+            NeedGapPolicy,
+            NeedUncertaintyPolicy,
+        )
+        from novel_agent.domain.writer_context import EvidenceSlice
+
+        text = "短句。" + "长" * 100 + "。"
+        block = _block(text)
+        text_root = _text_root((block,))
+        # Build two exact slices of the same block with different lengths
+        # directly: pass-1 round-robin must fit the short one and exhaust on
+        # the long one.
+        object_hash = sha256_id(block.text.encode("utf-8"))
+        slice_a = EvidenceSlice(
+            slice_id=StableId("slice.budget.a"),
+            parent_block_id=block.block_id,
+            chapter_id=block.chapter_id,
+            start=0,
+            end=len("短句。"),
+            text="短句。",
+            object_hash=object_hash,
+            quote_hash=quote_hash("短句。"),
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            access_scope="writer_safe",
+            slice_kind=EvidenceSliceKind.SENTENCE_WINDOW,
+        )
+        slice_b = EvidenceSlice(
+            slice_id=StableId("slice.budget.b"),
+            parent_block_id=block.block_id,
+            chapter_id=block.chapter_id,
+            start=len("短句。"),
+            end=len(text),
+            text=text[len("短句。") :],
+            object_hash=object_hash,
+            quote_hash=quote_hash(text[len("短句。") :]),
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            access_scope="writer_safe",
+            slice_kind=EvidenceSliceKind.SENTENCE_WINDOW,
+        )
+        assert EvidenceFirstWriterContextAssembler().count_tokens(slice_a.text) < (
+            EvidenceFirstWriterContextAssembler().count_tokens(slice_b.text)
+        )
+        # Budget exactly one short slice: Need A fits, Need B exhausts pass 1.
+        budget = EvidenceFirstWriterContextAssembler().count_tokens(slice_a.text)
+        selections = []
+        for index, need_id in enumerate(("need.test.budget.a", "need.test.budget.b")):
+            need = _need(need_id)
+            facet = NeedFacet(
+                need_facet_id=StableId(f"need-facet.budget.{index}"),
+                need_id=need.need_id,
+                facet_kind=NeedFacetKind.CURRENT_STATE,
+                expected_claim_scope=ExpectedClaimScope.CURRENT,
+                derivation_refs=(need.need_id,),
+                producer="test",
+                producer_version="v1",
+                information_scope="cutoff_safe",
+            )
+            spec = NeedCompletionSpec(
+                need_id=need.need_id,
+                required_need_facet_ids=(facet.need_facet_id,),
+                irreducible_need_facet_ids=(facet.need_facet_id,),
+                evidence_requirement_by_facet={
+                    facet.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE
+                },
+                min_distinct_evidence_sources=1,
+                min_distinct_chapters=1,
+                uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+                gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+                producer="test",
+                producer_version="v1",
+            )
+            need = need.model_copy(update={"need_facets": (facet,), "completion_spec": spec})
+            slice_ = slice_a if index == 0 else slice_b
+            selections.append(
+                NeedEvidenceSelection(
+                    need=need,
+                    selections=(
+                        SliceSelectionTrace(
+                            slice_id=slice_.slice_id,
+                            unit_id=StableId(f"unit.budget.{index}"),
+                            route_channel="r1_exact",
+                            fused_rank=1,
+                            rerank_score=0.9,
+                            selection_reason="test",
+                            evidence_ref=None,
+                            supported_facet_ids=(facet.need_facet_id,),
+                        ),
+                    ),
+                    slices=(slice_,),
+                    facet_receipts=(),
+                )
+            )
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=_task(),
+            selections=tuple(selections),
+            text_root=text_root,
+            basis_commit_id=COMMIT,
+            basis_snapshot_id=SNAPSHOT,
+            arm="A",
+            evidence_ledger_token_budget=budget,
+        )
+        assert result.status is ContextAssemblyStatus.READY
+        assert result.mandatory_facet_closure == "INCOMPLETE"
+        assert len(result.package.items) == 2
+        assert sum(item.gap is None for item in result.package.items) == 1
+        assert sum(item.gap is not None for item in result.package.items) == 1
