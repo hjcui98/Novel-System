@@ -1624,20 +1624,16 @@ class TeacherForcedBenchmarkE2ERunner:
     @staticmethod
     def _request(identity: str, mode: AgentMode) -> ModelRequest:
         suffix = identity.replace("_", "-")
-        # Transport configuration for the local endpoint.  Replay curators
-        # (complex multi-operation grammar-mode proposals) get bounded
-        # thinking: the pre-b11 project runs that produced 95 chapters used
-        # the endpoint's default thinking, and without it the model's
-        # proposals drift (missing/hallucinated evidence ids).  Bootstrap
-        # agents stay deterministic with thinking disabled.  Output ceiling
-        # Domain transport contract: timeout_seconds is capped at 600 and
-        # output is capped at 12288.  Thinking is disabled for the replay
-        # curator: the semantic-quote evidence contract plus strict json_schema
-        # framing already prevent the legacy evidence-id hallucination that
-        # thinking was introduced to mitigate, and unbounded thinking blows
-        # past the transport ceiling at ~18 tokens/s decode.  Without thinking
-        # the curator draft is short and deterministic (measured well under
-        # 600s), keeping proposal, repair, and support calls inside the budget.
+        # Transport configuration for the local endpoint.  E2E agent requests
+        # (bootstrap, replay curator, controller, guardian, support) keep
+        # thinking disabled: with strict json_schema framing the drafts are
+        # short and deterministic, keeping proposal, repair, and support calls
+        # well inside the 600s transport ceiling (output ceiling 12288, decode
+        # ~18 tokens/s without thinking).  The graph page extraction
+        # sub-request is the single exception: it overrides this base request
+        # in ModelCurator._extract_graph_page with bounded thinking (budget
+        # 2048) so the model can satisfy the relation-endpoint contract before
+        # emitting candidates.
         return ModelRequest(
             request_id=StableId(f"request.teacher-forced.{suffix}"),
             run_id=RunId("run.teacher-forced.e2e"),

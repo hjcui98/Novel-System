@@ -1061,9 +1061,16 @@ class ModelCurator:
             if repair_feedback is not None
             else ""
         )
+        # Graph page extraction must reason about the relation-endpoint
+        # contract (every entity candidate must be an endpoint of a relation
+        # candidate in the same page) before emitting candidates; bounded
+        # thinking is required for the proposal and the feedback/repair retry,
+        # which share this path.  Verifiers, bootstrap agents, and support
+        # requests keep thinking disabled.
         safe_request = request.model_copy(
             update={
-                "enable_thinking": False,
+                "enable_thinking": True,
+                "thinking_token_budget": 2048,
                 "prompt": (
                     "Extract one GRAPH_CANDIDATE_PAGE JSON from this revealed source unit. "
                     "Return at most 12 candidates in the single candidates array. Every item "

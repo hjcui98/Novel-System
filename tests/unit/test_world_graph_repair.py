@@ -337,6 +337,11 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
         purpose=ModelCallPurpose.DEVELOPMENT,
         trace_id="trace.graph-profile",
         prompt="",
+        # Base e2e requests keep thinking disabled; the graph page sub-request
+        # must override this with bounded thinking to satisfy the
+        # relation-endpoint contract.
+        enable_thinking=False,
+        thinking_token_budget=None,
     )
 
     batches, _ = asyncio.run(
@@ -371,7 +376,8 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
     assert batch.model_request_id is not None
     assert batch.model_request_id.root.endswith(".u000.p00")
     assert batch.relations[0].evidence_refs[0].span is not None
-    assert endpoint.requests[0].enable_thinking is False
+    assert endpoint.requests[0].enable_thinking is True
+    assert endpoint.requests[0].thinking_token_budget == 2048
     assert "every evidence_quote" in endpoint.requests[0].prompt
     assert "at most 12 candidates" in endpoint.requests[0].prompt
     assert (
@@ -416,6 +422,10 @@ def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
         purpose=ModelCallPurpose.DEVELOPMENT,
         trace_id="trace.graph-repair",
         prompt="",
+        # The feedback/repair retry shares the graph page path and must keep
+        # the bounded-thinking override on top of a thinking-disabled base.
+        enable_thinking=False,
+        thinking_token_budget=None,
     )
     feedback = (
         '{"reason_code":"CURATOR_PROPOSAL_SCHEMA_REJECTED",'
@@ -434,6 +444,8 @@ def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
         )
     )
     prompt = endpoint.requests[0].prompt
+    assert endpoint.requests[0].enable_thinking is True
+    assert endpoint.requests[0].thinking_token_budget == 2048
     assert "MANDATORY_GRAPH_REPAIR_CONTRACT" in prompt
     assert prompt.rfind("<MANDATORY_GRAPH_REPAIR_CONTRACT") > prompt.rfind("</GRAPH_REPAIR_INPUT>")
     assert "kind=entity or kind=relation" in prompt
