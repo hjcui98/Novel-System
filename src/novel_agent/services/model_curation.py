@@ -2117,9 +2117,10 @@ class ModelCurator:
         verifier_request = request.model_copy(
             update={
                 "request_id": StableId(request.request_id.root[: 128 - len(suffix)] + suffix),
-                "timeout_seconds": min(request.timeout_seconds, 300.0),
+                "timeout_seconds": request.timeout_seconds,
                 "enable_thinking": False,
                 "thinking_token_budget": None,
+                "repetition_penalty": 1.10,
                 "prompt": (
                     "Verify whether each typed World record is directly supported by its "
                     "complete evidence set. Evaluate all excerpts for one operation "

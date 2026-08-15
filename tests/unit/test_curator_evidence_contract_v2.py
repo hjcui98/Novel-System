@@ -1699,6 +1699,52 @@ def test_v2_partial_evidence_fails_closed_when_verifier_raises() -> None:
     assert exc.value.violation_rule == "partial_evidence_unresolved_no_verifier"
 
 
+def test_v2_model_semantic_verifier_inherits_parent_transport_ceiling() -> None:
+    # Round-11 repair: the partial-batch semantic verifier must inherit the parent
+    # request's 900s provider ceiling instead of being capped at 300s (the cap made
+    # chapter-48 Graph verification time out repeatedly under endpoint concurrency 4).
+    text = "陈长生已经开始阅读道藏并正式开始学习修行"
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    draft = _v2_state_draft(candidate)
+    verification = EvidenceSemanticVerificationDraft(
+        decisions=(
+            EvidenceSemanticVerificationItem(
+                operation_index=0,
+                candidate_ids=(candidate.candidate_id,),
+                disposition=EvidenceSupportDisposition.SUPPORTS,
+                reason_code="DIRECT_SEMANTIC_SUPPORT",
+            ),
+        )
+    )
+    gateway = _ModelVerifierGateway(draft, verification)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        enable_model_semantic_verifier=True,
+    )
+
+    request = _request("req.v2.model-verifier").model_copy(update={"timeout_seconds": 900})
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), request)
+    )
+
+    assert changes.operations
+    assert len(gateway.requests) == 2
+    verifier = gateway.requests[1]
+    assert verifier.request_id.root.endswith(".semantic-verifier")
+    assert verifier.timeout_seconds == 900  # inherits the parent ceiling, no 300s cap
+    assert verifier.enable_thinking is False  # verifier stays deterministic/non-thinking
+    assert verifier.thinking_token_budget is None
+    # Round-12 repair: verifier-only repetition penalty against runaway generation
+    # (a <=4-decision response must not burn the 12288 output ceiling); the parent
+    # Curator request stays unchanged.
+    assert verifier.repetition_penalty == 1.10
+    assert gateway.requests[0].repetition_penalty is None
+
+
 def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     text = "陈长生已经开始阅读道藏并正式开始学习修行"
     root = _root_with(text)
