@@ -1628,7 +1628,7 @@ class TeacherForcedBenchmarkE2ERunner:
         # (bootstrap, replay curator, controller, guardian, support) keep
         # thinking disabled: with strict json_schema framing the drafts are
         # short and deterministic, keeping proposal, repair, and support calls
-        # well inside the 600s transport ceiling (output ceiling 12288, decode
+        # well inside the 900s transport ceiling (output ceiling 12288, decode
         # ~18 tokens/s without thinking).  The graph page extraction
         # sub-request is the single exception: it overrides this base request
         # in ModelCurator._extract_graph_page with bounded thinking (budget
@@ -1643,7 +1643,7 @@ class TeacherForcedBenchmarkE2ERunner:
             trace_id=f"trace-teacher-forced-{mode.value}-{suffix}",
             prompt="replaced by StructuredAgentRunner",
             max_output_tokens=12288,
-            timeout_seconds=600,
+            timeout_seconds=900,
             enable_thinking=False,
             thinking_token_budget=None,
             scheduling_stage=f"agent_{suffix}",

@@ -108,10 +108,14 @@ def test_quality_repair_memory_write_budget_allows_progressive_feedback_retries(
     assert budget.same_finding_signature_limit == 3
 
 
-def test_teacher_forced_model_request_leaves_time_for_narrow_verifier() -> None:
+def test_teacher_forced_model_request_policy_is_900_second_transport_ceiling() -> None:
+    # Round-6 review: the 600s provider ceiling was exceeded by large-chapter curator
+    # requests under 4-way endpoint concurrency (ch7, 35.8k-char curator prompt). The
+    # request policy now matches the 900s scheduling deadline; the gateway fails closed
+    # (controlled pause + persisted checkpoint) when a single request still exceeds it.
     request = TeacherForcedBenchmarkE2ERunner._request("curator", AgentMode.REPLAY)
 
-    assert request.timeout_seconds == 600
+    assert request.timeout_seconds == 900
     assert request.max_output_tokens == 12288
     assert request.enable_thinking is False
     assert request.thinking_token_budget is None

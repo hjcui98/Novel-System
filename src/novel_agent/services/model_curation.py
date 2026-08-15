@@ -565,7 +565,7 @@ class ModelCurator:
         # output fields so the model cannot emit legacy fields (evidence_refs,
         # evidence_candidate_ids) or malformed record payloads, and the draft
         # validates on the first call (no blind structured retries that can
-        # exceed the 600s transport ceiling).  Measured on this endpoint:
+        # exceed the 900s transport ceiling).  Measured on this endpoint:
         # strict grammar completes a curator-scale draft in well under the
         # ceiling, and thinking is not grammar-constrained.  Host-side pydantic
         # validation plus contract-feedback retries remain the fail-closed
