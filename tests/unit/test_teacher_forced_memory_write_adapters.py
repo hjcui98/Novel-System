@@ -1587,3 +1587,161 @@ def test_guardian_adapter_maps_decision_and_evidence_root(
     assert result.receipt is not None
     assert evidence == [basis.canonical_text]
     assert scripts == ([AgentMode.RISK_REVIEW] if with_script else [])
+
+
+def test_structured_validation_rejection_uses_failing_request_attribution() -> None:
+    # Round-19: a Graph-page structured validation failure must be attributed
+    # to the Graph request/raw response, never the ordinary primary response.
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.attr"))
+    primary_raw = '{"operations":[{"operation":"create"}]}'
+    graph_raw = (
+        '{"status":"has_more","candidates":[],'
+        '"no_graph_candidate_reason":"model_returned_no_graph_candidates"}'
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=ScriptedModelEndpoint(
+                    lambda request: graph_raw
+                    if request.request_id.root.endswith(".graph")
+                    else primary_raw
+                ),
+            ),
+        )
+    )
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **kwargs: object) -> None:
+            parent = cast(ModelRequest, kwargs["request"])
+            await gateway.generate_text(parent)
+            graph = parent.model_copy(
+                update={"request_id": StableId(f"{parent.request_id.root}.graph")}
+            )
+            await gateway.generate_text(graph)
+            try:
+                GraphCandidatePageDraft.model_validate_json(graph_raw)
+            except ValidationError as error:
+                # Simulate the gateway's round-19 structured attribution.
+                error._structured_request_id = graph.request_id.root  # type: ignore[attr-defined]
+                error._structured_raw_response_hash = sha256_id(  # type: ignore[attr-defined]
+                    graph_raw.encode("utf-8")
+                )
+                raise
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(_proposal_attempt_request(artifacts, model_request.request_id))
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.rejection.output_hash == sha256_id(graph_raw.encode("utf-8"))
+    assert outcome.rejection.raw_draft_ref is not None
+    assert artifacts.read_verified(outcome.rejection.raw_draft_ref).decode("utf-8") == graph_raw
+
+
+def test_structured_validation_rejection_ambiguous_attribution_fails_closed() -> None:
+    # Round-19: when the attached attribution does not match any recorded call
+    # entry, the rejection must omit the reference instead of substituting the
+    # ordinary primary response.
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.ambig"))
+    primary_raw = '{"operations":[{"operation":"create"}]}'
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=ScriptedModelEndpoint(lambda request: primary_raw),
+            ),
+        )
+    )
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **kwargs: object) -> None:
+            parent = cast(ModelRequest, kwargs["request"])
+            await gateway.generate_text(parent)
+            try:
+                GraphCandidatePageDraft.model_validate_json(
+                    '{"status":"has_more","candidates":[],"no_graph_candidate_reason":"x"}'
+                )
+            except ValidationError as error:
+                # Attribution refers to a request that was never recorded.
+                error._structured_request_id = "model.proposal.never-recorded"  # type: ignore[attr-defined]
+                error._structured_raw_response_hash = sha256_id(b"ghost")  # type: ignore[attr-defined]
+                raise
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(_proposal_attempt_request(artifacts, model_request.request_id))
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.rejection.output_hash is None
+    assert outcome.rejection.raw_draft_ref is None
+
+
+def test_structured_validation_rejection_partial_attribution_fails_closed() -> None:
+    # Round-19: when only one attribution attribute is present (request id
+    # without the raw hash), the rejection must omit the reference instead of
+    # substituting the ordinary primary response.
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(StableId("model.proposal.partial"))
+    primary_raw = '{"operations":[{"operation":"create"}]}'
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=ScriptedModelEndpoint(lambda request: primary_raw),
+            ),
+        )
+    )
+
+    class Replay:
+        curator = SimpleNamespace(gateway=gateway)
+
+        async def run(self, **kwargs: object) -> None:
+            parent = cast(ModelRequest, kwargs["request"])
+            await gateway.generate_text(parent)
+            try:
+                GraphCandidatePageDraft.model_validate_json(
+                    '{"status":"has_more","candidates":[],"no_graph_candidate_reason":"x"}'
+                )
+            except ValidationError as error:
+                # Only the request id is attached; the raw hash is missing.
+                error._structured_request_id = parent.request_id.root  # type: ignore[attr-defined]
+                raise
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: model_request),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(_proposal_attempt_request(artifacts, model_request.request_id))
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.rejection.output_hash is None
+    assert outcome.rejection.raw_draft_ref is None

@@ -16,6 +16,7 @@ from novel_agent.domain.changes import (
     ChapterChangeDraftV2,
     CuratedOperationDraftV2,
     CuratorEntityRecord,
+    CuratorObligationRecord,
     CuratorStateRecord,
     CuratorStoryTime,
     CuratorV2EvidenceDraft,
@@ -1738,11 +1739,11 @@ def test_v2_model_semantic_verifier_inherits_parent_transport_ceiling() -> None:
     assert verifier.timeout_seconds == 900  # inherits the parent ceiling, no 300s cap
     assert verifier.enable_thinking is False  # verifier stays deterministic/non-thinking
     assert verifier.thinking_token_budget is None
-    # Round-12 repair: verifier-only repetition penalty against runaway generation
-    # (a <=4-decision response must not burn the 12288 output ceiling); the parent
-    # Curator request stays unchanged.
+    # Round-12/18 repairs: the verifier carries its own repetition penalty
+    # against runaway generation; the parent ordinary-Curator request carries
+    # the round-18 request-local penalty too (both 1.10, per-owner policies).
     assert verifier.repetition_penalty == 1.10
-    assert gateway.requests[0].repetition_penalty is None
+    assert gateway.requests[0].repetition_penalty == 1.10
 
 
 def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
@@ -2824,3 +2825,166 @@ def test_production_default_flags_enforce_support_gate_and_fail_closed_on_partia
         True,
         "ALL_OPERATIONS_REJECTED_BY_SUPPORT_GATE",
     )
+
+
+# --- Round-18: ordinary-Curator request penalty + narrow layout-equivalence binding ---
+
+_CANONICAL_CH12 = (
+    "”\n　　他纠正道\uff0c忽然又想起秋山君\uff0c如果那人参加今次的大朝试……\n　　"
+    "“好吧\uff0c我的目标是大朝试第三。"
+)
+_VARIANT_NO_LEADING_MARK = (
+    "他纠正道\uff0c忽然又想起秋山君\uff0c如果那人参加今次的大朝试……"
+    "“好吧\uff0c我的目标是大朝试第三。"
+)
+_VARIANT_KEPT_LEADING_MARK = (
+    "”他纠正道\uff0c忽然又想起秋山君\uff0c如果那人参加今次的大朝试……"
+    "“好吧\uff0c我的目标是大朝试第三。"
+)
+
+
+def _layout_candidate(text: str, candidate_id: str, start: int = 0) -> EvidenceCandidate:
+    return EvidenceCandidate(
+        candidate_id=StableId(candidate_id),
+        block_id=StableId("block.c21"),
+        chapter_index=21,
+        scene_index=0,
+        text=text,
+        start=start,
+        end=start + len(text),
+        content_hash=ArtifactId("sha256:" + "a" * 64),
+    )
+
+
+def test_v2_curator_request_carries_request_local_penalty() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    generator = EvidenceCandidateGenerator()
+    candidate = next(item for item in generator.generate(root, 21) if "confidence" in item.text)
+    draft = _v2_state_draft(candidate)
+    gateway = _FakeGateway(draft)
+    request = _request("req.v2.curator-penalty")
+    curator = ModelCurator(
+        cast(Any, gateway), evidence_generator=generator, enforce_support_gate=False
+    )
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), request)
+    )
+    assert changes.operations
+    # Round-18: the ordinary Curator request carries 1.10 against runaway
+    # generation; the base request stays unchanged (thinking policy inherited).
+    assert gateway.requests[0].repetition_penalty == 1.10
+    assert gateway.requests[0].enable_thinking is request.enable_thinking
+    assert gateway.requests[0].thinking_token_budget is request.thinking_token_budget
+    assert request.repetition_penalty is None
+
+
+def test_layout_equivalent_quote_binds_canonical_ch12_variants() -> None:
+    canonical = _layout_candidate(_CANONICAL_CH12, "cand.ch12")
+    chapter = _root_with(_CANONICAL_CH12).chapters[0]
+    for variant in (_VARIANT_NO_LEADING_MARK, _VARIANT_KEPT_LEADING_MARK):
+        bound = EvidenceCandidateGenerator.resolve_layout_equivalent_quote(
+            variant, (canonical,), chapter
+        )
+        assert bound is not None
+        assert bound.candidate_id == canonical.candidate_id
+        # Canonical source text and physical span, never the model string.
+        assert bound.text == _CANONICAL_CH12
+        assert bound.start == 0
+        assert bound.end == len(_CANONICAL_CH12)
+        assert bound.content_hash == canonical.content_hash
+
+
+def test_layout_equivalent_quote_fails_closed() -> None:
+    chapter = _root_with(_CANONICAL_CH12).chapters[0]
+    canonical = _layout_candidate(_CANONICAL_CH12, "cand.ch12")
+    resolver = EvidenceCandidateGenerator.resolve_layout_equivalent_quote
+    # Changed character.
+    assert (
+        resolver(
+            "他纠正到\uff0c忽然又想起秋山君\uff0c如果那人参加今次的大朝试……“好吧\uff0c我的目标是大朝试第三。",
+            (canonical,),
+            chapter,
+        )
+        is None
+    )
+    # Changed internal punctuation.
+    assert (
+        resolver(
+            "他纠正道\uff0c忽然又想起秋山君\uff1b如果那人参加今次的大朝试……“好吧\uff0c我的目标是大朝试第三。",
+            (canonical,),
+            chapter,
+        )
+        is None
+    )
+    # Ordinary word-space change.
+    assert (
+        resolver(
+            (
+                "他 纠正道\uff0c忽然又想起秋山君\uff0c如果那人参加今次的大朝试……"
+                "“好吧\uff0c我的目标是大朝试第三。"
+            ),
+            (canonical,),
+            chapter,
+        )
+        is None
+    )
+    # Duplicate layout-equivalent candidates (both real physical spans of the
+    # chapter text) -> ambiguous.
+    doubled_text = _CANONICAL_CH12 + "间隔" + _CANONICAL_CH12
+    doubled_chapter = _root_with(doubled_text).chapters[0]
+    first = _layout_candidate(_CANONICAL_CH12, "cand.ch12.first", start=0)
+    second = _layout_candidate(
+        _CANONICAL_CH12,
+        "cand.ch12.second",
+        start=len(_CANONICAL_CH12) + len("间隔"),
+    )
+    assert resolver(_VARIANT_NO_LEADING_MARK, (first, second), doubled_chapter) is None
+    # Too-short quote stays unresolved.
+    assert resolver("第三。", (canonical,), chapter) is None
+
+
+def test_v2_ch12_style_draft_binds_canonical_span_through_binding() -> None:
+    # The chapter-12 quarantine: the model's quote differs from the catalog
+    # only by the dropped/restored leading closing mark and the CR/LF+indent
+    # layout. The ordinary-Curator binding must produce the canonical ref.
+    canonical = _layout_candidate(_CANONICAL_CH12, "cand.ch12")
+
+    class _FixedCatalogGenerator(EvidenceCandidateGenerator):
+        def generate(self, text_root, chapter_index):
+            return (canonical,)
+
+    root = _root_with(_CANONICAL_CH12)
+    draft = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.OBLIGATION,
+                target_id=StableId("entity.tang36"),
+                record=CuratorObligationRecord(
+                    kind="objective",
+                    description="参加今次的大朝试并取得第三名",
+                    status="open",
+                ),
+                evidence_quotes=(_VARIANT_KEPT_LEADING_MARK,),
+            ),
+        ),
+    )
+    gateway = _FakeGateway(draft)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=_FixedCatalogGenerator(),
+        enforce_support_gate=True,
+        semantic_verifier=lambda _record, _candidate: (
+            EvidenceSupportDisposition.SUPPORTS,
+            "test_trusted_semantic_verifier",
+        ),
+    )
+    changes, _call, _out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, _world(), _request("req.v2.ch12"))
+    )
+    assert changes.operations
+    # The canonical evidence ref is produced by the layout-equivalence binding.
+    assert _out.operations[0].evidence_candidate_ids == (canonical.candidate_id,)
+    assert gateway.requests[0].repetition_penalty == 1.10

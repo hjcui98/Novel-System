@@ -163,26 +163,54 @@ class GraphCandidatePageDraft(DomainModel):
 
     @model_validator(mode="after")
     def validate_page_semantics(self) -> GraphCandidatePageDraft:
-        if self.candidates and self.no_graph_candidate_reason is not None:
+        # Round-19 repair: canonicalize the demonstrated semantically empty
+        # no-candidate forms before the conditional checks (review-19).  The
+        # model emits small, complete page JSONs whose
+        # `no_graph_candidate_reason` is an empty/whitespace string or is
+        # omitted.  A page WITH candidates must not carry a no-op reason, so
+        # the reason becomes None; an empty COMPLETE page must carry a reason,
+        # so it gains the stable operational value
+        # `model_returned_no_graph_candidates`.  Candidates, status, and any
+        # substantive reason are never altered; an empty `has_more` page and a
+        # non-empty page with a substantive reason still fail below.  (A
+        # `mode="before"` hook must not mutate the input here: the domain is
+        # strict and revalidates a mutated dict in Python mode, which rejects
+        # JSON arrays for tuple fields.)
+        reason = self.no_graph_candidate_reason
+        canonical = reason
+        if self.candidates and reason is not None and not reason.strip():
+            canonical = None
+        elif (
+            not self.candidates
+            and self.status is GraphCandidatePageStatus.COMPLETE
+            and (reason is None or not reason.strip())
+        ):
+            canonical = "model_returned_no_graph_candidates"
+        page = (
+            self
+            if canonical is reason
+            else self.model_copy(update={"no_graph_candidate_reason": canonical})
+        )
+        if page.candidates and page.no_graph_candidate_reason is not None:
             raise ValueError("non-empty graph candidate page cannot carry a no-op reason")
-        if not self.candidates and (
-            self.status is not GraphCandidatePageStatus.COMPLETE
-            or not self.no_graph_candidate_reason
+        if not page.candidates and (
+            page.status is not GraphCandidatePageStatus.COMPLETE
+            or not page.no_graph_candidate_reason
         ):
             raise ValueError("empty graph candidate page must be complete and carry a reason")
         relation_endpoints = {
             surface
-            for candidate in self.candidates
+            for candidate in page.candidates
             if isinstance(candidate, GraphRelationCandidateDraft)
             for surface in (candidate.subject_surface, candidate.object_surface)
         }
         if any(
             candidate.surface not in relation_endpoints
-            for candidate in self.candidates
+            for candidate in page.candidates
             if isinstance(candidate, GraphEntityCandidateDraft)
         ):
             raise ValueError("entity candidate must be a relation endpoint in the same page")
-        return self
+        return page
 
     @property
     def entities(self) -> tuple[GraphEntityCandidateDraft, ...]:

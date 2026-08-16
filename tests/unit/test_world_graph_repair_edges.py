@@ -152,8 +152,21 @@ def test_graph_domain_contracts_reject_invalid_shapes_and_accounting() -> None:
             ),
             no_graph_candidate_reason="not empty",
         )
+    # Round-19: an empty COMPLETE page without a reason no longer fails; it
+    # gains the stable operational reason (review-19 canonicalization).
+    empty_complete = GraphCandidatePageDraft.model_validate(
+        {"status": GraphCandidatePageStatus.COMPLETE, "candidates": ()}
+    )
+    assert empty_complete.no_graph_candidate_reason == "model_returned_no_graph_candidates"
     with pytest.raises(ValidationError, match="must be complete and carry a reason"):
-        GraphCandidatePageDraft(status=GraphCandidatePageStatus.COMPLETE)
+        # An empty HAS_MORE page still fails.
+        GraphCandidatePageDraft.model_validate(
+            {
+                "status": GraphCandidatePageStatus.HAS_MORE,
+                "candidates": (),
+                "no_graph_candidate_reason": "model_returned_no_graph_candidates",
+            }
+        )
     for update, message in (
         ({"status": EntityAdmissionStatus.CREATED}, "requires an entity id"),
         (

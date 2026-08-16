@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 
 from novel_agent.adapters.model import FakeModelEndpoint
@@ -1276,3 +1277,214 @@ def test_repair_receipt_domain_validators_fail_closed() -> None:
         deduped_count=0,
     )
     assert extraction.accepted_relation_ids == (accepted.relation_id,)
+
+
+# --- Round-19: GraphCandidatePageDraft canonicalization of empty no-op reasons ---
+
+
+def test_graph_page_draft_canonicalizes_empty_no_op_reason() -> None:
+    from novel_agent.domain.world import (
+        GraphCandidatePageDraft,
+        GraphCandidatePageStatus,
+        GraphRelationCandidateDraft,
+        StoryTime,
+        TruthClass,
+    )
+
+    relation = GraphRelationCandidateDraft(
+        kind="relation",
+        subject_surface="陈长生",
+        predicate="discloses_to",
+        object_surface="唐三十六",
+        valid_time=StoryTime(worldline="main", start_ordinal=None, end_ordinal=None),
+        source_truth_class=TruthClass.ASSERTION,
+        evidence_quotes=("陈长生向他解释。",),
+    )
+    # 1) non-empty page + empty-string reason -> reason None, candidates retained.
+    page = GraphCandidatePageDraft.model_validate(
+        {
+            "status": GraphCandidatePageStatus.COMPLETE,
+            "candidates": (relation,),
+            "no_graph_candidate_reason": "",
+        }
+    )
+    assert page.no_graph_candidate_reason is None
+    assert len(page.candidates) == 1
+    assert page.candidates[0].predicate == "discloses_to"  # type: ignore[union-attr]
+    # 3) same shape with whitespace-only reason.
+    page3 = GraphCandidatePageDraft.model_validate(
+        {
+            "status": GraphCandidatePageStatus.COMPLETE,
+            "candidates": (relation,),
+            "no_graph_candidate_reason": "   ",
+        }
+    )
+    assert page3.no_graph_candidate_reason is None
+    # 2) empty COMPLETE page + missing reason -> stable operational reason.
+    empty = GraphCandidatePageDraft.model_validate(
+        {
+            "status": GraphCandidatePageStatus.COMPLETE,
+            "candidates": (),
+            "no_graph_candidate_reason": None,
+        }
+    )
+    assert empty.no_graph_candidate_reason == "model_returned_no_graph_candidates"
+    # An existing substantive empty-page reason is preserved.
+    substantive = GraphCandidatePageDraft.model_validate(
+        {
+            "status": GraphCandidatePageStatus.COMPLETE,
+            "candidates": (),
+            "no_graph_candidate_reason": "no durable relation in unit",
+        }
+    )
+    assert substantive.no_graph_candidate_reason == "no durable relation in unit"
+    # Non-empty page with a substantive reason still fails.
+    with pytest.raises(ValidationError):
+        GraphCandidatePageDraft.model_validate(
+            {
+                "status": GraphCandidatePageStatus.COMPLETE,
+                "candidates": (relation,),
+                "no_graph_candidate_reason": "why not",
+            }
+        )
+    # Empty HAS_MORE page still fails even with the operational reason.
+    with pytest.raises(ValidationError):
+        GraphCandidatePageDraft.model_validate(
+            {
+                "status": GraphCandidatePageStatus.HAS_MORE,
+                "candidates": (),
+                "no_graph_candidate_reason": "model_returned_no_graph_candidates",
+            }
+        )
+    # Candidate mutation (entity without a relation endpoint) still fails.
+    from novel_agent.domain.world import GraphEntityCandidateDraft
+
+    entity = GraphEntityCandidateDraft(
+        kind="entity",
+        surface="陈长生",
+        entity_type="person",
+        evidence_quotes=("陈长生出现了。",),
+    )
+    with pytest.raises(ValidationError):
+        GraphCandidatePageDraft.model_validate(
+            {
+                "status": GraphCandidatePageStatus.COMPLETE,
+                "candidates": (entity,),
+                "no_graph_candidate_reason": "",
+            }
+        )
+    # Unrelated invalid fields still fail (strict domain, extra fields forbidden).
+    with pytest.raises(ValidationError):
+        GraphCandidatePageDraft.model_validate(
+            {
+                "status": GraphCandidatePageStatus.COMPLETE,
+                "candidates": (relation,),
+                "unrelated_field": "x",
+            }
+        )
+
+
+# The three exact Graph candidate-page raw responses quarantined by the
+# chapter-12 diagnostic (package sha256:1d35f044...): the first and third are
+# complete pages WITH candidates carrying `no_graph_candidate_reason: ""`; the
+# second is a complete page with no candidates that omits the reason entirely.
+QUARANTINED_CH12_GRAPH_PAGE_1 = """{
+  "status": "complete",
+  "candidates": [
+    {
+      "kind": "relation",
+      "subject_surface": "陈长生",
+      "predicate": "discloses_to",
+      "object_surface": "唐三十六",
+      "valid_time": {
+        "worldline": "main",
+        "start_ordinal": null,
+        "end_ordinal": null
+      },
+      "source_truth_class": "not_applicable",
+      "evidence_quotes": [
+        "陈长生想了想先前的场景\uff0c明白了些什么\uff0c有些不好意思\uff0c解释道\uff1a“因为……你点的飞雀黄精汤\uff0c名为温补\uff0c实则燥意极大\uff0c在秋冬服用是极好的\uff0c现在是春天\uff0c那汤喝了容易生虚火\uff0c对身体不大好。”"
+      ]
+    }
+  ],
+  "no_graph_candidate_reason": ""
+}"""
+QUARANTINED_CH12_GRAPH_PAGE_2 = """{
+  "status": "complete",
+  "candidates": []
+}"""
+QUARANTINED_CH12_GRAPH_PAGE_3 = """{
+  "status": "complete",
+  "candidates": [
+    {
+      "kind": "relation",
+      "subject_surface": "陈长生",
+      "predicate": "owns",
+      "object_surface": "剑",
+      "valid_time": {
+        "worldline": "main",
+        "start_ordinal": 1,
+        "end_ordinal": null
+      },
+      "source_truth_class": "not_applicable",
+      "evidence_quotes": [
+        "”\\n　　陈长生看着他\uff0c说道\uff1a“这是我的。"
+      ]
+    },
+    {
+      "kind": "entity",
+      "surface": "剑",
+      "entity_type": "artifact",
+      "evidence_quotes": [
+        "走到厅室过博物架的时候\uff0c唐三十六的目光下意识落到架上\uff0c便再也无法离开——那里有一把剑。"
+      ]
+    }
+  ],
+  "no_graph_candidate_reason": ""
+}"""
+
+
+def test_graph_page_draft_canonicalizes_exact_quarantined_ch12_pages() -> None:
+    # Round-19: the three exact quarantined raw pages must now validate, with
+    # the canonicalization confined to the no-candidate-reason field.
+    from novel_agent.domain.world import (
+        GraphCandidatePageDraft,
+        GraphEntityCandidateDraft,
+        GraphRelationCandidateDraft,
+    )
+
+    page1 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_1)
+    assert page1.no_graph_candidate_reason is None
+    relation1 = page1.candidates[0]
+    assert isinstance(relation1, GraphRelationCandidateDraft)
+    assert len(page1.candidates) == 1
+    assert relation1.predicate == "discloses_to"
+    assert relation1.subject_surface == "陈长生"
+    assert relation1.object_surface == "唐三十六"
+    assert relation1.valid_time.start_ordinal is None
+    assert len(relation1.evidence_quotes) == 1
+    assert relation1.source_truth_class.value == "not_applicable"
+
+    page2 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_2)
+    assert page2.candidates == ()
+    assert page2.no_graph_candidate_reason == "model_returned_no_graph_candidates"
+
+    page3 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_3)
+    assert page3.no_graph_candidate_reason is None
+    assert len(page3.candidates) == 2
+    relation3 = page3.candidates[0]
+    assert isinstance(relation3, GraphRelationCandidateDraft)
+    assert relation3.predicate == "owns"
+    assert relation3.object_surface == "剑"
+    entity3 = page3.candidates[1]
+    assert isinstance(entity3, GraphEntityCandidateDraft)
+    assert entity3.surface == "剑"
+    assert entity3.entity_type == "artifact"
+    # The canonicalized page differs from the raw page only in the reason field.
+    raw3 = json.loads(QUARANTINED_CH12_GRAPH_PAGE_3)
+    raw3["no_graph_candidate_reason"] = None
+    dumped = page3.model_dump(mode="json")
+    for candidate in dumped["candidates"]:
+        if candidate.get("valid_time") is not None:
+            candidate["valid_time"].pop("label", None)
+    assert dumped == raw3

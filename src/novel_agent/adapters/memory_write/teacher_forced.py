@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -846,14 +846,50 @@ class TeacherForcedCuratorPort:
             operation_indexes = ()
             json_pointers = paths
             violation_rule = None
-        output_hash = next(
-            (
-                entry.raw_response_hash
-                for entry in primary_entries
-                if entry.raw_response_hash is not None
-            ),
-            None,
-        )
+        # Round-19 repair: when the gateway attached exact structured
+        # attribution (request id + raw hash) to the validation failure, the
+        # rejection must reference THAT failing entry (e.g. a Graph page) and
+        # never substitute the ordinary primary response; ambiguous or missing
+        # attribution fails closed by omitting the reference.
+        structured_error = cast(Any, error)
+        try:
+            failing_request_id = structured_error._structured_request_id
+        except AttributeError:
+            failing_request_id = None
+        try:
+            failing_raw_hash = structured_error._structured_raw_response_hash
+        except AttributeError:
+            failing_raw_hash = None
+        attribution_attempted = failing_request_id is not None or failing_raw_hash is not None
+        attributed_raw_ref: ArtifactRef | None = None
+        if attribution_attempted:
+            # Attribution was attempted: only an exact request-id + raw-hash
+            # match against a recorded call may reference a response; any
+            # other combination omits the reference (fail closed).
+            output_hash = None
+            if failing_request_id is not None and failing_raw_hash is not None:
+                failing_entry = next(
+                    (entry for entry in entries if entry.request_id.root == failing_request_id),
+                    None,
+                )
+                if failing_entry is not None and (
+                    failing_entry.raw_response_hash == failing_raw_hash
+                ):
+                    output_hash = failing_raw_hash
+                    failing_raw_refs = self._persist_raw_responses(
+                        (StableId(failing_request_id),),
+                        version,
+                    )
+                    attributed_raw_ref = failing_raw_refs[-1] if failing_raw_refs else None
+        else:
+            output_hash = next(
+                (
+                    entry.raw_response_hash
+                    for entry in primary_entries
+                    if entry.raw_response_hash is not None
+                ),
+                None,
+            )
         from novel_agent.services.proposal_finding_signature import (
             extract_block_or_candidate_ids,
             proposal_finding_signature,
@@ -893,7 +929,11 @@ class TeacherForcedCuratorPort:
             operation_indexes=operation_indexes,
             json_pointers=json_pointers,
             violation_rule=violation_rule,
-            raw_draft_ref=primary_raw_refs[-1] if primary_raw_refs else None,
+            raw_draft_ref=(
+                (primary_raw_refs[-1] if primary_raw_refs else None)
+                if not attribution_attempted
+                else attributed_raw_ref
+            ),
             created_at=datetime.now(UTC),
         )
         rejection_ref = self._artifacts.put(

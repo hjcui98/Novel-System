@@ -308,6 +308,19 @@ class ModelGateway:
                         )
                     )
                 if attempt >= self._structured_max_retries:
+                    # Round-19 repair: preserve the exact terminal
+                    # structured-generation request identity and raw-response
+                    # hash with the validation failure so the rejection audit
+                    # can attribute the defect to the failing request (e.g. a
+                    # Graph page) instead of the concurrent ordinary primary.
+                    # `ledger_entry` is non-None here: the load above raises
+                    # AssertionError when it is missing.
+                    error._structured_request_id = (  # type: ignore[attr-defined]
+                        constrained_request.request_id.root
+                    )
+                    error._structured_raw_response_hash = (  # type: ignore[attr-defined]
+                        ledger_entry.raw_response_hash
+                    )
                     raise
                 suffix = f".schema-retry{attempt + 1}"
                 retry_id = request.request_id.root[: 128 - len(suffix)] + suffix

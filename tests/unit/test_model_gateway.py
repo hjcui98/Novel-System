@@ -20,6 +20,7 @@ from novel_agent.domain.model_calls import (
     ModelRole,
     ProviderModelResult,
 )
+from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.model_call_ledger import (
     InMemoryModelCallLedger,
     ModelCallLedgerCollision,
@@ -337,6 +338,32 @@ def test_structured_output_retry_limit_is_enforced() -> None:
         ModelCallLedgerStatus.VALIDATION_REJECTED,
         ModelCallLedgerStatus.VALIDATION_REJECTED,
     )
+
+
+def test_structured_terminal_validation_attaches_exact_attribution() -> None:
+    # Round-19: on the terminal structured-validation failure, the gateway must
+    # preserve the exact request id and raw-response hash of the FAILING
+    # attempt (the schema-retry suffix included) so the rejection audit can
+    # attribute the defect to the actual failing request.
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    fake = FakeModelEndpoint('{"answer":1}')
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),), structured_max_retries=1)
+
+    with pytest.raises(ValidationError) as raised:
+        asyncio.run(gateway.generate_structured(request(), Output))
+
+    error = cast(Any, raised.value)
+    assert error._structured_request_id == "model.request.1.schema-retry1"
+    raw_hash = error._structured_raw_response_hash
+    assert raw_hash == sha256_id(b'{"answer":1}')
+    # The recorded failing entry matches the attached attribution exactly.
+    failing = gateway.call_ledger.list_for_prefix("model.request.1.schema-retry1")
+    assert len(failing) == 1
+    assert failing[0].request_id.root == "model.request.1.schema-retry1"
+    assert failing[0].raw_response_hash == raw_hash
 
 
 def test_structured_audited_exhaustion_carries_all_durable_entries() -> None:

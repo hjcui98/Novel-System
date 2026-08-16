@@ -269,6 +269,76 @@ class EvidenceCandidateGenerator:
         """Punctuation-insensitive semantic span for quote binding."""
         return "".join(char for char in text.casefold() if char.isalnum())
 
+    # Round-18 repair: at most one LEADING closing dialogue-boundary mark may
+    # be ignored by the layout-equivalence fallback (the model dropped it in
+    # one chapter-12 variant and restored it in the others).
+    _CLOSING_DIALOGUE_MARKS: tuple[str, ...] = ("」", "』", "”", "\u2019", '"')
+
+    @staticmethod
+    def _layout_normalize(text: str) -> str:
+        """Remove CR/LF plus their adjacent indentation (layout equivalence).
+
+        Only whitespace immediately adjacent to a line break is removed; all
+        other characters (including internal punctuation and ordinary spaces)
+        are preserved, so character/punctuation/word-space changes stay
+        distinct and the fallback remains narrow.
+        """
+        return re.sub(r"[ \t\u3000]*\r?\n[ \t\u3000]*", "", text)
+
+    @classmethod
+    def resolve_layout_equivalent_quote(
+        cls,
+        quote: str,
+        candidates: tuple[EvidenceCandidate, ...],
+        chapter: ChapterDocument,
+    ) -> EvidenceCandidate | None:
+        """Narrow layout-equivalence fallback used only by the ordinary Curator.
+
+        After byte-exact physical lookup fails, the emitted quote is compared
+        with the covered catalog candidates with CR/LF plus adjacent
+        indentation removed and at most one leading closing dialogue-boundary
+        mark ignored.  Binds only when exactly one candidate is
+        layout-equivalent and returns that candidate's CANONICAL source text
+        and physical span; the model-normalized string is never returned.
+        Character changes, internal punctuation changes, ordinary word-space
+        changes, out-of-unit spans, and multiple layout-equivalent candidates
+        stay unresolved (None) — the caller then proceeds with its typed
+        rejection.
+        """
+        blocks = {block.block_id: block.text for scene in chapter.scenes for block in scene.blocks}
+        if len(cls._semantic_span(quote)) < 2:
+            return None
+
+        def variants(text: str) -> tuple[str, ...]:
+            stripped = [text]
+            for mark in cls._CLOSING_DIALOGUE_MARKS:
+                if text.startswith(mark):
+                    stripped.append(text[len(mark) :])
+                    break
+            return tuple(dict.fromkeys(cls._layout_normalize(item) for item in stripped))
+
+        quote_variants = variants(quote)
+        matches: list[EvidenceCandidate] = []
+        for candidate in candidates:
+            block_text = blocks.get(candidate.block_id)
+            # Only real physical spans of the covered source unit may bind;
+            # a candidate whose claimed span does not reproduce the chapter
+            # text stays out of the fallback (fail-closed).
+            if block_text is None or block_text[candidate.start : candidate.end] != candidate.text:
+                continue
+            candidate_variants = variants(candidate.text)
+            if (
+                any(
+                    candidate_normalized and candidate_normalized in quote_variants
+                    for candidate_normalized in candidate_variants
+                )
+                and candidate not in matches
+            ):
+                matches.append(candidate)
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     @staticmethod
     def _similarity_ratio(quote: str, candidate: EvidenceCandidate) -> float:
         """Deterministic similarity between a quote and one catalog candidate."""

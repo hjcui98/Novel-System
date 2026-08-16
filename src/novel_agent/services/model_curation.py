@@ -468,6 +468,7 @@ class ModelCurator:
         )
         safe_request = request.model_copy(
             update={
+                "repetition_penalty": 1.10,
                 "prompt": (
                     contract + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
                     "only. "
@@ -557,7 +558,7 @@ class ModelCurator:
                     "no_op_evidence_quotes MUST be an empty array. Those two no-op "
                     "proof fields may be populated only when operations is empty.\n"
                     "</CURATOR_OUTPUT_CONTRACT>" + repair_contract
-                )
+                ),
             }
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
@@ -1531,6 +1532,22 @@ class ModelCurator:
                         chapter,
                     )
                 except ValueError as error:
+                    # Round-18 repair: after byte-exact physical lookup fails,
+                    # the ordinary-Curator binding tries the narrow
+                    # layout-equivalence fallback (CR/LF + adjacent indentation
+                    # removed, at most one leading closing dialogue mark
+                    # ignored). It binds only when exactly one covered catalog
+                    # candidate is layout-equivalent; otherwise the typed
+                    # rejection below proceeds unchanged (fail-closed).
+                    layout_bound = self._evidence_generator.resolve_layout_equivalent_quote(
+                        quote,
+                        candidates,
+                        chapter,
+                    )
+                    if layout_bound is not None:
+                        catalog[layout_bound.candidate_id] = layout_bound
+                        resolved_ids.append(layout_bound.candidate_id)
+                        continue
                     hint = self._evidence_quote_feedback(quote, error, candidates)
                     operation_index = (
                         int(pointer_prefix.split("/")[2])
