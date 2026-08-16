@@ -378,6 +378,10 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
     assert batch.relations[0].evidence_refs[0].span is not None
     assert endpoint.requests[0].enable_thinking is True
     assert endpoint.requests[0].thinking_token_budget == 2048
+    # Round-16 repair: graph pages carry a request-local repetition penalty
+    # against runaway generation; the base request stays unchanged.
+    assert endpoint.requests[0].repetition_penalty == 1.10
+    assert request.repetition_penalty is None
     assert "every evidence_quote" in endpoint.requests[0].prompt
     assert "at most 12 candidates" in endpoint.requests[0].prompt
     assert (
@@ -446,6 +450,7 @@ def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
     prompt = endpoint.requests[0].prompt
     assert endpoint.requests[0].enable_thinking is True
     assert endpoint.requests[0].thinking_token_budget == 2048
+    assert endpoint.requests[0].repetition_penalty == 1.10
     assert "MANDATORY_GRAPH_REPAIR_CONTRACT" in prompt
     assert prompt.rfind("<MANDATORY_GRAPH_REPAIR_CONTRACT") > prompt.rfind("</GRAPH_REPAIR_INPUT>")
     assert "kind=entity or kind=relation" in prompt

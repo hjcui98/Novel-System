@@ -1071,6 +1071,7 @@ class ModelCurator:
             update={
                 "enable_thinking": True,
                 "thinking_token_budget": 2048,
+                "repetition_penalty": 1.10,
                 "prompt": (
                     "Extract one GRAPH_CANDIDATE_PAGE JSON from this revealed source unit. "
                     "Return at most 12 candidates in the single candidates array. Every item "
