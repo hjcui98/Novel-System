@@ -822,6 +822,14 @@ class TeacherForcedCuratorPort:
                 kind = ProposalRejectionKind.DANGLING_ENTITY_REFERENCE
                 stage = ProposalRejectionStage.SEMANTIC_CONTRACT
                 retryable = True
+            elif reason_code == "CURATOR_PROPOSAL_TARGET_IDENTITY_MISMATCH":
+                detail = (
+                    "Proposed operation reuses an existing target id bound to a "
+                    "different subject/predicate identity"
+                )
+                kind = ProposalRejectionKind.NORMALIZED_TARGET_COLLISION
+                stage = ProposalRejectionStage.TRUSTED_NORMALIZATION
+                retryable = True
             else:
                 detail = "Normalized targets collide with different semantic payloads"
                 kind = ProposalRejectionKind.NORMALIZED_TARGET_COLLISION

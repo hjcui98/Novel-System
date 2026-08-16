@@ -2307,24 +2307,30 @@ def test_v2_filters_state_target_identity_mismatch_before_candidate() -> None:
         enforce_support_gate=False,
     )
 
-    changes, _call, filtered = asyncio.run(
-        curator.extract_reported_v2(
-            root,
-            21,
-            _COMMIT,
-            world,
-            _request("req.v2.target-identity-mismatch"),
+    # Round-21 repair: an identity-mismatched operation is a typed rejection
+    # of the COMPLETE proposal, never a silent filter that could commit a
+    # partial delta or feed the empty-delta gate an emptied draft.
+    with pytest.raises(CuratorProposalSemanticRejected) as raised:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                world,
+                _request("req.v2.target-identity-mismatch"),
+            )
         )
-    )
-
-    assert len(changes.operations) == 1
-    assert len(filtered.operations) == 1
-    assert filtered.operations[0].target_id == first.target_id
-    assert len(curator.last_operation_filter_receipts) == 1
-    receipt = curator.last_operation_filter_receipts[0]
-    assert receipt.proposed_target_id == mismatched.target_id
-    assert receipt.existing_target_id == mismatched.target_id
-    assert receipt.reason == "target_identity_mismatch"
+    error = raised.value
+    assert error.reason_code == "CURATOR_PROPOSAL_TARGET_IDENTITY_MISMATCH"
+    assert error.operation_indexes == (1,)
+    assert "/operations/1/target_id" in error.json_pointers
+    assert "/operations/1/record/subject_id" in error.json_pointers
+    assert "/operations/1/record/predicate" in error.json_pointers
+    feedback = error.safe_feedback[0]
+    assert "state.reading-method" in feedback
+    assert "uses_reading_method" in feedback
+    assert "new non-colliding state id" in feedback
+    assert error.violation_rule == "existing_target_identity_immutable"
 
 
 def test_v2_rejects_dangling_entity_reference_with_field_level_feedback() -> None:
@@ -2988,3 +2994,153 @@ def test_v2_ch12_style_draft_binds_canonical_span_through_binding() -> None:
     # The canonical evidence ref is produced by the layout-equivalence binding.
     assert _out.operations[0].evidence_candidate_ids == (canonical.candidate_id,)
     assert gateway.requests[0].repetition_penalty == 1.10
+
+
+# --- Round-21: immutable state target identity (v7 chapter-22 typed stop) ---
+
+
+def _ch21_world_with_cultivation_start() -> WorldRootDocument:
+    """Frozen chapter-21 Canonical World fixture: the state id the v7 ch22
+    drafts reused with a different predicate (review-21 evidence fixture)."""
+    return WorldRootDocument(
+        root_hash=ArtifactId("sha256:" + "a" * 64),
+        schema_version=SchemaVersion("0.1.0"),
+        source_commit=_COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.bootstrap.chen-changsheng"),
+                entity_type="character",
+                internal_label="陈长生",
+            ),
+        ),
+        states=(
+            StateRecord(
+                state_id=StableId("state.chen-changsheng.cultivation-start"),
+                subject_id=StableId("entity.bootstrap.chen-changsheng"),
+                predicate="cultivation_start_status",
+                value="completed_xisui_lun_memorization_and_note_taking",
+                valid_time=StoryTime(worldline="main", start_ordinal=1),
+                truth_class=TruthClass.ASSERTION,
+            ),
+        ),
+    )
+
+
+def _ch22_identity_mismatch_draft(value: str) -> CuratorV2EvidenceDraft:
+    """The exact v7 chapter-22 ordinary-Curator draft shape: it reuses
+    state.chen-changsheng.cultivation-start for predicate cultivation_realm."""
+    return CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.REPLACE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.chen-changsheng.cultivation-start"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.bootstrap.chen-changsheng"),
+                    predicate="cultivation_realm",
+                    value=value,
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_quotes=("一天一夜时间\uff0c他凝结神识成功。",),
+            ),
+        ),
+        coverage=0.8,
+    )
+
+
+def _ch22_catalog(root: TextRootDocument) -> tuple[EvidenceCandidate, ...]:
+    return tuple(EvidenceCandidateGenerator().generate(root, 21))
+
+
+def test_v2_state_target_identity_mismatch_rejects_before_noop_branch() -> None:
+    # Both exact v7 ch22 raw draft shapes (values condensed_divine_spirit and
+    # 凝神之境) must raise the typed target-identity rejection BEFORE the
+    # empty-delta gate, with operation index zero, exact field pointers, and
+    # actionable feedback naming the immutable existing identity.
+    world = _ch21_world_with_cultivation_start()
+    root = _root_with("一天一夜时间\uff0c他凝结神识成功。")
+    candidates = _ch22_catalog(root)
+
+    class _FixedCatalogGenerator(EvidenceCandidateGenerator):
+        def generate(self, text_root, chapter_index):
+            return candidates
+
+    for value in ("condensed_divine_spirit", "凝神之境"):
+        gateway = _FakeGateway(_ch22_identity_mismatch_draft(value))
+        curator = ModelCurator(
+            cast(Any, gateway),
+            evidence_generator=_FixedCatalogGenerator(),
+            enforce_support_gate=True,
+            semantic_verifier=lambda _record, _candidate: (
+                EvidenceSupportDisposition.SUPPORTS,
+                "test_trusted_semantic_verifier",
+            ),
+        )
+        with pytest.raises(CuratorProposalSemanticRejected) as raised:
+            asyncio.run(
+                curator.extract_reported_v2(
+                    root, 21, _COMMIT, world, _request(f"req.v2.ch22.{len(value)}")
+                )
+            )
+        error = raised.value
+        assert error.reason_code == "CURATOR_PROPOSAL_TARGET_IDENTITY_MISMATCH"
+        assert error.operation_indexes == (0,)
+        assert "/operations/0/target_id" in error.json_pointers
+        assert "/operations/0/record/subject_id" in error.json_pointers
+        assert "/operations/0/record/predicate" in error.json_pointers
+        feedback = error.safe_feedback[0]
+        assert "state.chen-changsheng.cultivation-start" in feedback
+        assert "cultivation_start_status" in feedback
+        assert "new non-colliding state id" in feedback
+        assert error.violation_rule == "existing_target_identity_immutable"
+
+
+def test_v2_corrected_fresh_state_id_proceeds_through_binding_and_verifier() -> None:
+    # A corrected draft that uses a NEW state id for cultivation_realm stays
+    # non-empty and proceeds through exact evidence binding and the support
+    # verifier; the output contract names the immutable-target rule.
+    world = _ch21_world_with_cultivation_start()
+    root = _root_with("一天一夜时间\uff0c他凝结神识成功。")
+    candidates = _ch22_catalog(root)
+
+    class _FixedCatalogGenerator(EvidenceCandidateGenerator):
+        def generate(self, text_root, chapter_index):
+            return candidates
+
+    draft = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(
+            CuratorV2OperationDraft(
+                operation=ChangeOperationType.CREATE,
+                record_kind=WorldRecordKind.STATE,
+                target_id=StableId("state.chen-changsheng.cultivation-realm"),
+                record=CuratorStateRecord(
+                    subject_id=StableId("entity.bootstrap.chen-changsheng"),
+                    predicate="cultivation_realm",
+                    value="condensed_divine_spirit",
+                    valid_time=CuratorStoryTime(worldline="main", start_ordinal=21),
+                    truth_class=TruthClass.ASSERTION,
+                ),
+                evidence_quotes=("一天一夜时间\uff0c他凝结神识成功。",),
+            ),
+        ),
+    )
+    gateway = _FakeGateway(draft)
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=_FixedCatalogGenerator(),
+        enforce_support_gate=True,
+        semantic_verifier=lambda _record, _candidate: (
+            EvidenceSupportDisposition.SUPPORTS,
+            "test_trusted_semantic_verifier",
+        ),
+    )
+    changes, _call, out = asyncio.run(
+        curator.extract_reported_v2(root, 21, _COMMIT, world, _request("req.v2.ch22.corrected"))
+    )
+    assert len(changes.operations) == 1
+    assert changes.operations[0].target_id.root == "state.chen-changsheng.cultivation-realm"
+    assert out.operations[0].evidence_candidate_ids == (candidates[0].candidate_id,)
+    assert "A state target id is immutable" in gateway.requests[0].prompt

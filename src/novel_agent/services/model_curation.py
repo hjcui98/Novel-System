@@ -556,7 +556,13 @@ class ModelCurator:
                     "subject-bearing full-sentence quotes. "
                     "When operations is non-empty, no_durable_delta_reason MUST be null and "
                     "no_op_evidence_quotes MUST be an empty array. Those two no-op "
-                    "proof fields may be populated only when operations is empty.\n"
+                    "proof fields may be populated only when operations is empty. "
+                    "A state target id is immutable: each state id in WORLD is bound "
+                    "to exactly one subject and predicate. Never reuse an existing "
+                    "state id for a different subject or predicate; emit a new "
+                    "non-colliding state id (for example "
+                    "'state.<subject>.<predicate>') for a new fact, or omit the "
+                    "operation when the existing fact is already recorded.\n"
                     "</CURATOR_OUTPUT_CONTRACT>" + repair_contract
                 ),
             }
@@ -2034,26 +2040,34 @@ class ModelCurator:
             else:
                 identity_mismatch = False
             if identity_mismatch:
-                source_hash = sha256_id(canonical_json_bytes(operation.model_dump(mode="json")))
-                digest = self._digest(
-                    base_commit.root.encode(),
-                    str(index).encode(),
-                    source_hash.root.encode(),
-                    operation.target_id.root.encode(),
+                # Round-21 repair: an existing state target id is bound to its
+                # immutable subject/predicate identity in Canonical World.
+                # Reusing that id for a different subject or predicate is a
+                # typed rejection, never a silent filter: dropping it here
+                # would hand the empty-delta gate an empty draft and produce
+                # deterministic no-op-proof poison (v7 chapter 22), and a
+                # mixed proposal could otherwise commit a partial delta.
+                raise CuratorProposalSemanticRejected(
+                    "CURATOR_PROPOSAL_TARGET_IDENTITY_MISMATCH",
+                    (),
+                    operation_indexes=(index,),
+                    json_pointers=(
+                        f"/operations/{index}/target_id",
+                        f"/operations/{index}/record/subject_id",
+                        f"/operations/{index}/record/predicate",
+                    ),
+                    safe_feedback=(
+                        (
+                            f"operation {index} reuses state id "
+                            f"{operation.target_id.root} which Canonical World binds to "
+                            f"subject {existing_state.subject_id.root} predicate "
+                            f"{existing_state.predicate}; use a new non-colliding state id "
+                            "for the new subject/predicate, or drop the operation if the "
+                            "existing identity was intended"
+                        )[:240],
+                    ),
+                    violation_rule="existing_target_identity_immutable",
                 )
-                receipts.append(
-                    ProposalOperationFilterReceipt(
-                        transform_id=StableId(f"proposal-operation-filter.{digest}"),
-                        base_commit=base_commit,
-                        operation_index=index,
-                        record_kind=operation.record_kind,
-                        proposed_target_id=operation.target_id,
-                        existing_target_id=operation.target_id,
-                        reason="target_identity_mismatch",
-                        source_operation_hash=source_hash,
-                    )
-                )
-                continue
             normalized_type = operation.operation
             target_exists = operation.target_id in current_ids[operation.record_kind]
             if normalized_type is ChangeOperationType.CREATE and target_exists:

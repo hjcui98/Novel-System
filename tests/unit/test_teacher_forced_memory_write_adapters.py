@@ -1260,6 +1260,30 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
             True,
         ),
         (
+            CuratorProposalSemanticRejected(
+                "CURATOR_PROPOSAL_TARGET_IDENTITY_MISMATCH",
+                (),
+                operation_indexes=(0,),
+                json_pointers=(
+                    "/operations/0/target_id",
+                    "/operations/0/record/subject_id",
+                    "/operations/0/record/predicate",
+                ),
+                safe_feedback=(
+                    (
+                        "operation 0 reuses state id state.chen-changsheng.cultivation-start "
+                        "which Canonical World binds to subject "
+                        "entity.bootstrap.chen-changsheng predicate cultivation_start_status; "
+                        "use a new non-colliding state id for the new subject/predicate"
+                    )[:240],
+                ),
+                violation_rule="existing_target_identity_immutable",
+            ),
+            ProposalRejectionStage.TRUSTED_NORMALIZATION,
+            ProposalRejectionKind.NORMALIZED_TARGET_COLLISION,
+            True,
+        ),
+        (
             ModelCurationContractError("draft chapter differs"),
             ProposalRejectionStage.SEMANTIC_CONTRACT,
             ProposalRejectionKind.CHAPTER_MISMATCH,
