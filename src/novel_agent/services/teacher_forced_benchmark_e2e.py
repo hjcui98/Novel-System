@@ -1904,6 +1904,12 @@ class TeacherForcedBenchmarkE2ERunner:
             PromptRegistry(prompt_templates),
             SkillRegistry(skill_templates),
         )
+        endpoint_output_tokens = getattr(endpoint, "max_output_tokens", None)
+        controller_output_tokens = (
+            endpoint_output_tokens
+            if isinstance(endpoint_output_tokens, int) and endpoint_output_tokens >= 1
+            else 12288
+        )
 
         def controller_policy_factory(
             sealed_tool_policy: ToolPolicy,
@@ -1933,7 +1939,10 @@ class TeacherForcedBenchmarkE2ERunner:
                     purpose=ModelCallPurpose.BATCH_TEST,
                     trace_id=(f"trace-controller-{req.request_id.root}-r{round_index}"),
                     prompt="replaced by StructuredAgentRunner",
-                    timeout_seconds=60,
+                    max_output_tokens=controller_output_tokens,
+                    timeout_seconds=900,
+                    enable_thinking=False,
+                    thinking_token_budget=None,
                     scheduling_stage="memory_controller",
                 )
 

@@ -490,7 +490,7 @@ class PlanConditionedNeedPlanner:
                 ),
                 prompt=prompt,
                 max_output_tokens=self._max_output_tokens,
-                timeout_seconds=420.0,
+                timeout_seconds=900.0,
                 enable_thinking=False,
                 scheduling_stage="need_planner",
             )

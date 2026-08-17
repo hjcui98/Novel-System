@@ -454,6 +454,7 @@ sources:
 def test_semantic_harness_builds_structured_controller_policy() -> None:
     endpoint = FakeModelEndpoint("{}")
     cast(Any, endpoint).max_retries = 1
+    cast(Any, endpoint).max_output_tokens = 4096
     harness = TeacherForcedBenchmarkE2ERunner.build_model_harness(
         endpoint,
         quality_repair_flags=QualityRepairFeatureFlags(
@@ -485,7 +486,10 @@ def test_semantic_harness_builds_structured_controller_policy() -> None:
     )
     generated = policy._request_factory({"request": state_request}, 2)
     assert generated.request_id.root.endswith(".r2")
-    assert generated.timeout_seconds == 60
+    assert generated.max_output_tokens == 4096
+    assert generated.timeout_seconds == 900
+    assert generated.enable_thinking is False
+    assert generated.thinking_token_budget is None
     TeacherForcedBenchmarkE2ERunner._script(
         harness,
         TeacherForcedBenchmarkE2ERunner._request("semantic", AgentMode.REPLAY),
