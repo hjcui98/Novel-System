@@ -1655,6 +1655,23 @@ class TeacherForcedBenchmarkE2ERunner:
             harness.responses.add(request.request_id, model)
 
     @staticmethod
+    def build_model_harness(
+        endpoint: ModelEndpointPort,
+        *,
+        quality_repair_flags: QualityRepairFeatureFlags | None = None,
+        admission_controller: ModelRequestAdmissionController | None = None,
+        scheduling_timeout_seconds: float = 120.0,
+    ) -> _AgentHarness:
+        """Build the shared semantic Planner/Controller harness for read-side products."""
+
+        return TeacherForcedBenchmarkE2ERunner._agent_harness(
+            endpoint,
+            quality_repair_flags=quality_repair_flags,
+            admission_controller=admission_controller,
+            scheduling_timeout_seconds=scheduling_timeout_seconds,
+        )
+
+    @staticmethod
     def _agent_harness(
         endpoint: ModelEndpointPort | None = None,
         *,

@@ -1,4 +1,4 @@
-"""Evidence-first checkpoint runner: frozen-state pipeline with zero model calls."""
+"""Evidence-first checkpoint runner: deterministic baseline and model product path."""
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from novel_agent.domain.planning_memory import (
     PlannerArtifactMetadata,
     PlannerFallbackStatus,
     PlannerInvocationArtifact,
+    PlannerInvocationAttempt,
+    PlannerInvocationAttemptStatus,
 )
 from novel_agent.domain.retrieval_routing import (
     L2IndexKind,
@@ -36,6 +38,7 @@ from novel_agent.domain.retrieval_routing import (
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
+from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
 from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.evidence_first_checkpoint_runner import EvidenceFirstCheckpointRunner
 from novel_agent.services.memory_benchmark_contract import build_safe_task_contract
@@ -284,6 +287,9 @@ def test_runner_produces_ready_v2_package_with_zero_model_calls() -> None:
     assert result.future_leakage_count == 0
     assert result.retrieval_call_count >= 0
     assert result.planner_fallback_used is False
+    assert result.need_planner_model_call_count == 0
+    assert result.controller_model_call_count == 0
+    assert result.assembly.package.arm == "A"
     # zero model calls by construction: no gateway, no claim support, no
     # verifier/evaluator is ever instantiated on this path
     assert result.assembly.package.lineage.planner_fallback_used is False
@@ -293,6 +299,137 @@ def test_runner_produces_ready_v2_package_with_zero_model_calls() -> None:
     # every item is ledger-backed or a typed gap
     for item in result.assembly.package.items:
         assert item.evidence_ledger_ids or item.gap is not None
+
+
+def test_model_driven_runner_requires_planner_and_controller_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0].model_copy(update={"source_commit": COMMIT})
+    text = bundle.text_roots[0]
+    plan = bundle.plan_roots[0]
+    task, context = _task_and_context()
+    frozen_artifact = _planner_artifact(task, context)
+    replayed = TaskPlanConditionedNeedGenerator().generate_evidence_first(
+        task,
+        world,
+        plan,
+        context,
+        frozen_artifact,
+    )
+    assert replayed is not None
+    assert replayed.planner_artifact is not None
+    planner_attempt = PlannerInvocationAttempt(
+        request_id=StableId("request.runner.model-planner"),
+        status=PlannerInvocationAttemptStatus.SUCCEEDED,
+        raw_response="{}",
+        raw_response_hash=content_id({"raw": "{}"}),
+        input_tokens=1,
+        output_tokens=1,
+    )
+    generated = replayed.model_copy(
+        update={
+            "planner_artifact": replayed.planner_artifact.model_copy(
+                update={"attempts": (planner_attempt,)}
+            )
+        }
+    )
+
+    class _RecordedRoutePolicy(RouteBoundControllerPolicy):
+        @property
+        def decision_receipts(self) -> tuple[object, ...]:
+            return (object(),)
+
+        @property
+        def decision_repairs(self) -> tuple[object, ...]:
+            return ()
+
+    runner = EvidenceFirstCheckpointRunner(
+        planner_gateway=object(),  # type: ignore[arg-type]
+        controller_policy_factory=(
+            lambda _tool_policy, routes: _RecordedRoutePolicy(routes)
+        ),
+        require_model_decisions=True,
+    )
+    monkeypatch.setattr(
+        runner._generator,
+        "generate_with_lineage",
+        lambda *args, **kwargs: generated,
+    )
+    result = runner.run(
+        case_id=ProjectId("ztj_volume01_preview"),
+        task=task,
+        world=world,
+        text=text,
+        plan=plan,
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        planning_context=context,
+        frozen_planner_artifact=frozen_artifact,
+        frozen_needs=(),
+        backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
+        fingerprint=content_id({"runner": "model-driven-test"}),
+        run_id=StableId("request.runner.model-driven"),
+    )
+
+    assert result.need_planner_model_call_count == 1
+    assert result.controller_model_call_count == 1
+    assert result.assembly.package.arm == "B"
+
+
+def test_model_driven_runner_rejects_planner_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0].model_copy(update={"source_commit": COMMIT})
+    text = bundle.text_roots[0]
+    plan = bundle.plan_roots[0]
+    task, context = _task_and_context()
+    frozen_artifact = _planner_artifact(task, context)
+    replayed = TaskPlanConditionedNeedGenerator().generate_evidence_first(
+        task,
+        world,
+        plan,
+        context,
+        frozen_artifact,
+    )
+    assert replayed is not None
+    fallback = replayed.model_copy(
+        update={
+            "status": NeedGenerationStatus.PLANNER_FALLBACK,
+            "fallback_used": True,
+            "planner_fallback_reason": "provider_error",
+        }
+    )
+    runner = EvidenceFirstCheckpointRunner(
+        planner_gateway=object(),  # type: ignore[arg-type]
+        controller_policy_factory=(
+            lambda _tool_policy, routes: RouteBoundControllerPolicy(routes)
+        ),
+        require_model_decisions=True,
+    )
+    monkeypatch.setattr(
+        runner._generator,
+        "generate_with_lineage",
+        lambda *args, **kwargs: fallback,
+    )
+
+    with pytest.raises(RuntimeError, match="Planner fell back: provider_error"):
+        runner.run(
+            case_id=ProjectId("ztj_volume01_preview"),
+            task=task,
+            world=world,
+            text=text,
+            plan=plan,
+            base_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            planning_context=context,
+            frozen_planner_artifact=frozen_artifact,
+            frozen_needs=(),
+            backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
+            fingerprint=content_id({"runner": "model-fallback-test"}),
+            run_id=StableId("request.runner.model-fallback"),
+        )
 
 
 def test_runner_fallback_case_reuses_frozen_needs() -> None:
@@ -364,6 +501,13 @@ def test_runner_constructor_validation() -> None:
         EvidenceFirstCheckpointRunner(max_candidates=0)
     with pytest.raises(ValueError, match="tool-call limit"):
         EvidenceFirstCheckpointRunner(max_tool_calls=0)
+    with pytest.raises(ValueError, match="Planner gateway"):
+        EvidenceFirstCheckpointRunner(require_model_decisions=True)
+    with pytest.raises(ValueError, match="Controller policy factory"):
+        EvidenceFirstCheckpointRunner(
+            planner_gateway=object(),  # type: ignore[arg-type]
+            require_model_decisions=True,
+        )
 
 
 def test_runner_rejects_inexact_snapshot_capability() -> None:

@@ -47,6 +47,7 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     BenchmarkInformationProfile,
     ControllerMode,
+    QualityRepairFeatureFlags,
     ScenarioRunResult,
     SourceClass,
 )
@@ -453,7 +454,13 @@ sources:
 def test_semantic_harness_builds_structured_controller_policy() -> None:
     endpoint = FakeModelEndpoint("{}")
     cast(Any, endpoint).max_retries = 1
-    harness = TeacherForcedBenchmarkE2ERunner._agent_harness(endpoint)
+    harness = TeacherForcedBenchmarkE2ERunner.build_model_harness(
+        endpoint,
+        quality_repair_flags=QualityRepairFeatureFlags(
+            max_controller_decision_model_calls=8,
+            max_agentic_actions=32,
+        ),
+    )
 
     assert harness.responses is None
     assert harness.endpoint is endpoint
@@ -469,6 +476,8 @@ def test_semantic_harness_builds_structured_controller_policy() -> None:
     }
     policy = harness.controller_request_factory(harness.controller_spec.tool_policy)
     assert policy.tool_policy_hash == harness.controller_spec.tool_policy.content_hash
+    assert policy.max_decision_model_calls == 8
+    assert policy._max_agentic_actions == 32
     state_request = MagicMock(
         request_id=StableId("request.controller.fixture"),
         run_id=RunId("run.controller.fixture"),

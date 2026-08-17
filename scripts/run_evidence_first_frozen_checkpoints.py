@@ -3,9 +3,10 @@
 
 Reuses the frozen C20/C40/C60/C80/C95 Commit/World/TextRoot/Plan and the
 frozen real-hybrid snapshot indexes; runs the public
-Need -> Retrieval/Rank -> Exact L0 Slice Selection -> Package/Ledger ->
-Freeze/Export pipeline with zero Planner / Claim Support / whole-verifier /
-semantic-evaluator model calls.  The database is opened read-only for the
+Need -> model-guided Retrieval/Rank -> Exact L0 Slice Selection -> Package/Ledger ->
+Freeze/Export pipeline with Planner and bounded Controller model calls. Claim
+Support, whole-verifier and semantic-evaluator calls remain outside this path.
+The database is opened read-only for the
 commit chain and derived-snapshot attestations; nothing is published or
 rebuilt.
 
@@ -14,6 +15,11 @@ Usage:
     --source-project /tmp/ns-stage2m-phase4-v33-apc-20260810 \
     --output-root /tmp/ns-stage2m-evidence-first-five-20260811-v1 \
     --database-url postgresql+psycopg://...@127.0.0.1:5432/na_s2m_phase4_v33_apc_v1 \
+    --model-base-url http://127.0.0.1:8005/v1 \
+    --model qwen38-27b-fp8 \
+    --max-controller-decision-model-calls 8 \
+    --max-agentic-actions 32 \
+    --require-model-decisions \
     --experiment-id stage2m-evidence-first-v1-20260811 \
     --case P001 --case P002 --case P003 --case P004 --case P005
 
@@ -44,6 +50,7 @@ from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.model import (
     HttpEmbeddingProvider,
     HttpPassageReranker,
+    OpenAICompatibleChatEndpoint,
     RetrievalModelRoute,
 )
 from novel_agent.adapters.opensearch import OpenSearchIndex
@@ -63,7 +70,11 @@ from novel_agent.domain.memory import Stage1MemoryNeed, WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning_memory import PlannerInvocationArtifact
 from novel_agent.domain.retrieval_routing import SnapshotCapabilityStatus
-from novel_agent.domain.stage2 import BenchmarkInformationProfile, PairedContextComparison
+from novel_agent.domain.stage2 import (
+    BenchmarkInformationProfile,
+    PairedContextComparison,
+    QualityRepairFeatureFlags,
+)
 from novel_agent.domain.writer_context import (
     EvidenceFirstPackageManifest,
     EvidenceLedgerV2,
@@ -83,6 +94,9 @@ from novel_agent.services.r1 import R1WorldRepository
 from novel_agent.services.stage2_retrieval_backend import (
     Stage2RetrievalBackendBundle,
     build_real_hybrid_backend,
+)
+from novel_agent.services.teacher_forced_benchmark_e2e import (
+    TeacherForcedBenchmarkE2ERunner,
 )
 
 CASES: dict[str, dict[str, str]] = {
@@ -474,6 +488,9 @@ def _render_markdown(
         f"- checkpoint chapter: {package.task_contract.checkpoint_chapter}",
         f"- basis commit: `{package.basis_commit_id.root}`",
         f"- basis snapshot: `{package.basis_snapshot_id.root}`",
+        f"- controller arm: `{package.arm}`",
+        f"- Planner model calls: {manifest.call_counts.get('need_planner_model_calls', 0)}",
+        f"- Controller model calls: {manifest.call_counts.get('controller_model_calls', 0)}",
         f"- assembly status: `{package.budget_report.final_status.value}`",
         f"- writer tokens: {package.budget_report.actual_rendered_writer_tokens}/"
         f"{package.budget_report.configured_writer_token_budget}",
@@ -488,6 +505,10 @@ def _render_markdown(
         "## Task",
         "",
         package.task_contract.task_text,
+        "",
+        "## Writer-ready context",
+        "",
+        package.rendered_context or "(no writer-ready context rendered)",
         "",
         "## Evidence items (by Need/facet/scope)",
         "",
@@ -619,6 +640,22 @@ def main() -> int:
     parser.add_argument("--opensearch-url", default="http://127.0.0.1:9200")
     parser.add_argument("--embedding-url", default="http://127.0.0.1:8281/v1/embeddings")
     parser.add_argument("--reranker-url", default="http://127.0.0.1:8282/rerank")
+    parser.add_argument("--model-base-url", default="http://127.0.0.1:8005/v1")
+    parser.add_argument("--model", default="qwen38-27b-fp8")
+    parser.add_argument("--model-max-output-tokens", type=int, default=8192)
+    parser.add_argument("--model-max-retries", type=int, default=0)
+    parser.add_argument("--model-scheduling-timeout-seconds", type=float, default=900.0)
+    parser.add_argument("--max-controller-decision-model-calls", type=int, default=8)
+    parser.add_argument("--max-agentic-actions", type=int, default=32)
+    parser.add_argument(
+        "--require-model-decisions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "require real Planner and bounded Controller model calls; "
+            "--no-require-model-decisions retains the deterministic diagnostic baseline"
+        ),
+    )
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument("--writer-token-budget", type=int, default=4000)
     parser.add_argument("--ledger-token-budget", type=int, default=12000)
@@ -630,6 +667,10 @@ def main() -> int:
         raise FileExistsError("evidence-first output identity already exists")
     if len(args.case) != len(set(args.case)):
         raise ValueError("evidence-first cases must be unique")
+    if not 1 <= args.max_controller_decision_model_calls <= 8:
+        raise ValueError("Controller decision model calls must be between 1 and 8")
+    if not 1 <= args.max_agentic_actions <= 32:
+        raise ValueError("agentic actions must be between 1 and 32")
     if args.repair_workspace is not None and args.repair_case not in args.case:
         raise ValueError("repair-case must be included when repair-workspace is configured")
     if args.checkpoint_index is not None and args.repair_workspace is not None:
@@ -724,6 +765,30 @@ def main() -> int:
         output_repository = ArtifactRepository(
             FilesystemObjectStore((args.output_root / "objects").resolve())
         )
+        model_harness = (
+            TeacherForcedBenchmarkE2ERunner.build_model_harness(
+                OpenAICompatibleChatEndpoint(
+                    base_url=args.model_base_url,
+                    model=args.model,
+                    max_output_tokens=args.model_max_output_tokens,
+                    max_retries=args.model_max_retries,
+                ),
+                quality_repair_flags=QualityRepairFeatureFlags(
+                    max_controller_decision_model_calls=(
+                        args.max_controller_decision_model_calls
+                    ),
+                    max_agentic_actions=args.max_agentic_actions,
+                ),
+                scheduling_timeout_seconds=args.model_scheduling_timeout_seconds,
+            )
+            if args.require_model_decisions
+            else None
+        )
+        if (
+            model_harness is not None
+            and model_harness.controller_request_factory is None
+        ):
+            raise RuntimeError("semantic harness did not provide a Controller policy factory")
 
         def build_runner(graph_r1: R1WorldRepository) -> EvidenceFirstCheckpointRunner:
             return EvidenceFirstCheckpointRunner(
@@ -735,6 +800,13 @@ def main() -> int:
                     payload, media_type, SchemaVersion("1.0.0")
                 ),
                 graph_receipt_validator=graph_r1.validate_graph_path_receipts,
+                planner_gateway=(model_harness.gateway if model_harness is not None else None),
+                controller_policy_factory=(
+                    model_harness.controller_request_factory
+                    if model_harness is not None
+                    else None
+                ),
+                require_model_decisions=args.require_model_decisions,
             )
 
         index_entries: list[dict[str, object]] = []
@@ -853,6 +925,30 @@ def main() -> int:
                     "evidence_ledger_token_budget": args.ledger_token_budget,
                     "max_candidates": args.max_candidates,
                     "max_tool_calls": args.max_tool_calls,
+                    "require_model_decisions": args.require_model_decisions,
+                    "model_base_url": (
+                        args.model_base_url if args.require_model_decisions else None
+                    ),
+                    "model": args.model if args.require_model_decisions else None,
+                    "model_max_output_tokens": (
+                        args.model_max_output_tokens if args.require_model_decisions else None
+                    ),
+                    "model_max_retries": (
+                        args.model_max_retries if args.require_model_decisions else None
+                    ),
+                    "model_scheduling_timeout_seconds": (
+                        args.model_scheduling_timeout_seconds
+                        if args.require_model_decisions
+                        else None
+                    ),
+                    "max_controller_decision_model_calls": (
+                        args.max_controller_decision_model_calls
+                        if args.require_model_decisions
+                        else None
+                    ),
+                    "max_agentic_actions": (
+                        args.max_agentic_actions if args.require_model_decisions else None
+                    ),
                     "profile": case.information_profile.value,
                     "grounder_version": "need_draft_grounder.v3",
                     "assembler_version": runner.assembler.version,
@@ -946,7 +1042,9 @@ def main() -> int:
                 writer_token_budget=args.writer_token_budget,
                 evidence_ledger_token_budget=args.ledger_token_budget,
                 call_counts={
-                    "need_planner_model_calls": 0,
+                    "need_planner_model_calls": result.need_planner_model_call_count,
+                    "controller_model_calls": result.controller_model_call_count,
+                    "controller_repairs": result.controller_repair_count,
                     "claim_support_calls": 0,
                     "whole_verifier_calls": 0,
                     "semantic_evaluator_calls": 0,
@@ -1078,7 +1176,9 @@ def main() -> int:
                     "claim_support_calls": 0,
                     "whole_verifier_calls": 0,
                     "semantic_evaluator_calls": 0,
-                    "need_planner_model_calls": 0,
+                    "need_planner_model_calls": result.need_planner_model_call_count,
+                    "controller_model_calls": result.controller_model_call_count,
+                    "controller_repairs": result.controller_repair_count,
                     "retrieval_calls": result.retrieval_call_count,
                     "embedding_calls": embedding_calls,
                     "rerank_calls": rerank_calls,
@@ -1125,6 +1225,7 @@ def main() -> int:
                     "scope_failures": mechanical.get("scope", 0),
                     "cutoff_failures": mechanical.get("cutoff", 0),
                     "leakage_failures": result.future_leakage_count,
+                    "call_counts": dict(manifest.call_counts),
                     "root_hashes_unchanged": roots_unchanged,
                     "joint_repair": joint_repair,
                     "backend_project_id": backend_project_id.root,
@@ -1142,6 +1243,8 @@ def main() -> int:
                 f"ledger={len(ledger.entries)} writer_tokens="
                 f"{package.budget_report.actual_rendered_writer_tokens} "
                 f"ledger_tokens={ledger.rendered_tokens} "
+                f"planner_calls={result.need_planner_model_call_count} "
+                f"controller_calls={result.controller_model_call_count} "
                 f"retrieval_calls={result.retrieval_call_count} "
                 f"leakage={result.future_leakage_count} "
                 f"package={package_ref.artifact_id.root[:16]} "
@@ -1160,6 +1263,23 @@ def main() -> int:
         # INCOMPLETE whenever any case leaves any mandatory facet unsupported,
         # unresolved, insufficient or transport-failed (review 2026-08-14 P1-2).
         aggregate_semantic_status = _aggregate_semantic_status(index_entries)
+        aggregate_call_counts = {
+            key: sum(
+                int(item.get("call_counts", {}).get(key, 0))  # type: ignore[union-attr]
+                for item in index_entries
+            )
+            for key in (
+                "need_planner_model_calls",
+                "controller_model_calls",
+                "controller_repairs",
+                "claim_support_calls",
+                "whole_verifier_calls",
+                "semantic_evaluator_calls",
+                "retrieval_backend_calls",
+                "embedding_calls",
+                "rerank_calls",
+            )
+        }
         parsed_database = urlparse(database_url)
         aggregate_config_hash = content_id(
             {
@@ -1191,8 +1311,39 @@ def main() -> int:
                         "database": parsed_database.path.removeprefix("/"),
                     },
                     "profile": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
+                    "model_decision_config": {
+                        "required": args.require_model_decisions,
+                        "base_url": (
+                            args.model_base_url if args.require_model_decisions else None
+                        ),
+                        "model": args.model if args.require_model_decisions else None,
+                        "max_output_tokens": (
+                            args.model_max_output_tokens
+                            if args.require_model_decisions
+                            else None
+                        ),
+                        "max_retries": (
+                            args.model_max_retries if args.require_model_decisions else None
+                        ),
+                        "scheduling_timeout_seconds": (
+                            args.model_scheduling_timeout_seconds
+                            if args.require_model_decisions
+                            else None
+                        ),
+                        "max_controller_decision_model_calls": (
+                            args.max_controller_decision_model_calls
+                            if args.require_model_decisions
+                            else None
+                        ),
+                        "max_agentic_actions": (
+                            args.max_agentic_actions
+                            if args.require_model_decisions
+                            else None
+                        ),
+                    },
                     "aggregate_mechanical_status": aggregate_mechanical_status,
                     "aggregate_semantic_status": aggregate_semantic_status,
+                    "call_counts": aggregate_call_counts,
                     "immutable_roots": roots_after,
                     "repair_workspace": (
                         str(args.repair_workspace.resolve())

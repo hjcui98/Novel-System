@@ -2,9 +2,9 @@
 
 Reuses the frozen Commit/World/TextRoot/Plan and the frozen real-hybrid
 snapshot indexes, re-runs public Need -> Retrieval/Rank -> Exact L0 Slice
-Selection, and stops at WriterContextPackage v2 + EvidenceLedger v2.  No
-Claim Support, whole verifier, semantic evaluator or Planner model call is
-made on this path.
+Selection, and stops at WriterContextPackage v2 + EvidenceLedger v2.  The
+product path may use the existing Planner and bounded Controller model owners;
+Claim Support, whole verifier and semantic evaluation remain outside it.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ from novel_agent.services.evidence_first_writer_context_assembler import (
 from novel_agent.services.evidence_slice_resolver import EvidenceSliceResolver
 from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
+from novel_agent.services.model_gateway import ModelGateway
 from novel_agent.services.need_draft_grounder import NeedDraftGrounder
 from novel_agent.services.need_query_compiler import NeedQueryCompiler
 from novel_agent.services.need_validator import NeedValidator
@@ -87,6 +88,9 @@ class EvidenceFirstCheckpointResult:
         unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...],
         need_generation: NeedGenerationResult | None,
         trace_records: tuple[dict[str, Any], ...],
+        need_planner_model_call_count: int,
+        controller_model_call_count: int,
+        controller_repair_count: int,
     ) -> None:
         self.needs = needs
         self.route_plans = route_plans
@@ -99,12 +103,15 @@ class EvidenceFirstCheckpointResult:
         self.unresolved_lexical_anchors = unresolved_lexical_anchors
         self.need_generation = need_generation
         self.trace_records = trace_records
+        self.need_planner_model_call_count = need_planner_model_call_count
+        self.controller_model_call_count = controller_model_call_count
+        self.controller_repair_count = controller_repair_count
 
 
 class EvidenceFirstCheckpointRunner:
     """Run one frozen checkpoint through the evidence-first package pipeline."""
 
-    version = "evidence_first_checkpoint_runner.v1"
+    version = "evidence_first_checkpoint_runner.v2"
 
     def __init__(
         self,
@@ -121,6 +128,11 @@ class EvidenceFirstCheckpointRunner:
             ]
             | None
         ) = None,
+        planner_gateway: ModelGateway | None = None,
+        controller_policy_factory: (
+            Callable[[ToolPolicy, tuple[RoutePlan, ...]], Any] | None
+        ) = None,
+        require_model_decisions: bool = False,
     ) -> None:
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
@@ -133,8 +145,15 @@ class EvidenceFirstCheckpointRunner:
         self._max_candidates = max_candidates
         self._max_tool_calls = max_tool_calls
         self._generator = TaskPlanConditionedNeedGenerator(
+            planner_gateway=planner_gateway,
             planner_artifact_writer=artifact_writer,
         )
+        if require_model_decisions and planner_gateway is None:
+            raise ValueError("model-driven evidence-first requires a Planner gateway")
+        if require_model_decisions and controller_policy_factory is None:
+            raise ValueError("model-driven evidence-first requires a Controller policy factory")
+        self._controller_policy_factory = controller_policy_factory
+        self._require_model_decisions = require_model_decisions
         self._assembler = EvidenceFirstWriterContextAssembler()
         self._resolver = EvidenceSliceResolver()
         self._graph_receipt_validator = graph_receipt_validator
@@ -170,31 +189,53 @@ class EvidenceFirstCheckpointRunner:
         ):
             raise ValueError("checkpoint snapshot capability must be exact for the basis")
         need_generation: NeedGenerationResult | None = None
-        planner_fallback_used = frozen_planner_artifact.fallback_status is (
-            PlannerFallbackStatus.PLANNER_FALLBACK
-        )
-        if planner_fallback_used:
-            needs = frozen_needs
-        else:
-            need_generation = self._generator.generate_evidence_first(
+        if self._require_model_decisions:
+            need_generation = self._generator.generate_with_lineage(
                 task,
                 world,
                 plan,
-                planning_context,
-                frozen_planner_artifact,
+                planning_context=planning_context,
             )
-            if need_generation is None or not need_generation.needs:
+            planner_fallback_used = need_generation.fallback_used
+            if planner_fallback_used:
+                reason = need_generation.planner_fallback_reason or "unknown"
+                raise RuntimeError(
+                    f"model-driven evidence-first Planner fell back: {reason}"
+                )
+            needs = need_generation.needs
+        else:
+            planner_fallback_used = frozen_planner_artifact.fallback_status is (
+                PlannerFallbackStatus.PLANNER_FALLBACK
+            )
+            if planner_fallback_used:
                 needs = frozen_needs
-                planner_fallback_used = True
             else:
-                needs = need_generation.needs
+                need_generation = self._generator.generate_evidence_first(
+                    task,
+                    world,
+                    plan,
+                    planning_context,
+                    frozen_planner_artifact,
+                )
+                if need_generation is None or not need_generation.needs:
+                    needs = frozen_needs
+                    planner_fallback_used = True
+                else:
+                    needs = need_generation.needs
         needs = self._scope_needs(needs)
         if not needs:
             raise ValueError(f"evidence-first checkpoint produced no memory needs: {case_id.root}")
+        planner_model_call_count = (
+            len(need_generation.planner_artifact.attempts)
+            if need_generation is not None and need_generation.planner_artifact is not None
+            else 0
+        )
+        if self._require_model_decisions and planner_model_call_count < 1:
+            raise RuntimeError("model-driven evidence-first made no Planner model call")
         route_plans = tuple(DeterministicChannelPlanner().plan(need, capability) for need in needs)
         tool_policy = seal_tool_policy(
             ToolPolicy(
-                policy_id=StableId(f"policy.evidence-first.v1.{case_id.root}"[:128]),
+                policy_id=StableId(f"policy.evidence-first.v2.{case_id.root}"[:128]),
                 version=SchemaVersion("1.0.0"),
                 content_hash=fingerprint,
                 allowed_tools=self._allowed_tools(route_plans),
@@ -205,12 +246,17 @@ class EvidenceFirstCheckpointRunner:
                 token_budget=self._writer_token_budget,
             )
         )
+        controller_policy = (
+            self._controller_policy_factory(tool_policy, route_plans)
+            if self._controller_policy_factory is not None
+            else RouteBoundControllerPolicy(route_plans)
+        )
         controller = PairedMemoryControllerRunner.from_shared_backend(
             backend=backend_bundle.backend,
             needs=needs,
             tool_policy=tool_policy,
             compiler=ContextCompiler(EvidenceExpander()),
-            controller_policy=RouteBoundControllerPolicy(route_plans),
+            controller_policy=controller_policy,
             freshness_check=lambda _: True,
             checkpointer=InMemorySaver(),
             comparison_basis_fingerprint=fingerprint,
@@ -242,14 +288,26 @@ class EvidenceFirstCheckpointRunner:
             ),
             context_budget=ContextBudget(token_budget=self._writer_token_budget),
         )
-        deterministic = controller.run_deterministic(
-            request,
-            text,
-            evaluator_only_artifacts=(),
-        )
+        if self._require_model_decisions:
+            resolved = controller.run_agentic(
+                request,
+                text,
+                thread_id=f"evidence-first.{case_id.root}.{run_id.root}",
+                evaluator_only_artifacts=(),
+            )
+        else:
+            resolved = controller.run_deterministic(
+                request,
+                text,
+                evaluator_only_artifacts=(),
+            )
+        controller_receipts = tuple(getattr(controller_policy, "decision_receipts", ()))
+        controller_repairs = tuple(getattr(controller_policy, "decision_repairs", ()))
+        if self._require_model_decisions and not controller_receipts:
+            raise RuntimeError("model-driven evidence-first made no Controller model decision")
         selections, trace_records = self._selections(
             needs,
-            deterministic.context.retrieval_traces,
+            resolved.context.retrieval_traces,
             text,
             snapshot_id,
             route_plans=route_plans,
@@ -276,7 +334,7 @@ class EvidenceFirstCheckpointRunner:
             text_root=text,
             basis_commit_id=base_commit,
             basis_snapshot_id=snapshot_id,
-            arm="A",
+            arm=("B" if self._require_model_decisions else "A"),
             writer_token_budget=self._writer_token_budget,
             evidence_ledger_token_budget=self._evidence_ledger_token_budget,
             grounder_version=NeedDraftGrounder.version,
@@ -292,15 +350,18 @@ class EvidenceFirstCheckpointRunner:
         return EvidenceFirstCheckpointResult(
             needs=needs,
             route_plans=route_plans,
-            retrieval_call_count=deterministic.retrieval_call_count,
-            future_leakage_count=deterministic.future_leakage_count,
-            stop_reason=deterministic.stop_reason.value,
+            retrieval_call_count=resolved.retrieval_call_count,
+            future_leakage_count=resolved.future_leakage_count,
+            stop_reason=resolved.stop_reason.value,
             selections=selections,
             assembly=assembly,
             planner_fallback_used=planner_fallback_used,
             unresolved_lexical_anchors=unresolved,
             need_generation=need_generation,
             trace_records=trace_records,
+            need_planner_model_call_count=planner_model_call_count,
+            controller_model_call_count=len(controller_receipts),
+            controller_repair_count=len(controller_repairs),
         )
 
     def _selections(
