@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
 from novel_agent.domain.changes import (
     ChangeOperationType,
@@ -24,6 +25,7 @@ from novel_agent.domain.changes import (
     EvidenceCandidate,
     EvidenceRepairAction,
     EvidenceRepairDraft,
+    EvidenceRepairDraftArray,
     EvidenceSupportDisposition,
     WorldRecordKind,
 )
@@ -39,6 +41,7 @@ from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.text import TextBlock
 from novel_agent.domain.world import Entity, StateRecord, StoryTime, TruthClass
+from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
@@ -49,6 +52,7 @@ from novel_agent.services.model_curation import (
     ModelCurator,
     NoOpSemanticVerificationDraft,
 )
+from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 
 
 class _FakeGateway:
@@ -472,7 +476,7 @@ def test_replay_agent_uses_candidate_v2() -> None:
 
 
 class _RepairGateway:
-    """Fake gateway for evidence_repair_v2 returning EvidenceRepairDraft lists."""
+    """Fake gateway for evidence_repair_v2 returning EvidenceRepairDraftArray."""
 
     def __init__(self, drafts: list[EvidenceRepairDraft]) -> None:
         self._drafts = drafts
@@ -480,7 +484,7 @@ class _RepairGateway:
 
     async def generate_structured(
         self, request: ModelRequest, model_type: object
-    ) -> tuple[list[EvidenceRepairDraft], object]:
+    ) -> tuple[EvidenceRepairDraftArray, object]:
         self.requests.append(request)
         call = type(
             "Call",
@@ -490,7 +494,7 @@ class _RepairGateway:
                 "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
             },
         )()
-        return list(self._drafts), call
+        return EvidenceRepairDraftArray(tuple(self._drafts)), call
 
 
 _COMMIT = CommitId("sha256:" + "3" * 64)
@@ -3144,3 +3148,59 @@ def test_v2_corrected_fresh_state_id_proceeds_through_binding_and_verifier() -> 
     assert changes.operations[0].target_id.root == "state.chen-changsheng.cultivation-realm"
     assert out.operations[0].evidence_candidate_ids == (candidates[0].candidate_id,)
     assert "A state target id is immutable" in gateway.requests[0].prompt
+
+
+def test_evidence_repair_v2_array_contract_with_real_gateway() -> None:
+    # Round-23 regression: the evidence-repair corridor must pass a REAL
+    # Pydantic contract to the gateway. The formal v8 run crashed at chapter
+    # 28 with `AttributeError: type object 'list' has no attribute
+    # 'model_json_schema'` because the call passed `list[EvidenceRepairDraft]`;
+    # a duck-typed fake gateway never computed the schema, so the defect was
+    # invisible to the deterministic suites. A real ModelGateway plus the
+    # RootModel array contract must complete end-to-end.
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    other = next(item for item in candidates if item.candidate_id != good.candidate_id)
+    parent_changes = _v2_parent_changes(root, gen, good)
+
+    repair_json = canonical_json_bytes(
+        [
+            {
+                "operation_index": 0,
+                "replacement_candidate_ids": [other.candidate_id.root],
+                "action": "replace_evidence",
+            }
+        ]
+    ).decode("utf-8")
+    endpoint = FakeModelEndpoint(repair_json)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="repair-test",
+                model_name="fake",
+                adapter=endpoint,
+            ),
+        )
+    )
+    curator = ModelCurator(gateway, evidence_generator=gen, enforce_support_gate=True)
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(
+            root, 21, _COMMIT, parent_changes, _request("req.repair.real-gateway")
+        )
+    )
+
+    assert len(drafts) == 1
+    assert drafts[0].operation_index == 0
+    assert drafts[0].action is EvidenceRepairAction.REPLACE_EVIDENCE
+    assert drafts[0].replacement_candidate_ids == (other.candidate_id,)
+    assert len(changes.operations) == 1
+    new_evidence = changes.operations[0].evidence_refs[0]
+    assert new_evidence.span is not None
+    assert new_evidence.span.start == other.start
+    assert new_evidence.span.end == other.end
+    # The strict gateway carried the RootModel JSON schema on the request.
+    assert endpoint.requests[0].response_schema is not None

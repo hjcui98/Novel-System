@@ -31,6 +31,7 @@ from novel_agent.domain.changes import (
     EvidenceCandidate,
     EvidenceRepairAction,
     EvidenceRepairDraft,
+    EvidenceRepairDraftArray,
     EvidenceSupportDecision,
     EvidenceSupportDisposition,
     ObservedChangeSet,
@@ -2338,11 +2339,15 @@ class ModelCurator:
             }
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
-        raw_drafts, call = await self._gateway.generate_structured(
+        # Round-23 repair: the Curator emits a JSON ARRAY of repair drafts.
+        # `list[...]` is not a Pydantic model and has no model_json_schema, so
+        # the strict gateway crashed on it in the formal run (v8 chapter 28).
+        # The RootModel contract keeps the array shape and supplies the schema.
+        repair_batch, call = await self._gateway.generate_structured(
             safe_request,
-            list[EvidenceRepairDraft],  # type: ignore[type-var]
+            EvidenceRepairDraftArray,
         )
-        drafts = tuple(raw_drafts)
+        drafts = repair_batch.root
         # Apply evidence-only repairs to parent operations.
         repair_by_index: dict[int, EvidenceRepairDraft] = {
             draft.operation_index: draft for draft in drafts

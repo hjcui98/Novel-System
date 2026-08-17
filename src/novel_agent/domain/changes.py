@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, StringConstraints, model_validator
+from pydantic import Field, JsonValue, RootModel, StringConstraints, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind, RootManifest
 from novel_agent.domain.base import DomainModel
@@ -327,6 +327,16 @@ class EvidenceRepairDraft(DomainModel):
     operation_index: int = Field(ge=0)
     replacement_candidate_ids: tuple[StableId, ...] = ()
     action: EvidenceRepairAction
+
+
+class EvidenceRepairDraftArray(RootModel[tuple[EvidenceRepairDraft, ...]]):
+    """Structured-gateway contract for the evidence-repair JSON array output.
+
+    The Curator emits a JSON array of EvidenceRepairDraft objects. A RootModel
+    keeps the array shape while providing the `model_json_schema` the gateway
+    requires for strict structured generation (a bare `list[...]` generic has
+    none — v8 chapter 28 crashed on that with AttributeError).
+    """
 
 
 class StateTransitionEdge(DomainModel):
