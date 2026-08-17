@@ -559,6 +559,7 @@ class NeedExecutionStatus(StrEnum):
     NOT_EXECUTED_FRESHNESS_BLOCKED = "not_executed_freshness_blocked"
     NOT_EXECUTED_SCOPE_BLOCKED = "not_executed_scope_blocked"
     NOT_EXECUTED_NO_EXECUTABLE_QUERY = "not_executed_no_executable_query"
+    NOT_EXECUTED_CONTROLLER_STOP = "not_executed_controller_stop"
 
 
 class RetrievalTrace(DomainModel):

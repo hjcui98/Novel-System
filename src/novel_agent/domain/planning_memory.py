@@ -333,6 +333,11 @@ class PlannerInvocationArtifact(DomainModel):
     fallback_reason: str | None = None
     missing_goal_chapters: tuple[int, ...] = ()
     missing_goal_entities: tuple[tuple[str, str, int], ...] = ()
+    # Typed Planner-output-contract findings (review-25): draft_id -> finding.
+    # The grounder stays exact; a composite/descriptive/annotated explicit
+    # label that cannot copy one canonical WORLD label is recorded here and
+    # gets one bounded repair with the canonical label map before fail-closed.
+    planner_contract_findings: dict[str, str] = Field(default_factory=dict)
     raw_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     canonical_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     scope_normalization_reasons: dict[str, str] = Field(default_factory=dict)

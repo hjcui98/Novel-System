@@ -830,7 +830,8 @@
         "not_executed_budget_exhausted",
         "not_executed_freshness_blocked",
         "not_executed_scope_blocked",
-        "not_executed_no_executable_query"
+        "not_executed_no_executable_query",
+        "not_executed_controller_stop"
       ],
       "title": "NeedExecutionStatus",
       "type": "string"

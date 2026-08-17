@@ -424,7 +424,11 @@ class RouteBoundControllerPolicy:
 
     @staticmethod
     def _fallback_applies(condition: str, primary_succeeded: bool) -> bool:
-        if condition in {"anchor_evidence_insufficient", "plan_anchor_insufficient"}:
+        if condition in {
+            "anchor_evidence_insufficient",
+            "plan_anchor_insufficient",
+            "exact_current_record_absent",
+        }:
             return not primary_succeeded
         if condition == "hierarchy_scope_resolved":
             return primary_succeeded
@@ -970,6 +974,7 @@ class BoundedMemoryController:
             request.initial_memory_needs,
             calls,
             candidate_limit=request.retrieval_budget.max_candidates,
+            stop_reason=stop_reason,
         )
         unresolved = tuple(
             need.query_text
@@ -1212,6 +1217,7 @@ class BoundedMemoryController:
         calls: tuple[tuple[StableId, str, ToolResult], ...],
         *,
         candidate_limit: int = 20,
+        stop_reason: ControllerStopReason | None = None,
     ) -> tuple[RetrievalTrace, ...]:
         traces: list[RetrievalTrace] = []
         for need in needs:
@@ -1266,7 +1272,7 @@ class BoundedMemoryController:
                         if candidates
                         else NeedExecutionStatus.EXECUTED_EMPTY
                         if need_calls
-                        else NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+                        else self._not_executed_status(stop_reason)
                     ),
                     calls_allocated=len(need_calls),
                     required_need_facet_ids=(
@@ -1282,6 +1288,35 @@ class BoundedMemoryController:
                 )
             )
         return tuple(traces)
+
+    @staticmethod
+    def _not_executed_status(
+        stop_reason: ControllerStopReason | None,
+    ) -> NeedExecutionStatus:
+        """Truthful zero-call status (2026-08-17 diagnosis §3.5).
+
+        A need that never received a tool call must be labeled by the real
+        terminal reason, not uniformly as budget exhaustion: a Controller
+        STOP (e.g. ``mandatory_gap_unresolved``) is an agent decision, not a
+        trusted-budget verdict.
+        """
+        if stop_reason is ControllerStopReason.BUDGET_EXHAUSTED:
+            return NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+        if stop_reason is ControllerStopReason.FRESHNESS_BLOCKED:
+            return NeedExecutionStatus.NOT_EXECUTED_FRESHNESS_BLOCKED
+        if stop_reason is ControllerStopReason.ACCESS_BLOCKED:
+            return NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED
+        if stop_reason is ControllerStopReason.NO_ADDITIONAL_EVIDENCE:
+            return NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+        if stop_reason is ControllerStopReason.SUFFICIENT:
+            return NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+        if stop_reason is ControllerStopReason.MANDATORY_GAP_UNRESOLVED:
+            return NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+        if stop_reason is ControllerStopReason.CONFLICT_REQUIRES_REVIEW:
+            return NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+        if stop_reason is ControllerStopReason.TOOL_FAILURE:
+            return NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+        return NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
 
     def _route_candidates(
         self,

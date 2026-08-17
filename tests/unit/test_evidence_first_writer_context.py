@@ -1178,6 +1178,19 @@ class TestEvidenceFirstAssemblerCoverage:
             manifest(root_hashes_unchanged=False)
         with pytest.raises(ValueError, match="zero claim-path model calls"):
             manifest(call_counts={"claim_support_calls": 1})
+        with pytest.raises(ValueError, match="zero claim-path model calls"):
+            manifest(call_counts={"whole_verifier_calls": 1})
+        with pytest.raises(ValueError, match="zero claim-path model calls"):
+            manifest(call_counts={"semantic_evaluator_calls": 1})
+        # The manifest PERMITS Planner model calls (Plan v13 §6): the planner
+        # bucket is not a claim-path zero item, so a completed model-driven
+        # case may record its Planner call here. Enforcing at least one call is
+        # the runner's job under require_model_decisions; this shared manifest
+        # still admits zero Planner calls for the deterministic mode.
+        planned = manifest(call_counts={"need_planner_model_calls": 1})
+        assert planned.call_counts["need_planner_model_calls"] == 1
+        deterministic = manifest()
+        assert deterministic.call_counts.get("need_planner_model_calls", 0) == 0
         # leakage count must mirror the future-leakage count.
         with pytest.raises(ValueError, match="must equal the future leakage count"):
             manifest(future_leakage_count=2, leakage_failure_count=1)

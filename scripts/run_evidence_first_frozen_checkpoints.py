@@ -774,9 +774,7 @@ def main() -> int:
                     max_retries=args.model_max_retries,
                 ),
                 quality_repair_flags=QualityRepairFeatureFlags(
-                    max_controller_decision_model_calls=(
-                        args.max_controller_decision_model_calls
-                    ),
+                    max_controller_decision_model_calls=(args.max_controller_decision_model_calls),
                     max_agentic_actions=args.max_agentic_actions,
                 ),
                 scheduling_timeout_seconds=args.model_scheduling_timeout_seconds,
@@ -784,10 +782,7 @@ def main() -> int:
             if args.require_model_decisions
             else None
         )
-        if (
-            model_harness is not None
-            and model_harness.controller_request_factory is None
-        ):
+        if model_harness is not None and model_harness.controller_request_factory is None:
             raise RuntimeError("semantic harness did not provide a Controller policy factory")
 
         def build_runner(graph_r1: R1WorldRepository) -> EvidenceFirstCheckpointRunner:
@@ -802,11 +797,10 @@ def main() -> int:
                 graph_receipt_validator=graph_r1.validate_graph_path_receipts,
                 planner_gateway=(model_harness.gateway if model_harness is not None else None),
                 controller_policy_factory=(
-                    model_harness.controller_request_factory
-                    if model_harness is not None
-                    else None
+                    model_harness.controller_request_factory if model_harness is not None else None
                 ),
                 require_model_decisions=args.require_model_decisions,
+                planner_max_output_tokens=args.model_max_output_tokens,
             )
 
         index_entries: list[dict[str, object]] = []
@@ -1140,6 +1134,10 @@ def main() -> int:
                     for plan in result.route_plans
                 ],
                 "traces": list(result.trace_records),
+                "controller": {
+                    "decisions": list(result.controller_decisions),
+                    "repairs": list(result.controller_repairs),
+                },
                 "package": {
                     "item_count": package.budget_report.item_count,
                     "evidence_items": package.budget_report.evidence_item_count,
@@ -1313,14 +1311,10 @@ def main() -> int:
                     "profile": BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED.value,
                     "model_decision_config": {
                         "required": args.require_model_decisions,
-                        "base_url": (
-                            args.model_base_url if args.require_model_decisions else None
-                        ),
+                        "base_url": (args.model_base_url if args.require_model_decisions else None),
                         "model": args.model if args.require_model_decisions else None,
                         "max_output_tokens": (
-                            args.model_max_output_tokens
-                            if args.require_model_decisions
-                            else None
+                            args.model_max_output_tokens if args.require_model_decisions else None
                         ),
                         "max_retries": (
                             args.model_max_retries if args.require_model_decisions else None
@@ -1336,9 +1330,7 @@ def main() -> int:
                             else None
                         ),
                         "max_agentic_actions": (
-                            args.max_agentic_actions
-                            if args.require_model_decisions
-                            else None
+                            args.max_agentic_actions if args.require_model_decisions else None
                         ),
                     },
                     "aggregate_mechanical_status": aggregate_mechanical_status,

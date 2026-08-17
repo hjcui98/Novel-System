@@ -66,6 +66,7 @@ class StructuredControllerPolicy:
         self._request_factory = request_factory
         self._receipts: dict[StableId, AgentExecutionReceipt] = {}
         self._repairs: list[ControllerDecisionRepair] = []
+        self._decisions: list[ControllerPolicyDecision] = []
         self._legal_actions = legal_actions or LegalActionProvider(
             tool_policy=spec.tool_policy,
             route_plans=route_plans,
@@ -104,6 +105,11 @@ class StructuredControllerPolicy:
     @property
     def decision_repairs(self) -> tuple[ControllerDecisionRepair, ...]:
         return tuple(self._repairs)
+
+    @property
+    def decision_history(self) -> tuple[ControllerPolicyDecision, ...]:
+        """Every trusted bound decision in call order (diagnosis §3.5)."""
+        return tuple(self._decisions)
 
     def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
         round_index = len(state["tool_calls"]) + 1
@@ -192,6 +198,7 @@ class StructuredControllerPolicy:
                 available_actions,
                 rationale_code="SCHEMA_RETRY_EXHAUSTED",
             )
+            self._decisions.append(decision)
             self._record_repair(request.request_id, "SCHEMA_RETRY_EXHAUSTED", decision)
             return decision
         self._receipts[result.model_call.request_id] = result.receipt
@@ -199,8 +206,10 @@ class StructuredControllerPolicy:
             result.output,
             available_actions,
             action_by_id=action_by_id,
+            max_actions=self._max_agentic_actions,
         )
         decision = decision.model_copy(update={"model_call_id": result.model_call.request_id})
+        self._decisions.append(decision)
         if repair_reason is not None:
             self._record_repair(result.model_call.request_id, repair_reason, decision)
         return decision
@@ -212,6 +221,7 @@ class StructuredControllerPolicy:
         available_actions: list[dict[str, object]],
         *,
         action_by_id: Mapping[str, RegisteredControllerAction] | None = None,
+        max_actions: int = 8,
     ) -> tuple[ControllerPolicyDecision, str | None]:
         legal_pairs = cls._legal_pairs(available_actions)
         registry = action_by_id or {}
@@ -241,6 +251,37 @@ class StructuredControllerPolicy:
                 )
 
         if draft.action == ControllerPolicyAction.STOP.value:
+            # Trusted postcondition (2026-08-17 diagnosis §3): the model may
+            # not STOP while legal actions remain for unresolved mandatory
+            # Needs. The prompt already states this; the trusted binder must
+            # not accept a violating STOP. Bind a sealed registered batch
+            # (one primary action per unresolved Need, capped) through the
+            # existing EXECUTE_PLAN path and record an auditable repair.
+            if legal_pairs:
+                selected: list[StableId] = []
+                seen_needs: set[str] = set()
+                for item in registry.values():
+                    if item.need_id.root in seen_needs:
+                        continue
+                    seen_needs.add(item.need_id.root)
+                    selected.append(item.action_id)
+                    if len(selected) >= min(max_actions, 8):
+                        break
+                if selected:
+                    return (
+                        ControllerPolicyDecision(
+                            action=ControllerPolicyAction.EXECUTE_PLAN,
+                            selected_action_ids=tuple(selected),
+                            pending_action_ids=tuple(selected),
+                            rationale_code="PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+                        ),
+                        "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+                    )
+                decision = cls._first_legal_decision(
+                    available_actions,
+                    rationale_code="PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+                )
+                return decision, "PREMATURE_STOP_WITH_LEGAL_ACTIONS"
             if draft.stop_reason is None:
                 stop_reason = ControllerStopReason.MANDATORY_GAP_UNRESOLVED
             else:

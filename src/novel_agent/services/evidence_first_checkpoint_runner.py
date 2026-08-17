@@ -91,6 +91,8 @@ class EvidenceFirstCheckpointResult:
         need_planner_model_call_count: int,
         controller_model_call_count: int,
         controller_repair_count: int,
+        controller_decisions: tuple[dict[str, Any], ...] = (),
+        controller_repairs: tuple[dict[str, Any], ...] = (),
     ) -> None:
         self.needs = needs
         self.route_plans = route_plans
@@ -106,6 +108,8 @@ class EvidenceFirstCheckpointResult:
         self.need_planner_model_call_count = need_planner_model_call_count
         self.controller_model_call_count = controller_model_call_count
         self.controller_repair_count = controller_repair_count
+        self.controller_decisions = controller_decisions
+        self.controller_repairs = controller_repairs
 
 
 class EvidenceFirstCheckpointRunner:
@@ -133,6 +137,7 @@ class EvidenceFirstCheckpointRunner:
             Callable[[ToolPolicy, tuple[RoutePlan, ...]], Any] | None
         ) = None,
         require_model_decisions: bool = False,
+        planner_max_output_tokens: int = 8192,
     ) -> None:
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
@@ -147,6 +152,7 @@ class EvidenceFirstCheckpointRunner:
         self._generator = TaskPlanConditionedNeedGenerator(
             planner_gateway=planner_gateway,
             planner_artifact_writer=artifact_writer,
+            planner_max_output_tokens=planner_max_output_tokens,
         )
         if require_model_decisions and planner_gateway is None:
             raise ValueError("model-driven evidence-first requires a Planner gateway")
@@ -199,8 +205,16 @@ class EvidenceFirstCheckpointRunner:
             planner_fallback_used = need_generation.fallback_used
             if planner_fallback_used:
                 reason = need_generation.planner_fallback_reason or "unknown"
+                artifact_ref = need_generation.planner_artifact_document_ref
+                artifact = need_generation.planner_artifact
+                missing = tuple(artifact.missing_goal_chapters) if artifact is not None else ()
+                detail = f"missing_goal_chapters={list(missing)}" if missing else "no coverage gap"
+                ref_text = (
+                    artifact_ref.artifact_id.root if artifact_ref is not None else "not persisted"
+                )
                 raise RuntimeError(
-                    f"model-driven evidence-first Planner fell back: {reason}"
+                    "model-driven evidence-first Planner fell back: "
+                    f"{reason}; {detail}; planner_artifact_ref={ref_text}"
                 )
             needs = need_generation.needs
         else:
@@ -276,8 +290,8 @@ class EvidenceFirstCheckpointRunner:
             initial_memory_needs=needs,
             worldline="main",
             narrative_chapter=task.target_chapter_start,
-            access_scope=AccessScope.AUTHOR_PLANNING,
-            allow_future_plan=True,
+            access_scope=AccessScope.WRITER_SAFE,
+            allow_future_plan=False,
             retrieval_budget=RetrievalBudget(
                 max_rounds=2,
                 max_tool_calls=self._max_tool_calls,
@@ -303,6 +317,7 @@ class EvidenceFirstCheckpointRunner:
             )
         controller_receipts = tuple(getattr(controller_policy, "decision_receipts", ()))
         controller_repairs = tuple(getattr(controller_policy, "decision_repairs", ()))
+        controller_decisions = tuple(getattr(controller_policy, "decision_history", ()))
         if self._require_model_decisions and not controller_receipts:
             raise RuntimeError("model-driven evidence-first made no Controller model decision")
         selections, trace_records = self._selections(
@@ -362,6 +377,22 @@ class EvidenceFirstCheckpointRunner:
             need_planner_model_call_count=planner_model_call_count,
             controller_model_call_count=len(controller_receipts),
             controller_repair_count=len(controller_repairs),
+            controller_decisions=tuple(
+                decision.model_dump(mode="json") for decision in controller_decisions
+            ),
+            controller_repairs=tuple(
+                {
+                    "request_id": repair.request_id.root,
+                    "reason": repair.reason,
+                    "selected_need_id": (
+                        repair.selected_need_id.root
+                        if repair.selected_need_id is not None
+                        else None
+                    ),
+                    "selected_tool_name": repair.selected_tool_name,
+                }
+                for repair in controller_repairs
+            ),
         )
 
     def _selections(

@@ -257,29 +257,15 @@ class NeedValidator:
 
     @staticmethod
     def _looks_future_factualized(question: str) -> bool:
+        # 2026-08-17 diagnosis §4: only EXPLICIT future-fact markers may
+        # reject a draft. A closed history-word list must not be used to
+        # infer "future" from absence: legitimate history questions (婚约的
+        # 具体内容和法律/社会效力, 态度, 过往干预行为, ...) fail that list
+        # without being future facts. Plan-goal restatement and the other
+        # scope/grounding checks remain unchanged and strict.
         normalized = _normalize(question)
         future_markers = ("将会", "会在", "计划中", "目标是", "准备在", "未来会")
-        history_markers = (
-            "历史",
-            "此前",
-            "曾",
-            "当前",
-            "是否",
-            "什么",
-            "如何",
-            "哪些",
-            "为何",
-            "关系",
-            "状态",
-            "知",
-            "承诺",
-            "能力",
-            "限制",
-            "伏笔",
-        )
-        return any(marker in normalized for marker in future_markers) or not any(
-            marker in normalized for marker in history_markers
-        )
+        return any(marker in normalized for marker in future_markers)
 
 
 __all__ = ["NeedValidationResult", "NeedValidator"]

@@ -24,6 +24,7 @@ from novel_agent.domain.memory import (
     ExpectedClaimScope,
     FacetEvidenceRequirement,
     NeedCompletionSpec,
+    NeedExecutionStatus,
     NeedFacet,
     NeedFacetKind,
     NeedGapPolicy,
@@ -264,13 +265,21 @@ def test_structured_controller_repairs_missing_action_without_legal_route() -> N
 
 
 @pytest.mark.parametrize(
-    ("draft", "expected_action", "expected_reason", "expected_rationale"),
+    ("draft", "actions", "expected_action", "expected_reason", "expected_rationale"),
     (
+        # STOP with legal actions remaining is a typed repair, never an
+        # accepted stop (2026-08-17 diagnosis §3).
         (
             ControllerPolicyDraft(action="stop"),
-            ControllerPolicyAction.STOP,
-            None,
-            "MODEL_STOP",
+            [
+                {
+                    "need_id": "need.1",
+                    "tool_names": ["memory.search_exact", "memory.search_temporal"],
+                }
+            ],
+            ControllerPolicyAction.CALL_TOOL,
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
         ),
         (
             ControllerPolicyDraft(
@@ -278,12 +287,32 @@ def test_structured_controller_repairs_missing_action_without_legal_route() -> N
                 stop_reason="budget_exhausted",
                 rationale_code="MODEL_BUDGET_STOP",
             ),
-            ControllerPolicyAction.STOP,
-            None,
-            "MODEL_BUDGET_STOP",
+            [
+                {
+                    "need_id": "need.1",
+                    "tool_names": ["memory.search_exact", "memory.search_temporal"],
+                }
+            ],
+            ControllerPolicyAction.CALL_TOOL,
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
         ),
         (
             ControllerPolicyDraft(action="stop", stop_reason="not-a-reason"),
+            [
+                {
+                    "need_id": "need.1",
+                    "tool_names": ["memory.search_exact", "memory.search_temporal"],
+                }
+            ],
+            ControllerPolicyAction.CALL_TOOL,
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+            "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+        ),
+        # STOP with no legal actions remains a legitimate stop.
+        (
+            ControllerPolicyDraft(action="stop"),
+            [],
             ControllerPolicyAction.STOP,
             None,
             "MODEL_STOP",
@@ -294,6 +323,12 @@ def test_structured_controller_repairs_missing_action_without_legal_route() -> N
                 need_id="need.1",
                 tool_name="memory.search_exact",
             ),
+            [
+                {
+                    "need_id": "need.1",
+                    "tool_names": ["memory.search_exact", "memory.search_temporal"],
+                }
+            ],
             ControllerPolicyAction.CALL_TOOL,
             None,
             "MODEL_LEGAL_ACTION",
@@ -303,6 +338,12 @@ def test_structured_controller_repairs_missing_action_without_legal_route() -> N
                 action="call_tool",
                 tool_name="memory.search_temporal",
             ),
+            [
+                {
+                    "need_id": "need.1",
+                    "tool_names": ["memory.search_exact", "memory.search_temporal"],
+                }
+            ],
             ControllerPolicyAction.CALL_TOOL,
             "INFERRED_UNIQUE_LEGAL_ACTION",
             "BOUND_UNIQUE_LEGAL_ACTION",
@@ -311,20 +352,68 @@ def test_structured_controller_repairs_missing_action_without_legal_route() -> N
 )
 def test_structured_controller_binds_model_draft_cases(
     draft: ControllerPolicyDraft,
+    actions: list[dict[str, object]],
     expected_action: ControllerPolicyAction,
     expected_reason: str | None,
     expected_rationale: str,
 ) -> None:
-    actions: list[dict[str, object]] = [
-        {
-            "need_id": "need.1",
-            "tool_names": ["memory.search_exact", "memory.search_temporal"],
-        }
-    ]
     decision, repair = StructuredControllerPolicy._bind_draft(draft, actions)
     assert decision.action is expected_action
     assert repair == expected_reason
     assert decision.rationale_code == expected_rationale
+
+
+def test_structured_controller_binds_premature_stop_to_execute_plan_batch() -> None:
+    """STOP with sealed registered actions binds the batch, not the stop."""
+    registry = {
+        "action.need.1.search_exact": RegisteredControllerAction(
+            action_id=StableId("action.need.1.search_exact"),
+            need_id=StableId("need.1"),
+            tool_name="memory.search_exact",
+            retrieval_channel=RetrievalChannel.R1_EXACT,
+            requirement="mandatory",
+            phase=ControllerActionPhase.MANDATORY,
+            query_intent="locate anchor",
+        ),
+        "action.need.1.search_temporal": RegisteredControllerAction(
+            action_id=StableId("action.need.1.search_temporal"),
+            need_id=StableId("need.1"),
+            tool_name="memory.search_temporal",
+            retrieval_channel=RetrievalChannel.R1_TEMPORAL,
+            requirement="mandatory",
+            phase=ControllerActionPhase.MANDATORY,
+            query_intent="temporal locate",
+        ),
+        "action.need.2.search_exact": RegisteredControllerAction(
+            action_id=StableId("action.need.2.search_exact"),
+            need_id=StableId("need.2"),
+            tool_name="memory.search_exact",
+            retrieval_channel=RetrievalChannel.R1_EXACT,
+            requirement="mandatory",
+            phase=ControllerActionPhase.MANDATORY,
+            query_intent="locate anchor",
+        ),
+    }
+    actions: list[dict[str, object]] = [
+        {
+            "need_id": "need.1",
+            "tool_names": ["memory.search_exact", "memory.search_temporal"],
+        },
+        {"need_id": "need.2", "tool_names": ["memory.search_exact"]},
+    ]
+    decision, repair = StructuredControllerPolicy._bind_draft(
+        ControllerPolicyDraft(action="stop"),
+        actions,
+        action_by_id=registry,
+    )
+    assert decision.action is ControllerPolicyAction.EXECUTE_PLAN
+    assert repair == "PREMATURE_STOP_WITH_LEGAL_ACTIONS"
+    assert decision.rationale_code == "PREMATURE_STOP_WITH_LEGAL_ACTIONS"
+    # One registered action per unresolved Need (need.1's second action deduped).
+    assert decision.selected_action_ids == (
+        StableId("action.need.1.search_exact"),
+        StableId("action.need.2.search_exact"),
+    )
 
 
 def test_structured_controller_survives_exhausted_schema_retries() -> None:
@@ -1767,3 +1856,62 @@ def test_bind_draft_falls_through_when_all_action_ids_unknown() -> None:
         action_by_id={},
     )
     assert decision.action is ControllerPolicyAction.STOP
+
+
+def test_truthful_zero_tool_status_reflects_controller_stop() -> None:
+    """2026-08-17 diagnosis §3.5: zero-call needs must not be labeled
+    budget-exhausted when the Controller actually STOPped."""
+    runtime, _ = controller((), policy=None)
+    assert (
+        runtime._not_executed_status(ControllerStopReason.MANDATORY_GAP_UNRESOLVED)
+        is NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+    )
+    assert (
+        runtime._not_executed_status(ControllerStopReason.SUFFICIENT)
+        is NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+    )
+    assert (
+        runtime._not_executed_status(ControllerStopReason.NO_ADDITIONAL_EVIDENCE)
+        is NeedExecutionStatus.NOT_EXECUTED_CONTROLLER_STOP
+    )
+    assert (
+        runtime._not_executed_status(ControllerStopReason.BUDGET_EXHAUSTED)
+        is NeedExecutionStatus.NOT_EXECUTED_BUDGET_EXHAUSTED
+    )
+    assert (
+        runtime._not_executed_status(ControllerStopReason.FRESHNESS_BLOCKED)
+        is NeedExecutionStatus.NOT_EXECUTED_FRESHNESS_BLOCKED
+    )
+    assert (
+        runtime._not_executed_status(ControllerStopReason.ACCESS_BLOCKED)
+        is NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED
+    )
+
+
+def test_policy_records_bound_decision_history() -> None:
+    """§3.5: every trusted bound decision is persisted for the case record."""
+    policy = cast(
+        Any,
+        StructuredControllerPolicy(
+            cast(Any, object()),
+            cast(Any, structured_controller_spec()),
+            cast(Any, lambda *_: None),
+        ),
+    )
+    decision = ControllerPolicyDecision(
+        action=ControllerPolicyAction.CALL_TOOL,
+        need_id=StableId("need.1"),
+        tool_name="memory.search_exact",
+        rationale_code="PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+        model_call_id=StableId("model-call.1"),
+    )
+    policy._decisions.append(decision)
+    policy._record_repair(
+        StableId("model-call.1"),
+        "PREMATURE_STOP_WITH_LEGAL_ACTIONS",
+        decision,
+    )
+    assert policy.decision_history == (decision,)
+    assert policy.decision_repairs[0].reason == "PREMATURE_STOP_WITH_LEGAL_ACTIONS"
+    assert policy.decision_repairs[0].selected_need_id == StableId("need.1")
+    assert policy.decision_repairs[0].selected_tool_name == "memory.search_exact"

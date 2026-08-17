@@ -407,6 +407,7 @@ class PlanConditionedNeedPlanner:
         temperature: float = 0.0,
         max_drafts: int = 24,
         max_retries: int = 1,
+        max_output_tokens: int = 8192,
     ) -> None:
         if max_drafts < 1:
             raise ValueError("planner max drafts must be positive")
@@ -414,11 +415,14 @@ class PlanConditionedNeedPlanner:
             raise ValueError("planner retries must be between zero and two")
         if not 0 <= temperature <= 2:
             raise ValueError("planner temperature must be between zero and two")
+        if max_output_tokens < 512 or max_output_tokens > 32768:
+            raise ValueError("planner max output tokens must be between 512 and 32768")
         self._gateway = gateway
         self._model_role = model_role
         self._temperature = temperature
         self._max_drafts = max_drafts
         self._max_retries = max_retries
+        self._max_output_tokens = max_output_tokens
 
     def plan(
         self,
@@ -429,10 +433,27 @@ class PlanConditionedNeedPlanner:
         run_id: RunId | None = None,
         planner_model: str = "",
         planner_model_revision: str = "",
+        repair_instruction: str | None = None,
+        max_retries: int | None = None,
     ) -> PlannerRunResult:
+        attempt_retries = self._max_retries if max_retries is None else max_retries
+        if attempt_retries < 0 or attempt_retries > 2:
+            raise ValueError("planner retries override must be between zero and two")
         summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
         world_summary_hash = content_id(summary.model_dump(mode="json"))
-        prompt = self._build_prompt(planning_context, summary)
+        required_goal_chapters = tuple(
+            dict.fromkeys(
+                goal.chapter_index
+                for goal in planning_context.chapter_goals
+                if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
+            )
+        )
+        prompt = self._build_prompt(
+            planning_context,
+            summary,
+            required_goal_chapters=required_goal_chapters,
+            repair_instruction=repair_instruction,
+        )
         prompt_hash = content_id({"prompt_version": self.prompt_version, "prompt": prompt})
         if self._gateway is None:
             return PlannerRunResult(
@@ -456,7 +477,7 @@ class PlanConditionedNeedPlanner:
         input_tokens = 0
         output_tokens = 0
         attempts: list[PlannerInvocationAttempt] = []
-        for attempt_index in range(self._max_retries + 1):
+        for attempt_index in range(attempt_retries + 1):
             request = ModelRequest(
                 request_id=StableId(f"need-planner.{prompt_digest}.attempt{attempt_index + 1}"),
                 run_id=resolved_run_id,
@@ -468,7 +489,7 @@ class PlanConditionedNeedPlanner:
                     f"attempt{attempt_index + 1}"
                 ),
                 prompt=prompt,
-                max_output_tokens=4096,
+                max_output_tokens=self._max_output_tokens,
                 timeout_seconds=420.0,
                 enable_thinking=False,
                 scheduling_stage="need_planner",
@@ -476,6 +497,7 @@ class PlanConditionedNeedPlanner:
             attempt_raw = ""
             attempt_input_tokens = 0
             attempt_output_tokens = 0
+            usage_recorded = False
             try:
                 result = asyncio.run(self._gateway.generate_text(request))
                 raw_text = result.text
@@ -486,6 +508,7 @@ class PlanConditionedNeedPlanner:
                 attempt_output_tokens = result.call_record.usage.output_tokens
                 input_tokens += attempt_input_tokens
                 output_tokens += attempt_output_tokens
+                usage_recorded = True
                 drafts = self._parse_drafts(raw_text)
                 if not drafts:
                     last_category = "empty_drafts"
@@ -540,7 +563,24 @@ class PlanConditionedNeedPlanner:
                 )
             except Exception as error:
                 last_category = type(error).__name__
-                raw_text = raw_text or ""
+                if not usage_recorded:
+                    error_raw = getattr(error, "raw_content", None)
+                    attempt_raw = error_raw if isinstance(error_raw, str) else ""
+                    error_input_tokens = getattr(error, "input_tokens", None)
+                    error_output_tokens = getattr(error, "output_tokens", None)
+                    attempt_input_tokens = (
+                        error_input_tokens
+                        if isinstance(error_input_tokens, int) and error_input_tokens >= 0
+                        else 0
+                    )
+                    attempt_output_tokens = (
+                        error_output_tokens
+                        if isinstance(error_output_tokens, int) and error_output_tokens >= 0
+                        else 0
+                    )
+                    input_tokens += attempt_input_tokens
+                    output_tokens += attempt_output_tokens
+                    raw_text = attempt_raw
                 attempts.append(
                     PlannerInvocationAttempt(
                         request_id=request.request_id,
@@ -597,7 +637,18 @@ class PlanConditionedNeedPlanner:
         """Replay only when every semantic/model basis hash matches exactly."""
 
         summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
-        prompt = self._build_prompt(planning_context, summary)
+        required_goal_chapters = tuple(
+            dict.fromkeys(
+                goal.chapter_index
+                for goal in planning_context.chapter_goals
+                if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
+            )
+        )
+        prompt = self._build_prompt(
+            planning_context,
+            summary,
+            required_goal_chapters=required_goal_chapters,
+        )
         metadata = artifact.metadata
         checks = {
             "planning_context": artifact.planning_context == planning_context,
@@ -639,6 +690,9 @@ class PlanConditionedNeedPlanner:
         self,
         context: AuthorPlanningContext,
         summary: PlannerWorldSummary,
+        *,
+        required_goal_chapters: tuple[int, ...] = (),
+        repair_instruction: str | None = None,
     ) -> str:
         outline = "\n".join(f"- {node.summary}" for node in context.visible_outline_nodes)
         goals = "\n".join(
@@ -696,6 +750,9 @@ class PlanConditionedNeedPlanner:
             "- 如果某个章节目标需要的历史事实在世界摘要中完全不存在, 跳过该目标, "
             "不要生成无锚点的问题。\n"
             "- 实体与关系只能用世界摘要中给出的自然语言标签提及; 绝不输出任何 ID。\n"
+            "- 每个显式 entity_mentions 标签和 relation_mentions 端点必须原样复制"
+            "世界摘要中的一个规范实体标签或唯一别名; 不得使用复合、描述性或带注解的"
+            "标签(例如地点描述或带括号别名), 否则该 mention 会被判定为无效。\n"
             "- 每个问题必须说明它支撑的目标章节(trigger_plan_chapters, 取自目标章节计划)。\n"
             "- suggested_facets 只能从这些值中选取: " + "、".join(self._FACET_VALUES) + "。\n"
             "- required_claim_scopes 只能从这些值中选取: " + "、".join(self._SCOPE_VALUES) + "。\n"
@@ -703,6 +760,9 @@ class PlanConditionedNeedPlanner:
             f"- 最多输出 {self._max_drafts} 条。\n"
             "- 输出必须简洁: semantic_question 不超过 60 字, why_needed 不超过 40 字, "
             "query_hints 每条不超过 30 字; 禁止解释性前缀或后缀。\n"
+            "- 必须覆盖全部目标章节: 你输出的所有 draft 的 trigger_plan_chapters 并集"
+            "必须覆盖以下每一个目标章节编号; 缺少任意一章都是失败。\n"
+            f"  目标章节编号: {('、'.join(str(c) for c in required_goal_chapters)) or '(无)'}\n"
             '输出必须是单个 JSON 对象: {"drafts": [{"draft_id": "...", '
             '"semantic_question": "...", "entity_mentions": '
             '[{"label": "...", "role_in_need": "..."}], "relation_mentions": '
@@ -728,6 +788,14 @@ class PlanConditionedNeedPlanner:
             f"未决义务:\n{obligations or '(无)'}\n"
             f"近期事件(最近 {len(summary.recent_events)} 条):\n{events or '(无)'}\n"
             f"关键关系:\n{relations or '(无)'}\n"
+            + (
+                "\n【修复要求】(一次有界修复):\n"
+                "返回完整替代 drafts 批次, 不是增量补丁。保留仍然合格且必要的原条目, "
+                "并在同一个 drafts 数组中修正以下问题; 返回结果本身必须继续覆盖全部目标章节。\n"
+                f"{repair_instruction}\n"
+                if repair_instruction
+                else ""
+            )
         )
 
     @classmethod

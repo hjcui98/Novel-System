@@ -1202,6 +1202,13 @@
       "title": "Parsed Drafts",
       "type": "array"
     },
+    "planner_contract_findings": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Planner Contract Findings",
+      "type": "object"
+    },
     "planning_context": {
       "$ref": "#/$defs/AuthorPlanningContext"
     },

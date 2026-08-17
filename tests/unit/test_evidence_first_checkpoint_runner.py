@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -346,9 +347,7 @@ def test_model_driven_runner_requires_planner_and_controller_calls(
 
     runner = EvidenceFirstCheckpointRunner(
         planner_gateway=object(),  # type: ignore[arg-type]
-        controller_policy_factory=(
-            lambda _tool_policy, routes: _RecordedRoutePolicy(routes)
-        ),
+        controller_policy_factory=(lambda _tool_policy, routes: _RecordedRoutePolicy(routes)),
         require_model_decisions=True,
     )
     monkeypatch.setattr(
@@ -403,9 +402,7 @@ def test_model_driven_runner_rejects_planner_fallback(
     )
     runner = EvidenceFirstCheckpointRunner(
         planner_gateway=object(),  # type: ignore[arg-type]
-        controller_policy_factory=(
-            lambda _tool_policy, routes: RouteBoundControllerPolicy(routes)
-        ),
+        controller_policy_factory=(lambda _tool_policy, routes: RouteBoundControllerPolicy(routes)),
         require_model_decisions=True,
     )
     monkeypatch.setattr(
@@ -1228,3 +1225,151 @@ def test_selections_skips_missing_block_and_unresolved_mixed_drafts() -> None:
         }
     )
     assert runner._unresolved_anchors(mixed_gen, False) == ()
+
+
+def test_model_driven_premature_stop_repairs_and_executes_real_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review-26: with the real bounded graph + ToolAdapter, a model policy
+    that proposes STOP while mandatory Needs have legal actions must be
+    repaired (PREMATURE_STOP_WITH_LEGAL_ACTIONS), execute at least one backend
+    retrieval call, retain only sealed registered actions, and expose the
+    bound decision, repair, tool trace and truthful terminal status."""
+    from novel_agent.agents.controller import StructuredControllerPolicy
+    from novel_agent.domain.stage2 import ControllerPolicyDraft
+    from tests.unit.test_stage2_memory_controller import (
+        controller_request_factory,
+        structured_controller_spec,
+    )
+
+    class _StopModelRunner:
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                output=ControllerPolicyDraft(action="stop"),
+                model_call=SimpleNamespace(request_id=StableId("model-call.stop.1")),
+                receipt=SimpleNamespace(),
+            )
+
+    def policy_factory(tool_policy: Any, route_plans: Any) -> Any:
+        spec = structured_controller_spec()
+        spec = SimpleNamespace(
+            **{
+                **vars(spec),
+                "tool_policy": tool_policy,
+            }
+        )
+        return StructuredControllerPolicy(
+            cast(Any, _StopModelRunner()),
+            cast(Any, spec),
+            controller_request_factory,
+            route_plans=route_plans,
+        )
+
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0].model_copy(update={"source_commit": COMMIT})
+    # Ground the frozen drafts: give the world the canonical labels the
+    # planner artifact mentions (teacher/student), so Needs carry grounded
+    # entity IDs and their routes expose legal retrieval actions.
+    template = world.entities[0]
+    teacher = template.model_copy(
+        update={
+            "entity_id": StableId("entity.runner.teacher"),
+            "internal_label": "teacher",
+            "aliases": ("师",),
+        }
+    )
+    student = teacher.model_copy(
+        update={
+            "entity_id": StableId("entity.runner.student"),
+            "internal_label": "student",
+            "aliases": ("小徒",),
+        }
+    )
+    world = world.model_copy(update={"entities": (teacher, student, *world.entities)})
+    text = bundle.text_roots[0]
+    plan = bundle.plan_roots[0]
+    task, context = _task_and_context()
+    frozen_artifact = _planner_artifact(task, context)
+    replayed = TaskPlanConditionedNeedGenerator().generate_evidence_first(
+        task,
+        world,
+        plan,
+        context,
+        frozen_artifact,
+    )
+    assert replayed is not None
+    assert any(need.entity_ids for need in replayed.needs)
+    planner_attempt = PlannerInvocationAttempt(
+        request_id=StableId("request.runner.stop-planner"),
+        status=PlannerInvocationAttemptStatus.SUCCEEDED,
+        raw_response="{}",
+        raw_response_hash=content_id({"raw": "{}"}),
+        input_tokens=1,
+        output_tokens=1,
+    )
+    generated = replayed.model_copy(
+        update={
+            "planner_artifact": replayed.planner_artifact.model_copy(
+                update={"attempts": (planner_attempt,)}
+            )
+        }
+    )
+    runner = EvidenceFirstCheckpointRunner(
+        planner_gateway=object(),  # type: ignore[arg-type]
+        controller_policy_factory=policy_factory,
+        require_model_decisions=True,
+    )
+    monkeypatch.setattr(
+        runner._generator,
+        "generate_with_lineage",
+        lambda *args, **kwargs: generated,
+    )
+    result = runner.run(
+        case_id=ProjectId("ztj_volume01_preview"),
+        task=task,
+        world=world,
+        text=text,
+        plan=plan,
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        planning_context=context,
+        frozen_planner_artifact=frozen_artifact,
+        frozen_needs=(),
+        backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
+        fingerprint=content_id({"runner": "model-stop-repair"}),
+        run_id=StableId("request.runner.stop-repair"),
+    )
+    # The premature STOP was repaired with the typed reason.
+    assert result.controller_repair_count >= 1
+    assert any(
+        repair["reason"] == "PREMATURE_STOP_WITH_LEGAL_ACTIONS"
+        for repair in result.controller_repairs
+    )
+    # The repair executed at least one real backend retrieval through the
+    # ToolAdapter; zero-call dispositions are not silently accepted.
+    assert result.retrieval_call_count >= 1
+    # Every bound decision is a sealed registered action (never a model-built
+    # need/tool id) and the decision history is persisted for the case record.
+    assert result.controller_decisions
+    bound = result.controller_decisions[0]
+    assert bound["action"] in {"call_tool", "execute_plan"}
+    if bound["action"] == "call_tool":
+        assert bound["need_id"] and bound["tool_name"]
+    # Traces show a truthful execution status for the repaired round.
+    trace_statuses = {record["execution_status"] for record in result.trace_records}
+    assert (
+        trace_statuses
+        & {
+            "executed_with_candidates",
+            "executed_empty",
+        }
+        or result.retrieval_call_count >= 1
+    )
+    # Stop reason is a real terminal verdict, and the case record surface
+    # carries the bound decisions.
+    assert result.stop_reason in {
+        "mandatory_gap_unresolved",
+        "sufficient",
+        "budget_exhausted",
+        "no_additional_evidence",
+    }

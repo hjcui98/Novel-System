@@ -38,6 +38,7 @@ from novel_agent.domain.planning_memory import (
     PlannerFallbackStatus,
     PlannerFinalNeedManifest,
     PlannerInvocationArtifact,
+    PlannerRunResult,
 )
 from novel_agent.domain.world import StateRecord
 from novel_agent.domain.writer_context import (
@@ -174,13 +175,17 @@ class TaskPlanConditionedNeedGenerator:
         focus_extractor: TaskFocusExtractor | None = None,
         planner_gateway: ModelGateway | None = None,
         planner_artifact_writer: Callable[[bytes, str], ArtifactRef] | None = None,
+        planner_max_output_tokens: int = 8192,
     ) -> None:
         if max_total_needs < 1:
             raise ValueError("max_total_needs must be positive")
         self._max_total_needs = max_total_needs
         self._focus_extractor = focus_extractor or TaskFocusExtractor()
         self._planner = (
-            PlanConditionedNeedPlanner(gateway=planner_gateway)
+            PlanConditionedNeedPlanner(
+                gateway=planner_gateway,
+                max_output_tokens=planner_max_output_tokens,
+            )
             if planner_gateway is not None
             else None
         )
@@ -941,9 +946,7 @@ class TaskPlanConditionedNeedGenerator:
                         allow_plan=True,
                         pools=(CandidatePool.ANCHOR,),
                         predicates_by_facet={
-                            NeedFacetKind.PLAN_NODE: (
-                                getattr(node, "node_type", "plan_node"),
-                            ),
+                            NeedFacetKind.PLAN_NODE: (getattr(node, "node_type", "plan_node"),),
                         },
                     )
                     for facet_index, facet in enumerate(
@@ -1237,6 +1240,118 @@ class TaskPlanConditionedNeedGenerator:
             focus_set=focus_set,
             plan=plan,
         )
+        accepted = validation.accepted_drafts
+        target_start, target_end = task.target_chapter_start, task.target_chapter_end
+        target_goal_chapters = tuple(
+            dict.fromkeys(
+                goal.chapter_index
+                for goal in context.chapter_goals
+                if target_start <= goal.chapter_index <= target_end
+            )
+        )
+
+        def _coverage_state() -> tuple[tuple[int, ...], dict[str, str]]:
+            accepted_goal_chapters = tuple(
+                dict.fromkeys(
+                    chapter for draft in accepted for chapter in draft.trigger_plan_chapters
+                )
+            )
+            missing = tuple(
+                chapter for chapter in target_goal_chapters if chapter not in accepted_goal_chapters
+            )
+            return missing, self._planner_contract_findings(grounded)
+
+        missing_goal_chapters, contract_findings = _coverage_state()
+        # One bounded semantic-repair round (review-25 P0-4b + #1, review-26
+        # terminal-audit): when the target-goal union is incomplete or explicit
+        # labels violate the exact-canonical-label contract, issue exactly one
+        # repair request naming the missing chapters and the offending labels,
+        # with the canonical label map.  The repair invocation is ALWAYS
+        # terminal: its attempts, prompt, raw response and error category are
+        # merged into the persisted lineage even when it fails; a failed repair
+        # never resumes evaluation of the first drafts and never substitutes
+        # deterministic Needs (the runner fail-closes under
+        # require_model_decisions).
+        semantic_repair_attempted = False
+        if (missing_goal_chapters or contract_findings) and accepted and self._planner is not None:
+            semantic_repair_attempted = True
+            repair_instruction = self._build_repair_instruction(
+                missing_goal_chapters=missing_goal_chapters,
+                contract_findings=contract_findings,
+                canonical_labels=self._canonical_label_map(world),
+            )
+            repaired = self._planner.plan(
+                task=task,
+                world=world,
+                planning_context=context,
+                repair_instruction=repair_instruction,
+                max_retries=0,
+            )
+            planner_result = self._merge_planner_attempts(planner_result, repaired)
+            if repaired.drafts and repaired.metadata is not None:
+                grounded = tuple(
+                    self._grounder.ground(draft, world) for draft in planner_result.drafts
+                )
+                focus_set = self._focus_extractor.extract(task, world, plan)
+                entity_ids = tuple(
+                    dict.fromkeys(
+                        entity_id
+                        for draft in grounded
+                        for entity_id in self._grounder.grounded_entity_ids(draft)
+                    )
+                )
+                if entity_ids:  # pragma: no branch
+                    focus_set = self._focus_extractor.extend(focus_set, entity_ids)
+                validation = self._validator.validate(
+                    drafts=grounded,
+                    task=task,
+                    world=world,
+                    focus_set=focus_set,
+                    plan=plan,
+                )
+                accepted = validation.accepted_drafts
+                missing_goal_chapters, contract_findings = _coverage_state()
+            else:
+                # Typed semantic-repair fallback: the repair invocation is
+                # terminal.  Persist BOTH invocations, the repair prompt/raw
+                # and the real failure category; do not continue with the
+                # first response's coverage/contract verdict.
+                reason = repaired.error_category or "semantic_repair_no_usable_output"
+                rejected_hash = ArtifactId("sha256:" + "0" * 64)
+                fallback_metadata = (
+                    planner_result.metadata.model_copy(
+                        update={
+                            "validated_need_set_hash": rejected_hash,
+                            "fallback_used": True,
+                        }
+                    )
+                    if planner_result.metadata is not None
+                    else None
+                )
+                artifact = PlannerInvocationArtifact(
+                    planning_context=planner_result.planning_context,
+                    world_summary=planner_result.world_summary,
+                    exact_prompt=planner_result.exact_prompt,
+                    metadata=fallback_metadata,
+                    raw_response=planner_result.raw_response,
+                    attempts=planner_result.attempts,
+                    parsed_drafts=planner_result.drafts,
+                    grounded_drafts=(),
+                    accepted_draft_ids=(),
+                    rejected_reasons={},
+                    deduplicated_draft_ids=(),
+                    truncated_draft_ids=(),
+                    final_need_manifests=(),
+                    validated_need_set_hash=rejected_hash,
+                    fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
+                    fallback_reason=reason,
+                    missing_goal_chapters=missing_goal_chapters,
+                    planner_contract_findings=dict(contract_findings),
+                )
+                self._last_fallback_artifact = artifact
+                return self._terminal_planner_fallback_result(task, world, plan)
+        # The early guard plus the repair merge keep a non-None metadata.
+        assert planner_result.metadata is not None
         if not validation.accepted_drafts:
             rejected_hash = ArtifactId("sha256:" + "0" * 64)
             fallback_metadata = planner_result.metadata.model_copy(
@@ -1260,11 +1375,14 @@ class TaskPlanConditionedNeedGenerator:
                 validated_need_set_hash=rejected_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason="all_drafts_rejected",
+                planner_contract_findings=dict(contract_findings),
                 raw_scope_by_draft=validation.raw_scope_by_draft,
                 canonical_scope_by_draft=validation.canonical_scope_by_draft,
                 scope_normalization_reasons=validation.scope_normalization_reasons,
             )
             self._last_fallback_artifact = artifact
+            if semantic_repair_attempted:
+                return self._terminal_planner_fallback_result(task, world, plan)
             return None
         accepted = validation.accepted_drafts
         target_start, target_end = task.target_chapter_start, task.target_chapter_end
@@ -1275,13 +1393,7 @@ class TaskPlanConditionedNeedGenerator:
                 if target_start <= goal.chapter_index <= target_end
             )
         )
-        accepted_goal_chapters = tuple(
-            dict.fromkeys(chapter for draft in accepted for chapter in draft.trigger_plan_chapters)
-        )
-        missing_goal_chapters = tuple(
-            chapter for chapter in target_goal_chapters if chapter not in accepted_goal_chapters
-        )
-        if missing_goal_chapters:
+        if missing_goal_chapters or (semantic_repair_attempted and contract_findings):
             rejected_hash = ArtifactId("sha256:" + "0" * 64)
             fallback_metadata = planner_result.metadata.model_copy(
                 update={
@@ -1307,8 +1419,11 @@ class TaskPlanConditionedNeedGenerator:
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason="insufficient_target_goal_coverage",
                 missing_goal_chapters=missing_goal_chapters,
+                planner_contract_findings=dict(contract_findings),
             )
             self._last_fallback_artifact = artifact
+            if semantic_repair_attempted:
+                return self._terminal_planner_fallback_result(task, world, plan)
             return None
         missing_goal_entities = self._missing_goal_entities(
             context=context,
@@ -1346,8 +1461,11 @@ class TaskPlanConditionedNeedGenerator:
                     (entity_id.root, label, chapter)
                     for chapter, entity_id, label in missing_goal_entities
                 ),
+                planner_contract_findings=dict(contract_findings),
             )
             self._last_fallback_artifact = artifact
+            if semantic_repair_attempted:
+                return self._terminal_planner_fallback_result(task, world, plan)
             return None
         placeholder_hash = ArtifactId("sha256:" + "0" * 64)
         placeholder_ref = ArtifactId("sha256:" + "0" * 64)
@@ -1389,6 +1507,7 @@ class TaskPlanConditionedNeedGenerator:
             final_need_manifests=manifests,
             validated_need_set_hash=validated_hash,
             fallback_status=PlannerFallbackStatus.PLANNER,
+            planner_contract_findings=dict(contract_findings),
             raw_scope_by_draft=validation.raw_scope_by_draft,
             canonical_scope_by_draft=validation.canonical_scope_by_draft,
             scope_normalization_reasons=validation.scope_normalization_reasons,
@@ -1423,6 +1542,191 @@ class TaskPlanConditionedNeedGenerator:
             generator_version=self.version,
             planner_artifact=artifact,
             planner_artifact_document_ref=artifact_document_ref,
+        )
+
+    def _terminal_planner_fallback_result(
+        self,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        plan: PlanRootDocument,
+    ) -> NeedGenerationResult:
+        """Persist a failed semantic repair without substituting template Needs.
+
+        A bounded repair is the terminal model decision.  Once it fails or
+        remains outside the Planner contract, returning deterministic Needs
+        would make the caller believe the failed model decision was usable.
+        The empty final set and merged invocation artifact make that state
+        explicit to the evidence-first runner.
+        """
+
+        needs, artifact, artifact_ref, metadata = self._finalize_fallback_lineage(())
+        focus_set = self._focus_extractor.extract(task, world, plan)
+        return NeedGenerationResult(
+            task_id=task.task_id,
+            focus_set=focus_set,
+            needs=needs,
+            status=NeedGenerationStatus.PLANNER_FALLBACK,
+            unexpanded_focus_ids=tuple(focus.focus_id for focus in focus_set.focuses),
+            planner_metadata=metadata,
+            fallback_used=True,
+            planner_fallback_reason=artifact.fallback_reason,
+            grounding_status_counts=self._grounding_status_counts(artifact.grounded_drafts),
+            need_completion_spec_version=self.completion_spec_version,
+            generator_version=self.version,
+            planner_artifact=artifact,
+            planner_artifact_document_ref=artifact_ref,
+        )
+
+    def _planner_contract_findings(
+        self,
+        grounded: tuple[GroundedNeedDraft, ...],
+    ) -> dict[str, str]:
+        """Typed Planner-output-contract findings (review-25).
+
+        The Planner prompt requires every explicit entity mention and relation
+        endpoint to copy exactly one canonical WORLD label or unique alias.
+        The grounder stays exact; a composite/descriptive/annotated explicit
+        label that cannot resolve is a typed, retryable Planner-contract
+        finding (never a fuzzy ID guess).  ``draft_id -> finding``.
+        """
+
+        findings: dict[str, str] = {}
+        for draft in grounded:
+            explicit_entities = tuple(
+                mention for mention in draft.entity_mentions if mention.mention_source == "explicit"
+            )
+            for mention in explicit_entities:
+                if mention.grounding_status is GroundingStatus.UNRESOLVED:
+                    findings.setdefault(
+                        draft.draft_id,
+                        f"planner_contract_label_not_in_world:{mention.mention}",
+                    )
+                elif mention.grounding_status is GroundingStatus.AMBIGUOUS:
+                    findings.setdefault(
+                        draft.draft_id,
+                        f"planner_contract_label_ambiguous:{mention.mention}",
+                    )
+            for relation in draft.relation_mentions:
+                if relation.grounding_status is GroundingStatus.UNRESOLVED:
+                    findings.setdefault(
+                        draft.draft_id,
+                        "planner_contract_relation_endpoint_not_in_world:"
+                        f"{relation.subject_label}/{relation.object_label}",
+                    )
+                elif relation.grounding_status is GroundingStatus.AMBIGUOUS:
+                    findings.setdefault(
+                        draft.draft_id,
+                        "planner_contract_relation_endpoint_ambiguous:"
+                        f"{relation.subject_label}/{relation.object_label}",
+                    )
+        return findings
+
+    @staticmethod
+    def _canonical_label_map(
+        world: WorldRootDocument,
+        *,
+        limit: int = 120,
+    ) -> tuple[str, ...]:
+        """Bounded canonical label map for the repair prompt.
+
+        Built from ``NeedDraftGrounder._resolvable_label_map`` semantics so
+        every advertised value exact-grounds (review-26): each canonical
+        internal label and each uniquely resolvable alias is listed as a
+        separate exact value; ambiguous aliases and annotated/composite
+        display strings are never advertised.
+        """
+
+        from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+        resolvable = NeedDraftGrounder._resolvable_label_map(world)
+        labels: list[str] = []
+        seen: set[str] = set()
+        for entity in world.entities:
+            if not entity.internal_label.strip():
+                continue
+            normalized = NeedDraftGrounder._normalize(entity.internal_label)
+            if normalized in resolvable and normalized not in seen:
+                seen.add(normalized)
+                labels.append(entity.internal_label)
+            for alias in dict.fromkeys(entity.aliases):
+                if not alias.strip():
+                    continue
+                normalized_alias = NeedDraftGrounder._normalize(alias)
+                if normalized_alias in resolvable and normalized_alias not in seen:
+                    seen.add(normalized_alias)
+                    labels.append(alias)
+            if len(labels) >= limit:
+                break
+        return tuple(labels)
+
+    @staticmethod
+    def _build_repair_instruction(
+        *,
+        missing_goal_chapters: tuple[int, ...],
+        contract_findings: dict[str, str],
+        canonical_labels: tuple[str, ...],
+    ) -> str:
+        """One bounded repair request naming exact missing chapters and
+        offending explicit labels, with the canonical label map (review-25).
+        """
+
+        parts: list[str] = []
+        if missing_goal_chapters:
+            parts.append(
+                "你遗漏了以下目标章节: "
+                + "、".join(str(chapter) for chapter in missing_goal_chapters)
+                + "。必须为这些章节各补充至少一条问题, 且 trigger_plan_chapters"
+                " 必须包含对应章节编号。"
+            )
+        if contract_findings:
+            offending = tuple(dict.fromkeys(contract_findings.values()))
+            parts.append(
+                "以下显式标签不是世界摘要中的规范实体标签或唯一别名, 不得使用: "
+                + "、".join(offending)
+                + "。请把每个显式 entity_mentions 标签和 relation_mentions 端点替换为"
+                "下列规范标签中的某一个(原样复制), 或删除该 mention。"
+            )
+        if canonical_labels:
+            parts.append(
+                "规范标签映射(只使用这些):\n" + "\n".join(f"- {item}" for item in canonical_labels)
+            )
+        return "\n".join(parts)
+
+    def _merge_planner_attempts(
+        self,
+        first: PlannerRunResult,
+        second: PlannerRunResult,
+    ) -> PlannerRunResult:
+        """Merge a bounded repair invocation into the first result.
+
+        The repair invocation is TERMINAL: its prompt, raw response, error
+        category and fallback status always become the terminal ones, and its
+        attempts are ALWAYS merged so a failed repair is still fully auditable
+        (review-26).  Drafts become terminal only when the repair produced
+        usable drafts; otherwise the merged result keeps the first drafts but
+        carries the repair's failure category, and callers must not resume
+        evaluation of those drafts (the chain fail-closes instead).  Metadata
+        token usage aggregates across both invocations.
+        """
+
+        merged_metadata = second.metadata
+        if first.metadata is not None and second.metadata is not None:
+            merged_metadata = second.metadata.model_copy(
+                update={
+                    "input_tokens": first.metadata.input_tokens + second.metadata.input_tokens,
+                    "output_tokens": first.metadata.output_tokens + second.metadata.output_tokens,
+                }
+            )
+        return first.model_copy(
+            update={
+                "drafts": second.drafts or first.drafts,
+                "metadata": merged_metadata or first.metadata,
+                "fallback_status": second.fallback_status,
+                "error_category": second.error_category,
+                "exact_prompt": second.exact_prompt,
+                "raw_response": second.raw_response,
+                "attempts": (*first.attempts, *second.attempts),
+            }
         )
 
     def generate_evidence_first(
@@ -1857,17 +2161,14 @@ class TaskPlanConditionedNeedGenerator:
                 relation.predicate
                 for relation in world.relations
                 if relation.predicate
-                and bool(
-                    set((relation.subject_id, relation.object_id)) & set(entity_ids)
-                )
+                and bool(set((relation.subject_id, relation.object_id)) & set(entity_ids))
             )
         )[:16]
         event_predicates = tuple(
             dict.fromkeys(
                 event.event_type
                 for event in world.events
-                if event.event_type
-                and set(event.participant_ids) & set(entity_ids)
+                if event.event_type and set(event.participant_ids) & set(entity_ids)
             )
         )[:16]
         obligation_predicates = tuple(

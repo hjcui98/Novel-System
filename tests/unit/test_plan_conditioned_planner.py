@@ -1833,28 +1833,25 @@ def test_validator_still_rejects_plan_scope_and_unknown_values() -> None:
 
 
 def test_partial_goal_coverage_triggers_full_fallback_with_typed_missing_goals() -> None:
-    endpoint = _PlannerEndpoint(
-        (
+    partial_payload = {
+        "drafts": [
             {
-                "drafts": [
-                    {
-                        "draft_id": "only-21",
-                        "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
-                        "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
-                        "relation_mentions": [],
-                        "trigger_plan_chapters": [21],
-                        "trigger_plan_goal": "重申旧誓言",
-                        "why_needed": "plan the memory reload",
-                        "required_claim_scopes": ["current"],
-                        "suggested_facets": ["CURRENT_STATE"],
-                        "historical_time_scope": "main",
-                        "query_hints": ["teacher 伤势"],
-                    }
-                ],
-                "meta": {"rationale": "partial"},
-            },
-        )
-    )
+                "draft_id": "only-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "plan the memory reload",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": ["teacher 伤势"],
+            }
+        ],
+        "meta": {"rationale": "partial"},
+    }
+    endpoint = _PlannerEndpoint((partial_payload, partial_payload))
     gateway = _gateway(endpoint)
     task = _task()
     world = _entity_world()
@@ -2197,28 +2194,25 @@ def test_goal_entity_missing_triggers_whole_fallback() -> None:
     task = _task(task_intent="为写 81-85 章准备历史记忆")
     task = task.model_copy(update={"target_chapter_start": 81, "target_chapter_end": 85})
     # Only ch81 draft; ch82 goal names 落落 but the draft for 82 is missing.
-    endpoint = _PlannerEndpoint(
-        (
+    partial_payload = {
+        "drafts": [
             {
-                "drafts": [
-                    {
-                        "draft_id": "d81-only",
-                        "semantic_question": "陈长生对落落的教学方式是什么?",
-                        "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
-                        "relation_mentions": [],
-                        "trigger_plan_chapters": [81],
-                        "trigger_plan_goal": "师徒教学与感情进展",
-                        "why_needed": "决定第81章教学方式",
-                        "required_claim_scopes": ["current"],
-                        "suggested_facets": ["RELATION_STATE"],
-                        "historical_time_scope": "main",
-                        "query_hints": [],
-                    }
-                ],
-                "meta": {"rationale": "partial"},
-            },
-        )
-    )
+                "draft_id": "d81-only",
+                "semantic_question": "陈长生对落落的教学方式是什么?",
+                "entity_mentions": [{"label": "陈长生", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [81],
+                "trigger_plan_goal": "师徒教学与感情进展",
+                "why_needed": "决定第81章教学方式",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["RELATION_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+        ],
+        "meta": {"rationale": "partial"},
+    }
+    endpoint = _PlannerEndpoint((partial_payload, partial_payload))
     gateway = _gateway(endpoint)
     generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
     result = generator.generate_with_lineage(task, world, plan, context)
@@ -2984,3 +2978,451 @@ def test_generate_evidence_first_fallback_artifact_returns_none() -> None:
         )
         is None
     )
+
+
+def test_validator_keeps_legitimate_history_questions_not_in_word_list() -> None:
+    # 2026-08-17 diagnosis §4 (P003/C60 root cause): the closed history-word
+    # list must not infer "future fact" from absence. The two real C64 drafts
+    # rejected as plan_goal_as_fact in the §6 run are legitimate history
+    # questions (pre-cutoff marriage-contract content) and must pass.
+    task = _task()
+    world = _entity_world()
+    validator = NeedValidator()
+    c64_questions = (
+        "陈长生与徐有容之间的婚约具体内容和法律/社会效力?",
+        "徐世绩对陈长生与徐有容婚约的态度及过往干预行为?",
+    )
+    # The narrowed check is the direct §4 semantic: absence from the closed
+    # history-word list must not imply a future fact.
+    assert not any(validator._looks_future_factualized(q) for q in c64_questions)
+    drafts = tuple(
+        _draft(f"c64-{index}", question, chapters=(21,), goal="重申旧誓言")
+        for index, question in enumerate(c64_questions)
+    )
+    grounder = NeedDraftGrounder()
+    grounded = tuple(grounder.ground(draft, world) for draft in drafts)
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = validator.validate(
+        drafts=grounded,
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert "plan_goal_as_fact" not in result.rejected_reasons
+    accepted = {draft.draft_id for draft in result.accepted_drafts}
+    assert {"c64-0", "c64-1"} <= accepted
+
+
+def test_validator_still_rejects_explicit_future_and_goal_restatement() -> None:
+    # The explicit-future-marker rejection and the canonical goal restatement
+    # rejection remain strict after the §4 narrowing.
+    task = _task()
+    world = _entity_world()
+    validator = NeedValidator()
+    assert validator._looks_future_factualized("陈长生将会进入公开场合吗")
+    assert validator._looks_future_factualized("计划中如何处理婚约")
+    assert not validator._looks_future_factualized(
+        "陈长生与徐有容之间的婚约具体内容和法律/社会效力?"
+    )
+    draft_fact = _draft("fact", "重申旧誓言", chapters=(21,), goal="重申旧誓言")
+    grounder = NeedDraftGrounder()
+    grounded = (grounder.ground(draft_fact, world),)
+    focus_set = TaskFocusExtractor().extract(task, world)
+    result = validator.validate(
+        drafts=grounded,
+        task=task,
+        world=world,
+        focus_set=focus_set,
+        plan=make_synthetic_bundle().plan_roots[0],
+    )
+    assert result.rejected_reasons.get("fact") == "plan_goal_as_fact"
+
+
+def test_bounded_repair_closes_missing_goal_chapters() -> None:
+    """P0-4b: one bounded semantic-repair closes a target-goal coverage gap."""
+    first_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "only-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "plan the memory reload",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": ["teacher 伤势"],
+            }
+        ],
+        "meta": {"rationale": "partial"},
+    }
+    repair_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "repair-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "repair keeps ch21",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            },
+            {
+                "draft_id": "repair-22",
+                "semantic_question": "在截止点前 student 是否已承诺前往北塔?",
+                "entity_mentions": [{"label": "student", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [22],
+                "trigger_plan_goal": "进入北塔",
+                "why_needed": "repair adds ch22",
+                "required_claim_scopes": ["historical"],
+                "suggested_facets": ["CAUSAL_HISTORY"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            },
+            {
+                "draft_id": "repair-23",
+                "semantic_question": "在截止点前 teacher 对 student 秘密的知情边界是什么?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [23],
+                "trigger_plan_goal": "进入北塔",
+                "why_needed": "repair adds ch23",
+                "required_claim_scopes": ["knowledge"],
+                "suggested_facets": ["KNOWLEDGE_BOUNDARY"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            },
+        ],
+        "meta": {"rationale": "repair covers missing chapters"},
+    }
+    endpoint = _PlannerEndpoint((first_payload, repair_payload))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.READY
+    assert result.fallback_used is False
+    assert len(endpoint.requests) == 2
+    assert "【修复要求】" in endpoint.requests[1].prompt
+    assert "返回完整替代 drafts 批次" in endpoint.requests[1].prompt
+    assert "22" in endpoint.requests[1].prompt and "23" in endpoint.requests[1].prompt
+    assert result.planner_artifact is not None
+    assert not result.planner_artifact.missing_goal_chapters
+    assert len(result.planner_artifact.attempts) == 2
+
+
+def test_bounded_repair_still_incomplete_fails_closed() -> None:
+    """P0-4b: a repair that stays incomplete stops with the typed fallback."""
+    first_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "only-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "plan the memory reload",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": ["teacher 伤势"],
+            }
+        ],
+        "meta": {"rationale": "partial"},
+    }
+    still_partial: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "still-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "still partial",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+        ],
+        "meta": {"rationale": "repair still partial"},
+    }
+    endpoint = _PlannerEndpoint((first_payload, still_partial))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    assert result.planner_artifact is not None
+    assert result.planner_artifact.fallback_reason == "insufficient_target_goal_coverage"
+    assert set(result.planner_artifact.missing_goal_chapters) == {22, 23}
+
+
+def test_planner_contract_finding_repairs_composite_label_with_label_map() -> None:
+    """Review-25#1: an annotated composite explicit label is a typed finding,
+    and the bounded repair prompt carries the canonical label map."""
+    world = _chinese_world()
+    plan = _chinese_goals_plan(world)
+    context = AuthorPlanningContext(
+        profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 81-85 章准备历史记忆",
+        target_range=(81, 85),
+        visible_outline_nodes=(),
+        chapter_goals=plan.chapter_goals,
+        source_hash=content_id({"goals": "contract-finding"}),
+        planner_may_read_plan=True,
+    )
+    task = _task(task_intent="为写 81 章准备历史记忆")
+    task = task.model_copy(update={"target_chapter_start": 81, "target_chapter_end": 81})
+    composite_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "composite-81",
+                "semantic_question": "陈长生与落落之间的教学关系如何发展?",
+                "entity_mentions": [
+                    {"label": "落衡(别名: 落落)", "role_in_need": "subject"},
+                    {"label": "陈长生", "role_in_need": "object"},
+                ],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [81],
+                "trigger_plan_goal": "师徒教学与感情进展",
+                "why_needed": "决定第81章教学方式",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["RELATION_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+        ],
+        "meta": {"rationale": "composite label"},
+    }
+    repaired_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "exact-81",
+                "semantic_question": "陈长生对落落的教学方式是什么?",
+                "entity_mentions": [
+                    {"label": "落落", "role_in_need": "subject"},
+                    {"label": "陈长生", "role_in_need": "object"},
+                ],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [81],
+                "trigger_plan_goal": "师徒教学与感情进展",
+                "why_needed": "决定第81章教学方式",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["RELATION_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+        ],
+        "meta": {"rationale": "exact labels"},
+    }
+    endpoint = _PlannerEndpoint((composite_payload, repaired_payload))
+    gateway = _gateway(endpoint)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.READY
+    assert len(endpoint.requests) == 2
+    repair_prompt = endpoint.requests[1].prompt
+    assert "落衡(别名: 落落)" in repair_prompt  # named as the offending label
+    map_block = repair_prompt.split("规范标签映射(只使用这些):", 1)[1]
+    assert "落衡(别名: 落落)" not in map_block  # never advertised as usable
+    for expected in ("- 陈长生", "- 长生", "- 落落", "- 黑龙"):
+        assert expected in map_block  # each exact value advertised separately
+    assert result.planner_artifact is not None
+    assert result.planner_artifact.planner_contract_findings == {}
+    assert result.needs
+
+
+def test_planner_pins_configured_output_ceiling_on_gateway_request() -> None:
+    """P004 regression: the Planner request pins the configured bounded budget
+    (8,192 per Plan v13), not a hard-coded 4,096."""
+    endpoint = _PlannerEndpoint((_planner_payload(),))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    planner = PlanConditionedNeedPlanner(gateway=gateway)
+    context = _planner_context(task)
+    planner.plan(task=task, world=world, planning_context=context)
+    assert endpoint.requests[0].max_output_tokens == 8192
+    assert endpoint.requests[0].enable_thinking is False
+
+
+def test_planner_parses_schema_maximal_bounded_draft_batch() -> None:
+    """P004 regression: a max-size draft batch parses and validates."""
+    drafts = [
+        {
+            "draft_id": f"draft-{index:02d}",
+            "semantic_question": f"在截止点前 teacher 的第{index}项伤势状态是什么?",
+            "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+            "relation_mentions": [],
+            "trigger_plan_chapters": [21],
+            "trigger_plan_goal": "重申旧誓言",
+            "why_needed": "batch draft",
+            "required_claim_scopes": ["current"],
+            "suggested_facets": ["CURRENT_STATE"],
+            "historical_time_scope": "main",
+            "query_hints": [],
+        }
+        for index in range(24)
+    ]
+    parsed = PlanConditionedNeedPlanner._parse_drafts(
+        json.dumps({"drafts": drafts, "meta": {"rationale": "maximal"}}, ensure_ascii=False)
+    )
+    assert len(parsed) == 24
+    assert len({draft.draft_id for draft in parsed}) == 24
+
+
+def test_planner_output_length_terminal_stays_typed_and_never_silent() -> None:
+    """P004 regression: an output-length terminal result is a typed Planner
+    fallback with the error category, never a silent empty success."""
+    from novel_agent.adapters.model.openai_chat import OpenAIChatOutputLengthError
+
+    class _LengthEndpoint(_PlannerEndpoint):
+        is_external = False
+
+        async def generate(self, request: ModelRequest) -> ProviderModelResult:
+            self.requests.append(request)
+            raise OpenAIChatOutputLengthError(
+                "response exhausted its output-token allowance",
+                finish_reason="length",
+                input_tokens=100,
+                output_tokens=8192,
+            )
+
+    endpoint = _LengthEndpoint(())
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    planner = PlanConditionedNeedPlanner(gateway=gateway)
+    context = _planner_context(task)
+    result = planner.plan(task=task, world=world, planning_context=context)
+    assert result.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK
+    assert result.error_category == "OpenAIChatOutputLengthError"
+    assert result.drafts == ()
+    assert result.metadata is not None
+    assert result.metadata.fallback_used is True
+    assert len(result.attempts) == 2  # bounded retries, all typed errors
+    assert all(
+        attempt.status is PlannerInvocationAttemptStatus.ERROR for attempt in result.attempts
+    )
+    assert all(
+        attempt.error_category == "OpenAIChatOutputLengthError" for attempt in result.attempts
+    )
+
+
+def test_planner_cli_ceiling_threads_through_generator_to_request() -> None:
+    """Review-26#3: a non-default model-max-output-tokens CLI value must reach
+    ``ModelRequest.max_output_tokens`` through generator -> planner, and stays
+    bounded by the planner's constructor validation."""
+    endpoint = _PlannerEndpoint((_planner_payload(),))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(
+        planner_gateway=gateway,
+        planner_max_output_tokens=4096,
+    )
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.READY
+    assert endpoint.requests[0].max_output_tokens == 4096
+
+    endpoint2 = _PlannerEndpoint(())
+    gateway2 = _gateway(endpoint2)
+    with pytest.raises(ValueError):
+        PlanConditionedNeedPlanner(gateway=gateway2, max_output_tokens=256)
+
+
+def test_repair_exhausts_output_limit_persists_terminal_fallback() -> None:
+    """Review-26#1: when the bounded repair invocation exhausts its output
+    allowance, the chain must STOP with a typed PLANNER_FALLBACK artifact that
+    persists BOTH invocations, the repair prompt/raw and the real error
+    category; it never resumes the first drafts and never substitutes
+    deterministic Needs."""
+    from novel_agent.adapters.model.openai_chat import OpenAIChatOutputLengthError
+    from novel_agent.domain.planning_memory import PlannerInvocationAttemptStatus
+
+    repair_raw = '{"drafts": ['
+    first_payload: dict[str, object] = {
+        "drafts": [
+            {
+                "draft_id": "only-21",
+                "semantic_question": "在截止点前 teacher 的伤势是否仍未痊愈?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "plan the memory reload",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": ["teacher 伤势"],
+            }
+        ],
+        "meta": {"rationale": "partial"},
+    }
+
+    class _LengthEndpoint(_PlannerEndpoint):
+        is_external = False
+
+        async def generate(self, request: ModelRequest) -> ProviderModelResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ProviderModelResult(
+                    text=json.dumps(first_payload, ensure_ascii=False),
+                    model_version=self.model,
+                    usage=ModelUsage(input_tokens=10, output_tokens=10, cost_usd=Decimal("0")),
+                )
+            raise OpenAIChatOutputLengthError(
+                "repair response exhausted its output-token allowance",
+                finish_reason="length",
+                input_tokens=100,
+                output_tokens=8192,
+                raw_content=repair_raw,
+            )
+
+    endpoint = _LengthEndpoint(())
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    generator = TaskPlanConditionedNeedGenerator(planner_gateway=gateway)
+    result = generator.generate_with_lineage(task, world, plan, context)
+    assert result.status is NeedGenerationStatus.PLANNER_FALLBACK
+    assert result.fallback_used is True
+    artifact = result.planner_artifact
+    assert artifact is not None
+    assert artifact.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK
+    assert artifact.fallback_reason == "OpenAIChatOutputLengthError"
+    assert len(artifact.attempts) == 2
+    assert artifact.attempts[0].status is PlannerInvocationAttemptStatus.SUCCEEDED
+    assert artifact.attempts[1].status is PlannerInvocationAttemptStatus.ERROR
+    assert artifact.exact_prompt  # terminal repair prompt persisted
+    assert artifact.raw_response == repair_raw
+    assert artifact.attempts[1].raw_response == repair_raw
+    assert artifact.metadata is not None
+    assert artifact.metadata.input_tokens == 110
+    assert artifact.metadata.output_tokens == 8202
+    assert artifact.metadata.raw_response_hash == content_id({"raw": repair_raw})
+    assert set(artifact.missing_goal_chapters) == {22, 23}
+    assert artifact.planner_contract_findings == {}
+    assert result.needs == ()  # never substituted deterministic Needs

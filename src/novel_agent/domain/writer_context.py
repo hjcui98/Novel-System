@@ -678,10 +678,18 @@ class EvidenceFirstPackageManifest(DomainModel):
                 raise ValueError("READY manifest cannot carry mechanical failure counts")
             if not self.root_hashes_unchanged:
                 raise ValueError("READY manifest requires unchanged immutable roots")
+            # Model-driven Evidence-First (Plan v13 §6): this manifest *permits*
+            # `need_planner_model_calls` (it is deliberately absent from the
+            # claim-path zero list) so a completed model-driven case may record
+            # its Planner model call. Enforcing at least one Planner call is the
+            # `EvidenceFirstCheckpointRunner` owner's job when
+            # `require_model_decisions=True`; this shared manifest must keep
+            # admitting zero Planner calls for the deterministic mode. Claim
+            # Support, whole-verifier, semantic evaluator, and Gold calls remain
+            # forbidden during package construction and stay on the zero list.
             claim_path_calls = tuple(
                 self.call_counts.get(key, 0)
                 for key in (
-                    "need_planner_model_calls",
                     "claim_support_calls",
                     "whole_verifier_calls",
                     "semantic_evaluator_calls",
