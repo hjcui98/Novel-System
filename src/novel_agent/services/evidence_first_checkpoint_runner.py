@@ -260,20 +260,12 @@ class EvidenceFirstCheckpointRunner:
                 planning_context=planning_context,
             )
             planner_fallback_used = need_generation.fallback_used
-            if planner_fallback_used:
-                reason = need_generation.planner_fallback_reason or "unknown"
-                artifact_ref = need_generation.planner_artifact_document_ref
-                artifact = need_generation.planner_artifact
-                missing = tuple(artifact.missing_goal_chapters) if artifact is not None else ()
-                detail = f"missing_goal_chapters={list(missing)}" if missing else "no coverage gap"
-                ref_text = (
-                    artifact_ref.artifact_id.root if artifact_ref is not None else "not persisted"
-                )
-                raise RuntimeError(
-                    "model-driven evidence-first Planner fell back: "
-                    f"{reason}; {detail}; planner_artifact_ref={ref_text}"
-                )
-            needs = need_generation.needs
+            # A Planner semantic/contract fallback is a typed quality signal,
+            # not a transport failure.  Keep the chain running with the
+            # generator's deterministic fallback Needs (or the frozen Needs
+            # when the generator has no usable model Needs), and let the
+            # package carry planner_fallback_used + semantic INCOMPLETE.
+            needs = need_generation.needs or frozen_needs
         else:
             planner_fallback_used = frozen_planner_artifact.fallback_status is (
                 PlannerFallbackStatus.PLANNER_FALLBACK

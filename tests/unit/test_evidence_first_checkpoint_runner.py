@@ -376,7 +376,7 @@ def test_model_driven_runner_requires_planner_and_controller_calls(
     assert result.assembly.package.arm == "B"
 
 
-def test_model_driven_runner_rejects_planner_fallback(
+def test_model_driven_runner_continues_with_planner_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle = make_synthetic_bundle()
@@ -393,16 +393,38 @@ def test_model_driven_runner_rejects_planner_fallback(
         frozen_artifact,
     )
     assert replayed is not None
+    assert replayed.planner_artifact is not None
+    planner_attempt = PlannerInvocationAttempt(
+        request_id=StableId("request.runner.model-fallback-planner"),
+        status=PlannerInvocationAttemptStatus.SUCCEEDED,
+        raw_response="{}",
+        raw_response_hash=content_id({"raw": "{}"}),
+        input_tokens=1,
+        output_tokens=1,
+    )
     fallback = replayed.model_copy(
         update={
             "status": NeedGenerationStatus.PLANNER_FALLBACK,
             "fallback_used": True,
             "planner_fallback_reason": "provider_error",
+            "planner_artifact": replayed.planner_artifact.model_copy(
+                update={"attempts": (planner_attempt,)}
+            ),
         }
     )
+
+    class _RecordedRoutePolicy(RouteBoundControllerPolicy):
+        @property
+        def decision_receipts(self) -> tuple[object, ...]:
+            return (object(),)
+
+        @property
+        def decision_repairs(self) -> tuple[object, ...]:
+            return ()
+
     runner = EvidenceFirstCheckpointRunner(
         planner_gateway=object(),  # type: ignore[arg-type]
-        controller_policy_factory=(lambda _tool_policy, routes: RouteBoundControllerPolicy(routes)),
+        controller_policy_factory=(lambda _tool_policy, routes: _RecordedRoutePolicy(routes)),
         require_model_decisions=True,
     )
     monkeypatch.setattr(
@@ -411,22 +433,25 @@ def test_model_driven_runner_rejects_planner_fallback(
         lambda *args, **kwargs: fallback,
     )
 
-    with pytest.raises(RuntimeError, match="Planner fell back: provider_error"):
-        runner.run(
-            case_id=ProjectId("ztj_volume01_preview"),
-            task=task,
-            world=world,
-            text=text,
-            plan=plan,
-            base_commit=COMMIT,
-            snapshot_id=SNAPSHOT,
-            planning_context=context,
-            frozen_planner_artifact=frozen_artifact,
-            frozen_needs=(),
-            backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
-            fingerprint=content_id({"runner": "model-fallback-test"}),
-            run_id=StableId("request.runner.model-fallback"),
-        )
+    result = runner.run(
+        case_id=ProjectId("ztj_volume01_preview"),
+        task=task,
+        world=world,
+        text=text,
+        plan=plan,
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        planning_context=context,
+        frozen_planner_artifact=frozen_artifact,
+        frozen_needs=(),
+        backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
+        fingerprint=content_id({"runner": "model-fallback-test"}),
+        run_id=StableId("request.runner.model-fallback"),
+    )
+    assert result.planner_fallback_used is True
+    assert result.needs
+    assert result.assembly.package.lineage.planner_fallback_used is True
+    assert result.assembly.package.semantic_status == "INCOMPLETE"
 
 
 def test_runner_fallback_case_reuses_frozen_needs() -> None:

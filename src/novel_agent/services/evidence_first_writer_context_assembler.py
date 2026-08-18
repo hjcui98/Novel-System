@@ -815,8 +815,16 @@ class EvidenceFirstWriterContextAssembler:
         structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = (
             "COMPLETE" if not structural_mandatory_gap_items else "INCOMPLETE"
         )
-        if semantic_receipts:
-            semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = (
+        semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"]
+        if planner_fallback_used:
+            # A Planner fallback means the target-goal Need set was not fully
+            # validated, even when retrieval/semantic judging can serve every
+            # facet of the fallback Needs.  Keep mechanical delivery READY,
+            # but never report semantic completeness for that package.
+            semantic_status = "INCOMPLETE"
+            diagnostics.append("PLANNER_FALLBACK_SEMANTIC_INCOMPLETE")
+        elif semantic_receipts:
+            semantic_status = (
                 "COMPLETE"
                 if all(
                     receipt.status is NeedEvidenceSemanticStatus.SUPPORTED

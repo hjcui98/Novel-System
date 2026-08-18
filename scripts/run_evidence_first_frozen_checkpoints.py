@@ -1208,6 +1208,14 @@ def main() -> int:
                     else planner_result.planner_artifact_document_ref.artifact_id.root
                 ),
                 "status": None if planner_result is None else planner_result.status.value,
+                "fallback_used": (
+                    None if planner_result is None else planner_result.fallback_used
+                ),
+                "fallback_reason": (
+                    None
+                    if planner_result is None
+                    else planner_result.planner_fallback_reason
+                ),
                 "model_call_count": result.need_planner_model_call_count,
                 "coverage_audit_model_call_count": (result.planner_coverage_audit_model_call_count),
                 "generation_pages": (
@@ -1297,6 +1305,11 @@ def main() -> int:
                     "candidate_limit_saturated": list(result.candidate_limit_saturated),
                     "stop_reason": result.stop_reason,
                     "planner_fallback_used": result.planner_fallback_used,
+                    "planner_fallback_reason": (
+                        None
+                        if planner_result is None
+                        else planner_result.planner_fallback_reason
+                    ),
                     "unresolved_lexical_anchors": [
                         anchor.model_dump(mode="json")
                         for anchor in result.unresolved_lexical_anchors

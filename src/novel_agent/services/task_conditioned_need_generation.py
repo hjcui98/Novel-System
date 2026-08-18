@@ -1794,12 +1794,22 @@ class TaskPlanConditionedNeedGenerator:
                 " 必须包含对应章节编号。"
             )
         if contract_findings:
-            offending = tuple(dict.fromkeys(contract_findings.values()))
+            # Findings are typed internal diagnostics (for example
+            # ``planner_contract_label_ambiguous:桐宫``), not labels that can
+            # be copied into the repair prompt.  Expose only the offending
+            # value so the Planner can actually remove or replace it.
+            offending = tuple(
+                dict.fromkeys(
+                    value.split(":", 1)[1] if ":" in value else value
+                    for value in contract_findings.values()
+                )
+            )
             parts.append(
                 "以下显式标签不是世界摘要中的规范实体标签或唯一别名, 不得使用: "
                 + "、".join(offending)
                 + "。请把每个显式 entity_mentions 标签和 relation_mentions 端点替换为"
                 "下列规范标签中的某一个(原样复制), 或删除该 mention。"
+                "对歧义标签必须删除或替换, 不得再次输出该标签。"
             )
         if coverage_findings:
             parts.append(
