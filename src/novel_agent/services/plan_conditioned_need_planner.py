@@ -7,7 +7,8 @@ import json
 import re
 from typing import ClassVar, cast
 
-from novel_agent.domain.benchmark import AuthorPlanningContext
+from novel_agent.domain.base import DomainModel
+from novel_agent.domain.benchmark import AuthorPlanningContext, ChapterGoal
 from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
@@ -16,6 +17,8 @@ from novel_agent.domain.planning_memory import (
     EntityMention,
     PlannedNeedDraft,
     PlannerArtifactMetadata,
+    PlannerCoverageAuditReceipt,
+    PlannerCoverageFinding,
     PlannerEntitySummary,
     PlannerEventSummary,
     PlannerFallbackStatus,
@@ -23,6 +26,8 @@ from novel_agent.domain.planning_memory import (
     PlannerInvocationAttempt,
     PlannerInvocationAttemptStatus,
     PlannerObligationSummary,
+    PlannerPage,
+    PlannerPageStatus,
     PlannerRelationSummary,
     PlannerRunResult,
     PlannerStateSummary,
@@ -35,6 +40,12 @@ from novel_agent.domain.writer_context import BenchmarkTaskContract
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.model_gateway import ModelGateway
+
+
+class PlannerCoverageAuditOutput(DomainModel):
+    """Structured response for the bounded post-generation omission audit."""
+
+    findings: tuple[PlannerCoverageFinding, ...] = ()
 
 
 class PlannerWorldSummaryBuilder:
@@ -378,7 +389,10 @@ class PlanConditionedNeedPlanner:
     version = "plan_conditioned_need_planner.v1"
     prompt_version = "plan_conditioned_need_planner_prompt.v1"
     output_schema_version = PLANNER_OUTPUT_SCHEMA_VERSION
-    max_drafts_default = 24
+    # No product draft-count ceiling.  The request context and chapter pages
+    # are the resource bounds; an explicit value remains available for tests
+    # and deterministic emergency runs.
+    max_drafts_default: int | None = None
 
     _FACET_VALUES: ClassVar[tuple[str, ...]] = (
         "CURRENT_STATE",
@@ -405,11 +419,12 @@ class PlanConditionedNeedPlanner:
         gateway: ModelGateway | None = None,
         model_role: ModelRole = ModelRole.BATCH_TEST,
         temperature: float = 0.0,
-        max_drafts: int = 24,
+        max_drafts: int | None = None,
         max_retries: int = 1,
         max_output_tokens: int = 8192,
+        max_input_tokens: int = 12_000,
     ) -> None:
-        if max_drafts < 1:
+        if max_drafts is not None and max_drafts < 1:
             raise ValueError("planner max drafts must be positive")
         if max_retries < 0 or max_retries > 2:
             raise ValueError("planner retries must be between zero and two")
@@ -417,12 +432,403 @@ class PlanConditionedNeedPlanner:
             raise ValueError("planner temperature must be between zero and two")
         if max_output_tokens < 512 or max_output_tokens > 32768:
             raise ValueError("planner max output tokens must be between 512 and 32768")
+        if max_input_tokens < 256:
+            raise ValueError("planner max input tokens must be at least 256")
         self._gateway = gateway
         self._model_role = model_role
         self._temperature = temperature
         self._max_drafts = max_drafts
         self._max_retries = max_retries
         self._max_output_tokens = max_output_tokens
+        self._max_input_tokens = max_input_tokens
+
+    def partition_goal_pages(
+        self,
+        *,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        planning_context: AuthorPlanningContext,
+    ) -> tuple[tuple[PlannerPage, AuthorPlanningContext], ...]:
+        """Partition target goals by request capacity without splitting chapters.
+
+        The returned page records contain the deterministic input estimate.  A
+        caller that executes the pages replaces the provisional status with the
+        actual provider outcome.  Keeping the page context as a normal APC
+        projection means every page still receives the same public task and
+        bounded cutoff World summary; no future or Gold data is introduced.
+        """
+
+        goals = tuple(
+            goal
+            for goal in planning_context.chapter_goals
+            if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
+        )
+        if not goals:
+            page_context = planning_context
+            summary = PlannerWorldSummaryBuilder.build(task, world, page_context)
+            prompt = self._build_prompt(page_context, summary, required_goal_chapters=())
+            return (
+                (
+                    PlannerPage(
+                        page_id=StableId(f"planner.page.{task.task_id.root}.all"[:128]),
+                        target_chapters=(),
+                        input_tokens=self._count_tokens(prompt),
+                        output_tokens=0,
+                        status=(
+                            PlannerPageStatus.COMPLETED
+                            if self._count_tokens(prompt) <= self._max_input_tokens
+                            else PlannerPageStatus.CAPACITY_EXHAUSTED
+                        ),
+                        error_category=(
+                            None
+                            if self._count_tokens(prompt) <= self._max_input_tokens
+                            else "planner_page_capacity_exhausted"
+                        ),
+                    ),
+                    page_context,
+                ),
+            )
+
+        grouped: list[tuple[int, tuple[ChapterGoal, ...]]] = []
+        for goal in goals:
+            if grouped and grouped[-1][0] == goal.chapter_index:
+                grouped[-1] = (grouped[-1][0], (*grouped[-1][1], goal))
+            else:
+                grouped.append((goal.chapter_index, (goal,)))
+
+        pages: list[tuple[PlannerPage, AuthorPlanningContext]] = []
+        current: list[ChapterGoal] = []
+
+        def make_context(page_goals: tuple[ChapterGoal, ...]) -> AuthorPlanningContext:
+            return planning_context.model_copy(update={"chapter_goals": page_goals})
+
+        def estimate(page_goals: tuple[ChapterGoal, ...]) -> tuple[AuthorPlanningContext, int]:
+            page_context = make_context(page_goals)
+            page_summary = PlannerWorldSummaryBuilder.build(task, world, page_context)
+            page_prompt = self._build_prompt(
+                page_context,
+                page_summary,
+                required_goal_chapters=tuple(goal.chapter_index for goal in page_goals),
+            )
+            return page_context, self._count_tokens(page_prompt)
+
+        def emit(page_goals: tuple[ChapterGoal, ...], index: int) -> None:
+            page_context, input_tokens = estimate(page_goals)
+            too_large = input_tokens > self._max_input_tokens
+            pages.append(
+                (
+                    PlannerPage(
+                        page_id=StableId(f"planner.page.{task.task_id.root}.{index:04d}"[:128]),
+                        target_chapters=tuple(
+                            dict.fromkeys(goal.chapter_index for goal in page_goals)
+                        ),
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        status=(
+                            PlannerPageStatus.CAPACITY_EXHAUSTED
+                            if too_large
+                            else PlannerPageStatus.COMPLETED
+                        ),
+                        error_category="planner_page_capacity_exhausted" if too_large else None,
+                    ),
+                    page_context,
+                )
+            )
+
+        page_index = 1
+        for chapter, chapter_goals in grouped:
+            candidate = (*current, *chapter_goals)
+            _candidate_context, candidate_tokens = estimate(candidate)
+            if current and candidate_tokens > self._max_input_tokens:
+                emit(tuple(current), page_index)
+                page_index += 1
+                current = list(chapter_goals)
+            else:
+                current = list(candidate)
+            # A single chapter is never silently discarded.  It is emitted as
+            # a typed capacity failure for the caller to surface.
+            if not current:
+                current = list(chapter_goals)
+            del chapter
+        if current:
+            emit(tuple(current), page_index)
+        return tuple(pages)
+
+    def plan_pages(
+        self,
+        *,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        planning_context: AuthorPlanningContext,
+        run_id: RunId | None = None,
+        planner_model: str = "",
+        planner_model_revision: str = "",
+    ) -> PlannerRunResult:
+        """Run one logical generation phase over all capacity-bounded pages."""
+
+        page_inputs = self.partition_goal_pages(
+            task=task, world=world, planning_context=planning_context
+        )
+        if len(page_inputs) == 1 and (
+            page_inputs[0][0].status is PlannerPageStatus.CAPACITY_EXHAUSTED
+        ):
+            page = page_inputs[0][0]
+            summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
+            return PlannerRunResult(
+                drafts=(),
+                metadata=None,
+                fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
+                error_category=page.error_category,
+                planning_context=planning_context,
+                world_summary=summary,
+                exact_prompt="",
+                generation_pages=tuple(page for page, _context in page_inputs),
+            )
+
+        results: list[PlannerRunResult] = []
+        pages: list[PlannerPage] = []
+        for page, page_context in page_inputs:
+            if page.status is PlannerPageStatus.CAPACITY_EXHAUSTED:
+                pages.append(page)
+                continue
+            result = self.plan(
+                task=task,
+                world=world,
+                planning_context=page_context,
+                run_id=run_id,
+                planner_model=planner_model,
+                planner_model_revision=planner_model_revision,
+            )
+            # An output-length failure on a multi-chapter page is a capacity
+            # signal, not a reason to lose every chapter in that page.  Split
+            # only that page into chapter-atomic retries; a single-chapter
+            # output-length failure remains a typed page failure.
+            if (
+                result.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK
+                and result.error_category == "OpenAIChatOutputLengthError"
+                and len(page.target_chapters) > 1
+            ):
+                for chapter_index, chapter in enumerate(page.target_chapters, start=1):
+                    chapter_goals = tuple(
+                        goal for goal in page_context.chapter_goals if goal.chapter_index == chapter
+                    )
+                    chapter_context = page_context.model_copy(
+                        update={"chapter_goals": chapter_goals}
+                    )
+                    chapter_result = self.plan(
+                        task=task,
+                        world=world,
+                        planning_context=chapter_context,
+                        run_id=run_id,
+                        planner_model=planner_model,
+                        planner_model_revision=planner_model_revision,
+                    )
+                    results.append(chapter_result)
+                    pages.append(
+                        self._page_result(
+                            page.model_copy(
+                                update={
+                                    "page_id": StableId(
+                                        f"{page.page_id.root}.chapter.{chapter_index}"[:128]
+                                    ),
+                                    "target_chapters": (chapter,),
+                                }
+                            ),
+                            chapter_result,
+                        )
+                    )
+                continue
+            results.append(result)
+            pages.append(self._page_result(page, result))
+
+        full_summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
+        drafts = tuple(draft for result in results for draft in result.drafts)
+        attempts = tuple(attempt for result in results for attempt in result.attempts)
+        raw_response = "\n\n".join(result.raw_response for result in results if result.raw_response)
+        exact_prompt = "\n\n".join(result.exact_prompt for result in results if result.exact_prompt)
+        failed = next(
+            (
+                result
+                for result in results
+                if result.fallback_status is PlannerFallbackStatus.PLANNER_FALLBACK
+            ),
+            None,
+        )
+        metadata = next(
+            (result.metadata for result in results if result.metadata is not None),
+            None,
+        )
+        if metadata is not None:
+            metadata = metadata.model_copy(
+                update={
+                    "planning_context_hash": planning_context.source_hash,
+                    "world_summary_hash": content_id(full_summary.model_dump(mode="json")),
+                    "planner_prompt_hash": content_id(
+                        {"prompt_version": self.prompt_version, "prompt": exact_prompt}
+                    ),
+                    "raw_response_hash": content_id({"raw": raw_response}),
+                    "input_tokens": sum(item.input_tokens for item in pages),
+                    "output_tokens": sum(item.output_tokens for item in pages),
+                    "fallback_used": failed is not None,
+                }
+            )
+        return PlannerRunResult(
+            drafts=drafts,
+            metadata=metadata,
+            fallback_status=(
+                PlannerFallbackStatus.PLANNER_FALLBACK
+                if failed is not None
+                or any(page.status is PlannerPageStatus.CAPACITY_EXHAUSTED for page in pages)
+                else PlannerFallbackStatus.PLANNER
+            ),
+            error_category=(
+                failed.error_category
+                if failed is not None
+                else next(
+                    (page.error_category for page in pages if page.error_category is not None),
+                    None,
+                )
+            ),
+            planning_context=planning_context,
+            world_summary=full_summary,
+            exact_prompt=exact_prompt,
+            raw_response=raw_response,
+            attempts=attempts,
+            generation_pages=tuple(pages),
+        )
+
+    @staticmethod
+    def _page_result(page: PlannerPage, result: PlannerRunResult) -> PlannerPage:
+        """Attach physical Planner attempt accounting to one logical page."""
+        return page.model_copy(
+            update={
+                "input_tokens": sum(attempt.input_tokens for attempt in result.attempts)
+                or page.input_tokens,
+                "output_tokens": sum(attempt.output_tokens for attempt in result.attempts),
+                "request_ids": tuple(attempt.request_id for attempt in result.attempts),
+                "status": (
+                    PlannerPageStatus.COMPLETED
+                    if result.fallback_status is PlannerFallbackStatus.PLANNER
+                    else PlannerPageStatus.FAILED
+                ),
+                "error_category": (
+                    None
+                    if result.fallback_status is PlannerFallbackStatus.PLANNER
+                    else result.error_category or "planner_page_failed"
+                ),
+            }
+        )
+
+    def audit_coverage(
+        self,
+        *,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        planning_context: AuthorPlanningContext,
+        page: PlannerPage,
+        accepted_drafts: tuple[object, ...],
+        run_id: RunId | None = None,
+    ) -> PlannerCoverageAuditReceipt:
+        """Ask the same Planner endpoint for a bounded goal-material audit.
+
+        The audit sees only the page's public goals, the deterministic cutoff
+        summary and accepted draft summaries.  It returns typed omissions; it
+        cannot emit a Need, a claim, a graph id or a text citation.
+        """
+
+        summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
+        goal_text = "\n".join(
+            f"- 第{goal.chapter_index}章: {goal.summary}"
+            for goal in planning_context.chapter_goals
+            if not page.target_chapters or goal.chapter_index in page.target_chapters
+        )
+        draft_text = "\n".join(
+            f"- {getattr(draft, 'draft_id', '')}: {getattr(draft, 'semantic_question', '')}"
+            f"; chapters={getattr(draft, 'trigger_plan_chapters', ())}"
+            for draft in accepted_drafts
+        )
+        prompt = (
+            "你是写作记忆 Planner 的遗漏审计器。只检查目标章节需要的历史记忆问题是否遗漏。\n"
+            "不得读取未来正文, Gold 或原始文本, 不得生成新的 Need。只返回可由世界摘要锚定的遗漏。\n"
+            "category 只能是 KEY_CHARACTER、KEY_OBJECT、CURRENT_CONDITION、KNOWLEDGE_BOUNDARY。\n"
+            "如果目标没有明确要求或世界摘要没有相应实体/状态锚点, 不要报告。\n"
+            '{"findings":[{"target_chapter":21,"category":"KEY_CHARACTER",'
+            '"canonical_entity_labels":["..."],"missing_historical_question":"...",'
+            '"reason":"..."}]}\n'
+            f"目标章节:\n{goal_text or '(无)'}\n"
+            f"已接受问题:\n{draft_text or '(无)'}\n"
+            f"截止点世界摘要:\n{summary.model_dump_json(exclude={'target_state_coverage'})}\n"
+        )
+        request_digest = content_id({"page": page.page_id.root, "prompt": prompt}).root[7:]
+        request_id = StableId(f"planner-coverage-audit.{request_digest}"[:128])
+        resolved_run_id = run_id or RunId(f"run.stage2m.audit.{task.task_id.root}"[:128])
+        if self._gateway is None:
+            return PlannerCoverageAuditReceipt(
+                page_id=page.page_id,
+                exact_prompt=prompt,
+                request_ids=(request_id,),
+                input_tokens=self._count_tokens(prompt),
+                output_tokens=0,
+                findings=(),
+                status=PlannerPageStatus.FAILED,
+                error_category="no_gateway",
+            )
+        request = ModelRequest(
+            request_id=request_id,
+            run_id=resolved_run_id,
+            task_id=TaskId(task.task_id.root),
+            model_role=self._model_role,
+            purpose=ModelCallPurpose.BATCH_TEST,
+            trace_id=f"stage2m-planner-coverage-audit:{task.task_id.root}:{page.page_id.root}",
+            prompt=prompt,
+            max_output_tokens=min(self._max_output_tokens, 4096),
+            timeout_seconds=900.0,
+            enable_thinking=False,
+            scheduling_stage="planner_coverage_audit",
+        )
+        try:
+            output, call = asyncio.run(
+                self._gateway.generate_structured(request, PlannerCoverageAuditOutput)
+            )
+            from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+
+            resolvable_labels = NeedDraftGrounder._resolvable_label_map(world)
+            findings = tuple(
+                finding
+                for finding in output.findings
+                if finding.target_chapter in page.target_chapters
+                and all(
+                    NeedDraftGrounder._normalize(label) in resolvable_labels
+                    for label in finding.canonical_entity_labels
+                )
+            )
+            return PlannerCoverageAuditReceipt(
+                page_id=page.page_id,
+                exact_prompt=prompt,
+                raw_response=output.model_dump_json(),
+                request_ids=(request_id,),
+                model=call.model,
+                model_version=call.model_version,
+                input_tokens=call.usage.input_tokens,
+                output_tokens=call.usage.output_tokens,
+                findings=findings,
+                status=PlannerPageStatus.COMPLETED,
+            )
+        except Exception as error:
+            return PlannerCoverageAuditReceipt(
+                page_id=page.page_id,
+                exact_prompt=prompt,
+                request_ids=(request_id,),
+                input_tokens=self._count_tokens(prompt),
+                output_tokens=0,
+                findings=(),
+                status=PlannerPageStatus.FAILED,
+                error_category=type(error).__name__,
+            )
+
+    @staticmethod
+    def _count_tokens(text: str) -> int:
+        return max(1, (len(text) + 3) // 4)
 
     def plan(
         self,
@@ -637,17 +1043,16 @@ class PlanConditionedNeedPlanner:
         """Replay only when every semantic/model basis hash matches exactly."""
 
         summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
-        required_goal_chapters = tuple(
-            dict.fromkeys(
-                goal.chapter_index
-                for goal in planning_context.chapter_goals
-                if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
-            )
+        page_inputs = self.partition_goal_pages(
+            task=task, world=world, planning_context=planning_context
         )
-        prompt = self._build_prompt(
-            planning_context,
-            summary,
-            required_goal_chapters=required_goal_chapters,
+        prompt = "\n\n".join(
+            self._build_prompt(
+                page_context,
+                PlannerWorldSummaryBuilder.build(task, world, page_context),
+                required_goal_chapters=page.target_chapters,
+            )
+            for page, page_context in page_inputs
         )
         metadata = artifact.metadata
         checks = {
@@ -684,6 +1089,7 @@ class PlanConditionedNeedPlanner:
             exact_prompt=prompt,
             raw_response=artifact.raw_response,
             attempts=artifact.attempts,
+            generation_pages=artifact.generation_pages,
         )
 
     def _build_prompt(
@@ -757,8 +1163,12 @@ class PlanConditionedNeedPlanner:
             "- suggested_facets 只能从这些值中选取: " + "、".join(self._FACET_VALUES) + "。\n"
             "- required_claim_scopes 只能从这些值中选取: " + "、".join(self._SCOPE_VALUES) + "。\n"
             "- query_hints 可选: 1-3 条用于检索的自然语言改写, 不得含 ID。\n"
-            f"- 最多输出 {self._max_drafts} 条。\n"
-            "- 输出必须简洁: semantic_question 不超过 60 字, why_needed 不超过 40 字, "
+            + (
+                f"- 最多输出 {self._max_drafts} 条。\n"
+                if self._max_drafts is not None
+                else "- 不按固定条数截断 drafts; 覆盖目标章节所需的问题, 直到请求容量耗尽。\n"
+            )
+            + "- 输出必须简洁: semantic_question 不超过 60 字, why_needed 不超过 40 字, "
             "query_hints 每条不超过 30 字; 禁止解释性前缀或后缀。\n"
             "- 必须覆盖全部目标章节: 你输出的所有 draft 的 trigger_plan_chapters 并集"
             "必须覆盖以下每一个目标章节编号; 缺少任意一章都是失败。\n"
@@ -903,4 +1313,8 @@ class PlanConditionedNeedPlanner:
         raise ValueError("planner output JSON object is unterminated")
 
 
-__all__ = ["PlanConditionedNeedPlanner", "PlannerWorldSummaryBuilder"]
+__all__ = [
+    "PlanConditionedNeedPlanner",
+    "PlannerCoverageAuditOutput",
+    "PlannerWorldSummaryBuilder",
+]

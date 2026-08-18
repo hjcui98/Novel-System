@@ -37,6 +37,9 @@ from novel_agent.domain.writer_context import (
     EvidenceLedgerEntryV2,
     EvidenceLedgerV2,
     EvidenceSlice,
+    NeedEvidenceJudgmentBatchReceipt,
+    NeedEvidenceSemanticStatus,
+    NeedFacetSemanticReceipt,
     UnresolvedLexicalAnchor,
     WriterContextBudgetReportV2,
     WriterContextEvidenceItem,
@@ -76,6 +79,8 @@ class NeedEvidenceSelection(DomainModel):
     selections: tuple[SliceSelectionTrace, ...] = ()
     slices: tuple[EvidenceSlice, ...] = ()
     facet_receipts: tuple[FacetEvidenceReceipt, ...] = ()
+    semantic_receipts: tuple[NeedFacetSemanticReceipt, ...] = ()
+    semantic_batch_receipts: tuple[NeedEvidenceJudgmentBatchReceipt, ...] = ()
 
 
 class EvidenceFirstAssemblyResult(DomainModel):
@@ -87,6 +92,12 @@ class EvidenceFirstAssemblyResult(DomainModel):
     # Required, no success default: the assembler always computes it
     # (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
+    structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    usable_with_gaps: bool = True
+    unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
+    semantic_receipts: tuple[NeedFacetSemanticReceipt, ...] = ()
+    semantic_batch_receipts: tuple[NeedEvidenceJudgmentBatchReceipt, ...] = ()
     assembler_version: str = Field(min_length=1)
 
 
@@ -419,6 +430,11 @@ class EvidenceFirstWriterContextAssembler:
             need = selection.need
             entries = packed_entries.get(need.need_id, ())
             facet_ids = tuple(facet.need_facet_id for facet in need.need_facets)
+            semantic_by_facet = {
+                receipt.need_facet_id: receipt
+                for receipt in selection.semantic_receipts
+                if receipt.need_id == need.need_id
+            }
             if not entries:
                 gap = EvidenceFirstGap(
                     gap_id=StableId(f"gap.{need.need_id.root}.no-evidence"[:128]),
@@ -436,6 +452,9 @@ class EvidenceFirstWriterContextAssembler:
                         need_facet_ids=facet_ids,
                         purpose=self._purpose(need),
                         mandatory=need.requirement is RequirementLevel.MANDATORY,
+                        semantic_status=(
+                            NeedEvidenceSemanticStatus.UNRESOLVED if semantic_by_facet else None
+                        ),
                         gap=gap,
                     )
                 )
@@ -450,6 +469,33 @@ class EvidenceFirstWriterContextAssembler:
                 if _entry_id == entries[0]
             )
             validity = self._validity_from_facets(need.need_facets)
+            item_semantic_status = self._item_semantic_status(need, semantic_by_facet)
+            slice_to_entry = {
+                trace.slice_id: entry_id for trace, entry_id, _facets in need_plans[need.need_id]
+            }
+            answering_ids = tuple(
+                dict.fromkeys(
+                    slice_to_entry[slice_id]
+                    for receipt in semantic_by_facet.values()
+                    for slice_id in receipt.supporting_slice_ids
+                    if slice_id in slice_to_entry
+                )
+            )
+            answering_set = set(answering_ids)
+            partial_ids = tuple(
+                dict.fromkeys(
+                    slice_to_entry[slice_id]
+                    for receipt in semantic_by_facet.values()
+                    for slice_id in receipt.partial_slice_ids
+                    if slice_id in slice_to_entry
+                )
+            )
+            partial_set = set(partial_ids)
+            related_ids = tuple(
+                entry_id
+                for entry_id in entries
+                if entry_id not in answering_set and entry_id not in partial_set
+            )
             items.append(
                 WriterContextEvidenceItem(
                     item_id=StableId(f"context-item.{need.need_id.root}"[:128]),
@@ -464,6 +510,10 @@ class EvidenceFirstWriterContextAssembler:
                     source_kind=need.need_type,
                     validity=validity,
                     mandatory=need.requirement is RequirementLevel.MANDATORY,
+                    semantic_status=item_semantic_status,
+                    semantic_answering_ledger_ids=answering_ids,
+                    semantic_partial_ledger_ids=partial_ids,
+                    semantic_related_ledger_ids=related_ids,
                     selection_reason=(
                         f"route={top.route_channel};fused_rank={top.fused_rank};"
                         f"{top.selection_reason}"
@@ -474,16 +524,48 @@ class EvidenceFirstWriterContextAssembler:
             # using the same facet language the route recorded.
             if need.need_id in mandatory_need_ids:
                 for facet in need.need_facets:
-                    if facet.need_facet_id in satisfied_facets.get(need.need_id, ()):
-                        continue
+                    structural_supported = facet.need_facet_id in satisfied_facets.get(
+                        need.need_id, ()
+                    )
+                    semantic_receipt = semantic_by_facet.get(facet.need_facet_id)
+                    if semantic_by_facet:
+                        if (
+                            semantic_receipt is not None
+                            and semantic_receipt.status is NeedEvidenceSemanticStatus.SUPPORTED
+                        ):
+                            continue
+                        semantic_kind = {
+                            NeedEvidenceSemanticStatus.PARTIAL: EvidenceGapKind.SEMANTIC_PARTIAL,
+                            NeedEvidenceSemanticStatus.UNSUPPORTED: (
+                                EvidenceGapKind.SEMANTIC_UNSUPPORTED
+                            ),
+                            NeedEvidenceSemanticStatus.UNRESOLVED: (
+                                EvidenceGapKind.SEMANTIC_UNRESOLVED
+                            ),
+                        }.get(
+                            semantic_receipt.status
+                            if semantic_receipt is not None
+                            else NeedEvidenceSemanticStatus.UNRESOLVED,
+                            EvidenceGapKind.SEMANTIC_UNRESOLVED,
+                        )
+                        reason = (
+                            semantic_receipt.reason
+                            if semantic_receipt is not None and semantic_receipt.reason
+                            else "semantic evidence judgment did not close this mandatory facet"
+                        )
+                    else:
+                        if structural_supported:
+                            continue
+                        semantic_kind = EvidenceGapKind.NO_SELECTED_EVIDENCE
+                        reason = "mandatory facet closed by no exact L0 evidence"
                     gap = EvidenceFirstGap(
                         gap_id=StableId(
                             f"gap.{need.need_id.root}.facet.{facet.facet_kind.value}"[:128]
                         ),
                         need_ids=(need.need_id,),
                         need_facet_ids=(facet.need_facet_id,),
-                        kind=EvidenceGapKind.NO_SELECTED_EVIDENCE,
-                        reason="mandatory facet closed by no exact L0 evidence",
+                        kind=semantic_kind,
+                        reason=reason,
                     )
                     items.append(
                         WriterContextEvidenceItem(
@@ -531,6 +613,9 @@ class EvidenceFirstWriterContextAssembler:
                         "evidence_ledger_ids": (),
                         "raw_preview": "",
                         "preview_truncated": False,
+                        "semantic_answering_ledger_ids": (),
+                        "semantic_partial_ledger_ids": (),
+                        "semantic_related_ledger_ids": (),
                         "gap": gap,
                     }
                 )
@@ -564,6 +649,126 @@ class EvidenceFirstWriterContextAssembler:
         ledger = ledger.model_copy(
             update={"rendered_tokens": self._evidence_tokens(ledger.entries)}
         )
+        materialized_slice_ids = {
+            slice_.slice_id for entry in ledger.entries for slice_ in entry.evidence_slices
+        }
+        semantic_receipts_raw = tuple(
+            receipt for selection in selections for receipt in selection.semantic_receipts
+        )
+        if semantic_receipts_raw:
+            expected_semantic_keys = {
+                (selection.need.need_id, facet.need_facet_id)
+                for selection in selections
+                if selection.need.requirement is RequirementLevel.MANDATORY
+                for facet in selection.need.need_facets
+                if (
+                    selection.need.completion_spec is None
+                    or facet.need_facet_id in selection.need.completion_spec.required_need_facet_ids
+                )
+            }
+            present_semantic_keys = {
+                (receipt.need_id, receipt.need_facet_id) for receipt in semantic_receipts_raw
+            }
+            missing_semantic_keys = expected_semantic_keys - present_semantic_keys
+            if missing_semantic_keys:
+                diagnostics.append("SEMANTIC_RECEIPT_MISSING")
+                for selection in selections:
+                    for facet in selection.need.need_facets:
+                        key = (selection.need.need_id, facet.need_facet_id)
+                        if key not in missing_semantic_keys:
+                            continue
+                        semantic_receipts_raw += (
+                            NeedFacetSemanticReceipt(
+                                need_id=selection.need.need_id,
+                                need_facet_id=facet.need_facet_id,
+                                facet_kind=facet.facet_kind.value,
+                                mandatory=True,
+                                status=NeedEvidenceSemanticStatus.UNRESOLVED,
+                                reason=(
+                                    "semantic judge did not return a receipt for this "
+                                    "mandatory facet"
+                                ),
+                                judge_version="",
+                            ),
+                        )
+        semantic_receipts = tuple(
+            receipt.model_copy(
+                update={
+                    "status": NeedEvidenceSemanticStatus.UNRESOLVED,
+                    "reason": (
+                        "semantic judgment referenced exact slices not materialized "
+                        "in the retained Ledger"
+                    ),
+                }
+            )
+            if set(receipt.evaluated_slice_ids) - materialized_slice_ids
+            else receipt
+            for receipt in semantic_receipts_raw
+        )
+        if any(
+            set(receipt.evaluated_slice_ids) - materialized_slice_ids
+            for receipt in semantic_receipts_raw
+        ):
+            diagnostics.append("SEMANTIC_RECEIPT_NOT_MATERIALIZED")
+        semantic_gap_kind = {
+            NeedEvidenceSemanticStatus.PARTIAL: EvidenceGapKind.SEMANTIC_PARTIAL,
+            NeedEvidenceSemanticStatus.UNSUPPORTED: EvidenceGapKind.SEMANTIC_UNSUPPORTED,
+            NeedEvidenceSemanticStatus.UNRESOLVED: EvidenceGapKind.SEMANTIC_UNRESOLVED,
+        }
+        existing_gap_keys = {
+            (item.need_ids[0], facet_id)
+            for item in packed_items
+            if item.gap is not None
+            for facet_id in item.need_facet_ids
+        }
+        for receipt in semantic_receipts:
+            key = (receipt.need_id, receipt.need_facet_id)
+            if (
+                not receipt.mandatory
+                or receipt.status is NeedEvidenceSemanticStatus.SUPPORTED
+                or key in existing_gap_keys
+            ):
+                continue
+            semantic_need = need_by_id.get(receipt.need_id)
+            if semantic_need is None:
+                continue
+            gap = EvidenceFirstGap(
+                gap_id=StableId(f"gap.{receipt.need_id.root}.semantic.{receipt.facet_kind}"[:128]),
+                need_ids=(receipt.need_id,),
+                need_facet_ids=(receipt.need_facet_id,),
+                kind=semantic_gap_kind[receipt.status],
+                reason=receipt.reason or "semantic evidence judgment did not close this facet",
+            )
+            packed_items = (
+                *packed_items,
+                WriterContextEvidenceItem(
+                    item_id=StableId(
+                        f"context-item.{receipt.need_id.root}.semantic.{receipt.facet_kind}"[:128]
+                    ),
+                    section=(
+                        semantic_need.expected_section
+                        or WriterContextSection.CONTINUITY_CONSTRAINTS
+                    ),
+                    need_ids=(receipt.need_id,),
+                    need_facet_ids=(receipt.need_facet_id,),
+                    purpose=f"{self._purpose(semantic_need)} [{receipt.facet_kind}]",
+                    mandatory=True,
+                    semantic_status=receipt.status,
+                    gap=gap,
+                ),
+            )
+            existing_gap_keys.add(key)
+            diagnostics.append(f"MANDATORY_FACET_GAP:{receipt.facet_kind}")
+        packed_items = tuple(
+            sorted(
+                packed_items,
+                key=lambda item: (
+                    item.mandatory is not True,
+                    -self._need_priority(need_by_id, item),
+                    item.need_ids[0].root,
+                ),
+            )
+        )
         gaps = tuple(item.gap for item in packed_items if item.gap is not None)
         rendered = self._render(packed_items)
         rendered_tokens = self._count(rendered)
@@ -587,6 +792,54 @@ class EvidenceFirstWriterContextAssembler:
         )
         if mandatory_gap_items:
             diagnostics.append("MANDATORY_FACET_CLOSURE_INCOMPLETE")
+        semantic_batch_receipts = tuple(
+            dict(
+                (
+                    receipt.batch_id,
+                    receipt,
+                )
+                for selection in selections
+                for receipt in selection.semantic_batch_receipts
+            ).values()
+        )
+        semantic_gap_kinds = {
+            EvidenceGapKind.SEMANTIC_PARTIAL,
+            EvidenceGapKind.SEMANTIC_UNSUPPORTED,
+            EvidenceGapKind.SEMANTIC_UNRESOLVED,
+        }
+        structural_mandatory_gap_items = tuple(
+            item
+            for item in mandatory_gap_items
+            if item.gap is not None and item.gap.kind not in semantic_gap_kinds
+        )
+        structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = (
+            "COMPLETE" if not structural_mandatory_gap_items else "INCOMPLETE"
+        )
+        if semantic_receipts:
+            semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = (
+                "COMPLETE"
+                if all(
+                    receipt.status is NeedEvidenceSemanticStatus.SUPPORTED
+                    for receipt in semantic_receipts
+                    if receipt.mandatory
+                )
+                else "INCOMPLETE"
+            )
+        else:
+            semantic_status = "UNASSESSED"
+        unclosed_mandatory_need_facets = tuple(
+            dict.fromkeys(
+                receipt.need_facet_id
+                for receipt in semantic_receipts
+                if receipt.mandatory and receipt.status is not NeedEvidenceSemanticStatus.SUPPORTED
+            )
+        )
+        usable_with_gaps = (
+            status is ContextAssemblyStatus.READY
+            and not any(mechanical_failure_counts.values())
+            and bool(ledger.entries)
+            and semantic_status == "INCOMPLETE"
+        )
         budget_report = WriterContextBudgetReportV2(
             tokenizer=self._tokenizer_name,
             tokenizer_version=self._tokenizer_version,
@@ -613,6 +866,10 @@ class EvidenceFirstWriterContextAssembler:
             query_compiler_version=query_compiler_version,
             route_plan_version=route_plan_version,
             resolver_version=self._resolver.version,
+            semantic_judge_version=next(
+                (receipt.judge_version for receipt in semantic_receipts if receipt.judge_version),
+                "",
+            ),
             planner_artifact_ref=planner_artifact_ref,
             planner_artifact_hash=planner_artifact_hash,
             planner_fallback_used=planner_fallback_used,
@@ -630,6 +887,13 @@ class EvidenceFirstWriterContextAssembler:
             evidence_ledger_ref=ledger_ref,
             lineage=lineage,
             rendered_context=rendered,
+            assembly_status=status.value,
+            semantic_status=semantic_status,
+            usable_with_gaps=usable_with_gaps,
+            structural_mandatory_facet_closure=structural_mandatory_facet_closure,
+            unclosed_mandatory_need_facets=unclosed_mandatory_need_facets,
+            semantic_receipts=semantic_receipts,
+            semantic_batch_receipts=semantic_batch_receipts,
         )
         assert_safe_public_payload(package.model_dump(mode="json"))
         return EvidenceFirstAssemblyResult(
@@ -639,6 +903,12 @@ class EvidenceFirstWriterContextAssembler:
             diagnostic_codes=tuple(dict.fromkeys(diagnostics)),
             mechanical_failure_counts=mechanical_failure_counts,
             mandatory_facet_closure=mandatory_facet_closure,
+            structural_mandatory_facet_closure=structural_mandatory_facet_closure,
+            semantic_status=semantic_status,
+            usable_with_gaps=usable_with_gaps,
+            unclosed_mandatory_need_facets=unclosed_mandatory_need_facets,
+            semantic_receipts=semantic_receipts,
+            semantic_batch_receipts=semantic_batch_receipts,
             assembler_version=self.version,
         )
 
@@ -784,6 +1054,29 @@ class EvidenceFirstWriterContextAssembler:
         if len(combined) <= PREVIEW_CHAR_LIMIT:
             return combined, False
         return combined[: PREVIEW_CHAR_LIMIT - 1] + "…", True
+
+    @staticmethod
+    def _item_semantic_status(
+        need: Stage1MemoryNeed,
+        receipts: dict[StableId, NeedFacetSemanticReceipt],
+    ) -> NeedEvidenceSemanticStatus | None:
+        if not receipts:
+            return None
+        required = (
+            need.completion_spec.required_need_facet_ids
+            if need.completion_spec is not None
+            else tuple(facet.need_facet_id for facet in need.need_facets)
+        )
+        statuses = tuple(receipts[facet_id].status for facet_id in required if facet_id in receipts)
+        if not statuses or any(
+            status is NeedEvidenceSemanticStatus.UNRESOLVED for status in statuses
+        ):
+            return NeedEvidenceSemanticStatus.UNRESOLVED
+        if all(status is NeedEvidenceSemanticStatus.SUPPORTED for status in statuses):
+            return NeedEvidenceSemanticStatus.SUPPORTED
+        if any(status is NeedEvidenceSemanticStatus.PARTIAL for status in statuses):
+            return NeedEvidenceSemanticStatus.PARTIAL
+        return NeedEvidenceSemanticStatus.UNSUPPORTED
 
     @staticmethod
     def _validity_from_facets(facets: tuple[NeedFacet, ...]) -> WriterContextValidity:

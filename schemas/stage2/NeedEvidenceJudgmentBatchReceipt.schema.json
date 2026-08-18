@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "NeedEvidenceJudgmentBatchStatus": {
+      "enum": [
+        "completed",
+        "failed"
+      ],
+      "title": "NeedEvidenceJudgmentBatchStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Auditable input/output boundary for one semantic-judge request.",
+  "properties": {
+    "batch_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "endpoint": {
+      "default": "",
+      "title": "Endpoint",
+      "type": "string"
+    },
+    "error_category": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Category"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+    },
+    "model_version": {
+      "default": "",
+      "title": "Model Version",
+      "type": "string"
+    },
+    "need_facet_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Facet Ids",
+      "type": "array"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "slice_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Slice Ids",
+      "type": "array"
+    },
+    "status": {
+      "$ref": "#/$defs/NeedEvidenceJudgmentBatchStatus"
+    }
+  },
+  "required": [
+    "batch_id",
+    "request_id",
+    "need_facet_ids",
+    "slice_ids",
+    "status",
+    "input_tokens",
+    "output_tokens"
+  ],
+  "title": "NeedEvidenceJudgmentBatchReceipt",
+  "type": "object"
+}

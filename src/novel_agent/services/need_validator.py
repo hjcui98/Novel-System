@@ -74,8 +74,8 @@ class NeedValidator:
 
     version = "need_validator.v3"
 
-    def __init__(self, *, max_total_needs: int = 32) -> None:
-        if max_total_needs < 1:
+    def __init__(self, *, max_total_needs: int | None = None) -> None:
+        if max_total_needs is not None and max_total_needs < 1:
             raise ValueError("max_total_needs must be positive")
         self._max_total_needs = max_total_needs
         self._raw_scope_by_draft: dict[str, tuple[str, ...]] = {}
@@ -209,7 +209,7 @@ class NeedValidator:
                 deduplicated_ids.append(draft.draft_id)
                 continue
             seen.add(key)
-            if len(accepted) >= self._max_total_needs:
+            if self._max_total_needs is not None and len(accepted) >= self._max_total_needs:
                 break
             self._raw_scope_by_draft[draft.draft_id] = tuple(
                 item.value for item in raw_scope_values

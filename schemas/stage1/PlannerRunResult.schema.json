@@ -479,6 +479,75 @@
       "title": "PlannerObligationSummary",
       "type": "object"
     },
+    "PlannerPage": {
+      "additionalProperties": false,
+      "description": "Durable accounting for one logical chapter-goal Planner page.",
+      "properties": {
+        "error_category": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Category"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "page_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "request_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Request Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/PlannerPageStatus"
+        },
+        "target_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Target Chapters",
+          "type": "array"
+        }
+      },
+      "required": [
+        "page_id",
+        "input_tokens",
+        "output_tokens",
+        "status"
+      ],
+      "title": "PlannerPage",
+      "type": "object"
+    },
+    "PlannerPageStatus": {
+      "description": "Terminal status for one capacity-bounded Planner goal page.",
+      "enum": [
+        "completed",
+        "failed",
+        "capacity_exhausted"
+      ],
+      "title": "PlannerPageStatus",
+      "type": "string"
+    },
     "PlannerRelationSummary": {
       "additionalProperties": false,
       "description": "Bounded relation row in the deterministic world summary.",
@@ -826,6 +895,14 @@
     },
     "fallback_status": {
       "$ref": "#/$defs/PlannerFallbackStatus"
+    },
+    "generation_pages": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerPage"
+      },
+      "title": "Generation Pages",
+      "type": "array"
     },
     "metadata": {
       "anyOf": [

@@ -82,6 +82,15 @@
       "title": "Call Counts",
       "type": "object"
     },
+    "candidate_limit_saturated": {
+      "default": [],
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Candidate Limit Saturated",
+      "type": "array"
+    },
     "case_id": {
       "$ref": "#/$defs/StableId"
     },
@@ -107,6 +116,17 @@
       "minimum": 0,
       "title": "Dereference Failure Count",
       "type": "integer"
+    },
+    "derived_tool_call_budget": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Derived Tool Call Budget",
+      "type": "integer"
+    },
+    "derived_tool_call_formula": {
+      "default": "",
+      "title": "Derived Tool Call Formula",
+      "type": "string"
     },
     "embedding_call_count": {
       "default": 0,
@@ -263,6 +283,62 @@
       "minimum": 0,
       "title": "Scope Failure Count",
       "type": "integer"
+    },
+    "semantic_judge_batch_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Semantic Judge Batch Count",
+      "type": "integer"
+    },
+    "semantic_judge_completed_batch_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Semantic Judge Completed Batch Count",
+      "type": "integer"
+    },
+    "semantic_judge_failed_batch_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Semantic Judge Failed Batch Count",
+      "type": "integer"
+    },
+    "semantic_judge_planned_batch_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Semantic Judge Planned Batch Count",
+      "type": "integer"
+    },
+    "semantic_status": {
+      "default": "UNASSESSED",
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE",
+        "UNASSESSED"
+      ],
+      "title": "Semantic Status",
+      "type": "string"
+    },
+    "structural_mandatory_facet_closure": {
+      "default": "INCOMPLETE",
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE"
+      ],
+      "title": "Structural Mandatory Facet Closure",
+      "type": "string"
+    },
+    "unclosed_mandatory_need_facets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unclosed Mandatory Need Facets",
+      "type": "array"
+    },
+    "usable_with_gaps": {
+      "default": true,
+      "title": "Usable With Gaps",
+      "type": "boolean"
     },
     "verified_graph_path_receipt_ids": {
       "default": [],

@@ -47,9 +47,23 @@
         "cutoff_tainted",
         "scope_tainted",
         "dereference_failed",
-        "heading_source_role"
+        "heading_source_role",
+        "semantic_partial",
+        "semantic_unsupported",
+        "semantic_unresolved"
       ],
       "title": "EvidenceGapKind",
+      "type": "string"
+    },
+    "NeedEvidenceSemanticStatus": {
+      "description": "Model relevance verdict for one public Need/facet evidence set.",
+      "enum": [
+        "SUPPORTED",
+        "PARTIAL",
+        "UNSUPPORTED",
+        "UNRESOLVED"
+      ],
+      "title": "NeedEvidenceSemanticStatus",
       "type": "string"
     },
     "StableId": {
@@ -147,6 +161,41 @@
       "default": "",
       "title": "Selection Reason",
       "type": "string"
+    },
+    "semantic_answering_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Semantic Answering Ledger Ids",
+      "type": "array"
+    },
+    "semantic_partial_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Semantic Partial Ledger Ids",
+      "type": "array"
+    },
+    "semantic_related_ledger_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Semantic Related Ledger Ids",
+      "type": "array"
+    },
+    "semantic_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NeedEvidenceSemanticStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "source_kind": {
       "default": "",

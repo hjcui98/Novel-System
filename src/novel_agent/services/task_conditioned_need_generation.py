@@ -35,9 +35,12 @@ from novel_agent.domain.planning_memory import (
     GroundedNeedDraft,
     GroundingStatus,
     PlannerArtifactMetadata,
+    PlannerCoverageAuditReceipt,
+    PlannerCoverageFinding,
     PlannerFallbackStatus,
     PlannerFinalNeedManifest,
     PlannerInvocationArtifact,
+    PlannerPageStatus,
     PlannerRunResult,
 )
 from novel_agent.domain.world import StateRecord
@@ -171,20 +174,24 @@ class TaskPlanConditionedNeedGenerator:
     def __init__(
         self,
         *,
-        max_total_needs: int = 32,
+        max_total_needs: int | None = None,
         focus_extractor: TaskFocusExtractor | None = None,
         planner_gateway: ModelGateway | None = None,
         planner_artifact_writer: Callable[[bytes, str], ArtifactRef] | None = None,
         planner_max_output_tokens: int = 8192,
+        planner_max_input_tokens: int = 12_000,
+        planner_coverage_audit: bool = False,
     ) -> None:
-        if max_total_needs < 1:
+        if max_total_needs is not None and max_total_needs < 1:
             raise ValueError("max_total_needs must be positive")
         self._max_total_needs = max_total_needs
+        self._planner_coverage_audit = planner_coverage_audit
         self._focus_extractor = focus_extractor or TaskFocusExtractor()
         self._planner = (
             PlanConditionedNeedPlanner(
                 gateway=planner_gateway,
                 max_output_tokens=planner_max_output_tokens,
+                max_input_tokens=planner_max_input_tokens,
             )
             if planner_gateway is not None
             else None
@@ -1007,7 +1014,11 @@ class TaskPlanConditionedNeedGenerator:
                 item.need_id.root,
             ),
         )
-        retained = tuple(ordered[: self._max_total_needs])
+        retained = (
+            tuple(ordered)
+            if self._max_total_needs is None
+            else tuple(ordered[: self._max_total_needs])
+        )
         if task.information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED:
             retained = tuple(
                 need.model_copy(
@@ -1047,7 +1058,7 @@ class TaskPlanConditionedNeedGenerator:
                 NeedGenerationStatus.PLANNER_FALLBACK
                 if planner_fallback
                 else NeedGenerationStatus.NEED_BUDGET_EXHAUSTED
-                if len(ordered) > self._max_total_needs
+                if self._max_total_needs is not None and len(ordered) > self._max_total_needs
                 else NeedGenerationStatus.READY
             ),
             unexpanded_focus_ids=unexpanded,
@@ -1193,13 +1204,22 @@ class TaskPlanConditionedNeedGenerator:
         if planning_context is None:
             raise ValueError("APC Planner requires the compiled AuthorPlanningContext")
         context = planning_context
-        planner_result = self._planner.plan(
+        planner_result = self._planner.plan_pages(
             task=task,
             world=world,
             planning_context=context,
         )
-        if not planner_result.drafts or planner_result.metadata is None:
-            reason = planner_result.error_category or "empty_or_unusable_planner_output"
+        coverage_audits: tuple[PlannerCoverageAuditReceipt, ...] = ()
+        page_failures = tuple(
+            page
+            for page in planner_result.generation_pages
+            if page.status is not PlannerPageStatus.COMPLETED
+        )
+        if not planner_result.drafts or planner_result.metadata is None or page_failures:
+            if page_failures:
+                reason = page_failures[0].error_category or "planner_page_failed"
+            else:
+                reason = planner_result.error_category or "empty_or_unusable_planner_output"
             validated_hash = ArtifactId("sha256:" + "0" * 64)
             fallback_metadata = (
                 planner_result.metadata.model_copy(
@@ -1216,6 +1236,8 @@ class TaskPlanConditionedNeedGenerator:
                 raw_response=planner_result.raw_response,
                 attempts=planner_result.attempts,
                 parsed_drafts=planner_result.drafts,
+                generation_pages=planner_result.generation_pages,
+                coverage_audits=coverage_audits,
                 validated_need_set_hash=validated_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason=reason,
@@ -1249,6 +1271,38 @@ class TaskPlanConditionedNeedGenerator:
                 if target_start <= goal.chapter_index <= target_end
             )
         )
+        coverage_findings: tuple[PlannerCoverageFinding, ...] = ()
+        coverage_audit_failures: tuple[str, ...] = ()
+        if self._planner_coverage_audit:
+            for page in planner_result.generation_pages:
+                page_goals = tuple(
+                    goal
+                    for goal in context.chapter_goals
+                    if not page.target_chapters or goal.chapter_index in page.target_chapters
+                )
+                page_context = context.model_copy(update={"chapter_goals": page_goals})
+                page_drafts = tuple(
+                    draft
+                    for draft in accepted
+                    if not page.target_chapters
+                    or any(
+                        chapter in page.target_chapters for chapter in draft.trigger_plan_chapters
+                    )
+                )
+                audit = self._planner.audit_coverage(
+                    task=task,
+                    world=world,
+                    planning_context=page_context,
+                    page=page,
+                    accepted_drafts=page_drafts,
+                )
+                coverage_audits = (*coverage_audits, audit)
+                coverage_findings = (*coverage_findings, *audit.findings)
+                if audit.status.value == "failed":
+                    coverage_audit_failures = (
+                        *coverage_audit_failures,
+                        audit.error_category or "coverage_audit_failed",
+                    )
 
         def _coverage_state() -> tuple[tuple[int, ...], dict[str, str]]:
             accepted_goal_chapters = tuple(
@@ -1273,12 +1327,23 @@ class TaskPlanConditionedNeedGenerator:
         # deterministic Needs (the runner fail-closes under
         # require_model_decisions).
         semantic_repair_attempted = False
-        if (missing_goal_chapters or contract_findings) and accepted and self._planner is not None:
+        if (
+            (
+                missing_goal_chapters
+                or contract_findings
+                or coverage_findings
+                or coverage_audit_failures
+            )
+            and accepted
+            and self._planner is not None
+        ):
             semantic_repair_attempted = True
             repair_instruction = self._build_repair_instruction(
                 missing_goal_chapters=missing_goal_chapters,
                 contract_findings=contract_findings,
                 canonical_labels=self._canonical_label_map(world),
+                coverage_findings=coverage_findings,
+                coverage_audit_failures=coverage_audit_failures,
             )
             repaired = self._planner.plan(
                 task=task,
@@ -1311,6 +1376,11 @@ class TaskPlanConditionedNeedGenerator:
                 )
                 accepted = validation.accepted_drafts
                 missing_goal_chapters, contract_findings = _coverage_state()
+                coverage_findings = tuple(
+                    finding
+                    for finding in coverage_findings
+                    if not self._coverage_finding_is_satisfied(finding, accepted)
+                )
             else:
                 # Typed semantic-repair fallback: the repair invocation is
                 # terminal.  Persist BOTH invocations, the repair prompt/raw
@@ -1346,6 +1416,8 @@ class TaskPlanConditionedNeedGenerator:
                     fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                     fallback_reason=reason,
                     missing_goal_chapters=missing_goal_chapters,
+                    generation_pages=planner_result.generation_pages,
+                    coverage_audits=coverage_audits,
                     planner_contract_findings=dict(contract_findings),
                 )
                 self._last_fallback_artifact = artifact
@@ -1375,6 +1447,8 @@ class TaskPlanConditionedNeedGenerator:
                 validated_need_set_hash=rejected_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason="all_drafts_rejected",
+                generation_pages=planner_result.generation_pages,
+                coverage_audits=coverage_audits,
                 planner_contract_findings=dict(contract_findings),
                 raw_scope_by_draft=validation.raw_scope_by_draft,
                 canonical_scope_by_draft=validation.canonical_scope_by_draft,
@@ -1393,7 +1467,12 @@ class TaskPlanConditionedNeedGenerator:
                 if target_start <= goal.chapter_index <= target_end
             )
         )
-        if missing_goal_chapters or (semantic_repair_attempted and contract_findings):
+        if (
+            missing_goal_chapters
+            or coverage_findings
+            or coverage_audit_failures
+            or (semantic_repair_attempted and contract_findings)
+        ):
             rejected_hash = ArtifactId("sha256:" + "0" * 64)
             fallback_metadata = planner_result.metadata.model_copy(
                 update={
@@ -1417,8 +1496,14 @@ class TaskPlanConditionedNeedGenerator:
                 final_need_manifests=(),
                 validated_need_set_hash=rejected_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
-                fallback_reason="insufficient_target_goal_coverage",
+                fallback_reason=(
+                    "insufficient_semantic_goal_coverage"
+                    if coverage_findings or coverage_audit_failures
+                    else "insufficient_target_goal_coverage"
+                ),
                 missing_goal_chapters=missing_goal_chapters,
+                generation_pages=planner_result.generation_pages,
+                coverage_audits=coverage_audits,
                 planner_contract_findings=dict(contract_findings),
             )
             self._last_fallback_artifact = artifact
@@ -1461,6 +1546,8 @@ class TaskPlanConditionedNeedGenerator:
                     (entity_id.root, label, chapter)
                     for chapter, entity_id, label in missing_goal_entities
                 ),
+                generation_pages=planner_result.generation_pages,
+                coverage_audits=coverage_audits,
                 planner_contract_findings=dict(contract_findings),
             )
             self._last_fallback_artifact = artifact
@@ -1500,6 +1587,8 @@ class TaskPlanConditionedNeedGenerator:
             attempts=planner_result.attempts,
             parsed_drafts=planner_result.drafts,
             grounded_drafts=grounded,
+            generation_pages=planner_result.generation_pages,
+            coverage_audits=coverage_audits,
             accepted_draft_ids=tuple(draft.draft_id for draft in accepted),
             rejected_reasons=validation.rejected_reasons,
             deduplicated_draft_ids=validation.deduplicated_draft_ids,
@@ -1660,11 +1749,37 @@ class TaskPlanConditionedNeedGenerator:
         return tuple(labels)
 
     @staticmethod
+    def _coverage_finding_is_satisfied(
+        finding: PlannerCoverageFinding,
+        accepted: tuple[GroundedNeedDraft, ...],
+    ) -> bool:
+        required_facets = {
+            "KEY_CHARACTER": {"CURRENT_STATE", "RELATION_STATE", "CAUSAL_HISTORY"},
+            "KEY_OBJECT": {"CURRENT_STATE", "CAUSAL_HISTORY", "SETUP"},
+            "CURRENT_CONDITION": {"CURRENT_STATE", "CAPABILITY_STATUS", "LIMITATION"},
+            "KNOWLEDGE_BOUNDARY": {"KNOWLEDGE_BOUNDARY"},
+        }[finding.category.value]
+        for draft in accepted:
+            if finding.target_chapter not in draft.trigger_plan_chapters:
+                continue
+            if not required_facets.intersection(draft.suggested_facets):
+                continue
+            labels = {mention.canonical_label for mention in draft.entity_mentions}
+            if finding.canonical_entity_labels and not set(
+                finding.canonical_entity_labels
+            ).issubset(labels):
+                continue
+            return True
+        return False
+
+    @staticmethod
     def _build_repair_instruction(
         *,
         missing_goal_chapters: tuple[int, ...],
         contract_findings: dict[str, str],
         canonical_labels: tuple[str, ...],
+        coverage_findings: tuple[PlannerCoverageFinding, ...] = (),
+        coverage_audit_failures: tuple[str, ...] = (),
     ) -> str:
         """One bounded repair request naming exact missing chapters and
         offending explicit labels, with the canonical label map (review-25).
@@ -1685,6 +1800,26 @@ class TaskPlanConditionedNeedGenerator:
                 + "、".join(offending)
                 + "。请把每个显式 entity_mentions 标签和 relation_mentions 端点替换为"
                 "下列规范标签中的某一个(原样复制), 或删除该 mention。"
+            )
+        if coverage_findings:
+            parts.append(
+                "遗漏审计发现以下目标材料, 请在替代 drafts 中补齐对应章节、类别和规范实体:\n"
+                + "\n".join(
+                    "- "
+                    + f"第{finding.target_chapter}章 {finding.category.value}: "
+                    + finding.missing_historical_question
+                    + (
+                        " [实体: " + "、".join(finding.canonical_entity_labels) + "]"
+                        if finding.canonical_entity_labels
+                        else ""
+                    )
+                    for finding in coverage_findings
+                )
+            )
+        if coverage_audit_failures:
+            parts.append(
+                "遗漏审计请求未完成, 请按目标章节重新提供完整替代 drafts;"
+                "不得假设审计已通过。错误: " + "、".join(coverage_audit_failures)
             )
         if canonical_labels:
             parts.append(

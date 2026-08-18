@@ -8,7 +8,10 @@
         "cutoff_tainted",
         "scope_tainted",
         "dereference_failed",
-        "heading_source_role"
+        "heading_source_role",
+        "semantic_partial",
+        "semantic_unsupported",
+        "semantic_unresolved"
       ],
       "title": "EvidenceGapKind",
       "type": "string"

@@ -85,6 +85,20 @@ class SemanticSupportStatus(StrEnum):
     CONTRADICTED = "contradicted"
 
 
+class NeedEvidenceSemanticStatus(StrEnum):
+    """Model relevance verdict for one public Need/facet evidence set."""
+
+    SUPPORTED = "SUPPORTED"
+    PARTIAL = "PARTIAL"
+    UNSUPPORTED = "UNSUPPORTED"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class NeedEvidenceJudgmentBatchStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class ClaimReductionLevel(StrEnum):
     FULL = "full"
     NARROW = "narrow"
@@ -471,6 +485,85 @@ class EvidenceGapKind(StrEnum):
     SCOPE_TAINTED = "scope_tainted"
     DEREFERENCE_FAILED = "dereference_failed"
     HEADING_SOURCE_ROLE = "heading_source_role"
+    SEMANTIC_PARTIAL = "semantic_partial"
+    SEMANTIC_UNSUPPORTED = "semantic_unsupported"
+    SEMANTIC_UNRESOLVED = "semantic_unresolved"
+
+
+class NeedEvidenceJudgmentBatchReceipt(DomainModel):
+    """Auditable input/output boundary for one semantic-judge request."""
+
+    batch_id: StableId
+    request_id: StableId
+    need_facet_ids: tuple[StableId, ...]
+    slice_ids: tuple[StableId, ...]
+    status: NeedEvidenceJudgmentBatchStatus
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    model: str = ""
+    model_version: str = ""
+    endpoint: str = ""
+    error_category: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> NeedEvidenceJudgmentBatchReceipt:
+        if len(self.need_facet_ids) != len(set(self.need_facet_ids)):
+            raise ValueError("semantic judgment batch Need facets must be unique")
+        if len(self.slice_ids) != len(set(self.slice_ids)):
+            raise ValueError("semantic judgment batch slices must be unique")
+        if self.status is NeedEvidenceJudgmentBatchStatus.FAILED and self.error_category is None:
+            raise ValueError("failed semantic judgment batch requires an error category")
+        if (
+            self.status is NeedEvidenceJudgmentBatchStatus.COMPLETED
+            and self.error_category is not None
+        ):
+            raise ValueError("completed semantic judgment batch cannot carry an error category")
+        return self
+
+
+class NeedFacetSemanticReceipt(DomainModel):
+    """Final semantic relevance receipt for one mandatory public facet."""
+
+    need_id: StableId
+    need_facet_id: StableId
+    facet_kind: str = Field(min_length=1)
+    mandatory: bool
+    status: NeedEvidenceSemanticStatus
+    evaluated_slice_ids: tuple[StableId, ...] = ()
+    supporting_slice_ids: tuple[StableId, ...] = ()
+    partial_slice_ids: tuple[StableId, ...] = ()
+    unsupported_slice_ids: tuple[StableId, ...] = ()
+    reason: str = Field(default="", max_length=4096)
+    batch_receipt_ids: tuple[StableId, ...] = ()
+    judge_version: str = Field(default="", min_length=0)
+
+    @model_validator(mode="after")
+    def validate_receipt(self) -> NeedFacetSemanticReceipt:
+        buckets = (
+            self.supporting_slice_ids,
+            self.partial_slice_ids,
+            self.unsupported_slice_ids,
+        )
+        all_ids = tuple(item for bucket in buckets for item in bucket)
+        if len(all_ids) != len(set(all_ids)):
+            raise ValueError("semantic receipt slice classifications must be disjoint")
+        if not set(all_ids).issubset(self.evaluated_slice_ids):
+            raise ValueError("semantic receipt classifications must be evaluated slices")
+        if len(self.evaluated_slice_ids) != len(set(self.evaluated_slice_ids)):
+            raise ValueError("semantic receipt evaluated slices must be unique")
+        if len(self.batch_receipt_ids) != len(set(self.batch_receipt_ids)):
+            raise ValueError("semantic receipt batch refs must be unique")
+        if self.status is NeedEvidenceSemanticStatus.SUPPORTED and not self.supporting_slice_ids:
+            raise ValueError("SUPPORTED semantic receipt requires supporting slices")
+        if self.status is NeedEvidenceSemanticStatus.PARTIAL and (
+            self.supporting_slice_ids or not self.partial_slice_ids
+        ):
+            raise ValueError("PARTIAL semantic receipt requires only partial support")
+        if self.status is NeedEvidenceSemanticStatus.UNSUPPORTED and (
+            self.supporting_slice_ids or self.partial_slice_ids or not self.unsupported_slice_ids
+        ):
+            raise ValueError("UNSUPPORTED semantic receipt requires unsupported slices only")
+        return self
 
 
 class EvidenceFirstGap(DomainModel):
@@ -504,12 +597,22 @@ class WriterContextEvidenceItem(DomainModel):
     validity: WriterContextValidity = WriterContextValidity.UNCERTAIN
     mandatory: bool = False
     selection_reason: str = ""
+    semantic_status: NeedEvidenceSemanticStatus | None = None
+    semantic_answering_ledger_ids: tuple[StableId, ...] = ()
+    semantic_partial_ledger_ids: tuple[StableId, ...] = ()
+    semantic_related_ledger_ids: tuple[StableId, ...] = ()
     gap: EvidenceFirstGap | None = None
 
     @model_validator(mode="after")
     def validate_item(self) -> WriterContextEvidenceItem:
         if self.gap is not None:
-            if self.evidence_ledger_ids or self.raw_preview:
+            if (
+                self.evidence_ledger_ids
+                or self.raw_preview
+                or self.semantic_answering_ledger_ids
+                or self.semantic_partial_ledger_ids
+                or self.semantic_related_ledger_ids
+            ):
                 raise ValueError("typed gap items cannot carry evidence or previews")
             return self
         if not self.evidence_ledger_ids:
@@ -518,6 +621,18 @@ class WriterContextEvidenceItem(DomainModel):
             raise ValueError("writer context evidence item requires a raw preview")
         if len(self.evidence_ledger_ids) != len(set(self.evidence_ledger_ids)):
             raise ValueError("writer context evidence ledger ids must be unique")
+        if len(self.semantic_answering_ledger_ids) != len(set(self.semantic_answering_ledger_ids)):
+            raise ValueError("semantic answering ledger ids must be unique")
+        if len(self.semantic_partial_ledger_ids) != len(set(self.semantic_partial_ledger_ids)):
+            raise ValueError("semantic partial ledger ids must be unique")
+        if len(self.semantic_related_ledger_ids) != len(set(self.semantic_related_ledger_ids)):
+            raise ValueError("semantic related ledger ids must be unique")
+        if not set(self.semantic_answering_ledger_ids).issubset(self.evidence_ledger_ids):
+            raise ValueError("semantic answering refs must belong to the evidence item")
+        if not set(self.semantic_partial_ledger_ids).issubset(self.evidence_ledger_ids):
+            raise ValueError("semantic partial refs must belong to the evidence item")
+        if not set(self.semantic_related_ledger_ids).issubset(self.evidence_ledger_ids):
+            raise ValueError("semantic related refs must belong to the evidence item")
         return self
 
 
@@ -568,6 +683,7 @@ class EvidenceFirstLineage(DomainModel):
     query_compiler_version: str = ""
     route_plan_version: str = ""
     resolver_version: str = ""
+    semantic_judge_version: str = ""
     planner_artifact_ref: ArtifactRef | None = None
     planner_artifact_hash: ArtifactId | None = None
     planner_fallback_used: bool = False
@@ -594,6 +710,13 @@ class WriterContextPackageV2(DomainModel):
     evidence_ledger_ref: ArtifactRef
     lineage: EvidenceFirstLineage
     rendered_context: str = ""
+    assembly_status: str = "READY"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    usable_with_gaps: bool = True
+    structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
+    unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
+    semantic_receipts: tuple[NeedFacetSemanticReceipt, ...] = ()
+    semantic_batch_receipts: tuple[NeedEvidenceJudgmentBatchReceipt, ...] = ()
 
     @model_validator(mode="after")
     def validate_package(self) -> WriterContextPackageV2:
@@ -601,6 +724,22 @@ class WriterContextPackageV2(DomainModel):
         listed_gap_ids = {gap.gap_id for gap in self.gaps}
         if gap_ids != listed_gap_ids:
             raise ValueError("package typed gaps must match item gap bindings")
+        if len(self.unclosed_mandatory_need_facets) != len(
+            set(self.unclosed_mandatory_need_facets)
+        ):
+            raise ValueError("unclosed mandatory Need facets must be unique")
+        receipt_keys = tuple(
+            (receipt.need_id, receipt.need_facet_id) for receipt in self.semantic_receipts
+        )
+        if len(receipt_keys) != len(set(receipt_keys)):
+            raise ValueError("package semantic Need/facet receipts must be unique")
+        batch_ids = tuple(batch.batch_id for batch in self.semantic_batch_receipts)
+        if len(batch_ids) != len(set(batch_ids)):
+            raise ValueError("package semantic batch receipts must be unique")
+        if not set(
+            batch_id for receipt in self.semantic_receipts for batch_id in receipt.batch_receipt_ids
+        ).issubset(batch_ids):
+            raise ValueError("package semantic receipts must reference retained batch receipts")
         return self
 
 
@@ -652,6 +791,17 @@ class EvidenceFirstPackageManifest(DomainModel):
     # Required and fail-closed: an omitted closure must not silently select
     # the success state (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
+    structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    usable_with_gaps: bool = True
+    unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
+    derived_tool_call_budget: int = Field(default=0, ge=0)
+    derived_tool_call_formula: str = ""
+    candidate_limit_saturated: tuple[dict[str, object], ...] = ()
+    semantic_judge_planned_batch_count: int = Field(default=0, ge=0)
+    semantic_judge_batch_count: int = Field(default=0, ge=0)
+    semantic_judge_completed_batch_count: int = Field(default=0, ge=0)
+    semantic_judge_failed_batch_count: int = Field(default=0, ge=0)
     projection_attestation_id: StableId | None = None
     graph_edge_count: int = Field(default=0, ge=0)
     graph_readiness_by_need: dict[str, str] = Field(default_factory=dict)
@@ -667,6 +817,23 @@ class EvidenceFirstPackageManifest(DomainModel):
             raise ValueError("leakage failure count must equal the future leakage count")
         if self.gap_codes != tuple(dict.fromkeys(self.gap_codes)):
             raise ValueError("gap codes must be unique and ordered")
+        if len(self.unclosed_mandatory_need_facets) != len(
+            set(self.unclosed_mandatory_need_facets)
+        ):
+            raise ValueError("manifest unclosed mandatory Need facets must be unique")
+        if self.semantic_status == "COMPLETE" and self.unclosed_mandatory_need_facets:
+            raise ValueError("COMPLETE semantic manifest cannot carry unclosed Need facets")
+        judge_calls = self.call_counts.get("need_evidence_judge_calls", 0)
+        if self.semantic_judge_batch_count != (
+            self.semantic_judge_completed_batch_count + self.semantic_judge_failed_batch_count
+        ):
+            raise ValueError("semantic judge batch status counts must add up to total batches")
+        if self.semantic_judge_planned_batch_count != self.semantic_judge_batch_count:
+            raise ValueError("every planned semantic judge batch must be accounted")
+        if judge_calls != (
+            self.semantic_judge_completed_batch_count + self.semantic_judge_failed_batch_count
+        ):
+            raise ValueError("semantic judge call count must match persisted batch receipts")
         if self.assembly_status == "READY":
             failures = (
                 self.dereference_failure_count,
@@ -740,6 +907,10 @@ __all__ = [
     "EvidenceSliceKind",
     "EvidenceSliceSourceRole",
     "FreezeReceipt",
+    "NeedEvidenceJudgmentBatchReceipt",
+    "NeedEvidenceJudgmentBatchStatus",
+    "NeedEvidenceSemanticStatus",
+    "NeedFacetSemanticReceipt",
     "PublicCheckpointPayload",
     "SemanticSupportStatus",
     "UnresolvedLexicalAnchor",

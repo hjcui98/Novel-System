@@ -489,9 +489,18 @@ def _render_markdown(
         f"- basis commit: `{package.basis_commit_id.root}`",
         f"- basis snapshot: `{package.basis_snapshot_id.root}`",
         f"- controller arm: `{package.arm}`",
-        f"- Planner model calls: {manifest.call_counts.get('need_planner_model_calls', 0)}",
+        f"- Planner generation calls: {manifest.call_counts.get('need_planner_model_calls', 0)}",
+        f"- Planner coverage-audit calls: "
+        f"{manifest.call_counts.get('planner_coverage_audit_model_calls', 0)}",
         f"- Controller model calls: {manifest.call_counts.get('controller_model_calls', 0)}",
-        f"- assembly status: `{package.budget_report.final_status.value}`",
+        f"assembly_status: {package.assembly_status}",
+        f"semantic_status: {package.semantic_status}",
+        f"usable_with_gaps: {str(package.usable_with_gaps).lower()}",
+        "- semantic judge batches: "
+        f"planned {manifest.semantic_judge_planned_batch_count}, "
+        f"completed {manifest.semantic_judge_completed_batch_count}, "
+        f"failed {manifest.semantic_judge_failed_batch_count}",
+        f"- assembly status: `{package.assembly_status}`",
         f"- writer tokens: {package.budget_report.actual_rendered_writer_tokens}/"
         f"{package.budget_report.configured_writer_token_budget}",
         f"- ledger tokens: {package.budget_report.actual_rendered_ledger_tokens}/"
@@ -501,6 +510,25 @@ def _render_markdown(
         f"gaps {package.budget_report.gap_item_count})",
         f"- ledger entries: {package.budget_report.ledger_entry_count}",
         f"- future leakage: {manifest.future_leakage_count}",
+        "",
+        "## Unclosed mandatory Need/facets",
+        "",
+        *(
+            (
+                f"- Need `{receipt.need_id.root}` / facet `{receipt.need_facet_id.root}` "
+                f"({receipt.facet_kind}) — semantic_status: {receipt.status.value}; "
+                f"reason: {receipt.reason}"
+            )
+            for facet_id in package.unclosed_mandatory_need_facets
+            for receipt in package.semantic_receipts
+            if receipt.need_facet_id == facet_id
+        ),
+        *(
+            f"- facet `{facet_id.root}` — semantic receipt unavailable"
+            for facet_id in package.unclosed_mandatory_need_facets
+            if not any(receipt.need_facet_id == facet_id for receipt in package.semantic_receipts)
+        ),
+        "(none)" if not package.unclosed_mandatory_need_facets else "",
         "",
         "## Task",
         "",
@@ -522,6 +550,9 @@ def _render_markdown(
         for item in section_items:
             ids = ", ".join(f"`{item_id.root}`" for item_id in item.evidence_ledger_ids)
             facets = ", ".join(facet.root for facet in item.need_facet_ids) or "(none)"
+            semantic_label = (
+                item.semantic_status.value if item.semantic_status is not None else "UNASSESSED"
+            )
             if item.gap is not None:
                 lines.append(
                     f"- **[gap] {item.gap.kind.value}** — {item.purpose} "
@@ -532,9 +563,28 @@ def _render_markdown(
             lines.append(
                 f"- {item.purpose} "
                 f"(need `{item.need_ids[0].root}`, facets: {facets}, "
-                f"validity: {item.validity.value}, selection: {item.selection_reason})"
+                f"validity: {item.validity.value}, semantic: "
+                f"{semantic_label}, "
+                f"selection: {item.selection_reason})"
             )
             lines.append(f"  - evidence ids: {ids}")
+            if item.semantic_answering_ledger_ids:
+                lines.append(
+                    "  - answering evidence ids: "
+                    + ", ".join(
+                        f"`{item_id.root}`" for item_id in item.semantic_answering_ledger_ids
+                    )
+                )
+            if item.semantic_partial_ledger_ids:
+                lines.append(
+                    "  - partially answering evidence ids: "
+                    + ", ".join(f"`{item_id.root}`" for item_id in item.semantic_partial_ledger_ids)
+                )
+            if item.semantic_related_ledger_ids:
+                lines.append(
+                    "  - related-but-not-answering ids: "
+                    + ", ".join(f"`{item_id.root}`" for item_id in item.semantic_related_ledger_ids)
+                )
             lines.append(f"  - preview: {item.raw_preview}")
             if item.preview_truncated:
                 lines.append("  - preview truncated")
@@ -643,6 +693,7 @@ def main() -> int:
     parser.add_argument("--model-base-url", default="http://127.0.0.1:8005/v1")
     parser.add_argument("--model", default="qwen38-27b-fp8")
     parser.add_argument("--model-max-output-tokens", type=int, default=8192)
+    parser.add_argument("--planner-max-input-tokens", type=int, default=12000)
     parser.add_argument("--model-max-retries", type=int, default=0)
     parser.add_argument("--model-scheduling-timeout-seconds", type=float, default=900.0)
     parser.add_argument("--max-controller-decision-model-calls", type=int, default=8)
@@ -660,7 +711,14 @@ def main() -> int:
     parser.add_argument("--writer-token-budget", type=int, default=4000)
     parser.add_argument("--ledger-token-budget", type=int, default=12000)
     parser.add_argument("--max-candidates", type=int, default=20)
-    parser.add_argument("--max-tool-calls", type=int, default=48)
+    parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=None,
+        help="optional explicit retrieval action budget; otherwise derive it from Needs/routes",
+    )
+    parser.add_argument("--semantic-judge-input-tokens", type=int, default=12000)
+    parser.add_argument("--semantic-judge-output-tokens", type=int, default=2048)
     args = parser.parse_args()
 
     if args.output_root.exists():
@@ -673,6 +731,16 @@ def main() -> int:
         raise ValueError("agentic actions must be between 1 and 32")
     if args.repair_workspace is not None and args.repair_case not in args.case:
         raise ValueError("repair-case must be included when repair-workspace is configured")
+    if args.max_tool_calls is not None and args.max_tool_calls < 1:
+        raise ValueError("explicit max-tool-calls must be positive")
+    if args.planner_max_input_tokens < 256:
+        raise ValueError("Planner input budget must be at least 256 tokens")
+    if args.model_max_output_tokens < 256:
+        raise ValueError("Planner/model output budget must be at least 256 tokens")
+    if args.semantic_judge_input_tokens < 256:
+        raise ValueError("semantic judge input budget must be at least 256 tokens")
+    if args.semantic_judge_output_tokens < 256:
+        raise ValueError("semantic judge output budget must be at least 256 tokens")
     if args.checkpoint_index is not None and args.repair_workspace is not None:
         raise ValueError("a rebuilt checkpoint chain must not be combined with a repair workspace")
 
@@ -801,6 +869,9 @@ def main() -> int:
                 ),
                 require_model_decisions=args.require_model_decisions,
                 planner_max_output_tokens=args.model_max_output_tokens,
+                planner_max_input_tokens=args.planner_max_input_tokens,
+                semantic_judge_input_tokens=args.semantic_judge_input_tokens,
+                semantic_judge_output_tokens=args.semantic_judge_output_tokens,
             )
 
         index_entries: list[dict[str, object]] = []
@@ -919,11 +990,16 @@ def main() -> int:
                     "evidence_ledger_token_budget": args.ledger_token_budget,
                     "max_candidates": args.max_candidates,
                     "max_tool_calls": args.max_tool_calls,
+                    "semantic_judge_input_tokens": args.semantic_judge_input_tokens,
+                    "semantic_judge_output_tokens": args.semantic_judge_output_tokens,
                     "require_model_decisions": args.require_model_decisions,
                     "model_base_url": (
                         args.model_base_url if args.require_model_decisions else None
                     ),
                     "model": args.model if args.require_model_decisions else None,
+                    "planner_max_input_tokens": (
+                        args.planner_max_input_tokens if args.require_model_decisions else None
+                    ),
                     "model_max_output_tokens": (
                         args.model_max_output_tokens if args.require_model_decisions else None
                     ),
@@ -1037,8 +1113,19 @@ def main() -> int:
                 evidence_ledger_token_budget=args.ledger_token_budget,
                 call_counts={
                     "need_planner_model_calls": result.need_planner_model_call_count,
+                    "planner_coverage_audit_model_calls": (
+                        result.planner_coverage_audit_model_call_count
+                    ),
                     "controller_model_calls": result.controller_model_call_count,
                     "controller_repairs": result.controller_repair_count,
+                    "need_evidence_judge_calls": result.semantic_judge_model_call_count,
+                    "need_evidence_judge_planned_batches": (
+                        result.semantic_judge_planned_batch_count
+                    ),
+                    "need_evidence_judge_completed_batches": (
+                        result.semantic_judge_completed_batch_count
+                    ),
+                    "need_evidence_judge_failed_batches": result.semantic_judge_failed_batch_count,
                     "claim_support_calls": 0,
                     "whole_verifier_calls": 0,
                     "semantic_evaluator_calls": 0,
@@ -1064,6 +1151,20 @@ def main() -> int:
                 rerank_call_count=rerank_calls,
                 assembly_status=result.assembly.status.value,
                 mandatory_facet_closure=result.assembly.mandatory_facet_closure,
+                structural_mandatory_facet_closure=result.assembly.structural_mandatory_facet_closure,
+                semantic_status=package.semantic_status,
+                usable_with_gaps=package.usable_with_gaps,
+                unclosed_mandatory_need_facets=package.unclosed_mandatory_need_facets,
+                derived_tool_call_budget=result.derived_tool_call_budget,
+                derived_tool_call_formula=(
+                    "sum(max(1, len(effective_channels)) * 2 for Need route plan); "
+                    "minimum=1; explicit max_tool_calls overrides"
+                ),
+                candidate_limit_saturated=result.candidate_limit_saturated,
+                semantic_judge_planned_batch_count=result.semantic_judge_planned_batch_count,
+                semantic_judge_batch_count=len(result.semantic_judge_batch_receipts),
+                semantic_judge_completed_batch_count=result.semantic_judge_completed_batch_count,
+                semantic_judge_failed_batch_count=result.semantic_judge_failed_batch_count,
                 projection_attestation_id=backend_bundle.attestation.attestation_id,
                 graph_edge_count=backend_bundle.attestation.graph_edge_count,
                 graph_readiness_by_need=graph_readiness,
@@ -1097,6 +1198,33 @@ def main() -> int:
             (out_dir / "writer_context_package.md").write_text(
                 _render_markdown(package, ledger, manifest), encoding="utf-8"
             )
+            planner_result = result.need_generation
+            planner_artifact = None if planner_result is None else planner_result.planner_artifact
+            planner_record = {
+                "artifact_ref": (
+                    None
+                    if planner_result is None
+                    or planner_result.planner_artifact_document_ref is None
+                    else planner_result.planner_artifact_document_ref.artifact_id.root
+                ),
+                "status": None if planner_result is None else planner_result.status.value,
+                "model_call_count": result.need_planner_model_call_count,
+                "coverage_audit_model_call_count": (result.planner_coverage_audit_model_call_count),
+                "generation_pages": (
+                    []
+                    if planner_artifact is None
+                    else [
+                        page.model_dump(mode="json") for page in planner_artifact.generation_pages
+                    ]
+                ),
+                "coverage_audits": (
+                    []
+                    if planner_artifact is None
+                    else [
+                        audit.model_dump(mode="json") for audit in planner_artifact.coverage_audits
+                    ]
+                ),
+            }
             case_record = {
                 "case_id": case.case_id.root,
                 "checkpoint_chapter": int(case_spec["chapter"]),
@@ -1117,6 +1245,19 @@ def main() -> int:
                     }
                     for need in result.needs
                 ],
+                "planner": planner_record,
+                "semantic_judgment": {
+                    "planned_batch_count": result.semantic_judge_planned_batch_count,
+                    "completed_batch_count": result.semantic_judge_completed_batch_count,
+                    "failed_batch_count": result.semantic_judge_failed_batch_count,
+                    "receipts": [
+                        receipt.model_dump(mode="json") for receipt in result.semantic_receipts
+                    ],
+                    "batch_receipts": [
+                        receipt.model_dump(mode="json")
+                        for receipt in result.semantic_judge_batch_receipts
+                    ],
+                },
                 "route_plans": [
                     {
                         "need_id": plan.need_id.root,
@@ -1146,9 +1287,14 @@ def main() -> int:
                     "writer_tokens": package.budget_report.actual_rendered_writer_tokens,
                     "ledger_tokens": ledger.rendered_tokens,
                     "status": result.assembly.status.value,
+                    "assembly_status": package.assembly_status,
+                    "semantic_status": package.semantic_status,
+                    "usable_with_gaps": package.usable_with_gaps,
                     "diagnostics": list(result.assembly.diagnostic_codes),
                     "future_leakage_count": result.future_leakage_count,
                     "retrieval_call_count": result.retrieval_call_count,
+                    "derived_tool_call_budget": result.derived_tool_call_budget,
+                    "candidate_limit_saturated": list(result.candidate_limit_saturated),
                     "stop_reason": result.stop_reason,
                     "planner_fallback_used": result.planner_fallback_used,
                     "unresolved_lexical_anchors": [
@@ -1159,7 +1305,11 @@ def main() -> int:
                 "readiness": {
                     "package_status": result.assembly.status.value,
                     "mandatory_facet_closure": result.assembly.mandatory_facet_closure,
-                    "semantic_status": _semantic_status(result.assembly.mandatory_facet_closure),
+                    "semantic_status": package.semantic_status,
+                    "usable_with_gaps": package.usable_with_gaps,
+                    "unclosed_mandatory_need_facets": [
+                        item.root for item in package.unclosed_mandatory_need_facets
+                    ],
                     "gap_codes": list(gap_codes),
                     "ledger_entry_count": len(ledger.entries),
                     "evidence_item_count": package.budget_report.evidence_item_count,
@@ -1175,8 +1325,19 @@ def main() -> int:
                     "whole_verifier_calls": 0,
                     "semantic_evaluator_calls": 0,
                     "need_planner_model_calls": result.need_planner_model_call_count,
+                    "planner_coverage_audit_model_calls": (
+                        result.planner_coverage_audit_model_call_count
+                    ),
                     "controller_model_calls": result.controller_model_call_count,
                     "controller_repairs": result.controller_repair_count,
+                    "need_evidence_judge_calls": result.semantic_judge_model_call_count,
+                    "need_evidence_judge_planned_batches": (
+                        result.semantic_judge_planned_batch_count
+                    ),
+                    "need_evidence_judge_completed_batches": (
+                        result.semantic_judge_completed_batch_count
+                    ),
+                    "need_evidence_judge_failed_batches": result.semantic_judge_failed_batch_count,
                     "retrieval_calls": result.retrieval_call_count,
                     "embedding_calls": embedding_calls,
                     "rerank_calls": rerank_calls,
@@ -1212,7 +1373,18 @@ def main() -> int:
                     "manifest_id": manifest.manifest_id.root,
                     "assembly_status": result.assembly.status.value,
                     "mandatory_facet_closure": result.assembly.mandatory_facet_closure,
-                    "semantic_status": _semantic_status(result.assembly.mandatory_facet_closure),
+                    "semantic_status": package.semantic_status,
+                    "usable_with_gaps": package.usable_with_gaps,
+                    "semantic_judge_planned_batch_count": (
+                        result.semantic_judge_planned_batch_count
+                    ),
+                    "semantic_judge_completed_batch_count": (
+                        result.semantic_judge_completed_batch_count
+                    ),
+                    "semantic_judge_failed_batch_count": result.semantic_judge_failed_batch_count,
+                    "unclosed_mandatory_need_facets": [
+                        item.root for item in package.unclosed_mandatory_need_facets
+                    ],
                     "readiness_status": _readiness_status(
                         result.assembly.status.value,
                         mechanical,
@@ -1268,8 +1440,13 @@ def main() -> int:
             )
             for key in (
                 "need_planner_model_calls",
+                "planner_coverage_audit_model_calls",
                 "controller_model_calls",
                 "controller_repairs",
+                "need_evidence_judge_calls",
+                "need_evidence_judge_planned_batches",
+                "need_evidence_judge_completed_batches",
+                "need_evidence_judge_failed_batches",
                 "claim_support_calls",
                 "whole_verifier_calls",
                 "semantic_evaluator_calls",
@@ -1313,6 +1490,9 @@ def main() -> int:
                         "required": args.require_model_decisions,
                         "base_url": (args.model_base_url if args.require_model_decisions else None),
                         "model": args.model if args.require_model_decisions else None,
+                        "planner_max_input_tokens": (
+                            args.planner_max_input_tokens if args.require_model_decisions else None
+                        ),
                         "max_output_tokens": (
                             args.model_max_output_tokens if args.require_model_decisions else None
                         ),
@@ -1331,6 +1511,16 @@ def main() -> int:
                         ),
                         "max_agentic_actions": (
                             args.max_agentic_actions if args.require_model_decisions else None
+                        ),
+                        "semantic_judge_input_tokens": (
+                            args.semantic_judge_input_tokens
+                            if args.require_model_decisions
+                            else None
+                        ),
+                        "semantic_judge_output_tokens": (
+                            args.semantic_judge_output_tokens
+                            if args.require_model_decisions
+                            else None
                         ),
                     },
                     "aggregate_mechanical_status": aggregate_mechanical_status,

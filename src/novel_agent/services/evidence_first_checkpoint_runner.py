@@ -45,6 +45,8 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.writer_context import (
     BenchmarkTaskContract,
+    NeedEvidenceJudgmentBatchReceipt,
+    NeedFacetSemanticReceipt,
     UnresolvedLexicalAnchor,
 )
 from novel_agent.runtime.memory_controller import RouteBoundControllerPolicy
@@ -60,6 +62,10 @@ from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.memory_pipeline import ContextCompiler, EvidenceExpander
 from novel_agent.services.model_gateway import ModelGateway
 from novel_agent.services.need_draft_grounder import NeedDraftGrounder
+from novel_agent.services.need_evidence_semantic_judgment import (
+    NeedEvidenceSemanticJudge,
+    NeedEvidenceSemanticResult,
+)
 from novel_agent.services.need_query_compiler import NeedQueryCompiler
 from novel_agent.services.need_validator import NeedValidator
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
@@ -91,6 +97,9 @@ class EvidenceFirstCheckpointResult:
         need_planner_model_call_count: int,
         controller_model_call_count: int,
         controller_repair_count: int,
+        semantic_judgment: NeedEvidenceSemanticResult | None = None,
+        derived_tool_call_budget: int = 0,
+        candidate_limit_saturated: tuple[dict[str, Any], ...] = (),
         controller_decisions: tuple[dict[str, Any], ...] = (),
         controller_repairs: tuple[dict[str, Any], ...] = (),
     ) -> None:
@@ -106,8 +115,32 @@ class EvidenceFirstCheckpointResult:
         self.need_generation = need_generation
         self.trace_records = trace_records
         self.need_planner_model_call_count = need_planner_model_call_count
+        self.planner_coverage_audit_model_call_count = (
+            0
+            if need_generation is None or need_generation.planner_artifact is None
+            else sum(
+                len(audit.request_ids) for audit in need_generation.planner_artifact.coverage_audits
+            )
+        )
         self.controller_model_call_count = controller_model_call_count
         self.controller_repair_count = controller_repair_count
+        self.semantic_judgment = semantic_judgment
+        self.semantic_judge_model_call_count = (
+            0 if semantic_judgment is None else semantic_judgment.call_count
+        )
+        self.semantic_judge_batch_receipts = (
+            () if semantic_judgment is None else semantic_judgment.batch_receipts
+        )
+        self.semantic_judge_failed_batch_count = sum(
+            batch.status.value == "failed" for batch in self.semantic_judge_batch_receipts
+        )
+        self.semantic_judge_planned_batch_count = len(self.semantic_judge_batch_receipts)
+        self.semantic_judge_completed_batch_count = (
+            self.semantic_judge_planned_batch_count - self.semantic_judge_failed_batch_count
+        )
+        self.semantic_receipts = () if semantic_judgment is None else semantic_judgment.receipts
+        self.derived_tool_call_budget = derived_tool_call_budget
+        self.candidate_limit_saturated = candidate_limit_saturated
         self.controller_decisions = controller_decisions
         self.controller_repairs = controller_repairs
 
@@ -123,7 +156,7 @@ class EvidenceFirstCheckpointRunner:
         writer_token_budget: int = 4000,
         evidence_ledger_token_budget: int = 12_000,
         max_candidates: int = 20,
-        max_tool_calls: int = 48,
+        max_tool_calls: int | None = None,
         artifact_writer: Callable[[bytes, str], ArtifactRef] | None = None,
         graph_receipt_validator: (
             Callable[
@@ -138,21 +171,36 @@ class EvidenceFirstCheckpointRunner:
         ) = None,
         require_model_decisions: bool = False,
         planner_max_output_tokens: int = 8192,
+        planner_max_input_tokens: int = 12_000,
+        semantic_judge_input_tokens: int = 12_000,
+        semantic_judge_output_tokens: int = 2_048,
     ) -> None:
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
         if max_candidates < 1 or max_candidates > 100:
             raise ValueError("candidate limit must be between 1 and 100")
-        if max_tool_calls < 1:
+        if max_tool_calls is not None and max_tool_calls < 1:
             raise ValueError("tool-call limit must be positive")
+        if planner_max_input_tokens < 256:
+            raise ValueError("Planner input budget must be at least 256 tokens")
+        if planner_max_output_tokens < 256:
+            raise ValueError("Planner output budget must be at least 256 tokens")
+        if semantic_judge_input_tokens < 256:
+            raise ValueError("semantic judge input budget must be at least 256 tokens")
+        if semantic_judge_output_tokens < 256:
+            raise ValueError("semantic judge output budget must be at least 256 tokens")
         self._writer_token_budget = writer_token_budget
         self._evidence_ledger_token_budget = evidence_ledger_token_budget
         self._max_candidates = max_candidates
         self._max_tool_calls = max_tool_calls
+        self._semantic_judge_input_tokens = semantic_judge_input_tokens
+        self._semantic_judge_output_tokens = semantic_judge_output_tokens
         self._generator = TaskPlanConditionedNeedGenerator(
             planner_gateway=planner_gateway,
             planner_artifact_writer=artifact_writer,
             planner_max_output_tokens=planner_max_output_tokens,
+            planner_max_input_tokens=planner_max_input_tokens,
+            planner_coverage_audit=require_model_decisions,
         )
         if require_model_decisions and planner_gateway is None:
             raise ValueError("model-driven evidence-first requires a Planner gateway")
@@ -163,6 +211,15 @@ class EvidenceFirstCheckpointRunner:
         self._assembler = EvidenceFirstWriterContextAssembler()
         self._resolver = EvidenceSliceResolver()
         self._graph_receipt_validator = graph_receipt_validator
+        self._semantic_judge = (
+            NeedEvidenceSemanticJudge(
+                planner_gateway,
+                max_input_tokens=semantic_judge_input_tokens,
+                max_output_tokens=semantic_judge_output_tokens,
+            )
+            if planner_gateway is not None
+            else None
+        )
 
     @property
     def assembler(self) -> EvidenceFirstWriterContextAssembler:
@@ -247,6 +304,10 @@ class EvidenceFirstCheckpointRunner:
         if self._require_model_decisions and planner_model_call_count < 1:
             raise RuntimeError("model-driven evidence-first made no Planner model call")
         route_plans = tuple(DeterministicChannelPlanner().plan(need, capability) for need in needs)
+        derived_tool_call_budget = self._derived_tool_call_budget(route_plans)
+        tool_call_budget = (
+            self._max_tool_calls if self._max_tool_calls is not None else derived_tool_call_budget
+        )
         tool_policy = seal_tool_policy(
             ToolPolicy(
                 policy_id=StableId(f"policy.evidence-first.v2.{case_id.root}"[:128]),
@@ -254,7 +315,7 @@ class EvidenceFirstCheckpointRunner:
                 content_hash=fingerprint,
                 allowed_tools=self._allowed_tools(route_plans),
                 max_rounds=2,
-                max_tool_calls=self._max_tool_calls,
+                max_tool_calls=tool_call_budget,
                 max_query_rewrites_per_need=0,
                 wall_clock_budget_ms=120_000,
                 token_budget=self._writer_token_budget,
@@ -294,7 +355,7 @@ class EvidenceFirstCheckpointRunner:
             allow_future_plan=False,
             retrieval_budget=RetrievalBudget(
                 max_rounds=2,
-                max_tool_calls=self._max_tool_calls,
+                max_tool_calls=tool_call_budget,
                 max_query_rewrites_per_need=0,
                 max_candidates=self._max_candidates,
                 wall_clock_budget_ms=120_000,
@@ -327,7 +388,44 @@ class EvidenceFirstCheckpointRunner:
             snapshot_id,
             route_plans=route_plans,
             graph_edge_count=backend_bundle.attestation.graph_edge_count,
+            max_candidates=self._max_candidates,
         )
+        semantic_judgment: NeedEvidenceSemanticResult | None = None
+        if self._require_model_decisions:
+            if self._semantic_judge is None:
+                raise RuntimeError("model-driven evidence-first requires semantic judge gateway")
+            semantic_judgment = self._semantic_judge.judge(selections)
+            receipts_by_need: dict[StableId, list[NeedFacetSemanticReceipt]] = {}
+            for receipt in semantic_judgment.receipts:
+                receipts_by_need.setdefault(receipt.need_id, []).append(receipt)
+            batches_by_need: dict[StableId, list[NeedEvidenceJudgmentBatchReceipt]] = {}
+            for batch in semantic_judgment.batch_receipts:
+                for need_id in (
+                    selection.need.need_id
+                    for selection in selections
+                    if any(
+                        facet_id in batch.need_facet_ids
+                        for facet_id in (
+                            selection.need.completion_spec.required_need_facet_ids
+                            if selection.need.completion_spec is not None
+                            else tuple(facet.need_facet_id for facet in selection.need.need_facets)
+                        )
+                    )
+                ):
+                    batches_by_need.setdefault(need_id, []).append(batch)
+            selections = tuple(
+                selection.model_copy(
+                    update={
+                        "semantic_receipts": tuple(
+                            receipts_by_need.get(selection.need.need_id, ())
+                        ),
+                        "semantic_batch_receipts": tuple(
+                            batches_by_need.get(selection.need.need_id, ())
+                        ),
+                    }
+                )
+                for selection in selections
+            )
         unresolved = self._unresolved_anchors(need_generation, planner_fallback_used)
         planner_ref: ArtifactRef | None
         planner_hash: ArtifactId | None
@@ -377,6 +475,16 @@ class EvidenceFirstCheckpointRunner:
             need_planner_model_call_count=planner_model_call_count,
             controller_model_call_count=len(controller_receipts),
             controller_repair_count=len(controller_repairs),
+            semantic_judgment=semantic_judgment,
+            derived_tool_call_budget=derived_tool_call_budget,
+            candidate_limit_saturated=tuple(
+                {
+                    "need_id": record["need_id"],
+                    "channels": record["candidate_limit_saturation"],
+                }
+                for record in trace_records
+                if record.get("candidate_limit_saturation")
+            ),
             controller_decisions=tuple(
                 decision.model_dump(mode="json") for decision in controller_decisions
             ),
@@ -404,6 +512,7 @@ class EvidenceFirstCheckpointRunner:
         *,
         route_plans: tuple[RoutePlan, ...] = (),
         graph_edge_count: int | None = None,
+        max_candidates: int | None = None,
     ) -> tuple[tuple[NeedEvidenceSelection, ...], tuple[dict[str, Any], ...]]:
         need_by_id = {need.need_id: need for need in needs}
         plan_by_need_id = {plan.need_id: plan for plan in route_plans}
@@ -525,6 +634,15 @@ class EvidenceFirstCheckpointRunner:
                         channel.value: count
                         for channel, count in trace.channel_candidate_counts.items()
                     },
+                    "candidate_limit_saturation": (
+                        {
+                            channel.value: count
+                            for channel, count in trace.channel_candidate_counts.items()
+                            if max_candidates is not None and count >= max_candidates
+                        }
+                        if max_candidates is not None
+                        else {}
+                    ),
                     "channel_failures": {
                         channel.value: reason for channel, reason in trace.channel_failures.items()
                     },
@@ -659,6 +777,14 @@ class EvidenceFirstCheckpointRunner:
                 }
             )
             for need in needs
+        )
+
+    @staticmethod
+    def _derived_tool_call_budget(route_plans: tuple[RoutePlan, ...]) -> int:
+        """Size retrieval actions from the actual Need route surface."""
+        return max(
+            1,
+            sum(max(1, len(plan.effective_channels)) * 2 for plan in route_plans),
         )
 
     @staticmethod

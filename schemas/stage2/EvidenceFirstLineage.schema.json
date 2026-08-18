@@ -147,6 +147,11 @@
       "title": "Route Plan Version",
       "type": "string"
     },
+    "semantic_judge_version": {
+      "default": "",
+      "title": "Semantic Judge Version",
+      "type": "string"
+    },
     "unresolved_lexical_anchors": {
       "default": [],
       "items": {

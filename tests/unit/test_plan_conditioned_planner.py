@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -184,8 +184,8 @@ class _PlannerEndpoint:
     model = "planner-test-model"
     max_retries = 0
 
-    def __init__(self, payloads: tuple[dict[str, object] | Exception, ...]) -> None:
-        self.payloads: list[dict[str, object] | Exception] = list(payloads)
+    def __init__(self, payloads: tuple[object | Exception, ...]) -> None:
+        self.payloads: list[object | Exception] = list(payloads)
         self.requests: list[ModelRequest] = []
 
     async def generate(self, request: ModelRequest) -> ProviderModelResult:
@@ -1883,6 +1883,40 @@ def test_full_goal_coverage_does_not_fallback() -> None:
     assert not result.planner_artifact.missing_goal_chapters
 
 
+def test_planner_coverage_audit_is_bounded_and_rejects_unknown_world_labels() -> None:
+    audit_payload = {
+        "findings": [
+            {
+                "target_chapter": 21,
+                "category": "KEY_CHARACTER",
+                "canonical_entity_labels": ["not-in-world"],
+                "missing_historical_question": "unknown anchor",
+                "reason": "must not enter repair instructions",
+            }
+        ]
+    }
+    endpoint = _PlannerEndpoint((_planner_payload(), audit_payload))
+    generator = TaskPlanConditionedNeedGenerator(
+        planner_gateway=_gateway(endpoint),
+        planner_coverage_audit=True,
+    )
+    task = _task()
+    result = generator.generate_with_lineage(
+        task,
+        _entity_world(),
+        make_synthetic_bundle().plan_roots[0],
+        _planner_context(task),
+    )
+    assert result.status is NeedGenerationStatus.READY
+    assert result.planner_artifact is not None
+    assert len(result.planner_artifact.coverage_audits) == 1
+    assert result.planner_artifact.coverage_audits[0].findings == ()
+    assert len(endpoint.requests) == 2
+    audit_prompt = endpoint.requests[1].prompt
+    assert "未来正文" in audit_prompt
+    assert "not-in-world" not in audit_prompt
+
+
 def test_normal_planner_needs_are_mandatory() -> None:
     endpoint = _PlannerEndpoint((_planner_payload(),))
     gateway = _gateway(endpoint)
@@ -1899,6 +1933,39 @@ def test_normal_planner_needs_are_mandatory() -> None:
         assert need.completion_spec.irreducible_need_facet_ids == (
             need.completion_spec.required_need_facet_ids
         )
+
+
+def test_model_planner_keeps_more_than_thirty_two_valid_needs_without_implicit_cap() -> None:
+    payload = _planner_payload()
+    drafts = list(cast(list[dict[str, object]], payload["drafts"]))
+    for index in range(33):
+        drafts.append(
+            {
+                "draft_id": f"capacity-{index}",
+                "semantic_question": f"在截止点前 teacher 的历史状态条目 {index} 是什么?",
+                "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+                "relation_mentions": [],
+                "trigger_plan_chapters": [21],
+                "trigger_plan_goal": "重申旧誓言",
+                "why_needed": "capacity regression",
+                "required_claim_scopes": ["current"],
+                "suggested_facets": ["CURRENT_STATE"],
+                "historical_time_scope": "main",
+                "query_hints": [],
+            }
+        )
+    endpoint = _PlannerEndpoint((payload | {"drafts": drafts},))
+    task = _task()
+    result = TaskPlanConditionedNeedGenerator(
+        planner_gateway=_gateway(endpoint)
+    ).generate_with_lineage(
+        task,
+        _entity_world(),
+        make_synthetic_bundle().plan_roots[0],
+        _planner_context(task),
+    )
+    assert result.status is NeedGenerationStatus.READY
+    assert len(result.needs) > 32
 
 
 def _chinese_world() -> WorldRootDocument:
@@ -3287,6 +3354,46 @@ def test_planner_parses_schema_maximal_bounded_draft_batch() -> None:
     )
     assert len(parsed) == 24
     assert len({draft.draft_id for draft in parsed}) == 24
+
+
+def test_planner_parser_does_not_apply_legacy_twenty_four_draft_ceiling() -> None:
+    drafts = [
+        {
+            "draft_id": f"draft-{index:02d}",
+            "semantic_question": f"在截止点前 teacher 的第{index}项历史状态是什么?",
+            "entity_mentions": [{"label": "teacher", "role_in_need": "subject"}],
+            "relation_mentions": [],
+            "trigger_plan_chapters": [21],
+            "trigger_plan_goal": "重申旧誓言",
+            "why_needed": "capacity regression",
+            "required_claim_scopes": ["current"],
+            "suggested_facets": ["CURRENT_STATE"],
+            "historical_time_scope": "main",
+            "query_hints": [],
+        }
+        for index in range(25)
+    ]
+    parsed = PlanConditionedNeedPlanner._parse_drafts(
+        json.dumps({"drafts": drafts, "meta": {"rationale": "over legacy ceiling"}})
+    )
+    assert len(parsed) == 25
+
+
+def test_planner_marks_single_oversized_page_capacity_exhausted() -> None:
+    task = _task()
+    planner = PlanConditionedNeedPlanner(max_input_tokens=256)
+    pages = planner.partition_goal_pages(
+        task=task,
+        world=_entity_world(),
+        planning_context=_planner_context(task),
+    )
+    assert pages
+    assert any(page.status.value == "capacity_exhausted" for page, _context in pages)
+    assert all(
+        page.error_category == "planner_page_capacity_exhausted"
+        for page, _context in pages
+        if page.status.value == "capacity_exhausted"
+    )
 
 
 def test_planner_output_length_terminal_stays_typed_and_never_silent() -> None:

@@ -555,6 +555,138 @@
       "title": "PlannerArtifactMetadata",
       "type": "object"
     },
+    "PlannerCoverageAuditReceipt": {
+      "additionalProperties": false,
+      "description": "Replay evidence for one bounded Planner omission-audit request.",
+      "properties": {
+        "error_category": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Category"
+        },
+        "exact_prompt": {
+          "minLength": 1,
+          "title": "Exact Prompt",
+          "type": "string"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerCoverageFinding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "default": "",
+          "title": "Model Version",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "page_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "raw_response": {
+          "default": "",
+          "title": "Raw Response",
+          "type": "string"
+        },
+        "request_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Request Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/PlannerPageStatus"
+        }
+      },
+      "required": [
+        "page_id",
+        "exact_prompt",
+        "input_tokens",
+        "output_tokens",
+        "status"
+      ],
+      "title": "PlannerCoverageAuditReceipt",
+      "type": "object"
+    },
+    "PlannerCoverageCategory": {
+      "enum": [
+        "KEY_CHARACTER",
+        "KEY_OBJECT",
+        "CURRENT_CONDITION",
+        "KNOWLEDGE_BOUNDARY"
+      ],
+      "title": "PlannerCoverageCategory",
+      "type": "string"
+    },
+    "PlannerCoverageFinding": {
+      "additionalProperties": false,
+      "description": "One goal-material omission found after Planner draft generation.",
+      "properties": {
+        "canonical_entity_labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Canonical Entity Labels",
+          "type": "array"
+        },
+        "category": {
+          "$ref": "#/$defs/PlannerCoverageCategory"
+        },
+        "missing_historical_question": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Missing Historical Question",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "target_chapter": {
+          "minimum": 1,
+          "title": "Target Chapter",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_chapter",
+        "category",
+        "missing_historical_question",
+        "reason"
+      ],
+      "title": "PlannerCoverageFinding",
+      "type": "object"
+    },
     "PlannerEntitySummary": {
       "additionalProperties": false,
       "description": "Bounded entity row in the deterministic world summary.",
@@ -750,6 +882,75 @@
       ],
       "title": "PlannerObligationSummary",
       "type": "object"
+    },
+    "PlannerPage": {
+      "additionalProperties": false,
+      "description": "Durable accounting for one logical chapter-goal Planner page.",
+      "properties": {
+        "error_category": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Category"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "page_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "request_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Request Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/PlannerPageStatus"
+        },
+        "target_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Target Chapters",
+          "type": "array"
+        }
+      },
+      "required": [
+        "page_id",
+        "input_tokens",
+        "output_tokens",
+        "status"
+      ],
+      "title": "PlannerPage",
+      "type": "object"
+    },
+    "PlannerPageStatus": {
+      "description": "Terminal status for one capacity-bounded Planner goal page.",
+      "enum": [
+        "completed",
+        "failed",
+        "capacity_exhausted"
+      ],
+      "title": "PlannerPageStatus",
+      "type": "string"
     },
     "PlannerRelationSummary": {
       "additionalProperties": false,
@@ -1111,6 +1312,14 @@
       "title": "Canonical Scope By Draft",
       "type": "object"
     },
+    "coverage_audits": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerCoverageAuditReceipt"
+      },
+      "title": "Coverage Audits",
+      "type": "array"
+    },
     "deduplicated_draft_ids": {
       "default": [],
       "items": {
@@ -1144,6 +1353,14 @@
         "$ref": "#/$defs/PlannerFinalNeedManifest"
       },
       "title": "Final Need Manifests",
+      "type": "array"
+    },
+    "generation_pages": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannerPage"
+      },
+      "title": "Generation Pages",
       "type": "array"
     },
     "grounded_drafts": {

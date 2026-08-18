@@ -253,6 +253,11 @@
           "title": "Route Plan Version",
           "type": "string"
         },
+        "semantic_judge_version": {
+          "default": "",
+          "title": "Semantic Judge Version",
+          "type": "string"
+        },
         "unresolved_lexical_anchors": {
           "default": [],
           "items": {
@@ -281,10 +286,195 @@
         "cutoff_tainted",
         "scope_tainted",
         "dereference_failed",
-        "heading_source_role"
+        "heading_source_role",
+        "semantic_partial",
+        "semantic_unsupported",
+        "semantic_unresolved"
       ],
       "title": "EvidenceGapKind",
       "type": "string"
+    },
+    "NeedEvidenceJudgmentBatchReceipt": {
+      "additionalProperties": false,
+      "description": "Auditable input/output boundary for one semantic-judge request.",
+      "properties": {
+        "batch_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "endpoint": {
+          "default": "",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "error_category": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Category"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "default": "",
+          "title": "Model Version",
+          "type": "string"
+        },
+        "need_facet_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Need Facet Ids",
+          "type": "array"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "slice_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Slice Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/NeedEvidenceJudgmentBatchStatus"
+        }
+      },
+      "required": [
+        "batch_id",
+        "request_id",
+        "need_facet_ids",
+        "slice_ids",
+        "status",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "NeedEvidenceJudgmentBatchReceipt",
+      "type": "object"
+    },
+    "NeedEvidenceJudgmentBatchStatus": {
+      "enum": [
+        "completed",
+        "failed"
+      ],
+      "title": "NeedEvidenceJudgmentBatchStatus",
+      "type": "string"
+    },
+    "NeedEvidenceSemanticStatus": {
+      "description": "Model relevance verdict for one public Need/facet evidence set.",
+      "enum": [
+        "SUPPORTED",
+        "PARTIAL",
+        "UNSUPPORTED",
+        "UNRESOLVED"
+      ],
+      "title": "NeedEvidenceSemanticStatus",
+      "type": "string"
+    },
+    "NeedFacetSemanticReceipt": {
+      "additionalProperties": false,
+      "description": "Final semantic relevance receipt for one mandatory public facet.",
+      "properties": {
+        "batch_receipt_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Batch Receipt Ids",
+          "type": "array"
+        },
+        "evaluated_slice_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Evaluated Slice Ids",
+          "type": "array"
+        },
+        "facet_kind": {
+          "minLength": 1,
+          "title": "Facet Kind",
+          "type": "string"
+        },
+        "judge_version": {
+          "default": "",
+          "minLength": 0,
+          "title": "Judge Version",
+          "type": "string"
+        },
+        "mandatory": {
+          "title": "Mandatory",
+          "type": "boolean"
+        },
+        "need_facet_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "partial_slice_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Partial Slice Ids",
+          "type": "array"
+        },
+        "reason": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Reason",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/NeedEvidenceSemanticStatus"
+        },
+        "supporting_slice_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Supporting Slice Ids",
+          "type": "array"
+        },
+        "unsupported_slice_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Unsupported Slice Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "need_id",
+        "need_facet_id",
+        "facet_kind",
+        "mandatory",
+        "status"
+      ],
+      "title": "NeedFacetSemanticReceipt",
+      "type": "object"
     },
     "SchemaVersion": {
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
@@ -478,6 +668,41 @@
           "title": "Selection Reason",
           "type": "string"
         },
+        "semantic_answering_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Semantic Answering Ledger Ids",
+          "type": "array"
+        },
+        "semantic_partial_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Semantic Partial Ledger Ids",
+          "type": "array"
+        },
+        "semantic_related_ledger_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Semantic Related Ledger Ids",
+          "type": "array"
+        },
+        "semantic_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NeedEvidenceSemanticStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "source_kind": {
           "default": "",
           "title": "Source Kind",
@@ -539,6 +764,11 @@
       "title": "Arm",
       "type": "string"
     },
+    "assembly_status": {
+      "default": "READY",
+      "title": "Assembly Status",
+      "type": "string"
+    },
     "basis_commit_id": {
       "$ref": "#/$defs/CommitId"
     },
@@ -580,8 +810,56 @@
       "title": "Rendered Context",
       "type": "string"
     },
+    "semantic_batch_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NeedEvidenceJudgmentBatchReceipt"
+      },
+      "title": "Semantic Batch Receipts",
+      "type": "array"
+    },
+    "semantic_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NeedFacetSemanticReceipt"
+      },
+      "title": "Semantic Receipts",
+      "type": "array"
+    },
+    "semantic_status": {
+      "default": "UNASSESSED",
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE",
+        "UNASSESSED"
+      ],
+      "title": "Semantic Status",
+      "type": "string"
+    },
+    "structural_mandatory_facet_closure": {
+      "default": "INCOMPLETE",
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE"
+      ],
+      "title": "Structural Mandatory Facet Closure",
+      "type": "string"
+    },
     "task_contract": {
       "$ref": "#/$defs/BenchmarkTaskContract"
+    },
+    "unclosed_mandatory_need_facets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unclosed Mandatory Need Facets",
+      "type": "array"
+    },
+    "usable_with_gaps": {
+      "default": true,
+      "title": "Usable With Gaps",
+      "type": "boolean"
     }
   },
   "required": [

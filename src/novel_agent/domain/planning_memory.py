@@ -297,6 +297,100 @@ class PlannerFinalNeedManifest(DomainModel):
     query_bundle_hash: ArtifactId
 
 
+class PlannerPageStatus(StrEnum):
+    """Terminal status for one capacity-bounded Planner goal page."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CAPACITY_EXHAUSTED = "capacity_exhausted"
+
+
+class PlannerPage(DomainModel):
+    """Durable accounting for one logical chapter-goal Planner page."""
+
+    page_id: StableId
+    target_chapters: tuple[int, ...] = ()
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    request_ids: tuple[StableId, ...] = ()
+    status: PlannerPageStatus
+    error_category: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_page(self) -> PlannerPage:
+        if len(self.target_chapters) != len(set(self.target_chapters)):
+            raise ValueError("Planner page target chapters must be unique")
+        if any(chapter < 1 for chapter in self.target_chapters):
+            raise ValueError("Planner page target chapters must be positive")
+        if len(self.request_ids) != len(set(self.request_ids)):
+            raise ValueError("Planner page request ids must be unique")
+        if (
+            self.status
+            in {
+                PlannerPageStatus.FAILED,
+                PlannerPageStatus.CAPACITY_EXHAUSTED,
+            }
+            and self.error_category is None
+        ):
+            raise ValueError("failed or capacity-exhausted Planner page requires an error category")
+        if self.status is PlannerPageStatus.COMPLETED and self.error_category is not None:
+            raise ValueError("successful Planner page cannot carry an error category")
+        return self
+
+
+class PlannerCoverageCategory(StrEnum):
+    KEY_CHARACTER = "KEY_CHARACTER"
+    KEY_OBJECT = "KEY_OBJECT"
+    CURRENT_CONDITION = "CURRENT_CONDITION"
+    KNOWLEDGE_BOUNDARY = "KNOWLEDGE_BOUNDARY"
+
+
+class PlannerCoverageFinding(DomainModel):
+    """One goal-material omission found after Planner draft generation."""
+
+    target_chapter: int = Field(ge=1)
+    category: PlannerCoverageCategory
+    canonical_entity_labels: tuple[str, ...] = ()
+    missing_historical_question: str = Field(min_length=1, max_length=4096)
+    reason: str = Field(min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def validate_finding(self) -> PlannerCoverageFinding:
+        if len(self.canonical_entity_labels) != len(set(self.canonical_entity_labels)):
+            raise ValueError("coverage finding entity labels must be unique")
+        return self
+
+
+class PlannerCoverageAuditReceipt(DomainModel):
+    """Replay evidence for one bounded Planner omission-audit request."""
+
+    page_id: StableId
+    exact_prompt: str = Field(min_length=1)
+    raw_response: str = ""
+    request_ids: tuple[StableId, ...] = ()
+    model: str = ""
+    model_version: str = ""
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    findings: tuple[PlannerCoverageFinding, ...] = ()
+    status: PlannerPageStatus
+    error_category: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_audit(self) -> PlannerCoverageAuditReceipt:
+        finding_keys = tuple(
+            (finding.target_chapter, finding.category, finding.canonical_entity_labels)
+            for finding in self.findings
+        )
+        if len(finding_keys) != len(set(finding_keys)):
+            raise ValueError("coverage audit findings must be unique")
+        if self.status is PlannerPageStatus.FAILED and self.error_category is None:
+            raise ValueError("failed coverage audit requires an error category")
+        if self.status is not PlannerPageStatus.FAILED and self.error_category is not None:
+            raise ValueError("successful coverage audit cannot carry an error category")
+        return self
+
+
 class PlannerRunResult(DomainModel):
     """One planner invocation outcome, including the fallback signal."""
 
@@ -309,6 +403,7 @@ class PlannerRunResult(DomainModel):
     exact_prompt: str
     raw_response: str = ""
     attempts: tuple[PlannerInvocationAttempt, ...] = ()
+    generation_pages: tuple[PlannerPage, ...] = ()
 
 
 class PlannerInvocationArtifact(DomainModel):
@@ -333,6 +428,8 @@ class PlannerInvocationArtifact(DomainModel):
     fallback_reason: str | None = None
     missing_goal_chapters: tuple[int, ...] = ()
     missing_goal_entities: tuple[tuple[str, str, int], ...] = ()
+    generation_pages: tuple[PlannerPage, ...] = ()
+    coverage_audits: tuple[PlannerCoverageAuditReceipt, ...] = ()
     # Typed Planner-output-contract findings (review-25): draft_id -> finding.
     # The grounder stays exact; a composite/descriptive/annotated explicit
     # label that cannot copy one canonical WORLD label is recorded here and
@@ -361,6 +458,12 @@ class PlannerInvocationArtifact(DomainModel):
         need_ids = tuple(item.need_id for item in self.final_need_manifests)
         if len(need_ids) != len(set(need_ids)):
             raise ValueError("Planner artifact final Need ids must be unique")
+        page_ids = tuple(page.page_id for page in self.generation_pages)
+        if len(page_ids) != len(set(page_ids)):
+            raise ValueError("Planner artifact generation page ids must be unique")
+        audit_page_ids = tuple(audit.page_id for audit in self.coverage_audits)
+        if len(audit_page_ids) != len(set(audit_page_ids)):
+            raise ValueError("Planner artifact coverage audit pages must be unique")
         return self
 
 
@@ -428,6 +531,9 @@ __all__ = [
     "GroundingStatus",
     "PlannedNeedDraft",
     "PlannerArtifactMetadata",
+    "PlannerCoverageAuditReceipt",
+    "PlannerCoverageCategory",
+    "PlannerCoverageFinding",
     "PlannerEntitySummary",
     "PlannerEventSummary",
     "PlannerFallbackStatus",
@@ -437,6 +543,8 @@ __all__ = [
     "PlannerInvocationAttemptStatus",
     "PlannerNeedGenerationResult",
     "PlannerObligationSummary",
+    "PlannerPage",
+    "PlannerPageStatus",
     "PlannerRelationSummary",
     "PlannerRunResult",
     "PlannerStateSummary",

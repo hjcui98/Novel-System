@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "NeedEvidenceSemanticStatus": {
+      "description": "Model relevance verdict for one public Need/facet evidence set.",
+      "enum": [
+        "SUPPORTED",
+        "PARTIAL",
+        "UNSUPPORTED",
+        "UNRESOLVED"
+      ],
+      "title": "NeedEvidenceSemanticStatus",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Final semantic relevance receipt for one mandatory public facet.",
+  "properties": {
+    "batch_receipt_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Batch Receipt Ids",
+      "type": "array"
+    },
+    "evaluated_slice_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Evaluated Slice Ids",
+      "type": "array"
+    },
+    "facet_kind": {
+      "minLength": 1,
+      "title": "Facet Kind",
+      "type": "string"
+    },
+    "judge_version": {
+      "default": "",
+      "minLength": 0,
+      "title": "Judge Version",
+      "type": "string"
+    },
+    "mandatory": {
+      "title": "Mandatory",
+      "type": "boolean"
+    },
+    "need_facet_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "partial_slice_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Partial Slice Ids",
+      "type": "array"
+    },
+    "reason": {
+      "default": "",
+      "maxLength": 4096,
+      "title": "Reason",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/NeedEvidenceSemanticStatus"
+    },
+    "supporting_slice_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Supporting Slice Ids",
+      "type": "array"
+    },
+    "unsupported_slice_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Unsupported Slice Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "need_id",
+    "need_facet_id",
+    "facet_kind",
+    "mandatory",
+    "status"
+  ],
+  "title": "NeedFacetSemanticReceipt",
+  "type": "object"
+}
