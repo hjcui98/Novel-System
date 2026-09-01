@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TypeVar
 
 from novel_agent.domain.artifacts import (
@@ -29,7 +29,7 @@ from novel_agent.domain.changes import (
 from novel_agent.domain.creative_runtime import AcceptedCandidateBinding, CandidateKind
 from novel_agent.domain.editorial import ReconciliationResult
 from novel_agent.domain.generation import WritingTaskContract
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId
+from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.planning import (
     PlanningLoopEventReceipt,
     PlanReview,
@@ -81,9 +81,7 @@ class _TrustedMaterializer:
         self._commits = commits
         self._schema_version = schema_version
 
-    def _base(
-        self, accepted: AcceptedCandidateBinding, kind: CandidateKind
-    ) -> RootManifest:
+    def _base(self, accepted: AcceptedCandidateBinding, kind: CandidateKind) -> RootManifest:
         if accepted.candidate.kind is not kind:
             raise CandidateMaterializationError("materializer received the wrong candidate kind")
         if accepted.candidate.basis_commit != accepted.expected_project_commit:
@@ -104,9 +102,7 @@ class _TrustedMaterializer:
             ) from error
 
     @staticmethod
-    def _one(
-        refs: Iterable[ArtifactRef], media_type: str, *, label: str
-    ) -> ArtifactRef:
+    def _one(refs: Iterable[ArtifactRef], media_type: str, *, label: str) -> ArtifactRef:
         matches = tuple(
             {ref.artifact_id: ref for ref in refs if ref.media_type == media_type}.values()
         )
@@ -116,7 +112,9 @@ class _TrustedMaterializer:
 
     @staticmethod
     def _stable_id(prefix: str, value: str) -> StableId:
-        return StableId(f"{prefix}.{value}"[:128])
+        """Preserve the source identity when a readable prefix would overflow."""
+
+        return bounded_stable_id(f"{prefix}.{value}", value)
 
     def _report(
         self, accepted: AcceptedCandidateBinding, bundle: CandidateChangeBundle, profile: str
@@ -160,7 +158,6 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             or proposal.receipt.agent_type is not AgentType.PLANNER
             or proposal.receipt.status is not ExecutionStatus.SUCCEEDED
             or proposal.receipt.base_commit != accepted.expected_project_commit
-            or proposal.unresolved
             or not proposal.items
         ):
             raise CandidateMaterializationError(
@@ -188,12 +185,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
         )
         if candidate.horizon_start is not None and candidate.horizon_end is not None:
-            expected_chapters = tuple(
-                range(candidate.horizon_start, candidate.horizon_end + 1)
-            )
-            actual_chapters = tuple(
-                sorted(goal.chapter_index for goal in incoming_goals)
-            )
+            expected_chapters = tuple(range(candidate.horizon_start, candidate.horizon_end + 1))
+            actual_chapters = tuple(sorted(goal.chapter_index for goal in incoming_goals))
             if actual_chapters != expected_chapters:
                 raise CandidateMaterializationError(
                     "Plan candidate must provide exactly one chapter goal for every "
@@ -201,17 +194,23 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 )
         incoming_node_ids = {item.plan_node_id for item in incoming_nodes}
         incoming_goal_ids = {item.goal_id for item in incoming_goals}
-        nodes = tuple(
-            item
-            for item in current.nodes
-            if item.plan_node_id not in invalidated
-            and item.plan_node_id not in incoming_node_ids
-        ) + incoming_nodes
-        goals = tuple(
-            item
-            for item in current.chapter_goals
-            if item.goal_id not in invalidated and item.goal_id not in incoming_goal_ids
-        ) + incoming_goals
+        nodes = (
+            tuple(
+                item
+                for item in current.nodes
+                if item.plan_node_id not in invalidated
+                and item.plan_node_id not in incoming_node_ids
+            )
+            + incoming_nodes
+        )
+        goals = (
+            tuple(
+                item
+                for item in current.chapter_goals
+                if item.goal_id not in invalidated and item.goal_id not in incoming_goal_ids
+            )
+            + incoming_goals
+        )
         provisional = current.model_copy(
             update={
                 "root_hash": "sha256:" + "0" * 64,
@@ -225,9 +224,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             PLAN_ROOT_MEDIA_TYPE,
             updated.schema_version,
         )
-        root_ref = PlanRootRef(
-            **root_artifact.model_dump(mode="python"), root_kind=RootKind.PLAN
-        )
+        root_ref = PlanRootRef(**root_artifact.model_dump(mode="python"), root_kind=RootKind.PLAN)
         proposed_roots = base.model_copy(
             update={
                 "plan_root": root_ref,
@@ -317,10 +314,33 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             raise CandidateMaterializationError(f"Plan item {field} must be a string list")
         return tuple(StableId(item) for item in value)
 
+    @staticmethod
+    def _payload_text(payload: Mapping[str, object], *keys: str) -> str | None:
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    @staticmethod
+    def _chapter_number(payload: Mapping[str, object]) -> int | None:
+        if "chapter_index" in payload:
+            raw = payload["chapter_index"]
+        elif "chapter" in payload:
+            raw = payload["chapter"]
+        else:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise CandidateMaterializationError("Plan item chapter_index must be an integer")
+        return raw
+
     @classmethod
     def _node(cls, item: ProposedItem) -> PlanNode:
-        summary = item.payload.get("summary")
-        title = item.payload.get("title", item.item_id.root)
+        summary = cls._payload_text(item.payload, "summary", "goal")
+        if "title" in item.payload:
+            title = item.payload.get("title")
+        else:
+            title = summary or item.item_id.root
         parent = item.payload.get("parent_id")
         if not isinstance(summary, str) or not summary.strip():
             raise CandidateMaterializationError("Plan item requires a non-empty summary")
@@ -339,12 +359,10 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
 
     @classmethod
     def _chapter_goal(cls, item: ProposedItem) -> ChapterGoal | None:
-        chapter_index = item.payload.get("chapter_index")
+        chapter_index = cls._chapter_number(item.payload)
         if chapter_index is None:
             return None
-        if isinstance(chapter_index, bool) or not isinstance(chapter_index, int):
-            raise CandidateMaterializationError("Plan item chapter_index must be an integer")
-        summary = item.payload.get("summary")
+        summary = cls._payload_text(item.payload, "summary", "goal")
         if not isinstance(summary, str) or not summary.strip():
             raise CandidateMaterializationError("Chapter goal requires a non-empty summary")
         return ChapterGoal(
@@ -402,11 +420,15 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         ):
             raise CandidateMaterializationError("Draft candidate evidence chain is incomplete")
         expected_candidate_id = StableId(
-            "draft-candidate."
-            + result.final_candidate_id.root.removeprefix("sha256:")[:48]
+            "draft-candidate." + result.final_candidate_id.root.removeprefix("sha256:")[:48]
+        )
+        expected_acceptance_task = bounded_stable_id(
+            f"{result.task_id.root}.accept",
+            f"accept.{candidate.candidate_hash}",
+            f"accept.{result.run_id.root}",
         )
         if (
-            accepted.task_id.root != f"{result.task_id.root}.accept"
+            accepted.task_id.root != expected_acceptance_task.root
             or candidate.candidate_id != expected_candidate_id
         ):
             raise CandidateMaterializationError("Draft candidate task lineage is invalid")
@@ -415,8 +437,7 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
             basis.project_id != accepted.project_id
             or basis.base_commit != accepted.expected_project_commit
             or basis.plan_artifact.artifact_id != base.plan_root.artifact_id
-            or basis.project_profile_artifact.artifact_id
-            != base.project_profile_root.artifact_id
+            or basis.project_profile_artifact.artifact_id != base.project_profile_root.artifact_id
             or basis.snapshot_id != candidate.basis_snapshot
         ):
             raise CandidateMaterializationError("Draft candidate basis differs from accepted roots")
@@ -440,9 +461,7 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         if not text.strip():
             raise CandidateMaterializationError("accepted Draft text is blank")
         chapter_index = writing_task.target_chapter
-        chapter_id = self._stable_id(
-            f"chapter.{chapter_index}", accepted.acceptance_id.root
-        )
+        chapter_id = self._stable_id(f"chapter.{chapter_index}", accepted.acceptance_id.root)
         scene_id = writing_task.target_scenes[0]
         block_id = self._stable_id(
             f"block.{chapter_index}", result.final_candidate_id.root.removeprefix("sha256:")
@@ -467,17 +486,13 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
                 ),
             ),
         )
-        updated, _receipt = self._timeline.append(
-            current, accepted.candidate.candidate_id, chapter
-        )
+        updated, _receipt = self._timeline.append(current, accepted.candidate.candidate_id, chapter)
         root_artifact = self._artifacts.put(
             canonical_json_bytes(updated.model_dump(mode="json")),
             TEXT_ROOT_MEDIA_TYPE,
             updated.schema_version,
         )
-        root_ref = TextRootRef(
-            **root_artifact.model_dump(mode="python"), root_kind=RootKind.TEXT
-        )
+        root_ref = TextRootRef(**root_artifact.model_dump(mode="python"), root_kind=RootKind.TEXT)
         proposed_roots = base.model_copy(
             update={
                 "text_root": root_ref,

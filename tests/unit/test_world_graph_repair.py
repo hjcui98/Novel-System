@@ -39,6 +39,7 @@ from novel_agent.domain.world import (
     Entity,
     EntityResolutionStatus,
     RelationBackfillStatus,
+    RelationRecord,
     StateRecord,
     StoryTime,
     TruthClass,
@@ -129,10 +130,13 @@ def _world_with_state_truth(
 def test_predicate_registry_is_bounded_and_records_ownership_metadata() -> None:
     registry = PredicateRegistry()
 
-    assert len(registry.definitions) == 18
+    assert len(registry.definitions) == 19
     assert registry.require("teacher_of").current_caller == "WorldGraphExtractionPass"
     assert registry.require("teacher_of").inverse_predicate == "student_of"
     assert registry.require("teacher_of").example_evidence_ref
+    mounts = registry.require("mounts")
+    assert mounts.allowed_subject_types == ("character", "person")
+    assert mounts.allowed_object_types == ("creature", "animal", "beast")
 
 
 def test_alias_policy_prefers_unique_canonical_label_and_reports_alias_collision() -> None:
@@ -389,6 +393,167 @@ def test_model_curator_graph_profile_binds_quotes_and_host_admits_missing_entity
         "Prioritize relation candidates over entity-only discovery" in endpoint.requests[0].prompt
     )
     assert "Never emit a standalone entity candidate" in endpoint.requests[0].prompt
+    assert "source_truth_class must be explicit" in endpoint.requests[0].prompt
+    assert "Never use unknown or not_applicable for a relation" in endpoint.requests[0].prompt
+
+
+def test_graph_profile_binds_ordinal_free_time_to_source_chapter_for_new_evidence() -> None:
+    """An ordinal-free current observation must not dedupe an older timeless edge."""
+
+    world, text, teacher_id, student_id = _teacher_world()
+    quote = text.chapters[4].scenes[0].blocks[0].text
+    existing = RelationRecord(
+        relation_id=StableId("relation.synthetic.timeless"),
+        predicate="teacher_of",
+        subject_id=teacher_id,
+        object_id=student_id,
+        valid_time=StoryTime(worldline="main"),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    world = world.model_copy(update={"states": (), "relations": (existing,)})
+    world = world.model_copy(update={"root_hash": world_root_content_id(world)})
+    response = json.dumps(
+        {
+            "status": "complete",
+            "candidates": [
+                {
+                    "kind": "relation",
+                    "subject_surface": "旧誓言",
+                    "predicate": "teacher_of",
+                    "object_surface": "林澈",
+                    "valid_time": {"worldline": "main"},
+                    "source_truth_class": "accepted_world_fact",
+                    "evidence_quotes": [quote],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    endpoint = FakeModelEndpoint(response)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.labelled-time",
+                model_name="fake.graph.labelled-time",
+                adapter=endpoint,
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph.labelled-time"),
+        run_id=RunId("run.graph.labelled-time"),
+        task_id=TaskId("task.graph.labelled-time"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph.labelled-time",
+        prompt="",
+    )
+
+    batches, _ = asyncio.run(
+        ModelCurator(
+            gateway,
+            semantic_verifier=lambda _record, _candidate: (
+                EvidenceSupportDisposition.SUPPORTS,
+                "test_trusted_semantic_verifier",
+            ),
+        ).extract_graph_candidates(
+            text,
+            5,
+            world.source_commit,
+            world,
+            request,
+        )
+    )
+
+    assert batches[0].relations[0].valid_time.start_ordinal == 5
+    result = WorldGraphExtractionPass().run(world, text, candidate_batches=batches)
+    admitted = next(
+        item
+        for item in result.receipt.candidates
+        if item.candidate_id == batches[0].relations[0].candidate_id
+    )
+    assert admitted.status is RelationBackfillStatus.ACCEPTED
+    assert len(result.change_set.operations) == 1
+
+
+def test_graph_profile_retries_one_malformed_page_without_losing_valid_candidate() -> None:
+    """A bad concurrent page must get one bounded schema retry of its own.
+
+    Graph source units are independent evidence scopes.  A provider response
+    such as ``{{...`` must not cancel a valid page (or force a workflow-level
+    poison retry) when the same page can be corrected with the validation
+    feedback already recorded by the gateway.
+    """
+
+    world, text, _, _ = _teacher_world()
+    quote = text.chapters[4].scenes[0].blocks[0].text
+    valid_response = json.dumps(
+        {
+            "status": "complete",
+            "candidates": [
+                {
+                    "kind": "relation",
+                    "subject_surface": "林澈",
+                    "predicate": "located_at",
+                    "object_surface": "北塔",
+                    "valid_time": {"worldline": "main", "start_ordinal": 5},
+                    "source_truth_class": "accepted_world_fact",
+                    "evidence_quotes": [quote],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    endpoint = ScriptedModelEndpoint(
+        lambda request: (
+            '{{"status":"complete","candidates":[]}}'
+            if ".schema-retry1" not in request.request_id.root
+            else valid_response
+        )
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.schema-retry",
+                model_name="fake.graph.schema-retry",
+                adapter=endpoint,
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph.schema-retry"),
+        run_id=RunId("run.graph.schema-retry"),
+        task_id=TaskId("task.graph.schema-retry"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph.schema-retry",
+        prompt="",
+    )
+
+    batches, calls = asyncio.run(
+        ModelCurator(
+            gateway,
+            graph_source_unit_tokens=100_000,
+            semantic_verifier=lambda _record, _candidate: (
+                EvidenceSupportDisposition.SUPPORTS,
+                "test_trusted_semantic_verifier",
+            ),
+        ).extract_graph_candidates(text, 5, world.source_commit, world, request)
+    )
+
+    assert len(endpoint.requests) == 2
+    assert endpoint.requests[1].request_id.root.endswith(".u000.p00.schema-retry1")
+    assert len(calls) == 1
+    assert len(batches) == 1
+    assert batches[0].relations[0].predicate == "located_at"
+    ledger_entries = gateway.call_ledger.list_for_prefix(endpoint.requests[0].request_id.root)
+    assert tuple(entry.status.value for entry in ledger_entries) == (
+        "validation_rejected",
+        "completed",
+    )
 
 
 def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
@@ -446,6 +611,7 @@ def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
             world,
             request,
             repair_feedback=feedback,
+            repair_query="陈长生 located_at 哪里?",
         )
     )
     prompt = endpoint.requests[0].prompt
@@ -459,6 +625,8 @@ def test_graph_profile_embeds_repair_feedback_in_page_prompt() -> None:
     assert "CURATOR_PROPOSAL_SCHEMA_REJECTED" in prompt
     assert "/candidates/0" in prompt
     assert "kind_discriminator_required" in prompt
+    assert "陈长生 located_at 哪里?" in prompt
+    assert prompt.index("<MEMORY_REPAIR_TARGET") < prompt.index("EVIDENCE_CANDIDATES=")
 
 
 def test_model_graph_profile_support_gate_and_audit_paths() -> None:
@@ -584,6 +752,77 @@ def test_model_graph_profile_support_gate_and_audit_paths() -> None:
     candidate = verified_curator.last_evidence_candidates[0].model_copy(update={"text": "wrong"})
     with pytest.raises(ValueError, match="does not round-trip"):
         ModelCurator._evidence_ref(text, 5, world.source_commit, candidate)
+
+
+def test_model_graph_profile_batches_more_than_four_partial_verifications() -> None:
+    world, text, _, _ = _teacher_world()
+    quote = text.chapters[4].scenes[0].blocks[0].text
+    candidates = [
+        {
+            "kind": "relation",
+            "subject_surface": "旧誓言",
+            "predicate": "teacher_of",
+            "object_surface": "林澈",
+            "valid_time": {"worldline": "main", "start_ordinal": index},
+            "source_truth_class": "accepted_world_fact",
+            "evidence_quotes": [quote],
+        }
+        for index in range(5, 10)
+    ]
+    draft_response = json.dumps(
+        {"status": "complete", "candidates": candidates},
+        ensure_ascii=False,
+    )
+
+    def response(request: ModelRequest) -> str:
+        if ".semantic-verifier" not in request.request_id.root:
+            return draft_response
+        indexes = range(4) if ".b00" in request.request_id.root else (4,)
+        return json.dumps(
+            {
+                "decisions": [
+                    {
+                        "operation_index": index,
+                        "disposition": "supports",
+                        "reason_code": "DIRECT_SUPPORT",
+                    }
+                    for index in indexes
+                ]
+            }
+        )
+
+    endpoint = ScriptedModelEndpoint(response)
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="fake.graph.partial-batches",
+                model_name="fake.graph.partial-batches",
+                adapter=endpoint,
+            ),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("request.graph.partial-batches"),
+        run_id=RunId("run.graph.partial-batches"),
+        task_id=TaskId("task.graph.partial-batches"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.graph.partial-batches",
+        prompt="",
+    )
+
+    batches, _ = asyncio.run(
+        ModelCurator(
+            gateway,
+            enable_model_semantic_verifier=True,
+        ).extract_graph_candidates(text, 5, world.source_commit, world, request)
+    )
+
+    assert len(endpoint.requests) == 3
+    assert endpoint.requests[1].request_id.root.endswith(".semantic-verifier.b00")
+    assert endpoint.requests[2].request_id.root.endswith(".semantic-verifier.b01")
+    assert [relation.support_status.value for relation in batches[0].relations] == ["supported"] * 5
 
 
 def test_model_graph_profile_rejects_non_roundtripping_evidence_without_blocking_batch() -> None:
@@ -1386,8 +1625,8 @@ def test_graph_page_draft_canonicalizes_empty_no_op_reason() -> None:
 
 # The three exact Graph candidate-page raw responses quarantined by the
 # chapter-12 diagnostic (package sha256:1d35f044...): the first and third are
-# complete pages WITH candidates carrying `no_graph_candidate_reason: ""`; the
-# second is a complete page with no candidates that omits the reason entirely.
+# complete pages WITH candidates carrying an implicit `not_applicable` truth
+# class; the second is a complete page with no candidates that omits the reason.
 QUARANTINED_CH12_GRAPH_PAGE_1 = """{
   "status": "complete",
   "candidates": [
@@ -1444,47 +1683,14 @@ QUARANTINED_CH12_GRAPH_PAGE_3 = """{
 }"""
 
 
-def test_graph_page_draft_canonicalizes_exact_quarantined_ch12_pages() -> None:
-    # Round-19: the three exact quarantined raw pages must now validate, with
-    # the canonicalization confined to the no-candidate-reason field.
-    from novel_agent.domain.world import (
-        GraphCandidatePageDraft,
-        GraphEntityCandidateDraft,
-        GraphRelationCandidateDraft,
-    )
+def test_graph_page_draft_rejects_quarantined_implicit_truth_pages() -> None:
+    from novel_agent.domain.world import GraphCandidatePageDraft
 
-    page1 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_1)
-    assert page1.no_graph_candidate_reason is None
-    relation1 = page1.candidates[0]
-    assert isinstance(relation1, GraphRelationCandidateDraft)
-    assert len(page1.candidates) == 1
-    assert relation1.predicate == "discloses_to"
-    assert relation1.subject_surface == "陈长生"
-    assert relation1.object_surface == "唐三十六"
-    assert relation1.valid_time.start_ordinal is None
-    assert len(relation1.evidence_quotes) == 1
-    assert relation1.source_truth_class.value == "not_applicable"
-
+    with pytest.raises(ValidationError, match="explicit source truth class"):
+        GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_1)
     page2 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_2)
     assert page2.candidates == ()
     assert page2.no_graph_candidate_reason == "model_returned_no_graph_candidates"
 
-    page3 = GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_3)
-    assert page3.no_graph_candidate_reason is None
-    assert len(page3.candidates) == 2
-    relation3 = page3.candidates[0]
-    assert isinstance(relation3, GraphRelationCandidateDraft)
-    assert relation3.predicate == "owns"
-    assert relation3.object_surface == "剑"
-    entity3 = page3.candidates[1]
-    assert isinstance(entity3, GraphEntityCandidateDraft)
-    assert entity3.surface == "剑"
-    assert entity3.entity_type == "artifact"
-    # The canonicalized page differs from the raw page only in the reason field.
-    raw3 = json.loads(QUARANTINED_CH12_GRAPH_PAGE_3)
-    raw3["no_graph_candidate_reason"] = None
-    dumped = page3.model_dump(mode="json")
-    for candidate in dumped["candidates"]:
-        if candidate.get("valid_time") is not None:
-            candidate["valid_time"].pop("label", None)
-    assert dumped == raw3
+    with pytest.raises(ValidationError, match="explicit source truth class"):
+        GraphCandidatePageDraft.model_validate_json(QUARANTINED_CH12_GRAPH_PAGE_3)

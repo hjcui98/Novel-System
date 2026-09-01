@@ -47,6 +47,9 @@ retrieval-models = [
   "torch>=2.7,<3",
   "transformers>=4.51,<5",
 ]
+temporal-spike = [
+  "temporalio[langgraph]==1.31.0",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -89,6 +92,14 @@ ignore_missing_imports = true
 module = ["testcontainers", "testcontainers.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["temporalio", "temporalio.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["novel_agent.runtime.temporal_langgraph_spike"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=novel_agent --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
@@ -100,6 +111,7 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["novel_agent"]
+omit = ["*/novel_agent/runtime/temporal_langgraph_spike.py"]
 
 [tool.coverage.report]
 show_missing = true

@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "adapter_identity": {
+      "minLength": 1,
+      "title": "Adapter Identity",
+      "type": "string"
+    },
+    "endpoint_name": {
+      "minLength": 1,
+      "title": "Endpoint Name",
+      "type": "string"
+    },
+    "is_external": {
+      "title": "Is External",
+      "type": "boolean"
+    },
+    "model_name": {
+      "minLength": 1,
+      "title": "Model Name",
+      "type": "string"
+    },
+    "revision": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revision"
+    },
+    "role": {
+      "minLength": 1,
+      "title": "Role",
+      "type": "string"
+    }
+  },
+  "required": [
+    "role",
+    "endpoint_name",
+    "model_name",
+    "adapter_identity",
+    "is_external"
+  ],
+  "title": "ResolvedEndpointRevision",
+  "type": "object"
+}

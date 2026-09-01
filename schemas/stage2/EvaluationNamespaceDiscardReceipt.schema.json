@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "MemoryIdentitySnapshot": {
+      "additionalProperties": false,
+      "description": "Durable Memory/Commit identity used to prove evaluation discard is a no-op.",
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "profile_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "world_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "commit_id",
+        "text_root",
+        "world_root",
+        "plan_root",
+        "profile_root"
+      ],
+      "title": "MemoryIdentitySnapshot",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Logical close of evaluation artifacts. Does not mutate Memory or Canon.",
+  "properties": {
+    "discarded_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Discarded Refs",
+      "type": "array"
+    },
+    "memory_identity_after": {
+      "$ref": "#/$defs/MemoryIdentitySnapshot"
+    },
+    "memory_identity_before": {
+      "$ref": "#/$defs/MemoryIdentitySnapshot"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "run_id",
+    "discarded_refs",
+    "memory_identity_before",
+    "memory_identity_after"
+  ],
+  "title": "EvaluationNamespaceDiscardReceipt",
+  "type": "object"
+}

@@ -1,0 +1,259 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ResolvedEndpointRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_identity": {
+          "minLength": 1,
+          "title": "Adapter Identity",
+          "type": "string"
+        },
+        "endpoint_name": {
+          "minLength": 1,
+          "title": "Endpoint Name",
+          "type": "string"
+        },
+        "is_external": {
+          "title": "Is External",
+          "type": "boolean"
+        },
+        "model_name": {
+          "minLength": 1,
+          "title": "Model Name",
+          "type": "string"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "endpoint_name",
+        "model_name",
+        "adapter_identity",
+        "is_external"
+      ],
+      "title": "ResolvedEndpointRevision",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Startup facts frozen after preflight. Secrets never appear here.",
+  "properties": {
+    "chapter_settlement": {
+      "minLength": 1,
+      "title": "Chapter Settlement",
+      "type": "string"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "draft_materializer": {
+      "minLength": 1,
+      "title": "Draft Materializer",
+      "type": "string"
+    },
+    "endpoints": {
+      "items": {
+        "$ref": "#/$defs/ResolvedEndpointRevision"
+      },
+      "title": "Endpoints",
+      "type": "array"
+    },
+    "estimated_reasoning_reserve": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Estimated Reasoning Reserve",
+      "type": "integer"
+    },
+    "factory_locator": {
+      "minLength": 1,
+      "title": "Factory Locator",
+      "type": "string"
+    },
+    "global_output_cap": {
+      "default": 131072,
+      "minimum": 1,
+      "title": "Global Output Cap",
+      "type": "integer"
+    },
+    "memory_gateway": {
+      "minLength": 1,
+      "title": "Memory Gateway",
+      "type": "string"
+    },
+    "memory_maintenance": {
+      "minLength": 1,
+      "title": "Memory Maintenance",
+      "type": "string"
+    },
+    "migration_head": {
+      "minLength": 1,
+      "title": "Migration Head",
+      "type": "string"
+    },
+    "model_gateway": {
+      "minLength": 1,
+      "title": "Model Gateway",
+      "type": "string"
+    },
+    "object_store_root": {
+      "minLength": 1,
+      "title": "Object Store Root",
+      "type": "string"
+    },
+    "output_limit": {
+      "minimum": 1,
+      "title": "Output Limit",
+      "type": "integer"
+    },
+    "plan_materializer": {
+      "minLength": 1,
+      "title": "Plan Materializer",
+      "type": "string"
+    },
+    "planner_adapter": {
+      "minLength": 1,
+      "title": "Planner Adapter",
+      "type": "string"
+    },
+    "planner_invocation_factory": {
+      "minLength": 1,
+      "title": "Planner Invocation Factory",
+      "type": "string"
+    },
+    "projection_builder": {
+      "minLength": 1,
+      "title": "Projection Builder",
+      "type": "string"
+    },
+    "prompt_pins": {
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Prompt Pins",
+      "type": "array"
+    },
+    "reasoning_billing_mode": {
+      "minLength": 1,
+      "title": "Reasoning Billing Mode",
+      "type": "string"
+    },
+    "reasoning_included_in_completion_tokens": {
+      "default": false,
+      "title": "Reasoning Included In Completion Tokens",
+      "type": "boolean"
+    },
+    "reranker_declared": {
+      "title": "Reranker Declared",
+      "type": "boolean"
+    },
+    "reranker_resolved": {
+      "title": "Reranker Resolved",
+      "type": "boolean"
+    },
+    "retrieval_backend": {
+      "minLength": 1,
+      "title": "Retrieval Backend",
+      "type": "string"
+    },
+    "safety_allowance_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Safety Allowance Tokens"
+    },
+    "sequence_limit": {
+      "minimum": 1,
+      "title": "Sequence Limit",
+      "type": "integer"
+    },
+    "session_factory_identity": {
+      "minLength": 1,
+      "title": "Session Factory Identity",
+      "type": "string"
+    },
+    "skill_pins": {
+      "items": {
+        "$ref": "#/$defs/ArtifactId"
+      },
+      "title": "Skill Pins",
+      "type": "array"
+    },
+    "spec_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "writer_adapter": {
+      "minLength": 1,
+      "title": "Writer Adapter",
+      "type": "string"
+    },
+    "writing_request_factory": {
+      "minLength": 1,
+      "title": "Writing Request Factory",
+      "type": "string"
+    }
+  },
+  "required": [
+    "spec_version",
+    "factory_locator",
+    "migration_head",
+    "object_store_root",
+    "session_factory_identity",
+    "planner_adapter",
+    "writer_adapter",
+    "plan_materializer",
+    "draft_materializer",
+    "chapter_settlement",
+    "memory_maintenance",
+    "writing_request_factory",
+    "planner_invocation_factory",
+    "model_gateway",
+    "memory_gateway",
+    "projection_builder",
+    "retrieval_backend",
+    "endpoints",
+    "sequence_limit",
+    "output_limit",
+    "reasoning_billing_mode",
+    "prompt_pins",
+    "skill_pins",
+    "reranker_declared",
+    "reranker_resolved",
+    "configuration_fingerprint"
+  ],
+  "title": "ResolvedProductionAssemblyAttestation",
+  "type": "object"
+}

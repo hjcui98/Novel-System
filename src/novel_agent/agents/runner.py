@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from novel_agent.agents.registry import AgentRegistry
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
-from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
+from novel_agent.domain.model_calls import EffectiveBudgetResult, ModelCallRecord, ModelRequest
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -67,6 +67,27 @@ class StructuredAgentRunner:
         self._prompts = prompts
         self._skills = skills
 
+    def bind_effective_budget(
+        self, request: ModelRequest
+    ) -> tuple[ModelRequest, EffectiveBudgetResult]:
+        """Resolve one budget before a caller assembles budget-sensitive context.
+
+        The Gateway retains the result by request id, so the subsequent
+        structured call, admission descriptor, and ledger entry reuse this
+        exact identity instead of independently estimating output capacity.
+        """
+
+        budget = self._gateway.resolve_effective_budget(request)
+        return (
+            request.model_copy(
+                update={
+                    "max_output_tokens": budget.total_output_budget,
+                    "budget_source": budget.budget_source,
+                }
+            ),
+            budget,
+        )
+
     async def run(
         self,
         agent_type: AgentType,
@@ -101,7 +122,9 @@ class StructuredAgentRunner:
         unresolved: tuple[str, ...] = (),
     ) -> AgentRunResult[OutputT]:
         """Execute a prepared request and finalize its receipt with trusted outputs."""
-        output, call = await self._gateway.generate_structured(prepared.request, output_type)
+        output, call = await self._gateway.generate_structured_audited(
+            prepared.request, output_type
+        )
         receipt = self.receipt(
             prepared,
             call,
@@ -232,8 +255,8 @@ class StructuredAgentRunner:
                 base_commit=base_commit,
                 input_artifacts=input_artifacts,
                 output_artifacts=output_artifacts,
+                status=ExecutionStatus.PLANNED,
                 unresolved=unresolved,
-                status=ExecutionStatus.SUCCEEDED,
                 latency_ms=call.latency_ms,
             )
             for index, skill in enumerate(skill_refs)

@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "description": "One Track A evidence pointer. Chapter must be at or before the cutoff.",
+  "properties": {
+    "chapter": {
+      "maximum": 300,
+      "minimum": 0,
+      "title": "Chapter",
+      "type": "integer"
+    },
+    "span": {
+      "minLength": 1,
+      "title": "Span",
+      "type": "string"
+    }
+  },
+  "required": [
+    "chapter",
+    "span"
+  ],
+  "title": "QaEvidenceItem",
+  "type": "object"
+}

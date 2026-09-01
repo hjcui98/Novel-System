@@ -101,8 +101,16 @@ ROUTES: dict[Stage1QueryIntent, RouteDefinition] = {
     Stage1QueryIntent.DIALOGUE_SAMPLE: RouteDefinition(
         (RetrievalChannel.GROUNDED_BM25, RetrievalChannel.GROUNDED_DENSE), True
     ),
-    Stage1QueryIntent.CAUSAL_MULTI_HOP: RouteDefinition((RetrievalChannel.TYPED_GRAPH,), False),
-    Stage1QueryIntent.RELATION_CHAIN: RouteDefinition((RetrievalChannel.TYPED_GRAPH,), False),
+    Stage1QueryIntent.CAUSAL_MULTI_HOP: RouteDefinition(
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+        True,
+        (RetrievalChannel.TYPED_GRAPH,),
+    ),
+    Stage1QueryIntent.RELATION_CHAIN: RouteDefinition(
+        (RetrievalChannel.ANCHOR_BM25, RetrievalChannel.ANCHOR_DENSE),
+        True,
+        (RetrievalChannel.TYPED_GRAPH,),
+    ),
     Stage1QueryIntent.ANCHOR_INSUFFICIENT: RouteDefinition(
         (RetrievalChannel.GROUNDED_BM25, RetrievalChannel.GROUNDED_DENSE), True
     ),
@@ -198,6 +206,51 @@ class CandidateQuotaPolicy:
             raise ValueError("candidate quota limits must be positive")
 
 
+def _graph_path_seed_ids(candidate: FusedCandidate) -> set[StableId]:
+    """Entities actually on the path. Query-stamped seed_entity_ids do not count."""
+
+    seeds: set[StableId] = set()
+    for hit in candidate.channel_hits:
+        for receipt in hit.graph_path_receipts:
+            seeds.update(receipt.entity_path)
+    return seeds
+
+
+def retain_related_graph_paths(
+    candidates: tuple[FusedCandidate, ...],
+    *,
+    seed_entity_ids: tuple[StableId, ...] = (),
+) -> tuple[FusedCandidate, ...]:
+    """Keep one related admissible Graph path when Anchor mass would drop all."""
+
+    inferred = seed_entity_ids or tuple(
+        dict.fromkeys(
+            entity_id
+            for candidate in candidates
+            if candidate.selected and not _graph_path_seed_ids(candidate)
+            for entity_id in candidate.unit.entity_ids
+        )
+    )
+    seeds = set(inferred)
+    if not seeds:
+        return candidates
+    related = tuple(
+        candidate
+        for candidate in candidates
+        if seeds.issubset(_graph_path_seed_ids(candidate))
+        and set(candidate.unit.entity_ids).intersection(seeds)
+    )
+    if not related or any(candidate.selected for candidate in related):
+        return candidates
+    best = min(related, key=lambda candidate: (candidate.fused_rank, candidate.unit.unit_id.root))
+    return tuple(
+        candidate.model_copy(update={"selected": True, "rejection_reason": None})
+        if candidate.unit.unit_id == best.unit.unit_id
+        else candidate
+        for candidate in candidates
+    )
+
+
 class TypedCandidateSelector:
     def __init__(self, policy: CandidateQuotaPolicy | None = None) -> None:
         self._policy = policy or CandidateQuotaPolicy()
@@ -207,6 +260,7 @@ class TypedCandidateSelector:
         candidates: tuple[FusedCandidate, ...],
         *,
         limit: int,
+        seed_entity_ids: tuple[StableId, ...] = (),
     ) -> tuple[FusedCandidate, ...]:
         if limit < 1:
             raise ValueError("candidate selection limit must be positive")
@@ -214,6 +268,7 @@ class TypedCandidateSelector:
         kind_counts: dict[RetrievalUnitKind, int] = defaultdict(int)
         chapter_counts: dict[int, int] = defaultdict(int)
         evidence_seen: set[StableId] = set()
+        seeds = set(seed_entity_ids)
         output: list[FusedCandidate] = []
         for candidate in candidates:
             unit = candidate.unit
@@ -225,7 +280,9 @@ class TypedCandidateSelector:
             )
             reason: str | None = None
             if not unit.mandatory:
-                if selected_optional >= limit:
+                if seeds and not set(unit.entity_ids).intersection(seeds):
+                    reason = "off_seed"
+                elif selected_optional >= limit:
                     reason = "optional_candidate_limit"
                 elif kind_counts[unit.unit_kind] >= self._policy.max_per_unit_kind:
                     reason = "unit_kind_quota"
@@ -256,7 +313,7 @@ class TypedCandidateSelector:
                     }
                 )
             )
-        return tuple(output)
+        return retain_related_graph_paths(tuple(output), seed_entity_ids=seed_entity_ids)
 
 
 class FusionService:
@@ -278,6 +335,7 @@ class FusionService:
         channel_results: dict[RetrievalChannel, tuple[ChannelHit, ...]],
         *,
         limit: int,
+        seed_entity_ids: tuple[StableId, ...] = (),
     ) -> tuple[FusedCandidate, ...]:
         if limit < 1:
             raise ValueError("fusion limit must be positive")
@@ -316,7 +374,7 @@ class FusionService:
             )
             for rank, (score, identity, hits) in enumerate(scored, start=1)
         )
-        return self._selector.select(candidates, limit=limit)
+        return self._selector.select(candidates, limit=limit, seed_entity_ids=seed_entity_ids)
 
 
 class RetrievalOrchestrator:
@@ -369,6 +427,16 @@ class RetrievalOrchestrator:
                 compiled_query_bundle=bundle.model_dump(mode="json"),
                 effective_channels=(),
                 query_unavailable_reasons=unavailable,
+                required_need_facet_ids=(
+                    need.completion_spec.required_need_facet_ids
+                    if need.completion_spec is not None
+                    else ()
+                ),
+                irreducible_need_facet_ids=(
+                    need.completion_spec.irreducible_need_facet_ids
+                    if need.completion_spec is not None
+                    else ()
+                ),
                 facet_receipts=FacetSupportEvaluator.not_executed(need),
             )
         all_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
@@ -378,13 +446,19 @@ class RetrievalOrchestrator:
         fallback_used = False
         fallback_reason: str | None = None
         rerank_used = False
+        relation_or_causal = need.query_intent in {
+            Stage1QueryIntent.RELATION_CHAIN,
+            Stage1QueryIntent.CAUSAL_MULTI_HOP,
+        }
+        seed_ids: tuple[StableId, ...] = need.entity_ids
         window = self._per_channel_limit
         while True:
             primary = self._run_channels(need, primary_channels, limit=window)
             all_results.update(primary)
             candidates = self._combine(primary, fusion=route.fusion, limit=window)
             rerank_used = (
-                route.fusion
+                not relation_or_causal
+                and route.fusion
                 and self._reranker is not None
                 and any(
                     candidate.selected and candidate.unit.unit_kind in ANCHOR_KINDS
@@ -413,7 +487,46 @@ class RetrievalOrchestrator:
             )
             fallback = self._run_channels(need, fallback_channels, limit=self._max_window)
             all_results.update(fallback)
-            candidates = self._combine(fallback, fusion=len(fallback) > 1, limit=self._max_window)
+            if not relation_or_causal:
+                # Keep R1 exact/temporal state records. CURRENT_STATE fallback
+                # used to replace primary hits with BM25/dense relation
+                # anchors, so meridian/洗髓 STATE_ANCHOR never reached L0.
+                candidates = self._combine(
+                    all_results,
+                    fusion=len(all_results) > 1,
+                    limit=self._max_window,
+                )
+                selected = tuple(candidate for candidate in candidates if candidate.selected)
+                receipts = FacetSupportEvaluator.evaluate(need, selected)
+        if relation_or_causal:
+            # The anchor and graph results share the existing FusionService.
+            # Preserve anchor evidence when graph expansion is empty or only
+            # partially useful; a fallback must not erase the primary result.
+            seed_ids = (
+                tuple(
+                    dict.fromkeys(
+                        entity_id
+                        for candidate in selected
+                        for entity_id in candidate.unit.entity_ids
+                        if entity_id in set(need.entity_ids)
+                    )
+                )
+                or need.entity_ids
+            )
+            candidates = self._combine(
+                all_results,
+                fusion=True,
+                limit=self._max_window,
+                seed_entity_ids=seed_ids,
+            )
+            rerank_used = self._reranker is not None and any(
+                candidate.selected and candidate.unit.unit_kind in ANCHOR_KINDS
+                for candidate in candidates
+            )
+            if rerank_used:
+                assert self._reranker is not None
+                candidates = self._reranker.rerank(need, candidates, limit=self._max_window)
+                candidates = retain_related_graph_paths(candidates, seed_entity_ids=seed_ids)
             selected = tuple(candidate for candidate in candidates if candidate.selected)
             receipts = FacetSupportEvaluator.evaluate(need, selected)
         closed = FacetSupportEvaluator.closed_facet_ids(receipts)
@@ -435,6 +548,20 @@ class RetrievalOrchestrator:
             *((RetrievalChannel.RERANK,) if rerank_used else ()),
             *(fallback_channels if fallback_used else ()),
         )
+        selected_graph_paths = {
+            receipt.path_id
+            for candidate in selected
+            for hit in candidate.channel_hits
+            for receipt in hit.graph_path_receipts
+        }
+        graph_invoked = (
+            RetrievalChannel.TYPED_GRAPH in (fallback_channels if fallback_used else ())
+            or RetrievalChannel.TYPED_GRAPH in all_results
+        )
+        graph_exhausted = bool(graph_invoked and not selected_graph_paths)
+        if graph_exhausted:
+            unavailable = {**unavailable, RetrievalChannel.TYPED_GRAPH: "graph_exhausted"}
+            fallback_reason = fallback_reason or "graph_exhausted"
         return RetrievalTrace(
             need_id=need.need_id,
             intent=need.query_intent,
@@ -462,6 +589,9 @@ class RetrievalOrchestrator:
             closed_need_facet_ids=closed,
             facet_receipts=receipts,
             retrieval_pages=pages,
+            graph_path_count=len(selected_graph_paths),
+            graph_seed_entity_ids=(seed_ids if relation_or_causal else ()),
+            graph_exhausted=graph_exhausted,
         )
 
     def _run_channels(
@@ -479,9 +609,10 @@ class RetrievalOrchestrator:
         *,
         fusion: bool,
         limit: int,
+        seed_entity_ids: tuple[StableId, ...] = (),
     ) -> tuple[FusedCandidate, ...]:
         if fusion:
-            return self._fusion.fuse(results, limit=limit)
+            return self._fusion.fuse(results, limit=limit, seed_entity_ids=seed_entity_ids)
         hits: list[ChannelHit] = []
         seen: set[str] = set()
         for channel_hits in results.values():
@@ -489,7 +620,7 @@ class RetrievalOrchestrator:
                 if hit.unit.unit_id.root not in seen:
                     seen.add(hit.unit.unit_id.root)
                     hits.append(hit)
-        return tuple(
+        ranked = tuple(
             FusedCandidate(
                 unit=hit.unit,
                 fused_rank=rank,
@@ -502,6 +633,7 @@ class RetrievalOrchestrator:
             )
             for rank, hit in enumerate(hits, start=1)
         )
+        return retain_related_graph_paths(ranked, seed_entity_ids=seed_entity_ids)
 
 
 class InMemoryRetrievalBackend:

@@ -1,0 +1,298 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvolutionCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_contract_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Affected Contract Ids",
+          "type": "array"
+        },
+        "base_artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "bounded_single_change": {
+          "const": true,
+          "default": true,
+          "title": "Bounded Single Change",
+          "type": "boolean"
+        },
+        "candidate_artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "change_summary": {
+          "maxLength": 1200,
+          "minLength": 1,
+          "title": "Change Summary",
+          "type": "string"
+        },
+        "incident_refs": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "maxItems": 64,
+          "minItems": 2,
+          "title": "Incident Refs",
+          "type": "array"
+        },
+        "isolated_candidate": {
+          "const": true,
+          "default": true,
+          "title": "Isolated Candidate",
+          "type": "boolean"
+        },
+        "requires_human_gate": {
+          "default": false,
+          "title": "Requires Human Gate",
+          "type": "boolean"
+        },
+        "runtime_hot_mutation_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Runtime Hot Mutation Allowed",
+          "type": "boolean"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "target_kind": {
+          "$ref": "#/$defs/EvolutionTargetKind"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "target_id",
+        "target_kind",
+        "base_artifact_ref",
+        "candidate_artifact_ref",
+        "incident_refs",
+        "affected_contract_ids",
+        "change_summary"
+      ],
+      "title": "EvolutionCandidate",
+      "type": "object"
+    },
+    "EvolutionCheckpointAssignment": {
+      "additionalProperties": false,
+      "properties": {
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "basis_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "incident_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Incident Ids",
+          "type": "array"
+        },
+        "use": {
+          "$ref": "#/$defs/EvolutionCheckpointUse"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "use",
+        "basis_commit",
+        "basis_ref",
+        "incident_ids"
+      ],
+      "title": "EvolutionCheckpointAssignment",
+      "type": "object"
+    },
+    "EvolutionCheckpointUse": {
+      "enum": [
+        "calibration",
+        "sealed_acceptance",
+        "canary"
+      ],
+      "title": "EvolutionCheckpointUse",
+      "type": "string"
+    },
+    "EvolutionMetricThreshold": {
+      "additionalProperties": false,
+      "properties": {
+        "higher_is_better": {
+          "default": true,
+          "title": "Higher Is Better",
+          "type": "boolean"
+        },
+        "metric": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        },
+        "minimum_delta": {
+          "minimum": 0.0,
+          "title": "Minimum Delta",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metric",
+        "minimum_delta"
+      ],
+      "title": "EvolutionMetricThreshold",
+      "type": "object"
+    },
+    "EvolutionTargetKind": {
+      "enum": [
+        "prompt",
+        "skill",
+        "policy",
+        "code"
+      ],
+      "title": "EvolutionTargetKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assignments": {
+      "items": {
+        "$ref": "#/$defs/EvolutionCheckpointAssignment"
+      },
+      "minItems": 3,
+      "title": "Assignments",
+      "type": "array"
+    },
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "candidate": {
+      "$ref": "#/$defs/EvolutionCandidate"
+    },
+    "code_source_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluator_feedback_writeback": {
+      "const": false,
+      "default": false,
+      "title": "Evaluator Feedback Writeback",
+      "type": "boolean"
+    },
+    "held_out_read_after_development_freeze": {
+      "const": true,
+      "default": true,
+      "title": "Held Out Read After Development Freeze",
+      "type": "boolean"
+    },
+    "manifest_version": {
+      "const": "u8-evolution-campaign.v1",
+      "default": "u8-evolution-campaign.v1",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "online_policy_mutation": {
+      "const": false,
+      "default": false,
+      "title": "Online Policy Mutation",
+      "type": "boolean"
+    },
+    "preregistered_at": {
+      "format": "date-time",
+      "title": "Preregistered At",
+      "type": "string"
+    },
+    "thresholds": {
+      "items": {
+        "$ref": "#/$defs/EvolutionMetricThreshold"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Thresholds",
+      "type": "array"
+    },
+    "whole_checkpoint_split": {
+      "const": true,
+      "default": true,
+      "title": "Whole Checkpoint Split",
+      "type": "boolean"
+    },
+    "write_once": {
+      "const": true,
+      "default": true,
+      "title": "Write Once",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "campaign_id",
+    "candidate",
+    "assignments",
+    "thresholds",
+    "code_source_fingerprint",
+    "configuration_fingerprint",
+    "preregistered_at"
+  ],
+  "title": "EvolutionCampaignManifest",
+  "type": "object"
+}

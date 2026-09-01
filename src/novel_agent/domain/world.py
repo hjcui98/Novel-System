@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
@@ -41,6 +41,15 @@ class StoryTime(DomainModel):
         ):
             raise ValueError("story time end must be greater than or equal to start")
         return self
+
+
+class GraphStoryTime(StoryTime):
+    """Graph repair time constrained to the canonical main worldline."""
+
+    # Keep this field required.  A model response that omits the worldline
+    # must fail the bounded schema retry instead of silently inheriting the
+    # canonical value and bypassing temporal-shape repair.
+    worldline: Literal["main"]
 
 
 class NarrativeOrder(DomainModel):
@@ -145,9 +154,31 @@ class GraphRelationCandidateDraft(DomainModel):
     subject_surface: str = Field(min_length=1, max_length=160)
     predicate: str = Field(min_length=1, max_length=160)
     object_surface: str = Field(min_length=1, max_length=160)
-    valid_time: StoryTime
+    valid_time: GraphStoryTime
     source_truth_class: TruthClass
     evidence_quotes: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+    @field_validator("valid_time", mode="before")
+    @classmethod
+    def coerce_graph_time(cls, value: object) -> object:
+        if isinstance(value, StoryTime):
+            if value.worldline != "main":
+                raise ValueError("graph relation candidate valid_time must use worldline=main")
+            return GraphStoryTime.model_validate(value.model_dump())
+        if isinstance(value, dict) and value.get("worldline") not in {None, "main"}:
+            raise ValueError("graph relation candidate valid_time must use worldline=main")
+        return value
+
+    @model_validator(mode="after")
+    def validate_worldline(self) -> GraphRelationCandidateDraft:
+        # Graph repair writes to the main canonical World timeline.  A model
+        # may otherwise emit a schema-valid label such as ``chapter_95_end``;
+        # reject it here so the bounded graph-page retry can correct the
+        # temporal shape before support/admission rather than persisting a
+        # parallel worldline.
+        if self.valid_time.worldline != "main":
+            raise ValueError("graph relation candidate valid_time must use worldline=main")
+        return self
 
 
 GraphCandidateDraft = Annotated[
@@ -210,6 +241,16 @@ class GraphCandidatePageDraft(DomainModel):
             if isinstance(candidate, GraphEntityCandidateDraft)
         ):
             raise ValueError("entity candidate must be a relation endpoint in the same page")
+        if any(
+            candidate.source_truth_class
+            in {
+                TruthClass.UNKNOWN,
+                TruthClass.NOT_APPLICABLE,
+            }
+            for candidate in page.candidates
+            if isinstance(candidate, GraphRelationCandidateDraft)
+        ):
+            raise ValueError("graph relation candidate requires an explicit source truth class")
         return page
 
     @property

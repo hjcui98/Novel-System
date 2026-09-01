@@ -220,6 +220,41 @@ def test_checkpoint_reload_event_sequence_and_static_basis_errors() -> None:
     assert basis.project_id == PROJECT
 
 
+def test_workflow_event_identities_remain_bounded_after_shared_sequence_grows() -> None:
+    workflow, _ = _workflow_and_data()
+    sink = InMemoryRunEventSink()
+    workflow._events = sink
+    request = _request().model_copy(
+        update={"request_id": StableId("chapter-settlement.acceptance." + "a" * 64)}
+    )
+    data = _WorkflowData(request=request, artifacts=workflow._artifacts)
+
+    for sequence_no in range(1, 10):
+        sink.append(
+            RunEvent(
+                event_id=StableId(f"seed.event.{sequence_no}"),
+                run_id=request.run_id,
+                task_id=request.task_id,
+                sequence_no=sequence_no,
+                event_type=RunEventType.TASK_STARTED,
+                occurred_at=parent_time(),
+                idempotency_identity=StableId(f"seed.effect.{sequence_no}"),
+                payload_schema_version=VERSION,
+                trace_id="trace.seed",
+                payload={},
+            )
+        )
+
+    workflow._event(data, RunEventType.CURATOR_PROPOSAL_ATTEMPT_REQUESTED)
+
+    event = sink.events[-1]
+    assert event.sequence_no == 10
+    assert len(event.event_id.root) <= 128
+    assert len(event.idempotency_identity.root) <= 128
+    assert event.event_id.root.startswith("event.")
+    assert event.idempotency_identity.root.startswith("event-effect.")
+
+
 def parent_time() -> Any:
     from datetime import UTC, datetime
 
@@ -479,7 +514,9 @@ def test_execute_maps_initialize_and_all_exception_families_to_results() -> None
 
     workflow = Harness(canonical_read=cast(Any, object()), commit=object())
     workflow.initial = initialized
-    assert asyncio.run(workflow.execute(request)) == initialized
+    initialized_result = asyncio.run(workflow.execute(request))
+    assert initialized_result.model_copy(update={"terminal_result_ref": None}) == initialized
+    assert initialized_result.terminal_result_ref is not None
 
     for error, code in (
         (InformationBoundaryViolation("boundary"), "INFORMATION_DERIVATION_BOUNDARY_VIOLATION"),

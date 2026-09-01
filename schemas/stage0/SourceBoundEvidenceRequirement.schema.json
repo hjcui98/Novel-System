@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
+  "properties": {
+    "required_consequence_markers": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Required Consequence Markers",
+      "type": "array"
+    },
+    "required_span": {
+      "$ref": "#/$defs/TextSpanRef"
+    },
+    "source_artifact_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "source_chapter_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_chapter_index": {
+      "minimum": 0,
+      "title": "Source Chapter Index",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "source_artifact_id",
+    "source_chapter_index",
+    "source_chapter_id",
+    "required_span",
+    "required_consequence_markers"
+  ],
+  "title": "SourceBoundEvidenceRequirement",
+  "type": "object"
+}

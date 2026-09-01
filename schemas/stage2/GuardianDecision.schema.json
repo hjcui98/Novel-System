@@ -31,6 +31,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -231,7 +238,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -249,6 +259,7 @@
       "title": "GuardianOutcome",
       "type": "string"
     },
+    "JsonValue": {},
     "RunId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "RunId",
@@ -348,11 +359,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"

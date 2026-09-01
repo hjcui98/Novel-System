@@ -56,6 +56,7 @@ from novel_agent.domain.planning import (
     PlanningQuestionKind,
     PlanningReference,
     PlanningTurnAction,
+    PlanningTurnDraft,
     PlanningTurnOutput,
     PlanReview,
     PlanReviewDraft,
@@ -430,15 +431,21 @@ def test_planner_need_generator_covers_question_kinds_rejections_and_review_bind
     assert result.rejection_reasons["question.unknown-goal"] == "unknown_goal_lineage"
     generator = PlanningInquiryConditionedNeedGenerator()
     assert (
-        generator._routing(PlanningQuestionKind.RELATION_CAUSAL)[0]
-        is Stage1QueryIntent.CAUSAL_MULTI_HOP
+        generator._routing((NeedFacetKind.CAUSAL_HISTORY,))[0] is Stage1QueryIntent.CAUSAL_MULTI_HOP
     )
     assert (
-        generator._routing(PlanningQuestionKind.OBLIGATION_PACING)[0]
+        generator._routing(
+            (NeedFacetKind.COMMITMENT,),
+            structured_kind=PlanningQuestionKind.OBLIGATION_PACING,
+        )[0]
         is Stage1QueryIntent.PLAN_OBLIGATION
     )
     assert (
-        generator._routing(PlanningQuestionKind.STYLE_REFERENCE)[0] is Stage1QueryIntent.STYLE_VOICE
+        generator._routing(
+            (NeedFacetKind.SETUP,),
+            structured_kind=PlanningQuestionKind.STYLE_REFERENCE,
+        )[0]
+        is Stage1QueryIntent.STYLE_VOICE
     )
     no_anchor_question = questions[2].model_copy(
         update={"question": "文风和句式参考是什么?", "entity_labels": ()}
@@ -547,15 +554,17 @@ def test_post_genesis_context_rejects_wrong_memory_basis(tmp_path: Path) -> None
         )
 
 
-def test_relation_and_causal_routes_reuse_frozen_stage2_parallel_graph_profile() -> None:
+def test_relation_and_causal_routes_anchor_before_conditional_graph_profile() -> None:
     for intent in (Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP):
         profile = profile_for(intent, ResolutionTier.R2)
         assert tuple(step.channel for step in profile.primary_groups[0].steps) == (
-            RetrievalChannel.TYPED_GRAPH,
             RetrievalChannel.ANCHOR_BM25,
             RetrievalChannel.ANCHOR_DENSE,
         )
-        assert profile.conditional_fallbacks == ()
+        assert tuple(step.channel for step in profile.conditional_fallbacks[0].steps) == (
+            RetrievalChannel.TYPED_GRAPH,
+        )
+        assert profile.conditional_fallbacks[0].condition == "anchor_evidence_insufficient"
 
 
 def test_stage4_domain_validators_fail_closed(tmp_path: Path) -> None:
@@ -725,6 +734,12 @@ def test_stage4_domain_validators_fail_closed(tmp_path: Path) -> None:
         action=PlanningTurnAction.REQUEST_MEMORY,
         memory_questions=("what happened?",),
     ).memory_questions
+    assert PlanningTurnDraft.model_validate(
+        {
+            "action": PlanningTurnAction.REQUEST_MEMORY,
+            "memory_questions": ["first?", "first?", "second?"],
+        }
+    ).memory_questions == ("first?", "second?")
     with pytest.raises(ValidationError, match="non-degraded"):
         PlanningLoopResult(
             request_id=bootstrap.request_id,
@@ -1017,9 +1032,7 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
     assert tight.budget_report.dropped_item_ids
     assert set(tight.budget_report.drop_reasons.values()) == {"optional_token_budget"}
 
-    tiny_budgets = request.budgets.model_copy(
-        update={"planner_context_target_tokens": 1}
-    )
+    tiny_budgets = request.budgets.model_copy(update={"planner_context_target_tokens": 1})
     overflow, _ = assembler.assemble(
         request=request.model_copy(update={"budgets": tiny_budgets}),
         inquiry=inquiry,

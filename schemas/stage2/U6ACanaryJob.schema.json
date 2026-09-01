@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U6AReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context",
+        "c_roll",
+        "d_short",
+        "free_run"
+      ],
+      "title": "U6AReadoutTrack",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One Track C/D or free-run job attached to an existing N-1 basis.",
+  "properties": {
+    "basis_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "maximum": 300,
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "future_visibility": {
+      "const": "evaluator_only",
+      "default": "evaluator_only",
+      "title": "Future Visibility",
+      "type": "string"
+    },
+    "job_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "lifecycle": {
+      "default": [
+        "freeze",
+        "release",
+        "wcp",
+        "writer",
+        "response_freeze",
+        "evaluator_reveal",
+        "discard"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Lifecycle",
+      "type": "array"
+    },
+    "release_policy": {
+      "const": "after_basis_freeze",
+      "default": "after_basis_freeze",
+      "title": "Release Policy",
+      "type": "string"
+    },
+    "status": {
+      "default": "PLANNED",
+      "enum": [
+        "PLANNED",
+        "EXECUTED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "track": {
+      "$ref": "#/$defs/U6AReadoutTrack"
+    }
+  },
+  "required": [
+    "job_id",
+    "track",
+    "checkpoint_chapter",
+    "basis_id"
+  ],
+  "title": "U6ACanaryJob",
+  "type": "object"
+}

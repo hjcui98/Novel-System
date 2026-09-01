@@ -12,6 +12,7 @@ from pydantic import Field
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.creative_runtime import CreativeRunResult
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, SchemaVersion
+from novel_agent.domain.model_calls import ModelCallLedgerAggregate, ModelCostAvailability
 from novel_agent.domain.runtime import EffectReceipt, RunEvent, TaskAttempt, TaskRecord
 
 
@@ -54,7 +55,9 @@ class Stage5RuntimeAuditReport(DomainModel):
     effects: tuple[EffectReceipt, ...]
     events: tuple[RunEvent, ...]
     model_request_count: int = Field(ge=0)
-    model_cost_usd: Decimal = Field(ge=Decimal("0"))
+    model_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    model_cost_availability: ModelCostAvailability = ModelCostAvailability.UNKNOWN
+    model_call_aggregates: tuple[ModelCallLedgerAggregate, ...] = ()
     skill_hashes: tuple[str, ...] = ()
     active_feature_flags: tuple[str, ...] = ()
     deferred_feature_flags: tuple[str, ...]

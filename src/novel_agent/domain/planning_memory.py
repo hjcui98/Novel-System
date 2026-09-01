@@ -17,7 +17,7 @@ from pydantic import Field, model_validator
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import AuthorPlanningContext
-from novel_agent.domain.ids import ArtifactId, RunId, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId
 from novel_agent.domain.memory import Stage1MemoryNeed
 from novel_agent.domain.world import StoryTime
 
@@ -105,10 +105,22 @@ class GroundedRelationMention(DomainModel):
     subject_label: str = Field(min_length=1)
     relation_label: str = Field(min_length=1)
     object_label: str = Field(min_length=1)
+    # Endpoint ids are retained even when the relation itself is absent from
+    # the current World snapshot.  An explicit Planner question can therefore
+    # preserve its exact subject/predicate/object contract while remaining a
+    # typed unresolved graph gap.
+    subject_id: StableId | None = None
+    object_id: StableId | None = None
     relation_id: StableId | None = None
     grounding_status: GroundingStatus
     confidence: float = Field(ge=0.0, le=1.0)
     grounding_method: str = ""
+
+    @model_validator(mode="after")
+    def validate_endpoint_pair(self) -> GroundedRelationMention:
+        if (self.subject_id is None) != (self.object_id is None):
+            raise ValueError("grounded relation endpoint ids must appear together")
+        return self
 
 
 class GroundedNeedDraft(DomainModel):
@@ -188,6 +200,57 @@ class PlannerTargetStateCoverage(DomainModel):
         return self
 
 
+class PlannerPreviewStatus(StrEnum):
+    RESOLVED = "resolved"
+    MISSING = "missing"
+    STALE = "stale"
+    CUTOFF_EXCLUDED = "cutoff_excluded"
+
+
+class PlannerSourcePreview(DomainModel):
+    """One exact L0 preview dereferenced from a selected Planner record."""
+
+    record_id: StableId
+    record_kind: str = Field(min_length=1)
+    evidence_id: StableId
+    status: PlannerPreviewStatus
+    source_commit: CommitId
+    chapter_index: int | None = Field(default=None, ge=1)
+    text: str = ""
+    truncated: bool = False
+
+
+class PlannerSourceExpansion(DomainModel):
+    """Durable P1 selection and fail-closed dereference accounting."""
+
+    context_level: str = "P1"
+    hit_record_count: int = Field(ge=0)
+    resolved_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    stale_count: int = Field(ge=0)
+    cutoff_excluded_count: int = Field(ge=0)
+    preview_tokens: int = Field(ge=0)
+    selected_record_ids: tuple[StableId, ...] = ()
+    truncated_count: int = Field(default=0, ge=0)
+    previews: tuple[PlannerSourcePreview, ...] = ()
+
+    def prompt_block(self) -> str:
+        resolved_previews = tuple(
+            preview for preview in self.previews if preview.status is PlannerPreviewStatus.RESOLVED
+        )
+        if not resolved_previews:
+            return ""
+        lines = ["证据片段(P1, 仅截止点前精确 L0; 无效引用已排除):"]
+        for preview in resolved_previews:
+            chapter = (
+                f"第{preview.chapter_index}章" if preview.chapter_index is not None else "序章"
+            )
+            lines.append(
+                f"- {preview.record_kind} {preview.record_id.root} ({chapter}): {preview.text}"
+            )
+        return "\n".join(lines)
+
+
 class PlannerWorldSummary(DomainModel):
     """Deterministic, bounded world projection shown to the LLM Planner.
 
@@ -206,6 +269,7 @@ class PlannerWorldSummary(DomainModel):
     recent_events: tuple[PlannerEventSummary, ...] = ()
     key_relations: tuple[PlannerRelationSummary, ...] = ()
     target_state_coverage: tuple[PlannerTargetStateCoverage, ...] = ()
+    selected_record_ids: tuple[StableId, ...] = ()
     entity_count: int = Field(ge=0)
     state_count: int = Field(ge=0)
     event_count: int = Field(ge=0)
@@ -228,6 +292,8 @@ class PlannerWorldSummary(DomainModel):
             raise ValueError("planner state truncation count is inconsistent")
         if self.relation_count - len(self.key_relations) != self.truncated_relation_count:
             raise ValueError("planner relation truncation count is inconsistent")
+        if len(self.selected_record_ids) != len(set(self.selected_record_ids)):
+            raise ValueError("planner selected record ids must be unique")
         return self
 
 
@@ -404,6 +470,7 @@ class PlannerRunResult(DomainModel):
     raw_response: str = ""
     attempts: tuple[PlannerInvocationAttempt, ...] = ()
     generation_pages: tuple[PlannerPage, ...] = ()
+    source_expansion: PlannerSourceExpansion | None = None
 
 
 class PlannerInvocationArtifact(DomainModel):
@@ -438,6 +505,7 @@ class PlannerInvocationArtifact(DomainModel):
     raw_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     canonical_scope_by_draft: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     scope_normalization_reasons: dict[str, str] = Field(default_factory=dict)
+    source_expansion: PlannerSourceExpansion | None = None
     artifact_ref: ArtifactRef | None = None
 
     @model_validator(mode="after")
@@ -455,6 +523,10 @@ class PlannerInvocationArtifact(DomainModel):
         request_ids = tuple(attempt.request_id for attempt in self.attempts)
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("Planner artifact attempt request ids must be unique")
+        if self.source_expansion is not None and (
+            self.source_expansion.selected_record_ids != self.world_summary.selected_record_ids
+        ):
+            raise ValueError("Planner P1 expansion must use the P0 selected record sequence")
         need_ids = tuple(item.need_id for item in self.final_need_manifests)
         if len(need_ids) != len(set(need_ids)):
             raise ValueError("Planner artifact final Need ids must be unique")
@@ -545,8 +617,11 @@ __all__ = [
     "PlannerObligationSummary",
     "PlannerPage",
     "PlannerPageStatus",
+    "PlannerPreviewStatus",
     "PlannerRelationSummary",
     "PlannerRunResult",
+    "PlannerSourceExpansion",
+    "PlannerSourcePreview",
     "PlannerStateSummary",
     "PlannerTargetStateCoverage",
     "PlannerWorldSummary",

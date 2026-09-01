@@ -40,6 +40,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -506,7 +513,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -534,6 +544,7 @@
       "title": "FacetEvidenceRequirement",
       "type": "string"
     },
+    "JsonValue": {},
     "MemorySelection": {
       "additionalProperties": false,
       "properties": {
@@ -628,6 +639,16 @@
           "minLength": 1,
           "title": "Producer Version",
           "type": "string"
+        },
+        "relation_bindings_by_facet": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/RelationFacetBinding"
+            },
+            "type": "array"
+          },
+          "title": "Relation Bindings By Facet",
+          "type": "object"
         },
         "require_causal_history": {
           "default": false,
@@ -767,6 +788,30 @@
       "title": "RangeUnit",
       "type": "string"
     },
+    "RelationFacetBinding": {
+      "additionalProperties": false,
+      "description": "One ordered relation triple that can close a relation facet.\n\n``RetrievalUnit.entity_ids`` preserves the canonical relation direction\n(subject first, object second).  Keeping that direction in the completion\ncontract prevents an anchor for the inverse edge, or an edge that merely\nshares one endpoint, from satisfying an explicit Planner relation.",
+      "properties": {
+        "object_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "subject_id",
+        "predicate",
+        "object_id"
+      ],
+      "title": "RelationFacetBinding",
+      "type": "object"
+    },
     "RequirementLevel": {
       "enum": [
         "mandatory",
@@ -903,11 +948,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"

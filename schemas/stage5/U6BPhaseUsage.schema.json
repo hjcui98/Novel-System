@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "attempt_count": {
+      "minimum": 0,
+      "title": "Attempt Count",
+      "type": "integer"
+    },
+    "chapter_index": {
+      "minimum": 1,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "phase": {
+      "enum": [
+        "plan",
+        "memory",
+        "writer",
+        "editor",
+        "settlement",
+        "recovery"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "wall_clock_ms": {
+      "minimum": 0,
+      "title": "Wall Clock Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "chapter_index",
+    "phase",
+    "wall_clock_ms",
+    "model_call_count",
+    "input_tokens",
+    "output_tokens",
+    "attempt_count"
+  ],
+  "title": "U6BPhaseUsage",
+  "type": "object"
+}

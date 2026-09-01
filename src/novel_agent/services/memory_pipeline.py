@@ -187,24 +187,42 @@ class AnchorBuilder:
                 )
             )
         if plan is not None:
+            goal_ids = {goal.goal_id for goal in plan.chapter_goals}
+            plan_node_unit_ids = {
+                node.plan_node_id: StableId(
+                    f"anchor.plan-node.{node.plan_node_id.root}"
+                    if node.plan_node_id in goal_ids
+                    else f"anchor.{node.plan_node_id.root}"
+                )
+                for node in plan.nodes
+            }
             for node in plan.nodes:
+                node_unit_id = plan_node_unit_ids[node.plan_node_id]
                 units.append(
                     RetrievalUnit(
-                        unit_id=StableId(f"anchor.{node.plan_node_id.root}"),
+                        unit_id=node_unit_id,
                         unit_kind=RetrievalUnitKind.ARC_ANCHOR,
                         source_commit=basis_commit,
                         snapshot_id=snapshot_id,
                         source_artifact=plan.root_hash,
                         text=f"{node.title} {node.summary}",
                         parent_unit_id=(
-                            StableId(f"anchor.{node.parent_id.root}")
+                            plan_node_unit_ids.get(
+                                node.parent_id,
+                                StableId(f"anchor.{node.parent_id.root}"),
+                            )
                             if node.parent_id is not None
                             else None
                         ),
                         parent_unit_ids=(
                             ()
                             if node.parent_id is None
-                            else (StableId(f"anchor.{node.parent_id.root}"),)
+                            else (
+                                plan_node_unit_ids.get(
+                                    node.parent_id,
+                                    StableId(f"anchor.{node.parent_id.root}"),
+                                ),
+                            )
                         ),
                         access_scope="author_planning",
                         information_label="plan",
@@ -855,11 +873,21 @@ def _segment_evidence_ref(
         raise ValueError("grounded segment source requires an evidence reference")
     if parent_ref.span is None:
         raise ValueError("grounded segment source requires a precise span")
-    digest = quote_hash(segment).root.removeprefix("sha256:")[:24]
+    segment_hash = quote_hash(segment)
+    digest = segment_hash.root.removeprefix("sha256:")[:24]
+    evidence_id = f"evidence.segment.{unit.unit_id.root}.{start}.{digest}"
+    if len(evidence_id) > 128:
+        # Expanded unit ids can carry the complete query/lineage and exceed the StableId
+        # bound. The source object hash is already the bounded identity of the parent
+        # evidence; retaining it with the span and quote hash preserves segment identity.
+        evidence_id = (
+            f"evidence.segment.{parent_ref.object_hash.root.removeprefix('sha256:')}"
+            f".{start}.{digest}"
+        )
     return parent_ref.model_copy(
         update={
-            "evidence_id": StableId(f"evidence.segment.{unit.unit_id.root}.{start}.{digest}"),
-            "quote_hash": quote_hash(segment),
+            "evidence_id": StableId(evidence_id),
+            "quote_hash": segment_hash,
             "span": parent_ref.span.model_copy(update={"start": start, "end": end}),
         }
     )

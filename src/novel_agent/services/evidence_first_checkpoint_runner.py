@@ -17,7 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from novel_agent.agents import seal_tool_policy
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import AuthorPlanningContext, PlanRootDocument, TextRootDocument
-from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, SchemaVersion, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
     GraphPathDereferenceStatus,
     GraphPathReceipt,
@@ -37,6 +37,7 @@ from novel_agent.domain.retrieval_routing import (
 )
 from novel_agent.domain.stage2 import (
     AccessScope,
+    AgentExecutionReceipt,
     ContextBudget,
     MemoryResolutionRequest,
     RequiredSnapshotPolicy,
@@ -44,6 +45,7 @@ from novel_agent.domain.stage2 import (
     ToolPolicy,
 )
 from novel_agent.domain.writer_context import (
+    BenchmarkInformationProfile,
     BenchmarkTaskContract,
     NeedEvidenceJudgmentBatchReceipt,
     NeedFacetSemanticReceipt,
@@ -102,6 +104,7 @@ class EvidenceFirstCheckpointResult:
         candidate_limit_saturated: tuple[dict[str, Any], ...] = (),
         controller_decisions: tuple[dict[str, Any], ...] = (),
         controller_repairs: tuple[dict[str, Any], ...] = (),
+        controller_receipts: tuple[AgentExecutionReceipt, ...] = (),
     ) -> None:
         self.needs = needs
         self.route_plans = route_plans
@@ -143,6 +146,7 @@ class EvidenceFirstCheckpointResult:
         self.candidate_limit_saturated = candidate_limit_saturated
         self.controller_decisions = controller_decisions
         self.controller_repairs = controller_repairs
+        self.controller_receipts = controller_receipts
 
 
 class EvidenceFirstCheckpointRunner:
@@ -170,10 +174,15 @@ class EvidenceFirstCheckpointRunner:
             Callable[[ToolPolicy, tuple[RoutePlan, ...]], Any] | None
         ) = None,
         require_model_decisions: bool = False,
+        planner_model_decisions: bool | None = None,
+        controller_model_decisions: bool | None = None,
+        semantic_judge_model_decisions: bool | None = None,
         planner_max_output_tokens: int = 8192,
         planner_max_input_tokens: int = 12_000,
         semantic_judge_input_tokens: int = 12_000,
         semantic_judge_output_tokens: int = 2_048,
+        thinking_enabled: bool | None = False,
+        thinking_token_budget: int | None = None,
     ) -> None:
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
@@ -189,25 +198,54 @@ class EvidenceFirstCheckpointRunner:
             raise ValueError("semantic judge input budget must be at least 256 tokens")
         if semantic_judge_output_tokens < 256:
             raise ValueError("semantic judge output budget must be at least 256 tokens")
+        if thinking_token_budget is not None and thinking_token_budget < 0:
+            raise ValueError("thinking token budget must be non-negative")
         self._writer_token_budget = writer_token_budget
         self._evidence_ledger_token_budget = evidence_ledger_token_budget
         self._max_candidates = max_candidates
         self._max_tool_calls = max_tool_calls
         self._semantic_judge_input_tokens = semantic_judge_input_tokens
         self._semantic_judge_output_tokens = semantic_judge_output_tokens
+        self._thinking_enabled = thinking_enabled
+        self._thinking_token_budget = thinking_token_budget
+        self._planner_model_decisions = (
+            require_model_decisions if planner_model_decisions is None else planner_model_decisions
+        )
+        self._controller_model_decisions = (
+            require_model_decisions
+            if controller_model_decisions is None
+            else controller_model_decisions
+        )
+        self._semantic_judge_model_decisions = (
+            require_model_decisions
+            if semantic_judge_model_decisions is None
+            else semantic_judge_model_decisions
+        )
         self._generator = TaskPlanConditionedNeedGenerator(
             planner_gateway=planner_gateway,
             planner_artifact_writer=artifact_writer,
             planner_max_output_tokens=planner_max_output_tokens,
             planner_max_input_tokens=planner_max_input_tokens,
-            planner_coverage_audit=require_model_decisions,
+            planner_coverage_audit=self._planner_model_decisions,
+            planner_thinking_enabled=thinking_enabled,
+            planner_thinking_token_budget=thinking_token_budget,
         )
-        if require_model_decisions and planner_gateway is None:
-            raise ValueError("model-driven evidence-first requires a Planner gateway")
-        if require_model_decisions and controller_policy_factory is None:
+        if (
+            self._planner_model_decisions
+            or self._controller_model_decisions
+            or self._semantic_judge_model_decisions
+        ) and planner_gateway is None:
+            if self._planner_model_decisions:
+                raise ValueError("model-driven evidence-first requires a Planner gateway")
+            raise ValueError("model-driven evidence-first requires a model gateway")
+        if self._controller_model_decisions and controller_policy_factory is None:
             raise ValueError("model-driven evidence-first requires a Controller policy factory")
         self._controller_policy_factory = controller_policy_factory
-        self._require_model_decisions = require_model_decisions
+        self._require_model_decisions = (
+            self._planner_model_decisions
+            or self._controller_model_decisions
+            or self._semantic_judge_model_decisions
+        )
         self._assembler = EvidenceFirstWriterContextAssembler()
         self._resolver = EvidenceSliceResolver()
         self._graph_receipt_validator = graph_receipt_validator
@@ -216,6 +254,8 @@ class EvidenceFirstCheckpointRunner:
                 planner_gateway,
                 max_input_tokens=semantic_judge_input_tokens,
                 max_output_tokens=semantic_judge_output_tokens,
+                thinking_enabled=thinking_enabled,
+                thinking_token_budget=thinking_token_budget,
             )
             if planner_gateway is not None
             else None
@@ -236,11 +276,12 @@ class EvidenceFirstCheckpointRunner:
         base_commit: CommitId,
         snapshot_id: StableId,
         planning_context: AuthorPlanningContext,
-        frozen_planner_artifact: PlannerInvocationArtifact,
+        frozen_planner_artifact: PlannerInvocationArtifact | None,
         frozen_needs: tuple[Stage1MemoryNeed, ...],
         backend_bundle: Stage2RetrievalBackendBundle,
         fingerprint: ArtifactId,
         run_id: StableId,
+        model_run_id: RunId | None = None,
     ) -> EvidenceFirstCheckpointResult:
         """Execute Need -> Retrieval/Rank -> Selection -> Package/Ledger."""
         if backend_bundle.attestation.source_commit != base_commit:
@@ -251,13 +292,23 @@ class EvidenceFirstCheckpointRunner:
             or capability.snapshot_id != snapshot_id
         ):
             raise ValueError("checkpoint snapshot capability must be exact for the basis")
+        # A persisted WorldRoot can retain the commit that produced the world
+        # object, while this readout is bound to the checkpoint commit carried
+        # by the retrieval capability. Planner-generated Needs must use the
+        # latter identity or route compilation rejects an otherwise usable
+        # fallback Need. This mirrors the production reactive-memory binding.
+        if world.source_commit != base_commit:
+            world = world.model_copy(update={"source_commit": base_commit})
         need_generation: NeedGenerationResult | None = None
-        if self._require_model_decisions:
+        if self._planner_model_decisions:
             need_generation = self._generator.generate_with_lineage(
                 task,
                 world,
                 plan,
                 planning_context=planning_context,
+                history_text=text,
+                snapshot_id=snapshot_id,
+                run_id=model_run_id,
             )
             planner_fallback_used = need_generation.fallback_used
             # A Planner semantic/contract fallback is a typed quality signal,
@@ -267,6 +318,10 @@ class EvidenceFirstCheckpointRunner:
             # package carry planner_fallback_used + semantic INCOMPLETE.
             needs = need_generation.needs or frozen_needs
         else:
+            if frozen_planner_artifact is None:
+                raise ValueError(
+                    "deterministic evidence-first execution requires a frozen Planner artifact"
+                )
             planner_fallback_used = frozen_planner_artifact.fallback_status is (
                 PlannerFallbackStatus.PLANNER_FALLBACK
             )
@@ -285,7 +340,10 @@ class EvidenceFirstCheckpointRunner:
                     planner_fallback_used = True
                 else:
                     needs = need_generation.needs
-        needs = self._scope_needs(needs)
+        preserve_plan_context = (
+            task.information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
+        )
+        needs = self._scope_needs(needs, preserve_plan_context=preserve_plan_context)
         if not needs:
             raise ValueError(f"evidence-first checkpoint produced no memory needs: {case_id.root}")
         planner_model_call_count = (
@@ -293,7 +351,7 @@ class EvidenceFirstCheckpointRunner:
             if need_generation is not None and need_generation.planner_artifact is not None
             else 0
         )
-        if self._require_model_decisions and planner_model_call_count < 1:
+        if self._planner_model_decisions and planner_model_call_count < 1:
             raise RuntimeError("model-driven evidence-first made no Planner model call")
         route_plans = tuple(DeterministicChannelPlanner().plan(need, capability) for need in needs)
         derived_tool_call_budget = self._derived_tool_call_budget(route_plans)
@@ -343,8 +401,10 @@ class EvidenceFirstCheckpointRunner:
             initial_memory_needs=needs,
             worldline="main",
             narrative_chapter=task.target_chapter_start,
-            access_scope=AccessScope.WRITER_SAFE,
-            allow_future_plan=False,
+            access_scope=(
+                AccessScope.AUTHOR_PLANNING if preserve_plan_context else AccessScope.WRITER_SAFE
+            ),
+            allow_future_plan=preserve_plan_context,
             retrieval_budget=RetrievalBudget(
                 max_rounds=2,
                 max_tool_calls=tool_call_budget,
@@ -355,7 +415,7 @@ class EvidenceFirstCheckpointRunner:
             ),
             context_budget=ContextBudget(token_budget=self._writer_token_budget),
         )
-        if self._require_model_decisions:
+        if self._controller_model_decisions:
             resolved = controller.run_agentic(
                 request,
                 text,
@@ -371,7 +431,7 @@ class EvidenceFirstCheckpointRunner:
         controller_receipts = tuple(getattr(controller_policy, "decision_receipts", ()))
         controller_repairs = tuple(getattr(controller_policy, "decision_repairs", ()))
         controller_decisions = tuple(getattr(controller_policy, "decision_history", ()))
-        if self._require_model_decisions and not controller_receipts:
+        if self._controller_model_decisions and not controller_receipts:
             raise RuntimeError("model-driven evidence-first made no Controller model decision")
         selections, trace_records = self._selections(
             needs,
@@ -383,7 +443,7 @@ class EvidenceFirstCheckpointRunner:
             max_candidates=self._max_candidates,
         )
         semantic_judgment: NeedEvidenceSemanticResult | None = None
-        if self._require_model_decisions:
+        if self._semantic_judge_model_decisions:
             if self._semantic_judge is None:
                 raise RuntimeError("model-driven evidence-first requires semantic judge gateway")
             semantic_judgment = self._semantic_judge.judge(selections)
@@ -432,6 +492,10 @@ class EvidenceFirstCheckpointRunner:
                 )
         else:
             planner_ref = None
+            if frozen_planner_artifact is None:
+                raise ValueError(
+                    "deterministic evidence-first execution requires a frozen Planner artifact"
+                )
             planner_hash = content_id(frozen_planner_artifact.model_dump(mode="json"))
         assembly = self._assembler.assemble(
             task=task,
@@ -493,6 +557,7 @@ class EvidenceFirstCheckpointRunner:
                 }
                 for repair in controller_repairs
             ),
+            controller_receipts=controller_receipts,
         )
 
     def _selections(
@@ -756,16 +821,20 @@ class EvidenceFirstCheckpointRunner:
         return tuple(anchors)
 
     @staticmethod
-    def _scope_needs(needs: tuple[Stage1MemoryNeed, ...]) -> tuple[Stage1MemoryNeed, ...]:
+    def _scope_needs(
+        needs: tuple[Stage1MemoryNeed, ...],
+        *,
+        preserve_plan_context: bool = False,
+    ) -> tuple[Stage1MemoryNeed, ...]:
         return tuple(
             need.model_copy(
                 update={
-                    "access_scope": "writer_safe",
+                    "access_scope": ("author_planning" if preserve_plan_context else "writer_safe"),
                     "planner_may_read_plan": True,
-                    "retrieval_may_return_plan": False,
-                    "claim_may_cite_plan": False,
-                    "legacy_allow_plan": False,
-                    "allow_plan": False,
+                    "retrieval_may_return_plan": preserve_plan_context,
+                    "claim_may_cite_plan": preserve_plan_context,
+                    "legacy_allow_plan": preserve_plan_context,
+                    "allow_plan": preserve_plan_context,
                 }
             )
             for need in needs

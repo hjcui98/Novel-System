@@ -31,6 +31,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -264,7 +271,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -272,6 +282,7 @@
       "title": "ExecutionStatus",
       "type": "string"
     },
+    "JsonValue": {},
     "ModelCallPurpose": {
       "enum": [
         "development",
@@ -369,6 +380,15 @@
       "title": "ModelCallRecord",
       "type": "object"
     },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "ModelRole": {
       "enum": [
         "implementation_model",
@@ -380,6 +400,10 @@
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
         "cost_usd": {
           "anyOf": [
             {
@@ -517,11 +541,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"

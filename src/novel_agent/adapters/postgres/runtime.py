@@ -17,6 +17,10 @@ class RuntimeTaskQueryRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
+    @property
+    def session_factory(self) -> sessionmaker[Session]:
+        return self._session_factory
+
     def next_ready(
         self,
         *,
@@ -55,9 +59,7 @@ class RuntimeTaskQueryRepository:
                     RuntimeTaskProjectionRow.task_id,
                 ).limit(limit)
             )
-            return tuple(
-                TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows
-            )
+            return tuple(TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows)
 
     def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
         with self._session_factory() as session:

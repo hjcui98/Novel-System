@@ -186,7 +186,10 @@ class Stage2ConfigurationManifest(DomainModel):
 
 
 class ExecutionStatus(StrEnum):
+    PLANNED = "planned"
     SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    SKIPPED = "skipped"
     FAILED = "failed"
     SUSPENDED = "suspended"
     REJECTED = "rejected"
@@ -203,6 +206,8 @@ class SkillExecutionReceipt(DomainModel):
     context_manifest: ArtifactId | None = None
     input_artifacts: tuple[ArtifactRef, ...] = ()
     output_artifacts: tuple[ArtifactRef, ...] = ()
+    planned_checkpoints: tuple[str, ...] = ()
+    selected_checkpoints: tuple[str, ...] = ()
     completed_checkpoints: tuple[str, ...] = ()
     skipped_checkpoints: tuple[str, ...] = ()
     tool_call_ids: tuple[StableId, ...] = ()
@@ -210,6 +215,34 @@ class SkillExecutionReceipt(DomainModel):
     escalations: tuple[str, ...] = ()
     status: ExecutionStatus
     latency_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_checkpoint_receipt(self) -> SkillExecutionReceipt:
+        planned = set(self.planned_checkpoints)
+        selected = set(self.selected_checkpoints)
+        completed = set(self.completed_checkpoints)
+        skipped = set(self.skipped_checkpoints)
+        if len(planned) != len(self.planned_checkpoints):
+            raise ValueError("planned Skill checkpoints must be unique")
+        if len(selected) != len(self.selected_checkpoints):
+            raise ValueError("selected Skill checkpoints must be unique")
+        if len(completed) != len(self.completed_checkpoints):
+            raise ValueError("completed Skill checkpoints must be unique")
+        if len(skipped) != len(self.skipped_checkpoints):
+            raise ValueError("skipped Skill checkpoints must be unique")
+        if not selected.issubset(planned):
+            raise ValueError("selected Skill checkpoints must be planned")
+        if not completed.issubset(selected) or not skipped.issubset(selected):
+            raise ValueError("completed or skipped Skill checkpoints must be selected")
+        if completed & skipped:
+            raise ValueError("Skill checkpoint cannot be completed and skipped")
+        if self.status is ExecutionStatus.PLANNED and (completed or skipped):
+            raise ValueError("planned Skill receipt cannot claim completed checkpoints")
+        if self.status is ExecutionStatus.SUCCEEDED and not self.output_artifacts:
+            raise ValueError("succeeded Skill receipt requires output evidence")
+        if self.status is ExecutionStatus.SKIPPED and (completed or self.output_artifacts):
+            raise ValueError("skipped Skill receipt cannot claim completion or output")
+        return self
 
 
 class AgentExecutionReceipt(DomainModel):
@@ -233,6 +266,7 @@ class AgentExecutionReceipt(DomainModel):
     started_at: datetime
     completed_at: datetime
     latency_ms: int = Field(ge=0)
+    context_telemetry: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_timing(self) -> AgentExecutionReceipt:
@@ -416,6 +450,29 @@ class PlannerProposalDraft(DomainModel):
 
     @model_validator(mode="after")
     def validate_mode_output(self) -> PlannerProposalDraft:
+        if (
+            self.mode is AgentMode.CHAPTER_SET
+            and self.strategy is None
+            and not self.plan_items
+            and self.project_intent_items
+            and all(
+                item.provenance is ProposalProvenance.PLANNER_PROPOSED
+                and item.kind == "goal"
+                and type(item.payload.get("chapter_index")) is int
+                and isinstance(item.payload.get("summary"), str)
+                and bool(str(item.payload["summary"]).strip())
+                for item in self.project_intent_items
+            )
+        ):
+            # Some production responses place post-Genesis chapter goals under
+            # the bootstrap-only field. Keep this alias bounded to the exact
+            # CHAPTER_SET goal shape; malformed or bootstrap items still fail.
+            self = self.model_copy(
+                update={
+                    "project_intent_items": (),
+                    "plan_items": self.project_intent_items,
+                }
+            )
         planner_modes = {
             AgentMode.PROJECT_BOOTSTRAP,
             AgentMode.STORY,
@@ -444,7 +501,17 @@ class PlannerProposalDraft(DomainModel):
         ):
             raise ValueError("planning draft requires plan items or explicit unresolved gaps")
         if self.alternatives and not self.selection_rationale:
-            raise ValueError("planning alternatives require a selection rationale")
+            # Model output sometimes embeds the trade-off explanation in each
+            # alternative but omits the redundant aggregate field. Preserve
+            # that evidence as the typed rationale instead of turning a
+            # recoverable shape omission into a provider-unavailable failure.
+            return self.model_copy(
+                update={
+                    "selection_rationale": (
+                        "Embedded in alternatives: " + " | ".join(self.alternatives)
+                    )
+                }
+            )
         if self.strategy is BootstrapStrategy.NORMALIZE_ONLY and any(
             item.provenance is ProposalProvenance.PLANNER_PROPOSED
             for item in (

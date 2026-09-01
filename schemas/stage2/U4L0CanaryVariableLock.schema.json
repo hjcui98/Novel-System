@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "BudgetResolutionProfile": {
+      "enum": [
+        "canary",
+        "strict"
+      ],
+      "title": "BudgetResolutionProfile",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One frozen U4-L0 variable vector carried by campaign evidence.",
+  "properties": {
+    "budget_profile": {
+      "$ref": "#/$defs/BudgetResolutionProfile"
+    },
+    "c3_admission": {
+      "const": "NOT_ADMITTED",
+      "default": "NOT_ADMITTED",
+      "title": "C3 Admission",
+      "type": "string"
+    },
+    "controller_context_level": {
+      "enum": [
+        "C0",
+        "C1+C2"
+      ],
+      "title": "Controller Context Level",
+      "type": "string"
+    },
+    "planner_context_level": {
+      "enum": [
+        "P0",
+        "P0+P1"
+      ],
+      "title": "Planner Context Level",
+      "type": "string"
+    },
+    "thinking_enabled": {
+      "title": "Thinking Enabled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "budget_profile",
+    "controller_context_level",
+    "planner_context_level",
+    "thinking_enabled"
+  ],
+  "title": "U4L0CanaryVariableLock",
+  "type": "object"
+}

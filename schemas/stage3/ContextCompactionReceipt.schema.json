@@ -239,6 +239,19 @@
     "input_context_hash": {
       "$ref": "#/$defs/ArtifactId"
     },
+    "input_context_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Context Tokens"
+    },
     "kept_boundary": {
       "minimum": 0,
       "title": "Kept Boundary",
@@ -246,6 +259,19 @@
     },
     "output_context_hash": {
       "$ref": "#/$defs/ArtifactId"
+    },
+    "output_context_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Context Tokens"
     },
     "parent_generation": {
       "minimum": 0,
@@ -264,6 +290,20 @@
     },
     "receipt_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "reduction_ratio": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reduction Ratio"
     },
     "removed_item_ids": {
       "items": {

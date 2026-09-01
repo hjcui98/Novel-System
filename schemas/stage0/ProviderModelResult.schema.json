@@ -1,8 +1,21 @@
 {
   "$defs": {
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
         "cost_usd": {
           "anyOf": [
             {
@@ -48,6 +61,19 @@
       "minLength": 1,
       "title": "Model Version",
       "type": "string"
+    },
+    "provider_request_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Request Id"
     },
     "text": {
       "title": "Text",

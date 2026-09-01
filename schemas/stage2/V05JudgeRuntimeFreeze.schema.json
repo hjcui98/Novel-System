@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "description": "Independent scorer and judge contracts, including unavailable behavior.",
+  "properties": {
+    "answer_judge_version": {
+      "minLength": 1,
+      "title": "Answer Judge Version",
+      "type": "string"
+    },
+    "deterministic_scorer_version": {
+      "minLength": 1,
+      "title": "Deterministic Scorer Version",
+      "type": "string"
+    },
+    "evidence_support_judge_version": {
+      "minLength": 1,
+      "title": "Evidence Support Judge Version",
+      "type": "string"
+    },
+    "request_role": {
+      "minLength": 1,
+      "title": "Request Role",
+      "type": "string"
+    },
+    "unavailable_policy": {
+      "enum": [
+        "pending",
+        "unavailable",
+        "fail_closed"
+      ],
+      "title": "Unavailable Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_role",
+    "deterministic_scorer_version",
+    "answer_judge_version",
+    "evidence_support_judge_version",
+    "unavailable_policy"
+  ],
+  "title": "V05JudgeRuntimeFreeze",
+  "type": "object"
+}

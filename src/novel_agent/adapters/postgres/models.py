@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from novel_agent.adapters.postgres.database import Base
@@ -299,3 +299,30 @@ class R1RecordEntityRow(Base):
     )
     entity_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class ModelCallLedgerRow(Base):
+    """Durable provider-call lifecycle and raw-artifact references."""
+
+    __tablename__ = "model_call_ledger"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    attempt_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    logical_phase: Mapped[str] = mapped_column(String(256), nullable=False, default="unknown")
+    effective_budget_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reasoning_included_in_completion_tokens: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    raw_response_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    raw_artifact_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    call_record_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    validation_error: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    transport_error_type: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

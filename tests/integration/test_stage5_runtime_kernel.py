@@ -49,6 +49,7 @@ from novel_agent.domain.runtime import (
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
+from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
 from novel_agent.services.projection import (
     DerivedProjectionService,
@@ -229,6 +230,18 @@ def test_acceptance_is_durable_idempotent_and_policy_pinned(
         terminal_status=TaskStatus.SUCCEEDED,
         artifact_refs=(candidate_ref,),
     )
+    candidate = CandidateBinding(
+        candidate_id=StableId("candidate.accepted-plan"),
+        kind=CandidateKind.PLAN,
+        artifact_ref=candidate_ref,
+        candidate_hash=candidate_ref.artifact_id.root,
+        basis_commit=base,
+    )
+    binding_ref = artifacts.put(
+        canonical_json_bytes(candidate.model_dump(mode="json")),
+        "application/vnd.novel-agent.stage5-candidate-binding+json",
+        SchemaVersion("1.0.0"),
+    )
     waiting = TaskRecord(
         task_id=TaskId("run.accept.plan.accept"),
         run_id=first.run_id,
@@ -240,16 +253,10 @@ def test_acceptance_is_durable_idempotent_and_policy_pinned(
         policy_hash=POLICY_HASH,
         permission_hash=PERMISSION_HASH,
         input_artifact_refs=(candidate_ref,),
+        candidate_binding_ref=binding_ref,
         dependency_task_ids=(first.task_id,),
     )
     commands.create_task(waiting)
-    candidate = CandidateBinding(
-        candidate_id=StableId("candidate.accepted-plan"),
-        kind=CandidateKind.PLAN,
-        artifact_ref=candidate_ref,
-        candidate_hash=candidate_ref.artifact_id.root,
-        basis_commit=base,
-    )
     command = AcceptanceCommand(
         command_id=StableId("accept.command"),
         project_id=first.project_id,
@@ -537,6 +544,106 @@ def test_control_unblock_cancel_and_operator_reconcile_are_audited(
     )
 
 
+def test_retry_releases_settled_commit_writer_lane(
+    kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _, _, events, commands, base = kernel
+    task = TaskRecord(
+        task_id=TaskId("task.retry-commit-lane"),
+        run_id=RunId("run.retry-commit-lane"),
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_COMMIT,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=base,
+        policy_hash=POLICY_HASH,
+        permission_hash=PERMISSION_HASH,
+    )
+    commands.create_task(task)
+    first_attempt, first_fence = commands.claim(task.task_id, worker_id="commit-worker.one")
+    commands.mark_started(first_fence)
+    first_fence = commands.claim_writer_lane(first_fence)
+    waiting = commands.settle_attempt(
+        first_fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.WAITING_RETRY,
+        failure_class=FailureClass.PROVIDER_TRANSIENT,
+    )
+    assert waiting.writer_generation == first_fence.writer_generation
+
+    ready = commands.control(
+        task.task_id,
+        command_id=StableId("retry.commit-lane"),
+        action="retry",
+        actor_id="operator",
+        reason="retry settled provider failure",
+    )
+    assert ready.status is TaskStatus.READY
+    assert ready.writer_generation == 0
+
+    second_attempt, second_fence = commands.claim(task.task_id, worker_id="commit-worker.two")
+    assert second_attempt.attempt_no == first_attempt.attempt_no + 1
+    commands.mark_started(second_fence)
+    second_fence = commands.claim_writer_lane(second_fence)
+    assert second_fence.writer_generation == first_fence.writer_generation + 1
+    commands.verify_writer_lane(second_fence)
+    assert_task_projection_matches(
+        events.replay(task.run_id), RuntimeTaskQueryRepository(factory).list_run(task.run_id)
+    )
+
+
+def test_writer_lane_rejects_a_second_active_project_writer(
+    kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _, _, _, _, commands, base = kernel
+
+    def _write_task(task_id: str, run_id: str, kind: TaskKind) -> TaskRecord:
+        return TaskRecord(
+            task_id=TaskId(task_id),
+            run_id=RunId(run_id),
+            project_id=ProjectId("project.test"),
+            kind=kind,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=base,
+            policy_hash=POLICY_HASH,
+            permission_hash=PERMISSION_HASH,
+        )
+
+    first = _write_task("task.writer-lane.first", "run.writer-lane.first", TaskKind.PLAN_COMMIT)
+    second = _write_task("task.writer-lane.second", "run.writer-lane.second", TaskKind.DRAFT_COMMIT)
+    commands.create_task(first)
+    commands.create_task(second)
+
+    _, first_fence = commands.claim(first.task_id, worker_id="writer.one")
+    commands.mark_started(first_fence)
+    first_fence = commands.claim_writer_lane(first_fence)
+    assert commands.claim_writer_lane(first_fence) == first_fence
+
+    _, second_fence = commands.claim(second.task_id, worker_id="writer.two")
+    commands.mark_started(second_fence)
+    with pytest.raises(RuntimeCommandConflictError, match="already held"):
+        commands.claim_writer_lane(second_fence)
+
+    assert commands.get_task(first.task_id).status is TaskStatus.RUNNING
+    assert commands.get_task(second.task_id).status is TaskStatus.RUNNING
+    commands.verify_writer_lane(first_fence)
+
+
 def test_runtime_commands_fail_closed_on_invalid_identity_and_ownership(
     kernel: tuple[
         sessionmaker[Session],
@@ -647,7 +754,7 @@ def test_runtime_commands_fail_closed_on_invalid_identity_and_ownership(
             reason="active",
         )
     commands.reconcile_effect(task.task_id, terminal, command_id=StableId("reconcile.completed"))
-    with pytest.raises(ValueError, match="only retry or cancel"):
+    with pytest.raises(ValueError, match="only retry, block, or cancel"):
         commands.operator_reconcile_attempt(
             task.task_id,
             command_id=StableId("reconcile.invalid-status"),

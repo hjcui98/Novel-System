@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import RuntimeEffectProjectionRow
-from novel_agent.domain.ids import StableId, TaskId
+from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.runtime import (
     AttemptFence,
     EffectReceipt,
@@ -27,6 +27,27 @@ from novel_agent.services.runtime_commands import (
     RuntimeCommandService,
 )
 from novel_agent.services.runtime_projection import project_runtime_events
+
+
+def _bounded_recovery_command_id(
+    prefix: str,
+    identity: str,
+    *,
+    task_id: TaskId,
+    run_id: RunId,
+) -> StableId:
+    """Keep recovery commands bounded while retaining an existing scope."""
+
+    for value in (
+        f"{prefix}.{identity}",
+        f"{prefix}.{task_id.root}",
+        f"{prefix}.{run_id.root}",
+    ):
+        try:
+            return StableId(value)
+        except ValueError:
+            continue
+    raise RuntimeCommandConflictError("recovery command identity is too long")
 
 
 class RuntimeRecoveryService:
@@ -78,6 +99,7 @@ class RuntimeRecoveryService:
         return checkpoint
 
     def reconcile_uncertain_effects(self, task_id: TaskId) -> tuple[EffectReceipt, ...]:
+        task = self._commands.get_task(task_id)
         with self._session_factory() as session:
             rows = tuple(
                 session.scalars(
@@ -97,7 +119,12 @@ class RuntimeRecoveryService:
             if receipt.status in {EffectStatus.REQUESTED, EffectStatus.UNCERTAIN}:
                 self._commands.mark_recovery_pending(
                     task_id,
-                    command_id=StableId(f"recovery-pending.{receipt.effect_identity.root}"),
+                    command_id=_bounded_recovery_command_id(
+                        "recovery-pending",
+                        receipt.effect_identity.root,
+                        task_id=task_id,
+                        run_id=task.run_id,
+                    ),
                     actor_id="runtime-reconciler",
                     reason="external effect remains unresolved",
                 )
@@ -105,7 +132,12 @@ class RuntimeRecoveryService:
             self._commands.reconcile_effect(
                 task_id,
                 receipt,
-                command_id=StableId(f"reconcile.{receipt.effect_identity.root}"),
+                command_id=_bounded_recovery_command_id(
+                    "reconcile",
+                    receipt.effect_identity.root,
+                    task_id=task_id,
+                    run_id=task.run_id,
+                ),
             )
             resolved.append(receipt)
         return tuple(resolved)
@@ -125,7 +157,12 @@ class RuntimeRecoveryService:
         if task.paused:
             self._commands.resume(
                 task_id,
-                command_id=StableId(f"resume.{checkpoint.checkpoint_id.root}"),
+                command_id=_bounded_recovery_command_id(
+                    "resume",
+                    checkpoint.checkpoint_id.root,
+                    task_id=task_id,
+                    run_id=task.run_id,
+                ),
                 actor_id=actor_id,
                 reason="resume from latest settled checkpoint",
                 observed_revision=task.task_revision,
@@ -133,7 +170,12 @@ class RuntimeRecoveryService:
         elif task.status is TaskStatus.WAITING_RETRY:
             self._commands.control(
                 task_id,
-                command_id=StableId(f"retry.{checkpoint.checkpoint_id.root}"),
+                command_id=_bounded_recovery_command_id(
+                    "retry",
+                    checkpoint.checkpoint_id.root,
+                    task_id=task_id,
+                    run_id=task.run_id,
+                ),
                 action="retry",
                 actor_id=actor_id,
                 reason="retry from latest settled checkpoint",

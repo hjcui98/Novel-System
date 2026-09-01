@@ -31,6 +31,10 @@ def test_editor_public_literals_and_strict_output_contract_are_frozen() -> None:
         "MISMATCHED",
     )
     payload = EditorReviewPayload(verdict=EditorialVerdict.PASS)
+    marked_payload = EditorReviewPayload(
+        verdict=EditorialVerdict.PASS,
+        unresolved_needs=("missing but related context",),
+    )
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         EditorReviewPayload.model_validate_json(
             json.dumps({"verdict": "PASS", "canonical_id": "forbidden"})
@@ -48,6 +52,33 @@ def test_editor_public_literals_and_strict_output_contract_are_frozen() -> None:
             ),
         )
     assert payload.verdict is EditorialVerdict.PASS
+    assert marked_payload.unresolved_needs == ("missing but related context",)
+
+
+def test_local_repair_treats_nonstructural_blocking_issues_as_repairable() -> None:
+    payload = EditorReviewPayload.model_validate_json(
+        json.dumps(
+            {
+                "verdict": "LOCAL_REPAIR",
+                "issues": [
+                    {
+                        "issue_type": "continuity",
+                        "severity": "critical",
+                        "description": "The draft contradicts the previous chapter ending.",
+                        "evidence_quote": "he instantly understood the whole meridian map",
+                        "structural": False,
+                    }
+                ],
+                "repair_instructions": [
+                    "Rewrite the opening so the first reading remains first-time."
+                ],
+                "preserve_requirements": ["Keep third-person limited POV."],
+            }
+        )
+    )
+    assert payload.verdict is EditorialVerdict.LOCAL_REPAIR
+    assert payload.issues[0].repairable is True
+    assert payload.issues[0].structural is False
 
 
 def test_empty_reconciliation_is_bound_to_exact_current_draft() -> None:

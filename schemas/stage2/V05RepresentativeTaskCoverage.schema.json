@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Preselected task ids proving the required U4-S representative coverage.",
+  "properties": {
+    "early_checkpoint_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "late_checkpoint_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "legacy_five_chapter_window_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "mid_checkpoint_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "multi_hop_qa_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "twenty_chapter_window_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "unanswerable_qa_task_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "early_checkpoint_task_id",
+    "mid_checkpoint_task_id",
+    "late_checkpoint_task_id",
+    "legacy_five_chapter_window_task_id",
+    "twenty_chapter_window_task_id",
+    "unanswerable_qa_task_id",
+    "multi_hop_qa_task_id"
+  ],
+  "title": "V05RepresentativeTaskCoverage",
+  "type": "object"
+}

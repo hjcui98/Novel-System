@@ -33,6 +33,7 @@ from novel_agent.domain.memory_write import (
     ValidationSeverity,
 )
 from novel_agent.domain.stage2 import ContractRef
+from novel_agent.domain.text import SourceBoundEvidenceRequirement, TextSpanRef
 from novel_agent.services.memory_write_validation import (
     ModelFindingProvider,
     Stage2ValidationV2Adapter,
@@ -49,6 +50,7 @@ NOW = datetime(2026, 7, 23, tzinfo=UTC)
 PROJECT = ProjectId("project.validation-v2")
 WORLD = make_synthetic_bundle().world_roots[0]
 TEXT = make_synthetic_bundle().text_roots[0]
+SOURCE_BLOB_ROOT = ArtifactId("sha256:" + "1" * 64)
 
 
 def _operation(
@@ -101,6 +103,60 @@ def _candidate(*, base: Any = None) -> CandidateRevision:
     )
 
 
+def _source_text_artifact() -> Any:
+    return make_artifact("1").model_copy(
+        update={
+            # Production RootManifest refs identify the serialized blob,
+            # whereas EvidenceRef.root_hash identifies the canonical
+            # TextRoot content.  Keep those identities distinct in this
+            # fixture so the bridge is exercised.
+            "artifact_id": SOURCE_BLOB_ROOT,
+            "byte_length": 1,
+        }
+    )
+
+
+def _source_requirement() -> SourceBoundEvidenceRequirement:
+    chapter = TEXT.chapters[4]
+    block = chapter.scenes[0].blocks[0]
+    phrase = "旧誓言"
+    start = block.text.index(phrase)
+    return SourceBoundEvidenceRequirement(
+        source_artifact_id=SOURCE_BLOB_ROOT,
+        source_chapter_index=chapter.chapter_index,
+        source_chapter_id=chapter.chapter_id,
+        required_span=TextSpanRef(
+            block_id=block.block_id,
+            start=start,
+            end=start + len(phrase),
+        ),
+        required_consequence_markers=(phrase,),
+    )
+
+
+def _candidate_with_source_requirement() -> CandidateRevision:
+    return _candidate().model_copy(
+        update={
+            "source_artifacts": (_source_text_artifact(),),
+            "source_evidence_requirement": _source_requirement(),
+        }
+    )
+
+
+def _operation_with_evidence(evidence: Any) -> ChangeOperation:
+    operation = _operation()
+    payload = dict(operation.payload)
+    record = dict(payload["record"])
+    record["evidence_refs"] = [evidence.model_dump(mode="json")]
+    payload["record"] = record
+    return operation.model_copy(update={"payload": payload, "evidence_refs": (evidence,)})
+
+
+def _source_bundle(*operations: ChangeOperation) -> CandidateChangeBundle:
+    bundle = _bundle(*operations)
+    return bundle.model_copy(update={"proposed_roots": _basis().root_manifest})
+
+
 def _materialization(
     bundle: CandidateChangeBundle | None,
 ) -> CandidateMaterialization:
@@ -120,10 +176,16 @@ def _materialization(
 
 
 def _basis(*, typed: bool = False) -> CanonicalWriteBasis:
+    manifest = make_manifest(PROJECT)
+    manifest = manifest.model_copy(
+        update={
+            "text_root": manifest.text_root.model_copy(update={"artifact_id": SOURCE_BLOB_ROOT})
+        }
+    )
     return CanonicalWriteBasis(
         project_id=PROJECT,
         commit_id=WORLD.source_commit,
-        root_manifest=make_manifest(PROJECT),
+        root_manifest=manifest,
         canonical_world=WORLD if typed else None,
         canonical_text=TEXT if typed else None,
     )
@@ -168,6 +230,81 @@ def test_structural_validation_passes_without_legacy_typed_roots() -> None:
     )
     assert decision.disposition is ValidationDisposition.PASS
     assert decision.deterministic_profile == "stage2w-structural-v2"
+
+
+def test_source_bound_validation_rejects_evidence_from_another_chapter() -> None:
+    candidate = _candidate_with_source_requirement()
+    bundle = _source_bundle(_operation_with_evidence(WORLD.states[0].evidence_refs[0]))
+
+    decision = asyncio.run(
+        Stage2ValidationV2Adapter().validate(
+            candidate, _materialization(bundle), _basis(typed=True)
+        )
+    )
+
+    assert decision.disposition is ValidationDisposition.NON_REPAIRABLE
+    assert any(item.code == "SOURCE_BOUND_EVIDENCE_MISSING" for item in decision.findings)
+
+
+def test_source_bound_validation_accepts_evidence_covering_registered_span() -> None:
+    candidate = _candidate_with_source_requirement()
+    bundle = _source_bundle(_operation_with_evidence(WORLD.states[1].evidence_refs[0]))
+
+    decision = asyncio.run(
+        Stage2ValidationV2Adapter().validate(
+            candidate, _materialization(bundle), _basis(typed=True)
+        )
+    )
+
+    assert decision.disposition is ValidationDisposition.PASS
+    assert not any(item.code.startswith("SOURCE_BOUND_EVIDENCE") for item in decision.findings)
+
+
+def test_source_bound_validation_accepts_bounded_evidence_for_wide_registered_span() -> None:
+    requirement = _source_requirement().model_copy(
+        update={
+            "required_span": _source_requirement().required_span.model_copy(
+                update={"start": 0, "end": len(TEXT.chapters[4].scenes[0].blocks[0].text)}
+            )
+        }
+    )
+    candidate = _candidate().model_copy(
+        update={
+            "source_artifacts": (_source_text_artifact(),),
+            "source_evidence_requirement": requirement,
+        }
+    )
+    bundle = _source_bundle(_operation_with_evidence(WORLD.states[1].evidence_refs[0]))
+
+    decision = asyncio.run(
+        Stage2ValidationV2Adapter().validate(
+            candidate, _materialization(bundle), _basis(typed=True)
+        )
+    )
+
+    assert decision.disposition is ValidationDisposition.PASS
+
+
+def test_validation_report_id_is_bounded_for_long_materialized_bundle() -> None:
+    candidate = _candidate()
+    bundle = _bundle().model_copy(update={"bundle_id": StableId("bundle." + "b" * 115)})
+    report = Stage2ValidationV2Adapter()._deterministic_report(bundle, _basis(), candidate)
+
+    assert len(report.report_id.root) <= 128
+    assert report.report_id.root == "validation.structural." + ("c" * 64)
+
+
+def test_stage1_validator_bounds_long_bundle_report_id() -> None:
+    bundle = _bundle().model_copy(update={"bundle_id": StableId("bundle." + "b" * 115)})
+    report = Stage2ValidationV2Adapter()._deterministic.validate(
+        bundle,
+        WORLD,
+        WORLD,
+        TEXT,
+        canonical_commit=WORLD.source_commit,
+    )
+
+    assert report.report_id == StableId("validation.changes.validation-v2")
 
 
 def test_overlay_failure_becomes_a_non_repairable_schema_finding() -> None:

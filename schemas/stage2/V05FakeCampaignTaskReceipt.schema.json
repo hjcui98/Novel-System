@@ -1,0 +1,418 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BudgetResolutionProfile": {
+      "enum": [
+        "canary",
+        "strict"
+      ],
+      "title": "BudgetResolutionProfile",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U4L0CanaryVariableLock": {
+      "additionalProperties": false,
+      "description": "One frozen U4-L0 variable vector carried by campaign evidence.",
+      "properties": {
+        "budget_profile": {
+          "$ref": "#/$defs/BudgetResolutionProfile"
+        },
+        "c3_admission": {
+          "const": "NOT_ADMITTED",
+          "default": "NOT_ADMITTED",
+          "title": "C3 Admission",
+          "type": "string"
+        },
+        "controller_context_level": {
+          "enum": [
+            "C0",
+            "C1+C2"
+          ],
+          "title": "Controller Context Level",
+          "type": "string"
+        },
+        "planner_context_level": {
+          "enum": [
+            "P0",
+            "P0+P1"
+          ],
+          "title": "Planner Context Level",
+          "type": "string"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "budget_profile",
+        "controller_context_level",
+        "planner_context_level",
+        "thinking_enabled"
+      ],
+      "title": "U4L0CanaryVariableLock",
+      "type": "object"
+    },
+    "V05HistoryAccess": {
+      "enum": [
+        "history_only",
+        "author_plan_conditioned"
+      ],
+      "title": "V05HistoryAccess",
+      "type": "string"
+    },
+    "V05ReadoutTaskIdentity": {
+      "additionalProperties": false,
+      "description": "One unique V0.5 Writer readout identity. Public fields only.",
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "history_access": {
+          "$ref": "#/$defs/V05HistoryAccess"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "plan_release": {
+          "const": "after_checkpoint_freeze",
+          "default": "after_checkpoint_freeze",
+          "title": "Plan Release",
+          "type": "string"
+        },
+        "question_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "question_release": {
+          "anyOf": [
+            {
+              "const": "after_checkpoint_freeze",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Release"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "track": {
+          "$ref": "#/$defs/V05ReadoutTrack"
+        }
+      },
+      "required": [
+        "task_id",
+        "track",
+        "checkpoint_id",
+        "checkpoint_chapter",
+        "history_access",
+        "information_profile"
+      ],
+      "title": "V05ReadoutTaskIdentity",
+      "type": "object"
+    },
+    "V05ReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "V05ReadoutTrack",
+      "type": "string"
+    },
+    "WriterJudgeAvailability": {
+      "enum": [
+        "available",
+        "pending",
+        "unavailable"
+      ],
+      "title": "WriterJudgeAvailability",
+      "type": "string"
+    },
+    "WriterJudgeKind": {
+      "enum": [
+        "answer_judge",
+        "evidence_support_judge"
+      ],
+      "title": "WriterJudgeKind",
+      "type": "string"
+    },
+    "WriterJudgePair": {
+      "additionalProperties": false,
+      "description": "Answer and Evidence-Support Judge receipts for one frozen Writer answer.",
+      "properties": {
+        "answer_judge": {
+          "$ref": "#/$defs/WriterJudgeReceipt"
+        },
+        "evidence_support_judge": {
+          "$ref": "#/$defs/WriterJudgeReceipt"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "task_id",
+        "answer_judge",
+        "evidence_support_judge"
+      ],
+      "title": "WriterJudgePair",
+      "type": "object"
+    },
+    "WriterJudgeReceipt": {
+      "additionalProperties": false,
+      "description": "One Answer or Evidence-Support Judge phase. Pending is not a zero score.",
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/WriterJudgeAvailability"
+        },
+        "freeze_receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "input_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/WriterJudgeKind"
+        },
+        "logical_phase": {
+          "minLength": 1,
+          "title": "Logical Phase",
+          "type": "string"
+        },
+        "model_request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "response_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "kind",
+        "availability",
+        "logical_phase",
+        "run_id",
+        "task_id",
+        "freeze_receipt_id",
+        "response_ref"
+      ],
+      "title": "WriterJudgeReceipt",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One frozen fake-Writer readout after thin evaluator adaptation.",
+  "properties": {
+    "canary_lock": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/U4L0CanaryVariableLock"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evaluator_adapted": {
+      "const": true,
+      "default": true,
+      "title": "Evaluator Adapted",
+      "type": "boolean"
+    },
+    "freeze_receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gold_revealed": {
+      "const": false,
+      "default": false,
+      "title": "Gold Revealed",
+      "type": "boolean"
+    },
+    "identity": {
+      "$ref": "#/$defs/V05ReadoutTaskIdentity"
+    },
+    "judges": {
+      "$ref": "#/$defs/WriterJudgePair"
+    },
+    "model_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "raw_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "record_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "response_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "identity",
+    "freeze_receipt_id",
+    "model_request_id",
+    "response_ref",
+    "record_ref",
+    "judges"
+  ],
+  "title": "V05FakeCampaignTaskReceipt",
+  "type": "object"
+}

@@ -3536,3 +3536,827 @@ field; no contract test references them; content matches `model_json_schema()`).
 Quality gates: ruff check + format PASS; mypy 0 errors in the new test; contract tests
 (stage1 benchmark + stage1 memory + stage2) PASS.  Full deterministic suite result recorded at
 the end of this round.
+
+## 2026-08-19 U1 local baseline (no remote)
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration`
+
+### B0 inventory
+
+- Dirty root `/home/cuihengjia/agent/novel/NS` is `codex/stage2m-semantic-closure@3f0e6df` (docs commit on `c51bbeb`), dirty; not used as merge target.
+- `main` is `c51bbeb`.
+- Detached clean-Genesis HEAD was `0bc7757` (five linear commits after `c51bbeb`).
+- `3f0e6df` and `0bc7757` diverge: docs vs Stage 2 source. Merge-base is `c51bbeb`. No file overlap.
+
+### B1/B2 local git
+
+- Created local branch `codex/stage2m-need-evidence-closure` at `0bc7757`.
+- Created this worktree from `main@c51bbeb` and `git merge --ff-only codex/stage2m-need-evidence-closure`. HEAD is `0bc7757`.
+- No fetch, push, origin, rebase, or worktree delete.
+
+### U1-B code
+
+- Writer seed now emits protected `context-protected.writer-context-completeness` with
+  `assembly_status`, `semantic_status`, `usable_with_gaps`, and unclosed facets.
+- Production writing factory still requires mechanical READY, preserves INCOMPLETE+usable_with_gaps,
+  and rejects COMPLETE that still carries gaps.
+- Track B `ContextWriterResponse` contract added; extra Gold/draft fields fail closed.
+
+### Evidence
+
+Focused pytest `--no-cov` **11 passed** (production factories, writer seed completeness, schema pin,
+Track B response, additive defaults). Changed-file Ruff PASS. `make quality` not yet run.
+
+### Not claimed
+
+U1 Gate is not closed until `make quality`. U2 `build_production_assembly` is not implemented.
+U3–U8 not started. No merge to `main`.
+
+## 2026-08-19 U2-A production factory + one-chapter fake path
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Factory (already present; this round closed the Gate path)
+
+`novel_agent.runtime.creative_assembly:build_production_assembly` is the unique composition root.
+Spec vs attestation stay separate. CLI/runner default to the same factory locator.
+
+### Production seams closed while driving one chapter
+
+1. WriterWorkPlan lineage: PlanRootRef extra `root_kind` cannot be echoed into `ArtifactRef`.
+   Production writing factory now strips typed root extras (`_as_artifact_ref`). Cognition
+   compares artifact identity, not subclass equality.
+2. TeacherForced Curator looks up agent contracts by RootManifest.schema_version (`0.1.0` on
+   Stage 1 canon) while production runtime is `1.0.0`. `_curator_runner` registers replay/repair
+   contracts, prompts, and skills at both versions.
+3. Empty-delta Curator requires a trusted no-op verifier. Production `ModelCurator` now sets
+   `enable_model_semantic_verifier=True` (same as teacher-forced e2e).
+4. Settlement validator port is Stage 2W `Stage2ValidationV2Adapter` with named
+   `ProposedTextRootLoader`, not raw `Stage1Validator.validate(...)`.
+5. Pre-candidate repair `directive_id` is truncated to the 128-char `StableId` budget so a
+   rejected long settlement identity cannot crash the workflow.
+
+### One-chapter Gate evidence
+
+`tests/unit/test_production_assembly_one_chapter.py` seeds 20-chapter synthetic canon on sqlite,
+builds the production assembly with a typed fake implementation endpoint, and runs
+`VerticalCreativeRunner` AUTO for `current_chapter=20` / `target_chapters=21`.
+
+Result: **COMPLETED**, chapter 21 in TextRoot, injured-arm constraint in the settled prose.
+No manual WCP/PlanRoot/TextRoot inject at production entry. Retrieval is commit-scoped so
+Writer resolve after the plan commit does not see genesis units against a new snapshot.
+
+### Commands
+
+```
+ruff check/format + mypy --strict on changed factory/cognition/settlement files: PASS
+PYTHONPATH=src pytest --no-cov
+  tests/unit/test_production_assembly.py
+  tests/unit/test_production_assembly_one_chapter.py
+  tests/unit/test_stage5_cli.py
+  tests/unit/test_stage5_production_factories.py
+  tests/unit/test_context_writer_response.py
+-> 34 passed
+```
+
+`make quality` not run.
+
+### Not claimed
+
+U2 Gate is not closed: U2-B (`WriterContextReadoutProbe`, 51 QA / 30 Context manifest) and
+U2-C (taint / freeze-before-reveal / non-writeback) are not started. Formal V0.5 PASS is not
+claimed (`seed_not_formal_release`). No merge, no remote git.
+
+## 2026-08-19 U2-B/C Writer readout probe + identity/taint/non-writeback
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### U2-B
+
+- Ported `WriterContextReadoutProbe` onto this tree. Production bind uses the unique
+  assembly `ModelGateway` (Writer `IMPLEMENTATION` role, `DEVELOPMENT` purpose,
+  `scheduling_stage=benchmark.writer_context_readout` / `benchmark.writer_qa_readout`).
+- Named callables: `ProductionContextWriterReadout`, `ProductionQaWriterReadout`.
+  Host stamps freeze/task/basis after `generate_structured`; model draft cannot set freeze.
+- `history_only` maps to `visible_at_cutoff`; `author_plan_conditioned` maps to freeze-then
+  planning context ref/hash. No second Writer loop, Editor, acceptance, or Chapter Settlement.
+- Evaluation artifacts use `application/vnd.novel-agent.evaluation.*` media types.
+- V0.5 identities compile from public checkpoints + question ids only (no Gold text).
+
+### U2-C
+
+- Freeze-before-reveal, Gold-reveal, target-window prose, extra `gold_ids`/`why_needed`,
+  wrong profile/plan timing all fail closed.
+- Memory write `InformationBoundaryPort` rejects evaluation media types as sources.
+- Production fake readout leaves `CommitRow` count at 0.
+- Manifest invariants: 51 unique QA, 30 unique Context; C100 has no QA; C300 has no Context.
+
+### Commands
+
+```
+ruff check on changed readout/boundary files: PASS
+mypy --strict on those sources: PASS
+PYTHONPATH=src pytest --no-cov
+  tests/unit/test_writer_context_readout.py
+  tests/unit/test_production_writer_readout.py
+  tests/unit/test_v05_readout_manifest.py
+  tests/unit/test_information_boundary.py
+  tests/unit/test_context_writer_response.py
+-> 45 passed, 1 skipped (private V0.5 bundle absent from this worktree)
+```
+
+`make quality` not run.
+
+### Not claimed
+
+U2 Gate is not closed: evaluator thin adapter and a full 51/30 fake campaign receipt are
+still out of this slice. Formal V0.5 PASS is not claimed (`seed_not_formal_release`).
+U3–U8 not started. No merge, no remote git.
+
+## 2026-08-19 U2 evaluator thin adapters + 51/30 fake campaign
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Adapters
+
+- `WriterContextGoldAdapter` is the WCP caller: freeze-verify then `GoldEvidenceMatcher.match`.
+- `WriterResponseGoldAdapter` is the Track B caller: host-frozen Writer conclusions, evidence
+  must already sit in the frozen ledger or prove against checkpoint TextRoot via
+  `validate_evidence_ref`. Then the same matcher scores Gold. No forged production WCP.
+- `QaWriterResponseAdapter` freeze-gates Track A answers and evidence chapters. No second
+  QA scorer.
+- `BenchmarkScenarioCompiler.compile_v05_readout_identities` is the V0.5 identity translation
+  seam on the existing compiler.
+
+### Evidence
+
+Focused pytest `--no-cov` **41 passed, 1 skipped**:
+`test_writer_response_evaluation.py`, `test_gold_evidence_matching.py`,
+`test_v05_readout_manifest.py`, `test_writer_context_readout.py`,
+`test_production_writer_readout.py`, `test_context_writer_response.py`.
+
+Ruff + strict MyPy on changed adapter/compiler/matcher files: PASS.
+`make quality` not run.
+
+### Not claimed
+
+Formal V0.5 PASS is not claimed (`seed_not_formal_release`). U3–U8 not started.
+No merge, no remote git. This does not run C0→C300 or four-condition scoring.
+
+
+## 2026-08-19 U3-A provider sent/raw-before-parse closure
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- `ModelGateway` now settles the existing `REQUESTED` ledger entry with `provider_sent_at`
+  before invoking the endpoint; an optional endpoint `provider_request_id` and provider result
+  identity are retained without adding a new lifecycle state.
+- Provider-complete text is wrapped in `RawModelResponseArtifact`, stored through the existing
+  `ArtifactRepository` before the gateway returns or structured parsing runs. The envelope binds
+  request hash, request/run/task identity, role/purpose, endpoint/model/version, prompt/schema
+  identity, provider identity, raw-response identity, and the existing call record.
+- Raw persistence failure settles the sent request as existing `UNCERTAIN`; timeout remains
+  `UNCERTAIN`, transport failure remains `TRANSPORT_EXHAUSTED`, and no partial mechanism is
+  invented for the current non-streaming endpoints.
+- `reparse_structured_from_raw` validates the ledger/artifact identity and parses retained raw
+  text without invoking the provider. Invalid reparse updates the existing
+  `VALIDATION_REJECTED` status while retaining the raw artifact.
+- Added `SqlModelCallLedger` and migration `0010_model_call_ledger`; production assembly now
+  uses it, so requested/sent/raw/terminal evidence survives gateway reconstruction. Existing
+  `InMemoryModelCallLedger` remains the deterministic unit-test implementation.
+- Added Stage 0 raw model schema and completed missing Stage 2 readout schema exports; the Stage 2
+  schema contract now includes the V0.5 readout domain module.
+
+### Evidence
+
+Focused checks:
+
+```
+ruff check on changed U3-A sources/tests: PASS
+mypy --strict on U3-A source owners: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_model_gateway.py \
+  tests/unit/test_model_gateway_raw_evidence.py \
+  tests/unit/test_sql_model_call_ledger.py \
+  tests/unit/test_production_assembly.py \
+  tests/unit/test_production_assembly_one_chapter.py \
+  tests/unit/test_production_writer_readout.py -q
+-> 24 passed
+PYTHONPATH=src pytest --no-cov \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models -q
+-> 1 passed
+```
+
+Full-equivalent checks using the repository environment (the worktree has no local
+`.conda-env/bin/ruff`, so `make quality` itself could not start):
+
+- Full Ruff lint: PASS.
+- Full Ruff format check: existing 20 unrelated files would reformat; no broad formatting cleanup
+  was applied.
+- Full strict MyPy: FAIL with 35 existing errors across 10 pre-existing test/script files; no U3-A
+  source error was reported. The changed prior U2 test helpers also remain in that baseline list.
+- Deterministic pytest selector: 2338 passed, 51 failed, 1 skipped. Most failures require the
+  absent private `benchmarks/private/ztj_memory_pilot_v0.1/bundle.json`; remaining failures are
+  existing runtime-contract/coverage issues. The newly added raw/SQL/production tests passed.
+
+### Not claimed
+
+U2 remains unclaimed as a formal Gate because the full V0.5 campaign receipt is not produced.
+U3-A is implemented and focused-evidenced, but Gate U3 is not claimed: U3-B through U3-F,
+streaming-provider partial evidence, report reconstruction, Skill/progress receipts, and full
+`make quality` evidence remain open. Formal V0.5 PASS remains unclaimed
+(`seed_not_formal_release`). No merge or remote git operation.
+
+## 2026-08-19 U3-B ledger-backed report aggregation
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- `ModelRequest` and `ModelCallLedgerEntry` now retain optional attempt identity and a declared
+  logical phase; the raw response envelope carries the same dimensions.
+- `ModelCallLedgerPort` has a durable `list_for_run` query in both the in-memory and SQL
+  implementations. The SQL row and migration persist attempt and phase dimensions.
+- `aggregate_model_calls` groups the durable ledger by run/task/attempt/phase, counts every
+  request including schema retries, preserves terminal status counts, and sums observed token and
+  latency usage.
+- `ModelCostAvailability` is typed as `known`, `unknown`, or `not_applicable`. Aggregation and
+  reports leave `cost_usd` as `None` whenever the provider did not report a real cost; they do not
+  turn unavailable cost into a fabricated zero.
+- Stage 3 full-chain results, Stage 4 planning reports, and Stage 5 runtime reports accept the
+  ledger as their authoritative usage source when injected. The production runtime CLI report
+  export now injects `SqlModelCallLedger`; the existing event/list fallback remains available for
+  deterministic legacy callers.
+- Added aggregate/cost fields to the Stage 3/4/5 report contracts and refreshed only the Stage
+  0, affected Stage 2/3, Stage 4, and Stage 5 schema exports required by the model contract tests.
+
+### Evidence
+
+```
+ruff check on changed U3-B sources/tests: PASS
+mypy --strict on changed U3-B source owners: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_model_call_ledger_reporting.py \
+  tests/unit/test_model_gateway.py \
+  tests/unit/test_model_gateway_raw_evidence.py \
+  tests/unit/test_sql_model_call_ledger.py \
+  tests/unit/test_stage3_evaluation_domain.py \
+  tests/unit/test_stage3_evaluation_service.py \
+  tests/unit/test_stage4_planning_contracts.py \
+  tests/unit/test_stage4_planning_loop_and_evaluation.py \
+  tests/unit/test_stage5_runtime_runner.py::test_audit_report_derives_from_durable_truth \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models \
+  tests/contract/test_stage3_generation_contract.py::test_checked_in_stage3_schemas_match_stage3_models \
+  tests/contract/test_stage4_schema_contract.py -q
+-> 144 passed
+```
+
+### Not claimed
+
+This closes the focused U3-B ledger aggregation slice, not Gate U3. Stage 3/4 callers that do not
+inject their durable ledger retain the legacy deterministic fallback and therefore are not formal
+report-reconstruction evidence. U3-C through U3-F, streaming-provider partial evidence, benchmark
+Writer audit closure, full report reconstruction, and full `make quality` evidence remain open.
+U2 and formal V0.5 PASS remain unclaimed (`seed_not_formal_release`). No merge or remote git
+operation.
+
+## 2026-08-19 U3-C Skill receipt semantics
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- Extended the existing `ExecutionStatus` with `PLANNED`, `PARTIAL`, and `SKIPPED`; no parallel
+  Skill state machine was introduced.
+- `SkillExecutionReceipt` now keeps `planned_checkpoints`, `selected_checkpoints`, and
+  `completed_checkpoints` as separate sets, rejects overlap/out-of-plan claims, and requires
+  output evidence before `SUCCEEDED`.
+- Generic `StructuredAgentRunner` and Writer work-plan cognition now emit `PLANNED` Skill
+  receipts. The Writer WorkPlan binds selected checkpoints to the frozen expected checkpoint
+  list; it no longer promotes expected checkpoints directly to completed.
+- Added negative coverage for planned, succeeded-without-output, and skipped-with-output
+  receipts, plus the affected Stage 2/3/4 schema contract refreshes.
+
+### Evidence
+
+```
+ruff check on U3-C sources/tests: PASS
+mypy --strict on U3-C source owners: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_skill_receipt_semantics.py \
+  tests/unit/test_stage2_agent_runner.py \
+  tests/unit/test_stage2_curator_agent.py \
+  tests/unit/test_stage2_planner_agent.py \
+  tests/unit/test_stage2_guardian_agent.py \
+  tests/unit/test_writer_agent.py \
+  tests/unit/test_editorial.py \
+  tests/unit/test_stage3_evaluation_domain.py \
+  tests/unit/test_stage3_evaluation_service.py \
+  tests/unit/test_stage4_planning_contracts.py \
+  tests/unit/test_stage4_planning_loop_and_evaluation.py \
+  tests/integration/test_writer_context_loop.py \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models \
+  tests/contract/test_stage3_generation_contract.py::test_checked_in_stage3_schemas_match_stage3_models \
+  tests/contract/test_stage4_schema_contract.py -q
+-> 224 passed
+```
+
+### Not claimed
+
+U3-C is focused-evidenced but Gate U3 is not claimed. Bidirectional Skill receipt validation
+inside the formal Stage 3/4 report rebuild, U3-D through U3-F, streaming-provider partial
+evidence, benchmark Writer audit closure, and full `make quality` evidence remain open. U2 and
+formal V0.5 PASS remain unclaimed (`seed_not_formal_release`). No merge or remote git operation.
+
+## 2026-08-19 U3-D benchmark Writer raw/parse audit evidence
+
+### Mechanism
+
+- Added deterministic Track A QA and Track B Context production-readout tests that return one
+  deliberately invalid structured response followed by a valid response through the same
+  production `WriterContextReadout` callables.
+- The tests use the durable SQL ModelCall ledger and retained raw artifacts to prove the parse
+  failure remains `VALIDATION_REJECTED`, the retry receives a new request identity, both provider
+  responses have raw artifact refs, and the final parsed response/readout record are separate
+  artifacts from provider raw output.
+- The production retry policy remains explicit in the test gateway (`structured_max_retries=1`);
+  the existing production bootstrap default remains unchanged at zero retries, so a deployment
+  does not silently add provider spend.
+
+### Evidence
+
+```
+ruff check tests/unit/test_production_writer_readout.py: PASS
+PYTHONPATH=src pytest --no-cov tests/unit/test_production_writer_readout.py -q
+-> 6 passed
+```
+
+### Not claimed
+
+This is the Track A/B parse-audit slice only. Judge input/output receipts, report-side bidirectional
+receipt validation, differential side-channel deletion, and the remaining U3-D/U3-E requirements
+are open; Gate U3 and formal V0.5 PASS remain unclaimed.
+
+## 2026-08-19 U2 remaining 51/30 fake campaign receipt
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- Added `V05FakeCampaignReceipt` in the existing V0.5 evaluation namespace. It records 81 unique
+  Track A/B identities, freeze identity, model-request identity, and frozen response/record refs.
+  Gold is not revealed and scores are not filled as zero.
+- `V05FakeCampaignRunner` loops the existing scenario-compiler identities through the production
+  Writer-role readout probes (`bind_production_context_readout` / `bind_production_qa_readout`)
+  and the existing thin adapters (`QaWriterResponseAdapter.adapt`,
+  `WriterResponseGoldAdapter.writer_ledger`). It does not assemble a second Writer loop, Gold
+  matcher, freeze owner, or Memory write path.
+- Deterministic fake Writer JSON is scripted from the frozen ledger evidence. Each identity keeps
+  its public profile/window: `history_only` has no planning context; APC carries frozen planning
+  context; C100 has no QA; C300 has no Context.
+- The campaign receipt is stored as
+  `application/vnd.novel-agent.evaluation.v05-fake-campaign-receipt+json`. Memory write still
+  rejects that media type and the per-task evaluation response artifacts.
+
+### Evidence
+
+```
+ruff check on campaign domain/service/test/export: PASS
+mypy --strict src/novel_agent/domain/v05_readout.py src/novel_agent/services/v05_fake_campaign.py: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_v05_fake_campaign.py \
+  tests/unit/test_v05_readout_manifest.py \
+  tests/unit/test_production_writer_readout.py \
+  tests/unit/test_writer_response_evaluation.py \
+  tests/unit/test_information_boundary.py::test_memory_write_rejects_evaluation_source_artifacts \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models -q
+-> 22 passed, 1 skipped
+```
+
+The skip is the optional private V0.5 bundle identity load. The campaign itself does not require
+that bundle.
+
+### Not claimed
+
+This closes the remaining U2 fake-campaign receipt slice (51 QA + 30 Context through production
+readout + thin evaluator + non-writeback). Formal Gate U2 is still not claimed: full
+`make quality` remains a known baseline fail, and `seed_not_formal_release` still forbids a
+formal V0.5 PASS. U3-D remainder (judge receipts, differential deletion), U3-E/F, U3.5 Temporal
+spike, and U4+ remain open. No merge or remote git operation.
+
+## 2026-08-19 U3-D judge receipts, locate, and evaluation discard
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- Answer Judge and Evidence-Support Judge are two existing evaluation-namespace receipts with
+  distinct phases (`benchmark.answer_judge`, `benchmark.evidence_support_judge`). Pending or
+  unavailable receipts cannot carry a score, output artifact, or model request; a zero score is
+  rejected rather than treated as “no judge”.
+- The fake 51/30 campaign now attaches a pending judge pair and retained raw artifact to every
+  task. Ledger locate uses campaign/run/checkpoint/profile/question-or-task/phase against the
+  campaign receipt plus the existing model-call ledger; it does not add a second ledger.
+- Evidence-Support can complete through the existing Gold matcher while Answer Judge stays
+  pending. Judge input, judge output, parsed Writer answer, readout record, and provider raw are
+  distinct artifacts.
+- Discarding the evaluation namespace records Memory/Commit identity before and after and refuses
+  a receipt if those identities differ. A twin Commit path without evaluation artifacts produces
+  the same successor commit.
+
+### Evidence
+
+```
+ruff check on U3-D domain/service/tests: PASS
+mypy --strict v05_readout.py v05_fake_campaign.py writer_judge.py: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_v05_writer_judge_audit.py \
+  tests/unit/test_v05_fake_campaign.py \
+  tests/unit/test_v05_readout_manifest.py \
+  tests/unit/test_writer_response_evaluation.py \
+  tests/unit/test_production_writer_readout.py \
+  tests/unit/test_information_boundary.py::test_memory_write_rejects_evaluation_source_artifacts \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models -q
+-> 26 passed, 1 skipped
+```
+
+### Not claimed
+
+This closes the U3-D remainder (judge phases/receipts, pending≠0, ledger locate, evaluation
+discard differential). Gate U3 is not claimed: U3-E report reconstruction from durable evidence,
+U3-F typed preconditions/progress, streaming partials, full `make quality`, and formal V0.5 PASS
+remain open. No merge or remote git operation.
+
+## 2026-08-19 U3-E durable report rebuild from ledger + freeze + artifacts
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- `rebuild_durable_evidence_report` takes freeze receipts, model-call ledger entries, the Writer
+  Context package, optional Writer response, evidence ledger, Gold match, and judge pair. Callers
+  do not pass request, item, citation, or Gold-hit totals.
+- Phase aggregates, schema retry, and cost availability come from the existing ledger summarizer.
+  Empty ledger cost is `not_applicable`; pending/unavailable Evidence-Support leaves
+  `gold_hit_count` as `None` rather than `0`.
+- Lineage counts are derived: WCP item count from the package, cited refs from the Writer
+  response, used items from ledger ids bound to cited `EvidenceRef`s, Gold hits only when the
+  Evidence-Support judge is available.
+- Same-checkpoint history-only vs APC namespaces come from `profile_namespace()`. Failure stops
+  at transport / raw / parse / package / writer-answer / answer-judge / evidence-judge.
+
+### Evidence
+
+```
+ruff check on durable_report_rebuild.py v05_readout.py test_durable_report_rebuild.py: PASS
+mypy --strict src/novel_agent/domain/v05_readout.py src/novel_agent/services/durable_report_rebuild.py: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_durable_report_rebuild.py \
+  tests/unit/test_v05_writer_judge_audit.py \
+  tests/unit/test_writer_judge_receipts.py \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models -q
+-> 13 passed
+```
+
+### Not claimed
+
+This closes U3-E report reconstruction. Gate U3 is not claimed: U3-F remainder, streaming
+partials, full `make quality`, and formal V0.5 PASS remain open. No merge or remote git
+operation.
+
+## 2026-08-19 U3-F typed preconditions and per-round progress
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- Expected not-ready Writer Context is `INPUT_NOT_READY` / `WAITING_INPUT`, not a factory
+  `ValueError`. The production factory still builds the request; the Writer loop returns the
+  typed terminal. `COMPLETE` rewrite of semantic gaps remains an invariant error.
+- Planner `HUMAN_REQUIRED` maps to Stage 5 `WAITING_INPUT`; `DEGRADED_NOT_PROMOTABLE` maps to
+  `BLOCKED` (not-promotable), not review-as-if-promotable.
+- Editor and repair rounds classify `PROGRESSED | NO_PROGRESS | WAITING | TERMINAL` on the
+  existing checkpoint/receipt path. Same issue/finding ids are `NO_PROGRESS`; remaining-work text
+  and retry labels are ignored.
+- Consecutive `NO_PROGRESS` on the same candidate+basis uses the existing poison/budget Gate
+  (`FailureClass.POISON_LOOP` / `BUDGET_REVIEW`) once attempt_no reaches the existing stall
+  limit of 2. Repair still uses `BoundedMemoryRepairPolicy` finding-signature poison.
+
+### Evidence
+
+```
+ruff check on loop_round_progress, writer_context_loop, creative_runtime, stage3/4 adapters: PASS
+mypy --strict --follow-imports=silent loop_round_progress.py writer_context_loop.py
+  creative_runtime.py stage3_writer.py stage4_planner.py creative_runtime domain: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_loop_round_progress.py \
+  tests/unit/test_durable_report_rebuild.py \
+  tests/unit/test_stage5_leaf_adapters.py \
+  tests/unit/test_stage5_production_factories.py \
+  tests/unit/test_v05_writer_judge_audit.py \
+  tests/unit/test_writer_judge_receipts.py \
+  tests/unit/test_stage5_creative_runtime_edges.py \
+  tests/contract/test_stage2_contract.py::test_checked_in_stage2_schemas_match_models -q
+-> 29 passed (U3-E/F + factories/adapters/contract) and 18 passed (creative runtime edges)
+```
+
+### Not claimed
+
+This closes the U3-F typed-precondition and per-round progress slice. Gate U3 is not claimed:
+streaming-provider partial evidence, full `make quality`, U3.5 Temporal spike, and formal V0.5
+PASS remain open. No merge or remote git operation.
+
+## 2026-08-19 U3 discard owner unify + U4-L0 budget/context
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+Branch: `codex/unified-agent-runtime-integration` (uncommitted)
+
+### Mechanism
+
+- Evaluation discard is one owner (`evaluation_namespace.discard_evaluation_namespace`). The
+  campaign no longer keeps a second discard function. Memory identity before/after must match
+  or the receipt is refused.
+- U4-L0 unique budget: `EffectiveBudgetResolver` is the only parser for API `max_tokens`,
+  ModelGateway admission reserve, and ledger/report. Silent `or 4096` / `or 8192` fallbacks
+  are gone. Canary missing budget becomes named `model_max_auto`; production assembly uses
+  `BudgetResolutionProfile.STRICT` and fails closed with `ModelBudgetResolutionError`.
+- Controller compact prompts now go through `ControllerObservationAssembler` (C0+C1+C2) from
+  existing `ToolResult.payload.hits`. Retrieval, rerank, and final slice owners are unchanged.
+  C3 remains `NOT_ADMITTED`.
+- Stage 2 Memory Planner P1: `PlannerSourceExpander` resolves high-priority World
+  `evidence_refs` to cutoff-safe L0 previews on the frozen TextRoot and appends them to the
+  planner prompt. Stale/missing/`chapter > checkpoint` refs fail closed for that preview only.
+  P2/C4 stay deferred.
+
+### Evidence
+
+```
+ruff check on U4-L0 owners: PASS
+mypy --strict effective_budget.py controller_observation.py planner_source_expander.py
+  model_gateway.py openai_chat.py agents/controller.py: PASS
+PYTHONPATH=src pytest --no-cov \
+  tests/unit/test_effective_budget.py \
+  tests/unit/test_controller_observation.py \
+  tests/unit/test_planner_source_expander.py \
+  tests/unit/test_model_gateway.py \
+  tests/unit/test_openai_chat_adapter.py \
+  tests/unit/test_stage2_paired_controller.py \
+  tests/unit/test_task_conditioned_need_generation.py \
+  tests/unit/test_loop_round_progress.py \
+  tests/unit/test_v05_writer_judge_audit.py \
+  tests/unit/test_evaluation_namespace_discard.py \
+  -q
+-> 132 passed
+```
+
+### Not claimed
+
+Gate U3 is still not claimed (`make quality` baseline fail, no streaming-provider partial
+mechanism). Gate U4-L0 is not claimed: no C0 vs C1+C2 thinking/output canary on a frozen
+real-model case, C3 remains `NOT_ADMITTED`, and production strict is wired but not proven on
+a live Stage 3/4/5 request. No merge or remote git operation. U3.5/U7 Temporal remain out of
+this slice.
+
+## 2026-08-19 quality-gate attempt (U2/`make quality`/U3/V0.5)
+
+Worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
+
+### What was unblocked
+
+- Local `benchmarks/private` symlink to the root private tree (gitignored; not committed).
+- Stage 1 schema re-export: `ContinuousReplayResult.schema.json`.
+- Leaf-adapter `PlanProposal.receipt` is a real `AgentExecutionReceipt` so candidate dump works.
+- Stage 5 acceptance tests submit the stored immutable `CandidateBinding`, and kernel tests
+  persist `candidate_binding_ref` before policy checks. Operator-reconcile message matches code.
+
+### Evidence
+
+```
+ruff check + mypy (prior full run): 0 errors
+PYTHONPATH=src pytest -m "not model_required and not integration"
+-> 2427 passed, 9 deselected
+FAIL Required test coverage of 100% not reached. Total coverage: 97.05%
+```
+
+Focused follow-up after extra U3 branch tests: loop_round_progress, durable_report_rebuild,
+sql ledger, v05 manifest, writer_judge audit: 29 passed (`--no-cov`).
+
+### Not claimed
+
+Formal Gate U2, formal Gate U3 (needs full `make quality` including 100% branch coverage plus
+streaming-kill/partial proofs), and formal V0.5 PASS (`seed_not_formal_release` still applies)
+are not claimed. Remaining coverage holes are largely Stage 4/5 surfaces that this worktree
+does not currently exercise (lookahead recovery, materializers, planning_context_loop, etc.).
+No merge or remote git.
+
+## 2026-08-20 coverage repair round
+
+### Commands
+
+```
+PYTHONPATH=src NOVEL_AGENT_FORBID_MODEL_CALLS=true \
+  .conda-env/bin/pytest -m "not model_required and not integration"
+```
+
+### Results
+
+- **2456+ passed**, 9 deselected (full suite green on functionality).
+- Ruff/mypy unchanged at 0 errors from prior round.
+- **Coverage ~97.35%** — `make quality` still fails on `--cov-fail-under=100`.
+
+### Tests added or extended
+
+- `tests/unit/test_v05_readout_domain.py` — V0.5 domain validators (manifest, judge pair, campaign, discard, durable report).
+- `tests/unit/test_effective_budget.py` — `EffectiveBudgetResolver` strict/canary/thinking branches.
+- `tests/unit/test_controller_observation.py` — compaction routes and invalid tool payload skips.
+- `tests/unit/test_evaluation_namespace_discard.py` — empty discard list.
+- `tests/unit/test_sql_model_call_ledger.py` — terminal status overwrite collision.
+- `tests/unit/test_v05_writer_judge_audit.py` — colliding judge artifact guards.
+
+### Remaining blocker
+
+Branch coverage gaps remain largest in `creative_runtime.py` (~77%), `runtime_commands.py`,
+`materializers.py`, `writer_context_loop.py`, and dozens of smaller partial files. Closing
+to 100% requires continued test-only work across Stage 4/5 runtime surfaces, not product changes.
+
+### Not claimed
+
+Formal Gate U2/U3 and formal V0.5 PASS remain unclaimed (`seed_not_formal_release`).
+
+## 2026-08-20 coverage repair round 2
+
+### Commands
+
+```
+PYTHONPATH=src NOVEL_AGENT_FORBID_MODEL_CALLS=true \
+  .conda-env/bin/pytest -m "not model_required and not integration"
+```
+
+### Results
+
+- **2479 passed**, 9 deselected (function suite still green).
+- Targeted files now at 100%: `effective_budget.py`, `controller_observation.py`,
+  `evaluation_namespace.py`, `writer_judge.py`, postgres `runtime.py` / `model_call_ledger.py`,
+  `model_calls.py` budget identity, `stage5_manifest.py` / `stage5_evaluation.py` admission
+  branches.
+- `creative_runtime.py` recovered from ~77% to **87%** after `recover_boundary` / chapter
+  settlement recovery tests; additional lookahead repair tests were added after this run.
+- **Coverage 97.65%** on the recorded full suite — `make quality` still fails
+  `--cov-fail-under=100`.
+
+### Tests added this round
+
+- `tests/unit/test_coverage_small_validators.py` — policy/request/binding/budget/task/manifest
+  validators, Plan item mapping guards.
+- `tests/unit/test_creative_runtime_recovery.py` — `recover_boundary`, chapter-settlement
+  recovery outcomes, heartbeat, lookahead revalidation/promotion, post-draft repair.
+- Extended `test_v05_readout_domain.py` (pending judge artifacts, campaign C300/freeze/Gold,
+  empty discard) and `test_v05_fake_campaign.py` (empty evidence, missing window, freeze gate).
+
+### Remaining blocker
+
+Largest remaining holes: `planning_context_loop.py` (~79%), `runtime_commands.py` (~89%),
+`writer_context_loop.py` (~91%), leftover `creative_runtime.py` advance/settlement/lookahead
+paths, `materializers.py`, and many Stage 4 domain validators. Still test-only work.
+
+### Not claimed
+
+Formal Gate U2/U3 and formal V0.5 PASS remain unclaimed.
+
+## 2026-08-20 coverage repair round 3
+
+### Commands
+
+```
+PYTHONPATH=src NOVEL_AGENT_FORBID_MODEL_CALLS=true \
+  .conda-env/bin/pytest -m "not model_required and not integration"
+```
+
+### Results
+
+- **2511 passed**, 9 deselected (function suite still green).
+- Ruff on newly added tests: clean.
+- `runtime_commands.py` is now at **100%**.
+- `planning_context_loop.py` recovered from ~79% to **89%** after Planner `run_turn`
+  REQUEST_MEMORY yield / bootstrap-forbid / resolve tests.
+- `creative_runtime.py` is at **98%**.
+- **Coverage 98.14%** — `make quality` still fails `--cov-fail-under=100`.
+
+### Tests added or extended this round
+
+- `tests/unit/test_runtime_command_coverage.py` — lease bound, supersede, heartbeat live/settled,
+  suspect/reclaim fail-closed, effect lookup, operator BLOCKED, exhausted retry, extend_budget
+  args, successor topology including identical-task continue.
+- `tests/unit/test_materializer_guards.py` — `_base` / `_read` / `_one` and mapping wrappers.
+- `tests/unit/test_creative_runtime_recovery.py` — planner no-progress/yield/waiting-input,
+  writer poison loop, chapter-settlement reject/retry, materializer error, freshness lookahead
+  pending, lookahead replan / early exits, legal commands, planning inputs.
+- `tests/unit/test_stage5_chapter_settlement_runtime.py` — reconcile/record_external_commit
+  fail-closed and commit without an outer effect.
+- `tests/unit/test_stage4_planning_loop_and_evaluation.py` — Planner Memory `run_turn` yield,
+  bootstrap forbid, and resolve-or-fail-closed.
+- `tests/unit/test_v05_fake_campaign.py` — locate_campaign_model_call ledger/phase misses.
+
+### Remaining blocker
+
+Largest remaining holes: `planning_context_loop.py` leftover yield/revision branches,
+`writer_context_loop.py` (~91%), `materializers.py` mapping body, Stage 4 domain validators,
+and several runtime adapters. Still test-only work.
+
+### Not claimed
+
+Formal Gate U2/U3 and formal V0.5 PASS remain unclaimed.
+
+## 2026-08-20 — U4-L0 product wiring (no new tests)
+
+Continued the v5 U4-L0 slice of
+`docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`.
+No new test files. No U4-L0 / U4-L / U4-S / U2 / U3 PASS claim.
+
+- Gateway stamps one resolved `O_effective` onto the request used by adapter, ledger, and
+  admission; OpenAI adapter does not re-add thinking when `budget_source` is already set.
+- Production factory fills missing endpoint output limits from the assembly spec so STRICT
+  has a named default. Teacher-forced Controller no longer invents 12288.
+- C0 payload extracted; C1+C2 assembler unchanged; C3 stays NOT_ADMITTED.
+  `U4L0CanaryVariableLock` freezes one variable at a time.
+- Paired E2E now passes frozen TextRoot/snapshot into need generation. Memory Planner
+  records `last_source_expansion` (P0 or P1 counts).
+
+Next on this document is U4-S0 campaign freeze or U4-L1/L2 once a real endpoint is
+available. C3/P2/C4 stay unimplemented.
+
+## 2026-08-20 — U3.5 Temporal feasibility spike (slimmed local harness)
+
+Implemented the isolated U3.5 spike from
+`docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`
+§U3.5 / §12.5, without production assembly, PG dual-write, RuntimeBackend, or U7
+cutover. Formal Gate U3.5 is **not** claimed: U3 fault-matrix PASS is still missing,
+and worker-kill against a dropped worker remains an unsupported condition on this
+harness.
+
+### Commands
+
+```
+PYTHONPATH=src /path/.conda-env/bin/pip install 'temporalio[langgraph]>=1.27,<2'
+PYTHONPATH=src NOVEL_AGENT_FORBID_MODEL_CALLS=true \
+  .conda-env/bin/pytest tests/unit/test_temporal_spike.py \
+  tests/integration/test_temporal_runtime_spike.py --no-cov
+PYTHONPATH=src python scripts/run_temporal_runtime_spike.py
+```
+
+### Results
+
+- Optional extra `temporal-spike` pins `temporalio[langgraph]>=1.27,<2` (installed 1.31.0).
+  Default `project.dependencies` unchanged. Coverage omits
+  `runtime/temporal_langgraph_spike.py`; mypy ignores that module and `temporalio.*`.
+- Unit + integration: **10 passed**. Spike script prints a two-morphology JSON report.
+- Form A (`activity_wrapped`): fake/public identities, payload converter rejects `gold`,
+  pause/resume Signal+Update, delay-before-activity (no effect yet), hold+retryable
+  failure after settle (one business effect, `duplicate_effect_count=1`), and
+  allow-complete before workflow return. File-backed `ns_store.json` is the NS truth.
+- Form B (`plugin_integrated`): official `LangGraphPlugin` with `run_leaf` as Activity
+  and `accept` as Workflow. Plugin ran; `unsupported_conditions` empty.
+- Local Temporal test server via `WorkflowEnvironment.start_time_skipping()` (binary
+  already cached). Isolated tmp object root. Namespace request is `ns-u35-spike`; the
+  test server still serves `default`.
+
+### Unsupported conditions (recorded, not hidden)
+
+- `default_sandbox_blocked_by_novel_agent.runtime_package_init` — workflow class lives
+  under `novel_agent.runtime`, whose package init imports Stage 0 LangGraph; default
+  sandbox cannot load it. Spike uses `@workflow.defn(sandboxed=False)`.
+- `worker_restart_hangs_on_time_skipping_test_server` — dropping the Worker and
+  awaiting `handle.result()` hangs even for a trivial `workflow.sleep` workflow.
+  Form A therefore proves the three boundaries on one live worker (pause, delay,
+  settle-retry, allow-complete), not OS-level worker death.
+- `temporal_cli_download_forbidden` — `WorkflowEnvironment.start_local()` fetches
+  `https://temporal.download/cli/...` and this environment returns HTTP 403.
+
+### Files
+
+- `src/novel_agent/runtime/temporal_spike.py` — identities, public payload policy,
+  file-backed NS store (no `temporalio` import).
+- `src/novel_agent/runtime/temporal_langgraph_spike.py` — workflows, activities,
+  converter, both morphologies.
+- `scripts/run_temporal_runtime_spike.py`
+- `tests/unit/test_temporal_spike.py`
+- `tests/integration/test_temporal_runtime_spike.py`
+- `pyproject.toml` — optional extra, coverage omit, mypy overrides.
+
+### Not claimed
+
+Gate U3.5 PASS, U7 Temporal cutover, production Temporal worker, and any U2/U3/U4
+PASS. Plugin success does not lift the worker-restart or sandbox notes.

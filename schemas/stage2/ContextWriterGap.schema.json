@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "ContextWriterExpectedAction": {
+      "enum": [
+        "request_memory",
+        "declare_assumption",
+        "defer_beat",
+        "ask_author"
+      ],
+      "title": "ContextWriterExpectedAction",
+      "type": "string"
+    },
+    "ContextWriterGapType": {
+      "enum": [
+        "MISSING_HISTORY",
+        "EPISTEMIC_BOUNDARY",
+        "UNRESOLVED_OBLIGATION",
+        "CONFLICT",
+        "FUTURE_REVEAL"
+      ],
+      "title": "ContextWriterGapType",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One typed gap declared by the real Writer in Track B.",
+  "properties": {
+    "blocking": {
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "evidence_available": {
+      "title": "Evidence Available",
+      "type": "boolean"
+    },
+    "expected_action": {
+      "$ref": "#/$defs/ContextWriterExpectedAction"
+    },
+    "gap_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gap_type": {
+      "$ref": "#/$defs/ContextWriterGapType"
+    }
+  },
+  "required": [
+    "gap_id",
+    "description",
+    "gap_type",
+    "blocking",
+    "evidence_available",
+    "expected_action"
+  ],
+  "title": "ContextWriterGap",
+  "type": "object"
+}

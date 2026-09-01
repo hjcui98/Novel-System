@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "completed_chapters_after": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Completed Chapters After",
+      "type": "array"
+    },
+    "completed_chapters_before": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Completed Chapters Before",
+      "type": "array"
+    },
+    "phase_index": {
+      "minimum": 1,
+      "title": "Phase Index",
+      "type": "integer"
+    },
+    "report_path": {
+      "minLength": 1,
+      "title": "Report Path",
+      "type": "string"
+    },
+    "restarted_from_process": {
+      "title": "Restarted From Process",
+      "type": "boolean"
+    },
+    "status": {
+      "minLength": 1,
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "phase_index",
+    "report_path",
+    "status",
+    "restarted_from_process"
+  ],
+  "title": "U6BWorkerPhaseReport",
+  "type": "object"
+}

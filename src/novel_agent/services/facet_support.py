@@ -10,7 +10,8 @@ package will also expose as exact evidence, and a package gap always has the
 same typed reason the route recorded.
 
 Deterministic rules only: structured anchors close the facets their record kind
-stands for AND whose predicate the Need declared; grounded exact slices and
+stands for AND whose predicate the Need declared; explicit relation facets
+additionally require the ordered subject/predicate/object triple; grounded exact slices and
 entity-identity FACT_ANCHOR units are raw evidence and never by themselves
 close a semantic facet; obligation-projected PLAN_ANCHOR units (writer_safe)
 close commitment facets while plan provenance closes only PLAN_NODE;
@@ -72,7 +73,7 @@ _PLAN_OBLIGATION_SCOPE = "writer_safe"
 class FacetSupportEvaluator:
     """Compute per-facet exact-evidence closure over selected candidates."""
 
-    version = "facet_support_evaluator.v1"
+    version = "facet_support_evaluator.v2"
 
     @classmethod
     def evaluate(
@@ -198,8 +199,11 @@ class FacetSupportEvaluator:
         (``NeedCompletionSpec.predicates_by_facet``, 2026-08-14 review second
         follow-up P1): a same-kind anchor with an absent or mismatched
         predicate does not close the facet, and a declared predicate closes
-        only its bound facet.  An unbound facet cannot prove predicate
-        support, so no semantic facet closes on it (fail-closed).
+        only its bound facet.  Explicit relation facets also carry ordered
+        ``RelationFacetBinding`` triples; an anchor must match the complete
+        triple, not merely one endpoint or the inverse direction.  An unbound
+        facet cannot prove predicate support, so no semantic facet closes on it
+        (fail-closed).
         FACT_ANCHOR (entity identity) is never a semantic witness; PLAN_ANCHOR
         resolves to obligation vs plan provenance by access_scope.
         """
@@ -260,17 +264,35 @@ class FacetSupportEvaluator:
         facet of the Need.  A facet without a binding, or a unit without a
         predicate, cannot be closed (fail-closed).
         """
-        if unit.predicate is None:
-            return ()
         spec = need.completion_spec
-        if spec is None or not spec.predicates_by_facet:
+        if spec is None:
             return ()
-        return tuple(
-            facet.need_facet_id
-            for facet in facets
-            if facet.facet_kind in kind_facets
-            and unit.predicate in spec.predicates_by_facet.get(facet.need_facet_id.root, ())
-        )
+        matched: list[StableId] = []
+        for facet in facets:
+            if facet.facet_kind not in kind_facets:
+                continue
+            facet_id = facet.need_facet_id.root
+            has_relation_binding = (
+                facet.facet_kind is NeedFacetKind.RELATION_STATE
+                and facet_id in spec.relation_bindings_by_facet
+            )
+            relation_bindings = spec.relation_bindings_by_facet.get(facet_id, ())
+            if has_relation_binding:
+                if unit.unit_kind is not RetrievalUnitKind.RELATION_ANCHOR:
+                    continue
+                if not any(
+                    unit.predicate == binding.predicate
+                    and unit.entity_ids == (binding.subject_id, binding.object_id)
+                    for binding in relation_bindings
+                ):
+                    continue
+                matched.append(facet.need_facet_id)
+                continue
+            if unit.predicate is not None and unit.predicate in spec.predicates_by_facet.get(
+                facet_id, ()
+            ):
+                matched.append(facet.need_facet_id)
+        return tuple(matched)
 
 
 __all__ = ["FacetSupportEvaluator"]

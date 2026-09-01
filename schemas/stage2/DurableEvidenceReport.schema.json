@@ -1,0 +1,230 @@
+{
+  "$defs": {
+    "BenchmarkFailureLayer": {
+      "enum": [
+        "transport",
+        "raw",
+        "parse",
+        "package",
+        "writer-answer",
+        "answer-judge",
+        "evidence-judge",
+        "none"
+      ],
+      "title": "BenchmarkFailureLayer",
+      "type": "string"
+    },
+    "ModelCallLedgerAggregate": {
+      "additionalProperties": false,
+      "description": "Durable call usage grouped by run, task, attempt, and logical phase.",
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "logical_phase": {
+          "minLength": 1,
+          "title": "Logical Phase",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "request_count": {
+          "minimum": 0,
+          "title": "Request Count",
+          "type": "integer"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "schema_retry_count": {
+          "minimum": 0,
+          "title": "Schema Retry Count",
+          "type": "integer"
+        },
+        "status_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Status Counts",
+          "type": "object"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "run_id",
+        "task_id",
+        "logical_phase",
+        "request_count",
+        "schema_retry_count",
+        "status_counts",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "latency_ms",
+        "cost_availability"
+      ],
+      "title": "ModelCallLedgerAggregate",
+      "type": "object"
+    },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "WriterJudgeAvailability": {
+      "enum": [
+        "available",
+        "pending",
+        "unavailable"
+      ],
+      "title": "WriterJudgeAvailability",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Usage and lineage rebuilt from ledger, freeze receipts, and evaluation artifacts.",
+  "properties": {
+    "answer_judge_availability": {
+      "$ref": "#/$defs/WriterJudgeAvailability"
+    },
+    "cited_evidence_count": {
+      "minimum": 0,
+      "title": "Cited Evidence Count",
+      "type": "integer"
+    },
+    "cost_availability": {
+      "$ref": "#/$defs/ModelCostAvailability"
+    },
+    "evidence_judge_availability": {
+      "$ref": "#/$defs/WriterJudgeAvailability"
+    },
+    "first_failure_layer": {
+      "$ref": "#/$defs/BenchmarkFailureLayer"
+    },
+    "freeze_receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "gold_hit_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gold Hit Count"
+    },
+    "phase_aggregates": {
+      "items": {
+        "$ref": "#/$defs/ModelCallLedgerAggregate"
+      },
+      "title": "Phase Aggregates",
+      "type": "array"
+    },
+    "profile_namespaces": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Profile Namespaces",
+      "type": "array"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "writer_context_item_count": {
+      "minimum": 0,
+      "title": "Writer Context Item Count",
+      "type": "integer"
+    },
+    "writer_used_item_count": {
+      "minimum": 0,
+      "title": "Writer Used Item Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "freeze_receipt_id",
+    "phase_aggregates",
+    "profile_namespaces",
+    "writer_context_item_count",
+    "writer_used_item_count",
+    "cited_evidence_count",
+    "first_failure_layer",
+    "answer_judge_availability",
+    "evidence_judge_availability",
+    "cost_availability"
+  ],
+  "title": "DurableEvidenceReport",
+  "type": "object"
+}

@@ -17,6 +17,49 @@ class RootKind(StrEnum):
     PROJECT_PROFILE = "project_profile"
 
 
+MODEL_RAW_RESPONSE_MEDIA_TYPE = "application/vnd.novel-agent.model.raw-response+json"
+EVALUATION_ARTIFACT_MEDIA_TYPE_PREFIX = "application/vnd.novel-agent.evaluation."
+CONTEXT_WRITER_RESPONSE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.context-writer-response+json"
+)
+QA_WRITER_RESPONSE_MEDIA_TYPE = "application/vnd.novel-agent.evaluation.qa-writer-response+json"
+CONTEXT_WRITER_READOUT_RECORD_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.context-writer-readout+json"
+)
+QA_WRITER_READOUT_RECORD_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.qa-writer-readout+json"
+)
+V05_FAKE_CAMPAIGN_RECEIPT_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.v05-fake-campaign-receipt+json"
+)
+V05_READOUT_CAMPAIGN_MANIFEST_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.v05-readout-campaign-manifest+json"
+)
+V05_READOUT_FREEZE_RECEIPT_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.v05-readout-freeze-receipt+json"
+)
+PRODUCTION_ASSEMBLY_ATTESTATION_MEDIA_TYPE = (
+    "application/vnd.novel-agent.production-assembly-attestation+json"
+)
+EFFECTIVE_BUDGET_MEDIA_TYPE = "application/vnd.novel-agent.effective-budget+json"
+WRITER_JUDGE_RECEIPT_MEDIA_TYPE = "application/vnd.novel-agent.evaluation.writer-judge-receipt+json"
+WRITER_JUDGE_INPUT_MEDIA_TYPE = "application/vnd.novel-agent.evaluation.writer-judge-input+json"
+WRITER_JUDGE_OUTPUT_MEDIA_TYPE = "application/vnd.novel-agent.evaluation.writer-judge-output+json"
+EVALUATION_NAMESPACE_DISCARD_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.namespace-discard+json"
+)
+DURABLE_EVIDENCE_REPORT_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.durable-evidence-report+json"
+)
+U4S_SEED_READOUT_REPORT_MEDIA_TYPE = (
+    "application/vnd.novel-agent.evaluation.u4s-seed-readout-report+json"
+)
+
+
+def is_evaluation_artifact_media_type(media_type: str) -> bool:
+    return media_type.startswith(EVALUATION_ARTIFACT_MEDIA_TYPE_PREFIX)
+
+
 class ArtifactRef(DomainModel):
     artifact_id: ArtifactId
     media_type: str = Field(min_length=1, max_length=255)

@@ -27,6 +27,13 @@ class RunEventLogRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
+    def next_sequence(self, run_id: RunId) -> int:
+        """Return the next durable sequence number for one run stream."""
+
+        with self._session_factory() as session:
+            stream = session.get(RunStreamRow, run_id.root)
+            return 1 if stream is None else stream.last_sequence_no + 1
+
     def append(self, event: RunEvent) -> RunEvent:
         with self._session_factory() as session, session.begin():
             return self._append_in_session(session, event)

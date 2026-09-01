@@ -237,8 +237,11 @@ class ModelRequestAdmissionController:
                     self._timeouts += 1
                     self._wait_seconds += time.monotonic() - started
                     self._condition.notify_all()
+                    active_request_ids = tuple(sorted(self._active))
+                    queued_request_ids = tuple(queued.info.request_id for queued in self._queue)
                     raise SchedulingTimeoutError(
-                        f"SCHEDULING_TIMEOUT: {info.request_id} waited for endpoint capacity"
+                        f"SCHEDULING_TIMEOUT: {info.request_id} waited for endpoint capacity; "
+                        f"active={active_request_ids!r}; queued={queued_request_ids!r}"
                     )
                 self._condition.wait(timeout=remaining)
 

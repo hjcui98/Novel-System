@@ -137,6 +137,11 @@
       "title": "ChapterGoal",
       "type": "object"
     },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
     "EntityMention": {
       "additionalProperties": false,
       "description": "One natural-language entity reference in a draft (no graph id).",
@@ -323,6 +328,17 @@
         "grounding_status": {
           "$ref": "#/$defs/GroundingStatus"
         },
+        "object_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "object_label": {
           "minLength": 1,
           "title": "Object Label",
@@ -343,6 +359,17 @@
           "minLength": 1,
           "title": "Relation Label",
           "type": "string"
+        },
+        "subject_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "subject_label": {
           "minLength": 1,
@@ -952,6 +979,16 @@
       "title": "PlannerPageStatus",
       "type": "string"
     },
+    "PlannerPreviewStatus": {
+      "enum": [
+        "resolved",
+        "missing",
+        "stale",
+        "cutoff_excluded"
+      ],
+      "title": "PlannerPreviewStatus",
+      "type": "string"
+    },
     "PlannerRelationSummary": {
       "additionalProperties": false,
       "description": "Bounded relation row in the deterministic world summary.",
@@ -978,6 +1015,134 @@
         "object_label"
       ],
       "title": "PlannerRelationSummary",
+      "type": "object"
+    },
+    "PlannerSourceExpansion": {
+      "additionalProperties": false,
+      "description": "Durable P1 selection and fail-closed dereference accounting.",
+      "properties": {
+        "context_level": {
+          "default": "P1",
+          "title": "Context Level",
+          "type": "string"
+        },
+        "cutoff_excluded_count": {
+          "minimum": 0,
+          "title": "Cutoff Excluded Count",
+          "type": "integer"
+        },
+        "hit_record_count": {
+          "minimum": 0,
+          "title": "Hit Record Count",
+          "type": "integer"
+        },
+        "missing_count": {
+          "minimum": 0,
+          "title": "Missing Count",
+          "type": "integer"
+        },
+        "preview_tokens": {
+          "minimum": 0,
+          "title": "Preview Tokens",
+          "type": "integer"
+        },
+        "previews": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannerSourcePreview"
+          },
+          "title": "Previews",
+          "type": "array"
+        },
+        "resolved_count": {
+          "minimum": 0,
+          "title": "Resolved Count",
+          "type": "integer"
+        },
+        "selected_record_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Record Ids",
+          "type": "array"
+        },
+        "stale_count": {
+          "minimum": 0,
+          "title": "Stale Count",
+          "type": "integer"
+        },
+        "truncated_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hit_record_count",
+        "resolved_count",
+        "missing_count",
+        "stale_count",
+        "cutoff_excluded_count",
+        "preview_tokens"
+      ],
+      "title": "PlannerSourceExpansion",
+      "type": "object"
+    },
+    "PlannerSourcePreview": {
+      "additionalProperties": false,
+      "description": "One exact L0 preview dereferenced from a selected Planner record.",
+      "properties": {
+        "chapter_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Index"
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "record_kind": {
+          "minLength": 1,
+          "title": "Record Kind",
+          "type": "string"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "status": {
+          "$ref": "#/$defs/PlannerPreviewStatus"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record_id",
+        "record_kind",
+        "evidence_id",
+        "status",
+        "source_commit"
+      ],
+      "title": "PlannerSourcePreview",
       "type": "object"
     },
     "PlannerStateSummary": {
@@ -1107,6 +1272,14 @@
           "minimum": 0,
           "title": "Relation Count",
           "type": "integer"
+        },
+        "selected_record_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Selected Record Ids",
+          "type": "array"
         },
         "state_count": {
           "minimum": 0,
@@ -1457,6 +1630,17 @@
       },
       "title": "Scope Normalization Reasons",
       "type": "object"
+    },
+    "source_expansion": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlannerSourceExpansion"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "truncated_draft_ids": {
       "default": [],

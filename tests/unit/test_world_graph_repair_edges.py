@@ -68,7 +68,7 @@ def _relation_candidate(**updates: object) -> WorldGraphRelationCandidate:
         "object_surface": "林澈",
         "valid_time": StoryTime(worldline="main", start_ordinal=5),
         "evidence_refs": world.states[0].evidence_refs,
-        "source_truth_class": TruthClass.ASSERTION,
+        "source_truth_class": TruthClass.ACCEPTED_WORLD_FACT,
         "support_status": GraphCandidateSupportStatus.SUPPORTED,
         "support_reason": "test_support",
     }
@@ -167,6 +167,7 @@ def test_graph_domain_contracts_reject_invalid_shapes_and_accounting() -> None:
                 "no_graph_candidate_reason": "model_returned_no_graph_candidates",
             }
         )
+
     for update, message in (
         ({"status": EntityAdmissionStatus.CREATED}, "requires an entity id"),
         (
@@ -224,6 +225,53 @@ def test_graph_domain_contracts_reject_invalid_shapes_and_accounting() -> None:
     for field in ("accepted_count", "rejected_count", "deduped_count"):
         with pytest.raises(ValidationError, match="accounting mismatch"):
             WorldGraphExtractionReceipt.model_validate({**base_receipt, field: 1})
+
+
+@pytest.mark.parametrize("truth_class", [TruthClass.UNKNOWN, TruthClass.NOT_APPLICABLE])
+def test_graph_relation_candidate_requires_explicit_truth_class(
+    truth_class: TruthClass,
+) -> None:
+    with pytest.raises(ValidationError, match="explicit source truth class"):
+        GraphCandidatePageDraft(
+            status=GraphCandidatePageStatus.COMPLETE,
+            candidates=(
+                GraphRelationCandidateDraft(
+                    subject_surface="旧誓言",
+                    predicate="teacher_of",
+                    object_surface="林澈",
+                    valid_time=StoryTime(worldline="main", start_ordinal=5),
+                    source_truth_class=truth_class,
+                    evidence_quotes=("旧誓言教导林澈。",),
+                ),
+            ),
+        )
+
+
+def test_graph_relation_candidate_requires_main_worldline() -> None:
+    with pytest.raises(ValidationError, match="worldline=main"):
+        GraphCandidatePageDraft(
+            status=GraphCandidatePageStatus.COMPLETE,
+            candidates=(
+                GraphRelationCandidateDraft(
+                    subject_surface="旧誓言",
+                    predicate="teacher_of",
+                    object_surface="林澈",
+                    valid_time=StoryTime(worldline="chapter_95_end", start_ordinal=95),
+                    source_truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                    evidence_quotes=("旧誓言教导林澈。",),
+                ),
+            ),
+        )
+
+
+def test_graph_relation_candidate_schema_constrains_main_worldline() -> None:
+    schema = GraphCandidatePageDraft.model_json_schema()
+
+    relation_schema = schema["$defs"]["GraphRelationCandidateDraft"]
+    time_ref = relation_schema["properties"]["valid_time"]["$ref"]
+    assert time_ref == "#/$defs/GraphStoryTime"
+    assert schema["$defs"]["GraphStoryTime"]["properties"]["worldline"]["const"] == "main"
+    assert "worldline" in schema["$defs"]["GraphStoryTime"]["required"]
 
 
 def test_entity_admission_covers_fail_closed_and_identity_paths() -> None:
@@ -310,6 +358,7 @@ def test_entity_admission_covers_fail_closed_and_identity_paths() -> None:
     ("updates", "reason"),
     [
         ({"support_status": GraphCandidateSupportStatus.REJECTED}, "test_support"),
+        ({"source_truth_class": TruthClass.ASSERTION}, "truth_class_not_admitted:assertion"),
         ({"source_truth_class": TruthClass.UNKNOWN}, "truth_class_not_admitted:unknown"),
         ({"subject_surface": "不存在"}, "subject_entity_missing"),
         ({"object_surface": "不存在"}, "object_entity_missing"),

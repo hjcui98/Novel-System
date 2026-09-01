@@ -50,7 +50,9 @@
         "worker_startup",
         "worker_lease_expired",
         "provider_transient",
+        "leaf_schema_rejected",
         "leaf_review_required",
+        "canon_extraction_gap",
         "basis_changed",
         "permission_denied",
         "validation_rejected",
@@ -58,10 +60,14 @@
         "projection_failed",
         "freshness_waiting",
         "freshness_blocked",
+        "writer_lane_busy",
         "effect_uncertain",
         "poison_loop",
         "budget_exhausted",
-        "cancelled"
+        "cancelled",
+        "runtime_capability_unavailable",
+        "external_resource_unavailable",
+        "unknown"
       ],
       "title": "FailureClass",
       "type": "string"

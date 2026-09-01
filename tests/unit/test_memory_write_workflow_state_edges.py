@@ -1164,6 +1164,7 @@ def test_quarantine_package_id_is_bounded_for_max_length_candidate_id() -> None:
     package = workflow._quarantine.packages[-1]
     assert package.package_id.root.startswith("quarantine.candidate.")
     assert len(package.package_id.root) <= 128
+    assert data.candidate.candidate_id in package.candidate_ids
 
 
 def test_guardian_conversion_and_human_decision_specific_binding_errors() -> None:

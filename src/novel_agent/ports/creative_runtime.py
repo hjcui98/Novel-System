@@ -12,7 +12,7 @@ from novel_agent.domain.creative_runtime import (
 )
 from novel_agent.domain.generation import WritingLoopRequest
 from novel_agent.domain.ids import RunId, StableId
-from novel_agent.domain.memory_write import MemoryWriteWorkflowResult
+from novel_agent.domain.memory_write import MemoryRepairFinding, MemoryWriteWorkflowResult
 from novel_agent.domain.runtime import EffectReceipt, TaskRecord
 from novel_agent.domain.writing_loop import WritingLoopResult
 
@@ -43,6 +43,12 @@ class ChapterSettlementPort(Protocol):
     async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult: ...
 
 
+class MemoryMaintenancePort(Protocol):
+    async def run(
+        self, task: TaskRecord, finding: MemoryRepairFinding
+    ) -> MemoryWriteWorkflowResult: ...
+
+
 class RuntimeTaskReader(Protocol):
     def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]: ...
 
@@ -60,6 +66,7 @@ __all__ = [
     "CandidateMaterializer",
     "ChapterSettlementPort",
     "EffectStatusResolver",
+    "MemoryMaintenancePort",
     "PlanningLeafPort",
     "RuntimeTaskReader",
     "WritingLeafPort",

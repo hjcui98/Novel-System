@@ -30,7 +30,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
-from novel_agent.domain.memory import FreshnessDecision, WorldRootDocument
+from novel_agent.domain.memory import FreshnessDecision, NeedFacetKind, WorldRootDocument
 from novel_agent.domain.runtime import EffectStatus, ResumabilityStatus
 from novel_agent.domain.stage2 import (
     AccessScope,
@@ -40,7 +40,24 @@ from novel_agent.domain.stage2 import (
     PatchRiskAssessment,
     WriteGateDecision,
 )
-from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.text import EvidenceRef, SourceBoundEvidenceRequirement
+
+
+def semantic_id(namespace: str, *identity_parts: str) -> StableId:
+    """Build a readable bounded identity from the domain's existing keys.
+
+    The StableId limit is part of the public contract, so callers must keep
+    the source identity itself bounded instead of hiding it behind a new
+    digest.  Run/task/project/request details remain in the typed payloads and
+    artifact lineage when the surface identity is intentionally short.
+    """
+
+    value = ".".join((namespace, *identity_parts))
+    if not namespace or any(not part for part in identity_parts):
+        raise ValueError("semantic identity parts must be non-empty")
+    if len(value) > 128:
+        raise ValueError("semantic identity exceeds StableId limit")
+    return StableId(value)
 
 
 class NarrativePosition(DomainModel):
@@ -79,6 +96,19 @@ class PlanChangeTrigger(DomainModel):
 class MaintenanceTrigger(DomainModel):
     kind: Literal[MemoryWriteTriggerKind.MAINTENANCE] = MemoryWriteTriggerKind.MAINTENANCE
     maintenance_task_id: StableId
+    # A Planner gap may be grounded in an earlier revealed chapter rather
+    # than the latest chapter cutoff.  Keep that bounded source scope on the
+    # existing trigger so the maintenance workflow can read the same
+    # evidence that produced the finding without broadening visibility.
+    chapter_indices: tuple[int, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_chapter_indices(self) -> MaintenanceTrigger:
+        if any(index < 0 for index in self.chapter_indices):
+            raise ValueError("maintenance source chapter indices must be non-negative")
+        if self.chapter_indices != tuple(sorted(set(self.chapter_indices))):
+            raise ValueError("maintenance source chapter indices must be unique and ascending")
+        return self
 
 
 class HumanCorrectionTrigger(DomainModel):
@@ -100,6 +130,14 @@ class MemoryWriteCommitProfile(StrEnum):
     CHAPTER_REVEAL_ATOMIC = "chapter_reveal_atomic"
     CHANGED_ROOTS_ONLY = "changed_roots_only"
     REQUIRE_CANONICAL_COMMIT = "require_canonical_commit"
+
+
+class MemoryRepairOwner(StrEnum):
+    PROJECTION = "projection"
+    MEMORY_GATEWAY = "memory_gateway"
+    GRAPH_CURATOR = "graph_curator"
+    ORDINARY_CURATOR = "ordinary_curator"
+    OPERATOR = "operator"
 
 
 class RootUpdateKind(StrEnum):
@@ -302,6 +340,12 @@ class MemoryWriteWorkflowRequest(DomainModel):
     project_id: ProjectId
     trigger: MemoryWriteTrigger
     commit_profile: MemoryWriteCommitProfile
+    # U8-C isolated evidence may run the full proposal/materialization/
+    # validation path without granting the workflow Canon commit authority.
+    # This is intentionally opt-in and restricted to maintenance requests;
+    # chapter reveal and normal production maintenance keep the historical
+    # canonical-commit default.
+    validation_only: bool = False
     base_commit: CommitId
     source_artifacts: tuple[ArtifactRef, ...] = ()
     root_update_intents: tuple[RootUpdateIntent, ...] = ()
@@ -316,6 +360,19 @@ class MemoryWriteWorkflowRequest(DomainModel):
     skill_contract_refs: tuple[ContractRef, ...] = ()
     tool_policy_ref: ContractRef
     repair_policy_ref: ContractRef
+    # Maintenance findings carry their deterministic owner into the workflow
+    # so the Curator port can select the graph or ordinary profile explicitly.
+    # Non-maintenance callers retain the historical ``None`` value.
+    repair_owner: MemoryRepairOwner | None = None
+    # Planner-gap maintenance must retain the query that caused the gap.  The
+    # workflow is still evidence-bound, but the Curator needs this advisory
+    # target to select the relevant durable state/relation from a chapter
+    # instead of emitting an unrelated delta from the same source.
+    repair_query: str | None = Field(default=None, min_length=1, max_length=2048)
+    # A source-bound Planner finding may require every accepted candidate to
+    # carry evidence covering one pre-registered causal span.  The field is
+    # optional for legacy/ordinary writes, but immutable once supplied.
+    source_evidence_requirement: SourceBoundEvidenceRequirement | None = None
     budget: MemoryWriteBudget = Field(default_factory=MemoryWriteBudget)
     idempotency_key: StableId
     resume_checkpoint: ArtifactRef | None = None
@@ -330,6 +387,19 @@ class MemoryWriteWorkflowRequest(DomainModel):
             raise ValueError("source provenance must align one-to-one with source artifacts")
         if not self.source_provenance and self.source_artifacts:
             raise ValueError("source provenance must be supplied for every source artifact")
+        requirement = self.source_evidence_requirement
+        if requirement is not None:
+            source_ids = {source.artifact_id for source in self.source_artifacts}
+            if requirement.source_artifact_id not in source_ids:
+                raise ValueError(
+                    "source-bound evidence requirement must reference a request source"
+                )
+            if isinstance(self.trigger, MaintenanceTrigger) and (
+                requirement.source_chapter_index not in self.trigger.chapter_indices
+            ):
+                raise ValueError(
+                    "maintenance trigger must retain the source-bound evidence chapter"
+                )
         intent_ids = tuple(intent.intent_id for intent in self.root_update_intents)
         if len(intent_ids) != len(set(intent_ids)):
             raise ValueError("RootUpdateIntent ids must be unique")
@@ -359,6 +429,14 @@ class MemoryWriteWorkflowRequest(DomainModel):
             }
             if trigger_kind not in allowed:
                 raise ValueError("REQUIRE_CANONICAL_COMMIT trigger is not registered")
+
+        if self.validation_only:
+            if self.commit_profile is not MemoryWriteCommitProfile.REQUIRE_CANONICAL_COMMIT:
+                raise ValueError("validation-only workflow requires REQUIRE_CANONICAL_COMMIT")
+            if trigger_kind is not MemoryWriteTriggerKind.MAINTENANCE:
+                raise ValueError("validation-only workflow is restricted to maintenance")
+            if not isinstance(self.world_mutation, CuratorWorldProposalInput):
+                raise ValueError("validation-only workflow requires a Curator proposal input")
 
         if trigger_kind is MemoryWriteTriggerKind.PLAN_CHANGE and not any(
             intent.root_kind is RootKind.PLAN for intent in self.root_update_intents
@@ -405,6 +483,11 @@ class MemoryWriteWorkflowResult(DomainModel):
     base_commit: CommitId
     resulting_commit: CommitId | None = None
     world_mutation_noop: bool = False
+    # True only when a non-empty candidate passed validation and the explicit
+    # validation-only mode completed without invoking Canon commit.  This is
+    # distinct from an ordinary empty-delta NOOP and is the evidence-bearing
+    # safe action used by the U8-C corpus audit.
+    safe_action_accepted: bool = False
     accepted_candidate_id: StableId | None = None
     terminal_candidate_id: StableId | None = None
     validation_receipt: ArtifactRef | None = None
@@ -415,6 +498,8 @@ class MemoryWriteWorkflowResult(DomainModel):
     projection_snapshot_id: StableId | None = None
     freshness: FreshnessDecision | None = None
     checkpoint_ref: ArtifactRef | None = None
+    terminal_result_ref: ArtifactRef | None = None
+    effect_uncertain: bool = False
     degraded: bool = False
     quarantine_refs: tuple[ArtifactRef, ...] = ()
     committed_operation_ids: tuple[StableId, ...] = ()
@@ -427,6 +512,17 @@ class MemoryWriteWorkflowResult(DomainModel):
     @model_validator(mode="after")
     def validate_result_contract(self) -> MemoryWriteWorkflowResult:
         accepted = self.canonical_commit_accepted
+        if self.safe_action_accepted and (
+            accepted
+            or self.status is not MemoryWriteWorkflowStatus.NOOP
+            or self.workflow_phase is not MemoryWriteWorkflowPhase.COMPLETE
+            or self.terminal_candidate_id is None
+            or self.validation_receipt is None
+            or self.world_mutation_noop
+        ):
+            raise ValueError(
+                "safe action requires a validated non-noop candidate without Canon commit"
+            )
         if accepted:
             if self.resulting_commit is None or self.commit_receipt is None:
                 raise ValueError("accepted Canon requires resulting commit and commit receipt")
@@ -458,6 +554,8 @@ class MemoryWriteWorkflowResult(DomainModel):
             accepted or self.workflow_phase is not MemoryWriteWorkflowPhase.COMPLETE
         ):
             raise ValueError("NOOP must be an uncommitted completed result")
+        if self.safe_action_accepted and self.accepted_candidate_id is not None:
+            raise ValueError("safe action cannot expose a Canon accepted candidate id")
         if (
             self.status
             in {
@@ -468,6 +566,8 @@ class MemoryWriteWorkflowResult(DomainModel):
             and self.checkpoint_ref is None
         ):
             raise ValueError("resumable workflow status requires a checkpoint")
+        if self.effect_uncertain and self.status is not MemoryWriteWorkflowStatus.SUSPENDED:
+            raise ValueError("uncertain effect requires a suspended workflow")
         if self.status is MemoryWriteWorkflowStatus.QUARANTINED and not self.quarantine_refs:
             raise ValueError("QUARANTINED result requires a quarantine artifact")
         if self.degraded:
@@ -817,6 +917,7 @@ class MemoryWriteCandidatePayload(DomainModel):
     observed_changes: ObservedChangeSet
     root_update_intents: tuple[RootUpdateIntent, ...]
     commit_profile: MemoryWriteCommitProfile
+    source_evidence_requirement: SourceBoundEvidenceRequirement | None = None
 
 
 class RepairScope(DomainModel):
@@ -827,6 +928,154 @@ class RepairScope(DomainModel):
     allow_successor_creation: bool = False
 
 
+class MemoryGapClassification(StrEnum):
+    PROJECTION_STALE_OR_MISSING = "projection_stale_or_missing"
+    RETRIEVAL_PATH_GAP_WITH_L0 = "retrieval_path_gap_with_l0"
+    CANON_EXTRACTION_GAP = "canon_extraction_gap"
+    ASSERTION_OR_RUMOR_ONLY = "assertion_or_rumor_only"
+    SOURCE_EVIDENCE_ABSENT = "source_evidence_absent"
+    IDENTITY_CUTOFF_OR_PERMISSION_INVALID = "identity_cutoff_or_permission_invalid"
+
+
+_MEMORY_GAP_OWNERS: dict[MemoryGapClassification, tuple[MemoryRepairOwner, ...]] = {
+    MemoryGapClassification.PROJECTION_STALE_OR_MISSING: (MemoryRepairOwner.PROJECTION,),
+    MemoryGapClassification.RETRIEVAL_PATH_GAP_WITH_L0: (MemoryRepairOwner.MEMORY_GATEWAY,),
+    MemoryGapClassification.CANON_EXTRACTION_GAP: (
+        MemoryRepairOwner.GRAPH_CURATOR,
+        MemoryRepairOwner.ORDINARY_CURATOR,
+    ),
+    MemoryGapClassification.ASSERTION_OR_RUMOR_ONLY: (MemoryRepairOwner.OPERATOR,),
+    MemoryGapClassification.SOURCE_EVIDENCE_ABSENT: (MemoryRepairOwner.OPERATOR,),
+    MemoryGapClassification.IDENTITY_CUTOFF_OR_PERMISSION_INVALID: (MemoryRepairOwner.OPERATOR,),
+}
+
+
+class MemoryRepairFinding(DomainModel):
+    """Immutable, evidence-only handoff from a Planner gap to one repair owner."""
+
+    finding_id: StableId
+    incident_id: StableId
+    planner_run_id: RunId
+    planner_task_id: TaskId
+    planner_attempt_id: StableId
+    planner_request_id: StableId
+    planner_intent_ref: ArtifactRef
+    planner_checkpoint_ref: ArtifactRef
+    project_id: ProjectId
+    base_commit: CommitId
+    basis_snapshot_id: StableId | None = None
+    projection_snapshot_id: StableId | None = None
+    information_boundary: InformationBoundary
+    cutoff: NarrativePosition
+    access_scope: AccessScope
+    source_artifact_refs: tuple[ArtifactRef, ...] = ()
+    source_visibility_receipt_refs: tuple[ArtifactRef, ...] = ()
+    # Source chapters selected by the Planner retrieval trace.  An empty
+    # tuple preserves legacy findings and falls back to ``cutoff``; populated
+    # values are still bounded by the same information boundary.
+    source_chapter_indices: tuple[int, ...] = ()
+    source_evidence_requirement: SourceBoundEvidenceRequirement | None = None
+    need_id: StableId
+    need_query: str = Field(min_length=1, max_length=2048)
+    semantic_question: str = Field(min_length=1, max_length=2048)
+    entity_ids: tuple[StableId, ...] = ()
+    mandatory_facet_ids: tuple[StableId, ...] = ()
+    graph_receipt_refs: tuple[ArtifactRef, ...] = ()
+    anchor_receipt_refs: tuple[ArtifactRef, ...] = ()
+    l0_receipt_refs: tuple[ArtifactRef, ...] = ()
+    semantic_judge_receipt_refs: tuple[ArtifactRef, ...] = ()
+    classification: MemoryGapClassification
+    repair_owner: MemoryRepairOwner
+    target_root_kind: RootKind
+    repair_scope: RepairScope
+    budget: MemoryWriteBudget = Field(default_factory=MemoryWriteBudget)
+    no_progress_key: StableId
+
+    @model_validator(mode="after")
+    def validate_finding(self) -> MemoryRepairFinding:
+        if self.information_boundary.base_commit != self.base_commit:
+            raise ValueError("memory repair finding boundary must use the finding base commit")
+        if len(self.source_artifact_refs) != len(self.source_visibility_receipt_refs):
+            raise ValueError("every finding source artifact requires one visibility receipt")
+        if self.information_boundary.maximum_visible_position is not None and (
+            _position_key(self.cutoff)
+            > _position_key(self.information_boundary.maximum_visible_position)
+        ):
+            raise ValueError("memory repair finding cutoff exceeds the information boundary")
+        if any(index < 0 for index in self.source_chapter_indices):
+            raise ValueError("memory repair source chapter indices must be non-negative")
+        if self.source_chapter_indices != tuple(sorted(set(self.source_chapter_indices))):
+            raise ValueError("memory repair source chapter indices must be unique and ascending")
+        if any(index > self.cutoff.chapter_index for index in self.source_chapter_indices):
+            raise ValueError("memory repair source chapter exceeds the finding cutoff")
+        maximum = self.information_boundary.maximum_visible_position
+        if maximum is not None and any(
+            index > maximum.chapter_index for index in self.source_chapter_indices
+        ):
+            raise ValueError("memory repair source chapter exceeds the information boundary")
+        requirement = self.source_evidence_requirement
+        if requirement is not None:
+            source_ids = {source.artifact_id for source in self.source_artifact_refs}
+            if requirement.source_artifact_id not in source_ids:
+                raise ValueError(
+                    "source-bound evidence requirement must reference a finding source"
+                )
+            if requirement.source_chapter_index > self.cutoff.chapter_index:
+                raise ValueError("source-bound evidence requirement exceeds the finding cutoff")
+            if maximum is not None and requirement.source_chapter_index > maximum.chapter_index:
+                raise ValueError(
+                    "source-bound evidence requirement exceeds the information boundary"
+                )
+            if self.source_chapter_indices and (
+                requirement.source_chapter_index not in self.source_chapter_indices
+            ):
+                raise ValueError("source-bound evidence chapter is not retained by the finding")
+        if self.repair_owner not in _MEMORY_GAP_OWNERS[self.classification]:
+            raise ValueError(
+                "memory repair finding owner does not match its deterministic classification"
+            )
+        # New Planner findings carry the unresolved facet ids that selected the
+        # owner.  Keep legacy findings with no facet ids readable, but do not
+        # allow a populated relation finding to be handed to the ordinary
+        # Curator (or vice versa). Causal-history findings are event/state
+        # extraction and therefore intentionally remain ordinary-Curator
+        # owned. The owner is part of the durable command identity, so this
+        # must fail before a maintenance Task exists.
+        if self.classification is MemoryGapClassification.CANON_EXTRACTION_GAP and (
+            self.mandatory_facet_ids
+        ):
+            facet_suffixes = {
+                facet_id.root.rsplit(".", 1)[-1] for facet_id in self.mandatory_facet_ids
+            }
+            # Older artifacts use opaque facet identities (for example
+            # ``facet.stage4-gap``), so only explicit semantic suffixes are
+            # authoritative for this additive contract check.
+            known_facet_suffixes = {
+                "relation",
+                NeedFacetKind.RELATION_STATE.value,
+                "causal",
+                NeedFacetKind.CAUSAL_HISTORY.value,
+                NeedFacetKind.CURRENT_STATE.value,
+            }
+            recognized_suffixes = facet_suffixes & known_facet_suffixes
+            if not recognized_suffixes:
+                return self
+            expected_owner = (
+                MemoryRepairOwner.GRAPH_CURATOR
+                if recognized_suffixes
+                & {
+                    "relation",
+                    NeedFacetKind.RELATION_STATE.value,
+                }
+                else MemoryRepairOwner.ORDINARY_CURATOR
+            )
+            if self.repair_owner is not expected_owner:
+                raise ValueError(
+                    "memory repair finding owner does not match its unresolved facet kinds"
+                )
+        return self
+
+
 class CandidateRevision(DomainModel):
     candidate_id: StableId
     parent_candidate_id: StableId | None = None
@@ -835,6 +1084,7 @@ class CandidateRevision(DomainModel):
     basis_hash: ArtifactId
     candidate_artifact: ArtifactRef
     source_artifacts: tuple[ArtifactRef, ...] = ()
+    source_evidence_requirement: SourceBoundEvidenceRequirement | None = None
     producer_kind: CandidateProducerKind
     producer_receipt: ArtifactRef | None = None
     origin_proposal_attempt_id: StableId | None = None
@@ -860,6 +1110,11 @@ class CandidateRevision(DomainModel):
             raise ValueError("proposal-origin Candidate requires attempt id and receipt together")
         if self.revision_no > 1 and self.origin_proposal_attempt_id is not None:
             raise ValueError("only Candidate v1 may bind a proposal attempt")
+        requirement = self.source_evidence_requirement
+        if requirement is not None and requirement.source_artifact_id not in {
+            source.artifact_id for source in self.source_artifacts
+        }:
+            raise ValueError("source-bound evidence requirement must reference a candidate source")
         return self
 
 
@@ -1136,6 +1391,7 @@ class MemoryWriteCheckpoint(DomainModel):
     state: MemoryWriteState
     resume_state: MemoryWriteState
     current_candidate_id: StableId | None = None
+    candidate_revision_refs: tuple[ArtifactRef, ...] = ()
     proposal_attempt_no: int = Field(default=0, ge=0)
     inflight_proposal_attempt_id: StableId | None = None
     inflight_proposal_attempt_ref: ArtifactRef | None = None
@@ -1415,6 +1671,9 @@ __all__ = [
     "HumanDecisionKind",
     "InformationBoundary",
     "MaintenanceTrigger",
+    "MemoryGapClassification",
+    "MemoryRepairFinding",
+    "MemoryRepairOwner",
     "MemoryTransportBudget",
     "MemoryWriteBudget",
     "MemoryWriteBudgetRemaining",

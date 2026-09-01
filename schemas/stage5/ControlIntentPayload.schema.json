@@ -40,6 +40,19 @@
       "minLength": 1,
       "title": "Reason",
       "type": "string"
+    },
+    "writer_generation_after": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Writer Generation After"
     }
   },
   "required": [

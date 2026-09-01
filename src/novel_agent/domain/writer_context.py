@@ -601,6 +601,8 @@ class WriterContextEvidenceItem(DomainModel):
     semantic_answering_ledger_ids: tuple[StableId, ...] = ()
     semantic_partial_ledger_ids: tuple[StableId, ...] = ()
     semantic_related_ledger_ids: tuple[StableId, ...] = ()
+    advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
+    unverified: bool = False
     gap: EvidenceFirstGap | None = None
 
     @model_validator(mode="after")
@@ -614,7 +616,11 @@ class WriterContextEvidenceItem(DomainModel):
                 or self.semantic_related_ledger_ids
             ):
                 raise ValueError("typed gap items cannot carry evidence or previews")
+            if self.unverified and not self.advisory_artifact_refs:
+                raise ValueError("unverified gap items require advisory artifact refs")
             return self
+        if self.unverified or self.advisory_artifact_refs:
+            raise ValueError("advisory markers must be typed gap items")
         if not self.evidence_ledger_ids:
             raise ValueError("writer context evidence item requires ledger refs or a typed gap")
         if not self.raw_preview:
@@ -688,6 +694,7 @@ class EvidenceFirstLineage(DomainModel):
     planner_artifact_hash: ArtifactId | None = None
     planner_fallback_used: bool = False
     unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...] = ()
+    advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
 
 
 class WriterContextPackageV2(DomainModel):

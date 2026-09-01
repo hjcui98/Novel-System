@@ -186,6 +186,7 @@ from novel_agent.services.content_addressing import (
     plan_root_content_id,
     world_root_content_id,
 )
+from novel_agent.services.effective_budget import DEFAULT_SEQUENCE_LIMIT
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.gold_evidence_matching import GoldEvidenceMatcher
 from novel_agent.services.information_boundary import InformationBoundaryPort
@@ -1661,14 +1662,25 @@ class TeacherForcedBenchmarkE2ERunner:
         quality_repair_flags: QualityRepairFeatureFlags | None = None,
         admission_controller: ModelRequestAdmissionController | None = None,
         scheduling_timeout_seconds: float = 120.0,
+        provider_thinking_on: bool = False,
+        thinking_token_budget: int = 2_048,
+        call_ledger: Any | None = None,
+        raw_artifacts: ArtifactRepository | None = None,
     ) -> _AgentHarness:
         """Build the shared semantic Planner/Controller harness for read-side products."""
+
+        if thinking_token_budget < 0:
+            raise ValueError("thinking token budget must be non-negative")
 
         return TeacherForcedBenchmarkE2ERunner._agent_harness(
             endpoint,
             quality_repair_flags=quality_repair_flags,
             admission_controller=admission_controller,
             scheduling_timeout_seconds=scheduling_timeout_seconds,
+            provider_thinking_on=provider_thinking_on,
+            thinking_token_budget=thinking_token_budget,
+            call_ledger=call_ledger,
+            raw_artifacts=raw_artifacts,
         )
 
     @staticmethod
@@ -1678,6 +1690,10 @@ class TeacherForcedBenchmarkE2ERunner:
         quality_repair_flags: QualityRepairFeatureFlags | None = None,
         admission_controller: ModelRequestAdmissionController | None = None,
         scheduling_timeout_seconds: float = 120.0,
+        provider_thinking_on: bool = False,
+        thinking_token_budget: int = 2_048,
+        call_ledger: Any | None = None,
+        raw_artifacts: ArtifactRepository | None = None,
     ) -> _AgentHarness:
         package_root = Path(__file__).parents[1]
         prompt_directory = package_root / "prompts"
@@ -1881,20 +1897,40 @@ class TeacherForcedBenchmarkE2ERunner:
             is_semantic = True
         else:  # pragma: no cover - the branches above exhaust the constructor state
             raise AssertionError("semantic endpoint resolution failed")
+        endpoint_output_tokens = getattr(selected_endpoint, "max_output_tokens", None)
+        named_output_limit = (
+            endpoint_output_tokens
+            if isinstance(endpoint_output_tokens, int) and endpoint_output_tokens >= 1
+            else None
+        )
+        endpoint_sequence_limit = getattr(selected_endpoint, "sequence_limit", None)
+        if not isinstance(endpoint_sequence_limit, int) or endpoint_sequence_limit < 1:
+            endpoint_sequence_limit = DEFAULT_SEQUENCE_LIMIT
+        endpoint_safety_allowance = getattr(selected_endpoint, "safety_allowance_tokens", None)
+        if not isinstance(endpoint_safety_allowance, int) or endpoint_safety_allowance < 0:
+            endpoint_safety_allowance = 256
+        registered_endpoint = RegisteredModelEndpoint(
+            role=ModelRole.BATCH_TEST,
+            endpoint_name=endpoint_name,
+            model_name=model_name,
+            adapter=selected_endpoint,
+            sequence_limit=endpoint_sequence_limit,
+            output_limit=named_output_limit,
+            safety_allowance_tokens=endpoint_safety_allowance,
+            estimated_reasoning_reserve=thinking_token_budget,
+            default_thinking=provider_thinking_on,
+            reasoning_included_in_completion_tokens=False,
+        )
         gateway = ModelGateway(
-            (
-                RegisteredModelEndpoint(
-                    role=ModelRole.BATCH_TEST,
-                    endpoint_name=endpoint_name,
-                    model_name=model_name,
-                    adapter=selected_endpoint,
-                ),
-            ),
+            (registered_endpoint,),
             # Strict schema generation and workflow-level repair own semantic
             # correction. Transport retry policy must not silently enable an
             # additional full-prompt structured-output retry.
             structured_max_retries=0,
+            call_ledger=call_ledger,
             admission_controller=admission_controller,
+            raw_artifacts=raw_artifacts,
+            raw_artifact_schema_version=VERSION,
             scheduling_timeout_seconds=scheduling_timeout_seconds,
         )
         all_specs = (*specs,) if not is_semantic else (*specs, controller_spec_base)
@@ -1903,12 +1939,6 @@ class TeacherForcedBenchmarkE2ERunner:
             AgentRegistry(all_specs),
             PromptRegistry(prompt_templates),
             SkillRegistry(skill_templates),
-        )
-        endpoint_output_tokens = getattr(endpoint, "max_output_tokens", None)
-        controller_output_tokens = (
-            endpoint_output_tokens
-            if isinstance(endpoint_output_tokens, int) and endpoint_output_tokens >= 1
-            else 12288
         )
 
         def controller_policy_factory(
@@ -1939,10 +1969,10 @@ class TeacherForcedBenchmarkE2ERunner:
                     purpose=ModelCallPurpose.BATCH_TEST,
                     trace_id=(f"trace-controller-{req.request_id.root}-r{round_index}"),
                     prompt="replaced by StructuredAgentRunner",
-                    max_output_tokens=controller_output_tokens,
+                    max_output_tokens=named_output_limit,
                     timeout_seconds=900,
-                    enable_thinking=False,
-                    thinking_token_budget=None,
+                    enable_thinking=(None if provider_thinking_on else False),
+                    thinking_token_budget=(thinking_token_budget if provider_thinking_on else None),
                     scheduling_stage="memory_controller",
                 )
 

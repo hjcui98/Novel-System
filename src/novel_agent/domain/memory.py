@@ -247,6 +247,20 @@ class NeedFacet(DomainModel):
         return self
 
 
+class RelationFacetBinding(DomainModel):
+    """One ordered relation triple that can close a relation facet.
+
+    ``RetrievalUnit.entity_ids`` preserves the canonical relation direction
+    (subject first, object second).  Keeping that direction in the completion
+    contract prevents an anchor for the inverse edge, or an edge that merely
+    shares one endpoint, from satisfying an explicit Planner relation.
+    """
+
+    subject_id: StableId
+    predicate: str = Field(min_length=1)
+    object_id: StableId
+
+
 class NeedCompletionSpec(DomainModel):
     need_id: StableId
     required_need_facet_ids: tuple[StableId, ...]
@@ -267,6 +281,12 @@ class NeedCompletionSpec(DomainModel):
     # cannot be closed (fail-closed); a unit predicate closes only the facets
     # whose binding contains it.
     predicates_by_facet: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    # Explicit relation questions additionally carry the complete ordered
+    # triple.  The field is optional for legacy/template Needs and only the
+    # listed facet ids may be bound.
+    relation_bindings_by_facet: dict[str, tuple[RelationFacetBinding, ...]] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def validate_facets(self) -> NeedCompletionSpec:
@@ -286,6 +306,19 @@ class NeedCompletionSpec(DomainModel):
             item.root for item in self.required_need_facet_ids
         }:
             raise ValueError("facet predicate bindings must cover every required NeedFacet")
+        if self.relation_bindings_by_facet:
+            unknown = set(self.relation_bindings_by_facet) - {
+                item.root for item in self.required_need_facet_ids
+            }
+            if unknown:
+                raise ValueError("relation facet bindings must reference required NeedFacets")
+            for facet_id, bindings in self.relation_bindings_by_facet.items():
+                triples = tuple(
+                    (binding.subject_id, binding.predicate, binding.object_id)
+                    for binding in bindings
+                )
+                if len(triples) != len(set(triples)):
+                    raise ValueError(f"relation facet bindings must be unique: {facet_id}")
         return self
 
 
@@ -594,6 +627,18 @@ class RetrievalTrace(DomainModel):
     effective_channels: tuple[RetrievalChannel, ...] = ()
     query_unavailable_reasons: dict[RetrievalChannel, str] = Field(default_factory=dict)
     full_chapters_read: int = Field(default=0, ge=0)
+    # Read-side graph/L0 fallback diagnostics.  These fields do not change the
+    # typed graph truth policy; they make the existing trace sufficient to
+    # reconstruct why a graph-zero Need did or did not close.
+    graph_path_count: int = Field(default=0, ge=0)
+    graph_seed_entity_ids: tuple[StableId, ...] = ()
+    graph_exhausted: bool = False
+    l0_fallback_evidence_refs: tuple[EvidenceRef, ...] = ()
+    l0_fallback_slice_ids: tuple[StableId, ...] = ()
+    l0_fallback_truncated: bool = False
+    semantic_receipt_refs: tuple[ArtifactRef, ...] = ()
+    semantic_fallback_status: str | None = Field(default=None, min_length=1)
+    semantic_fallback_reason: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="before")
     @classmethod
@@ -601,6 +646,28 @@ class RetrievalTrace(DomainModel):
         if not isinstance(value, dict):
             return value
         normalized = dict(value)
+        if "graph_path_count" not in normalized:
+
+            def field(item: object, name: str, default: object = ()) -> object:
+                if isinstance(item, dict):
+                    return item.get(name, default)
+                return getattr(item, name, default)
+
+            def sequence(item: object, name: str) -> tuple[object, ...]:
+                value = field(item, name)
+                return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+            candidates = normalized.get("candidates", ())
+            candidate_items = candidates if isinstance(candidates, (list, tuple)) else ()
+            normalized["graph_path_count"] = len(
+                {
+                    getattr(receipt, "path_id", field(receipt, "path_id"))
+                    for candidate in candidate_items
+                    if field(candidate, "selected", True)
+                    for hit in sequence(candidate, "channel_hits")
+                    for receipt in sequence(hit, "graph_path_receipts")
+                }
+            )
         if "need_execution_status" not in normalized:
             normalized["need_execution_status"] = (
                 NeedExecutionStatus.EXECUTED_WITH_CANDIDATES

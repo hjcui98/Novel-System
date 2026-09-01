@@ -32,6 +32,26 @@ def test_artifact_round_trip_is_content_addressed_and_idempotent(tmp_path: Path)
     assert object_key(first.artifact_id).startswith("sha256/")
 
 
+def test_artifact_projection_reuses_existing_media_type_for_identical_content(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemObjectStore(tmp_path)
+    repository = ArtifactRepository(store)
+    content = b"projected prose"
+    version = SchemaVersion("0.1.0")
+
+    existing = repository.put(content, "application/vnd.novel-agent.draft-text+plain", version)
+    projected = repository.put_or_reuse_existing(
+        content,
+        "application/vnd.novel-agent.recent-chapter-text+plain",
+        version,
+    )
+
+    assert projected.artifact_id == existing.artifact_id
+    assert projected.media_type == existing.media_type
+    assert repository.read_verified(projected) == content
+
+
 def test_artifact_verification_detects_content_tampering(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path)
     repository = ArtifactRepository(store)

@@ -12,7 +12,7 @@ from pydantic import Field
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.benchmark import AuthorPlanningContext, PlanRootDocument
+from novel_agent.domain.benchmark import AuthorPlanningContext, PlanRootDocument, TextRootDocument
 from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
@@ -181,6 +181,8 @@ class TaskPlanConditionedNeedGenerator:
         planner_max_output_tokens: int = 8192,
         planner_max_input_tokens: int = 12_000,
         planner_coverage_audit: bool = False,
+        planner_thinking_enabled: bool | None = False,
+        planner_thinking_token_budget: int | None = None,
     ) -> None:
         if max_total_needs is not None and max_total_needs < 1:
             raise ValueError("max_total_needs must be positive")
@@ -192,6 +194,8 @@ class TaskPlanConditionedNeedGenerator:
                 gateway=planner_gateway,
                 max_output_tokens=planner_max_output_tokens,
                 max_input_tokens=planner_max_input_tokens,
+                thinking_enabled=planner_thinking_enabled,
+                thinking_token_budget=planner_thinking_token_budget,
             )
             if planner_gateway is not None
             else None
@@ -210,6 +214,10 @@ class TaskPlanConditionedNeedGenerator:
         plan: PlanRootDocument | None = None,
         planning_context: AuthorPlanningContext | None = None,
         frozen_planner_artifact: PlannerInvocationArtifact | None = None,
+        *,
+        history_text: TextRootDocument | None = None,
+        snapshot_id: StableId | None = None,
+        run_id: RunId | None = None,
     ) -> tuple[Stage1MemoryNeed, ...]:
         return self.generate_with_lineage(
             task,
@@ -217,6 +225,9 @@ class TaskPlanConditionedNeedGenerator:
             plan,
             planning_context,
             frozen_planner_artifact=frozen_planner_artifact,
+            history_text=history_text,
+            snapshot_id=snapshot_id,
+            run_id=run_id,
         ).needs
 
     def generate_with_lineage(
@@ -227,6 +238,9 @@ class TaskPlanConditionedNeedGenerator:
         planning_context: AuthorPlanningContext | None = None,
         *,
         frozen_planner_artifact: PlannerInvocationArtifact | None = None,
+        history_text: TextRootDocument | None = None,
+        snapshot_id: StableId | None = None,
+        run_id: RunId | None = None,
     ) -> NeedGenerationResult:
         self._last_fallback_artifact = None
         self._last_fallback_artifact_ref = None
@@ -268,7 +282,15 @@ class TaskPlanConditionedNeedGenerator:
                     return planned
                 planner_fallback = True
             elif self._planner is not None:
-                planned = self._run_planner_chain(task, world, plan, planning_context)
+                planned = self._run_planner_chain(
+                    task,
+                    world,
+                    plan,
+                    planning_context,
+                    history_text,
+                    snapshot_id,
+                    run_id,
+                )
                 if planned is not None:
                     return planned
                 planner_fallback = True
@@ -363,7 +385,7 @@ class TaskPlanConditionedNeedGenerator:
             )
         )
 
-        run_id = RunId(f"run.stage2m.{task.task_id.root}"[:128])
+        resolved_run_id = run_id or RunId(f"run.stage2m.{task.task_id.root}"[:128])
         task_id = TaskId(task.task_id.root)
         candidates: list[Stage1MemoryNeed] = []
 
@@ -409,7 +431,7 @@ class TaskPlanConditionedNeedGenerator:
             candidates.append(
                 Stage1MemoryNeed(
                     need_id=need_id,
-                    run_id=run_id,
+                    run_id=resolved_run_id,
                     task_id=task_id,
                     base_commit=world.source_commit,
                     horizon_target=(
@@ -1193,6 +1215,9 @@ class TaskPlanConditionedNeedGenerator:
         world: WorldRootDocument,
         plan: PlanRootDocument,
         planning_context: AuthorPlanningContext | None,
+        history_text: TextRootDocument | None = None,
+        snapshot_id: StableId | None = None,
+        run_id: RunId | None = None,
     ) -> NeedGenerationResult | None:
         """LLM Planner -> Grounder -> Validator chain with deterministic fallback.
 
@@ -1208,6 +1233,9 @@ class TaskPlanConditionedNeedGenerator:
             task=task,
             world=world,
             planning_context=context,
+            run_id=run_id,
+            history_text=history_text,
+            snapshot_id=snapshot_id,
         )
         coverage_audits: tuple[PlannerCoverageAuditReceipt, ...] = ()
         page_failures = tuple(
@@ -1238,6 +1266,7 @@ class TaskPlanConditionedNeedGenerator:
                 parsed_drafts=planner_result.drafts,
                 generation_pages=planner_result.generation_pages,
                 coverage_audits=coverage_audits,
+                source_expansion=planner_result.source_expansion,
                 validated_need_set_hash=validated_hash,
                 fallback_status=PlannerFallbackStatus.PLANNER_FALLBACK,
                 fallback_reason=reason,
@@ -1295,6 +1324,7 @@ class TaskPlanConditionedNeedGenerator:
                     planning_context=page_context,
                     page=page,
                     accepted_drafts=page_drafts,
+                    run_id=run_id,
                 )
                 coverage_audits = (*coverage_audits, audit)
                 coverage_findings = (*coverage_findings, *audit.findings)
@@ -1349,6 +1379,7 @@ class TaskPlanConditionedNeedGenerator:
                 task=task,
                 world=world,
                 planning_context=context,
+                run_id=run_id,
                 repair_instruction=repair_instruction,
                 max_retries=0,
             )
@@ -1418,6 +1449,7 @@ class TaskPlanConditionedNeedGenerator:
                     missing_goal_chapters=missing_goal_chapters,
                     generation_pages=planner_result.generation_pages,
                     coverage_audits=coverage_audits,
+                    source_expansion=planner_result.source_expansion,
                     planner_contract_findings=dict(contract_findings),
                 )
                 self._last_fallback_artifact = artifact
@@ -1449,6 +1481,7 @@ class TaskPlanConditionedNeedGenerator:
                 fallback_reason="all_drafts_rejected",
                 generation_pages=planner_result.generation_pages,
                 coverage_audits=coverage_audits,
+                source_expansion=planner_result.source_expansion,
                 planner_contract_findings=dict(contract_findings),
                 raw_scope_by_draft=validation.raw_scope_by_draft,
                 canonical_scope_by_draft=validation.canonical_scope_by_draft,
@@ -1504,6 +1537,7 @@ class TaskPlanConditionedNeedGenerator:
                 missing_goal_chapters=missing_goal_chapters,
                 generation_pages=planner_result.generation_pages,
                 coverage_audits=coverage_audits,
+                source_expansion=planner_result.source_expansion,
                 planner_contract_findings=dict(contract_findings),
             )
             self._last_fallback_artifact = artifact
@@ -1567,6 +1601,7 @@ class TaskPlanConditionedNeedGenerator:
                 artifact_ref=placeholder_ref,
                 validated_hash=placeholder_hash,
                 canonical_goals=canonical_goals,
+                run_id=run_id,
             )
             for draft in accepted
         )
@@ -1589,6 +1624,7 @@ class TaskPlanConditionedNeedGenerator:
             grounded_drafts=grounded,
             generation_pages=planner_result.generation_pages,
             coverage_audits=coverage_audits,
+            source_expansion=planner_result.source_expansion,
             accepted_draft_ids=tuple(draft.draft_id for draft in accepted),
             rejected_reasons=validation.rejected_reasons,
             deduplicated_draft_ids=validation.deduplicated_draft_ids,
@@ -2244,6 +2280,7 @@ class TaskPlanConditionedNeedGenerator:
         artifact_ref: ArtifactId,
         validated_hash: ArtifactId,
         canonical_goals: Mapping[int, str] | None = None,
+        run_id: RunId | None = None,
     ) -> Stage1MemoryNeed:
         entity_ids = self._grounder.grounded_entity_ids(draft)
         sanitized = NeedValidator.sanitize_draft_id(draft.draft_id)
@@ -2366,7 +2403,7 @@ class TaskPlanConditionedNeedGenerator:
         )
         return Stage1MemoryNeed(
             need_id=need_id,
-            run_id=RunId(f"run.stage2m.{task.task_id.root}"[:128]),
+            run_id=run_id or RunId(f"run.stage2m.{task.task_id.root}"[:128]),
             task_id=TaskId(task.task_id.root),
             base_commit=world.source_commit,
             horizon_target=(task.target_chapter_start, task.target_chapter_end),

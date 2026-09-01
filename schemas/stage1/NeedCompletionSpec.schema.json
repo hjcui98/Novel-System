@@ -26,6 +26,30 @@
       "title": "NeedUncertaintyPolicy",
       "type": "string"
     },
+    "RelationFacetBinding": {
+      "additionalProperties": false,
+      "description": "One ordered relation triple that can close a relation facet.\n\n``RetrievalUnit.entity_ids`` preserves the canonical relation direction\n(subject first, object second).  Keeping that direction in the completion\ncontract prevents an anchor for the inverse edge, or an edge that merely\nshares one endpoint, from satisfying an explicit Planner relation.",
+      "properties": {
+        "object_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "subject_id",
+        "predicate",
+        "object_id"
+      ],
+      "title": "RelationFacetBinding",
+      "type": "object"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -85,6 +109,16 @@
       "minLength": 1,
       "title": "Producer Version",
       "type": "string"
+    },
+    "relation_bindings_by_facet": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/RelationFacetBinding"
+        },
+        "type": "array"
+      },
+      "title": "Relation Bindings By Facet",
+      "type": "object"
     },
     "require_causal_history": {
       "default": false,

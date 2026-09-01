@@ -2,15 +2,94 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Status date: 2026-08-13 +08:00
+> Status date: 2026-08-19 +08:00
 >
 > Cross-cutting engineering constraint clarified: 2026-08-08 +08:00
 >
-> Clean executable implementation: commit `5ef295f`, fingerprint `sha256:20daa522...b089b881`
+> Current main integration base: `c51bbeb`; Stage 2 completion commit: `0bc7757` (detached HEAD, no branch)
 >
 > Canonical naming: `docs/adr/0006-three-product-stage-topology.md`
+>
+> Target Runtime: `docs/adr/0010-temporal-outer-langgraph-leaf-target-runtime.md`
 
 ## 1. Executive status
+
+### 1.1 2026-08-19 current convergence decision
+
+Stage 2M has completed its current engineering/real-test cycle and its source work is committed. The
+completion commit `0bc7757` is the single successor of `13b385c` and the fifth linear commit after
+`c51bbeb`. It preserves the
+evidence-first product and adds ADR-0009 Need–evidence semantic closure: `assembly_status`,
+`semantic_status`, `usable_with_gaps` and every unclosed mandatory Need/facet are separate, explicit
+truths. The user confirms the latest Stage 2 increment is only a small change over the prior baseline
+and does not require downstream redesign. The accepted product statement is therefore
+`ENGINEERING_CLOSED / REAL_TESTED_USABLE_WITH_EXPLICIT_GAPS`, not a claim that every mandatory facet is
+`SUPPORTED`. The final increment continues evidence processing after Planner fallback, propagates
+status and semantic state, adds regression coverage and adds the real-model service startup script.
+The user reports 169 relevant unit tests passed and Ruff passed. `0bc7757` remains detached and is not
+contained by a branch, so it still needs a formal ref and compatibility integration into the unified
+branch; that is source convergence, not reopening Stage 2 architecture.
+
+The Stage 2 source commit intentionally excludes `.agent/` audit state, private benchmark material,
+`.conda-env`, and uncommitted ADR/run-diagnosis documents. Those remain separately owned evidence or
+runtime material and must not be described as part of `0bc7757` or swept into source convergence.
+
+Stage 3 Writer, Stage 4 Planner and Stage 5 Runtime are already integrated into main through the
+Stage 3/4/5 runtime candidate and subsequent trusted-commit/autonomous-loop repairs. They must not be
+reassembled by wholesale merging old Stage 3 A/B/C/D or monolith branches. The current remaining
+product work is narrower and evidence-driven:
+
+1. attach and fast-forward Stage 2 completion commit `0bc7757` in a clean integration worktree;
+2. provide one repository-owned `ProductionRuntimeAssembly` factory and startup preflight shared by
+   the CLI and vertical runner;
+3. close Stage 3 model-call/Skill receipt trust, Stage 4 conditional Graph/compact-expand, and shared
+   raw-before-parse evidence gaps;
+4. after U3, run an isolated U3.5 Temporal feasibility Spike that separately tests Activity-wrapped
+   and plugin-integrated leaf forms; keep PostgreSQL as the production baseline while C0→C300 and
+   20/50-chapter evidence is accumulated;
+5. before the Stage 3/4 real leaf Gate, close U4-L0: one effective model-budget result shared by
+   provider/admission/ledger, Controller C1+C2 bounded candidate previews, and cutoff-safe Stage 2
+   Memory Planner P1 evidence-ref readback; admit C3 only if the C1+C2 differential proves it is needed;
+6. run the real Stage 3/4 production-required semantic Gates and C20→25 five-chapter Pilot;
+7. wire V0.5 into the production runner and make both Track A and Track B use real Writer answers;
+   keep WCP scoring as Memory-stage diagnosis, not the end-product score; the immediate V0.5 canary
+   sequence is `docs/novelmem_v0.5_plan_write_extension_design.md`: P0 Track B wiring → C-ROLL 20 →
+   D-SHORT 20 → four-condition canary → Judge calibration → G1 gate for C-SHORT/C-MID/C-LONG and
+   D-MID/D-LONG;
+8. use the frozen evidence in U7 to choose the Temporal integration form, migration scope and cutover
+   timing; a failed POC may defer cutover but does not silently cancel the ADR-0010 target;
+9. admit only bounded deterministic/semantic self-repair and candidate-based system evolution.
+
+The detailed model-budget/progressive-context policy is currently an untracked `PROPOSED` file in the
+detached clean-Genesis worktree, not part of `0bc7757` and not yet a root-document authority. U1 must
+either review and promote it into root `docs/` with a `docs/README.md` index, or absorb all normative
+content into an existing authority and retire that copy. Until then, the unified execution plan's
+U4-L0 section is the cross-Stage route; two active policy truths are not allowed.
+
+V0.5 is currently `0.5-seed.2 / seed_not_formal_release`. Its build and independent boundary
+validator pass, and it contains 51 Track A questions plus 111 Track B Gold items across 15 Context
+checkpoints (30 history-only/author-plan-conditioned task inputs). The ten new 20-chapter windows
+contribute 64 span-exact Gold items, but these still require an independent second annotator. Formal
+judge use also requires calibration on at least 100 multi-system Writer responses with dual human
+labels, at least 90% human agreement and Cohen's kappa at least 0.8. Until those gates and production
+manifest wiring are complete, V0.5 results are seed diagnostics, not a formal product acceptance.
+
+The current cross-Stage authority is
+`docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`. The existing
+vertical Pilot document remains its U5 detailed run protocol. ADR-0010 fixes Temporal outer +
+LangGraph leaf as the long-term Runtime target. PostgreSQL Task/Attempt/RunEvent remains the only
+production scheduler during migration and through the recovery baseline. The official LangGraph
+plugin is one experimental integration form, not the premise for Temporal adoption and never a
+second business truth source.
+
+The root worktree and the clean-Genesis worktree both contain user/runtime changes. No branch deletion,
+worktree removal, blind merge or runtime-data cleanup is currently authorized.
+
+### 1.2 Preserved pre-convergence narrative
+
+The paragraphs below preserve the status narrative and immutable evidence available through
+2026-08-13. Where their next-action wording conflicts with §1.1 or §7, §1.1/§7 supersede it; historical
+metrics and acceptance results remain unchanged.
 
 The project has completed Stage 2A development and accepted its infrastructure/safety result as
 `CONDITIONAL_PASS`. The deterministic real-hybrid Memory Gateway is frozen as the safe default.
@@ -122,10 +201,10 @@ architecture decision. This does not relax any safety, quality, reproducibility,
 | Stage 2A | Development complete | CONDITIONAL_PASS | Freeze deterministic Memory Gateway |
 | Stage 2R | Complete | Physical index/basis gate passed | Maintenance only |
 | Stage 2W | Complete | Canon safety and recovery evidence accepted | Maintenance only |
-| Stage 2M | Evidence-first package/readiness and bounded World/KG/R1/L1/L2 repair accepted; v33 frozen source retained | Architecture-repair PASS; deterministic quality and unified real gate PASS; new chapter-reveal executable benchmark still running | Do not preempt 8002; evaluate the clean-Genesis rerun when complete |
-| Stage 3 | Engineering candidate integrated; production factory supplies previous-chapter Canon prose, earlier trails, readable Plan/Profile and evidence-first WCP v2; reactive Memory phase supports checkpoint/yield/resume | Focused production request and cross-invocation resume tests pass; real model/infrastructure Gate conditional | Run the real semantic Gate through the production vertical assembly when endpoint capacity is available |
-| Stage 4 | Seven-mode Planner Context Loop integrated through the public adapter; rolling `CHAPTER_SET`, soft Context target, checkpoint continuation and independent Planner-Memory tranche implemented | Focused rolling/context/budget evidence passes; real seven-mode semantic Gate not run | Run the real semantic Gate through the production vertical assembly |
-| Stage 5 | Fixed topology, G4/G5 factories, Stage 2W atomic Chapter Settlement with outer-effect recovery, AUTO repair, bounded two-lane concurrency and general vertical runner implemented | `ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN`; focused atomic/recovery closure passes; real multi-chapter product Gate not run | Configure production assembly and run C20→25 when 8002 is free; do not call this product PASS before that evidence |
+| Stage 2M | Implementation complete and source committed at detached `0bc7757`; evidence-first product preserved | `ENGINEERING_CLOSED / SOURCE_COMMITTED / REAL_TESTED_USABLE_WITH_EXPLICIT_GAPS`; 169 relevant tests and Ruff reported PASS; not all mandatory facets are claimed complete | Attach a formal ref to `0bc7757`, run downstream compatibility Gate, then maintenance only |
+| Stage 3 | Engineering integrated; exact Editor Context and post-draft checkpoint/resume present | Trust repairs and real model/infrastructure semantic Gate pending | Close model-call ledger and Skill receipt, then run production-path Gate |
+| Stage 4 | Engineering integrated; seven-mode contract and production rolling `CHAPTER_SET` present | Conditional Graph/compact-expand maturity and real semantic Gate pending | Close retrieval maturity gaps; Gate production-required modes before Pilot |
+| Stage 5 | Fixed topology, Task/Attempt/fence, recovery, atomic settlement, two-lane dispatcher and vertical runner integrated | `PRODUCTION_ASSEMBLY_AND_REAL_PILOT_PENDING` | Build the single production factory, run C20→25, then 20/50-chapter recovery |
 
 ## 3. Accepted Stage 2A evidence
 
@@ -139,7 +218,10 @@ architecture decision. This does not relax any safety, quality, reproducibility,
 
 The accepted evidence is recorded by `docs/stage2_memory_gate_c95_acceptance.md` and ADR-0003.
 
-## 4. Stage 2M current execution
+## 4. Historical Stage 2M execution record through 2026-08-13
+
+> Superseded as current execution direction by §1.1 and §7. The measurements below remain immutable
+> diagnostic/acceptance history and are not reinterpreted as ADR-0009 semantic-completeness results.
 
 ### 4.1 Completed
 
@@ -481,7 +563,9 @@ default path. The next formal product run starts from clean Genesis, replays C1-
 model, freezes C20/C40/C60/C80/C95 from that run, then executes Evidence-First retrieval/package on
 those exact roots.
 
-## 5. Stage 3/4 implementation and Stage 5 isolation status
+## 5. Historical Stage 3/4 implementation and Stage 5 isolation snapshot
+
+> Superseded as current status by §1.1, §2 and §7. Retained to explain the isolated-branch provenance.
 
 Stage 3 has completed its engineering implementation in the isolated
 `codex/stage3-writer-context-loop` branch. Commit `bab4451` contains the Writer/Editor/Observer loop,
@@ -513,7 +597,9 @@ materialization and the real multi-chapter Plan→Write→Commit product Gate re
 passes. Multi-worker lease/reclaim, scheduled fire, external Hook, Experience/Skill evolution,
 Temporal, HA and a general TaskGraph require their own real caller/evidence trigger.
 
-## 6. Next permitted transitions
+## 6. Historical permitted transitions through 2026-08-13
+
+> Superseded as current next action by §7. Retained without rewriting the evidence available at the time.
 
 Stage 2M may:
 
@@ -574,3 +660,52 @@ operation remains serialized by the project writer lane and CAS Commit. The curr
 be occupied by the Stage 2 benchmark; integration work must not restart, reconfigure, cancel, or preempt
 that workload. Deterministic/offline evidence proceeds first, and real model checks are deferred when
 capacity cannot be proved available.
+
+## 7. Current permitted transition
+
+The only current execution order is U1→U8, with the mandatory U3.5 feasibility checkpoint, in
+`docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`:
+
+Within this order, the user has authorized a V0.5 canary path defined by
+`docs/novelmem_v0.5_plan_write_extension_design.md`. It may proceed in parallel with U1's
+documentation/contract work as long as it does not preempt the U1 ref/merge, Stage 2 endpoint, or
+private benchmark ownership. The canary order is P0 Track B wiring → C-ROLL 20 → D-SHORT 20 →
+four-condition canary → Judge calibration → G1 gate for C-SHORT/C-MID/C-LONG and D-MID/D-LONG.
+All canary results remain `seed_diagnostic` until R-BUNDLE, R-ANNOTATION, R-JUDGE and R-RUNNER are
+closed.
+
+1. **U1 baseline convergence** — attach `0bc7757`, create a clean integration branch, fast-forward
+   only, run Stage 2→3/4/5 compatibility, freeze the V0.5 Writer-answer protocol and salvage only
+   current assertions from old branches;
+2. **U2 production assembly** — implement the single repository-owned factory/manifest/preflight
+   used by both CLI and vertical runner, plus a thin V0.5 adapter that enumerates 51 QA and 30
+   Context Writer tasks without creating a second runtime/evaluator;
+3. **U3 trust repairs** — close the provider sent/partial/raw/uncertain window, ledger-complete model
+   usage, honest Skill/Writer/judge receipts and per-loop progress evidence, including proof that
+   benchmark interactions never write back;
+4. **U3.5 target-Runtime feasibility** — before long runs, use an isolated Temporal namespace and
+   public/fake payloads to verify Workflow/Activity boundaries, worker recovery, private-history
+   exclusion and narrow adapters in both Activity-wrapped and plugin-integrated forms;
+5. **U4-L0 budget/context Gate** — unify effective model budgets across provider/admission/ledger;
+   add Controller C1+C2 and cutoff-safe Memory Planner P1; keep C3 conditional and P2/C4 deferred;
+6. **U4-L1/L2 leaf Gates** — Stage 3 real semantic Gate and Stage 4 production-required modes plus
+   conditional Graph/compact-expand and retrieval-observability evidence;
+7. **U4-S/U4-F Writer benchmark Gates** — run real-Writer seed diagnostics independently of the
+   leaf Gate; complete second annotation and judge calibration before a separately reported formal
+   V0.5 acceptance;
+8. **U5 vertical Gate** — prove C20 benchmark side-channel isolation, then run one real C20→25
+   production chain with serial foreground and at most one basis-bound lookahead;
+9. **U6 long-run Gate** — replay C0→C300 once through all V0.5 checkpoints, run 20 chapters, a
+   two-project concurrency smoke and the production/benchmark crash matrix, then run the 50-chapter
+   durability baseline;
+10. **U7 target-Runtime migration Gate** — compare PostgreSQL, Activity-wrapped Temporal and
+   plugin-integrated Temporal on pre-registered hard and cost gates; choose integration form,
+   migration scope and cutover timing. PostgreSQL may remain the current baseline when cutover is
+   deferred, but cancelling the target requires a new ADR;
+11. **U8 bounded self-correction** — deterministic recovery and local semantic repair first;
+   RecoveryReasoner or prompt/Skill/code evolution only after real incident/sealed/canary evidence,
+   without feeding Gold back into the same benchmark campaign.
+
+Stage boundaries remain fail closed. Real endpoint work must not preempt or reconfigure a workload
+whose ownership is unclear. Old worktrees and branches remain until their dirty state and old-only
+files are reviewed and a human authorizes cleanup.

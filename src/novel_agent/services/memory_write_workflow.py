@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.changes import ObservedChangeSet
-from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, SchemaVersion, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
 from novel_agent.domain.memory import (
     DerivedBuildStatus,
     DerivedSnapshotLite,
@@ -37,6 +46,7 @@ from novel_agent.domain.memory_write import (
     MemoryWriteBudgetUsage,
     MemoryWriteCandidatePayload,
     MemoryWriteCheckpoint,
+    MemoryWriteCommitProfile,
     MemoryWriteState,
     MemoryWriteWorkflowPhase,
     MemoryWriteWorkflowRequest,
@@ -58,6 +68,7 @@ from novel_agent.domain.memory_write import (
     TrustedWorldCandidateInput,
     ValidationDecision,
     ValidationDisposition,
+    semantic_id,
 )
 from novel_agent.domain.runtime import EffectStatus, ResumabilityStatus, RunEvent, RunEventType
 from novel_agent.domain.stage2 import (
@@ -71,6 +82,8 @@ from novel_agent.domain.stage2 import (
 from novel_agent.ports.memory_write import (
     CanonicalReadPort,
     CuratorProposalAttemptRequest,
+    CuratorProposalBudgetExceededError,
+    CuratorProposalPreSendError,
     CuratorProposalResult,
     CuratorProposalTransportError,
     CuratorRepairRejectedError,
@@ -108,6 +121,58 @@ class MemoryWriteWorkflowError(RuntimeError):
 
 class MemoryWriteIdentityCollision(MemoryWriteWorkflowError):
     pass
+
+
+def _bounded_semantic_id(
+    namespace: str,
+    primary: tuple[str, ...],
+    *fallbacks: tuple[str, ...],
+) -> StableId:
+    """Use the richest existing typed identity that fits ``StableId``.
+
+    Request and candidate identities are retained in the surrounding typed
+    payloads and artifact lineage.  When a readable composite would exceed
+    the public 128-character identity limit, callers provide an already
+    scoped task/run fallback; no new digest or truncation is introduced.
+    """
+
+    last_error: ValueError | None = None
+    for parts in (primary, *fallbacks):
+        try:
+            return semantic_id(namespace, *parts)
+        except ValueError as error:
+            last_error = error
+    raise MemoryWriteWorkflowError(
+        f"cannot construct bounded semantic identity for {namespace}"
+    ) from last_error
+
+
+def _request_scoped_id(data: _WorkflowData, namespace: str, *suffix: str) -> StableId:
+    """Build a request identity, falling back to the task/run scope."""
+
+    return _bounded_semantic_id(
+        namespace,
+        (data.request.request_id.root, *suffix),
+        (data.request.task_id.root, *suffix),
+        (data.request.run_id.root, *suffix),
+    )
+
+
+def _bounded_trace_id(namespace: str, identity: str) -> str:
+    """Keep event traces within the persistence column without truncating identity."""
+
+    candidate = f"{namespace}.{identity}"
+    return candidate if len(candidate) <= 128 else identity
+
+
+def _is_validation_id_length_failure(result: MemoryWriteWorkflowResult) -> bool:
+    """Recognize only the historical validation-bundle StableId overflow."""
+
+    return result.status is MemoryWriteWorkflowStatus.FATAL and any(
+        code.startswith("1 validation error for StableId")
+        and "input_value='validation.bundle." in code
+        for code in result.terminal_codes
+    )
 
 
 class InMemoryArtifactRepository:
@@ -149,7 +214,10 @@ class InMemoryArtifactRepository:
         )
 
     def read_model(self, artifact: ArtifactRef, model_type: Any) -> Any:
-        return model_type.model_validate_json(self.read_verified(artifact), strict=True)
+        # JSON arrays are the wire representation of tuple fields.  Keep
+        # strict field validation while allowing the JSON boundary to
+        # materialize those immutable domain tuples.
+        return model_type.model_validate_json(self.read_verified(artifact), strict=False)
 
 
 class InMemoryCandidateLineageRepository:
@@ -190,7 +258,7 @@ class InMemoryCandidateLineageRepository:
 
 
 class InMemoryCheckpointRepository:
-    def __init__(self, artifacts: InMemoryArtifactRepository) -> None:
+    def __init__(self, artifacts: Any) -> None:
         self._artifacts = artifacts
         self._items: dict[ArtifactId, MemoryWriteCheckpoint] = {}
 
@@ -209,12 +277,12 @@ class InMemoryCheckpointRepository:
         if existing is not None:
             return existing
         return MemoryWriteCheckpoint.model_validate_json(
-            self._artifacts.read_verified(checkpoint_ref), strict=True
+            self._artifacts.read_verified(checkpoint_ref), strict=False
         )
 
 
 class InMemoryQuarantineRepository:
-    def __init__(self, artifacts: InMemoryArtifactRepository) -> None:
+    def __init__(self, artifacts: Any) -> None:
         self._artifacts = artifacts
         self.packages: list[QuarantinePackage] = []
 
@@ -412,6 +480,7 @@ class _WorkflowData:
     state: MemoryWriteState = MemoryWriteState.LOAD_BASIS
     basis: CanonicalWriteBasis | None = None
     candidate: CandidateRevision | None = None
+    candidate_revision_refs: list[ArtifactRef] = field(default_factory=list)
     proposal_attempt_no: int = 0
     inflight_proposal_attempt: CuratorProposalAttemptReceipt | None = None
     proposal_outcome: CuratorProposalAccepted | CuratorProposalRejected | None = None
@@ -531,32 +600,177 @@ class LocalMemoryWriteWorkflow:
             )
         self._validator = validator or Stage2ValidationV2Adapter()
 
+    def prepare_validation_retry(
+        self,
+        checkpoint_ref: ArtifactRef,
+        *,
+        task_id: TaskId,
+        run_id: RunId,
+        base_commit: CommitId,
+    ) -> ArtifactRef:
+        """Re-open the exact pre-commit candidate after the bounded id bug fix.
+
+        A historical workflow may have reached ``VALIDATE`` with a durable
+        candidate/materialization, then failed while constructing the
+        validation report identity.  The runtime operator must first unblock
+        that task with changed evidence; this method only accepts that one
+        known fatal signature and turns the linked STOP checkpoint into a
+        fresh, content-addressed ``VALIDATE`` checkpoint.  Other fatal
+        checkpoints remain non-resumable and therefore fail closed.
+        """
+
+        checkpoint = self._checkpoint.load(checkpoint_ref)
+        if (
+            checkpoint.task_id != task_id
+            or checkpoint.run_id != run_id
+            or checkpoint.base_commit != base_commit
+            or checkpoint.workflow_phase is not MemoryWriteWorkflowPhase.PRECOMMIT
+            or checkpoint.resume_state is not MemoryWriteState.STOP
+            or checkpoint.current_candidate_id is None
+            or checkpoint.materialization_artifact is None
+            or checkpoint.validation_artifact is not None
+            or checkpoint.terminal_result_ref is None
+        ):
+            raise MemoryWriteWorkflowError(
+                "validation retry requires a stopped pre-commit checkpoint with materialization"
+            )
+        terminal = _read_model(
+            self._artifacts,
+            checkpoint.terminal_result_ref,
+            MemoryWriteWorkflowResult,
+        )
+        if not _is_validation_id_length_failure(terminal):
+            raise MemoryWriteWorkflowError(
+                "validation retry is only allowed for the bounded validation-id failure"
+            )
+        retry = checkpoint.model_copy(
+            update={
+                "checkpoint_id": _bounded_semantic_id(
+                    "checkpoint",
+                    (checkpoint.request_identity_hash.root, "validation-retry"),
+                    (checkpoint.task_id.root, "validation-retry"),
+                    (checkpoint.run_id.root, "validation-retry"),
+                ),
+                "state": MemoryWriteState.VALIDATE,
+                "resume_state": MemoryWriteState.VALIDATE,
+                "terminal_result_ref": None,
+            }
+        )
+        return self._checkpoint.save(retry)
+
     async def execute(self, request: MemoryWriteWorkflowRequest) -> MemoryWriteWorkflowResult:
         data = await self._initialize(request)
         if isinstance(data, MemoryWriteWorkflowResult):
-            return data
-        self._event(
-            data,
-            RunEventType.RUN_RESUMED if request.resume_checkpoint else RunEventType.TASK_STARTED,
-        )
+            return self._ensure_terminal_result(
+                _WorkflowData(request=request, artifacts=self._artifacts), data
+            )
         try:
+            self._event(
+                data,
+                (
+                    RunEventType.RUN_RESUMED
+                    if request.resume_checkpoint
+                    else RunEventType.TASK_STARTED
+                ),
+            )
             for _ in range(self._request_step_limit):
                 self._update_elapsed(data)
                 result = await self._step(data)
                 if result is not None:
-                    return result
-            return self._fatal(data, "WORKFLOW_STEP_LIMIT_EXCEEDED")
+                    return self._ensure_terminal_result(data, result)
+            return self._ensure_terminal_result(
+                data, self._fatal(data, "WORKFLOW_STEP_LIMIT_EXCEEDED")
+            )
         except InformationBoundaryViolation as error:
             data.terminal_codes.append("INFORMATION_DERIVATION_BOUNDARY_VIOLATION")
-            return self._exception_result(data, str(error))
+            return self._ensure_terminal_result(data, self._exception_result(data, str(error)))
         except MemoryWriteIdentityCollision as error:
-            return self._exception_result(data, "IDEMPOTENCY_IDENTITY_COLLISION", str(error))
-        except (MemoryWriteWorkflowError, ValueError) as error:
-            return self._exception_result(data, str(error))
-        except Exception as error:
-            return self._exception_result(
-                data, "UNEXPECTED_WORKFLOW_FAILURE", type(error).__name__, str(error)
+            return self._ensure_terminal_result(
+                data,
+                self._exception_result(data, "IDEMPOTENCY_IDENTITY_COLLISION", str(error)),
             )
+        except (MemoryWriteWorkflowError, ValueError) as error:
+            return self._ensure_terminal_result(data, self._exception_result(data, str(error)))
+        except Exception as error:
+            return self._ensure_terminal_result(
+                data,
+                self._exception_result(
+                    data, "UNEXPECTED_WORKFLOW_FAILURE", type(error).__name__, str(error)
+                ),
+            )
+
+    def _ensure_terminal_result(
+        self,
+        data: _WorkflowData,
+        result: MemoryWriteWorkflowResult,
+    ) -> MemoryWriteWorkflowResult:
+        """Make the terminal artifact visible even when checkpoint persistence fails."""
+
+        if result.terminal_result_ref is not None:
+            return result
+        try:
+            terminal_ref = self._save_terminal(data, result)
+        except Exception as error:
+            codes = tuple(
+                dict.fromkeys(
+                    (*result.terminal_codes, "TERMINAL_RESULT_PERSIST_FAILED", type(error).__name__)
+                )
+            )
+            return result.model_copy(update={"terminal_codes": codes})
+
+        checkpoint_ref = result.checkpoint_ref
+        checkpoint_error: Exception | None = None
+        if checkpoint_ref is not None:
+            checkpoint_ref, checkpoint_error = self._link_terminal_checkpoint(
+                data,
+                checkpoint_ref,
+                terminal_ref,
+            )
+        if checkpoint_error is not None:
+            # The first terminal artifact is already durable.  Record the
+            # checkpoint boundary failure in a replacement terminal payload so
+            # the outer Runtime can diagnose the exact typed stop without
+            # pretending that a checkpoint exists.
+            checkpoint_ref = None
+            codes = tuple(
+                dict.fromkeys(
+                    (
+                        *result.terminal_codes,
+                        "CHECKPOINT_PERSIST_FAILED",
+                        type(checkpoint_error).__name__,
+                    )
+                )
+            )
+            result = result.model_copy(update={"terminal_codes": codes})
+            with suppress(Exception):
+                terminal_ref = self._save_terminal(data, result)
+        return result.model_copy(
+            update={
+                "terminal_result_ref": terminal_ref,
+                "checkpoint_ref": checkpoint_ref,
+            }
+        )
+
+    def _link_terminal_checkpoint(
+        self,
+        data: _WorkflowData,
+        checkpoint_ref: ArtifactRef,
+        terminal_ref: ArtifactRef,
+    ) -> tuple[ArtifactRef, Exception | None]:
+        """Add the terminal ref to an already-created checkpoint immutably."""
+
+        try:
+            checkpoint = self._checkpoint.load(checkpoint_ref)
+            if checkpoint.terminal_result_ref == terminal_ref:
+                return checkpoint_ref, None
+            linked = checkpoint.model_copy(update={"terminal_result_ref": terminal_ref})
+            linked_ref = self._checkpoint.save(linked)
+            self._checkpoint_states[linked_ref.artifact_id] = data
+            data.checkpoint_ref = linked_ref
+            self._event(data, RunEventType.CHECKPOINT_CREATED, artifact_refs=(linked_ref,))
+            return linked_ref, None
+        except Exception as error:
+            return checkpoint_ref, error
 
     async def _initialize(
         self, request: MemoryWriteWorkflowRequest
@@ -621,7 +835,12 @@ class LocalMemoryWriteWorkflow:
                     continuation_decision=ContinuationDecision.BLOCK_NEXT_CHAPTER,
                 )
             terminal_result = cast(MemoryWriteWorkflowResult, terminal)
-            return terminal_result.model_copy(update={"checkpoint_ref": request.resume_checkpoint})
+            return terminal_result.model_copy(
+                update={
+                    "checkpoint_ref": request.resume_checkpoint,
+                    "terminal_result_ref": checkpoint.terminal_result_ref,
+                }
+            )
         saved = self._checkpoint_states.get(request.resume_checkpoint.artifact_id)
         if saved is not None:
             saved.request = request
@@ -646,6 +865,7 @@ class LocalMemoryWriteWorkflow:
         data.checkpoint_ref = request.resume_checkpoint
         data.usage = checkpoint.budget_usage
         data.proposal_attempt_no = checkpoint.proposal_attempt_no
+        data.candidate_revision_refs = list(checkpoint.candidate_revision_refs)
         data.proposal_attempt_refs = list(checkpoint.proposal_attempt_refs)
         data.proposal_rejection_refs = list(checkpoint.proposal_rejection_refs)
         data.proposal_feedback_ref = checkpoint.proposal_feedback_ref
@@ -663,9 +883,14 @@ class LocalMemoryWriteWorkflow:
         data.same_proposal_rejection_count = checkpoint.same_proposal_rejection_count
         if checkpoint.inflight_proposal_attempt_id is not None:
             try:
-                data.inflight_proposal_attempt = self._proposal_attempts.load(
-                    checkpoint.inflight_proposal_attempt_id
-                )
+                if checkpoint.inflight_proposal_attempt_ref is not None:
+                    data.inflight_proposal_attempt = self._proposal_attempts.restore(
+                        checkpoint.inflight_proposal_attempt_ref
+                    )
+                else:
+                    data.inflight_proposal_attempt = self._proposal_attempts.load(
+                        checkpoint.inflight_proposal_attempt_id
+                    )
                 data.recovered_inflight_proposal = (
                     checkpoint.resume_state is MemoryWriteState.CURATE_ATTEMPT_EXECUTE
                     and data.inflight_proposal_attempt.status
@@ -717,7 +942,53 @@ class LocalMemoryWriteWorkflow:
                 checkpoint.commit_request_ref,
                 DurableMemoryWriteCommitRequest,
             )
+            if checkpoint.accepted_commit_id is not None:
+                # A post-commit cold restart reconstructs the commit result
+                # from the checkpoint, while the operation ids remain bound
+                # to the durable commit request.  Restore them here so the
+                # terminal result cannot silently report an empty commit.
+                data.committed_operation_ids = [
+                    item.operation_id
+                    for item in data.commit_request.bundle.observed_changes.operations
+                ]
         if checkpoint.current_candidate_id is not None:
+            if not checkpoint.candidate_revision_refs:
+                return MemoryWriteWorkflowResult(
+                    request_id=request.request_id,
+                    status=MemoryWriteWorkflowStatus.FATAL,
+                    workflow_phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                    canonical_commit_accepted=False,
+                    base_commit=request.base_commit,
+                    checkpoint_ref=request.resume_checkpoint,
+                    terminal_codes=("CANDIDATE_LINEAGE_MISSING",),
+                    continuation_decision=ContinuationDecision.BLOCK_NEXT_CHAPTER,
+                )
+            try:
+                restored_ids: list[StableId] = []
+                for revision_ref in checkpoint.candidate_revision_refs:
+                    if (
+                        revision_ref.media_type
+                        != "application/vnd.novel-agent.candidate-revision+json"
+                    ):
+                        raise MemoryWriteWorkflowError(
+                            "candidate revision artifact has an unexpected media type"
+                        )
+                    revision = _read_model(self._artifacts, revision_ref, CandidateRevision)
+                    self._lineage.persist(revision)
+                    restored_ids.append(revision.candidate_id)
+                if restored_ids[-1] != checkpoint.current_candidate_id:
+                    raise MemoryWriteWorkflowError("current candidate is not the lineage head")
+            except Exception as error:
+                return MemoryWriteWorkflowResult(
+                    request_id=request.request_id,
+                    status=MemoryWriteWorkflowStatus.FATAL,
+                    workflow_phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                    canonical_commit_accepted=False,
+                    base_commit=request.base_commit,
+                    checkpoint_ref=request.resume_checkpoint,
+                    terminal_codes=("CANDIDATE_LINEAGE_CORRUPT", str(error)),
+                    continuation_decision=ContinuationDecision.BLOCK_NEXT_CHAPTER,
+                )
             data.candidate = self._lineage.get(checkpoint.current_candidate_id)
             if data.candidate is None:
                 return MemoryWriteWorkflowResult(
@@ -789,7 +1060,16 @@ class LocalMemoryWriteWorkflow:
                 )
                 data.projection = ProjectionReadinessResult(
                     effect_id=checkpoint.projection_effect_id
-                    or StableId(f"effect.projection.{request.request_id.root}"),
+                    or _bounded_semantic_id(
+                        "effect.projection",
+                        (
+                            checkpoint.accepted_commit_id.root.removeprefix("sha256:")
+                            if checkpoint.accepted_commit_id is not None
+                            else request.base_commit.root.removeprefix("sha256:"),
+                        ),
+                        (request.task_id.root,),
+                        (request.run_id.root,),
+                    ),
                     status=ProjectionReadinessStatus.READY,
                     projection_receipt_ref=checkpoint.projection_receipt_ref,
                     freshness_receipt_ref=checkpoint.freshness_receipt_ref,
@@ -854,7 +1134,7 @@ class LocalMemoryWriteWorkflow:
                 data.candidate = self._new_candidate(
                     data,
                     ObservedChangeSet(
-                        change_set_id=StableId(f"changes.empty.{request.request_id.root}"),
+                        change_set_id=_request_scoped_id(data, "changes.empty"),
                         base_commit=request.base_commit,
                         source_artifact=_source_artifact(request),
                         operations=(),
@@ -881,7 +1161,11 @@ class LocalMemoryWriteWorkflow:
                 self._event(data, RunEventType.CURATOR_PROPOSAL_BUDGET_EXHAUSTED)
                 return self._budget_stop(data)
             attempt_no = data.proposal_attempt_no + 1
-            attempt_id = StableId(f"proposal-attempt.{request.request_id.root}.{attempt_no}")
+            attempt_id = self._proposal_attempt_id(
+                request.request_id,
+                attempt_no,
+                fallback_ids=(request.task_id, request.run_id),
+            )
             reservation_payload = {
                 "workflow_request_id": request.request_id.root,
                 "attempt_id": attempt_id.root,
@@ -949,10 +1233,12 @@ class LocalMemoryWriteWorkflow:
                     data,
                     "CURATOR_PROPOSAL_ATTEMPT_UNCERTAIN",
                     "recovery will not resend an unresolved model request identity",
+                    effect_uncertain=True,
                 )
             model_request_id = self._proposal_model_request_id(
                 request.request_id,
                 attempt.attempt_no,
+                fallback_ids=(request.task_id, request.run_id),
             )
             running_ref = self._proposal_attempts.mark_running(
                 attempt.attempt_id,
@@ -960,6 +1246,12 @@ class LocalMemoryWriteWorkflow:
             )
             data.inflight_proposal_attempt = self._proposal_attempts.load(attempt.attempt_id)
             data.proposal_attempt_refs[-1] = running_ref
+            data.checkpoint_ref = self._save_checkpoint(
+                data,
+                phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                resume_state=data.state,
+            )
+            self._fault("proposal_running_checkpoint_committed", data)
             try:
                 outcome = await self._execute_proposal_attempt(
                     data,
@@ -972,6 +1264,7 @@ class LocalMemoryWriteWorkflow:
                         source_artifacts=request.source_artifacts,
                         source_visibility_receipts=request.source_visibility_receipts,
                         budget_reservation_ref=_require(data.proposal_budget_reservation_ref),
+                        memory_write_tokens_used=data.usage.tokens_used,
                         feedback_artifact_ref=data.proposal_feedback_ref,
                         previous_rejection_ref=(
                             data.proposal_rejection_refs[-1]
@@ -979,6 +1272,27 @@ class LocalMemoryWriteWorkflow:
                             else None
                         ),
                     ),
+                )
+            except CuratorProposalBudgetExceededError as error:
+                abandoned_ref = self._proposal_attempts.mark_abandoned(
+                    attempt.attempt_id,
+                    str(error),
+                )
+                data.inflight_proposal_attempt = self._proposal_attempts.load(attempt.attempt_id)
+                data.proposal_attempt_refs[-1] = abandoned_ref
+                return self._proposal_attempt_budget_stop(data, str(error))
+            except CuratorProposalPreSendError as error:
+                abandoned_ref = self._proposal_attempts.mark_abandoned(
+                    attempt.attempt_id,
+                    str(error),
+                )
+                data.inflight_proposal_attempt = self._proposal_attempts.load(attempt.attempt_id)
+                data.proposal_attempt_refs[-1] = abandoned_ref
+                data.state = MemoryWriteState.STOP
+                return self._proposal_attempt_fatal(
+                    data,
+                    "CURATOR_PROPOSAL_PRE_SEND_FAILURE",
+                    str(error),
                 )
             except CuratorProposalTransportError as error:
                 uncertain_ref = self._proposal_attempts.mark_uncertain(
@@ -994,13 +1308,34 @@ class LocalMemoryWriteWorkflow:
                     phase=MemoryWriteWorkflowPhase.PRECOMMIT,
                     resume_state=data.state,
                 )
-                return self._suspended(
+                return self._proposal_attempt_suspended(
                     data,
                     "CURATOR_PROPOSAL_TRANSPORT_UNAVAILABLE",
                     str(error),
+                    effect_uncertain=error.uncertain,
                 )
             except InformationBoundaryViolation:
                 raise
+            except Exception as error:
+                uncertain_ref = self._proposal_attempts.mark_uncertain(
+                    attempt.attempt_id,
+                    f"unclassified proposal execution failure: {type(error).__name__}",
+                )
+                data.inflight_proposal_attempt = self._proposal_attempts.load(attempt.attempt_id)
+                data.proposal_attempt_refs[-1] = uncertain_ref
+                self._hold_uncertain_proposal_budget(data)
+                data.state = MemoryWriteState.CURATE_ATTEMPT_PREPARE
+                data.checkpoint_ref = self._save_checkpoint(
+                    data,
+                    phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                    resume_state=data.state,
+                )
+                return self._proposal_attempt_suspended(
+                    data,
+                    "CURATOR_PROPOSAL_EXECUTION_UNCLASSIFIED",
+                    type(error).__name__,
+                    effect_uncertain=True,
+                )
             self._settle_proposal_outcome(data, outcome)
             data.proposal_outcome = outcome
             data.inflight_proposal_attempt = outcome.attempt_receipt
@@ -1242,7 +1577,12 @@ class LocalMemoryWriteWorkflow:
             data.directive = directive
             data.action_receipts.append(
                 RepairActionReceipt(
-                    receipt_id=StableId(f"repair-receipt.{directive.directive_id.root}"),
+                    receipt_id=_bounded_semantic_id(
+                        "repair-receipt",
+                        (directive.directive_id.root,),
+                        (data.request.task_id.root, directive.action.value),
+                        (data.request.run_id.root, directive.action.value),
+                    ),
                     action=directive.action,
                     directive_id=directive.directive_id,
                     candidate_id=_candidate_id(data),
@@ -1505,12 +1845,32 @@ class LocalMemoryWriteWorkflow:
         data.last_proposal_rejection_signature = rejection.rejection_signature
 
     @staticmethod
+    def _proposal_attempt_id(
+        request_id: StableId,
+        attempt_no: int,
+        *,
+        fallback_ids: tuple[StableId, ...] = (),
+    ) -> StableId:
+        suffix = str(attempt_no)
+        return _bounded_semantic_id(
+            "proposal-attempt",
+            (request_id.root, suffix),
+            *((scope.root, suffix) for scope in fallback_ids),
+        )
+
+    @staticmethod
     def _proposal_model_request_id(
         request_id: StableId,
         attempt_no: int,
+        *,
+        fallback_ids: tuple[StableId, ...] = (),
     ) -> StableId:
-        suffix = f".proposal-{attempt_no}.schema-1"
-        return StableId(request_id.root[: 128 - len(suffix)] + suffix)
+        suffix = (str(attempt_no), "schema-1")
+        return _bounded_semantic_id(
+            "proposal-model-request",
+            (request_id.root, *suffix),
+            *((scope.root, *suffix) for scope in fallback_ids),
+        )
 
     def _proposal_budget_available(self, data: _WorkflowData) -> bool:
         self._update_elapsed(data)
@@ -1553,12 +1913,10 @@ class LocalMemoryWriteWorkflow:
         self,
         data: _WorkflowData,
         directive_ref: ArtifactRef,
-    ) -> MemoryWriteWorkflowResult:
+    ) -> MemoryWriteWorkflowResult | None:
+        advisory_only = self._proposal_quarantine_is_advisory_only(data)
         package = QuarantinePackage(
-            package_id=_bounded_workflow_id(
-                "quarantine.proposal",
-                data.request.request_id.root,
-            ),
+            package_id=_request_scoped_id(data, "quarantine.proposal"),
             request_id=data.request.request_id,
             base_commit=data.request.base_commit,
             candidate_ids=(),
@@ -1569,8 +1927,16 @@ class LocalMemoryWriteWorkflow:
             proposal_feedback_ref=data.proposal_feedback_ref,
             current_project_commit=_current_commit(data),
             configuration_fingerprint=data.request.configuration_fingerprint,
-            terminal_reason="curator proposal poison loop or policy quarantine",
-            recommended_action="review rejected proposal attempts before retry",
+            terminal_reason=(
+                "curator proposal advisory quarantine"
+                if advisory_only
+                else "curator proposal poison loop or policy quarantine"
+            ),
+            recommended_action=(
+                "retain advisory marker for downstream Writer"
+                if advisory_only
+                else "review rejected proposal attempts before retry"
+            ),
         )
         ref = self._quarantine.persist(package)
         data.quarantine_refs.append(ref)
@@ -1580,12 +1946,45 @@ class LocalMemoryWriteWorkflow:
             RunEventType.CURATOR_PROPOSAL_POISON_LOOP,
             artifact_refs=(ref,),
         )
+        if not advisory_only:
+            data.checkpoint_ref = self._save_checkpoint(
+                data,
+                phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                resume_state=MemoryWriteState.PROPOSAL_REPAIR_POLICY,
+            )
+            return self._quarantined(data)
+
+        data.terminal_codes.append("CURATOR_PROPOSAL_ADVISORY_ONLY")
+        data.candidate = self._new_candidate(
+            data,
+            ObservedChangeSet(
+                change_set_id=_request_scoped_id(data, "changes.empty"),
+                base_commit=data.request.base_commit,
+                source_artifact=_source_artifact(data.request),
+                operations=(),
+            ),
+            CandidateProducerKind.EMPTY_DELTA,
+        )
+        data.state = MemoryWriteState.MATERIALIZE
         data.checkpoint_ref = self._save_checkpoint(
             data,
             phase=MemoryWriteWorkflowPhase.PRECOMMIT,
-            resume_state=MemoryWriteState.PROPOSAL_REPAIR_POLICY,
+            resume_state=data.state,
         )
-        return self._quarantined(data)
+        return None
+
+    @staticmethod
+    def _proposal_quarantine_is_advisory_only(data: _WorkflowData) -> bool:
+        """Keep a chapter's text liveness when only its optional World delta poisoned."""
+
+        if data.request.commit_profile is not MemoryWriteCommitProfile.CHAPTER_REVEAL_ATOMIC:
+            return False
+        directive = data.proposal_directive
+        if directive is None or directive.action != "quarantine":
+            return False
+        if not data.proposal_rejections:
+            return False
+        return data.proposal_rejections[-1].stage is not ProposalRejectionStage.INFORMATION_BOUNDARY
 
     def _proposal_human_required(
         self,
@@ -1600,7 +1999,7 @@ class LocalMemoryWriteWorkflow:
             return self._fatal(data, "PROPOSAL_HUMAN_DRAFT_MISSING")
         if data.proposal_human_request is None:
             data.proposal_human_request = ProposalHumanReviewRequest(
-                approval_request_id=StableId(f"proposal-approval.{data.request.request_id.root}"),
+                approval_request_id=_request_scoped_id(data, "proposal-approval"),
                 workflow_request_id=data.request.request_id,
                 base_commit=data.request.base_commit,
                 proposal_attempt_refs=tuple(data.proposal_attempt_refs),
@@ -1668,6 +2067,7 @@ class LocalMemoryWriteWorkflow:
         if (
             payload.root_update_intents != data.request.root_update_intents
             or payload.commit_profile is not data.request.commit_profile
+            or payload.source_evidence_requirement != data.request.source_evidence_requirement
         ):
             raise InformationBoundaryViolation("trusted candidate payload differs from request")
         trusted_input = data.request.world_mutation
@@ -1702,6 +2102,7 @@ class LocalMemoryWriteWorkflow:
             observed_changes=changes,
             root_update_intents=data.request.root_update_intents,
             commit_profile=data.request.commit_profile,
+            source_evidence_requirement=data.request.source_evidence_requirement,
         )
         raw = canonical_json_bytes(payload.model_dump(mode="json"))
         artifact = candidate_artifact or self._artifacts.put(
@@ -1711,8 +2112,11 @@ class LocalMemoryWriteWorkflow:
         )
         content_hash = sha256_id(raw)
         revision_no = 1 if parent is None else parent.revision_no + 1
-        candidate_id = StableId(
-            f"candidate.{data.request.request_id.root}.{revision_no}.{content_hash.root[7:23]}"
+        candidate_id = _bounded_semantic_id(
+            "candidate",
+            (data.request.request_id.root, str(revision_no), content_hash.root[7:23]),
+            (data.request.task_id.root, str(revision_no), content_hash.root[7:23]),
+            (data.request.run_id.root, str(revision_no), content_hash.root[7:23]),
         )
         candidate = CandidateRevision(
             candidate_id=candidate_id,
@@ -1722,6 +2126,7 @@ class LocalMemoryWriteWorkflow:
             basis_hash=_request_basis_hash(data.request),
             candidate_artifact=artifact,
             source_artifacts=data.request.source_artifacts,
+            source_evidence_requirement=data.request.source_evidence_requirement,
             producer_kind=producer_kind,
             producer_receipt=self._candidate_producer_receipt(
                 data,
@@ -1776,6 +2181,7 @@ class LocalMemoryWriteWorkflow:
             configuration_fingerprint=data.request.configuration_fingerprint,
         )
         persisted = self._lineage.persist(candidate)
+        self._persist_candidate_revision_chain(data, persisted)
         data.usage = data.usage.model_copy(
             update={
                 "candidate_revisions": max(data.usage.candidate_revisions, persisted.revision_no)
@@ -1784,6 +2190,28 @@ class LocalMemoryWriteWorkflow:
         if persisted.content_hash not in data.seen_content_hashes:
             data.seen_content_hashes.append(persisted.content_hash)
         return persisted
+
+    def _persist_candidate_revision_chain(
+        self, data: _WorkflowData, candidate: CandidateRevision
+    ) -> None:
+        chain: list[CandidateRevision] = []
+        current: CandidateRevision | None = candidate
+        while current is not None:
+            chain.append(current)
+            if current.parent_candidate_id is None:
+                break
+            current = self._lineage.get(current.parent_candidate_id)
+            if current is None:
+                raise MemoryWriteWorkflowError("candidate parent is missing")
+        for revision in reversed(chain):
+            reference = _put_model(
+                self._artifacts,
+                revision,
+                "application/vnd.novel-agent.candidate-revision+json",
+                data.request.canonical_root_refs.schema_version,
+            )
+            if reference not in data.candidate_revision_refs:
+                data.candidate_revision_refs.append(reference)
 
     def _candidate_producer_receipt(
         self,
@@ -1906,13 +2334,19 @@ class LocalMemoryWriteWorkflow:
                 raise MemoryWriteWorkflowError("risk classifier returned an invalid assessment")
             return result
         change_set_id = _require(data.candidate).candidate_id
+        revision = str(_require(data.candidate).revision_no)
         findings = () if data.validation is None else data.validation.findings
         requires_guardian = any(
             finding.requires_guardian or finding.severity.value in {"critical", "warning"}
             for finding in findings
         )
         return PatchRiskAssessment(
-            assessment_id=StableId(f"risk.{change_set_id.root}"),
+            assessment_id=_bounded_semantic_id(
+                "risk",
+                (change_set_id.root,),
+                (data.request.task_id.root, revision),
+                (data.request.run_id.root, revision),
+            ),
             change_set_id=change_set_id,
             base_commit=data.request.base_commit,
             level=PatchRiskLevel.HIGH if requires_guardian else PatchRiskLevel.LOW,
@@ -1944,7 +2378,7 @@ class LocalMemoryWriteWorkflow:
             current = data.request.base_commit
         if current != data.request.base_commit:
             data.directive = RepairDirective(
-                directive_id=StableId(f"repair.replan.{data.request.request_id.root}"),
+                directive_id=_request_scoped_id(data, "repair.replan"),
                 action=RepairAction.REPLAN,
                 reason_codes=("BASE_COMMIT_MISMATCH",),
                 checkpoint_required=True,
@@ -1968,7 +2402,7 @@ class LocalMemoryWriteWorkflow:
             return self._fatal(data, "WRITE_GATE_BINDING_MISMATCH")
         if data.gate.outcome is not WriteGateOutcome.ALLOW_COMMIT:
             data.directive = RepairDirective(
-                directive_id=StableId(f"repair.gate.{data.request.request_id.root}"),
+                directive_id=_request_scoped_id(data, "repair.gate"),
                 action=RepairAction.HUMAN
                 if data.gate.outcome is WriteGateOutcome.REQUIRE_HUMAN
                 else RepairAction.STOP_FATAL,
@@ -1981,6 +2415,27 @@ class LocalMemoryWriteWorkflow:
                 else MemoryWriteState.STOP
             )
             return None
+
+        if data.request.validation_only:
+            # U8-C evidence mode deliberately stops after the real
+            # proposal/materialization/validation/Guardian/gate path.  No
+            # commit port is invoked, so Canon cannot change while the
+            # validated candidate and its lineage remain auditable.
+            # A validator-pass empty delta is still an explicit NOOP, not a
+            # safe recovery action.  Keep the marker reserved for a
+            # non-empty proposed mutation so audit readers cannot infer an
+            # accepted route from the mode alone.
+            if not data.world_mutation_noop:
+                data.terminal_codes.append("VALIDATION_ONLY_SAFE_ACTION")
+            data.commit_effect_id = None
+            data.state = MemoryWriteState.COMPLETE
+            data.checkpoint_ref = self._save_checkpoint(
+                data,
+                phase=MemoryWriteWorkflowPhase.COMPLETE,
+                resume_state=MemoryWriteState.COMPLETE,
+            )
+            return self._complete(data)
+
         roots_changed = _roots_changed(data.bundle.proposed_roots, data.request.canonical_root_refs)
         profile = data.request.commit_profile
         text_changed = (
@@ -1992,6 +2447,17 @@ class LocalMemoryWriteWorkflow:
             return self._fatal(data, data.terminal_codes[-1])
         if not roots_changed:
             if profile.value == "changed_roots_only":
+                data.state = MemoryWriteState.COMPLETE
+                return None
+            if (
+                profile is MemoryWriteCommitProfile.REQUIRE_CANONICAL_COMMIT
+                and data.world_mutation_noop
+            ):
+                # A maintenance Curator may produce a fully validated,
+                # evidence-audited empty delta.  It did not repair Canon, so
+                # complete the workflow as an explicit NOOP for Runtime to
+                # reclassify, rather than disguising the semantic outcome as
+                # a generic precommit fatal.
                 data.state = MemoryWriteState.COMPLETE
                 return None
             data.terminal_codes.append(
@@ -2010,7 +2476,13 @@ class LocalMemoryWriteWorkflow:
                 }
             )
         )
-        data.commit_effect_id = StableId(f"effect.commit.{data.request.idempotency_key.root}")
+        data.commit_effect_id = _bounded_semantic_id(
+            "effect.commit",
+            (data.request.idempotency_key.root,),
+            (data.request.request_id.root,),
+            (data.request.task_id.root,),
+            (data.request.run_id.root,),
+        )
         data.commit_request = DurableMemoryWriteCommitRequest(
             request_id=data.request.request_id,
             project_id=data.request.project_id,
@@ -2048,11 +2520,16 @@ class LocalMemoryWriteWorkflow:
                 resume_state=MemoryWriteState.COMMIT,
                 commit_attempt_status=EffectStatus.UNCERTAIN,
             )
-            return self._suspended(data, "COMMIT_EFFECT_UNCERTAIN", str(error))
+            return self._suspended(
+                data,
+                "COMMIT_EFFECT_UNCERTAIN",
+                str(error),
+                effect_uncertain=True,
+            )
         data.commit_result = result
         if result.status == MemoryWriteCommitStatus.CONFLICTED:
             data.directive = RepairDirective(
-                directive_id=StableId(f"repair.conflict.{data.request.request_id.root}"),
+                directive_id=_request_scoped_id(data, "repair.conflict"),
                 action=RepairAction.REPLAN,
                 reason_codes=("COMMIT_CONFLICTED",),
                 checkpoint_required=True,
@@ -2091,11 +2568,17 @@ class LocalMemoryWriteWorkflow:
             data.projection_effect_id = StableId(
                 f"effect.projection.{data.commit_result.commit_id.root.removeprefix('sha256:')[:40]}"
             )
+        # The process-kill recovery matrix owns two explicit projection
+        # boundaries.  Keep the hooks around the existing idempotent port so
+        # tests can terminate a worker before/after the durable effect
+        # request without introducing a second projection owner.
+        self._fault("projection_before_request", data)
         projection = self._projection.request_or_read_by_effect_id(
             data.request.project_id,
             data.commit_result.commit_id,
             data.projection_effect_id,
         )
+        self._fault("projection_after_request", data)
         data.projection = projection
         if projection.status is ProjectionReadinessStatus.READY:
             data.state = MemoryWriteState.FRESHNESS_GATE
@@ -2128,7 +2611,9 @@ class LocalMemoryWriteWorkflow:
                 data.request.project_id,
                 data.commit_result.commit_id,
                 data.projection_effect_id
-                or StableId(f"effect.projection.{data.request.request_id.root}"),
+                or StableId(
+                    f"effect.projection.{data.commit_result.commit_id.root.removeprefix('sha256:')[:40]}"
+                ),
             )
             data.projection = projection
             if projection.status is not ProjectionReadinessStatus.READY:
@@ -2173,6 +2658,14 @@ class LocalMemoryWriteWorkflow:
                 canonical_commit_accepted=False,
                 base_commit=data.request.base_commit,
                 world_mutation_noop=data.world_mutation_noop,
+                safe_action_accepted=(
+                    data.request.validation_only
+                    and data.candidate is not None
+                    and data.validation is not None
+                    and data.validation.disposition is ValidationDisposition.PASS
+                    and not data.world_mutation_noop
+                    and "VALIDATION_ONLY_SAFE_ACTION" in data.terminal_codes
+                ),
                 terminal_candidate_id=None
                 if data.candidate is None
                 else data.candidate.candidate_id,
@@ -2184,8 +2677,8 @@ class LocalMemoryWriteWorkflow:
                 budget_usage=data.usage,
                 terminal_codes=tuple(data.terminal_codes),
             )
-            self._save_terminal(data, result)
-            return result
+            terminal_ref = self._save_terminal(data, result)
+            return result.model_copy(update={"terminal_result_ref": terminal_ref})
         projection = data.projection
         if (
             projection is None
@@ -2231,6 +2724,7 @@ class LocalMemoryWriteWorkflow:
             budget_usage=data.usage,
             terminal_codes=tuple(data.terminal_codes),
         )
+        terminal_ref = self._save_terminal(data, result)
         data.checkpoint_ref = self._save_checkpoint(
             data,
             phase=MemoryWriteWorkflowPhase.COMPLETE,
@@ -2242,9 +2736,14 @@ class LocalMemoryWriteWorkflow:
             projection_receipt_ref=projection.projection_receipt_ref,
             projection_snapshot_id=projection.projection_snapshot_id,
             freshness_receipt_ref=projection.freshness_receipt_ref,
-            terminal_result_ref=self._save_terminal(data, result),
+            terminal_result_ref=terminal_ref,
         )
-        result = result.model_copy(update={"checkpoint_ref": data.checkpoint_ref})
+        result = result.model_copy(
+            update={
+                "checkpoint_ref": data.checkpoint_ref,
+                "terminal_result_ref": terminal_ref,
+            }
+        )
         return result
 
     def _suspend_for_human(self, data: _WorkflowData) -> MemoryWriteWorkflowResult:
@@ -2254,8 +2753,14 @@ class LocalMemoryWriteWorkflow:
             return self._human_required(data, "HUMAN_APPROVAL_PORT_UNAVAILABLE")
         if data.approval_request is None:
             data.approval_request = HumanApprovalRequest(
-                approval_request_id=StableId(
-                    f"approval.{data.request.request_id.root}.{data.candidate.candidate_id.root}"
+                approval_request_id=_bounded_semantic_id(
+                    "approval",
+                    (
+                        data.request.request_id.root,
+                        data.candidate.candidate_id.root,
+                    ),
+                    (data.request.task_id.root, str(data.candidate.revision_no)),
+                    (data.request.run_id.root, str(data.candidate.revision_no)),
                 ),
                 request_id=data.request.request_id,
                 candidate_id=data.candidate.candidate_id,
@@ -2283,7 +2788,7 @@ class LocalMemoryWriteWorkflow:
         request_id = (
             data.approval_request.approval_request_id
             if data.approval_request
-            else StableId(f"approval.{data.request.request_id.root}")
+            else _request_scoped_id(data, "approval")
         )
         decision = self._human.read_decision(request_id)
         if inspect.isawaitable(decision):
@@ -2327,18 +2832,41 @@ class LocalMemoryWriteWorkflow:
         if candidate is None:
             return self._fatal(data, "QUARANTINE_WITHOUT_CANDIDATE")
         operation_ids = () if data.directive is None else data.directive.operation_ids
+        candidate_prefix = f"candidate.{data.request.request_id.root}."
+        candidate_suffix = candidate.candidate_id.root.removeprefix(candidate_prefix)
+        package_id: StableId | None = None
+        for identity_parts in (
+            (data.request.request_id.root, str(candidate.revision_no)),
+            (data.request.task_id.root, str(candidate.revision_no)),
+            (data.request.run_id.root, str(candidate.revision_no)),
+            (candidate_suffix,),
+            (str(candidate.revision_no),),
+        ):
+            try:
+                package_id = semantic_id("quarantine.candidate", *identity_parts)
+                break
+            except ValueError:
+                continue
+        if package_id is None:
+            raise MemoryWriteWorkflowError("cannot construct bounded quarantine package identity")
+        candidate_revisions = list(self._lineage.list_for_request(data.request.request_id))
+        if not candidate_revisions and data.candidate_revision_refs:
+            for revision_ref in data.candidate_revision_refs:
+                try:
+                    candidate_revisions.append(
+                        _read_model(self._artifacts, revision_ref, CandidateRevision)
+                    )
+                except Exception:
+                    candidate_revisions = []
+                    break
+        candidate_ids = list(item.candidate_id for item in candidate_revisions)
+        if candidate.candidate_id not in candidate_ids:
+            candidate_ids.append(candidate.candidate_id)
         package = QuarantinePackage(
-            package_id=_bounded_workflow_id(
-                "quarantine.candidate",
-                data.request.request_id.root,
-                candidate.candidate_id.root,
-            ),
+            package_id=package_id,
             request_id=data.request.request_id,
             base_commit=data.request.base_commit,
-            candidate_ids=tuple(
-                item.candidate_id
-                for item in self._lineage.list_for_request(data.request.request_id)
-            ),
+            candidate_ids=tuple(candidate_ids),
             source_artifacts=data.request.source_artifacts,
             validation_ref=None
             if data.validation is None
@@ -2455,7 +2983,14 @@ class LocalMemoryWriteWorkflow:
             terminal_codes=tuple(data.terminal_codes),
         )
 
-    def _suspended(self, data: _WorkflowData, code: str, reason: str) -> MemoryWriteWorkflowResult:
+    def _suspended(
+        self,
+        data: _WorkflowData,
+        code: str,
+        reason: str,
+        *,
+        effect_uncertain: bool = False,
+    ) -> MemoryWriteWorkflowResult:
         data.terminal_codes.extend((code, reason))
         self._event(data, RunEventType.WORKFLOW_SUSPENDED)
         commit_result = data.commit_result
@@ -2496,6 +3031,7 @@ class LocalMemoryWriteWorkflow:
             else data.projection.projection_snapshot_id,
             freshness=None if data.projection is None else data.projection.freshness,
             checkpoint_ref=data.checkpoint_ref,
+            effect_uncertain=effect_uncertain,
             continuation_decision=ContinuationDecision.BLOCK_NEXT_CHAPTER,
             budget_usage=data.usage,
             terminal_codes=tuple(data.terminal_codes),
@@ -2541,8 +3077,163 @@ class LocalMemoryWriteWorkflow:
             and commit_result.commit_id is not None
         ):
             reason = " | ".join(codes)
-            return self._post_commit_fatal(data, "POST_COMMIT_FAILURE", reason)
-        return self._fatal(data, *codes)
+            result = self._post_commit_fatal(data, "POST_COMMIT_FAILURE", reason)
+        else:
+            result = self._fatal(data, *codes)
+
+        # Preserve the exact exception boundary for a durable caller.  A
+        # generic failure used to escape only as an in-memory result, leaving
+        # the runtime projection with a checkpoint but no terminal payload to
+        # explain why the leaf stopped.  STOP is deliberate: this artifact is
+        # evidence for review, not permission to replay a potentially sent
+        # external effect blindly.
+        terminal_ref = self._save_terminal(data, result)
+        checkpoint_error: Exception | None = None
+        try:
+            if result.canonical_commit_accepted:
+                accepted_commit = _require(data.commit_result)
+                commit_receipt = accepted_commit.commit_receipt_ref or _receipt_ref(data, "commit")
+                projection = data.projection
+                if projection is None:
+                    data.checkpoint_ref = self._save_checkpoint(
+                        data,
+                        phase=MemoryWriteWorkflowPhase.CANON_COMMITTED,
+                        resume_state=MemoryWriteState.STOP,
+                        accepted_commit_id=accepted_commit.commit_id,
+                        commit_receipt_ref=commit_receipt,
+                        commit_attempt_status=EffectStatus.COMPLETED,
+                        terminal_result_ref=terminal_ref,
+                    )
+                else:
+                    data.checkpoint_ref = self._save_checkpoint(
+                        data,
+                        phase=MemoryWriteWorkflowPhase.PROJECTION_PENDING,
+                        resume_state=MemoryWriteState.STOP,
+                        accepted_commit_id=accepted_commit.commit_id,
+                        commit_receipt_ref=commit_receipt,
+                        commit_attempt_status=EffectStatus.COMPLETED,
+                        projection_effect_id=data.projection_effect_id,
+                        projection_status=(
+                            EffectStatus.COMPLETED
+                            if projection.status is ProjectionReadinessStatus.READY
+                            else EffectStatus.REQUESTED
+                        ),
+                        projection_receipt_ref=projection.projection_receipt_ref,
+                        projection_snapshot_id=projection.projection_snapshot_id,
+                        freshness_receipt_ref=projection.freshness_receipt_ref,
+                        terminal_result_ref=terminal_ref,
+                    )
+            else:
+                data.checkpoint_ref = self._save_checkpoint(
+                    data,
+                    phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+                    resume_state=MemoryWriteState.STOP,
+                    terminal_result_ref=terminal_ref,
+                )
+        except Exception as error:
+            # The terminal artifact is still useful when the checkpoint store
+            # itself is the failing boundary.  Do not turn that secondary
+            # persistence failure into an uncaught workflow exception.
+            data.checkpoint_ref = None
+            checkpoint_error = error
+        if checkpoint_error is not None:
+            result = result.model_copy(
+                update={
+                    "terminal_codes": tuple(
+                        dict.fromkeys(
+                            (
+                                *result.terminal_codes,
+                                "CHECKPOINT_PERSIST_FAILED",
+                                type(checkpoint_error).__name__,
+                            )
+                        )
+                    )
+                }
+            )
+            with suppress(Exception):
+                terminal_ref = self._save_terminal(data, result)
+        return result.model_copy(
+            update={
+                "checkpoint_ref": data.checkpoint_ref,
+                "terminal_result_ref": terminal_ref,
+            }
+        )
+
+    def _proposal_attempt_fatal(
+        self,
+        data: _WorkflowData,
+        code: str,
+        reason: str,
+    ) -> MemoryWriteWorkflowResult:
+        result = self._fatal(data, code, reason)
+        terminal_ref = self._save_terminal(data, result)
+        data.checkpoint_ref = self._save_checkpoint(
+            data,
+            phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+            resume_state=MemoryWriteState.STOP,
+            terminal_result_ref=terminal_ref,
+        )
+        return result.model_copy(
+            update={
+                "checkpoint_ref": data.checkpoint_ref,
+                "terminal_result_ref": terminal_ref,
+            }
+        )
+
+    def _proposal_attempt_budget_stop(
+        self,
+        data: _WorkflowData,
+        reason: str,
+    ) -> MemoryWriteWorkflowResult:
+        """Stop a proposal before provider admission when its assembled prompt is too large."""
+
+        data.terminal_codes.append("CURATOR_PROPOSAL_BUDGET_EXHAUSTED")
+        self._event(data, RunEventType.CURATOR_PROPOSAL_BUDGET_EXHAUSTED)
+        data.state = MemoryWriteState.BUDGET_STOP
+        result = self._budget_stop(data).model_copy(
+            update={"terminal_codes": (*data.terminal_codes, reason)}
+        )
+        terminal_ref = self._save_terminal(data, result)
+        data.checkpoint_ref = self._save_checkpoint(
+            data,
+            phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+            resume_state=MemoryWriteState.STOP,
+            terminal_result_ref=terminal_ref,
+        )
+        return result.model_copy(
+            update={
+                "checkpoint_ref": data.checkpoint_ref,
+                "terminal_result_ref": terminal_ref,
+            }
+        )
+
+    def _proposal_attempt_suspended(
+        self,
+        data: _WorkflowData,
+        code: str,
+        reason: str,
+        *,
+        effect_uncertain: bool,
+    ) -> MemoryWriteWorkflowResult:
+        result = self._suspended(
+            data,
+            code,
+            reason,
+            effect_uncertain=effect_uncertain,
+        )
+        terminal_ref = self._save_terminal(data, result)
+        data.checkpoint_ref = self._save_checkpoint(
+            data,
+            phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+            resume_state=data.state,
+            terminal_result_ref=terminal_ref,
+        )
+        return result.model_copy(
+            update={
+                "checkpoint_ref": data.checkpoint_ref,
+                "terminal_result_ref": terminal_ref,
+            }
+        )
 
     def _fatal(self, data: _WorkflowData, *codes: str) -> MemoryWriteWorkflowResult:
         data.terminal_codes.extend(codes)
@@ -2606,7 +3297,12 @@ class LocalMemoryWriteWorkflow:
             else WriteGateOutcome.REQUIRE_GUARDIAN
         )
         return WriteGateDecision(
-            decision_id=StableId(f"write-gate.{candidate.candidate_id.root}"),
+            decision_id=_bounded_semantic_id(
+                "write-gate",
+                (candidate.candidate_id.root,),
+                (data.request.task_id.root, str(candidate.revision_no)),
+                (data.request.run_id.root, str(candidate.revision_no)),
+            ),
             change_set_id=candidate.candidate_id,
             base_commit=data.request.base_commit,
             outcome=outcome,
@@ -2671,10 +3367,19 @@ class LocalMemoryWriteWorkflow:
         approval_request_artifact: ArtifactRef | None = None,
         proposal_human_request_artifact: ArtifactRef | None = None,
     ) -> ArtifactRef:
+        if data.candidate is not None:
+            persisted = self._lineage.persist(data.candidate)
+            if persisted != data.candidate:
+                data.candidate = persisted
+            self._persist_candidate_revision_chain(data, data.candidate)
         request_ref = _model_ref(data.request, data, "request")
+        sequence = self._next_event_sequence(data.request.run_id)
         checkpoint = MemoryWriteCheckpoint(
-            checkpoint_id=StableId(
-                f"checkpoint.{data.request.request_id.root}.{len(self._checkpoint_states) + 1}"
+            checkpoint_id=_bounded_semantic_id(
+                "checkpoint",
+                (data.request.request_id.root, str(sequence)),
+                (data.request.task_id.root, str(sequence)),
+                (data.request.run_id.root, str(sequence)),
             ),
             request_identity_hash=_request_identity_hash(data.request),
             request_artifact_ref=request_ref,
@@ -2691,6 +3396,7 @@ class LocalMemoryWriteWorkflow:
             state=data.state,
             resume_state=resume_state,
             current_candidate_id=None if data.candidate is None else data.candidate.candidate_id,
+            candidate_revision_refs=tuple(data.candidate_revision_refs),
             proposal_attempt_no=data.proposal_attempt_no,
             inflight_proposal_attempt_id=(
                 None
@@ -2751,7 +3457,7 @@ class LocalMemoryWriteWorkflow:
                 if item is not None
             ),
             budget_usage=data.usage,
-            last_event_sequence=len(getattr(self._events, "events", ())),
+            last_event_sequence=self._last_event_sequence(data.request.run_id),
             resumability_status=ResumabilityStatus.RESUMABLE,
         )
         ref = self._checkpoint.save(checkpoint)
@@ -2769,25 +3475,35 @@ class LocalMemoryWriteWorkflow:
         event_type: RunEventType,
         artifact_refs: tuple[ArtifactRef, ...] = (),
     ) -> None:
+        sequence = self._next_event_sequence(data.request.run_id)
         event = RunEvent(
-            event_id=StableId(
-                "event."
-                f"{data.request.request_id.root}."
-                f"{len(getattr(self._events, 'events', ())) + 1}"
+            event_id=self._event_identity(
+                "event",
+                data.request.request_id.root,
+                event_type.value,
+                sequence,
+                scope_ids=(
+                    data.request.run_id.root,
+                    data.request.task_id.root,
+                ),
             ),
             run_id=data.request.run_id,
             task_id=data.request.task_id,
-            sequence_no=len(getattr(self._events, "events", ())) + 1,
+            sequence_no=sequence,
             event_type=event_type,
             occurred_at=self._clock.now(),
-            idempotency_identity=StableId(
-                "event-effect."
-                f"{data.request.request_id.root}."
-                f"{event_type.value}."
-                f"{len(getattr(self._events, 'events', ())) + 1}"
+            idempotency_identity=self._event_identity(
+                "event-effect",
+                data.request.request_id.root,
+                event_type.value,
+                sequence,
+                scope_ids=(
+                    data.request.run_id.root,
+                    data.request.task_id.root,
+                ),
             ),
             payload_schema_version=SchemaVersion("0.1.0"),
-            trace_id=f"trace.{data.request.run_id.root}",
+            trace_id=_bounded_trace_id("trace", data.request.run_id.root),
             payload={
                 "request_id": data.request.request_id.root,
                 "candidate_id": None
@@ -2802,6 +3518,42 @@ class LocalMemoryWriteWorkflow:
             artifact_refs=artifact_refs,
         )
         self._events.append(event)
+
+    @staticmethod
+    def _event_identity(
+        namespace: str,
+        request_id: str,
+        event_type: str,
+        sequence: int,
+        *,
+        scope_ids: tuple[str, ...] = (),
+    ) -> StableId:
+        parts = (event_type, str(sequence))
+        try:
+            return semantic_id(namespace, request_id, *parts)
+        except ValueError:
+            # RunEventRow.event_id is a global primary key, so a bare
+            # event-type/sequence fallback would collide across runs. Reuse
+            # an existing bounded typed scope before falling back to the
+            # sequence-only shape for the impossible case where every scope
+            # itself reaches the StableId limit.
+            for scope_id in scope_ids:
+                try:
+                    return semantic_id(namespace, scope_id, *parts)
+                except ValueError:
+                    continue
+            raise MemoryWriteWorkflowError(
+                "event identity has no bounded request, task, or run scope"
+            ) from None
+
+    def _next_event_sequence(self, run_id: RunId) -> int:
+        durable = getattr(self._events, "next_sequence", None)
+        if callable(durable):
+            return int(durable(run_id))
+        return len(getattr(self._events, "events", ())) + 1
+
+    def _last_event_sequence(self, run_id: RunId) -> int:
+        return self._next_event_sequence(run_id) - 1
 
     def _fault(self, point: str, data: _WorkflowData) -> None:
         injector = self._fault_injector
@@ -2927,13 +3679,6 @@ def _request_basis_hash(request: MemoryWriteWorkflowRequest) -> ArtifactId:
     return sha256_id(canonical_json_bytes(payload))
 
 
-def _bounded_workflow_id(namespace: str, *identity_parts: str) -> StableId:
-    """Keep compound workflow identities deterministic and within StableId limits."""
-
-    digest = sha256_id(canonical_json_bytes(identity_parts)).root.removeprefix("sha256:")
-    return StableId(f"{namespace}.{digest}")
-
-
 def _model_ref(value: Any, data: _WorkflowData, label: str) -> ArtifactRef:
     artifacts = data.artifacts
     if artifacts is None:
@@ -2964,7 +3709,7 @@ def _put_model(artifacts: Any, value: Any, media_type: str, version: SchemaVersi
 def _read_model(artifacts: Any, ref: ArtifactRef, model_type: Any) -> Any:
     if hasattr(artifacts, "read_model"):
         return artifacts.read_model(ref, model_type)
-    return model_type.model_validate_json(artifacts.read_verified(ref), strict=True)
+    return model_type.model_validate_json(artifacts.read_verified(ref), strict=False)
 
 
 def _receipt_ref(data: _WorkflowData, label: str) -> ArtifactRef:
@@ -3072,7 +3817,7 @@ def _remaining(budget: Any, usage: MemoryWriteBudgetUsage) -> Any:
 
 def _candidate_id(data: _WorkflowData) -> StableId:
     if data.candidate is None:
-        return StableId(f"candidate.missing.{data.request.request_id.root}")
+        return _request_scoped_id(data, "candidate.missing")
     return data.candidate.candidate_id
 
 

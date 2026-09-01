@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -20,26 +21,42 @@ from novel_agent.adapters.memory_write.teacher_forced import (
     TeacherForcedCuratorPort,
     _basis_manifest,
     _validate_durable_commit_request,
+    _validation_report,
 )
 from novel_agent.adapters.model import FakeModelEndpoint, ScriptedModelEndpoint
 from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
-from novel_agent.domain.changes import ChapterChangeDraft, ObservedChangeSet, WorldRecordKind
+from novel_agent.domain.changes import (
+    ChapterChangeDraft,
+    CuratorV2EvidenceDraft,
+    ObservedChangeSet,
+    WorldRecordKind,
+)
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite, WorldRootDocument
 from novel_agent.domain.memory_write import (
     CanonicalWriteBasis,
     CuratorProposalAccepted,
     CuratorProposalRejected,
+    MaintenanceTrigger,
+    MemoryRepairOwner,
     MemoryWriteCandidatePayload,
     MemoryWriteCommitProfile,
+    NarrativePosition,
     ProposalConflict,
     ProposalRejectionKind,
     ProposalRejectionStage,
     RepairAction,
     RepairDirective,
+    ValidationDecision,
     ValidationDisposition,
 )
-from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.model_calls import (
+    ModelCallPurpose,
+    ModelCallRecord,
+    ModelRequest,
+    ModelRole,
+    ModelUsage,
+)
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -73,6 +90,7 @@ from novel_agent.services.memory_write_workflow import (
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
     ModelCurationContractError,
+    ModelCurationOutputIncomplete,
 )
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 from novel_agent.services.projection import snapshot_id_for_commit
@@ -546,6 +564,68 @@ def test_graph_curator_must_share_the_replay_gateway() -> None:
         )
 
 
+def test_graph_child_identity_failure_is_a_typed_proposal_rejection() -> None:
+    artifacts = InMemoryArtifactRepository()
+    gateway = ModelGateway(())
+    replay = SimpleNamespace(curator=SimpleNamespace(gateway=gateway))
+    graph_curator = SimpleNamespace(gateway=gateway)
+    maximum = "x" * 128
+    port = TeacherForcedCuratorPort(
+        cast(Any, replay),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(
+            Any,
+            lambda *_: _proposal_model_request(StableId("m" * 128)).model_copy(
+                update={"task_id": type(_request().task_id)(maximum)}
+            ),
+        ),
+        graph_curator=cast(Any, graph_curator),
+    )
+    attempt = _proposal_attempt_request(artifacts, StableId(maximum)).model_copy(
+        update={
+            "attempt_id": StableId(maximum),
+            "request": _request().model_copy(
+                update={
+                    "request_id": StableId(maximum),
+                    "task_id": type(_request().task_id)(maximum),
+                }
+            ),
+        }
+    )
+
+    outcome = asyncio.run(port.propose_attempt(attempt))
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.attempt_receipt.provider_call_count == 0
+    assert outcome.rejection.kind is ProposalRejectionKind.SCOPE_VIOLATION
+
+
+def test_validation_report_reuses_maximal_change_set_identity() -> None:
+    maximum = "c" * 128
+    changes = ObservedChangeSet(
+        change_set_id=StableId(maximum),
+        base_commit=BASE,
+        source_artifact=_manifest().text_root,
+    )
+    validation = ValidationDecision(
+        decision_id=StableId("validation.max-change-set"),
+        candidate_id=StableId("candidate.max-change-set"),
+        candidate_content_hash=ArtifactId("sha256:" + "a" * 64),
+        materialization_receipt=_manifest().text_root,
+        proposed_roots_hash=ArtifactId("sha256:" + "b" * 64),
+        base_commit=BASE,
+        disposition=ValidationDisposition.PASS,
+        deterministic_profile="max-change-set-unit",
+        validated_at=datetime.now(UTC),
+    )
+
+    report = _validation_report(validation, changes)
+
+    assert report.report_id == StableId(maximum)
+    assert report.bundle_id == StableId(maximum)
+
+
 def test_curator_proposal_runs_without_an_optional_script() -> None:
     artifacts = InMemoryArtifactRepository()
     data = _ready_data(
@@ -786,6 +866,287 @@ def test_curator_proposal_attempt_runs_graph_profile_concurrently_and_merges_rel
         "application/vnd.novel-agent.world-graph-candidate-batch+json",
         "application/vnd.novel-agent.world-graph-extraction-receipt+json",
     }
+
+
+def test_graph_owned_proposal_routes_around_ordinary_curator() -> None:
+    artifacts = InMemoryArtifactRepository()
+    world, text, _, _ = _teacher_world()
+    request = _request().model_copy(
+        update={
+            "repair_owner": MemoryRepairOwner.GRAPH_CURATOR,
+            "trigger": MaintenanceTrigger(
+                maintenance_task_id=StableId("maintenance.graph-owned.unit"),
+                chapter_indices=(4, 5),
+            ),
+            "information_boundary": _request().information_boundary.model_copy(
+                update={"maximum_visible_position": NarrativePosition(chapter_index=5)}
+            ),
+        }
+    )
+    basis = _basis_with_world(text, world)
+    gateway = ModelGateway(())
+    now = datetime(2026, 7, 21, tzinfo=UTC)
+    ordinary_calls = 0
+    graph_requests: list[ModelRequest] = []
+    prepared_requests: list[ModelRequest] = []
+    receipt = agent_receipt().model_copy(
+        update={
+            "run_id": request.run_id,
+            "task_id": request.task_id,
+            "agent_type": AgentType.MEMORY_CURATOR,
+            "agent_mode": AgentMode.REPLAY,
+            "base_commit": BASE,
+        }
+    )
+
+    class Runner:
+        def prepare(
+            self,
+            _agent_type: AgentType,
+            _mode: AgentMode,
+            _version: str,
+            model_request: ModelRequest,
+            _task_payload: str,
+            **__: object,
+        ) -> object:
+            prepared_requests.append(model_request)
+            return SimpleNamespace(request=model_request)
+
+        def receipt(self, *_: object) -> AgentExecutionReceipt:
+            return receipt
+
+    class Replay:
+        curator = SimpleNamespace(
+            gateway=gateway,
+            last_evidence_merge_receipts=(),
+            last_operation_filter_receipts=(),
+            last_record_kind_coverage=None,
+            last_prompt_fingerprint=None,
+        )
+        runner = Runner()
+
+        async def run(self, **_: object) -> tuple[object, None]:
+            nonlocal ordinary_calls
+            ordinary_calls += 1
+            raise AssertionError("ordinary Curator must not run for a graph-owned finding")
+
+    class GraphCurator:
+        last_evidence_merge_receipts: tuple[object, ...] = ()
+        last_operation_filter_receipts: tuple[object, ...] = ()
+        last_record_kind_coverage = None
+        last_prompt_fingerprint = None
+
+        def __init__(self) -> None:
+            self.gateway = gateway
+
+        async def extract_graph_candidates(
+            self,
+            _text_root: TextRootDocument,
+            chapter_index: int,
+            _base_commit: CommitId,
+            _world: WorldRootDocument,
+            model_request: ModelRequest,
+            repair_feedback: str | None = None,
+        ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[ModelCallRecord, ...]]:
+            del repair_feedback
+            graph_requests.append(model_request)
+            call = ModelCallRecord(
+                request_id=model_request.request_id,
+                run_id=request.run_id,
+                task_id=request.task_id,
+                model_role=ModelRole.BATCH_TEST,
+                purpose=ModelCallPurpose.BATCH_TEST,
+                trace_id="trace.graph-owned.unit",
+                endpoint="fake",
+                model="fake",
+                model_version="v1",
+                usage=ModelUsage(
+                    input_tokens=1,
+                    output_tokens=1,
+                    cost_usd=Decimal("0"),
+                ),
+                latency_ms=0,
+                started_at=now,
+                completed_at=now,
+            )
+            return (
+                (
+                    WorldGraphCandidateBatch(
+                        batch_id=StableId(f"graph-batch.graph-owned.unit.{chapter_index}"),
+                        source_text_root=text.root_hash,
+                        base_commit=BASE,
+                        chapter_index=chapter_index,
+                        policy_version="graph-owned-unit.v1",
+                        model_request_id=model_request.request_id,
+                    ),
+                ),
+                (call,),
+            )
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.graph-owned"))),
+        graph_curator=cast(Any, GraphCurator()),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(
+            _proposal_attempt_request(artifacts, StableId("model.graph-owned.attempt")).model_copy(
+                update={"request": request, "basis": basis}
+            )
+        )
+    )
+
+    assert isinstance(outcome, CuratorProposalAccepted)
+    assert ordinary_calls == 0
+    assert len(graph_requests) == 2
+    assert [request.scheduling_stage for request in graph_requests] == [
+        "curator_graph_extraction",
+        "curator_graph_extraction",
+    ]
+    assert [request.request_id.root for request in graph_requests] == [
+        "model.graph-owned.attempt.graph",
+        "model.graph-owned.attempt.graph.ch005",
+    ]
+    assert len(prepared_requests) == 1
+    assert prepared_requests[0].request_id == StableId("model.graph-owned.attempt")
+
+
+def test_ordinary_owned_proposal_does_not_spend_graph_profile_calls() -> None:
+    artifacts = InMemoryArtifactRepository()
+    data = _ready_data(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+    )
+    assert data.bundle is not None
+    gateway = ModelGateway(())
+    ordinary_changes = data.bundle.observed_changes
+    receipt = _curator_receipt().model_copy(update={"agent_mode": AgentMode.REPLAY})
+    request = _request().model_copy(update={"repair_owner": MemoryRepairOwner.ORDINARY_CURATOR})
+    ordinary_calls = 0
+    graph_calls = 0
+
+    class Replay:
+        curator = SimpleNamespace(
+            gateway=gateway,
+            last_evidence_merge_receipts=(),
+            last_operation_filter_receipts=(),
+            last_record_kind_coverage=None,
+            last_prompt_fingerprint=None,
+        )
+
+        async def run(self, **_: object) -> tuple[CuratorReplayResult, None]:
+            nonlocal ordinary_calls
+            ordinary_calls += 1
+            return (
+                CuratorReplayResult(
+                    observed_changes=ordinary_changes,
+                    coverage=1.0,
+                    receipt=receipt,
+                ),
+                None,
+            )
+
+    class GraphCurator:
+        def __init__(self) -> None:
+            self.gateway = gateway
+
+        async def extract_graph_candidates(self, *_: object, **__: object) -> None:
+            nonlocal graph_calls
+            graph_calls += 1
+            raise AssertionError("ordinary-owned maintenance must not call Graph Curator")
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.ordinary-owned"))),
+        graph_curator=cast(Any, GraphCurator()),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(
+            _proposal_attempt_request(
+                artifacts, StableId("model.ordinary-owned.attempt")
+            ).model_copy(update={"request": request})
+        )
+    )
+
+    assert isinstance(outcome, CuratorProposalAccepted)
+    assert ordinary_calls == 1
+    assert graph_calls == 0
+
+
+def test_ordinary_owned_proposal_consumes_all_selected_source_chapters() -> None:
+    artifacts = InMemoryArtifactRepository()
+    basis = _basis()
+    gateway = ModelGateway(())
+    source_calls: list[tuple[int, StableId]] = []
+    receipt = _curator_receipt().model_copy(
+        update={
+            "agent_mode": AgentMode.REPLAY,
+            "base_commit": BASE,
+            "unresolved": (),
+        }
+    )
+    changes = ObservedChangeSet(
+        change_set_id=StableId("changes.ordinary-multi.unit"),
+        base_commit=BASE,
+        source_artifact=_manifest().text_root,
+    )
+    request = _request().model_copy(
+        update={
+            "repair_owner": MemoryRepairOwner.ORDINARY_CURATOR,
+            "trigger": MaintenanceTrigger(
+                maintenance_task_id=StableId("maintenance.ordinary-multi.unit"),
+                chapter_indices=(1, 5),
+            ),
+            "information_boundary": _request().information_boundary.model_copy(
+                update={"maximum_visible_position": NarrativePosition(chapter_index=5)}
+            ),
+        }
+    )
+
+    class Replay:
+        curator = SimpleNamespace(
+            gateway=gateway,
+            last_evidence_merge_receipts=(),
+            last_operation_filter_receipts=(),
+            last_record_kind_coverage=None,
+            last_prompt_fingerprint=None,
+        )
+
+        async def run(self, **kwargs: object) -> tuple[CuratorReplayResult, None]:
+            model_request = cast(ModelRequest, kwargs["request"])
+            source_calls.append((int(kwargs["chapter_index"]), model_request.request_id))
+            return (
+                CuratorReplayResult(
+                    observed_changes=changes,
+                    coverage=1.0,
+                    receipt=receipt,
+                ),
+                None,
+            )
+
+    port = TeacherForcedCuratorPort(
+        cast(Any, Replay()),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_: _proposal_model_request(StableId("model.ordinary-multi"))),
+    )
+    outcome = asyncio.run(
+        port.propose_attempt(
+            _proposal_attempt_request(
+                artifacts, StableId("model.ordinary-multi.attempt")
+            ).model_copy(update={"request": request, "basis": basis})
+        )
+    )
+
+    assert isinstance(outcome, CuratorProposalAccepted)
+    assert source_calls == [
+        (1, StableId("model.ordinary-multi.attempt")),
+        (5, StableId("model.ordinary-multi.attempt.ch005")),
+    ]
 
 
 def test_curator_proposal_cancels_graph_profile_when_replay_fails() -> None:
@@ -1188,6 +1549,12 @@ def test_typed_proposal_rejection_maps_schema_semantic_and_boundary_errors() -> 
             True,
         ),
         (
+            ModelCurationOutputIncomplete("compact response ended at finish_reason=length"),
+            ProposalRejectionStage.STRUCTURED_SCHEMA,
+            ProposalRejectionKind.SCHEMA_REJECTED,
+            True,
+        ),
+        (
             CuratorProposalSemanticRejected(
                 "CURATOR_PROPOSAL_INFORMATION_BOUNDARY",
                 (),
@@ -1393,6 +1760,84 @@ def test_schema_rejection_feedback_names_semantic_rule_messages() -> None:
     assert any(
         "relation endpoint in the same page" in line for line in outcome.rejection.safe_feedback
     )
+
+
+def test_schema_rejection_handles_scalar_extra_inputs_after_compact_retry() -> None:
+    """A malformed compact retry must remain a typed rejection, not transport uncertainty."""
+
+    invalid_compact_payload = {
+        "operations": [
+            {
+                "operation": "create",
+                "record_kind": "event",
+                "target_id": "event.invalid",
+                "record": {
+                    "event_type": "public_insult",
+                    "participant_ids": ["entity.bootstrap.chen-changsheng"],
+                    "story_time": "ch45",
+                    "narrative_order": 1,
+                    "effect_refs": [],
+                    "truth_class": "assertion",
+                },
+                "evidence_quotes": ["A subject-bearing quote."],
+            }
+        ],
+        "coverage": 0.5,
+        "unresolved": ["The specific speaker is unnamed."],
+        "declared_vs_observed_diff": [],
+        "no_durable_delta_reason": None,
+        "no_op_evidence_quotes": [],
+    }
+    with pytest.raises(ValidationError) as raised:
+        CuratorV2EvidenceDraft.model_validate(invalid_compact_payload)
+
+    artifacts = InMemoryArtifactRepository()
+    model_request = _proposal_model_request(
+        StableId("model.proposal.compact-schema-rejection.schema-1")
+    )
+    compact_request = model_request.model_copy(
+        update={"request_id": StableId(f"{model_request.request_id.root}.compact")}
+    )
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="proposal-test",
+                model_name="fake",
+                adapter=FakeModelEndpoint("primary response"),
+            ),
+        )
+    )
+    asyncio.run(gateway.generate_text(model_request))
+    asyncio.run(gateway.generate_text(compact_request))
+    replay = SimpleNamespace(curator=SimpleNamespace(gateway=gateway))
+    port = TeacherForcedCuratorPort(
+        cast(Any, replay),
+        cast(Any, object()),
+        cast(Any, artifacts),
+        cast(Any, lambda *_, request=model_request: request),
+    )
+
+    outcome = port._proposal_rejected(
+        _proposal_attempt_request(artifacts, model_request.request_id),
+        model_request,
+        raised.value,
+        datetime.now(UTC),
+        _manifest().schema_version,
+    )
+
+    assert isinstance(outcome, CuratorProposalRejected)
+    assert outcome.rejection.reason_code == "CURATOR_PROPOSAL_SCHEMA_REJECTED"
+    assert outcome.rejection.stage is ProposalRejectionStage.STRUCTURED_SCHEMA
+    assert outcome.rejection.kind is ProposalRejectionKind.SCHEMA_REJECTED
+    assert any("event_type" in line for line in outcome.rejection.safe_feedback)
+    assert outcome.attempt_receipt.status.value == "rejected"
+    assert outcome.attempt_receipt.model_request_ids == (
+        model_request.request_id,
+        compact_request.request_id,
+    )
+    assert len(outcome.attempt_receipt.model_call_receipt_refs) == 2
+    assert len(outcome.attempt_receipt.raw_response_refs) == 2
 
 
 def test_typed_proposal_attempt_wraps_transport_and_preserves_safe_feedback() -> None:

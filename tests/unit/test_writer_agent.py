@@ -44,7 +44,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
-from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.model_calls import BudgetSource, ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.stage2 import (
     AgentMode,
     AgentSpec,
@@ -55,7 +55,11 @@ from novel_agent.domain.stage2 import (
 from novel_agent.prompts import PromptRegistry, PromptRegistryError
 from novel_agent.prompts.registry import content_hash
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
-from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from novel_agent.services.model_gateway import (
+    ModelGateway,
+    RegisteredModelEndpoint,
+    StructuredGenerationExhausted,
+)
 from novel_agent.skills import SkillRegistry, SkillRegistryError, SkillTemplate
 
 ROOT = Path(__file__).parents[2]
@@ -339,6 +343,17 @@ def test_writer_prepare_places_trusted_tail_after_inert_untrusted_sources() -> N
     assert endpoint.requests == []
 
 
+def test_major_rewrite_prompt_requires_distinct_directive_coverage() -> None:
+    prompt = (PACKAGE_ROOT / "prompts" / "writer_major_rewrite_v1.md").read_text(encoding="utf-8")
+
+    assert "silently perform a directive-coverage pass" in prompt
+    assert "mentioning a keyword or restating the parent draft does" in prompt
+    assert "change the scene's causal state" in prompt
+    assert "Any `evidence_quote` inside that directive is a diagnostic location" in prompt
+    assert "Do not copy an evidence quote or the flagged dialogue" in prompt
+    assert "replace that passage before\nreturning the candidate" in prompt
+
+
 def test_writer_prepare_contract_exposes_real_fingerprints_without_model_access() -> None:
     bundle = build_writer_contract_bundle(modes=(AgentMode.DRAFT,))
     spec = bundle.agent_specs[0]
@@ -376,9 +391,16 @@ def test_writer_execute_returns_typed_output_and_final_receipt() -> None:
     assert result.receipt.unresolved == result.output.unresolved_questions
     assert result.receipt.configuration_fingerprint == invocation.basis.configuration_fingerprint
     assert result.receipt.prompt_fingerprint == prepared.prompt_fingerprint
+    actual_request = endpoint.requests[0]
+    assert actual_request.budget_source is BudgetSource.MODEL_MAX_AUTO
+    assert actual_request.max_output_tokens is not None
     assert endpoint.requests == [
         prepared.request.model_copy(
-            update={"response_schema": WriterDraftPayload.model_json_schema()}
+            update={
+                "response_schema": WriterDraftPayload.model_json_schema(),
+                "max_output_tokens": actual_request.max_output_tokens,
+                "budget_source": actual_request.budget_source,
+            }
         )
     ]
     output_artifact = _artifact("9", "text/plain")
@@ -529,9 +551,10 @@ def test_writer_output_schema_rejects_trusted_ids_and_evidence_refs(
     agent, endpoint, _ = _harness(json.dumps(payload), bundle=bundle)
     prepared = agent.prepare(invocation, _request(invocation))
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(StructuredGenerationExhausted) as error:
         asyncio.run(agent.execute(prepared))
 
+    assert isinstance(error.value.validation_error, ValidationError)
     assert len(endpoint.requests) == 1
 
 

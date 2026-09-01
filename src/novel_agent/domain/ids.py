@@ -16,6 +16,17 @@ class StableId(RootModel[StableIdValue]):
     model_config = ConfigDict(strict=True, frozen=True)
 
 
+def bounded_stable_id(primary: str, *fallbacks: str) -> StableId:
+    """Return the first readable identity that fits the StableId contract."""
+
+    for value in (primary, *fallbacks):
+        try:
+            return StableId(value)
+        except ValueError:
+            continue
+    raise ValueError("stable identity is too long")
+
+
 class ProjectId(StableId):
     pass
 

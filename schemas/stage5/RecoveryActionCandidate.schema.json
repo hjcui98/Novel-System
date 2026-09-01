@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RecoveryActionKind": {
+      "enum": [
+        "graph_curator",
+        "ordinary_curator",
+        "review_required"
+      ],
+      "title": "RecoveryActionKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One existing safe action the reasoner is allowed to select.",
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "action_kind": {
+      "$ref": "#/$defs/RecoveryActionKind"
+    },
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "canonical_mutation_observed": {
+      "const": false,
+      "default": false,
+      "title": "Canonical Mutation Observed",
+      "type": "boolean"
+    },
+    "proposal_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "safety_boundary_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "skill_mutation_observed": {
+      "const": false,
+      "default": false,
+      "title": "Skill Mutation Observed",
+      "type": "boolean"
+    },
+    "validation_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "validator_accepted": {
+      "const": true,
+      "default": true,
+      "title": "Validator Accepted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "action_id",
+    "action_kind",
+    "proposal_ref",
+    "validation_ref",
+    "basis_commit",
+    "safety_boundary_id"
+  ],
+  "title": "RecoveryActionCandidate",
+  "type": "object"
+}

@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "EvolutionIncident": {
+      "additionalProperties": false,
+      "properties": {
+        "failure_class": {
+          "$ref": "#/$defs/FailureClass"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "incident_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "problem_key": {
+          "$ref": "#/$defs/StableId"
+        },
+        "safety_boundary_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "target_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "target_kind": {
+          "$ref": "#/$defs/EvolutionTargetKind"
+        }
+      },
+      "required": [
+        "incident_id",
+        "problem_key",
+        "failure_class",
+        "safety_boundary_id",
+        "target_id",
+        "target_kind",
+        "incident_ref"
+      ],
+      "title": "EvolutionIncident",
+      "type": "object"
+    },
+    "EvolutionTargetKind": {
+      "enum": [
+        "prompt",
+        "skill",
+        "policy",
+        "code"
+      ],
+      "title": "EvolutionTargetKind",
+      "type": "string"
+    },
+    "FailureClass": {
+      "enum": [
+        "worker_startup",
+        "worker_lease_expired",
+        "provider_transient",
+        "leaf_schema_rejected",
+        "leaf_review_required",
+        "canon_extraction_gap",
+        "basis_changed",
+        "permission_denied",
+        "validation_rejected",
+        "commit_conflict",
+        "projection_failed",
+        "freshness_waiting",
+        "freshness_blocked",
+        "writer_lane_busy",
+        "effect_uncertain",
+        "poison_loop",
+        "budget_exhausted",
+        "cancelled",
+        "runtime_capability_unavailable",
+        "external_resource_unavailable",
+        "unknown"
+      ],
+      "title": "FailureClass",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cluster_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "failure_class": {
+      "$ref": "#/$defs/FailureClass"
+    },
+    "incidents": {
+      "items": {
+        "$ref": "#/$defs/EvolutionIncident"
+      },
+      "maxItems": 64,
+      "minItems": 2,
+      "title": "Incidents",
+      "type": "array"
+    },
+    "problem_key": {
+      "$ref": "#/$defs/StableId"
+    },
+    "safety_boundary_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "target_kind": {
+      "$ref": "#/$defs/EvolutionTargetKind"
+    }
+  },
+  "required": [
+    "cluster_id",
+    "problem_key",
+    "failure_class",
+    "safety_boundary_id",
+    "target_id",
+    "target_kind",
+    "incidents"
+  ],
+  "title": "EvolutionIncidentCluster",
+  "type": "object"
+}

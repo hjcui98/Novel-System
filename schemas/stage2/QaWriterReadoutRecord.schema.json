@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "QaEvidenceItem": {
+      "additionalProperties": false,
+      "description": "One Track A evidence pointer. Chapter must be at or before the cutoff.",
+      "properties": {
+        "chapter": {
+          "maximum": 300,
+          "minimum": 0,
+          "title": "Chapter",
+          "type": "integer"
+        },
+        "span": {
+          "minLength": 1,
+          "title": "Span",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chapter",
+        "span"
+      ],
+      "title": "QaEvidenceItem",
+      "type": "object"
+    },
+    "QaWriterResponse": {
+      "additionalProperties": false,
+      "description": "Track A product main result: answer plus at most 20 history evidence items.",
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Answer"
+        },
+        "evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/QaEvidenceItem"
+          },
+          "maxItems": 20,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "answer"
+      ],
+      "title": "QaWriterResponse",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Evaluation-namespace envelope for one frozen Track A Writer readout.",
+  "properties": {
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "case_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "freeze_receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "information_profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "model_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "model_role": {
+      "$ref": "#/$defs/ModelRole"
+    },
+    "package_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "prompt_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "question_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "response": {
+      "$ref": "#/$defs/QaWriterResponse"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "schema_title": {
+      "minLength": 1,
+      "title": "Schema Title",
+      "type": "string"
+    },
+    "task_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "run_id",
+    "case_id",
+    "checkpoint_chapter",
+    "information_profile",
+    "task_id",
+    "question_id",
+    "package_ref",
+    "basis_commit_id",
+    "freeze_receipt_id",
+    "model_role",
+    "model_request_id",
+    "prompt_hash",
+    "schema_title",
+    "response"
+  ],
+  "title": "QaWriterReadoutRecord",
+  "type": "object"
+}

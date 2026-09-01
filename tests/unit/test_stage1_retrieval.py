@@ -6,7 +6,14 @@ from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
+    ExpectedClaimScope,
+    FacetEvidenceRequirement,
+    NeedCompletionSpec,
+    NeedFacet,
+    NeedFacetKind,
+    NeedGapPolicy,
     NeedRisk,
+    NeedUncertaintyPolicy,
     RequirementLevel,
     ResolutionPath,
     RetrievalChannel,
@@ -147,6 +154,65 @@ def test_exact_current_state_bypasses_anchor_and_rrf() -> None:
         dict.fromkeys(candidate.unit.unit_id for candidate in trace.candidates)
     )
     assert trace.direct_unit_ids
+
+
+def test_current_state_fallback_keeps_r1_state_anchor() -> None:
+    facet_id = StableId("facet.current")
+    need_id = StableId("need.current_state")
+    current = need(
+        Stage1QueryIntent.CURRENT_STATE,
+        "经脉 洗髓",
+        (CandidatePool.R1, CandidatePool.ANCHOR),
+        entity_ids=(CHARACTER,),
+    ).model_copy(
+        update={
+            "need_id": need_id,
+            "need_facets": (
+                NeedFacet(
+                    need_facet_id=facet_id,
+                    need_id=need_id,
+                    facet_kind=NeedFacetKind.CURRENT_STATE,
+                    expected_claim_scope=ExpectedClaimScope.CURRENT,
+                    derivation_refs=(need_id,),
+                    producer="test",
+                    producer_version="v1",
+                    information_scope="writer_safe",
+                ),
+            ),
+            "completion_spec": NeedCompletionSpec(
+                need_id=need_id,
+                required_need_facet_ids=(facet_id,),
+                irreducible_need_facet_ids=(facet_id,),
+                evidence_requirement_by_facet={
+                    facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE
+                },
+                uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+                gap_policy=NeedGapPolicy.EMIT_TYPED_GAP,
+                producer="test",
+                producer_version="v1",
+            ),
+        }
+    )
+    meridian = unit(
+        "anchor.state.meridian",
+        RetrievalUnitKind.STATE_ANCHOR,
+        "林澈 meridian_condition 九段经脉无法相通",
+        entity_ids=(CHARACTER,),
+    ).model_copy(update={"predicate": "meridian_condition"})
+    distraction = unit(
+        "anchor.relation.location",
+        RetrievalUnitKind.RELATION_ANCHOR,
+        "林澈 located_at 藏书馆 经脉 洗髓",
+        entity_ids=(CHARACTER,),
+    ).model_copy(update={"predicate": "located_at"})
+    service = RetrievalOrchestrator(
+        InMemoryRetrievalBackend((meridian, distraction)),
+        FusionService(),
+    )
+    trace = service.retrieve(current)
+    selected_ids = {candidate.unit.unit_id for candidate in trace.candidates if candidate.selected}
+    assert meridian.unit_id in selected_ids
+    assert trace.fallback_used is True
 
 
 def test_query_compiler_builds_per_channel_bundle() -> None:
@@ -551,6 +617,25 @@ def test_effective_channels_are_route_pool_and_query_intersection() -> None:
         RetrievalChannel.ANCHOR_DENSE,
     )
     assert trace.compiled_query_bundle["semantic_query"] == "旧誓言"
+
+
+def test_relation_and_causal_routes_try_anchor_before_graph_fallback() -> None:
+    for intent in (Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP):
+        trace = orchestrator().retrieve(
+            need(
+                intent,
+                "旧誓言",
+                (CandidatePool.ANCHOR, CandidatePool.GRAPH),
+                entity_ids=(CHARACTER,),
+            )
+        )
+
+        assert trace.effective_channels == (
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        )
+        assert trace.fallback_used is False
+        assert trace.candidates[0].unit.unit_id == StableId("anchor.event.promise")
 
 
 def test_fusion_and_backend_reject_malformed_inputs() -> None:

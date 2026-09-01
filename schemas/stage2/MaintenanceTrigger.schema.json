@@ -8,6 +8,14 @@
   },
   "additionalProperties": false,
   "properties": {
+    "chapter_indices": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Chapter Indices",
+      "type": "array"
+    },
     "kind": {
       "const": "maintenance",
       "default": "maintenance",

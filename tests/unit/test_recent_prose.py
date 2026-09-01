@@ -56,6 +56,37 @@ def test_recent_prose_keeps_previous_chapter_full_and_earlier_trails(tmp_path: P
     assert RecentProseContext.model_validate_json(artifacts.read_verified(context_ref)) == context
 
 
+def test_recent_prose_reuses_existing_previous_chapter_object_metadata(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    text_root = next(
+        item for item in make_synthetic_bundle().text_roots if len(item.chapters) == 20
+    )
+    expected_text = "\n\n".join(
+        block.text
+        for scene in text_root.chapters[-1].scenes
+        for block in scene.blocks
+        if block.text.strip()
+    )
+    existing = artifacts.put(
+        expected_text.encode("utf-8"),
+        "application/vnd.novel-agent.draft-text+plain",
+        VERSION,
+    )
+
+    context, _ = RecentProseAssembler(artifacts, VERSION).assemble(
+        text_root=text_root,
+        base_commit=BASE,
+        snapshot_id=SNAPSHOT,
+        target_chapter=21,
+    )
+
+    assert context.previous_chapter is not None
+    previous = context.previous_chapter.full_text_artifact
+    assert previous.artifact_id == existing.artifact_id
+    assert previous.media_type == existing.media_type
+    assert artifacts.read_verified(previous).decode("utf-8") == expected_text
+
+
 def test_recent_prose_requires_text_root_to_end_at_target_predecessor(tmp_path: Path) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
     empty = TextRootDocument(

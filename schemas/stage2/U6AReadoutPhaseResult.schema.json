@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "MemoryIdentitySnapshot": {
+      "additionalProperties": false,
+      "description": "Durable Memory/Commit identity used to prove evaluation discard is a no-op.",
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "profile_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "world_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "commit_id",
+        "text_root",
+        "world_root",
+        "plan_root",
+        "profile_root"
+      ],
+      "title": "MemoryIdentitySnapshot",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One adapter-owned, frozen result from a pre-discard U6-A phase.",
+  "properties": {
+    "artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Artifact Refs",
+      "type": "array"
+    },
+    "evaluation_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Evaluation Refs",
+      "type": "array"
+    },
+    "evidence_distance": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Evidence Distance",
+      "type": "integer"
+    },
+    "future_leakage_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "gap_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Gap Count",
+      "type": "integer"
+    },
+    "input_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "latency_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "memory_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryIdentitySnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "output_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "phase": {
+      "enum": [
+        "freeze",
+        "release",
+        "wcp",
+        "writer",
+        "response_freeze",
+        "evaluator_reveal"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "stage_loss_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Stage Loss Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "phase"
+  ],
+  "title": "U6AReadoutPhaseResult",
+  "type": "object"
+}

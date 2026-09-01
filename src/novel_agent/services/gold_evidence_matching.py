@@ -140,6 +140,15 @@ class GoldEvidenceMatcher:
         )
         return matched / len(alternative.evidence_refs)
 
+    def ledger_contains(self, actual: EvidenceRef, ledger: EvidenceLedger) -> bool:
+        """Return whether one Writer-cited ref is already in the frozen ledger."""
+
+        return any(
+            self._ref_matches(expected, actual) or self._ref_matches(actual, expected)
+            for entry in ledger.entries
+            for expected in entry.evidence_refs
+        )
+
     def _match_alternative(
         self,
         alternative: EvidenceSet,

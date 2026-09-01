@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.model_calls import (
+    BudgetSource,
+    EffectiveBudgetResult,
     ModelCallLedgerEntry,
     ModelCallLedgerStatus,
     ModelCallPurpose,
@@ -21,12 +23,16 @@ from novel_agent.domain.model_calls import (
     ProviderModelResult,
 )
 from novel_agent.services.artifacts import sha256_id
+from novel_agent.services.effective_budget import ModelBudgetResolutionError
 from novel_agent.services.model_call_ledger import (
     InMemoryModelCallLedger,
     ModelCallLedgerCollision,
+    bounded_model_request_id,
 )
 from novel_agent.services.model_gateway import (
+    ModelCallCumulativeBudgetExceeded,
     ModelCallForbiddenError,
+    ModelCallUncertainError,
     ModelGateway,
     ModelRoutingError,
     RegisteredModelEndpoint,
@@ -66,6 +72,42 @@ def endpoint(role: ModelRole, adapter: FakeModelEndpoint) -> RegisteredModelEndp
     )
 
 
+def ledger_budget(model_request: ModelRequest) -> EffectiveBudgetResult:
+    gateway = ModelGateway((endpoint(model_request.model_role, FakeModelEndpoint("ledger")),))
+    return gateway.resolve_effective_budget(model_request)
+
+
+def test_registered_endpoint_owns_default_thinking_policy() -> None:
+    class AdapterWithImplicitThinking(FakeModelEndpoint):
+        default_thinking = True
+
+    adapter = AdapterWithImplicitThinking("response")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, adapter),))
+
+    omitted = gateway.resolve_effective_budget(request())
+    assert omitted.thinking_budget == 0
+
+    explicit = RegisteredModelEndpoint(
+        role=ModelRole.BATCH_TEST,
+        endpoint_name="explicit-thinking-endpoint",
+        model_name="fake-model",
+        adapter=adapter,
+        default_thinking=True,
+    )
+    explicit_gateway = ModelGateway((explicit,))
+    declared = explicit_gateway.resolve_effective_budget(request())
+    assert declared.thinking_budget == declared.context_limit // 64
+
+    with pytest.raises(ValueError, match="default_thinking must be an explicit bool"):
+        RegisteredModelEndpoint(
+            role=ModelRole.BATCH_TEST,
+            endpoint_name="missing-thinking-policy-endpoint",
+            model_name="fake-model",
+            adapter=adapter,
+            default_thinking=cast(Any, None),
+        )
+
+
 def test_fake_model_records_complete_batch_role_audit() -> None:
     fake = FakeModelEndpoint("fixed response")
     gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
@@ -81,11 +123,72 @@ def test_fake_model_records_complete_batch_role_audit() -> None:
     assert result.call_record.span_id == "span-model-test"
     assert result.call_record.usage.cost_usd == Decimal("0")
     assert result.call_record.latency_ms >= 0
-    assert fake.requests == [request()]
+    assert fake.requests[0].request_id == request().request_id
+    assert fake.requests[0].prompt == request().prompt
     ledger = gateway.call_ledger.load(request().request_id)
     assert ledger is not None
     assert ledger.status is ModelCallLedgerStatus.COMPLETED
     assert ledger.call_record == result.call_record
+
+
+def test_cumulative_budget_preflight_rejects_before_provider_ledger() -> None:
+    fake = FakeModelEndpoint("must not run")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    model_request = request()
+
+    with pytest.raises(ModelCallCumulativeBudgetExceeded, match="cannot admit request"):
+        gateway.preflight_cumulative_token_budget(
+            model_request,
+            token_budget=1,
+        )
+
+    assert fake.requests == []
+    assert gateway.call_ledger.load(model_request.request_id) is None
+
+
+def test_cumulative_budget_preflight_allows_fit_and_does_not_send_early() -> None:
+    fake = FakeModelEndpoint("fit")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    model_request = request()
+
+    resolved = gateway.preflight_cumulative_token_budget(
+        model_request,
+        token_budget=200_000,
+    )
+
+    assert resolved.estimated_input_tokens > 0
+    assert fake.requests == []
+    assert gateway.call_ledger.load(model_request.request_id) is None
+    assert asyncio.run(gateway.generate_text(model_request)).text == "fit"
+    assert len(fake.requests) == 1
+
+
+def test_long_curator_like_request_requires_explicit_campaign_tranche() -> None:
+    fake = FakeModelEndpoint("must not run during preflight")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    model_request = request().model_copy(
+        update={
+            # The estimator is deliberately the same conservative UTF-8
+            # byte/token estimate used by the gateway. This models the
+            # observed ~52k-input + 8k-output Curator request without calling
+            # a provider or depending on a tokenizer package.
+            "prompt": "x" * (52_410 * 3),
+            "max_output_tokens": 8_000,
+        }
+    )
+
+    with pytest.raises(ModelCallCumulativeBudgetExceeded):
+        gateway.preflight_cumulative_token_budget(model_request, token_budget=24_000)
+
+    resolved = gateway.preflight_cumulative_token_budget(
+        model_request,
+        token_budget=128_000,
+    )
+
+    assert resolved.estimated_input_tokens >= 52_410
+    assert resolved.total_output_budget == 8_000
+    assert fake.requests == []
+    assert gateway.call_ledger.load(model_request.request_id) is None
 
 
 @pytest.mark.model_required
@@ -103,7 +206,8 @@ def test_model_required_smoke_routes_exclusively_to_batch_test_role() -> None:
 
     assert result.call_record.model_role is ModelRole.BATCH_TEST
     assert implementation.requests == []
-    assert batch.requests == [request()]
+    assert batch.requests[0].request_id == request().request_id
+    assert batch.requests[0].prompt == request().prompt
 
 
 def test_development_call_can_explicitly_use_implementation_role() -> None:
@@ -112,6 +216,21 @@ def test_development_call_can_explicitly_use_implementation_role() -> None:
     development = request(role=ModelRole.IMPLEMENTATION, purpose=ModelCallPurpose.DEVELOPMENT)
 
     assert asyncio.run(gateway.generate_text(development)).text == "development"
+
+
+def test_bound_request_without_cached_effective_budget_fails_closed() -> None:
+    fake = FakeModelEndpoint("must not run")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    bound = request().model_copy(
+        update={
+            "max_output_tokens": 400,
+            "budget_source": BudgetSource.EXPLICIT_REQUEST,
+        }
+    )
+
+    with pytest.raises(ModelBudgetResolutionError, match="no in-process EffectiveBudgetResult"):
+        asyncio.run(gateway.generate_text(bound))
+    assert fake.requests == []
 
 
 @pytest.mark.parametrize("purpose", [ModelCallPurpose.BATCH_TEST, ModelCallPurpose.EVALUATION])
@@ -155,13 +274,42 @@ def test_gateway_scheduler_configuration_and_endpoint_policy_identity() -> None:
         gateway.endpoint_policy_identity(ModelRole.IMPLEMENTATION)
 
     controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    scheduled_request = request()
+    scheduled_fake = FakeModelEndpoint("scheduled")
     scheduled = ModelGateway(
-        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("scheduled")),),
+        (endpoint(ModelRole.BATCH_TEST, scheduled_fake),),
         admission_controller=controller,
     )
     assert scheduled.admission_controller is controller
-    assert asyncio.run(scheduled.generate_text(request())).text == "scheduled"
-    assert controller.snapshot()["released_requests"] == 1
+    assert asyncio.run(scheduled.generate_text(scheduled_request)).text == "scheduled"
+    scheduled_entry = scheduled.call_ledger.load(scheduled_request.request_id)
+    assert scheduled_entry is not None
+    scheduled_budget = scheduled_entry.effective_budget
+    assert scheduled_fake.requests[0].max_output_tokens == scheduled_budget.total_output_budget
+    snapshot = controller.snapshot()
+    assert snapshot["released_requests"] == 1
+    descriptors = cast(tuple[dict[str, object], ...], snapshot["admitted_descriptors"])
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert descriptor["estimated_prompt_tokens"] == scheduled_budget.estimated_input_tokens
+    assert descriptor["reserved_output_tokens"] == scheduled_budget.total_output_budget
+    assert descriptor["safety_allowance_tokens"] == scheduled_budget.safety_allowance_tokens
+    assert descriptor["reserved_sequence_tokens"] == scheduled_budget.reserved_sequence_tokens
+
+    class FailingLedger(InMemoryModelCallLedger):
+        def create_requested(self, *args: Any, **kwargs: Any) -> ModelCallLedgerEntry:
+            raise RuntimeError("ledger reservation failed")
+
+    failing_controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    failing_gateway = ModelGateway(
+        (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("must not run")),),
+        call_ledger=FailingLedger(),
+        admission_controller=failing_controller,
+    )
+    with pytest.raises(RuntimeError, match="ledger reservation failed"):
+        asyncio.run(failing_gateway.generate_text(request()))
+    assert failing_controller.inflight_requests == 0
+    assert failing_controller.snapshot()["released_requests"] == 1
 
     unsatisfiable = ModelGateway(
         (endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint("never")),),
@@ -260,7 +408,12 @@ def test_fake_model_failure_and_timeout_are_not_silently_retried() -> None:
     assert failed_entry.status is ModelCallLedgerStatus.TRANSPORT_EXHAUSTED
 
     class SlowFake(FakeModelEndpoint):
+        def __init__(self, response_text: str) -> None:
+            super().__init__(response_text)
+            self.dispatches = 0
+
         async def generate(self, model_request: ModelRequest) -> ProviderModelResult:
+            self.dispatches += 1
             await asyncio.sleep(0.02)
             return await super().generate(model_request)
 
@@ -271,6 +424,9 @@ def test_fake_model_failure_and_timeout_are_not_silently_retried() -> None:
     timeout_entry = timeout_gateway.call_ledger.load(request().request_id)
     assert timeout_entry is not None
     assert timeout_entry.status is ModelCallLedgerStatus.UNCERTAIN
+    with pytest.raises(ModelCallUncertainError, match="reconcile before retry"):
+        asyncio.run(timeout_gateway.generate_text(request(timeout=0.001)))
+    assert slow.dispatches == 1
 
 
 def test_structured_output_uses_the_requested_domain_type() -> None:
@@ -287,6 +443,36 @@ def test_structured_output_uses_the_requested_domain_type() -> None:
     invalid = ModelGateway((endpoint(ModelRole.BATCH_TEST, FakeModelEndpoint('{"answer":1}')),))
     with pytest.raises(ValidationError):
         asyncio.run(invalid.generate_structured(request(), Output))
+
+
+def test_structured_output_repairs_one_observed_extra_leading_brace() -> None:
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    fake = FakeModelEndpoint('\n\n{{"answer":"ok"}')
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+
+    output, _record = asyncio.run(gateway.generate_structured(request(), Output))
+
+    assert output.answer == "ok"
+    assert len(fake.requests) == 1
+    entry = gateway.call_ledger.load(request().request_id)
+    assert entry is not None
+    assert entry.status is ModelCallLedgerStatus.COMPLETED
+    assert gateway.structured_validation_attempts == []
+
+
+def test_structured_output_does_not_accept_other_brace_shapes() -> None:
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    fake = FakeModelEndpoint('{{"answer":"ok"}}')
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+
+    with pytest.raises(ValidationError):
+        asyncio.run(gateway.generate_structured(request(), Output))
 
 
 def test_structured_output_retries_domain_validation_with_feedback() -> None:
@@ -318,6 +504,91 @@ def test_structured_output_retries_domain_validation_with_feedback() -> None:
     assert record.request_id == fake.requests[1].request_id
     assert len(gateway.structured_validation_attempts) == 1
     assert gateway.structured_validation_attempts[0].request_id == "model.request.1"
+
+
+def test_structured_retry_preserves_attempt_scope_for_maximal_parent_id() -> None:
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    class SequenceEndpoint(FakeModelEndpoint):
+        def __init__(self) -> None:
+            super().__init__("")
+            self.responses = iter(('{"answer":1}', '{"answer":"corrected"}'))
+
+        async def generate(self, model_request: ModelRequest) -> ProviderModelResult:
+            self.response_text = next(self.responses)
+            return await super().generate(model_request)
+
+    parent = request().model_copy(
+        update={
+            "request_id": StableId("q" * 128),
+            "attempt_id": StableId("attempt.structured-retry"),
+        }
+    )
+    assert bounded_model_request_id(parent, ".schema-retry1").root == (
+        "model-request.attempt.structured-retry.652713bcb795a6978fa84aa8.schema-retry1"
+    )
+    fake = SequenceEndpoint()
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),), structured_max_retries=1)
+
+    output, _record = asyncio.run(gateway.generate_structured(parent, Output))
+
+    assert output.answer == "corrected"
+    assert fake.requests[1].request_id.root == (
+        "model-request.attempt.structured-retry.652713bcb795a6978fa84aa8.schema-retry1"
+    )
+
+
+def test_long_parent_child_ids_keep_sibling_identity_in_attempt_scope() -> None:
+    parent = request().model_copy(
+        update={
+            "request_id": StableId("q" * 128),
+            "attempt_id": StableId("attempt.graph"),
+        }
+    )
+    sibling = parent.model_copy(update={"request_id": StableId("r" * 128)})
+
+    first = bounded_model_request_id(parent, ".semantic-verifier")
+    second = bounded_model_request_id(sibling, ".semantic-verifier")
+
+    assert first != second
+    assert first.root.startswith("model-request.attempt.graph.")
+    assert second.root.startswith("model-request.attempt.graph.")
+
+
+def test_child_model_request_identity_fails_closed_without_bounded_scope() -> None:
+    parent = request().model_copy(
+        update={
+            "request_id": StableId("q" * 128),
+            "task_id": TaskId("t" * 128),
+            "attempt_id": None,
+        }
+    )
+
+    with pytest.raises(ValueError, match="no bounded"):
+        bounded_model_request_id(parent, ".schema-retry1")
+
+
+def test_structured_retry_identity_failure_is_model_routing_error() -> None:
+    class Output(BaseModel):
+        model_config = ConfigDict(strict=True)
+        answer: str
+
+    parent = request().model_copy(
+        update={
+            "request_id": StableId("q" * 128),
+            "task_id": TaskId("t" * 128),
+            "attempt_id": None,
+        }
+    )
+    fake = FakeModelEndpoint('{"answer":1}')
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),), structured_max_retries=1)
+
+    with pytest.raises(ModelRoutingError, match="structured retry request identity"):
+        asyncio.run(gateway.generate_structured(parent, Output))
+
+    assert len(fake.requests) == 1
 
 
 def test_structured_output_retry_limit_is_enforced() -> None:
@@ -388,10 +659,26 @@ def test_structured_audited_exhaustion_carries_all_durable_entries() -> None:
 def test_model_call_ledger_cas_rejects_identity_and_terminal_overwrites() -> None:
     ledger = InMemoryModelCallLedger()
     model_request = request()
-    requested = ledger.create_requested(model_request)
-    assert ledger.create_requested(model_request) == requested
+    effective_budget = ledger_budget(model_request)
+    requested = ledger.create_requested(
+        model_request,
+        effective_budget=effective_budget,
+        reasoning_included_in_completion_tokens=False,
+    )
+    assert (
+        ledger.create_requested(
+            model_request,
+            effective_budget=effective_budget,
+            reasoning_included_in_completion_tokens=False,
+        )
+        == requested
+    )
     with pytest.raises(ModelCallLedgerCollision, match="identity collision"):
-        ledger.create_requested(model_request.model_copy(update={"prompt": "changed"}))
+        ledger.create_requested(
+            model_request.model_copy(update={"prompt": "changed"}),
+            effective_budget=effective_budget,
+            reasoning_included_in_completion_tokens=False,
+        )
     with pytest.raises(KeyError, match="was not reserved"):
         ledger.settle(
             requested.model_copy(update={"request_id": StableId("model.request.missing")})
@@ -425,9 +712,22 @@ def test_model_call_ledger_prefix_includes_all_scoped_child_calls() -> None:
         update={"request_id": StableId(f"{parent.request_id.root}.semantic-verifier")}
     )
     collision = parent.model_copy(update={"request_id": StableId(f"{parent.request_id.root}0")})
-    ledger.create_requested(parent)
-    ledger.create_requested(verifier)
-    ledger.create_requested(collision)
+    effective_budget = ledger_budget(parent)
+    ledger.create_requested(
+        parent,
+        effective_budget=effective_budget,
+        reasoning_included_in_completion_tokens=False,
+    )
+    ledger.create_requested(
+        verifier,
+        effective_budget=effective_budget,
+        reasoning_included_in_completion_tokens=False,
+    )
+    ledger.create_requested(
+        collision,
+        effective_budget=effective_budget,
+        reasoning_included_in_completion_tokens=False,
+    )
 
     assert tuple(
         item.request_id.root for item in ledger.list_for_prefix(parent.request_id.root)
@@ -439,7 +739,12 @@ def test_model_call_ledger_prefix_includes_all_scoped_child_calls() -> None:
 
 def test_model_call_ledger_entry_rejects_missing_terminal_evidence() -> None:
     ledger = InMemoryModelCallLedger()
-    requested = ledger.create_requested(request())
+    model_request = request()
+    requested = ledger.create_requested(
+        model_request,
+        effective_budget=ledger_budget(model_request),
+        reasoning_included_in_completion_tokens=False,
+    )
     now = datetime.now(UTC)
     for updates, message in (
         (

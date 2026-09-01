@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "U6BCompactionOutcome": {
+      "enum": [
+        "COMPACTED",
+        "NO_OP",
+        "INEFFECTIVE"
+      ],
+      "title": "U6BCompactionOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One truthful compaction observation, including the no-pressure case.",
+  "properties": {
+    "chapter_index": {
+      "minimum": 1,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "covered_event_range": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Covered Event Range",
+      "type": "array"
+    },
+    "input_context_tokens": {
+      "minimum": 0,
+      "title": "Input Context Tokens",
+      "type": "integer"
+    },
+    "min_reduction_ratio": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Min Reduction Ratio",
+      "type": "number"
+    },
+    "outcome": {
+      "$ref": "#/$defs/U6BCompactionOutcome"
+    },
+    "output_context_tokens": {
+      "minimum": 0,
+      "title": "Output Context Tokens",
+      "type": "integer"
+    },
+    "pending_effects_retained": {
+      "title": "Pending Effects Retained",
+      "type": "boolean"
+    },
+    "protected_items_retained": {
+      "title": "Protected Items Retained",
+      "type": "boolean"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reduction_ratio": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Reduction Ratio",
+      "type": "number"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "safe_cut": {
+      "title": "Safe Cut",
+      "type": "boolean"
+    },
+    "semantic_retention_passed": {
+      "title": "Semantic Retention Passed",
+      "type": "boolean"
+    },
+    "source_receipt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "run_id",
+    "task_id",
+    "chapter_index",
+    "outcome",
+    "input_context_tokens",
+    "output_context_tokens",
+    "reduction_ratio",
+    "min_reduction_ratio",
+    "covered_event_range",
+    "protected_items_retained",
+    "pending_effects_retained",
+    "safe_cut",
+    "semantic_retention_passed"
+  ],
+  "title": "U6BCompactionEvidence",
+  "type": "object"
+}

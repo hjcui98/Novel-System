@@ -15,6 +15,7 @@ from novel_agent.domain.memory import (
     NeedGapPolicy,
     NeedRisk,
     NeedUncertaintyPolicy,
+    RelationFacetBinding,
     RequirementLevel,
     ResolutionPath,
     RetrievalUnit,
@@ -36,6 +37,8 @@ def _need(
     mandatory: bool = True,
     predicates: tuple[str, ...] = ("location", "enrollment_status"),
     predicates_by_facet: dict[NeedFacetKind, tuple[str, ...]] | None = None,
+    entity_ids: tuple[StableId, ...] = (ENTITY,),
+    relation_bindings_by_facet: dict[NeedFacetKind, tuple[RelationFacetBinding, ...]] | None = None,
 ) -> Stage1MemoryNeed:
     need_id = StableId("need.test")
     digest = "aabbccdd00112233"
@@ -76,6 +79,15 @@ def _need(
         predicates_by_facet={
             item.need_facet_id.root: facet_bindings[item.facet_kind] for item in need_facets
         },
+        relation_bindings_by_facet=(
+            {
+                item.need_facet_id.root: relation_bindings_by_facet[item.facet_kind]
+                for item in need_facets
+                if item.facet_kind in relation_bindings_by_facet
+            }
+            if relation_bindings_by_facet is not None
+            else {}
+        ),
     )
     return Stage1MemoryNeed(
         need_id=need_id,
@@ -86,7 +98,7 @@ def _need(
         need_type="test",
         query_intent=Stage1QueryIntent.CURRENT_STATE,
         query_text="陈长生当前状态",
-        entity_ids=(ENTITY,),
+        entity_ids=entity_ids,
         predicates=predicates,
         access_scope="writer_safe",
         why_needed="test",
@@ -180,6 +192,75 @@ def test_same_kind_matching_predicate_closes_facet() -> None:
     state_unit = _unit("unit.state", kind="state_anchor", predicate="location")
     receipts = FacetSupportEvaluator.evaluate(need, (_candidate(state_unit),))
     assert receipts[0].status is FacetClosureStatus.SUPPORTED
+
+
+def test_explicit_relation_facet_requires_exact_ordered_triple() -> None:
+    subject = StableId("entity.test.subject")
+    object_ = StableId("entity.test.mount")
+    other = StableId("entity.test.other")
+    binding = RelationFacetBinding(subject_id=subject, predicate="mounts", object_id=object_)
+    need = _need(
+        facets=(NeedFacetKind.RELATION_STATE,),
+        predicates=("mounts",),
+        predicates_by_facet={NeedFacetKind.RELATION_STATE: ("mounts",)},
+        entity_ids=(subject, object_),
+        relation_bindings_by_facet={NeedFacetKind.RELATION_STATE: (binding,)},
+    )
+    exact = _unit(
+        "unit.relation.exact",
+        kind="relation_anchor",
+        entity_ids=(subject, object_),
+        predicate="mounts",
+    )
+    reverse = _unit(
+        "unit.relation.reverse",
+        kind="relation_anchor",
+        entity_ids=(object_, subject),
+        predicate="mounts",
+    )
+    shared_endpoint = _unit(
+        "unit.relation.shared-endpoint",
+        kind="relation_anchor",
+        entity_ids=(subject, other),
+        predicate="mounts",
+    )
+    wrong_predicate = _unit(
+        "unit.relation.wrong-predicate",
+        kind="relation_anchor",
+        entity_ids=(subject, object_),
+        predicate="possesses",
+    )
+
+    receipts = FacetSupportEvaluator.evaluate(
+        need,
+        tuple(_candidate(unit) for unit in (exact, reverse, shared_endpoint, wrong_predicate)),
+    )
+    assert receipts[0].status is FacetClosureStatus.SUPPORTED
+    assert receipts[0].supporting_unit_ids == (exact.unit_id,)
+    for unit in (reverse, shared_endpoint, wrong_predicate):
+        isolated = FacetSupportEvaluator.evaluate(need, (_candidate(unit),))
+        assert isolated[0].status is FacetClosureStatus.UNSUPPORTED
+
+
+def test_empty_explicit_relation_binding_does_not_fallback_to_predicate() -> None:
+    subject = StableId("entity.test.subject")
+    object_ = StableId("entity.test.mount")
+    need = _need(
+        facets=(NeedFacetKind.RELATION_STATE,),
+        predicates=("mounts",),
+        predicates_by_facet={NeedFacetKind.RELATION_STATE: ("mounts",)},
+        entity_ids=(subject, object_),
+        relation_bindings_by_facet={NeedFacetKind.RELATION_STATE: ()},
+    )
+    unit = _unit(
+        "unit.relation.empty-binding",
+        kind="relation_anchor",
+        entity_ids=(subject, object_),
+        predicate="mounts",
+    )
+
+    receipt = FacetSupportEvaluator.evaluate(need, (_candidate(unit),))[0]
+    assert receipt.status is FacetClosureStatus.UNSUPPORTED
 
 
 def test_same_kind_different_predicate_does_not_close_facet() -> None:

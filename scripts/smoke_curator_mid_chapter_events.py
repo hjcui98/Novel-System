@@ -106,8 +106,7 @@ def main() -> int:
     chapter = chapters.get(MID_CHAPTER)
     if chapter is None:
         raise SystemExit(
-            f"mid chapter {MID_CHAPTER} not in P001 history range "
-            f"{case.history_range}"
+            f"mid chapter {MID_CHAPTER} not in P001 history range {case.history_range}"
         )
     print(f"mid chapter {MID_CHAPTER}: {chapter.chapter_id.root}")
 

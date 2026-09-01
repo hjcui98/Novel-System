@@ -202,6 +202,26 @@ def _local_review(quote: str) -> str:
     )
 
 
+def _multi_local_review(first_quote: str, second_quote: str) -> str:
+    payload = json.loads(_local_review(first_quote))
+    payload["issues"].append(
+        {
+            "issue_type": EditorialIssueType.CONTINUITY.value,
+            "severity": EditorialSeverity.ERROR.value,
+            "description": "Resolve the second continuity issue.",
+            "evidence_quote": second_quote,
+            "occurrence": 0,
+            "repairable": True,
+            "structural": False,
+        }
+    )
+    payload["repair_instructions"] = [
+        "Repair the first issue.",
+        "Repair the second issue.",
+    ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _major_review() -> str:
     return json.dumps(
         {
@@ -247,6 +267,20 @@ def test_editor_contract_bundle_is_independent_and_zero_write_capability() -> No
     assert editor_agent_module._json_safe(AgentMode.REVIEW) == AgentMode.REVIEW.value
 
 
+def test_editor_review_contract_keeps_unverified_relationships_advisory() -> None:
+    prompt = (Path(__file__).parents[2] / "src/novel_agent/prompts/editor_review_v1.md").read_text(
+        encoding="utf-8"
+    )
+    assert "missing canon fact" in prompt
+    assert "undefined access mechanism" in prompt
+    assert "PASS` with a precise `unresolved_needs` marker" in prompt
+    assert "non-empty `repair_instructions`" in prompt
+    assert "invalid without a non-empty" in prompt
+    assert "unresolved needs never" in prompt
+    assert "substitute for rewrite targets" in prompt
+    assert "never use `...`, `…`, or a paraphrase" in prompt
+
+
 def test_pass_review_is_read_only_and_does_not_replace_original_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -268,6 +302,95 @@ def test_pass_review_is_read_only_and_does_not_replace_original_text(
         )
 
 
+def test_editor_review_retries_host_contract_failure_with_fresh_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(
+        tmp_path,
+        _local_review("quote absent from the draft"),
+        monkeypatch,
+    )
+    responses = iter(
+        (
+            _local_review("quote absent from the draft"),
+            _local_review("石门向里退开"),
+        )
+    )
+
+    async def generate(request: ModelRequest):
+        harness.endpoint.response_text = next(responses)
+        return await FakeModelEndpoint.generate(harness.endpoint, request)
+
+    monkeypatch.setattr(harness.endpoint, "generate", generate)
+    report = asyncio.run(harness.service.review(harness.review_input, _request("contract-retry")))
+
+    assert report.verdict is EditorialVerdict.LOCAL_REPAIR
+    assert len(harness.endpoint.requests) == 2
+    assert harness.endpoint.requests[0].request_id.root == "request.editor.contract-retry"
+    assert harness.endpoint.requests[1].request_id.root == (
+        "request.editor.contract-retry.contract-retry1"
+    )
+    assert "host_contract_retry" not in harness.endpoint.requests[0].prompt
+    assert "host_contract_retry" in harness.endpoint.requests[1].prompt
+    assert "exact contiguous evidence_quote" in harness.endpoint.requests[1].prompt
+
+
+def test_advisory_only_editor_route_is_pass_with_unresolved_markers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = json.dumps(
+        {
+            "verdict": "MAJOR_REWRITE",
+            "planner_replan_required": True,
+            "unresolved_needs": ["related context has no direct evidence"],
+        },
+        ensure_ascii=False,
+    )
+    harness = _harness(tmp_path, response, monkeypatch)
+
+    report = asyncio.run(harness.service.review(harness.review_input, _request("advisory")))
+
+    assert report.verdict is EditorialVerdict.PASS
+    assert report.issues == ()
+    assert report.planner_replan_required is False
+    assert report.unresolved_needs == ("related context has no direct evidence",)
+
+
+def test_warning_only_local_repair_is_passed_to_writer_as_advisory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = json.dumps(
+        {
+            "verdict": "LOCAL_REPAIR",
+            "issues": [
+                {
+                    "issue_type": "style",
+                    "severity": "warning",
+                    "description": "The draft contains an unnecessary English word.",
+                    "evidence_quote": "石门向里退开",
+                    "repairable": False,
+                    "structural": False,
+                }
+            ],
+            "repair_instructions": ["Prefer a Chinese expression if the Writer revises this line."],
+            "unresolved_needs": ["The wording is related but not blocking."],
+        },
+        ensure_ascii=False,
+    )
+    harness = _harness(tmp_path, response, monkeypatch)
+
+    report = asyncio.run(harness.service.review(harness.review_input, _request("warning-only")))
+
+    assert report.verdict is EditorialVerdict.PASS
+    assert report.repair_scope is None
+    assert len(report.issues) == 1
+    assert report.issues[0].severity is EditorialSeverity.WARNING
+    assert report.unresolved_needs == ("The wording is related but not blocking.",)
+
+
 def test_local_repair_creates_child_candidate_and_preserves_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -280,6 +403,19 @@ def test_local_repair_creates_child_candidate_and_preserves_parent(
     assert report.repair_scope is not None
 
     original = parent_bytes.decode("utf-8")
+    repair_payload = editorial_service_module._repair_payload(
+        harness.review_input,
+        report,
+        original,
+        editorial_service_module._draft_blocks(
+            harness.review_input.draft.draft_id,
+            original,
+        ),
+    )
+    scoped_text = cast(tuple[dict[str, object], ...], repair_payload["repair_scope_text"])
+    assert scoped_text[0]["text"] == quote
+    assert scoped_text[0]["start"] == report.repair_scope.allowed_spans[0].start
+    assert scoped_text[0]["end"] == report.repair_scope.allowed_spans[0].end
     repaired = original.replace(quote, "石门向外退开", 1)
     harness.endpoint.response_text = json.dumps(
         {
@@ -297,6 +433,41 @@ def test_local_repair_creates_child_candidate_and_preserves_parent(
     assert child.draft_id != child.parent_draft_id
     assert harness.artifacts.read_verified(harness.review_input.draft.text_artifact) == parent_bytes
     assert harness.artifacts.read_verified(child.text_artifact) == repaired.encode("utf-8")
+
+
+def test_local_repair_payload_requires_every_blocking_issue_to_be_addressed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(
+        tmp_path,
+        _multi_local_review("石门向里退开", "旧刻痕"),
+        monkeypatch,
+    )
+    report = asyncio.run(harness.service.review(harness.review_input, _request("multi-review")))
+    assert report.repair_scope is not None
+    assert len(report.repair_scope.allowed_spans) == 2
+
+    original = harness.artifacts.read_verified(harness.review_input.draft.text_artifact).decode()
+    payload = editorial_service_module._repair_payload(
+        harness.review_input,
+        report,
+        original,
+        editorial_service_module._draft_blocks(
+            harness.review_input.draft.draft_id,
+            original,
+        ),
+    )
+
+    instruction = payload["host_repair_completeness"]
+    assert isinstance(instruction, str)
+    assert "every blocking issue" in instruction
+    assert "Do not stop after repairing the first issue" in instruction
+    boundary_instruction = payload["host_repair_boundary_semantics"]
+    assert isinstance(boundary_instruction, str)
+    assert "replacement boundary, not a fixed-length quota" in boundary_instruction
+    assert "may be longer or shorter" in boundary_instruction
+    assert len(payload["issues"]) == 2
 
 
 def test_repaired_candidate_review_failures_are_typed(
@@ -411,6 +582,21 @@ def test_major_rewrite_returns_writer_directive_and_does_not_repair(
 
     with pytest.raises(EditorialRepairError, match="LOCAL_REPAIR"):
         asyncio.run(harness.service.repair(harness.review_input, report, _request("not-local")))
+
+
+def test_major_rewrite_keeps_structural_issue_when_evidence_quote_is_not_contiguous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = json.loads(_major_review())
+    payload["issues"][0]["evidence_quote"] = "not a contiguous draft quote …"
+    harness = _harness(tmp_path, json.dumps(payload, ensure_ascii=False), monkeypatch)
+
+    report = asyncio.run(harness.service.review(harness.review_input, _request("major-quote")))
+
+    assert report.verdict is EditorialVerdict.MAJOR_REWRITE
+    assert report.issues[0].location is None
+    assert report.rewrite_directive is not None
 
 
 def test_invalid_review_route_fails_without_pseudo_report(
@@ -635,9 +821,9 @@ def test_editorial_value_contract_negative_edges() -> None:
             "verdict": EditorialVerdict.MAJOR_REWRITE,
             "issues": (
                 EditorialIssueDraft(
-                    issue_type=EditorialIssueType.STRUCTURE,
-                    severity=EditorialSeverity.CRITICAL,
-                    description="critical",
+                    issue_type=EditorialIssueType.STYLE,
+                    severity=EditorialSeverity.WARNING,
+                    description="nonblocking",
                 ),
             ),
         },
@@ -715,11 +901,16 @@ def test_editorial_review_input_and_report_lineage_edges(
     )
     for updates in (
         {"planner_replan_required": True},
-        {"unresolved_needs": ("missing context",)},
         {"issues": (blocking_issue,)},
     ):
         with pytest.raises(ValueError):
             _validated_replace(pass_report, **updates)
+    marked_report = _validated_replace(
+        pass_report,
+        unresolved_needs=("missing but related context",),
+    )
+    assert marked_report.verdict is EditorialVerdict.PASS
+    assert marked_report.unresolved_needs == ("missing but related context",)
     with pytest.raises(ValueError, match="Editor"):
         _validated_replace(
             pass_report,
@@ -996,20 +1187,6 @@ def test_editorial_context_summary_supports_legacy_section_shapes() -> None:
                 "issues": [
                     {
                         "issue_type": "style",
-                        "severity": "warning",
-                        "description": "no blocking issue",
-                        "repairable": False,
-                    }
-                ],
-                "repair_instructions": ["repair"],
-            }
-        ),
-        json.dumps(
-            {
-                "verdict": "LOCAL_REPAIR",
-                "issues": [
-                    {
-                        "issue_type": "style",
                         "severity": "error",
                         "description": "hint without quote",
                         "block_hint": "block.wrong",
@@ -1099,6 +1276,50 @@ def test_editor_service_read_repair_and_lineage_failures_are_typed(
     monkeypatch.setattr(editorial_service_module, "RepairedDraft", reject_lineage)
     with pytest.raises(EditorialRepairError, match="lineage is invalid"):
         asyncio.run(harness.service.repair(harness.review_input, report, _request("bad-lineage")))
+
+
+def test_editor_local_repair_retries_an_unchanged_candidate_with_fresh_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quote = "石门向里退开"
+    harness = _harness(tmp_path, _local_review(quote), monkeypatch)
+    report = asyncio.run(harness.service.review(harness.review_input, _request("repair-report")))
+    original = harness.artifacts.read_verified(harness.review_input.draft.text_artifact).decode()
+    repaired_text = original.replace(quote, "石门向外退开", 1)
+    responses = iter(
+        (
+            EditorRepairPayload(repaired_text=original).model_dump_json(),
+            EditorRepairPayload(repaired_text=repaired_text).model_dump_json(),
+        )
+    )
+
+    async def generate(request: ModelRequest):
+        harness.endpoint.response_text = next(responses)
+        return await FakeModelEndpoint.generate(harness.endpoint, request)
+
+    monkeypatch.setattr(harness.endpoint, "generate", generate)
+    harness.endpoint.requests.clear()
+    repaired = asyncio.run(
+        harness.service.repair(
+            harness.review_input,
+            report,
+            _request("repair-no-change-retry"),
+        )
+    )
+
+    assert harness.artifacts.read_verified(repaired.text_artifact).decode() == repaired_text
+    assert len(harness.endpoint.requests) == 2
+    assert harness.endpoint.requests[0].request_id.root == ("request.editor.repair-no-change-retry")
+    assert harness.endpoint.requests[1].request_id.root == (
+        "request.editor.repair-no-change-retry.no-change-retry1"
+    )
+    assert harness.endpoint.requests[0].repetition_penalty is None
+    assert harness.endpoint.requests[1].repetition_penalty == pytest.approx(1.10)
+    assert "host_no_change_retry" not in harness.endpoint.requests[0].prompt
+    assert "host_no_change_retry" in harness.endpoint.requests[1].prompt
+    assert "changed inside the frozen allowed spans" in harness.endpoint.requests[1].prompt
+    assert "do not return the original" in harness.endpoint.requests[1].prompt
 
 
 def test_changed_spans_merges_adjacent_differences(monkeypatch: pytest.MonkeyPatch) -> None:

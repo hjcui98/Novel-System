@@ -7,14 +7,17 @@ from typing import Any
 
 import pytest
 
-from novel_agent.domain.ids import CommitId, StableId
+from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory_write import (
+    CandidateProducerKind,
     CanonicalWriteBasis,
     MemoryWriteState,
     MemoryWriteWorkflowPhase,
+    MemoryWriteWorkflowResult,
     MemoryWriteWorkflowStatus,
     ProjectionReadinessStatus,
 )
+from novel_agent.domain.runtime import RunEventType
 from novel_agent.ports.memory_write import (
     MemoryWriteCommitResult,
     MemoryWriteCommitStatus,
@@ -55,6 +58,71 @@ def _workflow_and_data() -> tuple[LocalMemoryWriteWorkflow, _WorkflowData]:
         information_boundary=_BoundarySpy(),
     )
     return workflow, _ready_data(artifacts=artifacts, lineage=lineage)
+
+
+def test_long_request_event_identity_retains_run_scope() -> None:
+    request_id = "r" * 117
+    first = LocalMemoryWriteWorkflow._event_identity(
+        "event",
+        request_id,
+        "task_started",
+        1,
+        scope_ids=("run.u8b.event-one", "task.u8b.event-one"),
+    )
+    second = LocalMemoryWriteWorkflow._event_identity(
+        "event",
+        request_id,
+        "task_started",
+        1,
+        scope_ids=("run.u8b.event-two", "task.u8b.event-two"),
+    )
+
+    assert first.root == "event.run.u8b.event-one.task_started.1"
+    assert second.root == "event.run.u8b.event-two.task_started.1"
+    assert first != second
+
+
+def test_event_identity_fails_closed_when_all_scopes_are_max_length() -> None:
+    maximum = "i" * 128
+
+    with pytest.raises(MemoryWriteWorkflowError, match="no bounded"):
+        LocalMemoryWriteWorkflow._event_identity(
+            "event",
+            maximum,
+            "task_started",
+            1,
+            scope_ids=(maximum, maximum),
+        )
+
+
+def test_workflow_exposes_terminal_ref_when_event_identity_is_unadmissible() -> None:
+    workflow, data = _workflow_and_data()
+    maximum = "i" * 128
+    request = data.request.model_copy(
+        update={
+            "request_id": StableId(maximum),
+            "task_id": TaskId(maximum),
+            "run_id": RunId(maximum),
+        }
+    )
+
+    result = asyncio.run(workflow.execute(request))
+
+    assert result.status is MemoryWriteWorkflowStatus.FATAL
+    assert result.terminal_result_ref is not None
+    assert result.checkpoint_ref is None
+    assert any("no bounded" in code for code in result.terminal_codes)
+
+
+def test_long_run_event_trace_reuses_existing_run_identity() -> None:
+    workflow, data = _workflow_and_data()
+    data.request = data.request.model_copy(update={"run_id": RunId("r" * 128)})
+
+    workflow._event(data, RunEventType.CHECKPOINT_CREATED)
+
+    event = workflow._events.events[0]
+    assert event.trace_id == data.request.run_id.root
+    assert len(event.trace_id) <= 128
 
 
 def test_all_workflow_terminal_statuses_have_a_real_constructor_path() -> None:
@@ -152,6 +220,151 @@ def test_unexpected_step_exception_is_captured_precommit() -> None:
     assert result.status is MemoryWriteWorkflowStatus.FATAL
     assert result.canonical_commit_accepted is False
     assert "UNEXPECTED_WORKFLOW_FAILURE" in result.terminal_codes
+    assert result.checkpoint_ref is not None
+    checkpoint = workflow._checkpoint.load(result.checkpoint_ref)
+    assert checkpoint.resume_state is MemoryWriteState.STOP
+    assert checkpoint.terminal_result_ref is not None
+    terminal = MemoryWriteWorkflowResult.model_validate_json(
+        workflow._artifacts.read_verified(checkpoint.terminal_result_ref),
+        strict=True,
+    )
+    assert terminal.request_id == result.request_id
+    assert terminal.terminal_codes == result.terminal_codes
+    assert result.terminal_result_ref == checkpoint.terminal_result_ref
+
+
+def test_terminal_ref_survives_checkpoint_persistence_failure() -> None:
+    workflow, _ = _workflow_and_data()
+
+    class FailingCheckpointRepository:
+        def save(self, _checkpoint: object) -> Any:
+            raise RuntimeError("checkpoint store unavailable")
+
+        def load(self, _checkpoint_ref: object) -> Any:  # pragma: no cover - not reached
+            raise AssertionError("load must not be called")
+
+    workflow._checkpoint = FailingCheckpointRepository()
+
+    async def explode(_: _WorkflowData) -> None:
+        raise LookupError("unexpected")
+
+    workflow_with_fault: Any = workflow
+    workflow_with_fault._step = explode
+    result = asyncio.run(workflow.execute(_request()))
+
+    assert result.status is MemoryWriteWorkflowStatus.FATAL
+    assert result.checkpoint_ref is None
+    assert result.terminal_result_ref is not None
+    assert "CHECKPOINT_PERSIST_FAILED" in result.terminal_codes
+    terminal = MemoryWriteWorkflowResult.model_validate_json(
+        workflow._artifacts.read_verified(result.terminal_result_ref),
+        strict=True,
+    )
+    assert terminal.terminal_codes == result.terminal_codes
+
+
+def test_checkpoint_ref_is_cleared_when_checkpoint_event_persistence_fails() -> None:
+    workflow, _ = _workflow_and_data()
+
+    class FailingEventSink:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def append(self, _event: object) -> object:
+            raise RuntimeError("event sink unavailable")
+
+    workflow._events = FailingEventSink()
+
+    result = asyncio.run(workflow.execute(_request()))
+
+    assert result.status is MemoryWriteWorkflowStatus.FATAL
+    assert result.checkpoint_ref is None
+    assert result.terminal_result_ref is not None
+    assert "CHECKPOINT_PERSIST_FAILED" in result.terminal_codes
+    terminal = MemoryWriteWorkflowResult.model_validate_json(
+        workflow._artifacts.read_verified(result.terminal_result_ref),
+        strict=True,
+    )
+    assert terminal.checkpoint_ref is None
+    assert terminal.terminal_codes == result.terminal_codes
+
+
+def test_checkpoint_identity_reuses_short_semantic_maintenance_request_id() -> None:
+    workflow, data = _workflow_and_data()
+    data.request = data.request.model_copy(
+        update={"request_id": StableId("memory-write.memory-gap." + "a" * 32)}
+    )
+
+    ref = workflow._save_checkpoint(
+        data,
+        phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+        resume_state=MemoryWriteState.MATERIALIZE,
+    )
+
+    checkpoint = workflow._checkpoint.load(ref)
+    assert len(checkpoint.checkpoint_id.root) <= 128
+    assert checkpoint.checkpoint_id.root.startswith("checkpoint.memory-write.memory-gap.")
+    assert checkpoint.run_id == data.request.run_id
+
+
+def test_long_request_id_uses_existing_task_scope_for_checkpoint_and_candidate() -> None:
+    workflow, data = _workflow_and_data()
+    data.request = data.request.model_copy(update={"request_id": StableId("r" * 128)})
+
+    checkpoint_ref = workflow._save_checkpoint(
+        data,
+        phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+        resume_state=MemoryWriteState.MATERIALIZE,
+    )
+    checkpoint = workflow._checkpoint.load(checkpoint_ref)
+    assert checkpoint.checkpoint_id.root == "checkpoint.task.stage2w.contract.1"
+
+    workflow_with_any: Any = workflow
+    workflow_with_any._persist_candidate = lambda _data, candidate: candidate
+    candidate = workflow._new_candidate(
+        data,
+        data.bundle.observed_changes,  # type: ignore[union-attr]
+        CandidateProducerKind.EMPTY_DELTA,
+    )
+    assert candidate.candidate_id.root.startswith("candidate.task.stage2w.contract.1.")
+    assert len(candidate.candidate_id.root) <= 128
+
+
+def test_proposal_and_event_identities_are_readable_and_replay_stable() -> None:
+    request_id = StableId("memory-write.memory-gap." + "a" * 32)
+
+    first_attempt = LocalMemoryWriteWorkflow._proposal_attempt_id(request_id, 1)
+    second_attempt = LocalMemoryWriteWorkflow._proposal_attempt_id(request_id, 2)
+    first_model_request = LocalMemoryWriteWorkflow._proposal_model_request_id(request_id, 1)
+
+    assert first_attempt.root == "proposal-attempt.memory-write.memory-gap." + "a" * 32 + ".1"
+    assert second_attempt != first_attempt
+    assert first_model_request.root.startswith("proposal-model-request.memory-write.memory-gap.")
+    assert all(
+        len(identity.root) <= 128
+        for identity in (first_attempt, second_attempt, first_model_request)
+    )
+    assert "sha256" not in first_attempt.root
+
+
+def test_long_request_id_uses_existing_task_scope_for_proposal_identities() -> None:
+    request_id = StableId("r" * 128)
+    task_id = StableId("task.stage2w.proposal")
+    run_id = StableId("run.stage2w.proposal")
+
+    attempt = LocalMemoryWriteWorkflow._proposal_attempt_id(
+        request_id,
+        1,
+        fallback_ids=(task_id, run_id),
+    )
+    model_request = LocalMemoryWriteWorkflow._proposal_model_request_id(
+        request_id,
+        1,
+        fallback_ids=(task_id, run_id),
+    )
+
+    assert attempt.root == "proposal-attempt.task.stage2w.proposal.1"
+    assert model_request.root == "proposal-model-request.task.stage2w.proposal.1.schema-1"
 
 
 def test_invalid_validation_adapter_result_is_a_programming_error() -> None:

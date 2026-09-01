@@ -364,7 +364,7 @@ def test_model_driven_runner_requires_planner_and_controller_calls(
         base_commit=COMMIT,
         snapshot_id=SNAPSHOT,
         planning_context=context,
-        frozen_planner_artifact=frozen_artifact,
+        frozen_planner_artifact=None,
         frozen_needs=(),
         backend_bundle=_backend_bundle(world, text, plan, COMMIT, SNAPSHOT),
         fingerprint=content_id({"runner": "model-driven-test"}),
@@ -452,6 +452,70 @@ def test_model_driven_runner_continues_with_planner_fallback(
     assert result.needs
     assert result.assembly.package.lineage.planner_fallback_used is True
     assert result.assembly.package.semantic_status == "INCOMPLETE"
+
+
+def test_model_fallback_rebinds_world_basis_before_route_compilation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = make_synthetic_bundle()
+    stale_commit = CommitId("sha256:" + "c" * 64)
+    stale_world = bundle.world_roots[0].model_copy(update={"source_commit": stale_commit})
+    text = bundle.text_roots[0]
+    plan = bundle.plan_roots[0]
+    task, context = _task_and_context()
+    fallback_artifact = _planner_artifact(task, context).model_copy(
+        update={
+            "fallback_status": PlannerFallbackStatus.PLANNER_FALLBACK,
+            "fallback_reason": "empty_drafts",
+            "attempts": (
+                PlannerInvocationAttempt(
+                    request_id=StableId("request.runner.stale-world-planner"),
+                    status=PlannerInvocationAttemptStatus.SUCCEEDED,
+                    raw_response='{"drafts": []}',
+                    raw_response_hash=content_id({"raw": "stale-world-planner"}),
+                    input_tokens=1,
+                    output_tokens=1,
+                ),
+            ),
+        }
+    )
+
+    def planner_fallback(
+        self: TaskPlanConditionedNeedGenerator, *_args: Any, **_kwargs: Any
+    ) -> None:
+        self._last_fallback_artifact = fallback_artifact
+        return None
+
+    monkeypatch.setattr(
+        TaskPlanConditionedNeedGenerator,
+        "_run_planner_chain",
+        planner_fallback,
+    )
+    runner = EvidenceFirstCheckpointRunner(
+        planner_gateway=object(),  # type: ignore[arg-type]
+        planner_model_decisions=True,
+        controller_model_decisions=False,
+        semantic_judge_model_decisions=False,
+    )
+    result = runner.run(
+        case_id=ProjectId("ztj_volume01_preview"),
+        task=task,
+        world=stale_world,
+        text=text,
+        plan=plan,
+        base_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        planning_context=context,
+        frozen_planner_artifact=None,
+        frozen_needs=(),
+        backend_bundle=_backend_bundle(stale_world, text, plan, COMMIT, SNAPSHOT),
+        fingerprint=content_id({"runner": "stale-world-model-fallback"}),
+        run_id=StableId("request.runner.stale-world-model-fallback"),
+    )
+
+    assert result.planner_fallback_used is True
+    assert result.needs
+    assert all(need.base_commit == COMMIT for need in result.needs)
 
 
 def test_runner_fallback_case_reuses_frozen_needs() -> None:
@@ -1323,6 +1387,7 @@ def test_model_driven_premature_stop_repairs_and_executes_real_retrieval(
         frozen_artifact,
     )
     assert replayed is not None
+    assert replayed.planner_artifact is not None
     assert any(need.entity_ids for need in replayed.needs)
     planner_attempt = PlannerInvocationAttempt(
         request_id=StableId("request.runner.stop-planner"),

@@ -381,6 +381,17 @@ def test_commit_task_from_acceptance_rejects_unsettled_and_mismatched_receipts()
     commit_task = commit_task_from_acceptance(settled, receipt)
     assert commit_task.kind is TaskKind.PLAN_COMMIT
     assert commit_task.failure_budget == 7
+    long_commit_task = commit_task_from_acceptance(
+        settled.model_copy(
+            update={
+                "task_id": TaskId("t" * 128),
+                "run_id": RunId("r" * 128),
+            }
+        ),
+        receipt,
+    )
+    assert long_commit_task.task_id.root == f"commit.{candidate.candidate_hash}"
+    assert len(long_commit_task.task_id.root) <= 128
     with pytest.raises(ValueError, match="only an accepted, settled"):
         commit_task_from_acceptance(
             _task(task_id=TaskId("task.accept.commit"), kind=TaskKind.PLAN_ACCEPTANCE),

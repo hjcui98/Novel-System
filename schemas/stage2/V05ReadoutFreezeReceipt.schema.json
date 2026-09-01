@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable zero-call receipt binding the immutable campaign to U2 facts.",
+  "properties": {
+    "attestation_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "effective_budget_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "frozen_before_run": {
+      "const": true,
+      "default": true,
+      "title": "Frozen Before Run",
+      "type": "boolean"
+    },
+    "ledger_after_request_count": {
+      "minimum": 0,
+      "title": "Ledger After Request Count",
+      "type": "integer"
+    },
+    "ledger_before_request_count": {
+      "minimum": 0,
+      "title": "Ledger Before Request Count",
+      "type": "integer"
+    },
+    "ledger_identity": {
+      "minLength": 1,
+      "title": "Ledger Identity",
+      "type": "string"
+    },
+    "manifest_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "receipt_version": {
+      "const": "v05_readout_freeze_receipt.v1",
+      "default": "v05_readout_freeze_receipt.v1",
+      "title": "Receipt Version",
+      "type": "string"
+    },
+    "zero_model_call": {
+      "const": true,
+      "default": true,
+      "title": "Zero Model Call",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "campaign_id",
+    "ledger_identity",
+    "ledger_before_request_count",
+    "ledger_after_request_count",
+    "manifest_ref",
+    "attestation_ref",
+    "effective_budget_ref"
+  ],
+  "title": "V05ReadoutFreezeReceipt",
+  "type": "object"
+}

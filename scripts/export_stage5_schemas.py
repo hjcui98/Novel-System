@@ -6,11 +6,35 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_agent.domain import creative_runtime, runtime, stage5_evaluation, stage5_manifest
+from novel_agent.domain import (
+    creative_runtime,
+    evolution,
+    production_assembly,
+    recovery_reasoning,
+    runtime,
+    stage5_evaluation,
+    stage5_manifest,
+    u6b_production,
+    u6c_fault_matrix,
+    u6d_two_project,
+    u6e_endurance,
+)
 from novel_agent.domain.base import DomainModel
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage5"
-DOMAIN_MODULES = (creative_runtime, runtime, stage5_evaluation, stage5_manifest)
+DOMAIN_MODULES = (
+    creative_runtime,
+    evolution,
+    production_assembly,
+    recovery_reasoning,
+    runtime,
+    stage5_evaluation,
+    stage5_manifest,
+    u6b_production,
+    u6c_fault_matrix,
+    u6d_two_project,
+    u6e_endurance,
+)
 MODELS = tuple(
     model
     for module in DOMAIN_MODULES

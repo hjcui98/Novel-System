@@ -13,6 +13,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import CommitId, StableId
 from novel_agent.domain.text import EvidenceRef, TextBlock, TextSpanRef
 from novel_agent.domain.writer_context import (
@@ -37,6 +38,48 @@ class ResolvedSlice:
 
 class EvidenceSliceResolutionError(ValueError):
     """A selected evidence reference cannot be resolved to an exact slice."""
+
+
+@dataclass(frozen=True, slots=True)
+class LiveEvidenceBasis:
+    """Current request identity used as live equality keys.
+
+    Callers: ``MemoryGateway.resolve`` output assembly, ``PlannerSourceExpander``
+    P1, and ``EvidenceFirstWriterContextAssembler`` 回源.  Historical
+    ``EvidenceRef.resolved_at_commit`` and evidence ``root_hash`` stay in
+    provenance and are not compared to the current Project Commit or whole-book
+    TextRoot hash.
+    """
+
+    request_commit: CommitId
+    request_snapshot_id: StableId
+    checkpoint_chapter: int
+
+
+@dataclass(frozen=True, slots=True)
+class LiveEvidenceDecision:
+    live: bool
+    reason: str
+
+
+def text_root_indexes(
+    text_root: TextRootDocument,
+) -> tuple[dict[StableId, TextBlock], dict[StableId, int]]:
+    """Locate blocks and chapter indexes on the current append-only TextRoot."""
+
+    blocks: dict[StableId, TextBlock] = {}
+    chapter_indexes: dict[StableId, int] = {}
+    if text_root.prelude is not None:
+        chapter_indexes[text_root.prelude.prelude_id] = 0
+        for scene in text_root.prelude.scenes:
+            for block in scene.blocks:
+                blocks[block.block_id] = block
+    for chapter in text_root.chapters:
+        chapter_indexes[chapter.chapter_id] = chapter.chapter_index
+        for scene in chapter.scenes:
+            for block in scene.blocks:
+                blocks[block.block_id] = block
+    return blocks, chapter_indexes
 
 
 class EvidenceSliceResolver:
@@ -183,6 +226,92 @@ class EvidenceSliceResolver:
                 source_role=source_role,
             ),
         )
+
+    def live_decision(
+        self,
+        *,
+        basis: LiveEvidenceBasis,
+        unit_source_commit: CommitId,
+        unit_snapshot_id: StableId,
+        evidence: EvidenceRef | None = None,
+        block: TextBlock | None = None,
+        chapter_index: int | None = None,
+        slice_: EvidenceSlice | None = None,
+    ) -> LiveEvidenceDecision:
+        """Decide current readability without using historical commit/root keys."""
+
+        if unit_source_commit != basis.request_commit:
+            return LiveEvidenceDecision(False, "source_commit_mismatch")
+        if unit_snapshot_id != basis.request_snapshot_id:
+            return LiveEvidenceDecision(False, "snapshot_mismatch")
+        if slice_ is not None:
+            if slice_.source_commit != basis.request_commit:
+                return LiveEvidenceDecision(False, "source_commit_mismatch")
+            if slice_.snapshot_id != basis.request_snapshot_id:
+                return LiveEvidenceDecision(False, "snapshot_mismatch")
+            if block is None or slice_.parent_block_id != block.block_id:
+                return LiveEvidenceDecision(False, "missing_block")
+            if chapter_index is None or chapter_index > basis.checkpoint_chapter:
+                return LiveEvidenceDecision(False, "cutoff")
+            if (
+                slice_.end > len(block.text)
+                or slice_.start < 0
+                or slice_.chapter_id != block.chapter_id
+                or slice_.object_hash != sha256_id(block.text.encode("utf-8"))
+                or block.text[slice_.start : slice_.end] != slice_.text
+            ):
+                return LiveEvidenceDecision(False, "hash_mismatch")
+            if quote_hash(slice_.text) != slice_.quote_hash:
+                return LiveEvidenceDecision(False, "quote_mismatch")
+            return LiveEvidenceDecision(True, "live")
+        if evidence is None or evidence.span is None:
+            return LiveEvidenceDecision(False, "no_span")
+        if block is None or evidence.span.block_id != block.block_id:
+            return LiveEvidenceDecision(False, "missing_block")
+        if chapter_index is None or chapter_index > basis.checkpoint_chapter:
+            return LiveEvidenceDecision(False, "cutoff")
+        try:
+            self._verify_evidence(evidence, block)
+        except EvidenceSliceResolutionError as error:
+            message = str(error)
+            if "object hash" in message:
+                return LiveEvidenceDecision(False, "hash_mismatch")
+            if "quote hash" in message:
+                return LiveEvidenceDecision(False, "quote_mismatch")
+            return LiveEvidenceDecision(False, "span_mismatch")
+        return LiveEvidenceDecision(True, "live")
+
+    def resolve_live_evidence(
+        self,
+        *,
+        basis: LiveEvidenceBasis,
+        unit_source_commit: CommitId,
+        unit_snapshot_id: StableId,
+        evidence: EvidenceRef,
+        block: TextBlock | None,
+        chapter_index: int | None,
+        access_scope: str,
+    ) -> tuple[EvidenceSlice, ...] | None:
+        decision = self.live_decision(
+            basis=basis,
+            unit_source_commit=unit_source_commit,
+            unit_snapshot_id=unit_snapshot_id,
+            evidence=evidence,
+            block=block,
+            chapter_index=chapter_index,
+        )
+        if not decision.live or block is None:
+            return None
+        try:
+            return self.resolve_evidence(
+                evidence,
+                block,
+                source_commit=basis.request_commit,
+                snapshot_id=basis.request_snapshot_id,
+                access_scope=access_scope,
+            )
+        except EvidenceSliceResolutionError:
+            return None
 
     @staticmethod
     def _verify_evidence(evidence: EvidenceRef, block: TextBlock) -> None:
@@ -355,5 +484,8 @@ __all__ = [
     "DEFAULT_SENTENCE_WINDOW_CHAR_LIMIT",
     "EvidenceSliceResolutionError",
     "EvidenceSliceResolver",
+    "LiveEvidenceBasis",
+    "LiveEvidenceDecision",
     "ResolvedSlice",
+    "text_root_indexes",
 ]

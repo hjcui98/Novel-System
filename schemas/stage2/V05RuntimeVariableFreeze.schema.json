@@ -1,0 +1,183 @@
+{
+  "$defs": {
+    "BudgetResolutionProfile": {
+      "enum": [
+        "canary",
+        "strict"
+      ],
+      "title": "BudgetResolutionProfile",
+      "type": "string"
+    },
+    "BudgetSource": {
+      "enum": [
+        "explicit_request",
+        "invocation_budget",
+        "endpoint_default",
+        "model_max_auto"
+      ],
+      "title": "BudgetSource",
+      "type": "string"
+    },
+    "EffectiveBudgetResult": {
+      "additionalProperties": false,
+      "description": "One resolved output budget shared by API payload, admission, and ledger.",
+      "properties": {
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "body_output_budget": {
+          "minimum": 1,
+          "title": "Body Output Budget",
+          "type": "integer"
+        },
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "estimated_input_tokens": {
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_budget": {
+          "minimum": 0,
+          "title": "Thinking Budget",
+          "type": "integer"
+        },
+        "total_output_budget": {
+          "minimum": 1,
+          "title": "Total Output Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "budget_source",
+        "context_limit",
+        "estimated_input_tokens",
+        "body_output_budget",
+        "thinking_budget",
+        "total_output_budget",
+        "safety_allowance_tokens",
+        "reserved_sequence_tokens",
+        "available_input_tokens"
+      ],
+      "title": "EffectiveBudgetResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "U4-L0 variables held constant while a readout campaign runs.",
+  "properties": {
+    "body_output_tokens": {
+      "minimum": 1,
+      "title": "Body Output Tokens",
+      "type": "integer"
+    },
+    "budget_profile": {
+      "$ref": "#/$defs/BudgetResolutionProfile",
+      "default": "canary"
+    },
+    "budget_source": {
+      "$ref": "#/$defs/BudgetSource"
+    },
+    "context_limit": {
+      "minimum": 1,
+      "title": "Context Limit",
+      "type": "integer"
+    },
+    "controller_level": {
+      "enum": [
+        "C0",
+        "C1+C2"
+      ],
+      "title": "Controller Level",
+      "type": "string"
+    },
+    "effective_budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EffectiveBudgetResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "planner_level": {
+      "enum": [
+        "P0",
+        "P0+P1"
+      ],
+      "title": "Planner Level",
+      "type": "string"
+    },
+    "provider_reasoning_included_in_completion_tokens": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Reasoning Included In Completion Tokens"
+    },
+    "provider_total_output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Total Output Tokens"
+    },
+    "reasoning_reserve_tokens": {
+      "minimum": 0,
+      "title": "Reasoning Reserve Tokens",
+      "type": "integer"
+    },
+    "safety_allowance_tokens": {
+      "minimum": 0,
+      "title": "Safety Allowance Tokens",
+      "type": "integer"
+    },
+    "thinking_enabled": {
+      "title": "Thinking Enabled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "budget_source",
+    "context_limit",
+    "body_output_tokens",
+    "reasoning_reserve_tokens",
+    "safety_allowance_tokens",
+    "controller_level",
+    "planner_level",
+    "thinking_enabled"
+  ],
+  "title": "V05RuntimeVariableFreeze",
+  "type": "object"
+}

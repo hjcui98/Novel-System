@@ -199,6 +199,47 @@ def test_recovery_selects_old_safe_checkpoint_and_reconciles_effects(
     assert unresolved.reconcile_uncertain_effects(task.task_id) == ()
 
 
+def test_recovery_reconciles_max_length_effect_identity(
+    operations_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, base = operations_kernel
+    task = commands.create_run_and_initial_task(_request("run.recovery-long-effect", base))
+    _, fence = commands.claim(task.task_id, worker_id="worker.dead")
+    commands.mark_started(fence)
+    requested = EffectReceipt(
+        effect_identity=StableId("e" * 128),
+        external_system="provider",
+        request_identity=StableId("request.recovery-long-effect"),
+        status=EffectStatus.REQUESTED,
+        attempt_no=1,
+    )
+    commands.record_effect_requested(fence, requested)
+    commands.record_effect_terminal(
+        fence,
+        requested.model_copy(update={"status": EffectStatus.UNCERTAIN}),
+    )
+    recovery = RuntimeRecoveryService(
+        factory,
+        commands,
+        RunCheckpointRepository(factory),
+        artifacts,
+        commits,
+        cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
+    )
+
+    resolved = recovery.reconcile_uncertain_effects(task.task_id)
+
+    assert resolved[0].status is EffectStatus.COMPLETED
+    events = RunEventLogRepository(factory).replay(task.run_id)
+    assert all(len(event.idempotency_identity.root) <= 128 for event in events)
+
+
 def test_query_maintenance_and_supervisor_are_read_only_and_no_model(
     operations_kernel: tuple[
         sessionmaker[Session],
@@ -214,6 +255,8 @@ def test_query_maintenance_and_supervisor_are_read_only_and_no_model(
     assert query.next_ready() == task.task_id
     assert query.next_ready(project_id=task.project_id) == task.task_id
     assert query.next_ready(project_id=ProjectId("project.other")) is None
+    with pytest.raises(ValueError, match="ready batch limit must be positive"):
+        query.ready_batch(limit=0)
     assert query.list_run(task.run_id) == (task,)
 
     maintenance = RuntimeMaintenanceService(factory)
@@ -252,6 +295,31 @@ def test_query_maintenance_and_supervisor_are_read_only_and_no_model(
     assert audit.item_count == 1
     findings = RuntimeSupervisor(factory, stuck_after=timedelta(minutes=1)).inspect()
     assert len(findings) == 1 and findings[0].requires_operator
+
+
+def test_supervisor_finding_preserves_max_length_task_identity(
+    operations_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _, _, commands, base = operations_kernel
+    task = commands.create_run_and_initial_task(_request("t" * 128, base))
+    with factory() as session, session.begin():
+        row = session.get(RuntimeTaskProjectionRow, task.task_id.root)
+        assert row is not None
+        row.status = TaskStatus.WAITING_RETRY.value
+        row.updated_at = NOW - timedelta(days=1)
+
+    findings = RuntimeSupervisor(factory, stuck_after=timedelta(minutes=1)).inspect()
+
+    assert len(findings) == 1
+    assert findings[0].task_id == task.task_id
+    assert findings[0].finding_id.root == task.task_id.root
+    assert len(findings[0].finding_id.root) == 128
 
 
 def test_claim_rechecks_current_permission_hash(

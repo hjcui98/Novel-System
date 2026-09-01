@@ -10,7 +10,14 @@ from pydantic import Field, StringConstraints, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import CommitId, ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.ids import (
+    CommitId,
+    ProjectId,
+    RunId,
+    StableId,
+    TaskId,
+    bounded_stable_id,
+)
 from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
 
 Hash = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -31,6 +38,7 @@ class PlanningTerminalStatus(StrEnum):
     PLAN_CANDIDATE_READY = "PLAN_CANDIDATE_READY"
     YIELDED = "YIELDED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    WAITING_INPUT = "WAITING_INPUT"
     SUSPENDED = "SUSPENDED"
     BLOCKED = "BLOCKED"
 
@@ -91,6 +99,7 @@ class CreativeRunRequest(DomainModel):
     basis_snapshot: StableId | None = None
     policy: CreativeRunPolicy
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
+    continuation_artifact_refs: tuple[ArtifactRef, ...] = ()
     current_chapter: int = Field(default=0, ge=0, le=9999)
     target_chapters: int = Field(default=1, ge=1, le=10000)
 
@@ -146,6 +155,7 @@ class PlanningLoopRequest(DomainModel):
     task_id: TaskId
     project_id: ProjectId
     basis_commit: CommitId
+    attempt_id: StableId | None = None
     basis_snapshot: StableId | None = None
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
     continuation_artifact_refs: tuple[ArtifactRef, ...] = ()
@@ -379,7 +389,13 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
         else TaskKind.DRAFT_COMMIT
     )
     return TaskRecord(
-        task_id=TaskId(f"{previous.task_id.root}.commit"),
+        task_id=TaskId(
+            bounded_stable_id(
+                f"{previous.task_id.root}.commit",
+                f"commit.{receipt.candidate.candidate_hash}",
+                f"commit.{previous.run_id.root}",
+            ).root
+        ),
         run_id=previous.run_id,
         project_id=previous.project_id,
         kind=kind,

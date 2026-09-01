@@ -227,7 +227,7 @@ def test_postgres_migration_and_durable_workflow_resume(
                 R1WorldRepository(factory).materialize(
                     concurrent_project, accepted_commit, synthetic_world
                 )
-                == 4
+                == 6
             )
             with factory() as session:
                 assert (
@@ -236,7 +236,7 @@ def test_postgres_migration_and_durable_workflow_resume(
                         .select_from(R1RecordRow)
                         .where(R1RecordRow.source_commit == accepted_commit.root)
                     )
-                    == 4
+                    == 6
                 )
                 assert (
                     session.scalar(
@@ -522,7 +522,7 @@ def test_full_outbox_projection_crosses_minio_postgres_and_opensearch(
                         .select_from(R1RecordRow)
                         .where(R1RecordRow.source_commit == commit_id.root)
                     )
-                    == 4
+                    == 10
                 )
             backend = Stage1OpenSearchBackend(
                 search_index,

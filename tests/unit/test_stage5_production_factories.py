@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
@@ -16,15 +17,25 @@ from novel_agent.adapters.runtime.stage4_planner import (
     Stage4InvocationPolicy,
 )
 from novel_agent.domain.artifacts import (
+    ArtifactRef,
     PlanRootRef,
     ProjectProfileRootRef,
     TextRootRef,
     WorldRootRef,
 )
-from novel_agent.domain.benchmark import ChapterGoal
+from novel_agent.domain.benchmark import ChapterGoal, TextRootDocument
 from novel_agent.domain.creative_runtime import PlanningLoopRequest
 from novel_agent.domain.generation import WritingLengthPolicy, WritingLoopBudgets
-from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning import PlanningBudgets
 from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
 from novel_agent.domain.stage2 import (
@@ -38,10 +49,16 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.writer_context import ContextAssemblyStatus, WriterContextPackageV2
 from novel_agent.domain.writing_loop import WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+from novel_agent.runtime.production_components import (
+    ProductionCuratorModelRequestFactory,
+    ProductionReactiveMemoryInputsFactory,
+    ProductionWriterModelRequestFactory,
+)
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes, plan_root_content_id
 from novel_agent.services.evidence_first_writer_context_assembler import (
+    EvidenceFirstAssemblyResult,
     EvidenceFirstWriterContextAssembler,
     NeedEvidenceSelection,
     SliceSelectionTrace,
@@ -56,7 +73,7 @@ VERSION = SchemaVersion("1.0.0")
 HASH = ArtifactId("sha256:" + "1" * 64)
 
 
-def _put(artifacts: ArtifactRepository, value: object, media_type: str) -> object:
+def _put(artifacts: ArtifactRepository, value: object, media_type: str) -> ArtifactRef:
     payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
     return artifacts.put(canonical_json_bytes(payload), media_type, VERSION)
 
@@ -81,7 +98,9 @@ def _profile() -> ProjectProfileRootDocument:
     )
 
 
-def _canonical(tmp_path: Path) -> tuple[ArtifactRepository, CommitService, object, object]:
+def _canonical(
+    tmp_path: Path,
+) -> tuple[ArtifactRepository, CommitService, CommitId, TextRootDocument]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     commits = CommitService(build_session_factory(engine))
@@ -116,6 +135,76 @@ def _canonical(tmp_path: Path) -> tuple[ArtifactRepository, CommitService, objec
     return artifacts, commits, base, text
 
 
+def test_production_curator_factory_uses_settlement_transport_timeout() -> None:
+    factory = ProductionCuratorModelRequestFactory(
+        run_id=RunId("factory-curator-run"),
+        task_id=TaskId("factory-curator-task"),
+        max_output_tokens=8_000,
+        timeout_seconds=60.0,
+    )
+
+    request = factory("curator.replay.47.proposal-1", AgentMode.REPLAY)
+
+    assert request.max_output_tokens == 8_000
+    assert request.timeout_seconds == 60.0
+
+
+def test_production_curator_factory_scopes_request_identity_by_run() -> None:
+    first_factory = ProductionCuratorModelRequestFactory(
+        run_id=RunId("factory-curator-run-1"),
+        task_id=TaskId("factory-curator-task"),
+        max_output_tokens=8_000,
+        timeout_seconds=60.0,
+    )
+    second_factory = ProductionCuratorModelRequestFactory(
+        run_id=RunId("factory-curator-run-2"),
+        task_id=TaskId("factory-curator-task"),
+        max_output_tokens=8_000,
+        timeout_seconds=60.0,
+    )
+
+    first = first_factory("guardian.21", AgentMode.RISK_REVIEW)
+    second = second_factory("guardian.21", AgentMode.RISK_REVIEW)
+
+    assert first.request_id != second.request_id
+    assert "factory-curator-run-1" in first.request_id.root
+    assert "factory-curator-run-2" in second.request_id.root
+
+
+def test_production_curator_factory_fails_closed_when_run_and_task_are_maximal() -> None:
+    factory = ProductionCuratorModelRequestFactory(
+        run_id=RunId("r" * 128),
+        task_id=TaskId("t" * 128),
+        max_output_tokens=8_000,
+        timeout_seconds=60.0,
+    )
+
+    with pytest.raises(ValueError, match="stable identity is too long"):
+        factory("guardian.21", AgentMode.RISK_REVIEW)
+
+
+def _writing_policy() -> WritingRequestPolicy:
+    return WritingRequestPolicy(
+        pov="fallback POV",
+        narrative_person="fallback person",
+        length_policy=WritingLengthPolicy(
+            minimum_characters=500,
+            target_characters=1_500,
+            maximum_characters=3_000,
+        ),
+        allowed_skills=(StableId("skill.scene-composition"),),
+        budgets=WritingLoopBudgets(
+            context_sequence_limit=32_000,
+            reserved_output_tokens=4_000,
+            context_safety_allowance_tokens=1_000,
+            context_soft_limit_tokens=24_000,
+        ),
+        writer_configuration_fingerprint=HASH,
+        model_configuration_fingerprint=HASH,
+        future_isolation_configuration_fingerprint=HASH,
+    )
+
+
 def test_production_writing_factory_builds_v2_request_from_exact_commit(
     tmp_path: Path,
 ) -> None:
@@ -128,6 +217,11 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     unrelated_ref = artifacts.put(b"terminal", "application/json", VERSION)
     checkpoint_ref = artifacts.put(
         b'{"checkpoint":"latest"}', WRITING_LOOP_CHECKPOINT_MEDIA_TYPE, VERSION
+    )
+    advisory_ref = artifacts.put(
+        b"quarantine-advisory",
+        "application/vnd.novel-agent.quarantine-package+json",
+        VERSION,
     )
     task = TaskRecord(
         task_id=TaskId("task.production-writer"),
@@ -142,10 +236,13 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
         permission_hash=HASH.root,
         chapter_index=21,
         target_chapters=25,
+        current_attempt_id=StableId("attempt.production-writer"),
+        input_artifact_refs=(advisory_ref,),
         terminal_artifact_refs=(old_checkpoint_ref, unrelated_ref, checkpoint_ref),
     )
 
-    def stage2m(invocation: Stage2MWriterContextInvocation):
+    def stage2m(invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
+        assert invocation.advisory_artifact_refs == (advisory_ref,)
         _fixture_task, needs, _units, _fixture_base = writer_context_inputs()
         block = invocation.text.chapters[-1].scenes[0].blocks[0]
         need = needs[0].model_copy(
@@ -191,25 +288,7 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
         artifacts=artifacts,
         recent_prose=RecentProseAssembler(artifacts, VERSION),
         writer_context=stage2m,
-        policy=WritingRequestPolicy(
-            pov="fallback POV",
-            narrative_person="fallback person",
-            length_policy=WritingLengthPolicy(
-                minimum_characters=500,
-                target_characters=1_500,
-                maximum_characters=3_000,
-            ),
-            allowed_skills=(StableId("skill.scene-composition"),),
-            budgets=WritingLoopBudgets(
-                context_sequence_limit=32_000,
-                reserved_output_tokens=4_000,
-                context_safety_allowance_tokens=1_000,
-                context_soft_limit_tokens=24_000,
-            ),
-            writer_configuration_fingerprint=HASH,
-            model_configuration_fingerprint=HASH,
-            future_isolation_configuration_fingerprint=HASH,
-        ),
+        policy=_writing_policy(),
         schema_version=VERSION,
     )(task)
 
@@ -221,6 +300,186 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     assert request.recent_prose_context.previous_chapter.chapter_index == 20
     assert request.future_isolation_attestation.evaluator_only_source_ids == ()
     assert request.resume_checkpoint_ref == checkpoint_ref
+    assert request.attempt_id == task.current_attempt_id
+    model_request = ProductionWriterModelRequestFactory(
+        role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        max_output_tokens=8_000,
+        timeout_seconds=120.0,
+    )(request)
+    assert model_request.attempt_id == task.current_attempt_id
+    assert task.current_attempt_id is not None
+    assert task.current_attempt_id.root in model_request.request_id.root
+    retry_request = request.model_copy(
+        update={"attempt_id": StableId("attempt.production-writer.2")}
+    )
+    retry_model_request = ProductionWriterModelRequestFactory(
+        role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        max_output_tokens=8_000,
+        timeout_seconds=120.0,
+    )(retry_request)
+    assert retry_model_request.request_id != model_request.request_id
+    assert retry_model_request.attempt_id == retry_request.attempt_id
+
+    maximal_scope_request = request.model_copy(
+        update={
+            "run_id": RunId("r" * 128),
+            "task_id": TaskId("t" * 128),
+            "attempt_id": None,
+        }
+    )
+    with pytest.raises(ValueError, match="stable identity is too long"):
+        ProductionWriterModelRequestFactory(
+            role=ModelRole.IMPLEMENTATION,
+            purpose=ModelCallPurpose.DEVELOPMENT,
+            max_output_tokens=8_000,
+            timeout_seconds=120.0,
+        )(maximal_scope_request)
+
+    reactive = ProductionReactiveMemoryInputsFactory(commits, artifacts)(request)
+    assert reactive.world.source_commit == request.base_commit
+    assert reactive.resolution_template.base_commit == request.base_commit
+    assert reactive.resolution_template.snapshot_id == request.snapshot_id
+
+
+def test_production_writing_factory_preserves_semantic_gaps_and_rejects_complete_rewrite(
+    tmp_path: Path,
+) -> None:
+    artifacts, commits, base, _text = _canonical(tmp_path)
+    snapshot = StableId("snapshot.chapter.20")
+    run_id = RunId("run.production-writer-gaps")
+    task = TaskRecord(
+        task_id=TaskId("task.production-writer-gaps"),
+        run_id=run_id,
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=base,
+        basis_snapshot=snapshot,
+        policy_hash=HASH.root,
+        permission_hash=HASH.root,
+        chapter_index=21,
+        target_chapters=25,
+    )
+    unclosed = StableId("facet.unclosed.continuity")
+
+    def stage2m(invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
+        _fixture_task, needs, _units, _fixture_base = writer_context_inputs()
+        block = invocation.text.chapters[-1].scenes[0].blocks[0]
+        need = needs[0].model_copy(
+            update={
+                "run_id": run_id,
+                "task_id": invocation.task.task_id,
+                "base_commit": invocation.base_commit,
+                "horizon_target": (21, 21),
+            }
+        )
+        slice_ = EvidenceSliceResolver().resolve_block(
+            block,
+            source_commit=invocation.base_commit,
+            snapshot_id=invocation.snapshot_id,
+            access_scope=need.access_scope,
+        )[0]
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=invocation.task,
+            selections=(
+                NeedEvidenceSelection(
+                    need=need,
+                    selections=(
+                        SliceSelectionTrace(
+                            slice_id=slice_.slice_id,
+                            unit_id=StableId("unit.production-writer-gaps"),
+                            route_channel="r1_exact",
+                            fused_rank=1,
+                            selection_reason="production factory semantic-gap evidence",
+                        ),
+                    ),
+                    slices=(slice_,),
+                ),
+            ),
+            text_root=invocation.text,
+            basis_commit_id=invocation.base_commit,
+            basis_snapshot_id=invocation.snapshot_id,
+        )
+        assert result.status is ContextAssemblyStatus.READY
+        gapped = result.package.model_copy(
+            update={
+                "semantic_status": "INCOMPLETE",
+                "usable_with_gaps": True,
+                "unclosed_mandatory_need_facets": (unclosed,),
+            }
+        )
+        return result.model_copy(
+            update={
+                "package": gapped,
+                "semantic_status": "INCOMPLETE",
+                "usable_with_gaps": True,
+                "unclosed_mandatory_need_facets": (unclosed,),
+            }
+        )
+
+    factory = ProductionWritingRequestFactory(
+        commits=commits,
+        artifacts=artifacts,
+        recent_prose=RecentProseAssembler(artifacts, VERSION),
+        writer_context=stage2m,
+        policy=_writing_policy(),
+        schema_version=VERSION,
+    )
+    request = factory(task)
+    assert isinstance(request.writer_context_package, WriterContextPackageV2)
+    assert request.writer_context_package.semantic_status == "INCOMPLETE"
+    assert request.writer_context_package.usable_with_gaps is True
+    assert request.writer_context_package.unclosed_mandatory_need_facets == (unclosed,)
+
+    def not_ready(
+        invocation: Stage2MWriterContextInvocation,
+    ) -> EvidenceFirstAssemblyResult:
+        result = stage2m(invocation)
+        package = result.package.model_copy(
+            update={"assembly_status": ContextAssemblyStatus.EVIDENCE_INSUFFICIENT.value}
+        )
+        return result.model_copy(
+            update={"status": ContextAssemblyStatus.EVIDENCE_INSUFFICIENT, "package": package}
+        )
+
+    waiting = ProductionWritingRequestFactory(
+        commits=commits,
+        artifacts=artifacts,
+        recent_prose=RecentProseAssembler(artifacts, VERSION),
+        writer_context=not_ready,
+        policy=_writing_policy(),
+        schema_version=VERSION,
+    )(task)
+    assert isinstance(waiting.writer_context_package, WriterContextPackageV2)
+    assert waiting.writer_context_package.assembly_status == (
+        ContextAssemblyStatus.EVIDENCE_INSUFFICIENT.value
+    )
+
+    def complete_rewrite(
+        invocation: Stage2MWriterContextInvocation,
+    ) -> EvidenceFirstAssemblyResult:
+        result = stage2m(invocation)
+        rewritten = result.package.model_copy(
+            update={
+                "semantic_status": "COMPLETE",
+                "usable_with_gaps": True,
+                "unclosed_mandatory_need_facets": (unclosed,),
+            }
+        )
+        return result.model_copy(update={"package": rewritten, "semantic_status": "COMPLETE"})
+
+    with pytest.raises(ValueError, match="semantic incompleteness"):
+        ProductionWritingRequestFactory(
+            commits=commits,
+            artifacts=artifacts,
+            recent_prose=RecentProseAssembler(artifacts, VERSION),
+            writer_context=complete_rewrite,
+            policy=_writing_policy(),
+            schema_version=VERSION,
+        )(task)
 
 
 def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
@@ -265,6 +524,7 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
         commits=commits,
         artifacts=artifacts,
         policy=policy,
+        model_request_namespace="resume-c6ccf194e344449f",
     )
     invocation = factory(request)
 
@@ -290,4 +550,19 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
     )
     model_request = invocation.model_request("plan", AgentMode.CHAPTER_SET, 1)
     assert model_request.task_id == request.task_id
+    assert model_request.request_id.root.endswith(".resume-c6ccf194e344449f.plan.1")
     assert model_request.max_output_tokens == policy.model_max_output_tokens
+    assert model_request.enable_thinking is False
+
+    retry_request_a = request.model_copy(update={"attempt_id": StableId("attempt.factory-a")})
+    retry_request_b = request.model_copy(update={"attempt_id": StableId("attempt.factory-b")})
+    retry_factory = ProductionStage4InvocationFactory(
+        commits=commits,
+        artifacts=artifacts,
+        policy=policy,
+    )
+    retry_id_a = retry_factory(retry_request_a).model_request("plan", AgentMode.CHAPTER_SET, 1)
+    retry_id_b = retry_factory(retry_request_b).model_request("plan", AgentMode.CHAPTER_SET, 1)
+    assert retry_id_a.request_id != retry_id_b.request_id
+    assert retry_id_a.attempt_id == retry_request_a.attempt_id
+    assert retry_id_b.attempt_id == retry_request_b.attempt_id

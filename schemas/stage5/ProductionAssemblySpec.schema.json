@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "ProductionModelPolicy": {
+      "additionalProperties": false,
+      "description": "Non-secret model admission limits declared by the assembly spec.",
+      "properties": {
+        "default_output_limit": {
+          "default": 8000,
+          "minimum": 1,
+          "title": "Default Output Limit",
+          "type": "integer"
+        },
+        "reasoning_billing_mode": {
+          "default": "unknown_not_applicable",
+          "minLength": 1,
+          "title": "Reasoning Billing Mode",
+          "type": "string"
+        },
+        "require_admission": {
+          "default": true,
+          "title": "Require Admission",
+          "type": "boolean"
+        },
+        "sequence_limit": {
+          "default": 131072,
+          "minimum": 1,
+          "title": "Sequence Limit",
+          "type": "integer"
+        }
+      },
+      "title": "ProductionModelPolicy",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Repo-owned declaration. Runtime observations must not be written back.",
+  "properties": {
+    "expected_chapter_settlement": {
+      "minLength": 1,
+      "title": "Expected Chapter Settlement",
+      "type": "string"
+    },
+    "expected_draft_materializer": {
+      "minLength": 1,
+      "title": "Expected Draft Materializer",
+      "type": "string"
+    },
+    "expected_memory_maintenance": {
+      "minLength": 1,
+      "title": "Expected Memory Maintenance",
+      "type": "string"
+    },
+    "expected_migration_head": {
+      "minLength": 1,
+      "title": "Expected Migration Head",
+      "type": "string"
+    },
+    "expected_plan_materializer": {
+      "minLength": 1,
+      "title": "Expected Plan Materializer",
+      "type": "string"
+    },
+    "expected_planner_adapter": {
+      "minLength": 1,
+      "title": "Expected Planner Adapter",
+      "type": "string"
+    },
+    "expected_prompt_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Expected Prompt Ids",
+      "type": "array"
+    },
+    "expected_skill_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Expected Skill Ids",
+      "type": "array"
+    },
+    "expected_writer_adapter": {
+      "minLength": 1,
+      "title": "Expected Writer Adapter",
+      "type": "string"
+    },
+    "factory_locator": {
+      "minLength": 1,
+      "title": "Factory Locator",
+      "type": "string"
+    },
+    "model_policy": {
+      "$ref": "#/$defs/ProductionModelPolicy"
+    },
+    "reranker_required": {
+      "default": false,
+      "title": "Reranker Required",
+      "type": "boolean"
+    },
+    "runtime_contract_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "spec_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "required": [
+    "spec_version",
+    "factory_locator",
+    "runtime_contract_version",
+    "expected_migration_head",
+    "expected_planner_adapter",
+    "expected_writer_adapter",
+    "expected_plan_materializer",
+    "expected_draft_materializer",
+    "expected_chapter_settlement",
+    "expected_memory_maintenance",
+    "model_policy",
+    "expected_prompt_ids",
+    "expected_skill_ids"
+  ],
+  "title": "ProductionAssemblySpec",
+  "type": "object"
+}

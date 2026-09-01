@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -287,6 +288,37 @@ class CuratorV2EvidenceDraft(DomainModel):
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     no_durable_delta_reason: CuratorShortText | None = None
     no_op_evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_mixed_delta_and_no_op(cls, value: object) -> object:
+        """Prefer executable operations when model output includes stale no-op proof.
+
+        The raw response remains auditable in the model-call ledger.  An output that
+        contains an operation and no-op proof is contradictory, but the operation is
+        still a usable candidate and can be deterministically filtered against World.
+        Empty operations retain the strict no-op proof requirement below.
+        """
+        if not isinstance(value, Mapping):
+            return value
+
+        def normalize_json_arrays(item: object) -> object:
+            if isinstance(item, list):
+                return tuple(normalize_json_arrays(child) for child in item)
+            if isinstance(item, Mapping):
+                return {key: normalize_json_arrays(child) for key, child in item.items()}
+            return item
+
+        normalized = {key: normalize_json_arrays(item) for key, item in value.items()}
+        if not normalized.get("operations"):
+            return normalized
+        if normalized.get("no_durable_delta_reason") is None and not normalized.get(
+            "no_op_evidence_quotes"
+        ):
+            return normalized
+        normalized["no_durable_delta_reason"] = None
+        normalized["no_op_evidence_quotes"] = ()
+        return normalized
 
     @model_validator(mode="after")
     def validate_explicit_no_op(self) -> CuratorV2EvidenceDraft:

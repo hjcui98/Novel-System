@@ -34,7 +34,15 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunPolicy,
     CreativeRunRequest,
 )
-from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
 from novel_agent.domain.runtime import (
     AttemptFence,
     AttemptOutcome,
@@ -119,6 +127,33 @@ def _request(run_id: str, base: CommitId) -> CreativeRunRequest:
     )
 
 
+def test_initial_task_persists_explicit_continuation_artifacts(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _, _, _, _, commands, base = edge_kernel
+    continuation = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "3" * 64),
+        media_type="application/json",
+        byte_length=1,
+        schema_version=SchemaVersion("1.0.0"),
+    )
+    request = _request("run.continuation-seed", base).model_copy(
+        update={"continuation_artifact_refs": (continuation,)}
+    )
+
+    task = commands.create_run_and_initial_task(request)
+
+    assert task.terminal_artifact_refs == (continuation,)
+    assert commands.get_task(task.task_id).terminal_artifact_refs == (continuation,)
+
+
 def _effect(identity: str, *, attempt_no: int = 1) -> EffectReceipt:
     return EffectReceipt(
         effect_identity=StableId(identity),
@@ -129,9 +164,7 @@ def _effect(identity: str, *, attempt_no: int = 1) -> EffectReceipt:
     )
 
 
-def _binding_ref(
-    artifacts: ArtifactRepository, candidate: CandidateBinding
-) -> ArtifactRef:
+def _binding_ref(artifacts: ArtifactRepository, candidate: CandidateBinding) -> ArtifactRef:
     return artifacts.put(
         canonical_json_bytes(candidate.model_dump(mode="json")),
         "application/vnd.novel-agent.stage5-candidate-binding+json",

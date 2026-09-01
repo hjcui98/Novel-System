@@ -171,18 +171,21 @@ class PlannerContextAssembler:
                         graph_refs[graph_ref.artifact_id] = graph_ref
 
         budget = (
-            request.budgets.planner_context_target_tokens
-            or request.budgets.context.token_budget
+            request.budgets.planner_context_target_tokens or request.budgets.context.token_budget
         )
         mandatory_tokens = sum(item.token_count for item in mandatory)
-        selected = list(mandatory)
-        selected_tokens = mandatory_tokens
+        selected = list({item.context_item_id.root: item for item in mandatory}.values())
+        selected_tokens = sum(item.token_count for item in selected)
+        seen_ids = {item.context_item_id.root for item in selected}
         dropped: list[StableId] = []
         drop_reasons: dict[str, str] = {}
         for item in self._diverse(optional):
+            if item.context_item_id.root in seen_ids:
+                continue
             if selected_tokens + item.token_count <= budget:
                 selected.append(item)
                 selected_tokens += item.token_count
+                seen_ids.add(item.context_item_id.root)
             else:
                 dropped.append(item.context_item_id)
                 drop_reasons[item.context_item_id.root] = "optional_token_budget"
@@ -275,8 +278,7 @@ class PlannerContextAssembler:
             selected_ids = {
                 node.plan_node_id
                 for node in plan.nodes
-                if node.parent_id is None
-                or bool(set(node.obligation_ids) & obligation_ids)
+                if node.parent_id is None or bool(set(node.obligation_ids) & obligation_ids)
             }
             frontier = tuple(selected_ids)
             while frontier:
@@ -364,6 +366,19 @@ class PlannerContextAssembler:
             source_artifact_refs=(artifact,),
         )
 
+    @staticmethod
+    def _context_item_id(unit: RetrievalUnit) -> StableId:
+        base = f"planner-context.unit.{unit.unit_id.root}"
+        if not unit.unit_id.root.startswith("compact."):
+            return StableId(base[:128])
+        # Compact grounded excerpts are query-shaped: the same source unit can
+        # legitimately produce different excerpts in later Memory rounds. A
+        # content-shaped suffix keeps those excerpts distinct in the append-only
+        # Context stream without weakening the runtime's identity invariant.
+        suffix = content_id({"unit_id": unit.unit_id.root, "text": unit.text}).root[-24:]
+        prefix = base[: 128 - len(suffix) - 1]
+        return StableId(f"{prefix}.{suffix}")
+
     def _unit_item(
         self,
         unit: RetrievalUnit,
@@ -382,7 +397,7 @@ class PlannerContextAssembler:
         )
         return (
             PlannerContextItem(
-                context_item_id=StableId(f"planner-context.unit.{unit.unit_id.root}"[:128]),
+                context_item_id=self._context_item_id(unit),
                 section=section,
                 text=unit.text,
                 protected=section is PlannerContextSection.ACCEPTED_PLAN,

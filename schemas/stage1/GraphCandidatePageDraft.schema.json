@@ -87,7 +87,7 @@
           "type": "string"
         },
         "valid_time": {
-          "$ref": "#/$defs/StoryTime"
+          "$ref": "#/$defs/GraphStoryTime"
         }
       },
       "required": [
@@ -101,8 +101,9 @@
       "title": "GraphRelationCandidateDraft",
       "type": "object"
     },
-    "StoryTime": {
+    "GraphStoryTime": {
       "additionalProperties": false,
+      "description": "Graph repair time constrained to the canonical main worldline.",
       "properties": {
         "end_ordinal": {
           "anyOf": [
@@ -141,7 +142,7 @@
           "title": "Start Ordinal"
         },
         "worldline": {
-          "minLength": 1,
+          "const": "main",
           "title": "Worldline",
           "type": "string"
         }
@@ -149,7 +150,7 @@
       "required": [
         "worldline"
       ],
-      "title": "StoryTime",
+      "title": "GraphStoryTime",
       "type": "object"
     },
     "TruthClass": {

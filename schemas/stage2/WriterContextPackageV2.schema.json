@@ -188,6 +188,14 @@
     "EvidenceFirstLineage": {
       "additionalProperties": false,
       "properties": {
+        "advisory_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Advisory Artifact Refs",
+          "type": "array"
+        },
         "assembler_version": {
           "minLength": 1,
           "title": "Assembler Version",
@@ -604,6 +612,14 @@
       "additionalProperties": false,
       "description": "Writer-visible evidence item: purpose plus ledger refs or a typed gap.\n\n``purpose`` is derived only from the public Need's semantic question /\nwhy-needed / facet metadata; it never rewrites material into a claim and\nnever reads Gold or future text.  ``raw_preview`` is a bounded prefix of\nthe exact Ledger text (never a model rewrite) with an explicit truncation\nflag.",
       "properties": {
+        "advisory_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Advisory Artifact Refs",
+          "type": "array"
+        },
         "evidence_ledger_ids": {
           "default": [],
           "items": {
@@ -712,6 +728,11 @@
           "default": "",
           "title": "Source Scope",
           "type": "string"
+        },
+        "unverified": {
+          "default": false,
+          "title": "Unverified",
+          "type": "boolean"
         },
         "validity": {
           "$ref": "#/$defs/WriterContextValidity",

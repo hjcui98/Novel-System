@@ -1,6 +1,21 @@
 {
+  "$defs": {
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    }
+  },
   "additionalProperties": false,
   "properties": {
+    "cost_availability": {
+      "$ref": "#/$defs/ModelCostAvailability",
+      "default": "unknown"
+    },
     "cost_usd": {
       "anyOf": [
         {

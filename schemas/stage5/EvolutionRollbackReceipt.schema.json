@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "failed_promotion_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "failure_evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Failure Evidence Refs",
+      "type": "array"
+    },
+    "production_hot_swap": {
+      "const": false,
+      "default": false,
+      "title": "Production Hot Swap",
+      "type": "boolean"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "restored_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "rolled_back_at": {
+      "format": "date-time",
+      "title": "Rolled Back At",
+      "type": "string"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "target_id",
+    "failed_promotion_ref",
+    "restored_ref",
+    "failure_evidence_refs",
+    "rolled_back_at"
+  ],
+  "title": "EvolutionRollbackReceipt",
+  "type": "object"
+}

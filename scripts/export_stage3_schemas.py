@@ -50,5 +50,7 @@ def main() -> None:
     for stale in OUTPUT_DIRECTORY.glob("*.schema.json"):
         if stale.name not in expected:
             stale.unlink()
+
+
 if __name__ == "__main__":
     main()

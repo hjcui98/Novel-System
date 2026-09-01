@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select
@@ -22,6 +21,11 @@ from novel_agent.domain.runtime import EffectReceipt, TaskAttempt, TaskRecord, f
 from novel_agent.domain.stage5_evaluation import Stage5RuntimeAuditReport
 from novel_agent.domain.stage5_manifest import load_stage5_manifest
 from novel_agent.services.event_log import RunEventLogRepository
+from novel_agent.services.model_call_ledger import (
+    ModelCallLedgerPort,
+    aggregate_model_calls,
+    summarize_model_cost,
+)
 
 
 class RuntimeReportService:
@@ -29,9 +33,11 @@ class RuntimeReportService:
         self,
         session_factory: sessionmaker[Session],
         events: RunEventLogRepository,
+        call_ledger: ModelCallLedgerPort | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._events = events
+        self._call_ledger = call_ledger
 
     def export(
         self,
@@ -84,17 +90,20 @@ class RuntimeReportService:
         effects = tuple(
             EffectReceipt.model_validate_json(json.dumps(row.effect_json)) for row in effect_rows
         )
-        model_records = tuple(
-            event.model_call_record for event in events if event.model_call_record is not None
+        ledger_entries = (
+            self._call_ledger.list_for_run(run_id) if self._call_ledger is not None else ()
         )
-        model_cost = sum(
-            (
-                record.usage.cost_usd
-                for record in model_records
-                if isinstance(record, ModelCallRecord)
-            ),
-            start=Decimal("0"),
+        model_records = (
+            tuple(entry.call_record for entry in ledger_entries if entry.call_record is not None)
+            if self._call_ledger is not None
+            else tuple(
+                event.model_call_record for event in events if event.model_call_record is not None
+            )
         )
+        model_cost, model_cost_availability = summarize_model_cost(
+            tuple(record for record in model_records if isinstance(record, ModelCallRecord))
+        )
+        model_call_aggregates = aggregate_model_calls(ledger_entries)
         skill_hashes = tuple(sorted({item for event in events for item in event.skill_hashes}))
         flags = manifest.feature_admission.model_dump()
         return Stage5RuntimeAuditReport(
@@ -111,8 +120,12 @@ class RuntimeReportService:
             },
             effects=effects,
             events=events,
-            model_request_count=len(model_records),
+            model_request_count=(
+                len(ledger_entries) if self._call_ledger is not None else len(model_records)
+            ),
             model_cost_usd=model_cost,
+            model_cost_availability=model_cost_availability,
+            model_call_aggregates=model_call_aggregates,
             skill_hashes=skill_hashes,
             active_feature_flags=tuple(sorted(name for name, active in flags.items() if active)),
             deferred_feature_flags=tuple(

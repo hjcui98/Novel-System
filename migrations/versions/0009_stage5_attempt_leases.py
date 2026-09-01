@@ -24,12 +24,23 @@ def upgrade() -> None:
         "runtime_task_attempt",
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.execute(
-        "UPDATE runtime_task_attempt "
-        "SET heartbeat_at = claimed_at, lease_expires_at = claimed_at + INTERVAL '1 second'"
-    )
-    op.alter_column("runtime_task_attempt", "heartbeat_at", nullable=False)
-    op.alter_column("runtime_task_attempt", "lease_expires_at", nullable=False)
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        op.execute(
+            "UPDATE runtime_task_attempt "
+            "SET heartbeat_at = claimed_at, "
+            "lease_expires_at = datetime(claimed_at, '+1 second')"
+        )
+        with op.batch_alter_table("runtime_task_attempt") as batch:
+            batch.alter_column("heartbeat_at", nullable=False)
+            batch.alter_column("lease_expires_at", nullable=False)
+    else:
+        op.execute(
+            "UPDATE runtime_task_attempt "
+            "SET heartbeat_at = claimed_at, lease_expires_at = claimed_at + INTERVAL '1 second'"
+        )
+        op.alter_column("runtime_task_attempt", "heartbeat_at", nullable=False)
+        op.alter_column("runtime_task_attempt", "lease_expires_at", nullable=False)
     op.create_index(
         "ix_runtime_task_attempt_lease",
         "runtime_task_attempt",

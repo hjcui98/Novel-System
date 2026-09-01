@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
 
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
-from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     NeedRisk,
@@ -79,9 +81,10 @@ def _text_root(blocks: tuple[TextBlock, ...]) -> TextRootDocument:
         scene_index=0,
         blocks=blocks,
     )
+    chapter_match = re.search(r"(?:^|[._:-])(\d+)$", blocks[0].chapter_id.root)
     chapter = ChapterDocument(
         chapter_id=blocks[0].chapter_id,
-        chapter_index=5,
+        chapter_index=int(chapter_match.group(1)) if chapter_match is not None else 5,
         title="第五章",
         scenes=(scene,),
     )
@@ -361,6 +364,34 @@ class TestEvidenceFirstWriterContextAssembler:
         assert all(
             entry.dereference_receipt == "verified_read" for entry in result.evidence_ledger.entries
         )
+
+    def test_unverified_advisory_is_a_gap_and_never_a_ledger_entry(self) -> None:
+        need = _need()
+        text_root = _text_root((_block("第一段。\n第二段,陈长生伤势未愈。\n第三段。"),))
+        source_ref = ArtifactRef(
+            artifact_id=ArtifactId("sha256:" + "d" * 64),
+            media_type="application/vnd.novel-agent.quarantine-package+json",
+            byte_length=128,
+            schema_version=SchemaVersion("0.1.0"),
+        )
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=_task(),
+            selections=(_selection(need, self._slice(text_root)),),
+            text_root=text_root,
+            basis_commit_id=COMMIT,
+            basis_snapshot_id=SNAPSHOT,
+            arm="A",
+            advisory_items=((source_ref, "unverified=true; advisory_only=true; open lead"),),
+        )
+
+        advisory = next(item for item in result.package.items if item.unverified)
+        assert result.package.semantic_status == "INCOMPLETE"
+        assert result.package.usable_with_gaps is True
+        assert advisory.gap is not None
+        assert advisory.evidence_ledger_ids == ()
+        assert advisory.advisory_artifact_refs == (source_ref,)
+        assert result.package.lineage.advisory_artifact_refs == (source_ref,)
+        assert len(result.evidence_ledger.entries) == 1
 
     def test_unselected_need_becomes_typed_gap(self) -> None:
         mandatory = _need()

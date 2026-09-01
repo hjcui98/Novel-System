@@ -11,12 +11,22 @@ from novel_agent.domain import (
     memory_write,
     retrieval_routing,
     stage2,
+    u6_continuous_replay,
+    v05_readout,
     writer_context,
 )
 from novel_agent.domain.base import DomainModel
 
 OUTPUT_DIRECTORY = Path(__file__).parents[1] / "schemas" / "stage2"
-DOMAIN_MODULES = (stage2, writer_context, memory_benchmark, retrieval_routing, memory_write)
+DOMAIN_MODULES = (
+    stage2,
+    writer_context,
+    memory_benchmark,
+    retrieval_routing,
+    memory_write,
+    u6_continuous_replay,
+    v05_readout,
+)
 MODELS = tuple(
     model
     for module in DOMAIN_MODULES

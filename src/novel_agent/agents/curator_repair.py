@@ -169,7 +169,7 @@ class CuratorRepairAgent:
         unresolved = tuple(
             f"evidence_repair:{draft.operation_index}:{draft.action.value}"
             for draft in drafts
-            if draft.action.value != "replace_evidence"
+            if (draft.action.value != "replace_evidence" or not draft.replacement_candidate_ids)
         )
         receipt = self._runner.receipt(
             prepared,

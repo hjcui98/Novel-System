@@ -970,6 +970,25 @@
       "title": "Fusion Applied",
       "type": "boolean"
     },
+    "graph_exhausted": {
+      "default": false,
+      "title": "Graph Exhausted",
+      "type": "boolean"
+    },
+    "graph_path_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Graph Path Count",
+      "type": "integer"
+    },
+    "graph_seed_entity_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Graph Seed Entity Ids",
+      "type": "array"
+    },
     "intent": {
       "$ref": "#/$defs/Stage1QueryIntent"
     },
@@ -980,6 +999,27 @@
       },
       "title": "Irreducible Need Facet Ids",
       "type": "array"
+    },
+    "l0_fallback_evidence_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "L0 Fallback Evidence Refs",
+      "type": "array"
+    },
+    "l0_fallback_slice_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "L0 Fallback Slice Ids",
+      "type": "array"
+    },
+    "l0_fallback_truncated": {
+      "default": false,
+      "title": "L0 Fallback Truncated",
+      "type": "boolean"
     },
     "l0_tokens": {
       "default": 0,
@@ -1028,6 +1068,40 @@
       "minimum": 0,
       "title": "Scenes Expanded",
       "type": "integer"
+    },
+    "semantic_fallback_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Semantic Fallback Reason"
+    },
+    "semantic_fallback_status": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Semantic Fallback Status"
+    },
+    "semantic_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Semantic Receipt Refs",
+      "type": "array"
     },
     "spans_expanded": {
       "default": 0,

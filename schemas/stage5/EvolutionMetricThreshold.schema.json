@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "higher_is_better": {
+      "default": true,
+      "title": "Higher Is Better",
+      "type": "boolean"
+    },
+    "metric": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Metric",
+      "type": "string"
+    },
+    "minimum_delta": {
+      "minimum": 0.0,
+      "title": "Minimum Delta",
+      "type": "number"
+    }
+  },
+  "required": [
+    "metric",
+    "minimum_delta"
+  ],
+  "title": "EvolutionMetricThreshold",
+  "type": "object"
+}

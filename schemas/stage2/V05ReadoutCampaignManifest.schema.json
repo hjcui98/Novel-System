@@ -1,0 +1,930 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BudgetResolutionProfile": {
+      "enum": [
+        "canary",
+        "strict"
+      ],
+      "title": "BudgetResolutionProfile",
+      "type": "string"
+    },
+    "BudgetSource": {
+      "enum": [
+        "explicit_request",
+        "invocation_budget",
+        "endpoint_default",
+        "model_max_auto"
+      ],
+      "title": "BudgetSource",
+      "type": "string"
+    },
+    "EffectiveBudgetResult": {
+      "additionalProperties": false,
+      "description": "One resolved output budget shared by API payload, admission, and ledger.",
+      "properties": {
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "body_output_budget": {
+          "minimum": 1,
+          "title": "Body Output Budget",
+          "type": "integer"
+        },
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "estimated_input_tokens": {
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_budget": {
+          "minimum": 0,
+          "title": "Thinking Budget",
+          "type": "integer"
+        },
+        "total_output_budget": {
+          "minimum": 1,
+          "title": "Total Output Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "budget_source",
+        "context_limit",
+        "estimated_input_tokens",
+        "body_output_budget",
+        "thinking_budget",
+        "total_output_budget",
+        "safety_allowance_tokens",
+        "reserved_sequence_tokens",
+        "available_input_tokens"
+      ],
+      "title": "EffectiveBudgetResult",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U4L0CanaryVariableLock": {
+      "additionalProperties": false,
+      "description": "One frozen U4-L0 variable vector carried by campaign evidence.",
+      "properties": {
+        "budget_profile": {
+          "$ref": "#/$defs/BudgetResolutionProfile"
+        },
+        "c3_admission": {
+          "const": "NOT_ADMITTED",
+          "default": "NOT_ADMITTED",
+          "title": "C3 Admission",
+          "type": "string"
+        },
+        "controller_context_level": {
+          "enum": [
+            "C0",
+            "C1+C2"
+          ],
+          "title": "Controller Context Level",
+          "type": "string"
+        },
+        "planner_context_level": {
+          "enum": [
+            "P0",
+            "P0+P1"
+          ],
+          "title": "Planner Context Level",
+          "type": "string"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "budget_profile",
+        "controller_context_level",
+        "planner_context_level",
+        "thinking_enabled"
+      ],
+      "title": "U4L0CanaryVariableLock",
+      "type": "object"
+    },
+    "V05CampaignExecutionFreeze": {
+      "additionalProperties": false,
+      "description": "Repetition, resource, namespace, and stop policy fixed before run.",
+      "properties": {
+        "database_namespace": {
+          "minLength": 1,
+          "title": "Database Namespace",
+          "type": "string"
+        },
+        "max_model_calls": {
+          "minimum": 1,
+          "title": "Max Model Calls",
+          "type": "integer"
+        },
+        "max_wall_time_seconds": {
+          "minimum": 1,
+          "title": "Max Wall Time Seconds",
+          "type": "integer"
+        },
+        "object_namespace": {
+          "minLength": 1,
+          "title": "Object Namespace",
+          "type": "string"
+        },
+        "output_namespace": {
+          "minLength": 1,
+          "title": "Output Namespace",
+          "type": "string"
+        },
+        "repetitions": {
+          "minimum": 1,
+          "title": "Repetitions",
+          "type": "integer"
+        },
+        "stop_conditions": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Stop Conditions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repetitions",
+        "max_model_calls",
+        "max_wall_time_seconds",
+        "output_namespace",
+        "object_namespace",
+        "database_namespace",
+        "stop_conditions"
+      ],
+      "title": "V05CampaignExecutionFreeze",
+      "type": "object"
+    },
+    "V05CampaignPhase": {
+      "enum": [
+        "seed",
+        "calibration",
+        "formal"
+      ],
+      "title": "V05CampaignPhase",
+      "type": "string"
+    },
+    "V05CampaignReportFreeze": {
+      "additionalProperties": false,
+      "description": "Report dimensions and any thresholds registered before candidate runs.",
+      "properties": {
+        "canary_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/U4L0CanaryVariableLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dimensions": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Dimensions",
+          "type": "array"
+        },
+        "threshold_policy": {
+          "enum": [
+            "diagnostic_only",
+            "pre_registered"
+          ],
+          "title": "Threshold Policy",
+          "type": "string"
+        },
+        "thresholds": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/V05CampaignThreshold"
+          },
+          "title": "Thresholds",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dimensions",
+        "threshold_policy"
+      ],
+      "title": "V05CampaignReportFreeze",
+      "type": "object"
+    },
+    "V05CampaignSourceIdentity": {
+      "additionalProperties": false,
+      "description": "Source and readiness facts frozen before a Writer-readout campaign.",
+      "properties": {
+        "assembly_attestation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "build_report_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "bundle_id": {
+          "minLength": 1,
+          "title": "Bundle Id",
+          "type": "string"
+        },
+        "bundle_version": {
+          "minLength": 1,
+          "title": "Bundle Version",
+          "type": "string"
+        },
+        "effective_budget_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "r_annotation": {
+          "$ref": "#/$defs/V05ReadinessStatus"
+        },
+        "r_bundle": {
+          "$ref": "#/$defs/V05ReadinessStatus"
+        },
+        "r_judge": {
+          "$ref": "#/$defs/V05ReadinessStatus"
+        },
+        "r_runner": {
+          "$ref": "#/$defs/V05ReadinessStatus"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "bundle_id",
+        "bundle_version",
+        "build_report_ref",
+        "assembly_attestation_ref",
+        "effective_budget_ref",
+        "source_identity",
+        "r_bundle",
+        "r_annotation",
+        "r_judge",
+        "r_runner"
+      ],
+      "title": "V05CampaignSourceIdentity",
+      "type": "object"
+    },
+    "V05CampaignStatus": {
+      "enum": [
+        "seed_diagnostic_not_acceptance",
+        "calibration_not_acceptance",
+        "formal_candidate"
+      ],
+      "title": "V05CampaignStatus",
+      "type": "string"
+    },
+    "V05CampaignThreshold": {
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            ">=",
+            "<=",
+            "=="
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metric",
+        "operator",
+        "value"
+      ],
+      "title": "V05CampaignThreshold",
+      "type": "object"
+    },
+    "V05HistoryAccess": {
+      "enum": [
+        "history_only",
+        "author_plan_conditioned"
+      ],
+      "title": "V05HistoryAccess",
+      "type": "string"
+    },
+    "V05JudgeRuntimeFreeze": {
+      "additionalProperties": false,
+      "description": "Independent scorer and judge contracts, including unavailable behavior.",
+      "properties": {
+        "answer_judge_version": {
+          "minLength": 1,
+          "title": "Answer Judge Version",
+          "type": "string"
+        },
+        "deterministic_scorer_version": {
+          "minLength": 1,
+          "title": "Deterministic Scorer Version",
+          "type": "string"
+        },
+        "evidence_support_judge_version": {
+          "minLength": 1,
+          "title": "Evidence Support Judge Version",
+          "type": "string"
+        },
+        "request_role": {
+          "minLength": 1,
+          "title": "Request Role",
+          "type": "string"
+        },
+        "unavailable_policy": {
+          "enum": [
+            "pending",
+            "unavailable",
+            "fail_closed"
+          ],
+          "title": "Unavailable Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_role",
+        "deterministic_scorer_version",
+        "answer_judge_version",
+        "evidence_support_judge_version",
+        "unavailable_policy"
+      ],
+      "title": "V05JudgeRuntimeFreeze",
+      "type": "object"
+    },
+    "V05ReadinessStatus": {
+      "enum": [
+        "PASS",
+        "PENDING",
+        "UNAVAILABLE"
+      ],
+      "title": "V05ReadinessStatus",
+      "type": "string"
+    },
+    "V05ReadoutManifest": {
+      "additionalProperties": false,
+      "description": "Complete unique identity set for V0.5 Track A and Track B Writer readout.",
+      "properties": {
+        "benchmark_id": {
+          "minLength": 1,
+          "title": "Benchmark Id",
+          "type": "string"
+        },
+        "canary_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/U4L0CanaryVariableLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/V05ReadoutTaskIdentity"
+          },
+          "title": "Tasks",
+          "type": "array"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "benchmark_id",
+        "version",
+        "tasks"
+      ],
+      "title": "V05ReadoutManifest",
+      "type": "object"
+    },
+    "V05ReadoutTaskIdentity": {
+      "additionalProperties": false,
+      "description": "One unique V0.5 Writer readout identity. Public fields only.",
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "history_access": {
+          "$ref": "#/$defs/V05HistoryAccess"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "plan_release": {
+          "const": "after_checkpoint_freeze",
+          "default": "after_checkpoint_freeze",
+          "title": "Plan Release",
+          "type": "string"
+        },
+        "question_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "question_release": {
+          "anyOf": [
+            {
+              "const": "after_checkpoint_freeze",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Release"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "track": {
+          "$ref": "#/$defs/V05ReadoutTrack"
+        }
+      },
+      "required": [
+        "task_id",
+        "track",
+        "checkpoint_id",
+        "checkpoint_chapter",
+        "history_access",
+        "information_profile"
+      ],
+      "title": "V05ReadoutTaskIdentity",
+      "type": "object"
+    },
+    "V05ReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "V05ReadoutTrack",
+      "type": "string"
+    },
+    "V05RepresentativeTaskCoverage": {
+      "additionalProperties": false,
+      "description": "Preselected task ids proving the required U4-S representative coverage.",
+      "properties": {
+        "early_checkpoint_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "late_checkpoint_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "legacy_five_chapter_window_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "mid_checkpoint_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "multi_hop_qa_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "twenty_chapter_window_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "unanswerable_qa_task_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "early_checkpoint_task_id",
+        "mid_checkpoint_task_id",
+        "late_checkpoint_task_id",
+        "legacy_five_chapter_window_task_id",
+        "twenty_chapter_window_task_id",
+        "unanswerable_qa_task_id",
+        "multi_hop_qa_task_id"
+      ],
+      "title": "V05RepresentativeTaskCoverage",
+      "type": "object"
+    },
+    "V05RuntimeVariableFreeze": {
+      "additionalProperties": false,
+      "description": "U4-L0 variables held constant while a readout campaign runs.",
+      "properties": {
+        "body_output_tokens": {
+          "minimum": 1,
+          "title": "Body Output Tokens",
+          "type": "integer"
+        },
+        "budget_profile": {
+          "$ref": "#/$defs/BudgetResolutionProfile",
+          "default": "canary"
+        },
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "controller_level": {
+          "enum": [
+            "C0",
+            "C1+C2"
+          ],
+          "title": "Controller Level",
+          "type": "string"
+        },
+        "effective_budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectiveBudgetResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planner_level": {
+          "enum": [
+            "P0",
+            "P0+P1"
+          ],
+          "title": "Planner Level",
+          "type": "string"
+        },
+        "provider_reasoning_included_in_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Reasoning Included In Completion Tokens"
+        },
+        "provider_total_output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Total Output Tokens"
+        },
+        "reasoning_reserve_tokens": {
+          "minimum": 0,
+          "title": "Reasoning Reserve Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "budget_source",
+        "context_limit",
+        "body_output_tokens",
+        "reasoning_reserve_tokens",
+        "safety_allowance_tokens",
+        "controller_level",
+        "planner_level",
+        "thinking_enabled"
+      ],
+      "title": "V05RuntimeVariableFreeze",
+      "type": "object"
+    },
+    "V05WriterRuntimeFreeze": {
+      "additionalProperties": false,
+      "description": "Writer request identity and fixed transport budgets.",
+      "properties": {
+        "concurrency": {
+          "minimum": 1,
+          "title": "Concurrency",
+          "type": "integer"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "evidence_token_budget": {
+          "minimum": 0,
+          "title": "Evidence Token Budget",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "output_token_budget": {
+          "minimum": 1,
+          "title": "Output Token Budget",
+          "type": "integer"
+        },
+        "prompt_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "provider_total_output_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Total Output Budget"
+        },
+        "request_role": {
+          "minLength": 1,
+          "title": "Request Role",
+          "type": "string"
+        },
+        "response_schema_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "seed_capability": {
+          "enum": [
+            "fixed",
+            "unsupported",
+            "uncontrolled"
+          ],
+          "title": "Seed Capability",
+          "type": "string"
+        },
+        "temperature": {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        }
+      },
+      "required": [
+        "endpoint",
+        "model",
+        "revision",
+        "prompt_ref",
+        "response_schema_ref",
+        "request_role",
+        "temperature",
+        "seed_capability",
+        "evidence_token_budget",
+        "output_token_budget",
+        "concurrency"
+      ],
+      "title": "V05WriterRuntimeFreeze",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable U4-S0 campaign contract wrapping the public readout identities.",
+  "properties": {
+    "benchmark_id": {
+      "minLength": 1,
+      "title": "Benchmark Id",
+      "type": "string"
+    },
+    "benchmark_version": {
+      "minLength": 1,
+      "title": "Benchmark Version",
+      "type": "string"
+    },
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "canary_lock": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/U4L0CanaryVariableLock"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "execution": {
+      "$ref": "#/$defs/V05CampaignExecutionFreeze"
+    },
+    "frozen_before_run": {
+      "const": true,
+      "default": true,
+      "title": "Frozen Before Run",
+      "type": "boolean"
+    },
+    "judges": {
+      "$ref": "#/$defs/V05JudgeRuntimeFreeze"
+    },
+    "manifest_version": {
+      "const": "v05_readout_campaign_manifest.v1",
+      "default": "v05_readout_campaign_manifest.v1",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "phase": {
+      "$ref": "#/$defs/V05CampaignPhase"
+    },
+    "readout_manifest": {
+      "$ref": "#/$defs/V05ReadoutManifest"
+    },
+    "report": {
+      "$ref": "#/$defs/V05CampaignReportFreeze"
+    },
+    "representative_task_coverage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V05RepresentativeTaskCoverage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "representative_task_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Representative Task Ids",
+      "type": "array"
+    },
+    "runtime": {
+      "$ref": "#/$defs/V05RuntimeVariableFreeze"
+    },
+    "source": {
+      "$ref": "#/$defs/V05CampaignSourceIdentity"
+    },
+    "status": {
+      "$ref": "#/$defs/V05CampaignStatus"
+    },
+    "writer": {
+      "$ref": "#/$defs/V05WriterRuntimeFreeze"
+    }
+  },
+  "required": [
+    "campaign_id",
+    "benchmark_id",
+    "benchmark_version",
+    "phase",
+    "status",
+    "readout_manifest",
+    "source",
+    "writer",
+    "judges",
+    "runtime",
+    "execution",
+    "report"
+  ],
+  "title": "V05ReadoutCampaignManifest",
+  "type": "object"
+}

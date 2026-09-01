@@ -16,6 +16,7 @@ from novel_agent.adapters.model.openai_chat import (
 )
 from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.model_calls import (
+    BudgetSource,
     ModelCallPurpose,
     ModelRequest,
     ModelRole,
@@ -30,6 +31,12 @@ def _request(
     thinking_token_budget: int | None = None,
     repetition_penalty: float | None = None,
 ) -> ModelRequest:
+    resolved_output_tokens = max_output_tokens if max_output_tokens is not None else 8192
+    budget_source = (
+        BudgetSource.EXPLICIT_REQUEST
+        if max_output_tokens is not None
+        else BudgetSource.ENDPOINT_DEFAULT
+    )
     return ModelRequest(
         request_id=StableId("request.test"),
         run_id=RunId("run.test"),
@@ -39,11 +46,12 @@ def _request(
         trace_id="trace-test",
         prompt=prompt,
         response_schema=response_schema,
-        max_output_tokens=max_output_tokens,
+        max_output_tokens=resolved_output_tokens,
         timeout_seconds=10,
         enable_thinking=enable_thinking,
         thinking_token_budget=thinking_token_budget,
         repetition_penalty=repetition_penalty,
+        budget_source=budget_source,
     )
 
 
@@ -395,10 +403,10 @@ def test_generate_sends_json_schema_when_schema_provided() -> None:
     asyncio.run(endpoint.generate(_request(response_schema=schema)))
 
 
-def test_generate_enforces_enable_thinking_true() -> None:
+def test_generate_leaves_provider_default_thinking_unset() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["chat_template_kwargs"] == {"enable_thinking": True}
+        assert body["chat_template_kwargs"] == {}
         return httpx.Response(
             200,
             json={

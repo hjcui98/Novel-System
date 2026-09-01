@@ -130,6 +130,16 @@ def test_admission_controller_timeout_and_lease_double_release_are_typed() -> No
     assert controller.snapshot()["scheduling_timeouts"] == 1
 
 
+def test_admission_timeout_reports_active_and_queued_request_ids() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    blocker = controller.acquire(1)
+
+    with pytest.raises(SchedulingTimeoutError, match=r"active=.*legacy-0"):
+        controller.acquire(1, timeout_seconds=0.02)
+
+    blocker.release()
+
+
 def test_admission_descriptor_has_stable_priority_queue_and_endpoint_telemetry() -> None:
     controller = ModelRequestAdmissionController(
         endpoint_request_limit=1,

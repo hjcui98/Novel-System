@@ -61,6 +61,34 @@ class SupervisorFinding(DomainModel):
     proposed_command: str | None = Field(default=None, max_length=64)
 
 
+def _bounded_finding_id(
+    task_id: TaskId,
+    *,
+    run_id: str,
+    suffix: str,
+) -> StableId:
+    """Keep a supervisor finding addressable without truncating its task scope.
+
+    A task identity is already globally unique in the runtime projection.  The
+    readable finding prefix is preferred, then the existing run/revision
+    scope, and finally the complete task identity itself when the task is at
+    the public 128-character limit.  Supervisor emits at most one finding per
+    task, so the final fallback remains unambiguous while ``code`` carries the
+    diagnostic kind.
+    """
+
+    for value in (
+        f"finding.{task_id.root}.{suffix}",
+        f"finding.{run_id}.{suffix}",
+        task_id.root,
+    ):
+        try:
+            return StableId(value)
+        except ValueError:
+            continue
+    raise ValueError("supervisor finding identity is too long")
+
+
 class RuntimeMaintenanceService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -202,7 +230,11 @@ class RuntimeSupervisor:
             )
             findings.append(
                 SupervisorFinding(
-                    finding_id=StableId(f"finding.{row.task_id}.{row.revision}"),
+                    finding_id=_bounded_finding_id(
+                        TaskId(row.task_id),
+                        run_id=row.run_id,
+                        suffix=f"stuck.{row.revision}",
+                    ),
                     task_id=TaskId(row.task_id),
                     code="runtime_task_stuck",
                     failure_class=failure,
@@ -218,7 +250,11 @@ class RuntimeSupervisor:
             if task.failure_budget == 0 and task.task_id.root not in existing:
                 findings.append(
                     SupervisorFinding(
-                        finding_id=StableId(f"finding.{row.task_id}.budget.{row.revision}"),
+                        finding_id=_bounded_finding_id(
+                            task.task_id,
+                            run_id=task.run_id.root,
+                            suffix=f"budget.{row.revision}",
+                        ),
                         task_id=task.task_id,
                         code="runtime_failure_budget_exhausted",
                         failure_class=FailureClass.BUDGET_EXHAUSTED,
@@ -231,7 +267,11 @@ class RuntimeSupervisor:
             if effect.task_id not in existing:
                 findings.append(
                     SupervisorFinding(
-                        finding_id=StableId(f"finding.{effect.task_id}.effect"),
+                        finding_id=_bounded_finding_id(
+                            TaskId(effect.task_id),
+                            run_id=effect.run_id,
+                            suffix="effect",
+                        ),
                         task_id=TaskId(effect.task_id),
                         code="runtime_effect_unresolved",
                         failure_class=FailureClass.EFFECT_UNCERTAIN,

@@ -5,12 +5,115 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BudgetSource": {
+      "enum": [
+        "explicit_request",
+        "invocation_budget",
+        "endpoint_default",
+        "model_max_auto"
+      ],
+      "title": "BudgetSource",
+      "type": "string"
+    },
+    "EffectiveBudgetResult": {
+      "additionalProperties": false,
+      "description": "One resolved output budget shared by API payload, admission, and ledger.",
+      "properties": {
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "body_output_budget": {
+          "minimum": 1,
+          "title": "Body Output Budget",
+          "type": "integer"
+        },
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "estimated_input_tokens": {
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_budget": {
+          "minimum": 0,
+          "title": "Thinking Budget",
+          "type": "integer"
+        },
+        "total_output_budget": {
+          "minimum": 1,
+          "title": "Total Output Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "budget_source",
+        "context_limit",
+        "estimated_input_tokens",
+        "body_output_budget",
+        "thinking_budget",
+        "total_output_budget",
+        "safety_allowance_tokens",
+        "reserved_sequence_tokens",
+        "available_input_tokens"
+      ],
+      "title": "EffectiveBudgetResult",
+      "type": "object"
+    },
     "ModelCallLedgerStatus": {
       "description": "Durable lifecycle for one unique provider generation request.",
       "enum": [
         "requested",
         "completed",
         "validation_rejected",
+        "output_incomplete",
         "transport_exhausted",
         "uncertain"
       ],
@@ -114,6 +217,15 @@
       "title": "ModelCallRecord",
       "type": "object"
     },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "ModelRole": {
       "enum": [
         "implementation_model",
@@ -125,6 +237,10 @@
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
         "cost_usd": {
           "anyOf": [
             {
@@ -168,6 +284,11 @@
       "title": "RunId",
       "type": "string"
     },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -181,6 +302,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "call_record": {
       "anyOf": [
         {
@@ -205,6 +337,52 @@
       "default": null,
       "title": "Completed At"
     },
+    "effective_budget": {
+      "$ref": "#/$defs/EffectiveBudgetResult"
+    },
+    "logical_phase": {
+      "default": "unknown",
+      "minLength": 1,
+      "title": "Logical Phase",
+      "type": "string"
+    },
+    "provider_request_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Request Id"
+    },
+    "provider_sent_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Sent At"
+    },
+    "raw_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "raw_response_hash": {
       "anyOf": [
         {
@@ -215,6 +393,10 @@
         }
       ],
       "default": null
+    },
+    "reasoning_included_in_completion_tokens": {
+      "title": "Reasoning Included In Completion Tokens",
+      "type": "boolean"
     },
     "request_hash": {
       "$ref": "#/$defs/ArtifactId"
@@ -269,6 +451,8 @@
     "run_id",
     "task_id",
     "request_hash",
+    "effective_budget",
+    "reasoning_included_in_completion_tokens",
     "status",
     "requested_at"
   ],

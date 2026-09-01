@@ -13,6 +13,7 @@ from pydantic import JsonValue, ValidationError
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import SchemaVersion, StableId
+from novel_agent.domain.model_calls import ModelCallLedgerAggregate
 from novel_agent.domain.planning import (
     PlanningEvaluationCase,
     PlanningEvaluationManifest,
@@ -26,6 +27,7 @@ from novel_agent.domain.planning import (
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+from novel_agent.services.model_call_ledger import ModelCallLedgerPort, aggregate_model_calls
 
 
 class PlanningEvaluationArm(StrEnum):
@@ -171,12 +173,14 @@ class PlanningEvaluationRunner:
         schema_version: SchemaVersion,
         blind_evaluator: BlindEvaluator | None = None,
         frozen_gate: FrozenPlanningEvaluationGate | None = None,
+        call_ledger: ModelCallLedgerPort | None = None,
     ) -> None:
         self._adapter = adapter
         self._artifacts = artifacts
         self._schema_version = schema_version
         self._blind_evaluator = blind_evaluator
         self._frozen_gate = frozen_gate
+        self._call_ledger = call_ledger
         self._profile = (
             PlanningEvaluationProfile.DETERMINISTIC_FAKE
             if isinstance(adapter, FakePlanningEvaluationAdapter)
@@ -377,6 +381,17 @@ class PlanningEvaluationRunner:
             if candidate_scores
             else {}
         )
+        model_call_aggregates: tuple[ModelCallLedgerAggregate, ...] = ()
+        if self._call_ledger is not None:
+            task_ids = {case.request.task_id for case in manifest.cases}
+            run_ids = {case.request.run_id for case in manifest.cases}
+            ledger_entries = tuple(
+                entry
+                for run_id in run_ids
+                for entry in self._call_ledger.list_for_run(run_id)
+                if entry.task_id in task_ids
+            )
+            model_call_aggregates = aggregate_model_calls(ledger_entries)
         report = PlanningEvaluationReport(
             manifest_id=manifest.manifest_id,
             evaluation_profile=self._profile,
@@ -397,6 +412,7 @@ class PlanningEvaluationRunner:
             reviewer_metrics=reviewer_metrics,
             leakage_count=leakage_count,
             provenance_error_count=provenance_error_count,
+            model_call_aggregates=model_call_aggregates,
         )
         report_ref = self._artifacts.put(
             canonical_json_bytes(report.model_dump(mode="json")),

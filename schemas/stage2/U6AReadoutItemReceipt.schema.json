@@ -1,0 +1,351 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "MemoryIdentitySnapshot": {
+      "additionalProperties": false,
+      "description": "Durable Memory/Commit identity used to prove evaluation discard is a no-op.",
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "profile_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "world_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "commit_id",
+        "text_root",
+        "world_root",
+        "plan_root",
+        "profile_root"
+      ],
+      "title": "MemoryIdentitySnapshot",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U6AReadoutPhaseResult": {
+      "additionalProperties": false,
+      "description": "One adapter-owned, frozen result from a pre-discard U6-A phase.",
+      "properties": {
+        "artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        },
+        "evaluation_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Evaluation Refs",
+          "type": "array"
+        },
+        "evidence_distance": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Evidence Distance",
+          "type": "integer"
+        },
+        "future_leakage_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Future Leakage Count",
+          "type": "integer"
+        },
+        "gap_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Gap Count",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "memory_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryIdentitySnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "phase": {
+          "enum": [
+            "freeze",
+            "release",
+            "wcp",
+            "writer",
+            "response_freeze",
+            "evaluator_reveal"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "stage_loss_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Stage Loss Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "U6AReadoutPhaseResult",
+      "type": "object"
+    },
+    "U6AReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context",
+        "c_roll",
+        "d_short",
+        "free_run"
+      ],
+      "title": "U6AReadoutTrack",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable per-item evidence after one checkpoint lifecycle completes.",
+  "properties": {
+    "basis_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "maximum": 300,
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "completed_phases": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Phases",
+      "type": "array"
+    },
+    "control_replay_identity": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "discard_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "discarded_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Discarded Refs",
+      "type": "array"
+    },
+    "evidence_distance": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Evidence Distance",
+      "type": "integer"
+    },
+    "future_leakage_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "gap_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Gap Count",
+      "type": "integer"
+    },
+    "input_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "item_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "latency_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "lifecycle": {
+      "default": [
+        "freeze",
+        "release",
+        "wcp",
+        "writer",
+        "response_freeze",
+        "evaluator_reveal",
+        "discard"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Lifecycle",
+      "type": "array"
+    },
+    "memory_identity_after": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryIdentitySnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "memory_identity_before": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryIdentitySnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "output_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "phase_results": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/U6AReadoutPhaseResult"
+      },
+      "title": "Phase Results",
+      "type": "array"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "stage_loss_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Stage Loss Count",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "EXECUTED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "track": {
+      "$ref": "#/$defs/U6AReadoutTrack"
+    }
+  },
+  "required": [
+    "item_id",
+    "track",
+    "checkpoint_chapter",
+    "basis_id",
+    "run_id",
+    "control_replay_identity",
+    "status"
+  ],
+  "title": "U6AReadoutItemReceipt",
+  "type": "object"
+}

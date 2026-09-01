@@ -14,6 +14,7 @@ from novel_agent.domain.stage2 import (
     CuratorEvidenceContract,
     CuratorReplayResult,
 )
+from novel_agent.domain.text import SourceBoundEvidenceRequirement
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.model_curation import ModelCurator
@@ -39,6 +40,12 @@ class CuratorReplayAgent:
     def evidence_contract(self) -> CuratorEvidenceContract:
         return self._evidence_contract
 
+    @property
+    def runner(self) -> StructuredAgentRunner:
+        """Expose the shared runner for non-ordinary Curator profiles."""
+
+        return self._runner
+
     async def run(
         self,
         *,
@@ -49,6 +56,10 @@ class CuratorReplayAgent:
         current_world: WorldRootDocument,
         request: ModelRequest,
         proposal_feedback: str | None = None,
+        repair_query: str | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_tokens_used: int = 0,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
         if self._evidence_contract is CuratorEvidenceContract.CANDIDATE_ID_V2:
             return await self._run_v2(
@@ -59,6 +70,10 @@ class CuratorReplayAgent:
                 current_world=current_world,
                 request=request,
                 proposal_feedback=proposal_feedback,
+                repair_query=repair_query,
+                cumulative_token_budget=cumulative_token_budget,
+                cumulative_tokens_used=cumulative_tokens_used,
+                source_evidence_requirement=source_evidence_requirement,
             )
         return await self._run_v1(
             version=version,
@@ -68,6 +83,7 @@ class CuratorReplayAgent:
             current_world=current_world,
             request=request,
             proposal_feedback=proposal_feedback,
+            repair_query=repair_query,
         )
 
     async def _run_v1(
@@ -80,6 +96,10 @@ class CuratorReplayAgent:
         current_world: WorldRootDocument,
         request: ModelRequest,
         proposal_feedback: str | None,
+        repair_query: str | None,
+        cumulative_token_budget: int | None = None,
+        cumulative_tokens_used: int = 0,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
         task_payload = (
             f"chapter_index={chapter_index}\n"
@@ -91,6 +111,15 @@ class CuratorReplayAgent:
                 '\n<PROPOSAL_REPAIR_FEEDBACK trusted="true">\n'
                 + proposal_feedback
                 + "\n</PROPOSAL_REPAIR_FEEDBACK>"
+            )
+        if repair_query is not None and repair_query.strip():
+            task_payload += (
+                '\n<MEMORY_REPAIR_TARGET trusted="false">\n'
+                "Use this Planner-gap query only as an advisory focus. Extract every "
+                "directly evidenced durable delta that answers it; do not infer facts or "
+                "suppress other evidence for lack of a match.\n"
+                + repair_query.strip()
+                + "\n</MEMORY_REPAIR_TARGET>"
             )
         prepared = self._runner.prepare(
             AgentType.MEMORY_CURATOR,
@@ -143,6 +172,10 @@ class CuratorReplayAgent:
         current_world: WorldRootDocument,
         request: ModelRequest,
         proposal_feedback: str | None,
+        repair_query: str | None,
+        cumulative_token_budget: int | None,
+        cumulative_tokens_used: int,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
         task_payload = (
             f"chapter_index={chapter_index}\n"
@@ -150,9 +183,26 @@ class CuratorReplayAgent:
             "Output ChapterChangeDraftV2 only; cite registered evidence_candidate_ids. "
             "Always emit the operations key. An empty array requires a complete explicit "
             "no-durable-delta proof using no_durable_delta_reason and "
-            "no_op_evidence_candidate_ids; incomplete empty output is rejected. "
+            "no_op_evidence_candidate_ids; unresolved may contain advisory gaps that must "
+            "be preserved for downstream consumers and do not by themselves invalidate the "
+            "no-op proof; incomplete empty output is rejected. "
             "The trusted service binds all offsets, hashes and EvidenceRef values."
         )
+        if proposal_feedback is not None:
+            task_payload += (
+                '\n<PROPOSAL_REPAIR_FEEDBACK trusted="true">\n'
+                + proposal_feedback
+                + "\n</PROPOSAL_REPAIR_FEEDBACK>"
+            )
+        if repair_query is not None and repair_query.strip():
+            task_payload += (
+                '\n<MEMORY_REPAIR_TARGET trusted="false">\n'
+                "Use this Planner-gap query only as an advisory focus. Extract every "
+                "directly evidenced durable delta that answers it; do not infer facts or "
+                "suppress other evidence for lack of a match.\n"
+                + repair_query.strip()
+                + "\n</MEMORY_REPAIR_TARGET>"
+            )
         prepared = self._runner.prepare(
             AgentType.MEMORY_CURATOR,
             AgentMode.REPLAY,
@@ -170,6 +220,9 @@ class CuratorReplayAgent:
             prepared.request,
             contract_prompt=prepared.rendered_prompt,
             repair_feedback=proposal_feedback,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_tokens_used=cumulative_tokens_used,
+            source_evidence_requirement=source_evidence_requirement,
         )
         output_bytes = canonical_json_bytes(changes.model_dump(mode="json"))
         output_artifact = ArtifactRef(

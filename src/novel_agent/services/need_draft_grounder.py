@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.memory import WorldRootDocument
@@ -32,11 +32,14 @@ class NeedDraftGrounder:
     4. a bounded mention closure scans only the same public draft's semantic
        question, query hints, why-needed and trigger goal, never Gold/future
        or whole-World text;
-    5. every mention records explicit/derived source fields, match kind, and
+    5. an exact, uniquely owned scalar StateRecord predicate/value in those
+       fields may close its subject entity; ambiguous literals stay unresolved
+       and no Canon alias is written;
+    6. every mention records explicit/derived source fields, match kind, and
        the chosen id or typed rejection for the grounding audit.
     """
 
-    version = "need_draft_grounder.v3"
+    version = "need_draft_grounder.v5"
 
     @staticmethod
     def _normalize(label: str) -> str:
@@ -113,7 +116,20 @@ class NeedDraftGrounder:
             *,
             mention_source: str = "explicit",
             source_fields: tuple[str, ...] = (),
+            derived_entity_id: StableId | None = None,
+            derived_method: str = "exact_state_literal_subject_match",
         ) -> GroundedEntityMention:
+            if derived_entity_id is not None:
+                return GroundedEntityMention(
+                    mention=label,
+                    canonical_label=label_by_id[derived_entity_id],
+                    entity_id=derived_entity_id,
+                    confidence=1.0,
+                    grounding_method=derived_method,
+                    grounding_status=GroundingStatus.GROUNDED,
+                    mention_source=mention_source,
+                    mention_source_fields=source_fields,
+                )
             normalized = self._normalize(label)
             if normalized in resolved:
                 entity_id, canonical = resolved[normalized]
@@ -205,6 +221,7 @@ class NeedDraftGrounder:
         closed_mentions = self._mention_closure(
             closure_texts=closure_texts,
             unique_label_entities=self._resolvable_label_map(world),
+            state_literal_entities=self._unique_state_literal_entities(world),
             grounded_by_normalized=grounded_by_normalized,
             resolve=resolve_entity,
         )
@@ -244,8 +261,8 @@ class NeedDraftGrounder:
                 relation
                 for relation in world.relations
                 if relation.predicate == mention.relation_label
-                and {relation.subject_id, relation.object_id}
-                == {subject.entity_id, object_.entity_id}
+                and relation.subject_id == subject.entity_id
+                and relation.object_id == object_.entity_id
             )
             if len(matches) == 1:
                 relation_id = matches[0].relation_id
@@ -267,6 +284,8 @@ class NeedDraftGrounder:
                     subject_label=mention.subject_label,
                     relation_label=mention.relation_label,
                     object_label=mention.object_label,
+                    subject_id=subject.entity_id,
+                    object_id=object_.entity_id,
                     relation_id=relation_id,
                     grounding_status=status,
                     confidence=confidence,
@@ -305,23 +324,34 @@ class NeedDraftGrounder:
         *,
         closure_texts: tuple[tuple[str, tuple[str, ...]], ...],
         unique_label_entities: dict[str, StableId],
+        state_literal_entities: Mapping[str, StableId],
         grounded_by_normalized: dict[str, GroundedEntityMention],
         resolve: Callable[..., GroundedEntityMention],
     ) -> tuple[GroundedEntityMention, ...]:
         """Bounded literal entity-mention closure over a draft's own text.
 
-        Finds every resolvable label that occurs verbatim in the draft-
-        authorized text fields (semantic question, query hints, why-needed,
-        trigger goal), longest label first so a longer alias wins over a
-        shorter substring of it.  Only labels that uniquely resolve to one
-        runtime entity are closed in; ambiguous, empty, absent or unresolved
-        labels stay fail-closed.  Explicit mentions already resolved are
-        skipped.
+        Finds every resolvable label or uniquely owned StateRecord literal
+        that occurs verbatim in the draft-authorized text fields (semantic
+        question, query hints, why-needed, trigger goal), longest label first
+        so a longer alias wins over a shorter substring of it.  Entity labels
+        take precedence over state literals.  Only literals that uniquely
+        resolve to one runtime entity are closed in; ambiguous, empty, absent
+        or unresolved literals stay fail-closed.  Explicit mentions already
+        resolved are skipped.
         """
 
-        normalized_by_length = tuple(
-            sorted(unique_label_entities, key=lambda item: (-len(item), item))
+        literal_entities: dict[str, tuple[StableId, bool]] = {
+            normalized: (entity_id, False)
+            for normalized, entity_id in unique_label_entities.items()
+        }
+        literal_entities.update(
+            {
+                normalized: (entity_id, True)
+                for normalized, entity_id in state_literal_entities.items()
+                if normalized not in literal_entities
+            }
         )
+        normalized_by_length = tuple(sorted(literal_entities, key=lambda item: (-len(item), item)))
         combined = "\n".join(text for text, _fields in closure_texts if text)
         closed: list[GroundedEntityMention] = []
         closed_ids: set[StableId] = set()
@@ -341,7 +371,7 @@ class NeedDraftGrounder:
                     start = found + 1
                     continue
                 occupied.append(span)
-                entity_id = unique_label_entities[normalized]
+                entity_id, is_state_literal = literal_entities[normalized]
                 if entity_id in closed_ids:
                     start = found + 1
                     continue
@@ -361,8 +391,13 @@ class NeedDraftGrounder:
                 )
                 resolved_mention = resolve(
                     normalized,
-                    mention_source="exact_text_mention_closure",
+                    mention_source=(
+                        "exact_state_literal_subject_closure"
+                        if is_state_literal
+                        else "exact_text_mention_closure"
+                    ),
                     source_fields=fields,
+                    **({"derived_entity_id": entity_id} if is_state_literal else {}),
                 )
                 if (  # pragma: no branch - closure labels uniquely resolve
                     resolved_mention.entity_id is not None
@@ -372,6 +407,34 @@ class NeedDraftGrounder:
                     closed_ids.add(entity_id)
                 start = found + 1
         return tuple(closed)
+
+    @classmethod
+    def _unique_state_literal_entities(
+        cls,
+        world: WorldRootDocument,
+    ) -> dict[str, StableId]:
+        """Map exact, uniquely owned scalar state literals to their subjects.
+
+        This is only a grounding aid for a public draft.  It does not expose
+        state text to the draft, create an alias, or infer a relation: a
+        literal is usable only when every matching StateRecord belongs to the
+        same subject entity.
+        """
+
+        owners: dict[str, set[StableId]] = {}
+        for state in world.states:
+            literals: tuple[str, ...] = (state.predicate,)
+            if isinstance(state.value, str) and state.value.strip():
+                literals = (*literals, state.value)
+            for literal in literals:
+                normalized = cls._normalize(literal)
+                if normalized:
+                    owners.setdefault(normalized, set()).add(state.subject_id)
+        return {
+            literal: next(iter(entity_ids))
+            for literal, entity_ids in owners.items()
+            if len(entity_ids) == 1
+        }
 
 
 __all__ = ["NeedDraftGrounder"]

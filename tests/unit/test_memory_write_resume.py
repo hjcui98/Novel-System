@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MethodType
+from typing import Any
 
 import pytest
 
-from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.changes import CandidateChangeBundle, ObservedChangeSet
+from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
+from novel_agent.domain.artifacts import ArtifactRef, RootKind
+from novel_agent.domain.changes import (
+    CandidateChangeBundle,
+    ChangeOperation,
+    ChangeOperationType,
+    ObservedChangeSet,
+)
 from novel_agent.domain.ids import ArtifactId, RunId, StableId
 from novel_agent.domain.memory_write import (
     CandidateMaterialization,
@@ -32,6 +40,7 @@ from novel_agent.domain.stage2 import (
     PatchRiskLevel,
 )
 from novel_agent.ports.memory_write import MemoryWriteCommitStatus
+from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.memory_write_workflow import (
     ImmediateProjectionReadinessPort,
     InMemoryArtifactRepository,
@@ -41,6 +50,7 @@ from novel_agent.services.memory_write_workflow import (
     LocalMemoryWriteWorkflow,
     _WorkflowData,
 )
+from novel_agent.services.pre_candidate_repair import requested_attempt
 from tests.contract.test_memory_write_workflow_contract import (
     BASE,
     PROJECT,
@@ -101,7 +111,7 @@ class _FailPhaseCheckpoint(InMemoryCheckpointRepository):
 
 def _ready_data(
     *,
-    artifacts: InMemoryArtifactRepository,
+    artifacts: Any,
     lineage: InMemoryCandidateLineageRepository,
 ) -> _WorkflowData:
     request = _request()
@@ -168,7 +178,7 @@ def _ready_data(
 
 def _workflow(
     *,
-    artifacts: InMemoryArtifactRepository,
+    artifacts: Any,
     lineage: InMemoryCandidateLineageRepository,
     checkpoint: InMemoryCheckpointRepository,
     commit: InMemoryCommitPort,
@@ -210,8 +220,10 @@ def test_candidate_persisted_checkpoint_reconstructs_in_a_new_process() -> None:
 
     restarted = _workflow(
         artifacts=artifacts,
-        lineage=lineage,
-        checkpoint=checkpoint,
+        lineage=InMemoryCandidateLineageRepository(),
+        # A new repository instance proves that checkpoint correctness comes
+        # from the persisted artifact, not the previous process's _items map.
+        checkpoint=InMemoryCheckpointRepository(artifacts),
         commit=commit,
         projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
     )
@@ -224,7 +236,110 @@ def test_candidate_persisted_checkpoint_reconstructs_in_a_new_process() -> None:
     assert isinstance(restored, _WorkflowData)
     assert restored.state is MemoryWriteState.MATERIALIZE
     assert restored.candidate == data.candidate
+    assert len(restored.candidate_revision_refs) == 1
+    assert checkpoint.load(candidate_checkpoint).candidate_revision_refs == tuple(
+        restored.candidate_revision_refs
+    )
     assert restored.basis is not None
+
+
+def test_candidate_checkpoint_reconstructs_from_filesystem_artifacts_after_assembly_rebuild(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path
+    first_artifacts = ArtifactRepository(FilesystemObjectStore(root / "objects"))
+    first_lineage = InMemoryCandidateLineageRepository()
+    first_checkpoint = InMemoryCheckpointRepository(first_artifacts)
+    commit = InMemoryCommitPort(current_commit=BASE)
+    first = _workflow(
+        artifacts=first_artifacts,
+        lineage=first_lineage,
+        checkpoint=first_checkpoint,
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(),
+    )
+    data = _ready_data(artifacts=first_artifacts, lineage=first_lineage)
+    data.materialization = None
+    data.bundle = None
+    data.validation = None
+    data.risk = None
+    checkpoint_ref = first._save_checkpoint(
+        data,
+        phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+        resume_state=MemoryWriteState.MATERIALIZE,
+    )
+
+    restarted_artifacts = ArtifactRepository(FilesystemObjectStore(root / "objects"))
+    restarted = _workflow(
+        artifacts=restarted_artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+        checkpoint=InMemoryCheckpointRepository(restarted_artifacts),
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(),
+    )
+    restored = asyncio.run(
+        restarted._initialize(data.request.model_copy(update={"resume_checkpoint": checkpoint_ref}))
+    )
+
+    assert isinstance(restored, _WorkflowData)
+    assert restored is not data
+    assert restored.candidate == data.candidate
+    assert restored.candidate_revision_refs == data.candidate_revision_refs
+    assert restored.state is MemoryWriteState.MATERIALIZE
+
+
+def test_proposal_attempt_checkpoint_reconstructs_in_a_new_process() -> None:
+    artifacts = InMemoryArtifactRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    commit = InMemoryCommitPort(current_commit=BASE)
+    first = _workflow(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+        checkpoint=checkpoint,
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
+    )
+    data = _ready_data(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+    )
+    data.candidate = None
+    attempt = requested_attempt(
+        attempt_id=StableId("proposal-attempt.resume.1"),
+        workflow_request_id=data.request.request_id,
+        run_id=data.request.run_id,
+        task_id=data.request.task_id,
+        attempt_no=1,
+        base_commit=BASE,
+        boundary_id=data.request.information_boundary.boundary_id,
+        configuration_fingerprint=data.request.configuration_fingerprint,
+        prompt_fingerprint=data.request.configuration_fingerprint,
+    )
+    attempt_ref = first._proposal_attempts.create_requested(attempt)
+    data.proposal_attempt_no = 1
+    data.inflight_proposal_attempt = attempt
+    data.proposal_attempt_refs = [attempt_ref]
+    checkpoint_ref = first._save_checkpoint(
+        data,
+        phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+        resume_state=MemoryWriteState.CURATE_ATTEMPT_EXECUTE,
+    )
+
+    restarted = _workflow(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+        checkpoint=InMemoryCheckpointRepository(artifacts),
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
+    )
+    restored = asyncio.run(
+        restarted._initialize(data.request.model_copy(update={"resume_checkpoint": checkpoint_ref}))
+    )
+
+    assert isinstance(restored, _WorkflowData)
+    assert restored.inflight_proposal_attempt == attempt
+    assert restored.proposal_attempt_refs == [attempt_ref]
+    assert restored.recovered_inflight_proposal is True
 
 
 def test_guardian_decision_checkpoint_reconstructs_in_a_new_process() -> None:
@@ -266,7 +381,9 @@ def test_guardian_decision_checkpoint_reconstructs_in_a_new_process() -> None:
     restarted = _workflow(
         artifacts=artifacts,
         lineage=lineage,
-        checkpoint=checkpoint,
+        # Rebuild the checkpoint adapter as a separate process would; the
+        # durable artifact must be sufficient to restore Guardian state.
+        checkpoint=InMemoryCheckpointRepository(artifacts),
         commit=commit,
         projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
     )
@@ -325,6 +442,56 @@ def test_commit_accepted_before_checkpoint_uses_exact_replay_after_restart() -> 
     assert result.resulting_commit == accepted_commit
     assert result.canonical_commit_accepted is True
     assert commit.calls == 1
+
+
+def test_cold_commit_resume_restores_committed_operation_ids() -> None:
+    artifacts = InMemoryArtifactRepository()
+    lineage = InMemoryCandidateLineageRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    commit = InMemoryCommitPort(current_commit=BASE)
+    first = _workflow(
+        artifacts=artifacts,
+        lineage=lineage,
+        checkpoint=checkpoint,
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
+    )
+    data = _ready_data(artifacts=artifacts, lineage=lineage)
+    operation = ChangeOperation(
+        operation_id=StableId("operation.resume.replayed"),
+        root_kind=RootKind.WORLD,
+        operation=ChangeOperationType.CREATE,
+        target_id=StableId("entity.resume.replayed"),
+        payload={"record_type": "entity", "record": {"internal_label": "replayed"}},
+    )
+    assert data.bundle is not None
+    data.bundle = data.bundle.model_copy(
+        update={
+            "observed_changes": data.bundle.observed_changes.model_copy(
+                update={"operations": (operation,)}
+            )
+        }
+    )
+    assert first._prepare_commit(data) is None
+    precommit_checkpoint = data.checkpoint_ref
+    assert precommit_checkpoint is not None
+    assert first._commit(data) is None
+
+    restarted = _workflow(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+        checkpoint=InMemoryCheckpointRepository(artifacts),
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
+    )
+    result = asyncio.run(
+        restarted.execute(
+            data.request.model_copy(update={"resume_checkpoint": precommit_checkpoint})
+        )
+    )
+
+    assert result.status is MemoryWriteWorkflowStatus.COMMITTED
+    assert result.committed_operation_ids == (operation.operation_id,)
 
 
 def test_projection_pending_checkpoint_resumes_without_recommitting() -> None:

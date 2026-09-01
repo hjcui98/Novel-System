@@ -158,6 +158,7 @@
         "PLAN_CANDIDATE_READY",
         "YIELDED",
         "REVIEW_REQUIRED",
+        "WAITING_INPUT",
         "SUSPENDED",
         "BLOCKED"
       ],

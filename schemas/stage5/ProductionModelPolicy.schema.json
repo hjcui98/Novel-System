@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "Non-secret model admission limits declared by the assembly spec.",
+  "properties": {
+    "default_output_limit": {
+      "default": 8000,
+      "minimum": 1,
+      "title": "Default Output Limit",
+      "type": "integer"
+    },
+    "reasoning_billing_mode": {
+      "default": "unknown_not_applicable",
+      "minLength": 1,
+      "title": "Reasoning Billing Mode",
+      "type": "string"
+    },
+    "require_admission": {
+      "default": true,
+      "title": "Require Admission",
+      "type": "boolean"
+    },
+    "sequence_limit": {
+      "default": 131072,
+      "minimum": 1,
+      "title": "Sequence Limit",
+      "type": "integer"
+    }
+  },
+  "title": "ProductionModelPolicy",
+  "type": "object"
+}

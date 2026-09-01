@@ -13,7 +13,7 @@ from novel_agent.domain.benchmark import (
     PlanRootDocument,
     VisibleOutlineNode,
 )
-from novel_agent.domain.ids import ArtifactId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     NeedRisk,
@@ -43,6 +43,7 @@ from novel_agent.domain.world import (
     Event,
     NarrativeOrder,
     RelationRecord,
+    StateRecord,
     StoryTime,
     TruthClass,
 )
@@ -285,6 +286,52 @@ def test_planner_prompt_is_general_and_bounded() -> None:
     assert summary.entities
     assert summary.states
     assert "当前状态面" in prompt
+
+
+def test_p1_frozen_snapshot_reaches_planner_prompt_without_future_text() -> None:
+    bundle = make_synthetic_bundle()
+    task = build_safe_task_contract(
+        case_id=bundle.case_manifests[0].case_id,
+        checkpoint_chapter=20,
+        target_range=(21, 23),
+        information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
+        task_intent="为写 21-23 章准备历史记忆",
+    )
+    result = PlanConditionedNeedPlanner().plan(
+        task=task,
+        world=bundle.world_roots[0],
+        planning_context=_planner_context(task),
+        history_text=bundle.text_roots[0],
+        snapshot_id=StableId("snapshot.planner-p1"),
+    )
+
+    expansion = result.source_expansion
+    assert expansion is not None
+    assert expansion.context_level == "P1"
+    assert expansion.selected_record_ids == result.world_summary.selected_record_ids
+    assert expansion.prompt_block()
+    assert expansion.prompt_block() in result.exact_prompt
+    assert "林澈立下旧誓言,未来必须进入北塔。" in result.exact_prompt
+    assert "林澈受伤仍未痊愈。" in result.exact_prompt
+    assert "林澈重申旧誓言,决定继续北行。" not in result.exact_prompt
+    assert "林澈终于进入北塔,兑现了阶段目标。" not in result.exact_prompt
+
+    stale_world = bundle.world_roots[0].model_copy(
+        update={"source_commit": CommitId("sha256:" + "9" * 64)}
+    )
+    stale_result = PlanConditionedNeedPlanner().plan(
+        task=task,
+        world=stale_world,
+        planning_context=_planner_context(task),
+        history_text=bundle.text_roots[0],
+        snapshot_id=StableId("snapshot.planner-p1-stale"),
+    )
+    stale_expansion = stale_result.source_expansion
+    assert stale_expansion is not None
+    assert stale_expansion.resolved_count == 0
+    assert stale_expansion.stale_count >= 1
+    assert stale_expansion.prompt_block() == ""
+    assert "event.synthetic.promise" not in stale_result.exact_prompt
 
 
 def test_world_summary_filters_before_cap_and_prioritizes_relevant_rows() -> None:
@@ -722,6 +769,31 @@ def test_generator_planner_chain_emits_lineaged_needs() -> None:
         assert item.stop_condition == (
             "served by cutoff-safe exact evidence slices or an explicit typed gap"
         )
+
+
+def test_generator_binds_explicit_model_run_identity() -> None:
+    endpoint = _PlannerEndpoint((_planner_payload(),))
+    gateway = _gateway(endpoint)
+    task = _task()
+    world = _entity_world()
+    plan = make_synthetic_bundle().plan_roots[0]
+    context = _planner_context(task)
+    model_run_id = RunId("run.u6a.c-roll.identity")
+
+    result = TaskPlanConditionedNeedGenerator(planner_gateway=gateway).generate_with_lineage(
+        task,
+        world,
+        plan,
+        context,
+        run_id=model_run_id,
+    )
+
+    assert result.needs
+    assert result.planner_metadata is not None
+    assert result.planner_metadata.run_id == model_run_id
+    assert all(need.run_id == model_run_id for need in result.needs)
+    assert endpoint.requests
+    assert all(request.run_id == model_run_id for request in endpoint.requests)
 
 
 def test_planner_artifact_is_content_addressed_replayable_and_basis_checked(
@@ -1395,6 +1467,29 @@ def test_grounder_relation_edge_statuses() -> None:
     )
     assert no_relation.relation_mentions[0].grounding_status is GroundingStatus.UNRESOLVED
     assert no_relation.relation_mentions[0].grounding_method == "no_relation_match"
+    assert no_relation.relation_mentions[0].subject_id == teacher.entity_id
+    assert no_relation.relation_mentions[0].object_id == student.entity_id
+
+    reversed_relation = grounder.ground(
+        PlannedNeedDraft(
+            draft_id="rel-reversed",
+            semantic_question="question?",
+            entity_mentions=(
+                EntityMention(label="student", role_in_need="subject"),
+                EntityMention(label="teacher", role_in_need="object"),
+            ),
+            relation_mentions=(
+                RelationMention(
+                    subject_label="student",
+                    relation_label="teaches",
+                    object_label="teacher",
+                ),
+            ),
+        ),
+        world,
+    )
+    assert reversed_relation.relation_mentions[0].grounding_status is GroundingStatus.UNRESOLVED
+    assert reversed_relation.relation_mentions[0].grounding_method == "no_relation_match"
 
     duplicate_relation_world = world.model_copy(
         update={
@@ -2020,6 +2115,60 @@ def test_grounder_closure_binds_entities_from_question_text() -> None:
     assert StableId("entity.planner.luo") in ids
     sources = {item.mention: item.mention_source for item in grounded.entity_mentions}
     assert sources["落落"] == "exact_text_mention_closure"
+
+
+def test_grounder_closure_binds_unique_state_literal_to_subject() -> None:
+    """A compound planner question must route a state value to its owner."""
+
+    base = _chinese_world()
+    chen = next(entity for entity in base.entities if entity.internal_label == "陈长生")
+    world = base.model_copy(
+        update={
+            "states": (
+                *base.states,
+                StateRecord(
+                    state_id=StableId("state.planner.black-dragon-location"),
+                    subject_id=chen.entity_id,
+                    predicate="location",
+                    value="underground_space_below_tonggong",
+                    valid_time=StoryTime(worldline="main"),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+                StateRecord(
+                    state_id=StableId("state.planner.black-dragon-obligation"),
+                    subject_id=chen.entity_id,
+                    predicate="obligation_visit_black_dragon",
+                    value="agreed_to_return_and_visit",
+                    valid_time=StoryTime(worldline="main"),
+                    truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                ),
+            )
+        }
+    )
+    grounded = NeedDraftGrounder().ground(
+        PlannedNeedDraft(
+            draft_id="closure-state-literal",
+            semantic_question=(
+                "What is the current status of the 'underground_space_below_tonggong' "
+                "encounter with the 黑龙, and has the 'agreed_to_return_and_visit' "
+                "obligation been fulfilled or is it pending?"
+            ),
+            entity_mentions=(EntityMention(label="黑龙", role_in_need="object"),),
+            suggested_facets=("CURRENT_STATE",),
+        ),
+        world,
+    )
+
+    chen_mention = next(
+        mention for mention in grounded.entity_mentions if mention.entity_id == chen.entity_id
+    )
+    assert chen_mention.mention_source == "exact_state_literal_subject_closure"
+    assert chen_mention.grounding_method == "exact_state_literal_subject_match"
+    assert "semantic_question" in chen_mention.mention_source_fields
+    assert set(NeedDraftGrounder().grounded_entity_ids(grounded)) == {
+        chen.entity_id,
+        StableId("entity.planner.hei"),
+    }
 
 
 def test_grounder_closure_binds_fallback_goal_entities() -> None:

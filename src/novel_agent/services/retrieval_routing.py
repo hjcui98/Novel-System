@@ -35,8 +35,8 @@ from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.need_query_compiler import NeedQueryCompiler
 from novel_agent.services.retrieval import ROUTES, FusionService, RetrievalBackend
 
-ROUTE_POLICY_VERSION = SchemaVersion("2.2.0")
-ROUTE_PROFILE_VERSION = SchemaVersion("2.2.0")
+ROUTE_POLICY_VERSION = SchemaVersion("2.3.0")
+ROUTE_PROFILE_VERSION = SchemaVersion("2.3.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,22 +623,19 @@ def _r2_registration(
             None,
         )
     if intent in {Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP}:
-        group = _parallel_group(
+        graph_fallback = _fallback(
             intent,
-            (
-                RetrievalChannel.TYPED_GRAPH,
-                RetrievalChannel.ANCHOR_BM25,
-                RetrievalChannel.ANCHOR_DENSE,
-            ),
+            "anchor_evidence_insufficient",
+            (RetrievalChannel.TYPED_GRAPH,),
         )
         return (
             (
-                RetrievalChannel.TYPED_GRAPH,
                 RetrievalChannel.ANCHOR_BM25,
                 RetrievalChannel.ANCHOR_DENSE,
+                RetrievalChannel.TYPED_GRAPH,
             ),
-            (group,),
-            (),
+            (anchor,),
+            (graph_fallback,),
             GraphTraversalPolicy(),
         )
     if intent in {

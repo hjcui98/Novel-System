@@ -39,11 +39,18 @@ class VerticalCreativeRunner:
         *,
         max_tasks: int,
         max_slices: int | None = None,
+        stop_after_chapter: int | None = None,
     ) -> Stage5VerticalRunReport:
         if max_tasks < 1:
             raise ValueError("vertical runner dispatch slice size must be positive")
         if max_slices is not None and max_slices < 1:
             raise ValueError("vertical runner max_slices must be positive")
+        if stop_after_chapter is not None and not (
+            request.current_chapter < stop_after_chapter <= request.target_chapters
+        ):
+            raise ValueError(
+                "vertical runner stop_after_chapter must be after current and at or before target"
+            )
 
         tasks = self._tasks.list_run(request.run_id)
         results: list[CreativeRunResult] = []
@@ -54,13 +61,18 @@ class VerticalCreativeRunner:
         dispatch_slices = 0
         while True:
             completed_chapters = self._completed_chapters(request, tasks)
-            if request.target_chapters in completed_chapters or self._has_blocking_task(tasks):
+            reached_chapter_boundary = stop_after_chapter is not None and any(
+                chapter >= stop_after_chapter for chapter in completed_chapters
+            )
+            if request.target_chapters in completed_chapters or reached_chapter_boundary:
                 break
             recovered = self._recover_boundary(tasks)
             if recovered is not None:
                 results.append(recovered)
                 tasks = self._tasks.list_run(request.run_id)
                 continue
+            if self._has_blocking_task(tasks) and not self._has_runnable_background_work(tasks):
+                break
             if not self._has_runnable_work(tasks):
                 break
             if max_slices is not None and dispatch_slices >= max_slices:
@@ -76,6 +88,9 @@ class VerticalCreativeRunner:
                 break
 
         completed_chapters = self._completed_chapters(request, tasks)
+        reached_chapter_boundary = stop_after_chapter is not None and any(
+            chapter >= stop_after_chapter for chapter in completed_chapters
+        )
         reached_slice_limit = (
             max_slices is not None
             and dispatch_slices >= max_slices
@@ -86,6 +101,7 @@ class VerticalCreativeRunner:
             completed_target=request.target_chapters in completed_chapters,
             tasks=tasks,
             reached_slice_limit=reached_slice_limit,
+            reached_chapter_boundary=reached_chapter_boundary,
         )
         final_commit = (
             results[-1].current_commit
@@ -106,25 +122,18 @@ class VerticalCreativeRunner:
             outputs_frozen=status is VerticalRunStatus.COMPLETED,
         )
 
-    def _recover_boundary(
-        self, tasks: tuple[TaskRecord, ...]
-    ) -> CreativeRunResult | None:
+    def _recover_boundary(self, tasks: tuple[TaskRecord, ...]) -> CreativeRunResult | None:
         recover = getattr(self._runtime, "recover_boundary", None)
         if not callable(recover):  # Narrow deterministic runner fixtures.
             return None
-        recover_boundary = cast(
-            Callable[[TaskId], CreativeRunResult | None], recover
-        )
+        recover_boundary = cast(Callable[[TaskId], CreativeRunResult | None], recover)
         for task in reversed(tasks):
             recoverable = (
                 (
                     task.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.DRAFT_ACCEPTANCE}
                     and task.status is TaskStatus.WAITING_INPUT
                 )
-                or (
-                    task.kind is TaskKind.DRAFT_COMMIT
-                    and task.current_attempt_id is not None
-                )
+                or (task.kind is TaskKind.DRAFT_COMMIT and task.current_attempt_id is not None)
                 or (
                     task.kind is TaskKind.PROJECTION_FRESHNESS
                     and task.projection_after == "draft"
@@ -181,6 +190,10 @@ class VerticalCreativeRunner:
         )
 
     @classmethod
+    def _has_runnable_background_work(cls, tasks: tuple[TaskRecord, ...]) -> bool:
+        return cls._has_runnable_work(tuple(task for task in tasks if cls._is_background(task)))
+
+    @classmethod
     def _has_recovery_pending(cls, tasks: tuple[TaskRecord, ...]) -> bool:
         return any(
             not task.superseded
@@ -200,6 +213,7 @@ class VerticalCreativeRunner:
         completed_target: bool,
         tasks: tuple[TaskRecord, ...],
         reached_slice_limit: bool,
+        reached_chapter_boundary: bool,
     ) -> VerticalRunStatus:
         if completed_target:
             return VerticalRunStatus.COMPLETED
@@ -222,6 +236,8 @@ class VerticalCreativeRunner:
             ):
                 return VerticalRunStatus.BLOCKED
         if reached_slice_limit:
+            return VerticalRunStatus.YIELDED
+        if reached_chapter_boundary:
             return VerticalRunStatus.YIELDED
         return VerticalRunStatus.WAITING
 

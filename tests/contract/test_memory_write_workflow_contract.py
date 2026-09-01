@@ -28,13 +28,16 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.memory_write import (
+    CandidateMaterialization,
     CandidateProducerKind,
     CandidateRevision,
     CanonicalWriteBasis,
     ChapterRevealTrigger,
+    CuratorWorldProposalInput,
     InformationBoundary,
     MaintenanceTrigger,
     MemoryWriteCommitProfile,
+    MemoryWriteState,
     MemoryWriteWorkflowRequest,
     MemoryWriteWorkflowResult,
     MemoryWriteWorkflowStatus,
@@ -108,6 +111,8 @@ def _request(
     *,
     profile: MemoryWriteCommitProfile = MemoryWriteCommitProfile.CHANGED_ROOTS_ONLY,
     chapter_text_changed: bool = False,
+    validation_only: bool = False,
+    world_mutation: object | None = None,
 ) -> MemoryWriteWorkflowRequest:
     boundary = InformationBoundary(
         boundary_id=StableId("boundary.stage2w.contract"),
@@ -151,9 +156,10 @@ def _request(
         project_id=PROJECT,
         trigger=trigger,
         commit_profile=profile,
+        validation_only=validation_only,
         base_commit=BASE,
         root_update_intents=intents,
-        world_mutation=NoWorldMutationInput(),
+        world_mutation=NoWorldMutationInput() if world_mutation is None else world_mutation,
         canonical_root_refs=_manifest(),
         information_boundary=boundary,
         access_scope=AccessScope.WRITER_SAFE,
@@ -323,3 +329,101 @@ def test_identical_root_profiles_never_create_a_commit(
         assert result is not None
         assert result.status is expected_status
         assert expected_code in result.terminal_codes
+
+
+def test_confirmed_canonical_noop_is_an_explicit_noop_terminal() -> None:
+    artifacts = InMemoryArtifactRepository()
+    workflow = LocalMemoryWriteWorkflow(
+        canonical_read=_Canonical(),
+        commit=object(),
+        information_boundary=_BoundarySpy(),
+        artifacts=artifacts,
+    )
+    data = _precommit_data(
+        _request(profile=MemoryWriteCommitProfile.REQUIRE_CANONICAL_COMMIT),
+        artifacts,
+        _manifest(),
+    )
+    data.world_mutation_noop = True
+
+    result = workflow._prepare_commit(data)
+
+    assert result is None
+    assert data.state is MemoryWriteState.COMPLETE
+
+
+def test_validation_only_records_a_safe_validated_action_without_commit() -> None:
+    artifacts = InMemoryArtifactRepository()
+    workflow = LocalMemoryWriteWorkflow(
+        canonical_read=_Canonical(),
+        commit=object(),
+        information_boundary=_BoundarySpy(),
+        artifacts=artifacts,
+    )
+    request = _request(
+        profile=MemoryWriteCommitProfile.REQUIRE_CANONICAL_COMMIT,
+        validation_only=True,
+        world_mutation=CuratorWorldProposalInput(curator_agent_spec=_contract("agent.curator")),
+    )
+    candidate = _candidate(_artifact("e"))
+    materialization = CandidateMaterialization(
+        candidate_id=candidate.candidate_id,
+        candidate_content_hash=candidate.content_hash,
+        bundle_artifact=_artifact("f"),
+        proposed_roots_hash=_id("8"),
+        materialization_receipt=_artifact("9"),
+        materializer_policy_ref=_contract("policy.materializer"),
+    )
+    data = _precommit_data(request, artifacts, _manifest(world="f"))
+    data.candidate = candidate
+    data.materialization = materialization
+
+    result = workflow._prepare_commit(data)
+
+    assert result is not None
+    assert result.status is MemoryWriteWorkflowStatus.NOOP
+    assert result.workflow_phase.value == "complete"
+    assert result.safe_action_accepted is True
+    assert result.canonical_commit_accepted is False
+    assert result.resulting_commit is None
+    assert result.commit_receipt is None
+    assert result.terminal_candidate_id is not None
+    assert result.validation_receipt is not None
+    assert result.world_mutation_noop is False
+    assert "VALIDATION_ONLY_SAFE_ACTION" in result.terminal_codes
+
+
+def test_validation_only_empty_delta_remains_an_explicit_noop() -> None:
+    artifacts = InMemoryArtifactRepository()
+    workflow = LocalMemoryWriteWorkflow(
+        canonical_read=_Canonical(),
+        commit=object(),
+        information_boundary=_BoundarySpy(),
+        artifacts=artifacts,
+    )
+    request = _request(
+        profile=MemoryWriteCommitProfile.REQUIRE_CANONICAL_COMMIT,
+        validation_only=True,
+        world_mutation=CuratorWorldProposalInput(curator_agent_spec=_contract("agent.curator")),
+    )
+    candidate = _candidate(_artifact("e"))
+    materialization = CandidateMaterialization(
+        candidate_id=candidate.candidate_id,
+        candidate_content_hash=candidate.content_hash,
+        bundle_artifact=_artifact("f"),
+        proposed_roots_hash=_id("8"),
+        materialization_receipt=_artifact("9"),
+        materializer_policy_ref=_contract("policy.materializer"),
+    )
+    data = _precommit_data(request, artifacts, _manifest(world="f"))
+    data.candidate = candidate
+    data.materialization = materialization
+    data.world_mutation_noop = True
+
+    result = workflow._prepare_commit(data)
+
+    assert result is not None
+    assert result.status is MemoryWriteWorkflowStatus.NOOP
+    assert result.safe_action_accepted is False
+    assert result.world_mutation_noop is True
+    assert "VALIDATION_ONLY_SAFE_ACTION" not in result.terminal_codes

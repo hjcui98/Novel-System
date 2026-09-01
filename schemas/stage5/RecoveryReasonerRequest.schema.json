@@ -1,0 +1,358 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "FailureClass": {
+      "enum": [
+        "worker_startup",
+        "worker_lease_expired",
+        "provider_transient",
+        "leaf_schema_rejected",
+        "leaf_review_required",
+        "canon_extraction_gap",
+        "basis_changed",
+        "permission_denied",
+        "validation_rejected",
+        "commit_conflict",
+        "projection_failed",
+        "freshness_waiting",
+        "freshness_blocked",
+        "writer_lane_busy",
+        "effect_uncertain",
+        "poison_loop",
+        "budget_exhausted",
+        "cancelled",
+        "runtime_capability_unavailable",
+        "external_resource_unavailable",
+        "unknown"
+      ],
+      "title": "FailureClass",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RecoveryActionCandidate": {
+      "additionalProperties": false,
+      "description": "One existing safe action the reasoner is allowed to select.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "action_kind": {
+          "$ref": "#/$defs/RecoveryActionKind"
+        },
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "canonical_mutation_observed": {
+          "const": false,
+          "default": false,
+          "title": "Canonical Mutation Observed",
+          "type": "boolean"
+        },
+        "proposal_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "safety_boundary_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "skill_mutation_observed": {
+          "const": false,
+          "default": false,
+          "title": "Skill Mutation Observed",
+          "type": "boolean"
+        },
+        "validation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "validator_accepted": {
+          "const": true,
+          "default": true,
+          "title": "Validator Accepted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action_id",
+        "action_kind",
+        "proposal_ref",
+        "validation_ref",
+        "basis_commit",
+        "safety_boundary_id"
+      ],
+      "title": "RecoveryActionCandidate",
+      "type": "object"
+    },
+    "RecoveryActionKind": {
+      "enum": [
+        "graph_curator",
+        "ordinary_curator",
+        "review_required"
+      ],
+      "title": "RecoveryActionKind",
+      "type": "string"
+    },
+    "RecoveryReasonerAdmission": {
+      "additionalProperties": false,
+      "description": "Evidence gate required before the offline reasoner can be called.",
+      "properties": {
+        "canonical_or_skill_mutation_observed": {
+          "const": false,
+          "default": false,
+          "title": "Canonical Or Skill Mutation Observed",
+          "type": "boolean"
+        },
+        "decision": {
+          "const": "U8_C_ADMITTED",
+          "default": "U8_C_ADMITTED",
+          "title": "Decision",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "maxItems": 16,
+          "minItems": 3,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "gate_authority": {
+          "const": "codex_or_human",
+          "default": "codex_or_human",
+          "title": "Gate Authority",
+          "type": "string"
+        },
+        "held_out_beats_deterministic_baseline": {
+          "const": true,
+          "default": true,
+          "title": "Held Out Beats Deterministic Baseline",
+          "type": "boolean"
+        },
+        "receipt_state_cannot_disambiguate": {
+          "const": true,
+          "default": true,
+          "title": "Receipt State Cannot Disambiguate",
+          "type": "boolean"
+        },
+        "same_failure_boundary_has_multiple_valid_actions": {
+          "const": true,
+          "default": true,
+          "title": "Same Failure Boundary Has Multiple Valid Actions",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "evidence_refs"
+      ],
+      "title": "RecoveryReasonerAdmission",
+      "type": "object"
+    },
+    "RecoveryReasonerBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "enable_thinking": {
+          "default": false,
+          "title": "Enable Thinking",
+          "type": "boolean"
+        },
+        "max_context_bytes": {
+          "default": 65536,
+          "maximum": 1048576,
+          "minimum": 1024,
+          "title": "Max Context Bytes",
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "default": 2048,
+          "maximum": 16384,
+          "minimum": 128,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "thinking_token_budget": {
+          "default": 0,
+          "maximum": 8192,
+          "minimum": 0,
+          "title": "Thinking Token Budget",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 120.0,
+          "exclusiveMinimum": 0,
+          "maximum": 900,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "RecoveryReasonerBudget",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable incident surface presented to the offline reasoner.",
+  "properties": {
+    "admission": {
+      "$ref": "#/$defs/RecoveryReasonerAdmission"
+    },
+    "allowed_action_kinds": {
+      "items": {
+        "$ref": "#/$defs/RecoveryActionKind"
+      },
+      "maxItems": 3,
+      "minItems": 2,
+      "title": "Allowed Action Kinds",
+      "type": "array"
+    },
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget": {
+      "$ref": "#/$defs/RecoveryReasonerBudget"
+    },
+    "candidates": {
+      "items": {
+        "$ref": "#/$defs/RecoveryActionCandidate"
+      },
+      "maxItems": 8,
+      "minItems": 2,
+      "title": "Candidates",
+      "type": "array"
+    },
+    "failure_class": {
+      "$ref": "#/$defs/FailureClass"
+    },
+    "incident_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "model_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "prompt_contract_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "proposal_only": {
+      "const": true,
+      "default": true,
+      "title": "Proposal Only",
+      "type": "boolean"
+    },
+    "receipt_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Receipt Refs",
+      "type": "array"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "safety_boundary_id": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "skill_contract_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "state_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "State Refs",
+      "type": "array"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "request_id",
+    "model_request_id",
+    "project_id",
+    "run_id",
+    "task_id",
+    "incident_ref",
+    "failure_class",
+    "basis_commit",
+    "safety_boundary_id",
+    "receipt_refs",
+    "state_refs",
+    "candidates",
+    "allowed_action_kinds",
+    "prompt_contract_hash",
+    "skill_contract_hash",
+    "admission"
+  ],
+  "title": "RecoveryReasonerRequest",
+  "type": "object"
+}

@@ -184,6 +184,11 @@
       ],
       "title": "PlannerTargetStateCoverage",
       "type": "object"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
     }
   },
   "additionalProperties": false,
@@ -250,6 +255,14 @@
       "minimum": 0,
       "title": "Relation Count",
       "type": "integer"
+    },
+    "selected_record_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Record Ids",
+      "type": "array"
     },
     "state_count": {
       "minimum": 0,

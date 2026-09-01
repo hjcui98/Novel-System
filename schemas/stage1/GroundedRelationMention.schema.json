@@ -32,6 +32,17 @@
     "grounding_status": {
       "$ref": "#/$defs/GroundingStatus"
     },
+    "object_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "object_label": {
       "minLength": 1,
       "title": "Object Label",
@@ -52,6 +63,17 @@
       "minLength": 1,
       "title": "Relation Label",
       "type": "string"
+    },
+    "subject_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "subject_label": {
       "minLength": 1,

@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "V05ReadinessStatus": {
+      "enum": [
+        "PASS",
+        "PENDING",
+        "UNAVAILABLE"
+      ],
+      "title": "V05ReadinessStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Source and readiness facts frozen before a Writer-readout campaign.",
+  "properties": {
+    "assembly_attestation_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "build_report_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "bundle_id": {
+      "minLength": 1,
+      "title": "Bundle Id",
+      "type": "string"
+    },
+    "bundle_version": {
+      "minLength": 1,
+      "title": "Bundle Version",
+      "type": "string"
+    },
+    "effective_budget_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "r_annotation": {
+      "$ref": "#/$defs/V05ReadinessStatus"
+    },
+    "r_bundle": {
+      "$ref": "#/$defs/V05ReadinessStatus"
+    },
+    "r_judge": {
+      "$ref": "#/$defs/V05ReadinessStatus"
+    },
+    "r_runner": {
+      "$ref": "#/$defs/V05ReadinessStatus"
+    },
+    "source_identity": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "bundle_version",
+    "build_report_ref",
+    "assembly_attestation_ref",
+    "effective_budget_ref",
+    "source_identity",
+    "r_bundle",
+    "r_annotation",
+    "r_judge",
+    "r_runner"
+  ],
+  "title": "V05CampaignSourceIdentity",
+  "type": "object"
+}

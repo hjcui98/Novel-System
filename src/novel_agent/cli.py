@@ -11,12 +11,55 @@ from pathlib import Path
 from typing import Any
 
 from novel_agent.config import AppSettings
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import CommitId, ProjectId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
+from novel_agent.domain.runtime import FailureClass
+from novel_agent.ports.model_endpoint import ModelEndpointError
+from novel_agent.runtime.creative_assembly import DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
+from novel_agent.runtime.production_bootstrap import resolve_registered_model_endpoints
 
 
 def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(coro)
+
+
+def _resource_blocked(error: BaseException) -> int:
+    print(
+        json.dumps(
+            {"status": "RESOURCE_BLOCKED", "reason": str(error)},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 2
+
+
+def _write_json_once(path: Path, payload: object) -> None:
+    if path.exists():
+        raise RuntimeError(f"runtime CLI refuses to overwrite receipt: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_artifact_refs(path: Path | None) -> tuple[ArtifactRef, ...]:
+    """Load a JSON list of already-issued refs for an operator command."""
+
+    if path is None:
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"artifact refs file is not valid JSON: {path}") from error
+    if not isinstance(payload, list):
+        raise ValueError("artifact refs file must contain a JSON list")
+    try:
+        return tuple(ArtifactRef.model_validate(item, strict=True) for item in payload)
+    except ValueError as error:
+        raise ValueError("artifact refs file contains an invalid ArtifactRef") from error
 
 
 class _ProjectionBuilder:
@@ -56,8 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
     advance.add_argument("--policy", type=Path, required=True)
     advance.add_argument("--manifest", type=Path, required=True)
     advance.add_argument("--object-store-root", type=Path, required=True)
-    advance.add_argument("--assembly-factory", required=True)
+    advance.add_argument(
+        "--endpoint-profile",
+        help="explicit registered endpoint profile; omit to fail closed without an endpoint",
+    )
+    advance.add_argument(
+        "--assembly-factory",
+        default=DEFAULT_PRODUCTION_ASSEMBLY_FACTORY,
+    )
     advance.add_argument("--max-tasks", type=int, required=True)
+    advance.add_argument("--receipt", type=Path)
     for action in ("pause", "resume", "cancel", "retry"):
         control = runtime_commands.add_parser(action)
         control.add_argument("--project-id", required=True)
@@ -76,9 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     extend_budget.add_argument("--actor-id", required=True)
     extend_budget.add_argument("--reason", required=True)
     extend_budget.add_argument("--additional-attempts", type=int, default=0)
-    extend_budget.add_argument(
-        "--additional-planner-memory-tranches", type=int, default=0
-    )
+    extend_budget.add_argument("--additional-planner-memory-tranches", type=int, default=0)
     reconcile = runtime_commands.add_parser("reconcile-effect")
     reconcile.add_argument("--project-id", required=True)
     reconcile.add_argument("--run-id", required=True)
@@ -95,7 +144,15 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_attempt.add_argument("--actor-id", required=True)
     reconcile_attempt.add_argument("--reason", required=True)
     reconcile_attempt.add_argument(
-        "--terminal-status", choices=("waiting_retry", "cancelled"), required=True
+        "--terminal-status", choices=("waiting_retry", "blocked", "cancelled"), required=True
+    )
+    reconcile_attempt.add_argument(
+        "--failure-class", choices=tuple(item.value for item in FailureClass)
+    )
+    reconcile_attempt.add_argument(
+        "--artifact-refs",
+        type=Path,
+        help="JSON list of existing ArtifactRef objects to attach to the settlement",
     )
     unblock = runtime_commands.add_parser("unblock")
     unblock.add_argument("--project-id", required=True)
@@ -136,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.top_command == "runtime":
         from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
         from novel_agent.adapters.postgres.database import build_engine, build_session_factory
+        from novel_agent.adapters.postgres.model_call_ledger import SqlModelCallLedger
         from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
         from novel_agent.domain.creative_runtime import (
             AcceptanceCommand,
@@ -186,32 +244,51 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             policy = CreativeRunPolicy.model_validate_json(args.policy.read_bytes())
             manifest = load_stage5_manifest(args.manifest)
-            assembly = load_production_runtime_assembly(
-                args.assembly_factory,
-                ProductionAssemblyContext(
-                    database_url=args.database_url,
-                    object_store_root=args.object_store_root,
-                    project_id=ProjectId(args.project_id),
-                    run_id=RunId(args.run_id),
-                    policy=policy,
-                    manifest=manifest,
-                ),
-            )
-            results = _run_async(
-                assembly.dispatcher.run_bounded(max_tasks=args.max_tasks)
-            )
-            if not results:
-                print(json.dumps({"progressed": 0, "results": []}, sort_keys=True))
-                return 0
-            print(
-                json.dumps(
-                    {
-                        "progressed": len(results),
-                        "results": [item.model_dump(mode="json") for item in results],
-                    },
-                    sort_keys=True,
+            try:
+                assembly = load_production_runtime_assembly(
+                    args.assembly_factory,
+                    ProductionAssemblyContext(
+                        database_url=args.database_url,
+                        object_store_root=args.object_store_root,
+                        project_id=ProjectId(args.project_id),
+                        run_id=RunId(args.run_id),
+                        policy=policy,
+                        manifest=manifest,
+                        model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
+                    ),
                 )
-            )
+            except RuntimeError as error:
+                if "requires registered model endpoints" in str(error):
+                    return _resource_blocked(error)
+                raise
+            try:
+                results = _run_async(assembly.dispatcher.run_bounded(max_tasks=args.max_tasks))
+            except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
+                return _resource_blocked(error)
+            output = {
+                "progressed": len(results),
+                "results": [item.model_dump(mode="json") for item in results],
+            }
+            if args.receipt is not None:
+                if assembly.attestation is None:
+                    raise RuntimeError("production assembly did not provide a CLI attestation")
+                _write_json_once(
+                    args.receipt,
+                    {
+                        "receipt_type": "runtime_cli_advance",
+                        "status": "succeeded",
+                        "assembly_factory": args.assembly_factory,
+                        "endpoint_profile": args.endpoint_profile,
+                        "spec_locator": assembly.attestation.factory_locator,
+                        "session_factory_identity": assembly.attestation.session_factory_identity,
+                        "model_gateway": assembly.attestation.model_gateway,
+                        "endpoints": [
+                            item.model_dump(mode="json") for item in assembly.attestation.endpoints
+                        ],
+                        **output,
+                    },
+                )
+            print(json.dumps(output, sort_keys=True))
             return 0
         if args.runtime_command in {
             "accept-plan",
@@ -263,7 +340,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if args.runtime_command == "export-report":
-            report = RuntimeReportService(factory, events).export(
+            report = RuntimeReportService(
+                factory,
+                events,
+                SqlModelCallLedger(factory),
+            ).export(
                 RunId(args.run_id),
                 manifest_path=args.manifest,
                 executable_commit=args.executable_commit,
@@ -298,7 +379,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 actor_id=args.actor_id,
                 reason=args.reason,
                 terminal_status=TaskStatus(args.terminal_status),
+                failure_class=(
+                    None if args.failure_class is None else FailureClass(args.failure_class)
+                ),
                 observed_revision=args.observed_revision,
+                artifact_refs=_load_artifact_refs(args.artifact_refs),
             )
             print(reconcile_result.model_dump_json())
             return 0
@@ -333,9 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 actor_id=args.actor_id,
                 reason=args.reason,
                 additional_attempts=args.additional_attempts,
-                additional_planner_memory_tranches=(
-                    args.additional_planner_memory_tranches
-                ),
+                additional_planner_memory_tranches=(args.additional_planner_memory_tranches),
                 observed_revision=args.observed_revision,
             )
         elif args.runtime_command == "resume":

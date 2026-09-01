@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Structured model output; identity and authority are assigned by the host.",
+  "properties": {
+    "rationale": {
+      "maxLength": 1200,
+      "minLength": 1,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "rejected_action_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 7,
+      "title": "Rejected Action Ids",
+      "type": "array"
+    },
+    "selected_action_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "selected_action_id",
+    "rejected_action_ids",
+    "rationale"
+  ],
+  "title": "RecoveryProposalDraft",
+  "type": "object"
+}

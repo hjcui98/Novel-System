@@ -15,7 +15,7 @@ from novel_agent.domain.changes import (
     ValidationReport,
     ValidationStatus,
 )
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId
+from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.world import Event, TruthClass
 from novel_agent.services.benchmark_importer import (
@@ -88,7 +88,11 @@ class Stage1Validator:
             else ValidationStatus.PASSED
         )
         return ValidationReport(
-            report_id=StableId(f"validation.{bundle.bundle_id.root}"),
+            report_id=bounded_stable_id(
+                f"validation.{bundle.bundle_id.root}",
+                f"validation.{bundle.observed_changes.change_set_id.root}",
+                "validation.structural",
+            ),
             bundle_id=bundle.bundle_id,
             status=status,
             findings=tuple(findings),

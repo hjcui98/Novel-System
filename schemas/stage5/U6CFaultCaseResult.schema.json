@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U6CFaultCase": {
+      "enum": [
+        "provider_request_before_worker_kill",
+        "provider_request_after_send_before_raw",
+        "streaming_partial_before_raw",
+        "provider_raw_before_parse",
+        "parse_before_leaf_checkpoint",
+        "acceptance_before_kill",
+        "commit_before_receipt_settlement",
+        "projection_failure",
+        "lease_expiry",
+        "basis_freshness_change",
+        "repeated_validation_semantic_failure",
+        "planner_request_memory",
+        "editor_repair_or_major_rewrite",
+        "supervisor_finding",
+        "checkpoint_before_question_plan_release",
+        "writer_raw_before_parse",
+        "response_freeze_before_judge",
+        "evaluator_before_discard"
+      ],
+      "title": "U6CFaultCase",
+      "type": "string"
+    },
+    "U6CFaultCaseStatus": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "U6CFaultCaseStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One immutable case receipt; the harness never writes runtime state directly.",
+  "properties": {
+    "case": {
+      "$ref": "#/$defs/U6CFaultCase"
+    },
+    "effect_identities": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Effect Identities",
+      "type": "array"
+    },
+    "evidence_artifact_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "minItems": 1,
+      "title": "Evidence Artifact Refs",
+      "type": "array"
+    },
+    "expected_action": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Expected Action",
+      "type": "string"
+    },
+    "forbidden_results": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Forbidden Results",
+      "type": "array"
+    },
+    "injection_point": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Injection Point",
+      "type": "string"
+    },
+    "new_attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "new_fence_generation": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "New Fence Generation"
+    },
+    "notes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    },
+    "observed_action": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Observed Action",
+      "type": "string"
+    },
+    "old_attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "old_fence_generation": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Old Fence Generation"
+    },
+    "provider_call_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Provider Call Count",
+      "type": "integer"
+    },
+    "recovered_commit_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "recovered_memory_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "safe_checkpoint_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "status": {
+      "$ref": "#/$defs/U6CFaultCaseStatus"
+    }
+  },
+  "required": [
+    "case",
+    "run_id",
+    "injection_point",
+    "expected_action",
+    "observed_action",
+    "status",
+    "safe_checkpoint_id",
+    "evidence_artifact_refs"
+  ],
+  "title": "U6CFaultCaseResult",
+  "type": "object"
+}

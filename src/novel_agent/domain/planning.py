@@ -6,13 +6,17 @@ Planner or Reviewer permission to mutate canonical roots or commit state.
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
 
 from pydantic import Field, JsonValue, model_validator
 
+from novel_agent.domain.agent_context import LoopRoundProgress
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.memory import NeedFacetKind
+from novel_agent.domain.model_calls import ModelCallLedgerAggregate
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -22,7 +26,7 @@ from novel_agent.domain.stage2 import (
     PlanProposal,
     RetrievalBudget,
 )
-from novel_agent.domain.text import EvidenceRef
+from novel_agent.domain.text import EvidenceRef, SourceBoundEvidenceRequirement
 
 PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE = "application/vnd.novel-agent.planning-loop-checkpoint+json"
 
@@ -143,6 +147,45 @@ class PlanningInquiry(DomainModel):
             raise ValueError("initial inquiry cannot have a parent")
         if self.generation > 1 and self.parent_inquiry_id is None:
             raise ValueError("revised inquiry requires its parent")
+        return self
+
+
+class PlanningProblemIdentitySeed(DomainModel):
+    """Pre-registered, source-bound identity for one Planner Memory problem.
+
+    The seed is execution input, not a model conclusion.  ``source_commit`` and
+    ``source_text_root`` identify the frozen source from which the seed was
+    prepared; the destination run may have a different project Commit after
+    the canonical roots are copied into an isolated object store.
+    """
+
+    need_id: StableId
+    question_id: StableId
+    need_query: str = Field(min_length=1, max_length=2048)
+    semantic_question: str = Field(min_length=1, max_length=2048)
+    facet: NeedFacetKind
+    source_commit: CommitId
+    source_text_root: ArtifactId
+    cutoff_chapter: int = Field(ge=0)
+    # Optional preflight contract for a source-bound causal problem.  When
+    # present, this exact span/marker requirement must survive into the
+    # maintenance finding and candidate validation path.
+    source_evidence_requirement: SourceBoundEvidenceRequirement | None = None
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> PlanningProblemIdentitySeed:
+        if self.need_query.strip() != self.need_query or (
+            self.semantic_question.strip() != self.semantic_question
+        ):
+            raise ValueError("problem identity seed questions must not have surrounding whitespace")
+        if not self.need_id.root.startswith("need."):
+            raise ValueError("problem identity seed need_id must use the Need namespace")
+        requirement = self.source_evidence_requirement
+        if requirement is not None:
+            if requirement.source_artifact_id != self.source_text_root:
+                raise ValueError("source-bound evidence requirement must use the seed TextRoot")
+            if requirement.source_chapter_index > self.cutoff_chapter:
+                raise ValueError("source-bound evidence requirement exceeds the seed cutoff")
         return self
 
 
@@ -443,12 +486,42 @@ class PlanningTurnDraft(DomainModel):
     def accept_legacy_plan_draft(cls, value: object) -> object:
         """Treat the existing raw proposal shape as PLAN_READY during migration."""
 
-        if isinstance(value, dict) and "action" not in value and "mode" in value:
-            return {
+        if not isinstance(value, dict):
+            return value
+        if "action" not in value and "mode" in value:
+            value = {
                 "action": PlanningTurnAction.PLAN_READY,
                 "plan_proposal_draft": value,
             }
-        return value
+        nested = value.get("plan_proposal_draft")
+        if isinstance(nested, dict):
+            value = {
+                **value,
+                "plan_proposal_draft": PlannerProposalDraft.model_validate_json(json.dumps(nested)),
+            }
+        coerced = dict(value)
+        for key in (
+            "memory_questions",
+            "assumptions",
+            "unresolved",
+            "selected_skill_ids",
+            "used_context_item_ids",
+        ):
+            field = coerced.get(key)
+            if isinstance(field, list):
+                coerced[key] = tuple(field)
+        memory_questions = coerced.get("memory_questions")
+        if isinstance(memory_questions, (list, tuple)) and all(
+            isinstance(question, str) for question in memory_questions
+        ):
+            unique_questions: list[str] = []
+            seen_questions: set[str] = set()
+            for question in memory_questions:
+                if question not in seen_questions:
+                    seen_questions.add(question)
+                    unique_questions.append(question)
+            coerced["memory_questions"] = tuple(unique_questions)
+        return coerced
 
     @model_validator(mode="after")
     def validate_action(self) -> PlanningTurnDraft:
@@ -511,6 +584,7 @@ class PlanningLoopResult(DomainModel):
     event_artifacts: tuple[ArtifactRef, ...] = ()
     diagnostic_codes: tuple[str, ...] = ()
     degraded: bool = False
+    round_progress: LoopRoundProgress | None = None
 
     @model_validator(mode="after")
     def validate_terminal(self) -> PlanningLoopResult:
@@ -547,6 +621,7 @@ class PlanningLoopCheckpoint(DomainModel):
     configuration_fingerprint: ArtifactId
     inquiry_ref: ArtifactRef | None = None
     inquiry_review_ref: ArtifactRef | None = None
+    problem_identity_seed: PlanningProblemIdentitySeed | None = None
     memory_context_ref: ArtifactRef | None = None
     planner_context_ref: ArtifactRef | None = None
     proposal_ref: ArtifactRef | None = None
@@ -566,6 +641,7 @@ class PlanningLoopCheckpoint(DomainModel):
     model_input_tokens_used: int = Field(default=0, ge=0)
     model_output_tokens_used: int = Field(default=0, ge=0)
     model_reasoning_tokens_used: int = Field(default=0, ge=0)
+    round_progress: LoopRoundProgress | None = None
 
     @model_validator(mode="after")
     def validate_resume_frontier(self) -> PlanningLoopCheckpoint:
@@ -623,6 +699,7 @@ class PlanningLoopEventReceipt(DomainModel):
     event_kind: str = Field(min_length=1)
     artifact_refs: tuple[ArtifactRef, ...] = ()
     payload: dict[str, JsonValue] = Field(default_factory=dict)
+    round_progress: LoopRoundProgress | None = None
 
 
 class PlanningEvaluationCase(DomainModel):
@@ -755,6 +832,7 @@ class PlanningEvaluationReport(DomainModel):
     reviewer_metrics: dict[str, JsonValue] = Field(default_factory=dict)
     leakage_count: int = Field(ge=0)
     provenance_error_count: int = Field(ge=0)
+    model_call_aggregates: tuple[ModelCallLedgerAggregate, ...] = ()
 
     @model_validator(mode="after")
     def validate_gate_eligibility(self) -> PlanningEvaluationReport:

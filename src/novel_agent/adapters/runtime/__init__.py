@@ -8,6 +8,10 @@ from novel_agent.adapters.runtime.materializers import (
     DraftCandidateMaterializer,
     PlanCandidateMaterializer,
 )
+from novel_agent.adapters.runtime.memory_maintenance import (
+    MemoryMaintenanceAdapter,
+    MemoryMaintenancePolicy,
+)
 from novel_agent.adapters.runtime.stage3_writer import (
     ProductionWritingRequestFactory,
     Stage2MWriterContextInvocation,
@@ -25,6 +29,8 @@ __all__ = [
     "AtomicChapterSettlementAdapter",
     "ChapterSettlementPolicy",
     "DraftCandidateMaterializer",
+    "MemoryMaintenanceAdapter",
+    "MemoryMaintenancePolicy",
     "PlanCandidateMaterializer",
     "ProductionStage4InvocationFactory",
     "ProductionWritingRequestFactory",

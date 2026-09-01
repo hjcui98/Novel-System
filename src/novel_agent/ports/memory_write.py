@@ -72,6 +72,23 @@ class CuratorProposalTransportError(RuntimeError):
         self.uncertain = uncertain
 
 
+class CuratorProposalPreSendError(RuntimeError):
+    """Proposal preparation failed before the provider ledger was created."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model_request_ids: tuple[StableId, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.model_request_ids = model_request_ids
+
+
+class CuratorProposalBudgetExceededError(CuratorProposalPreSendError):
+    """The assembled proposal cannot fit the remaining workflow token budget."""
+
+
 class CuratorProposalRequest(DomainModel):
     request: MemoryWriteWorkflowRequest
     basis: CanonicalWriteBasis
@@ -99,6 +116,7 @@ class CuratorProposalAttemptRequest(DomainModel):
     source_artifacts: tuple[ArtifactRef, ...]
     source_visibility_receipts: tuple[SourceVisibilityReceipt, ...]
     budget_reservation_ref: ArtifactRef
+    memory_write_tokens_used: int = Field(default=0, ge=0)
     feedback_artifact_ref: ArtifactRef | None = None
     previous_rejection_ref: ArtifactRef | None = None
 
@@ -325,6 +343,10 @@ class CuratorProposalAttemptRepositoryPort(Protocol):
 
     def mark_uncertain(self, attempt_id: StableId, reason: str) -> ArtifactRef: ...
 
+    def mark_abandoned(self, attempt_id: StableId, reason: str) -> ArtifactRef: ...
+
+    def restore(self, receipt_ref: ArtifactRef) -> CuratorProposalAttemptReceipt: ...
+
     def load(self, attempt_id: StableId) -> CuratorProposalAttemptReceipt: ...
 
     def list_for_workflow(
@@ -374,6 +396,7 @@ __all__ = [
     "CanonicalReadPort",
     "ClockPort",
     "CuratorPort",
+    "CuratorProposalPreSendError",
     "CuratorProposalRequest",
     "CuratorProposalResult",
     "CuratorRepairRequest",

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
-from novel_agent.domain.agent_context import AgentContextView
+from novel_agent.domain.agent_context import AgentContextView, ContextItemKind
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.generation import (
+    WriterTurnAction,
     WriterTurnOutput,
     WriterWorkPlan,
     WriterWorkPlanResult,
@@ -34,6 +37,62 @@ WRITER_COGNITION_SCHEMA_VERSION = SchemaVersion("1.0.0")
 WRITER_WORK_PLAN_MEDIA_TYPE = "application/vnd.novel-agent.writer-work-plan+json"
 WRITER_TURN_MEDIA_TYPE = "application/vnd.novel-agent.writer-turn+json"
 
+_INTERNAL_DRAFT_MARKERS = (
+    "evidence.curator.",
+    "契约非交易",
+)
+_KNOWN_NARRATIVE_MARKER_REPLACEMENTS = {
+    "契约非交易": "这份婚约不是可以拿来交换的筹码",
+}
+_INTERNAL_CHAPTER_LABEL = re.compile(r"(?<![A-Za-z0-9_])ch\d+(?![A-Za-z0-9_])", re.IGNORECASE)
+_META_RELATION_MARKER = re.compile(r"婚约线.{0,20}冲突载体")
+_RECENT_PROSE_MIN_LENGTH = 384
+_RECENT_PROSE_MIN_MATCH_CHARS = 128
+_RECENT_PROSE_SIMILARITY_THRESHOLD = 0.85
+_RECENT_PROSE_MIN_OVERLAP_RATIO = 0.10
+_RECENT_PROSE_LONG_MATCH_CHARS = 256
+_RECENT_PROSE_LONG_MATCH_RATIO = 0.25
+_COMPACT_RECENT_PROSE_MIN_MATCH_CHARS = 80
+_COMPACT_RECENT_PROSE_MIN_OVERLAP_RATIO = 0.10
+_SURFACE_RETRY_REPETITION_PENALTY = 1.10
+
+
+def _repeats_recent_prose(
+    prose: str,
+    draft_text: str,
+    *,
+    compact_trail: bool = False,
+) -> bool:
+    """Detect a demonstrated near-copy while leaving ordinary continuity alone."""
+
+    recent = prose.strip()
+    draft = draft_text.strip()
+    if not recent or not draft:
+        return False
+    if recent == draft:
+        return True
+    minimum_length = min(len(recent), len(draft))
+    matcher = SequenceMatcher(None, recent, draft, autojunk=False)
+    longest = matcher.find_longest_match(0, len(recent), 0, len(draft))
+    if compact_trail:
+        return (
+            longest.size >= _COMPACT_RECENT_PROSE_MIN_MATCH_CHARS
+            and longest.size / len(recent) >= _COMPACT_RECENT_PROSE_MIN_OVERLAP_RATIO
+        )
+    if minimum_length < _RECENT_PROSE_MIN_LENGTH:
+        return False
+    overall_near_copy = (
+        matcher.ratio() >= _RECENT_PROSE_SIMILARITY_THRESHOLD
+        and longest.size >= _RECENT_PROSE_MIN_MATCH_CHARS
+        and longest.size / minimum_length >= _RECENT_PROSE_MIN_OVERLAP_RATIO
+    )
+    long_contiguous_copy = (
+        longest.size >= _RECENT_PROSE_LONG_MATCH_CHARS
+        and longest.size / len(recent) >= _RECENT_PROSE_LONG_MATCH_RATIO
+    )
+    return overall_near_copy or long_contiguous_copy
+
+
 _SKILL_FILES: dict[str, str] = {
     "skill.scene-composition": "scene_composition_v1.md",
     "skill.continuation": "continuation_v1.md",
@@ -49,6 +108,56 @@ _SKILL_FILES: dict[str, str] = {
 
 class WriterCognitionError(ValueError):
     """Writer cognition violated a trusted plan, Skill, or Context boundary."""
+
+
+def _writer_draft_surface_error(draft_text: str, view: AgentContextView) -> str | None:
+    """Reject only demonstrated model surface failures before editorial review."""
+
+    for marker in _INTERNAL_DRAFT_MARKERS:
+        if marker in draft_text:
+            return f"Writer draft contains internal planning marker: {marker}"
+    if _INTERNAL_CHAPTER_LABEL.search(draft_text) is not None:
+        return "Writer draft contains an internal chapter label"
+    if _META_RELATION_MARKER.search(draft_text) is not None:
+        return "Writer draft contains a planning relation marker"
+
+    for item in (
+        *view.protected_items,
+        *view.active_memory_items,
+        *view.working_items,
+        *view.recent_settled_tail,
+        *view.compacted_prefix_items,
+    ):
+        if item.kind is not ContextItemKind.RECENT_PROSE:
+            continue
+        _header, separator, prose = item.content.partition("\n")
+        compact_trail = _header.startswith("[近期章尾:")
+        if (
+            separator
+            and (_header.startswith("[上一章完整正文:") or _header.startswith("[近期章尾:"))
+            and _repeats_recent_prose(prose, draft_text, compact_trail=compact_trail)
+        ):
+            return "Writer draft repeats visible recent prose"
+    return None
+
+
+def _rewrite_known_narrative_markers(draft_text: str) -> str:
+    """Turn one demonstrated planning alias into natural narrative wording."""
+
+    for marker, replacement in _KNOWN_NARRATIVE_MARKER_REPLACEMENTS.items():
+        draft_text = draft_text.replace(marker, replacement)
+    return draft_text
+
+
+def _same_artifact(left: ArtifactRef | None, right: ArtifactRef | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return (
+        left.artifact_id == right.artifact_id
+        and left.media_type == right.media_type
+        and left.byte_length == right.byte_length
+        and left.schema_version == right.schema_version
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +244,15 @@ class WriterCognitionService:
                 "agent_context_view": render_context(view),
             }
         ).decode("utf-8")
+        opaque_lineage = canonical_json_bytes(
+            {
+                "writing_task_ref": request.writing_task_artifact.model_dump(mode="json"),
+                "accepted_plan_ref": request.accepted_plan.artifact.model_dump(mode="json"),
+                "writer_context_ref": request.writer_context_package_artifact.model_dump(
+                    mode="json"
+                ),
+            }
+        ).decode("utf-8")
         prepared = model_request.model_copy(
             update={
                 "prompt": (
@@ -143,22 +261,33 @@ class WriterCognitionService:
                     + "\n\n".join(skill_payload)
                     + "\n\n<TRUSTED_INPUT>\n"
                     + task_payload
-                    + "\n</TRUSTED_INPUT>"
+                    + "\n<OPAQUE_LINEAGE_BINDING>\n"
+                    + opaque_lineage
+                    + "\n</OPAQUE_LINEAGE_BINDING>\n</TRUSTED_INPUT>"
                 ),
                 "agent_id": StableId("agent.writer.work-plan"),
                 "agent_mode": AgentMode.DRAFT.value,
                 "skill_contract_hashes": tuple(item.content_hash for item in catalog.values()),
-                "max_output_tokens": request.budgets.reserved_output_tokens or 4096,
+                "max_output_tokens": (
+                    request.budgets.reserved_output_tokens
+                    if request.budgets.reserved_output_tokens >= 1
+                    else None
+                ),
                 "scheduling_stage": "stage3.writer_work_plan",
             }
         )
         work_plan, call = await self._gateway.generate_structured(prepared, WriterWorkPlan)
-        if (
-            work_plan.writing_task_ref != request.writing_task_artifact
-            or work_plan.accepted_plan_ref != request.accepted_plan.artifact
-            or work_plan.writer_context_ref != request.writer_context_package_artifact
-        ):
-            raise WriterCognitionError("WriterWorkPlan lineage differs from loop inputs")
+        # These three fields are model-visible echoes, not model-owned lineage.  The raw response
+        # remains in the call ledger for audit, while the typed WorkPlan is always bound to the
+        # request that the host already validated.  This prevents a long content-addressed id
+        # copied incorrectly by the model from changing the trusted Writer basis.
+        work_plan = work_plan.model_copy(
+            update={
+                "writing_task_ref": request.writing_task_artifact,
+                "accepted_plan_ref": request.accepted_plan.artifact,
+                "writer_context_ref": request.writer_context_package_artifact,
+            }
+        )
         selected = set(work_plan.selected_skill_ids)
         if not selected.issubset(allowed):
             raise WriterCognitionError("WriterWorkPlan selected a Skill outside the allowlist")
@@ -188,11 +317,15 @@ class WriterCognitionService:
                     request.writer_context_package_artifact,
                 ),
                 output_artifacts=(work_plan_ref,),
-                completed_checkpoints=work_plan.expected_skill_checkpoints.get(
+                planned_checkpoints=work_plan.expected_skill_checkpoints.get(
                     skill_id.root,
                     (),
                 ),
-                status=ExecutionStatus.SUCCEEDED,
+                selected_checkpoints=work_plan.expected_skill_checkpoints.get(
+                    skill_id.root,
+                    (),
+                ),
+                status=ExecutionStatus.PLANNED,
                 latency_ms=call.latency_ms,
             )
             for skill_id in work_plan.selected_skill_ids
@@ -210,7 +343,11 @@ class WriterCognitionService:
         view: AgentContextView,
         plan: WriterWorkPlanResult,
         model_request: ModelRequest,
+        *,
+        major_rewrite_attempt: int = 1,
     ) -> WriterTurnResult:
+        if major_rewrite_attempt < 1:
+            raise WriterCognitionError("major rewrite attempt must be positive")
         self._validate_view(request, view)
         selected_texts: list[str] = []
         contracts = {item.contract_id: item for item in self.skill_contracts()}
@@ -222,10 +359,52 @@ class WriterCognitionService:
             if actual != contract:
                 raise WriterCognitionError(f"Writer Skill hash mismatch: {skill_id.root}")
             selected_texts.append(f'<SKILL id="{skill_id.root}">\n{text}\n</SKILL>')
+        if request.mode is AgentMode.MAJOR_REWRITE:
+            directives = tuple(
+                item.content
+                for item in view.working_items
+                if item.kind is ContextItemKind.EDITOR_INSTRUCTION
+            )
+            if len(directives) != 1:
+                raise WriterCognitionError(
+                    "MAJOR_REWRITE requires exactly one Editor instruction in Context"
+                )
+            mode_prompt = self._read_prompt("writer_major_rewrite_v1.md")
+            directive_prompt = (
+                "\n\n<TRUSTED_EDITOR_REWRITE_DIRECTIVE>\n"
+                + directives[0]
+                + "\n</TRUSTED_EDITOR_REWRITE_DIRECTIVE>"
+            )
+            if major_rewrite_attempt > 1:
+                directive_prompt += (
+                    "\n\n<TRUSTED_MAJOR_REWRITE_RETRY>\n"
+                    f"This is independent major rewrite attempt {major_rewrite_attempt}. "
+                    "The previous rewrite still failed the Editor review. Discard both "
+                    "earlier candidates and write a complete replacement scene. Execute "
+                    "every required scene beat and advance the causal state; do not repeat, "
+                    "paraphrase, summarize, or lightly edit any earlier candidate or the "
+                    "visible prior-chapter ending. Resolve every blocking directive before "
+                    "returning DRAFT_READY.\n"
+                    "</TRUSTED_MAJOR_REWRITE_RETRY>"
+                )
+        else:
+            mode_prompt = self._read_prompt("writer_turn_v1.md")
+            directive_prompt = ""
         prompt = (
-            self._read_prompt("writer_turn_v1.md")
+            mode_prompt
+            + directive_prompt
             + "\n\n"
             + "\n\n".join(selected_texts)
+            + "\n\n<TRUSTED_WRITING_LENGTH_POLICY>\n"
+            + (
+                "For DRAFT_READY, draft_text must contain between "
+                f"{request.writing_task.length_policy.minimum_characters} and "
+                f"{request.writing_task.length_policy.maximum_characters} characters "
+                f"inclusive; aim for {request.writing_task.length_policy.target_characters} "
+                "characters and stop before the maximum.\n"
+            )
+            + request.writing_task.length_policy.model_dump_json()
+            + "\n</TRUSTED_WRITING_LENGTH_POLICY>"
             + "\n\n<WRITER_WORK_PLAN>\n"
             + plan.work_plan.model_dump_json()
             + "\n</WRITER_WORK_PLAN>\n<AGENT_CONTEXT_VIEW>\n"
@@ -240,11 +419,59 @@ class WriterCognitionService:
                 "skill_contract_hashes": tuple(
                     contracts[item].content_hash for item in plan.work_plan.selected_skill_ids
                 ),
-                "max_output_tokens": request.budgets.reserved_output_tokens or 4096,
+                "max_output_tokens": (
+                    request.budgets.reserved_output_tokens
+                    if request.budgets.reserved_output_tokens >= 1
+                    else None
+                ),
                 "scheduling_stage": "stage3.writer_turn",
             }
         )
         output, call = await self._gateway.generate_structured(prepared, WriterTurnOutput)
+        if output.action is WriterTurnAction.DRAFT_READY and output.draft_text is not None:
+            draft_text = output.draft_text
+            rewritten_text = _rewrite_known_narrative_markers(draft_text)
+            if rewritten_text != draft_text:
+                output = output.model_copy(update={"draft_text": rewritten_text})
+                draft_text = rewritten_text
+            surface_error = _writer_draft_surface_error(draft_text, view)
+            if surface_error == "Writer draft repeats visible recent prose":
+                retry_digest = hashlib.sha256(
+                    f"{prepared.request_id.root}:surface-retry".encode()
+                ).hexdigest()[:48]
+                retry_request = prepared.model_copy(
+                    update={
+                        "request_id": StableId(
+                            f"request.stage3.writer-surface-retry.{retry_digest}"
+                        ),
+                        "trace_id": f"{prepared.trace_id}:surface-retry",
+                        "repetition_penalty": _SURFACE_RETRY_REPETITION_PENALTY,
+                        "prompt": (
+                            prepared.prompt + "\n\n<WRITER_SURFACE_RETRY>\n"
+                            "The previous draft was rejected because it copied the visible "
+                            "recent prose. Discard that candidate. Write a distinct "
+                            "target-chapter narrative that starts from the prior final state, "
+                            "advances the accepted plan, and does not reproduce any complete "
+                            "paragraph or any contiguous phrase longer than 64 characters "
+                            "from visible recent prose. Change the opening action and scene "
+                            "progression rather than paraphrasing the prior chapter.\n"
+                            "</WRITER_SURFACE_RETRY>"
+                        ),
+                    }
+                )
+                output, call = await self._gateway.generate_structured(
+                    retry_request,
+                    WriterTurnOutput,
+                )
+                if output.action is WriterTurnAction.DRAFT_READY and output.draft_text is not None:
+                    draft_text = output.draft_text
+                    rewritten_text = _rewrite_known_narrative_markers(draft_text)
+                    if rewritten_text != draft_text:
+                        output = output.model_copy(update={"draft_text": rewritten_text})
+                        draft_text = rewritten_text
+                    surface_error = _writer_draft_surface_error(draft_text, view)
+            if surface_error is not None:
+                raise WriterCognitionError(surface_error)
         if len(output.memory_requests) > request.budgets.max_memory_questions:
             raise WriterCognitionError("Writer exceeded the bounded memory-question budget")
         visible_ids = {
@@ -257,11 +484,22 @@ class WriterCognitionService:
                 *view.compacted_prefix_items,
             )
         }
-        if any(
-            not set(item.known_context_item_ids).issubset(visible_ids)
+        normalized_requests = tuple(
+            item.model_copy(
+                update={
+                    "known_context_item_ids": tuple(
+                        context_id
+                        for context_id in item.known_context_item_ids
+                        if context_id in visible_ids
+                    )
+                }
+            )
             for item in output.memory_requests
-        ):
-            raise WriterCognitionError("Writer memory request cites a non-visible Context item")
+        )
+        if normalized_requests != output.memory_requests:
+            # A stale model-side anchor is advisory metadata, not a permission to read hidden
+            # Context. Keep only exact visible ids and let the bounded Memory query proceed.
+            output = output.model_copy(update={"memory_requests": normalized_requests})
         artifact = self._artifacts.put(
             canonical_json_bytes(output.model_dump(mode="json")),
             WRITER_TURN_MEDIA_TYPE,
@@ -292,8 +530,8 @@ class WriterCognitionService:
             or view.task_id != request.task_id
             or view.base_commit != request.base_commit
             or view.snapshot_id != request.snapshot_id
-            or view.plan_ref != request.accepted_plan.artifact
-            or view.profile_ref != request.project_profile_artifact
+            or not _same_artifact(view.plan_ref, request.accepted_plan.artifact)
+            or not _same_artifact(view.profile_ref, request.project_profile_artifact)
             or view.information_scope != "writer_safe"
         ):
             raise WriterCognitionError("Writer Context View differs from the WritingLoop basis")

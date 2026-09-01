@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "description": "Repetition, resource, namespace, and stop policy fixed before run.",
+  "properties": {
+    "database_namespace": {
+      "minLength": 1,
+      "title": "Database Namespace",
+      "type": "string"
+    },
+    "max_model_calls": {
+      "minimum": 1,
+      "title": "Max Model Calls",
+      "type": "integer"
+    },
+    "max_wall_time_seconds": {
+      "minimum": 1,
+      "title": "Max Wall Time Seconds",
+      "type": "integer"
+    },
+    "object_namespace": {
+      "minLength": 1,
+      "title": "Object Namespace",
+      "type": "string"
+    },
+    "output_namespace": {
+      "minLength": 1,
+      "title": "Output Namespace",
+      "type": "string"
+    },
+    "repetitions": {
+      "minimum": 1,
+      "title": "Repetitions",
+      "type": "integer"
+    },
+    "stop_conditions": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Stop Conditions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "repetitions",
+    "max_model_calls",
+    "max_wall_time_seconds",
+    "output_namespace",
+    "object_namespace",
+    "database_namespace",
+    "stop_conditions"
+  ],
+  "title": "V05CampaignExecutionFreeze",
+  "type": "object"
+}

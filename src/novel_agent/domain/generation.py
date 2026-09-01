@@ -278,8 +278,8 @@ class WritingLoopBudgets(DomainModel):
     # turn the first implementation's default into a product-wide ceiling.
     max_reactive_memory_rounds: int = Field(default=1, ge=0)
     max_memory_questions: int = Field(default=3, ge=1, le=8)
-    max_local_repairs: int = Field(default=1, ge=0, le=1)
-    max_major_rewrites: int = Field(default=1, ge=0, le=1)
+    max_local_repairs: int = Field(default=1, ge=0, le=2)
+    max_major_rewrites: int = Field(default=1, ge=0, le=2)
     max_writer_turns: int = Field(default=2, ge=1)
     max_post_draft_model_calls: int = Field(default=5, ge=0)
     context_sequence_limit: int = Field(ge=1)
@@ -302,6 +302,7 @@ class WritingLoopBudgets(DomainModel):
 class WritingLoopRequest(DomainModel):
     run_id: RunId
     task_id: TaskId
+    attempt_id: StableId | None = None
     project_id: ProjectId
     base_commit: CommitId
     snapshot_id: StableId
@@ -441,6 +442,12 @@ class WriterWorkPlanResult(DomainModel):
         receipt_skills = {item.skill.contract_id for item in self.skill_receipts}
         if selected != receipt_skills:
             raise ValueError("Skill receipts must exactly cover selected Writer Skills")
+        for receipt in self.skill_receipts:
+            expected = self.work_plan.expected_skill_checkpoints.get(
+                receipt.skill.contract_id.root, ()
+            )
+            if receipt.selected_checkpoints != expected:
+                raise ValueError("Skill receipt selected checkpoints differ from the WorkPlan")
         return self
 
 

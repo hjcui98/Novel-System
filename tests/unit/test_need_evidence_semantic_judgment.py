@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from decimal import Decimal
@@ -150,7 +151,7 @@ def _judge(
     return NeedEvidenceSemanticJudge(
         gateway,
         max_input_tokens=max_input_tokens,
-        max_output_tokens=512,
+        max_output_tokens=2_048,
     )
 
 
@@ -167,6 +168,105 @@ def test_judge_classifies_complete_finite_slice_set(mode: str, expected: str) ->
     assert result.call_count == 1
 
 
+class _DuplicateUnsupportedEndpoint(_JudgeEndpoint):
+    async def generate(self, request: Any) -> ProviderModelResult:
+        result = await super().generate(request)
+        payload = json.loads(result.text)
+        unsupported = list(payload["decisions"][0]["unsupported_slice_ids"])
+        payload["decisions"][0]["unsupported_slice_ids"] = [*unsupported, unsupported[-1]]
+        payload["decisions"][0]["status"] = "UNSUPPORTED"
+        payload["decisions"][0]["supporting_slice_ids"] = []
+        payload["decisions"][0]["partial_slice_ids"] = []
+        return result.model_copy(update={"text": json.dumps(payload)})
+
+
+def test_judge_dedupes_duplicate_slice_ids_in_one_bucket() -> None:
+    endpoint = _DuplicateUnsupportedEndpoint("unsupported")
+    result = _judge(endpoint).judge((_selection(3),))
+    assert result.failed_batch_count == 0
+    receipt = result.receipts[0]
+    assert receipt.status.value == "UNSUPPORTED"
+    assert len(receipt.evaluated_slice_ids) == 3
+    assert len(receipt.unsupported_slice_ids) == 3
+
+
+class _TypoSupportingEndpoint(_JudgeEndpoint):
+    """C95 落落 batch: one supporting SHA mistyped, one unsupported id duplicated."""
+
+    async def generate(self, request: Any) -> ProviderModelResult:
+        result = await super().generate(request)
+        payload = json.loads(result.text)
+        decision = payload["decisions"][0]
+        supporting = list(decision["supporting_slice_ids"])
+        unsupported = list(decision["unsupported_slice_ids"])
+        typed = supporting[0]
+        mistyped = typed[:40] + "6" + typed[40:]
+        decision["supporting_slice_ids"] = [mistyped, *supporting[1:]]
+        if unsupported:
+            decision["unsupported_slice_ids"] = [*unsupported, unsupported[-1]]
+        return result.model_copy(update={"text": json.dumps(payload)})
+
+
+def test_judge_keeps_valid_supporting_ids_when_one_slice_id_is_mistyped() -> None:
+    endpoint = _TypoSupportingEndpoint("supported")
+    result = _judge(endpoint).judge((_selection(4),))
+    assert result.failed_batch_count == 0
+    receipt = result.receipts[0]
+    assert receipt.status.value == "SUPPORTED"
+    assert len(receipt.evaluated_slice_ids) == 4
+    assert len(receipt.supporting_slice_ids) == 3
+    assert len(receipt.unsupported_slice_ids) == 1
+    assert set(receipt.supporting_slice_ids).issubset(receipt.evaluated_slice_ids)
+    assert set(receipt.unsupported_slice_ids).issubset(receipt.evaluated_slice_ids)
+
+
+class _TruncatedNeedIdEndpoint(_JudgeEndpoint):
+    """C95 location batch: model dropped a middle run of hex from need_id."""
+
+    async def generate(self, request: Any) -> ProviderModelResult:
+        result = await super().generate(request)
+        payload = json.loads(result.text)
+        decision = payload["decisions"][0]
+        need_id = decision["need_id"]
+        decision["need_id"] = need_id[:24] + need_id[-12:]
+        return result.model_copy(update={"text": json.dumps(payload)})
+
+
+def test_judge_applies_decision_when_need_id_is_truncated_but_facet_id_matches() -> None:
+    endpoint = _TruncatedNeedIdEndpoint("partial")
+    result = _judge(endpoint).judge((_selection(4),))
+    assert result.failed_batch_count == 0
+    receipt = result.receipts[0]
+    assert receipt.status.value == "PARTIAL"
+    assert len(receipt.evaluated_slice_ids) == 4
+    assert len(receipt.partial_slice_ids) == 1
+    assert len(receipt.unsupported_slice_ids) == 3
+
+
+def test_judge_async_runs_on_the_already_running_event_loop() -> None:
+    endpoint = _JudgeEndpoint("supported")
+    judge = _judge(endpoint)
+    selection = _selection(2)
+
+    async def _from_loop() -> object:
+        return await judge.judge_async((selection,))
+
+    result = asyncio.run(_from_loop())
+    assert endpoint.requests
+    assert result.receipts[0].status.value == "SUPPORTED"
+    assert result.failed_batch_count == 0
+
+
+def test_sync_judge_refuses_a_running_event_loop() -> None:
+    judge = _judge(_JudgeEndpoint("supported"))
+
+    async def _from_loop() -> object:
+        return judge.judge((_selection(2),))
+
+    with pytest.raises(RuntimeError, match="await judge_async"):
+        asyncio.run(_from_loop())
+
+
 def test_judge_emits_unresolved_receipt_without_selected_slices() -> None:
     endpoint = _JudgeEndpoint()
     selection = _selection(1).model_copy(update={"selections": (), "slices": ()})
@@ -177,6 +277,78 @@ def test_judge_emits_unresolved_receipt_without_selected_slices() -> None:
     assert len(result.receipts) == 1
     assert result.receipts[0].status.value == "UNRESOLVED"
     assert result.receipts[0].reason == "no_selected_evidence"
+
+
+def _selection_named(name: str, slice_count: int = 3) -> NeedEvidenceSelection:
+    selection = _selection(slice_count)
+    need_id = StableId(f"need.semantic.{name}")
+    facet_id = StableId(f"facet.semantic.{name}")
+    facet = selection.need.need_facets[0].model_copy(
+        update={"need_id": need_id, "need_facet_id": facet_id}
+    )
+    spec = selection.need.completion_spec
+    assert spec is not None
+    requirement = next(iter(spec.evidence_requirement_by_facet.values()))
+    spec = spec.model_copy(
+        update={
+            "need_id": need_id,
+            "required_need_facet_ids": (facet_id,),
+            "irreducible_need_facet_ids": (facet_id,),
+            "evidence_requirement_by_facet": {facet_id.root: requirement},
+        }
+    )
+    need = selection.need.model_copy(
+        update={"need_id": need_id, "need_facets": (facet,), "completion_spec": spec}
+    )
+    return selection.model_copy(update={"need": need})
+
+
+def test_judge_issues_one_model_call_per_required_facet() -> None:
+    selection = _selection(3)
+    first = selection.need.need_facets[0]
+    second = first.model_copy(
+        update={
+            "need_facet_id": StableId("facet.semantic.causal"),
+            "facet_kind": NeedFacetKind.CAUSAL_HISTORY,
+        }
+    )
+    spec = selection.need.completion_spec
+    assert spec is not None
+    requirement = next(iter(spec.evidence_requirement_by_facet.values()))
+    spec = spec.model_copy(
+        update={
+            "required_need_facet_ids": (first.need_facet_id, second.need_facet_id),
+            "irreducible_need_facet_ids": (first.need_facet_id, second.need_facet_id),
+            "evidence_requirement_by_facet": {
+                first.need_facet_id.root: requirement,
+                second.need_facet_id.root: requirement,
+            },
+        }
+    )
+    need = selection.need.model_copy(
+        update={"need_facets": (first, second), "completion_spec": spec}
+    )
+    endpoint = _JudgeEndpoint("supported")
+    result = _judge(endpoint).judge((selection.model_copy(update={"need": need}),))
+    assert result.call_count == 2
+    assert result.failed_batch_count == 0
+    assert {receipt.need_facet_id.root for receipt in result.receipts} == {
+        first.need_facet_id.root,
+        second.need_facet_id.root,
+    }
+    assert all(receipt.status.value == "SUPPORTED" for receipt in result.receipts)
+
+
+def test_judge_issues_one_model_call_per_need() -> None:
+    endpoint = _JudgeEndpoint("supported")
+    result = _judge(endpoint).judge((_selection_named("left"), _selection_named("right")))
+    assert result.call_count == 2
+    assert result.failed_batch_count == 0
+    assert {receipt.need_id.root for receipt in result.receipts} == {
+        "need.semantic.left",
+        "need.semantic.right",
+    }
+    assert all(receipt.status.value == "SUPPORTED" for receipt in result.receipts)
 
 
 def test_judge_is_not_limited_to_four_slices_and_can_use_multiple_batches() -> None:

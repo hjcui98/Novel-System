@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BudgetResolutionProfile": {
+      "enum": [
+        "canary",
+        "strict"
+      ],
+      "title": "BudgetResolutionProfile",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "U4L0CanaryVariableLock": {
+      "additionalProperties": false,
+      "description": "One frozen U4-L0 variable vector carried by campaign evidence.",
+      "properties": {
+        "budget_profile": {
+          "$ref": "#/$defs/BudgetResolutionProfile"
+        },
+        "c3_admission": {
+          "const": "NOT_ADMITTED",
+          "default": "NOT_ADMITTED",
+          "title": "C3 Admission",
+          "type": "string"
+        },
+        "controller_context_level": {
+          "enum": [
+            "C0",
+            "C1+C2"
+          ],
+          "title": "Controller Context Level",
+          "type": "string"
+        },
+        "planner_context_level": {
+          "enum": [
+            "P0",
+            "P0+P1"
+          ],
+          "title": "Planner Context Level",
+          "type": "string"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "budget_profile",
+        "controller_context_level",
+        "planner_context_level",
+        "thinking_enabled"
+      ],
+      "title": "U4L0CanaryVariableLock",
+      "type": "object"
+    },
+    "V05HistoryAccess": {
+      "enum": [
+        "history_only",
+        "author_plan_conditioned"
+      ],
+      "title": "V05HistoryAccess",
+      "type": "string"
+    },
+    "V05ReadoutTaskIdentity": {
+      "additionalProperties": false,
+      "description": "One unique V0.5 Writer readout identity. Public fields only.",
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "history_access": {
+          "$ref": "#/$defs/V05HistoryAccess"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "plan_release": {
+          "const": "after_checkpoint_freeze",
+          "default": "after_checkpoint_freeze",
+          "title": "Plan Release",
+          "type": "string"
+        },
+        "question_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "question_release": {
+          "anyOf": [
+            {
+              "const": "after_checkpoint_freeze",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Release"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "track": {
+          "$ref": "#/$defs/V05ReadoutTrack"
+        }
+      },
+      "required": [
+        "task_id",
+        "track",
+        "checkpoint_id",
+        "checkpoint_chapter",
+        "history_access",
+        "information_profile"
+      ],
+      "title": "V05ReadoutTaskIdentity",
+      "type": "object"
+    },
+    "V05ReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "V05ReadoutTrack",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Complete unique identity set for V0.5 Track A and Track B Writer readout.",
+  "properties": {
+    "benchmark_id": {
+      "minLength": 1,
+      "title": "Benchmark Id",
+      "type": "string"
+    },
+    "canary_lock": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/U4L0CanaryVariableLock"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/V05ReadoutTaskIdentity"
+      },
+      "title": "Tasks",
+      "type": "array"
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "benchmark_id",
+    "version",
+    "tasks"
+  ],
+  "title": "V05ReadoutManifest",
+  "type": "object"
+}

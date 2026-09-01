@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from pydantic import ValidationError
 
@@ -27,7 +27,14 @@ from novel_agent.domain.changes import (
     ValidationReport,
     ValidationStatus,
 )
-from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, SchemaVersion, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    SchemaVersion,
+    StableId,
+    bounded_stable_id,
+)
 from novel_agent.domain.memory import (
     FreshnessMode,
     FreshnessRequest,
@@ -43,6 +50,7 @@ from novel_agent.domain.memory_write import (
     CuratorProposalRejected,
     CuratorProposalRejection,
     InformationBoundary,
+    MemoryRepairOwner,
     MemoryWriteWorkflowRequest,
     NarrativePosition,
     ProjectionReadinessResult,
@@ -59,6 +67,7 @@ from novel_agent.domain.stage2 import (
     AccessScope,
     AgentExecutionReceipt,
     AgentMode,
+    AgentType,
     ContractRef,
     CuratorReplayResult,
     GuardianDecision,
@@ -66,8 +75,11 @@ from novel_agent.domain.stage2 import (
     WriteGateDecision,
     WriteGateOutcome,
 )
+from novel_agent.domain.text import SourceBoundEvidenceRequirement
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
+    CuratorProposalBudgetExceededError,
+    CuratorProposalPreSendError,
     CuratorProposalRequest,
     CuratorProposalResult,
     CuratorProposalTransportError,
@@ -82,11 +94,14 @@ from novel_agent.ports.memory_write import (
 from novel_agent.services.artifacts import ArtifactRepository, sha256_id
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.model_call_ledger import bounded_model_request_id
 from novel_agent.services.model_curation import (
     CuratorProposalSemanticRejected,
     ModelCurationContractError,
+    ModelCurationOutputIncomplete,
     ModelCurator,
 )
+from novel_agent.services.model_gateway import ModelCallCumulativeBudgetExceeded
 from novel_agent.services.overlay import WorldOverlay
 from novel_agent.services.projection import (
     DerivedProjectionService,
@@ -107,6 +122,12 @@ ScriptCallback = Callable[[ModelRequest, AgentMode], None]
 class _CuratorProposalExecution:
     result: CuratorReplayResult
     graph_extraction: WorldGraphExtractionResult | None = None
+    replay_requests: tuple[ModelRequest, ...] = ()
+    graph_requests: tuple[ModelRequest, ...] = ()
+
+
+class _SourceBoundKwargs(TypedDict, total=False):
+    source_evidence_requirement: SourceBoundEvidenceRequirement
 
 
 class RepositoryCanonicalReadAdapter:
@@ -156,7 +177,10 @@ class CommitServiceMemoryWriteAdapter:
         if rejection is not None:
             return rejection
         validation = ValidationReport(
-            report_id=StableId(f"validation-report.{request.candidate.candidate_id.root}"),
+            report_id=bounded_stable_id(
+                f"validation-report.{request.candidate.candidate_id.root}",
+                request.candidate.candidate_id.root,
+            ),
             bundle_id=request.bundle.bundle_id,
             status=ValidationStatus.PASSED,
             schema_version=request.bundle.proposed_roots.schema_version,
@@ -375,6 +399,7 @@ class TeacherForcedCuratorPort:
             current_world=world,
             request=model_request,
             graph_request=graph_request,
+            repair_query=request.request.repair_query,
         )
         result = execution.result
         self.proposal_calls += 1
@@ -391,7 +416,10 @@ class TeacherForcedCuratorPort:
                 result.receipt,
                 changes_ref,
                 transform_refs,
-                self._model_call_entries(model_request, graph_request),
+                self._model_call_entries(
+                    execution.replay_requests or model_request,
+                    execution.graph_requests or graph_request,
+                ),
             )
         self.last_receipt = receipt
         return CuratorProposalResult(
@@ -414,8 +442,19 @@ class TeacherForcedCuratorPort:
         model_request = self._request_factory(
             f"curator.replay.{chapter_index}.proposal-{request.attempt_no}",
             AgentMode.REPLAY,
-        ).model_copy(update={"request_id": request.model_request_id})
-        graph_request = self._graph_model_request(model_request)
+        ).model_copy(
+            update={
+                "request_id": request.model_request_id,
+                "attempt_id": request.attempt_id,
+            }
+        )
+        owner = request.request.repair_owner
+        graph_request: ModelRequest | None = None
+        source_chapter_indices = _chapter_indices(request.request)
+        replay_requests = self._source_chapter_requests(
+            model_request,
+            source_chapter_indices,
+        )
         feedback = (
             None
             if request.feedback_artifact_ref is None
@@ -430,6 +469,11 @@ class TeacherForcedCuratorPort:
             flush=True,
         )
         try:
+            graph_request = (
+                self._graph_model_request(model_request)
+                if owner is None or owner is MemoryRepairOwner.GRAPH_CURATOR
+                else None
+            )
             execution = await self._run_proposal_profiles(
                 version=manifest.schema_version,
                 text_root=text,
@@ -439,21 +483,35 @@ class TeacherForcedCuratorPort:
                 request=model_request,
                 proposal_feedback=feedback,
                 graph_request=graph_request,
+                source_chapter_indices=source_chapter_indices,
+                graph_only=(owner is MemoryRepairOwner.GRAPH_CURATOR),
+                repair_query=request.request.repair_query,
+                source_evidence_requirement=request.request.source_evidence_requirement,
+                cumulative_token_budget=request.request.budget.token_budget,
+                cumulative_tokens_used=request.memory_write_tokens_used,
             )
+        except ModelCallCumulativeBudgetExceeded as error:
+            raise CuratorProposalBudgetExceededError(
+                str(error),
+                model_request_ids=tuple(item.request_id for item in replay_requests),
+            ) from error
         except (ValidationError, ModelCurationContractError) as error:
             self.proposal_calls += 1
             return self._proposal_rejected(
                 request,
-                model_request,
+                replay_requests,
                 error,
                 started_at,
                 manifest.schema_version,
                 graph_request=graph_request,
             )
         except Exception as error:
-            entries = self._model_call_entries(model_request, graph_request)
+            entries = self._model_call_entries(replay_requests, graph_request)
             if not entries:
-                raise
+                raise CuratorProposalPreSendError(
+                    f"{error} (curator proposal failed before a provider ledger entry was created)",
+                    model_request_ids=(model_request.request_id,),
+                ) from error
             self.proposal_calls += 1
             import traceback
 
@@ -466,7 +524,10 @@ class TeacherForcedCuratorPort:
 
         result = execution.result
         self.proposal_calls += 1
-        entries = self._model_call_entries(model_request, graph_request)
+        entries = self._model_call_entries(
+            execution.replay_requests or replay_requests,
+            execution.graph_requests or graph_request,
+        )
         call_refs = tuple(
             self._persist_model_call_entry(entry, manifest.schema_version) for entry in entries
         )
@@ -479,15 +540,25 @@ class TeacherForcedCuratorPort:
             manifest.schema_version,
         )
         changes_ref = self._persist_changes(result.observed_changes, manifest.schema_version)
-        coverage_receipt = getattr(self._replay.curator, "last_record_kind_coverage", None)
+        receipt_curator = (
+            self._graph_curator
+            if request.request.repair_owner is MemoryRepairOwner.GRAPH_CURATOR
+            else self._replay.curator
+        )
+        if receipt_curator is None:
+            raise CuratorProposalPreSendError(
+                "graph Curator owner is not configured",
+                model_request_ids=(model_request.request_id,),
+            )
+        coverage_receipt = getattr(receipt_curator, "last_record_kind_coverage", None)
         curator_receipt_sources: tuple[tuple[tuple[DomainModel, ...], str], ...] = (
             (
-                self._replay.curator.last_evidence_merge_receipts,
+                receipt_curator.last_evidence_merge_receipts,
                 "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
             ),
             (
                 getattr(
-                    self._replay.curator,
+                    receipt_curator,
                     "last_operation_filter_receipts",
                     (),
                 ),
@@ -537,7 +608,7 @@ class TeacherForcedCuratorPort:
             model_request_ids=tuple(entry.request_id for entry in entries),
             model_call_receipt_refs=call_refs,
             prompt_fingerprint=(
-                getattr(self._replay.curator, "last_prompt_fingerprint", None)
+                getattr(receipt_curator, "last_prompt_fingerprint", None)
                 or sha256_id(model_request.prompt.encode("utf-8"))
             ),
             feedback_artifact_ref=request.feedback_artifact_ref,
@@ -574,14 +645,57 @@ class TeacherForcedCuratorPort:
         if self._graph_curator is None:
             return None
         suffix = ".graph"
-        request_id = request.request_id.root[: 128 - len(suffix)] + suffix
+        try:
+            request_id = bounded_model_request_id(request, suffix)
+        except ValueError as error:
+            raise ModelCurationContractError(
+                "model request child identity has no bounded request, attempt, or task scope"
+            ) from error
         return request.model_copy(
             update={
-                "request_id": StableId(request_id),
+                "request_id": request_id,
                 "trace_id": f"{request.trace_id}.graph",
                 "scheduling_stage": "curator_graph_extraction",
             }
         )
+
+    @staticmethod
+    def _source_chapter_request(request: ModelRequest, chapter_index: int) -> ModelRequest:
+        """Give each historical source chapter its own deterministic call scope."""
+
+        suffix = f".ch{chapter_index:03d}"
+        try:
+            request_id = bounded_model_request_id(request, suffix)
+        except ValueError as error:
+            raise ModelCurationContractError(
+                "source chapter identity has no bounded request scope"
+            ) from error
+        return request.model_copy(
+            update={
+                "request_id": request_id,
+                "trace_id": f"{request.trace_id}.ch{chapter_index}",
+            }
+        )
+
+    @classmethod
+    def _source_chapter_requests(
+        cls,
+        request: ModelRequest,
+        source_chapter_indices: tuple[int, ...],
+    ) -> tuple[ModelRequest, ...]:
+        chapters = tuple(dict.fromkeys(source_chapter_indices))
+        if not chapters:
+            return (request,)
+        return tuple(
+            request if index == 0 else cls._source_chapter_request(request, chapter_index)
+            for index, chapter_index in enumerate(chapters)
+        )
+
+    @staticmethod
+    def _graph_chapter_request(request: ModelRequest, chapter_index: int) -> ModelRequest:
+        """Preserve the graph profile's historical child identity."""
+
+        return TeacherForcedCuratorPort._source_chapter_request(request, chapter_index)
 
     async def _run_proposal_profiles(
         self,
@@ -593,12 +707,110 @@ class TeacherForcedCuratorPort:
         current_world: WorldRootDocument,
         request: ModelRequest,
         graph_request: ModelRequest | None,
+        source_chapter_indices: tuple[int, ...] = (),
+        graph_only: bool = False,
         proposal_feedback: str | None = None,
+        repair_query: str | None = None,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_tokens_used: int = 0,
     ) -> _CuratorProposalExecution:
-        if self._script is not None:
+        source_bound_kwargs: _SourceBoundKwargs = (
+            {}
+            if source_evidence_requirement is None
+            else {"source_evidence_requirement": source_evidence_requirement}
+        )
+        if self._script is not None and not graph_only:
             self._script(request, AgentMode.REPLAY)
             if graph_request is not None:
                 self._script(graph_request, AgentMode.REPLAY)
+
+        if graph_only:
+            if self._graph_curator is None or graph_request is None:
+                raise ModelCurationContractError(
+                    "graph Curator owner requires a configured graph profile"
+                )
+            chapters = tuple(dict.fromkeys(source_chapter_indices or (chapter_index,)))
+            graph_requests = tuple(
+                graph_request
+                if index == 0
+                else self._graph_chapter_request(graph_request, source_chapter)
+                for index, source_chapter in enumerate(chapters)
+            )
+            if self._script is not None:
+                for source_request in graph_requests:
+                    self._script(source_request, AgentMode.REPLAY)
+            batches: list[Any] = []
+            calls: list[Any] = []
+            for source_chapter, source_request in zip(chapters, graph_requests, strict=True):
+                if repair_query is None:
+                    (
+                        source_batches,
+                        source_calls,
+                    ) = await self._graph_curator.extract_graph_candidates(
+                        text_root,
+                        source_chapter,
+                        base_commit,
+                        current_world,
+                        source_request,
+                        repair_feedback=proposal_feedback,
+                        **source_bound_kwargs,
+                    )
+                else:
+                    (
+                        source_batches,
+                        source_calls,
+                    ) = await self._graph_curator.extract_graph_candidates(
+                        text_root,
+                        source_chapter,
+                        base_commit,
+                        current_world,
+                        source_request,
+                        repair_feedback=proposal_feedback,
+                        repair_query=repair_query,
+                        **source_bound_kwargs,
+                    )
+                batches.extend(source_batches)
+                calls.extend(source_calls)
+            graph_batches = tuple(batches)
+            graph_calls = tuple(calls)
+            try:
+                graph_extraction = self._graph_extraction.run(
+                    current_world,
+                    text_root,
+                    candidate_batches=graph_batches,
+                    base_commit=base_commit,
+                )
+                if graph_extraction.receipt.incomplete_source_unit_ids:
+                    raise ValueError("graph source unit extraction is incomplete")
+            except ValueError as error:
+                raise ModelCurationContractError("graph candidate admission failed") from error
+            if not graph_calls:
+                raise ModelCurationContractError("graph Curator produced no model call")
+            prepared = self._replay.runner.prepare(
+                AgentType.MEMORY_CURATOR,
+                AgentMode.REPLAY,
+                version.root,
+                request,
+                (
+                    f"chapter_index={chapter_index}\n"
+                    f"base_commit={base_commit.root}\n"
+                    "Output graph candidates only; the trusted service binds evidence and IDs."
+                ),
+                source_hashes=(text_root.root_hash,),
+                base_commit=base_commit,
+            )
+            receipt = self._replay.runner.receipt(prepared, graph_calls[0])
+            result = CuratorReplayResult(
+                observed_changes=graph_extraction.change_set,
+                coverage=1.0,
+                receipt=receipt,
+            )
+            return _CuratorProposalExecution(
+                result=result,
+                graph_extraction=graph_extraction,
+                graph_requests=graph_requests,
+            )
 
         replay_call = self._replay.run(
             version=version,
@@ -608,22 +820,77 @@ class TeacherForcedCuratorPort:
             current_world=current_world,
             request=request,
             proposal_feedback=proposal_feedback,
+            repair_query=repair_query,
+            **source_bound_kwargs,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_tokens_used=cumulative_tokens_used,
         )
         if self._graph_curator is None or graph_request is None:
-            result, _ = await replay_call
-            return _CuratorProposalExecution(result=result)
+            chapters = tuple(dict.fromkeys(source_chapter_indices))
+            if len(chapters) <= 1:
+                result, _ = await replay_call
+                return _CuratorProposalExecution(
+                    result=result,
+                    replay_requests=(request,),
+                )
+            replay_requests = tuple(
+                request if index == 0 else self._source_chapter_request(request, source_chapter)
+                for index, source_chapter in enumerate(chapters)
+            )
+            results: list[CuratorReplayResult] = []
+            used_tokens = cumulative_tokens_used
+            for index, (source_chapter, source_request) in enumerate(
+                zip(chapters, replay_requests, strict=True)
+            ):
+                if self._script is not None and index > 0:
+                    self._script(source_request, AgentMode.REPLAY)
+                if index == 0:
+                    source_result, source_call = await replay_call
+                else:
+                    source_result, source_call = await self._replay.run(
+                        version=version,
+                        text_root=text_root,
+                        chapter_index=source_chapter,
+                        base_commit=base_commit,
+                        current_world=current_world,
+                        request=source_request,
+                        proposal_feedback=proposal_feedback,
+                        repair_query=repair_query,
+                        **source_bound_kwargs,
+                        cumulative_token_budget=cumulative_token_budget,
+                        cumulative_tokens_used=used_tokens,
+                    )
+                results.append(source_result)
+                if source_call is not None:
+                    used_tokens += source_call.usage.input_tokens + source_call.usage.output_tokens
+            return _CuratorProposalExecution(
+                result=self._merge_replay_results(results, base_commit),
+                replay_requests=replay_requests,
+            )
 
         replay_task = asyncio.create_task(replay_call)
-        graph_task = asyncio.create_task(
-            self._graph_curator.extract_graph_candidates(
+        if repair_query is None:
+            graph_call = self._graph_curator.extract_graph_candidates(
                 text_root,
                 chapter_index,
                 base_commit,
                 current_world,
                 graph_request,
                 repair_feedback=proposal_feedback,
+                **source_bound_kwargs,
             )
-        )
+        else:
+            graph_call = self._graph_curator.extract_graph_candidates(
+                text_root,
+                chapter_index,
+                base_commit,
+                current_world,
+                graph_request,
+                repair_feedback=proposal_feedback,
+                repair_query=repair_query,
+                **source_bound_kwargs,
+            )
+        graph_task = asyncio.create_task(graph_call)
         try:
             replay_output, graph_output = await asyncio.gather(replay_task, graph_task)
         except BaseException:
@@ -679,19 +946,80 @@ class TeacherForcedCuratorPort:
         return _CuratorProposalExecution(
             result=result,
             graph_extraction=graph_extraction,
+            graph_requests=(graph_request,),
+        )
+
+    @staticmethod
+    def _merge_replay_results(
+        results: list[CuratorReplayResult],
+        base_commit: CommitId,
+    ) -> CuratorReplayResult:
+        if not results:
+            raise ModelCurationContractError("ordinary Curator produced no source result")
+        operations = []
+        seen_operations: dict[StableId, Any] = {}
+        for result in results:
+            for operation in result.observed_changes.operations:
+                previous = seen_operations.get(operation.operation_id)
+                if previous is None:
+                    seen_operations[operation.operation_id] = operation
+                    operations.append(operation)
+                elif previous != operation:
+                    raise ModelCurationContractError(
+                        "ordinary Curator produced conflicting duplicate operation identity"
+                    )
+        source_artifacts = tuple(
+            result.observed_changes.source_artifact.artifact_id.root for result in results
+        )
+        change_set_id = sha256_id(
+            canonical_json_bytes(
+                {
+                    "base_commit": base_commit.root,
+                    "source_artifacts": source_artifacts,
+                    "operation_ids": tuple(operation.operation_id.root for operation in operations),
+                }
+            )
+        )
+        merged_changes = ObservedChangeSet(
+            change_set_id=StableId(f"changes.curator-multi.{change_set_id.root[7:39]}"),
+            base_commit=base_commit,
+            source_artifact=results[0].observed_changes.source_artifact,
+            operations=tuple(operations),
+        )
+        unresolved = tuple(dict.fromkeys(item for result in results for item in result.unresolved))
+        declared_diff = tuple(
+            dict.fromkeys(item for result in results for item in result.declared_vs_observed_diff)
+        )
+        receipt = results[0].receipt.model_copy(update={"unresolved": unresolved})
+        return results[0].model_copy(
+            update={
+                "observed_changes": merged_changes,
+                "coverage": min(result.coverage for result in results),
+                "unresolved": unresolved,
+                "declared_vs_observed_diff": declared_diff,
+                "receipt": receipt,
+            }
         )
 
     def _model_call_entries(
         self,
-        request: ModelRequest,
-        graph_request: ModelRequest | None,
+        request: ModelRequest | tuple[ModelRequest, ...],
+        graph_request: ModelRequest | tuple[ModelRequest, ...] | None,
     ) -> tuple[ModelCallLedgerEntry, ...]:
         ledger = self._replay.curator.gateway.call_ledger
+        requests = request if isinstance(request, tuple) else (request,)
+        graph_requests = (
+            ()
+            if graph_request is None
+            else graph_request
+            if isinstance(graph_request, tuple)
+            else (graph_request,)
+        )
         by_id = {
             entry.request_id: entry
             for prefix in (
-                request.request_id.root,
-                *((graph_request.request_id.root,) if graph_request is not None else ()),
+                *(item.request_id.root for item in requests),
+                *(item.request_id.root for item in graph_requests),
             )
             for entry in ledger.list_for_prefix(prefix)
         }
@@ -740,14 +1068,16 @@ class TeacherForcedCuratorPort:
     def _proposal_rejected(
         self,
         request: CuratorProposalAttemptRequest,
-        model_request: ModelRequest,
+        model_requests: ModelRequest | tuple[ModelRequest, ...],
         error: ValidationError | ModelCurationContractError,
         started_at: datetime,
         version: SchemaVersion,
         *,
         graph_request: ModelRequest | None = None,
     ) -> CuratorProposalRejected:
-        entries = self._model_call_entries(model_request, graph_request)
+        requests = model_requests if isinstance(model_requests, tuple) else (model_requests,)
+        model_request = requests[0]
+        entries = self._model_call_entries(requests, graph_request)
         call_refs = tuple(self._persist_model_call_entry(entry, version) for entry in entries)
         raw_refs = self._persist_raw_responses(
             tuple(entry.request_id for entry in entries), version
@@ -761,10 +1091,9 @@ class TeacherForcedCuratorPort:
             paths = tuple(".".join(str(part) for part in item["loc"]) or "$" for item in errors)
             extra_fields = sorted(
                 {
-                    key
+                    str(item["loc"][-1])
                     for item in error.errors(include_url=False)
-                    if item["type"] == "extra_forbidden"
-                    for key in (item.get("input") or {})
+                    if item["type"] == "extra_forbidden" and item.get("loc")
                 }
             )
             detail = (
@@ -791,6 +1120,19 @@ class TeacherForcedCuratorPort:
             operation_indexes: tuple[int, ...] = ()
             json_pointers = paths
             violation_rule: str | None = "schema_validation"
+        elif isinstance(error, ModelCurationOutputIncomplete):
+            paths = ()
+            detail = (
+                "Curator output was truncated even after the bounded compact retry; "
+                "the retained partial response is advisory only"
+            )
+            kind = ProposalRejectionKind.SCHEMA_REJECTED
+            stage = ProposalRejectionStage.STRUCTURED_SCHEMA
+            reason_code = error.reason_code
+            retryable = True
+            operation_indexes = ()
+            json_pointers = paths
+            violation_rule = "provider_output_finish_reason_length"
         elif isinstance(error, CuratorProposalSemanticRejected):
             paths = error.json_pointers
             reason_code = error.reason_code
@@ -917,7 +1259,10 @@ class TeacherForcedCuratorPort:
             block_or_candidate_ids=extract_block_or_candidate_ids(feedback_lines),
         )
         rejection = CuratorProposalRejection(
-            rejection_id=StableId(f"proposal-rejection.{request.attempt_id.root}"),
+            rejection_id=bounded_stable_id(
+                f"proposal-rejection.{request.attempt_id.root}",
+                request.attempt_id.root,
+            ),
             attempt_id=request.attempt_id,
             workflow_request_id=request.request.request_id,
             base_commit=request.request.base_commit,
@@ -1247,7 +1592,7 @@ class InformationBoundaryRegistryAdapter:
         receipt = receipt.model_copy(
             update={"receipt_hash": sha256_id(canonical_json_bytes(payload))}
         )
-        receipt_ref = self.artifacts.put(
+        receipt_ref = self.artifacts.put_or_reuse_existing(
             canonical_json_bytes(receipt.model_dump(mode="json")),
             "application/vnd.novel-agent.boundary-propagation-receipt+json",
             output.schema_version,
@@ -1305,8 +1650,15 @@ def _validation_report(
         else ValidationStatus.FAILED
     )
     return ValidationReport(
-        report_id=StableId(f"validation-report.{changes.change_set_id.root}"),
-        bundle_id=StableId(f"bundle.validation.{changes.change_set_id.root}"),
+        report_id=bounded_stable_id(
+            f"validation-report.{changes.change_set_id.root}",
+            changes.change_set_id.root,
+        ),
+        bundle_id=bounded_stable_id(
+            f"bundle.validation.{changes.change_set_id.root}",
+            f"bundle.{changes.change_set_id.root}",
+            changes.change_set_id.root,
+        ),
         status=status,
         findings=findings,
         schema_version=SchemaVersion("0.1.0"),
@@ -1369,9 +1721,20 @@ def _validate_durable_commit_request(
     )
 
 
-def _chapter_index(request: MemoryWriteWorkflowRequest) -> int:
+def _chapter_indices(request: MemoryWriteWorkflowRequest) -> tuple[int, ...]:
     trigger = request.trigger
-    return int(getattr(trigger, "chapter_index", 0))
+    source_chapters = getattr(trigger, "chapter_indices", ())
+    if source_chapters:
+        return tuple(int(index) for index in source_chapters)
+    chapter_index = getattr(trigger, "chapter_index", None)
+    if chapter_index is not None:
+        return (int(chapter_index),)
+    visible = request.information_boundary.maximum_visible_position
+    return (0 if visible is None else visible.chapter_index,)
+
+
+def _chapter_index(request: MemoryWriteWorkflowRequest) -> int:
+    return _chapter_indices(request)[0]
 
 
 __all__ = [

@@ -434,8 +434,17 @@ def _parse_frozen_comparison(
     parsing at detecting stale or drifted formats.
     """
     comparison = PairedContextComparison.model_validate_json(comparison_bytes, strict=False)
-    if canonical_json_bytes(comparison.model_dump(mode="json")) != comparison_bytes:
-        raise ValueError("frozen comparison is not a canonical dump of the current schema")
+    canonical = canonical_json_bytes(comparison.model_dump(mode="json"))
+    if canonical != comparison_bytes:
+        # Inherited frozen comparisons can predate an additive default field
+        # (currently ModelUsage.cost_availability).  Full validation above
+        # still applies; accept only when every supplied field is an exact
+        # canonical round-trip and the difference is unset defaults.
+        unset_default_canonical = canonical_json_bytes(
+            comparison.model_dump(mode="json", exclude_unset=True)
+        )
+        if unset_default_canonical != comparison_bytes:
+            raise ValueError("frozen comparison is not a canonical dump of the current schema")
     needs = comparison.generated_needs
     if not needs or any(need.base_commit != commit for need in needs):
         raise ValueError("frozen checkpoint Needs do not match the checkpoint commit")
@@ -649,6 +658,16 @@ def _semantic_status(mandatory_facet_closure: str) -> str:
     if mandatory_facet_closure == "COMPLETE":
         return "COMPLETE"
     return "INCOMPLETE"
+
+
+def _index_call_count(item: dict[str, object], key: str) -> int:
+    counts = item.get("call_counts")
+    if not isinstance(counts, dict):
+        return 0
+    value = counts.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0
+    return int(value)
 
 
 def _aggregate_mechanical_status(index_entries: list[dict[str, object]]) -> str:
@@ -1208,13 +1227,9 @@ def main() -> int:
                     else planner_result.planner_artifact_document_ref.artifact_id.root
                 ),
                 "status": None if planner_result is None else planner_result.status.value,
-                "fallback_used": (
-                    None if planner_result is None else planner_result.fallback_used
-                ),
+                "fallback_used": (None if planner_result is None else planner_result.fallback_used),
                 "fallback_reason": (
-                    None
-                    if planner_result is None
-                    else planner_result.planner_fallback_reason
+                    None if planner_result is None else planner_result.planner_fallback_reason
                 ),
                 "model_call_count": result.need_planner_model_call_count,
                 "coverage_audit_model_call_count": (result.planner_coverage_audit_model_call_count),
@@ -1306,9 +1321,7 @@ def main() -> int:
                     "stop_reason": result.stop_reason,
                     "planner_fallback_used": result.planner_fallback_used,
                     "planner_fallback_reason": (
-                        None
-                        if planner_result is None
-                        else planner_result.planner_fallback_reason
+                        None if planner_result is None else planner_result.planner_fallback_reason
                     ),
                     "unresolved_lexical_anchors": [
                         anchor.model_dump(mode="json")
@@ -1447,10 +1460,7 @@ def main() -> int:
         # unresolved, insufficient or transport-failed (review 2026-08-14 P1-2).
         aggregate_semantic_status = _aggregate_semantic_status(index_entries)
         aggregate_call_counts = {
-            key: sum(
-                int(item.get("call_counts", {}).get(key, 0))  # type: ignore[union-attr]
-                for item in index_entries
-            )
+            key: sum(_index_call_count(item, key) for item in index_entries)
             for key in (
                 "need_planner_model_calls",
                 "planner_coverage_audit_model_calls",

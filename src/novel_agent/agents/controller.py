@@ -28,6 +28,12 @@ from novel_agent.domain.stage2 import (
 from novel_agent.runtime.memory_controller import ControllerStateView
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.controller_legal_actions import LegalActionProvider
+from novel_agent.services.controller_observation import (
+    CompactionRoute,
+    ControllerObservationAssembler,
+    ControllerObservationAssembly,
+    build_c0_payload,
+)
 
 ControllerRequestFactory = Callable[[ControllerStateView, int], ModelRequest]
 
@@ -56,6 +62,7 @@ class StructuredControllerPolicy:
         max_decision_model_calls: int = 2,
         max_agentic_actions: int = 8,
         compact_prompt: bool = True,
+        available_input_tokens: int = 12_000,
     ) -> None:
         if spec.agent_type is not AgentType.MEMORY_CONTROLLER:
             raise ValueError("structured Controller policy requires a Memory Controller AgentSpec")
@@ -74,6 +81,9 @@ class StructuredControllerPolicy:
         self.max_decision_model_calls = max_decision_model_calls
         self._max_agentic_actions = max_agentic_actions
         self._compact_prompt = compact_prompt
+        self._available_input_tokens = available_input_tokens
+        self._observation_assembler = ControllerObservationAssembler()
+        self.last_observation: ControllerObservationAssembly | None = None
 
     @property
     def contract_ref(self) -> ContractRef:
@@ -114,6 +124,15 @@ class StructuredControllerPolicy:
     def decide(self, state: ControllerStateView) -> ControllerPolicyDecision:
         round_index = len(state["tool_calls"]) + 1
         request = self._request_factory(state, round_index)
+        self.last_observation = None
+        bind_budget = getattr(self._runner, "bind_effective_budget", None)
+        if callable(bind_budget):
+            request, effective_budget = bind_budget(request)
+            available_input_tokens = effective_budget.available_input_tokens
+        else:
+            # Lightweight unit-test runners do not own a Gateway. Production
+            # StructuredAgentRunner always takes the strict path above.
+            available_input_tokens = self._available_input_tokens
         available_actions = self._available_actions(state)
         registered = self._legal_actions.available_actions(
             state["request"],
@@ -122,59 +141,34 @@ class StructuredControllerPolicy:
         action_by_id = {item.action_id.root: item for item in registered}
         payload_obj: dict[str, object]
         if self._compact_prompt:
-            payload_obj = {
-                "task_contract": {
-                    "request_id": state["request"].request_id.root,
-                    "base_commit": state["request"].base_commit.root,
-                    "snapshot_id": state["request"].snapshot_id.root,
-                    "narrative_chapter": state["request"].narrative_chapter,
-                },
-                "need_summaries": [
-                    {
-                        "id": need.need_id.root,
-                        "intent": need.query_intent.value,
-                        "requirement": need.requirement.value,
-                        "resolved": any(
-                            need_id == need.need_id
-                            and result.status.value == "succeeded"
-                            and result.coverage > 0
-                            for need_id, _, result in state["tool_calls"]
-                        ),
-                    }
-                    for need in state["request"].initial_memory_needs
-                ],
-                "available_actions": available_actions,
-                "registered_action_ids": [item.action_id.root for item in registered],
-                "prior_action_outcomes": [
-                    {
-                        "need_id": need_id.root,
-                        "tool_name": tool_name,
-                        "success": result.status.value == "succeeded",
-                        "candidate_count": result.channel_candidate_count or 0,
-                        "gain": result.new_information_gain,
-                        "failure_code": (
-                            result.failure_code.value if result.failure_code is not None else None
-                        ),
-                    }
-                    for need_id, tool_name, result in state["tool_calls"]
-                ],
-                "round_index": round_index,
-                "max_agentic_actions": self._max_agentic_actions,
-            }
+            assembly = self._observation_assembler.assemble(
+                state,
+                available_actions=available_actions,
+                registered_action_ids=[item.action_id.root for item in registered],
+                round_index=round_index,
+                max_agentic_actions=self._max_agentic_actions,
+                available_input_tokens=available_input_tokens,
+            )
+            self.last_observation = assembly
+            payload_obj = assembly.payload
         else:
-            payload_obj = {
-                "resolution_request": state["request"].model_dump(mode="json"),
-                "available_actions": available_actions,
-                "prior_tool_results": [
-                    {
-                        "need_id": need_id.root,
-                        "tool_name": tool_name,
-                        "result": result.model_dump(mode="json"),
-                    }
-                    for need_id, tool_name, result in state["tool_calls"]
-                ],
-                "round_index": round_index,
-            }
+            payload_obj = build_c0_payload(
+                state,
+                available_actions=available_actions,
+                round_index=round_index,
+            )
+            self.last_observation = ControllerObservationAssembly(
+                context_level="C0",
+                available_input_tokens=available_input_tokens,
+                input_tokens=ControllerObservationAssembler._tokens(payload_obj),
+                preview_count=0,
+                truncated_preview_count=0,
+                zero_preview_cause=None,
+                dropped_optional_needs=0,
+                dropped_actions=0,
+                compaction_route=CompactionRoute.NONE,
+                payload=payload_obj,
+            )
         payload = canonical_json_bytes(payload_obj).decode("utf-8")
 
         async def execute() -> AgentRunResult[ControllerPolicyDraft]:
@@ -201,7 +195,12 @@ class StructuredControllerPolicy:
             self._decisions.append(decision)
             self._record_repair(request.request_id, "SCHEMA_RETRY_EXHAUSTED", decision)
             return decision
-        self._receipts[result.model_call.request_id] = result.receipt
+        receipt = result.receipt
+        if self.last_observation is not None and hasattr(receipt, "model_copy"):
+            receipt = receipt.model_copy(
+                update={"context_telemetry": self.last_observation.telemetry()}
+            )
+        self._receipts[result.model_call.request_id] = receipt
         decision, repair_reason = self._bind_draft(
             result.output,
             available_actions,

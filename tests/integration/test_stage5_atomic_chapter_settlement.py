@@ -32,7 +32,7 @@ from novel_agent.domain.creative_runtime import (
     CandidateBinding,
     CandidateKind,
 )
-from novel_agent.domain.ids import ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.ids import CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite, WorldRootDocument
 from novel_agent.domain.memory_write import (
     CuratorProposalAccepted,
@@ -158,7 +158,9 @@ class _TextMaterializer:
         self._base = base
         self._source = source
 
-    def materialize(self, accepted: AcceptedCandidateBinding):
+    def materialize(
+        self, accepted: AcceptedCandidateBinding
+    ) -> tuple[CandidateChangeBundle, ValidationReport]:
         manifest = self._commits.load_manifest(self._base)
         current = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
@@ -267,9 +269,7 @@ def test_atomic_chapter_settlement_updates_text_and_world_in_one_commit(
         commit=CommitServiceMemoryWriteAdapter(commits, artifacts),
         information_boundary=boundary,
         artifacts=artifacts,
-        projection=ProjectionServiceReadinessAdapter(
-            projections, snapshots, artifacts
-        ),
+        projection=ProjectionServiceReadinessAdapter(projections, snapshots, artifacts),
     )
     contract = ContractRef(
         contract_id=StableId("contract.chapter-settlement"),
@@ -312,3 +312,66 @@ def test_atomic_chapter_settlement_updates_text_and_world_in_one_commit(
     assert committed_text.chapters[-1].chapter_index == 21
     assert committed_world.states[0].value == {"status": "settled"}
     assert revealed[-1] == committed_text
+
+
+def test_boundary_receipt_reuses_existing_content_addressed_object(
+    tmp_path: Path,
+) -> None:
+    from novel_agent.adapters.filesystem import FilesystemObjectStore
+    from novel_agent.domain.memory_write import (
+        InformationBoundary,
+        NarrativePosition,
+        SourceProvenance,
+    )
+    from novel_agent.domain.stage2 import AccessScope
+    from novel_agent.services.artifacts import ArtifactRepository
+
+    real_artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path))
+    source = real_artifacts.put(b"source", "text/plain", VERSION)
+    output = real_artifacts.put(b"output", "application/json", VERSION)
+    boundary = InformationBoundary(
+        boundary_id=StableId("boundary.reuse"),
+        base_commit=CommitId("sha256:" + "1" * 64),
+        reveal_position=NarrativePosition(chapter_index=1),
+        maximum_visible_position=NarrativePosition(chapter_index=1),
+        evaluator_sources_forbidden=True,
+        policy_ref=ContractRef(
+            contract_id=StableId("policy.boundary.reuse"),
+            version=VERSION,
+            content_hash=HASH,
+        ),
+    )
+    port = InformationBoundaryPort(
+        artifact_reader=real_artifacts,
+        trusted_policy_hashes=(HASH,),
+    )
+
+    class PreseedWrongMedia:
+        def put_or_reuse_existing(self, data: bytes, media_type: str, schema_version: Any):
+            real_artifacts.put(
+                data,
+                "application/vnd.novel-agent.legacy-receipt+json",
+                schema_version,
+            )
+            return real_artifacts.put_or_reuse_existing(data, media_type, schema_version)
+
+    registry = InformationBoundaryRegistryAdapter(port, cast(Any, PreseedWrongMedia()))
+    visibility = registry.register_visibility(
+        source=source,
+        boundary=boundary,
+        position=NarrativePosition(chapter_index=1),
+        access_scope=AccessScope.WRITER_SAFE,
+        provenance=SourceProvenance.REVEALED_TEXT,
+    )
+
+    receipt_ref = registry.register_derivation(
+        output=output,
+        inputs=(source,),
+        visibility_receipts=(visibility,),
+        boundary=boundary,
+        policy=boundary.policy_ref,
+        position=NarrativePosition(chapter_index=1),
+        access_scope=AccessScope.WRITER_SAFE,
+    )
+
+    assert receipt_ref.media_type == "application/vnd.novel-agent.legacy-receipt+json"

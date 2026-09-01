@@ -109,6 +109,54 @@ class InMemoryCuratorProposalAttemptRepository:
             current.model_copy(update={"status": CuratorProposalAttemptStatus.UNCERTAIN})
         )
 
+    def mark_abandoned(self, attempt_id: StableId, reason: str) -> ArtifactRef:
+        if not reason:
+            raise ValueError("abandoned proposal attempt requires a reason")
+        current = self.load(attempt_id)
+        if current.status in {
+            CuratorProposalAttemptStatus.ACCEPTED,
+            CuratorProposalAttemptStatus.REJECTED,
+        }:
+            raise ProposalAttemptIdentityCollision(
+                "terminal proposal attempt cannot become abandoned"
+            )
+        if current.status is CuratorProposalAttemptStatus.ABANDONED:
+            return self._refs[attempt_id]
+        return self._persist(
+            current.model_copy(
+                update={
+                    "status": CuratorProposalAttemptStatus.ABANDONED,
+                    "completed_at": datetime.now(UTC),
+                }
+            )
+        )
+
+    def restore(self, receipt_ref: ArtifactRef) -> CuratorProposalAttemptReceipt:
+        expected_media_type = "application/vnd.novel-agent.curator-proposal-attempt-receipt+json"
+        if receipt_ref.media_type != expected_media_type:
+            raise ValueError("proposal attempt receipt has an unexpected media type")
+        receipt = CuratorProposalAttemptReceipt.model_validate_json(
+            self._artifacts.read_verified(receipt_ref), strict=True
+        )
+        existing = self._items.get(receipt.attempt_id)
+        if existing is not None and existing != receipt:
+            raise ProposalAttemptIdentityCollision("restored proposal attempt changed")
+        existing_ref = self._refs.get(receipt.attempt_id)
+        if existing_ref is not None and existing_ref != receipt_ref:
+            raise ProposalAttemptIdentityCollision("restored proposal attempt reference changed")
+        self._items[receipt.attempt_id] = receipt
+        self._refs[receipt.attempt_id] = receipt_ref
+        if receipt.rejection_ref is not None:
+            rejection = CuratorProposalRejection.model_validate_json(
+                self._artifacts.read_verified(receipt.rejection_ref), strict=True
+            )
+            if rejection.attempt_id != receipt.attempt_id:
+                raise ProposalAttemptIdentityCollision(
+                    "restored rejection belongs to another attempt"
+                )
+            self._rejections[receipt.attempt_id] = rejection
+        return receipt
+
     def load(self, attempt_id: StableId) -> CuratorProposalAttemptReceipt:
         try:
             return self._items[attempt_id]
@@ -237,7 +285,7 @@ class BoundedPreCandidateRepairPolicy:
         )
         return CuratorProposalRepairDirective(
             directive_id=StableId(
-                f"proposal-directive.{rejection.rejection_id.root}.{attempt_count}"
+                f"proposal-directive.{rejection.rejection_id.root}.{attempt_count}"[:128]
             ),
             workflow_request_id=rejection.workflow_request_id,
             prior_attempt_id=rejection.attempt_id,

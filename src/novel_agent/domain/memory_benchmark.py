@@ -10,7 +10,8 @@ from pydantic import Field, model_validator
 from novel_agent.domain import writer_context as _public
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId
+from novel_agent.domain.model_calls import ModelRole
 from novel_agent.domain.text import EvidenceRef
 
 
@@ -53,6 +54,166 @@ WriterContextBudgetReport = _public.WriterContextBudgetReport
 ContextLineage = _public.ContextLineage
 WriterContextPackage = _public.WriterContextPackage
 FreezeReceipt = _public.FreezeReceipt
+
+
+class ContextWriterGapType(StrEnum):
+    MISSING_HISTORY = "MISSING_HISTORY"
+    EPISTEMIC_BOUNDARY = "EPISTEMIC_BOUNDARY"
+    UNRESOLVED_OBLIGATION = "UNRESOLVED_OBLIGATION"
+    CONFLICT = "CONFLICT"
+    FUTURE_REVEAL = "FUTURE_REVEAL"
+
+
+class ContextWriterExpectedAction(StrEnum):
+    REQUEST_MEMORY = "request_memory"
+    DECLARE_ASSUMPTION = "declare_assumption"
+    DEFER_BEAT = "defer_beat"
+    ASK_AUTHOR = "ask_author"
+
+
+class ContextWriterGap(DomainModel):
+    """One typed gap declared by the real Writer in Track B."""
+
+    gap_id: StableId
+    description: str = Field(min_length=1)
+    gap_type: ContextWriterGapType
+    blocking: bool
+    evidence_available: bool
+    expected_action: ContextWriterExpectedAction
+
+
+class ContextWriterConclusion(DomainModel):
+    """One evidence-backed conclusion the Writer returns in Track B.
+
+    Conclusions are not target-window prose. Each conclusion must cite at
+    least one evidence ref so the answer can be evaluated independently of
+    the WCP diagnostic layer.
+    """
+
+    conclusion_id: StableId
+    text: str = Field(min_length=1)
+    evidence_refs: tuple[EvidenceRef, ...] = Field(min_length=1)
+    gap_ids: tuple[StableId, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_conclusion(self) -> ContextWriterConclusion:
+        if len(self.evidence_refs) != len(set(self.evidence_refs)):
+            raise ValueError("context writer conclusion evidence refs must be unique")
+        if len(self.gap_ids) != len(set(self.gap_ids)):
+            raise ValueError("context writer conclusion gap ids must be unique")
+        return self
+
+
+class ContextWriterResponse(DomainModel):
+    """Track B product main result: the Writer benchmark answer.
+
+    This is intentionally separate from ``WriterContextPackageV2``. It is
+    frozen before Gold reveal and must not contain draft prose, target-window
+    text, or future text.
+    """
+
+    response_version: str = Field(min_length=1)
+    task_contract: BenchmarkTaskContract
+    basis_commit_id: CommitId
+    conclusions: tuple[ContextWriterConclusion, ...] = Field(min_length=1)
+    gaps: tuple[ContextWriterGap, ...] = ()
+    rendered_response: str = ""
+    frozen_before_gold_reveal: bool = False
+
+    @model_validator(mode="after")
+    def validate_response(self) -> ContextWriterResponse:
+        if len(self.conclusions) != len(
+            {conclusion.conclusion_id for conclusion in self.conclusions}
+        ):
+            raise ValueError("context writer response conclusions must be unique")
+        if len(self.gaps) != len({gap.gap_id for gap in self.gaps}):
+            raise ValueError("context writer response gaps must be unique")
+        declared_gap_ids = {gap.gap_id for gap in self.gaps}
+        for conclusion in self.conclusions:
+            missing = set(conclusion.gap_ids) - declared_gap_ids
+            if missing:
+                raise ValueError("context writer conclusion references undeclared gap")
+        return self
+
+
+class ContextWriterModelDraft(DomainModel):
+    """Benchmark-only Writer JSON before host identity/freeze stamping."""
+
+    conclusions: tuple[ContextWriterConclusion, ...] = Field(min_length=1)
+    gaps: tuple[ContextWriterGap, ...] = ()
+    rendered_response: str = ""
+
+
+class QaEvidenceItem(DomainModel):
+    """One Track A evidence pointer. Chapter must be at or before the cutoff."""
+
+    chapter: int = Field(ge=0, le=300)
+    span: str = Field(min_length=1)
+
+
+class QaWriterResponse(DomainModel):
+    """Track A product main result: answer plus at most 20 history evidence items."""
+
+    answer: str | bool | int | tuple[str, ...]
+    evidence: tuple[QaEvidenceItem, ...] = Field(default=(), max_length=20)
+
+
+class ContextWriterReadoutRecord(DomainModel):
+    """Evaluation-namespace envelope for one frozen Track B Writer readout."""
+
+    run_id: RunId
+    case_id: StableId
+    checkpoint_chapter: int = Field(ge=0)
+    information_profile: BenchmarkInformationProfile
+    task_id: StableId
+    package_ref: ArtifactRef
+    basis_commit_id: CommitId
+    freeze_receipt_id: StableId
+    model_role: ModelRole
+    model_request_id: StableId
+    prompt_hash: ArtifactId
+    schema_title: str = Field(min_length=1)
+    response: ContextWriterResponse
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> ContextWriterReadoutRecord:
+        if self.response.task_contract.task_id != self.task_id:
+            raise ValueError("readout record task_id does not match the Writer answer")
+        if self.response.basis_commit_id != self.basis_commit_id:
+            raise ValueError("readout record basis does not match the Writer answer")
+        if not self.response.frozen_before_gold_reveal:
+            raise ValueError("readout record cannot store an unfrozen Writer answer")
+        if self.response.task_contract.checkpoint_chapter != self.checkpoint_chapter:
+            raise ValueError("readout record checkpoint does not match the task")
+        if self.response.task_contract.information_profile != self.information_profile:
+            raise ValueError("readout record profile does not match the task")
+        return self
+
+
+class QaWriterReadoutRecord(DomainModel):
+    """Evaluation-namespace envelope for one frozen Track A Writer readout."""
+
+    run_id: RunId
+    case_id: StableId
+    checkpoint_chapter: int = Field(ge=0)
+    information_profile: BenchmarkInformationProfile
+    task_id: StableId
+    question_id: StableId
+    package_ref: ArtifactRef
+    basis_commit_id: CommitId
+    freeze_receipt_id: StableId
+    model_role: ModelRole
+    model_request_id: StableId
+    prompt_hash: ArtifactId
+    schema_title: str = Field(min_length=1)
+    response: QaWriterResponse
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> QaWriterReadoutRecord:
+        for item in self.response.evidence:
+            if item.chapter > self.checkpoint_chapter:
+                raise ValueError("QA evidence chapter is after the frozen checkpoint")
+        return self
 
 
 class GoldMatchStatus(StrEnum):

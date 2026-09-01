@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.model import FakeModelEndpoint
@@ -13,6 +13,10 @@ from novel_agent.agents import (
     PlannerAgent,
     PlannerInvocationError,
     StructuredAgentRunner,
+)
+from novel_agent.agents.planner import (
+    INQUIRY_OUTPUT_CONSTRAINTS,
+    PLANNING_TURN_OUTPUT_CONSTRAINTS,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import (
@@ -25,6 +29,14 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.planning import (
+    GoalProposal,
+    PlanningInquiryDraft,
+    PlanningProvenance,
+    PlanningReference,
+    PlanningTurnAction,
+    PlanningTurnDraft,
+)
 from novel_agent.domain.stage2 import (
     AgentMode,
     AgentSpec,
@@ -171,7 +183,7 @@ def prompt_ref(path: Path, identity: str) -> PromptContractRef:
 def harness(
     tmp_path: Path,
     mode: AgentMode,
-    output: PlannerProposalDraft,
+    output: BaseModel,
 ) -> tuple[PlannerAgent, FakeModelEndpoint, ArtifactRepository]:
     system_path = ROOT / "src/novel_agent/prompts/system_policy_v1.md"
     prompt_name, skill_name = MODE_FILES[mode]
@@ -279,6 +291,70 @@ def test_planner_agent_executes_all_six_modes_with_typed_provenance(
     assert "SOURCE_DATA=author material" in sent.prompt
 
 
+def test_planner_inquiry_prompt_binds_compact_output_contract(tmp_path: Path) -> None:
+    source_id = StableId("source.brief")
+    provenance = PlanningReference(
+        provenance=PlanningProvenance.AUTHOR_SUPPLIED,
+        reference_ids=(source_id,),
+    )
+    inquiry = PlanningInquiryDraft(
+        mode=AgentMode.CHAPTER,
+        planning_scope=("chapter",),
+        horizon_start=2,
+        horizon_end=2,
+        goal_proposals=(
+            GoalProposal(
+                goal_id=StableId("goal.chapter"),
+                summary="advance the chapter conflict",
+                rationale="preserve the author direction",
+                provenance=provenance,
+            ),
+        ),
+        expected_output_shape="one compact inquiry",
+    )
+    agent, endpoint, _ = harness(tmp_path, AgentMode.CHAPTER, inquiry)
+    asyncio.run(
+        agent.propose_inquiry(
+            version=VERSION,
+            task=task(AgentMode.CHAPTER),
+            source_payload="author material",
+            source_artifacts=(artifact(),),
+            request=request(AgentMode.CHAPTER),
+            horizon_start=2,
+            horizon_end=2,
+        )
+    )
+
+    assert INQUIRY_OUTPUT_CONSTRAINTS in endpoint.requests[0].prompt
+    assert "PROVENANCE_CONSTRAINT" in endpoint.requests[0].prompt
+    assert "GROUNDING_CONSTRAINT" in endpoint.requests[0].prompt
+    assert "LINEAGE_CONSTRAINT" in endpoint.requests[0].prompt
+    assert "RELATION_CONSTRAINT" in endpoint.requests[0].prompt
+    assert "PLANNING_SCOPE_CONSTRAINT" in endpoint.requests[0].prompt
+    assert "HORIZON_CONSTRAINT" in endpoint.requests[0].prompt
+
+
+def test_planner_turn_prompt_binds_memory_grounding(tmp_path: Path) -> None:
+    turn = PlanningTurnDraft(
+        action=PlanningTurnAction.REQUEST_MEMORY,
+        memory_questions=("陈长生当前状态是什么?",),
+    )
+    agent, endpoint, _ = harness(tmp_path, AgentMode.CHAPTER, turn)
+    asyncio.run(
+        agent.run_turn(
+            version=VERSION,
+            task=task(AgentMode.CHAPTER),
+            source_payload="WORLD_ENTITY_LABELS=陈长生",
+            source_artifacts=(artifact(),),
+            request=request(AgentMode.CHAPTER),
+        )
+    )
+
+    assert PLANNING_TURN_OUTPUT_CONSTRAINTS in endpoint.requests[0].prompt
+    assert "WORLD_ENTITY_LABELS" in endpoint.requests[0].prompt
+    assert "at most three unique memory_questions" in endpoint.requests[0].prompt
+
+
 def test_planner_agent_rejects_untrusted_mode_source_and_strategy_changes(tmp_path: Path) -> None:
     mode = AgentMode.STORY
     agent, endpoint, _ = harness(tmp_path, mode, draft(mode))
@@ -363,8 +439,28 @@ def test_planning_contracts_reject_mode_and_provenance_contradictions() -> None:
         )
     with pytest.raises(ValidationError, match="plan items or explicit unresolved"):
         PlannerProposalDraft.model_validate(base | {"plan_items": (), "unresolved": ()})
-    with pytest.raises(ValidationError, match="selection rationale"):
-        PlannerProposalDraft.model_validate(base | {"alternatives": ("A",)})
+    normalized = PlannerProposalDraft.model_validate(
+        base | {"alternatives": ("A: preserve tension", "B: reduce scope")}
+    )
+    assert normalized.selection_rationale == (
+        "Embedded in alternatives: A: preserve tension | B: reduce scope"
+    )
+    chapter_goal = ProposedItem(
+        item_id=StableId("plan-item.chapter-set-alias"),
+        kind="goal",
+        payload={"chapter_index": 21, "summary": "Advance the chapter conflict."},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+    aliased = PlannerProposalDraft.model_validate(
+        {
+            "mode": AgentMode.CHAPTER_SET,
+            "project_intent_items": (chapter_goal,),
+            "unresolved": ("historical detail remains open",),
+            "coverage": 0.6,
+        }
+    )
+    assert aliased.project_intent_items == ()
+    assert aliased.plan_items == (chapter_goal,)
     proposed = item(AgentMode.PROJECT_BOOTSTRAP)
     with pytest.raises(ValidationError, match="NORMALIZE_ONLY"):
         PlannerProposalDraft(
@@ -374,6 +470,20 @@ def test_planning_contracts_reject_mode_and_provenance_contradictions() -> None:
             plan_items=(proposed,),
             coverage=1,
         )
+
+
+def test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal() -> None:
+    prompt = (ROOT / "src/novel_agent/prompts/planner_chapter_set_v1.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PLANNING_TASK.creative_scope" in prompt
+    assert "exactly one `plan_items` entry" in prompt
+    assert "`chapter_index` integer" in prompt
+    assert "non-empty `summary` string" in prompt
+    assert "`project_intent_items: []`" in prompt
+    assert "`strategy: null`" in prompt
+    assert "Put missing historical details in `unresolved`" in prompt
 
 
 def test_planner_result_rejects_receipt_and_mode_contradictions(tmp_path: Path) -> None:

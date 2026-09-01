@@ -436,9 +436,7 @@ def _child_candidate(
         )
     )
     content_hash = sha256_id(data)
-    candidate_id = StableId(
-        f"candidate.{parent.candidate_id.root}.{parent.revision_no + 1}.{content_hash.root[7:23]}"
-    )
+    candidate_id = _child_candidate_id(parent, content_hash, payload)
     return CandidateRevision(
         candidate_id=candidate_id,
         parent_candidate_id=parent.candidate_id,
@@ -447,6 +445,7 @@ def _child_candidate(
         basis_hash=parent.basis_hash,
         candidate_artifact=artifact,
         source_artifacts=parent.source_artifacts,
+        source_evidence_requirement=parent.source_evidence_requirement,
         producer_kind=producer_kind,
         producer_receipt=producer_receipt,
         repair_scope=repair_scope,
@@ -462,6 +461,23 @@ def _child_candidate(
 
 def _payload_hash(payload: MemoryWriteCandidatePayload) -> ArtifactId:
     return sha256_id(canonical_json_bytes(payload.model_dump(mode="json")))
+
+
+def _child_candidate_id(
+    parent: CandidateRevision,
+    content_hash: ArtifactId,
+    payload: MemoryWriteCandidatePayload,
+) -> StableId:
+    """Derive a bounded child identity without losing deterministic lineage."""
+
+    revision = parent.revision_no + 1
+    content_suffix = content_hash.root.removeprefix("sha256:")[:16]
+    readable = f"candidate.{parent.candidate_id.root}.{revision}.{content_suffix}"
+    if len(readable) <= 128:
+        return StableId(readable)
+    parent_hash = hashlib.sha256(parent.candidate_id.root.encode("utf-8")).hexdigest()[:32]
+    payload_hash = hashlib.sha256(canonical_json_bytes(payload.model_dump(mode="json"))).hexdigest()
+    return StableId(f"candidate.{parent_hash}.{revision}.{payload_hash[:32]}")
 
 
 def _content_digest(value: Any) -> str:

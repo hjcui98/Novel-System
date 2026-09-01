@@ -15,6 +15,36 @@ _Text = Annotated[str, StringConstraints(min_length=1)]
 CONTEXT_EVENT_SCHEMA_VERSION = SchemaVersion("1.0.0")
 
 
+class LoopRoundProgressKind(StrEnum):
+    """Durable per-round progress. Retry count or model self-praise is not progress."""
+
+    PROGRESSED = "PROGRESSED"
+    NO_PROGRESS = "NO_PROGRESS"
+    WAITING = "WAITING"
+    TERMINAL = "TERMINAL"
+
+
+class LoopRoundProgress(DomainModel):
+    """Minimal evidence that one Writer/Planner/Editor/repair round changed work."""
+
+    kind: LoopRoundProgressKind
+    basis_commit: CommitId | None = None
+    input_candidate_ref: ArtifactRef | None = None
+    changed_ids: tuple[StableId, ...] = ()
+    remaining_work: tuple[str, ...] = ()
+    artifact_ref: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def validate_progress_evidence(self) -> LoopRoundProgress:
+        if self.kind is LoopRoundProgressKind.NO_PROGRESS and self.changed_ids:
+            raise ValueError("NO_PROGRESS cannot record a changed finding or Need")
+        if self.kind is LoopRoundProgressKind.PROGRESSED and not (
+            self.changed_ids or self.artifact_ref is not None
+        ):
+            raise ValueError("PROGRESSED requires a changed finding/Need or new artifact")
+        return self
+
+
 class ContextConsumer(StrEnum):
     WRITER = "writer"
     PLANNER = "planner"
@@ -173,6 +203,9 @@ class ContextCompactionReceipt(DomainModel):
     detail_artifact: ArtifactRef | None = None
     input_context_hash: ArtifactId
     output_context_hash: ArtifactId
+    input_context_tokens: int | None = Field(default=None, ge=0)
+    output_context_tokens: int | None = Field(default=None, ge=0)
+    reduction_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
     deterministic: bool
     safe_cut: bool
     published_generation: int = Field(ge=1)
@@ -188,6 +221,17 @@ class ContextCompactionReceipt(DomainModel):
             raise ValueError("unsafe compaction receipt cannot be published")
         if (self.summary_artifact is None) != (self.detail_artifact is None):
             raise ValueError("summary and detail artifacts must be persisted together")
+        token_fields = (self.input_context_tokens, self.output_context_tokens, self.reduction_ratio)
+        if any(value is not None for value in token_fields):
+            if self.input_context_tokens is None or self.output_context_tokens is None:
+                raise ValueError("compaction token counts must be supplied together")
+            if self.input_context_tokens < 1:
+                raise ValueError("compaction input token count must be positive")
+            expected = (
+                self.input_context_tokens - self.output_context_tokens
+            ) / self.input_context_tokens
+            if self.reduction_ratio is None or abs(self.reduction_ratio - expected) > 1e-9:
+                raise ValueError("compaction reduction ratio contradicts token counts")
         return self
 
 
@@ -363,6 +407,8 @@ __all__ = [
     "ContextPressure",
     "ContextPressureDetectedPayload",
     "ContextViewItem",
+    "LoopRoundProgress",
+    "LoopRoundProgressKind",
     "ProviderValidityReceipt",
     "SettledArtifactPayload",
     "WriterWorkPlanSettledPayload",

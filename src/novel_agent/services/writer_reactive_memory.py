@@ -224,20 +224,25 @@ class WriterReactiveNeedAdapter:
             WRITER_MEMORY_RESOLUTION_MEDIA_TYPE,
             self._schema_version,
         )
-        units = tuple(
-            unit
-            for section in (
-                result.context.mandatory_constraints,
-                result.context.current_world_state,
-                result.context.active_plan_obligations,
-                result.context.relevant_historical_events,
-                result.context.truth_and_knowledge_boundaries,
-                result.context.raw_evidence_spans,
-                result.context.style_or_reference_optional,
-            )
-            for unit in section
-            if unit.access_scope == "writer_safe" and not unit.derivation_taint
-        )
+        units = []
+        seen_unit_ids: set[StableId] = set()
+        for section in (
+            result.context.mandatory_constraints,
+            result.context.current_world_state,
+            result.context.active_plan_obligations,
+            result.context.relevant_historical_events,
+            result.context.truth_and_knowledge_boundaries,
+            result.context.raw_evidence_spans,
+            result.context.style_or_reference_optional,
+        ):
+            for unit in section:
+                if (
+                    unit.access_scope == "writer_safe"
+                    and not unit.derivation_taint
+                    and unit.unit_id not in seen_unit_ids
+                ):
+                    seen_unit_ids.add(unit.unit_id)
+                    units.append(unit)
         existing_ids = {item.item_id for item in view.active_memory_items}
         added = tuple(
             ContextViewItem(
@@ -389,6 +394,35 @@ class WriterReactiveNeedAdapter:
             WRITER_MEMORY_RESOLUTION_MEDIA_TYPE,
             self._schema_version,
         )
+        unresolved_items: tuple[ContextViewItem, ...] = ()
+        if status is ContextDeltaStatus.INSUFFICIENT:
+            existing_ids = {item.item_id for item in view.active_memory_items}
+            markers: list[ContextViewItem] = []
+            for item in requests:
+                marker_id = StableId(f"unresolved-reactive.{item.request_id.root}"[:128])
+                if marker_id in existing_ids:
+                    continue
+                content = (
+                    "[未解决 reactive Memory 需求]\n"
+                    f"问题: {item.question}\n"
+                    f"目的: {item.purpose}\n"
+                    f"状态: {status.value}\n"
+                    "本轮没有获得新的可引用证据。不得把缺失内容当成事实;"
+                    "如仍与当前动作相关, 可在不新增事实的前提下继续。"
+                )
+                markers.append(
+                    ContextViewItem(
+                        item_id=marker_id,
+                        layer=ContextLayer.MEMORY,
+                        kind=ContextItemKind.UNRESOLVED_NEED,
+                        content=content,
+                        token_count=max(1, self._count_tokens(content)),
+                        source_artifact_refs=(request_ref, resolution_ref),
+                        mandatory=item.mandatory_suggestion,
+                        information_scope="writer_safe",
+                    )
+                )
+            unresolved_items = tuple(markers)
         delta = ContextDelta(
             delta_id=StableId(f"context-delta.{fingerprint.root[-32:]}"),
             request_ref=request_ref,
@@ -398,6 +432,7 @@ class WriterReactiveNeedAdapter:
             snapshot_id=loop_request.snapshot_id,
             profile_ref=loop_request.project_profile_artifact,
             plan_ref=loop_request.accepted_plan.artifact,
+            added_memory_items=unresolved_items,
             unresolved_need_ids=tuple(item.request_id for item in requests),
             token_impact=0,
             status=status,

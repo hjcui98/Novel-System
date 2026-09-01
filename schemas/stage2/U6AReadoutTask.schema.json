@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One public QA/Context task released against one frozen basis.",
+  "properties": {
+    "basis_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "maximum": 300,
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "future_visibility": {
+      "const": "evaluator_only",
+      "default": "evaluator_only",
+      "title": "Future Visibility",
+      "type": "string"
+    },
+    "lifecycle": {
+      "default": [
+        "freeze",
+        "release",
+        "wcp",
+        "writer",
+        "response_freeze",
+        "evaluator_reveal",
+        "discard"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Lifecycle",
+      "type": "array"
+    },
+    "source_task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "status": {
+      "default": "PLANNED",
+      "enum": [
+        "PLANNED",
+        "EXECUTED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "track": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "Track",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "track",
+    "checkpoint_chapter",
+    "basis_id",
+    "source_task_id"
+  ],
+  "title": "U6AReadoutTask",
+  "type": "object"
+}

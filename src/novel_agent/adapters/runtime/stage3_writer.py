@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
     AuthorPlanningContext,
     PlanRootDocument,
@@ -18,7 +19,15 @@ from novel_agent.domain.generation import (
     WritingLoopRequest,
     WritingTaskContract,
 )
-from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    bounded_stable_id,
+)
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.domain.runtime import TaskRecord
@@ -27,6 +36,7 @@ from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
     ContextAssemblyStatus,
+    WriterContextPackageV2,
 )
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
@@ -59,6 +69,8 @@ class Stage2MWriterContextInvocation:
     world: WorldRootDocument
     base_commit: CommitId
     snapshot_id: StableId
+    project_id: ProjectId | None = None
+    advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
 
 
 Stage2MWriterContextFactory = Callable[
@@ -149,7 +161,10 @@ class ProductionWritingRequestFactory:
             dict.fromkeys((*(node.summary for node in relevant_nodes), goal.summary))
         )
         writing_task = WritingTaskContract(
-            contract_id=StableId(f"writing-contract.{task.task_id.root}"[:128]),
+            contract_id=bounded_stable_id(
+                f"writing-contract.{task.task_id.root}",
+                f"writing-contract.{task.basis_commit.root}.{task.chapter_index}",
+            ),
             target_chapter=task.chapter_index,
             target_scenes=(StableId(f"scene.chapter.{task.chapter_index}.0"),),
             pov=self._profile_string(profile, "pov", self._policy.pov),
@@ -173,7 +188,10 @@ class ProductionWritingRequestFactory:
         )
         planning_context = self._planning_context(task, plan, goal.summary)
         memory_task = BenchmarkTaskContract(
-            task_id=StableId(f"memory-task.{task.task_id.root}"[:128]),
+            task_id=bounded_stable_id(
+                f"memory-task.{task.task_id.root}",
+                f"memory-task.{task.basis_commit.root}.{task.chapter_index}",
+            ),
             task_text=self._task_text(writing_task),
             checkpoint_chapter=latest,
             target_chapter_start=task.chapter_index,
@@ -194,14 +212,22 @@ class ProductionWritingRequestFactory:
                 world=world,
                 base_commit=task.basis_commit,
                 snapshot_id=task.basis_snapshot,
+                project_id=task.project_id,
+                advisory_artifact_refs=tuple(
+                    ref
+                    for ref in task.input_artifact_refs
+                    if ref.media_type == "application/vnd.novel-agent.quarantine-package+json"
+                ),
             )
         )
-        if assembly.status is not ContextAssemblyStatus.READY:
-            raise ValueError(
-                "Stage 2M Writer Context is not READY: "
-                + ",".join(assembly.diagnostic_codes)
-            )
         package = assembly.package
+        if (
+            assembly.status is ContextAssemblyStatus.READY
+            and isinstance(package, WriterContextPackageV2)
+            and package.semantic_status == "COMPLETE"
+            and (package.unclosed_mandatory_need_facets or package.usable_with_gaps)
+        ):
+            raise ValueError("READY assembly cannot rewrite semantic incompleteness as COMPLETE")
         if (
             package.task_contract != memory_task
             or package.basis_commit_id != task.basis_commit
@@ -227,31 +253,33 @@ class ProductionWritingRequestFactory:
             target_chapter=task.chapter_index,
         )
         attestation = FutureIsolationAttestation(
-            attestation_id=StableId(f"future-isolation.{task.task_id.root}"[:128]),
+            attestation_id=bounded_stable_id(
+                f"future-isolation.{task.task_id.root}",
+                f"future-isolation.{task.basis_commit.root}.{task.chapter_index}",
+            ),
             checkpoint_chapter=latest,
             canonical_source_ids=tuple(chapter.chapter_id for chapter in text.chapters),
             evaluator_only_source_ids=(),
             passed=True,
-            configuration_fingerprint=(
-                self._policy.future_isolation_configuration_fingerprint
-            ),
+            configuration_fingerprint=(self._policy.future_isolation_configuration_fingerprint),
         )
         return WritingLoopRequest(
             run_id=task.run_id,
             task_id=task.task_id,
+            attempt_id=task.current_attempt_id,
             project_id=task.project_id,
             base_commit=task.basis_commit,
             snapshot_id=task.basis_snapshot,
             writing_task=writing_task,
             writing_task_artifact=writing_task_artifact,
             accepted_plan=AcceptedPlanBinding(
-                artifact=manifest.plan_root,
+                artifact=_as_artifact_ref(manifest.plan_root),
                 revision=plan.root_hash.root,
                 task_contract_id=writing_task.contract_id,
                 base_commit=task.basis_commit,
                 snapshot_id=task.basis_snapshot,
             ),
-            project_profile_artifact=manifest.project_profile_root,
+            project_profile_artifact=_as_artifact_ref(manifest.project_profile_root),
             project_profile_revision=profile.root_hash.root,
             writer_context_package=package,
             writer_context_package_artifact=package_ref,
@@ -268,9 +296,7 @@ class ProductionWritingRequestFactory:
             future_isolation_attestation=attestation,
             allowed_skills=self._policy.allowed_skills,
             budgets=self._policy.budgets,
-            writer_configuration_fingerprint=(
-                self._policy.writer_configuration_fingerprint
-            ),
+            writer_configuration_fingerprint=(self._policy.writer_configuration_fingerprint),
             model_configuration_fingerprint=self._policy.model_configuration_fingerprint,
         )
 
@@ -365,6 +391,17 @@ class Stage3WritingLeafAdapter:
         if result.run_id != request.run_id or result.task_id != request.task_id:
             raise RuntimeError("Stage 3 Writer returned cross-task lineage")
         return result
+
+
+def _as_artifact_ref(ref: ArtifactRef) -> ArtifactRef:
+    """Strip typed root extras so WriterWorkPlan lineage can echo ArtifactRef."""
+
+    return ArtifactRef(
+        artifact_id=ref.artifact_id,
+        media_type=ref.media_type,
+        byte_length=ref.byte_length,
+        schema_version=ref.schema_version,
+    )
 
 
 __all__ = [

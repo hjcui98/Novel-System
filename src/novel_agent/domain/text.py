@@ -47,6 +47,34 @@ class TextSpanRef(DomainModel):
         return self
 
 
+class SourceBoundEvidenceRequirement(DomainModel):
+    """Immutable source span that a source-bound repair must actually cover.
+
+    Planner preflight may establish that a typed graph/anchor is missing while
+    the frozen TextRoot contains a causal answer.  This contract carries the
+    exact source identity, chapter/block span, and consequence markers into
+    the write side.  It is deliberately optional at every downstream legacy
+    boundary; when present, validation is fail-closed.
+    """
+
+    source_artifact_id: ArtifactId
+    source_chapter_index: int = Field(ge=0)
+    source_chapter_id: StableId
+    required_span: TextSpanRef
+    required_consequence_markers: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_markers(self) -> SourceBoundEvidenceRequirement:
+        if any(
+            not marker.strip() or marker != marker.strip()
+            for marker in self.required_consequence_markers
+        ):
+            raise ValueError("source-bound consequence markers must be non-empty and trimmed")
+        if len(set(self.required_consequence_markers)) != len(self.required_consequence_markers):
+            raise ValueError("source-bound consequence markers must be unique")
+        return self
+
+
 class EvidenceRef(DomainModel):
     evidence_id: StableId
     root_hash: ArtifactId

@@ -37,15 +37,24 @@ from novel_agent.domain.memory_write import (
     MemoryWriteWorkflowStatus,
 )
 from novel_agent.domain.model_calls import (
+    ModelCallLedgerAggregate,
     ModelCallLedgerEntry,
     ModelCallRecord,
+    ModelCostAvailability,
     ModelRequest,
     ModelTextResult,
     ModelUsage,
     ProviderModelResult,
+    RawModelResponseArtifact,
 )
 from novel_agent.domain.runtime import EffectReceipt, EvaluationEntry, RunCheckpoint, RunEvent
-from novel_agent.domain.text import EvidenceRef, QuoteHash, TextBlock, TextSpanRef
+from novel_agent.domain.text import (
+    EvidenceRef,
+    QuoteHash,
+    SourceBoundEvidenceRequirement,
+    TextBlock,
+    TextSpanRef,
+)
 from novel_agent.domain.world import (
     Entity,
     Event,
@@ -83,8 +92,10 @@ __all__ = [
     "MemoryWriteWorkflowRequest",
     "MemoryWriteWorkflowResult",
     "MemoryWriteWorkflowStatus",
+    "ModelCallLedgerAggregate",
     "ModelCallLedgerEntry",
     "ModelCallRecord",
+    "ModelCostAvailability",
     "ModelRequest",
     "ModelTextResult",
     "ModelUsage",
@@ -97,6 +108,7 @@ __all__ = [
     "ProviderModelResult",
     "QueryContract",
     "QuoteHash",
+    "RawModelResponseArtifact",
     "ReferenceRootRef",
     "RelationRecord",
     "RootKind",
@@ -105,6 +117,7 @@ __all__ = [
     "RunEvent",
     "RunId",
     "SchemaVersion",
+    "SourceBoundEvidenceRequirement",
     "StateRecord",
     "StoryTime",
     "TaskId",

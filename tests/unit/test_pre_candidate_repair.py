@@ -23,6 +23,7 @@ from novel_agent.domain.changes import (
 )
 from novel_agent.domain.ids import ArtifactId, RunId, StableId
 from novel_agent.domain.memory_write import (
+    ContinuationDecision,
     CuratorProposalAccepted,
     CuratorProposalAttemptReceipt,
     CuratorProposalAttemptStatus,
@@ -44,6 +45,8 @@ from novel_agent.domain.memory_write import (
 )
 from novel_agent.ports.memory_write import (
     CuratorProposalAttemptRequest,
+    CuratorProposalBudgetExceededError,
+    CuratorProposalPreSendError,
     CuratorProposalTransportError,
 )
 from novel_agent.services.content_addressing import canonical_json_bytes
@@ -145,8 +148,20 @@ def _requested(request: Any, attempt_no: int = 1) -> CuratorProposalAttemptRecei
 
 
 class _RejectedCurator:
-    def __init__(self, artifacts: InMemoryArtifactRepository) -> None:
+    def __init__(
+        self,
+        artifacts: InMemoryArtifactRepository,
+        *,
+        rejection_kind: ProposalRejectionKind = ProposalRejectionKind.DUPLICATE_TARGET,
+        reason_code: str = "CURATOR_PROPOSAL_DUPLICATE_TARGET",
+        raw_output: bytes = b'{"duplicate":true}',
+        raw_media_type: str = "application/vnd.novel-agent.curator-proposal-draft-untrusted+json",
+    ) -> None:
         self.artifacts = artifacts
+        self.rejection_kind = rejection_kind
+        self.reason_code = reason_code
+        self.raw_output = raw_output
+        self.raw_media_type = raw_media_type
         self.requests: list[CuratorProposalAttemptRequest] = []
 
     async def propose_attempt(
@@ -154,8 +169,8 @@ class _RejectedCurator:
     ) -> CuratorProposalAccepted | CuratorProposalRejected:
         self.requests.append(request)
         output = self.artifacts.put(
-            b'{"duplicate":true}',
-            "application/vnd.novel-agent.curator-proposal-draft-untrusted+json",
+            self.raw_output,
+            self.raw_media_type,
             request.request.canonical_root_refs.schema_version,
         )
         signature = _id("7")
@@ -165,8 +180,8 @@ class _RejectedCurator:
             workflow_request_id=request.request.request_id,
             base_commit=request.request.base_commit,
             stage=ProposalRejectionStage.STRUCTURED_SCHEMA,
-            kind=ProposalRejectionKind.DUPLICATE_TARGET,
-            reason_code="CURATOR_PROPOSAL_DUPLICATE_TARGET",
+            kind=self.rejection_kind,
+            reason_code=self.reason_code,
             retryable=True,
             rejection_signature=signature,
             output_hash=output.artifact_id,
@@ -205,6 +220,33 @@ class _TransportCurator:
     async def propose_attempt(self, request: CuratorProposalAttemptRequest) -> None:
         raise CuratorProposalTransportError(
             "provider timeout",
+            model_request_ids=(request.model_request_id,),
+        )
+
+
+class _OutputIncompleteCurator(_RejectedCurator):
+    def __init__(self, artifacts: InMemoryArtifactRepository) -> None:
+        super().__init__(
+            artifacts,
+            rejection_kind=ProposalRejectionKind.SCHEMA_REJECTED,
+            reason_code="CURATOR_PROPOSAL_OUTPUT_INCOMPLETE",
+            raw_output=b'{"chapter_index":21,"operations":[',
+            raw_media_type="application/vnd.novel-agent.raw-model-response+text",
+        )
+
+
+class _PreSendCurator:
+    async def propose_attempt(self, request: CuratorProposalAttemptRequest) -> None:
+        raise CuratorProposalPreSendError(
+            "model request construction failed",
+            model_request_ids=(request.model_request_id,),
+        )
+
+
+class _BudgetCurator:
+    async def propose_attempt(self, request: CuratorProposalAttemptRequest) -> None:
+        raise CuratorProposalBudgetExceededError(
+            "cumulative model budget cannot admit request",
             model_request_ids=(request.model_request_id,),
         )
 
@@ -408,6 +450,81 @@ def test_attempt_repository_is_cas_and_terminal_settlement_is_immutable() -> Non
     assert repository.load(receipt.attempt_id).model_request_ids == (
         StableId("model.proposal.1"),
         StableId("model.proposal.schema-retry2"),
+    )
+
+
+def test_attempt_repository_restores_receipt_from_immutable_artifact() -> None:
+    artifacts = InMemoryArtifactRepository()
+    first = InMemoryCuratorProposalAttemptRepository(artifacts)
+    request = _curator_request()
+    receipt = _requested(request)
+    first.create_requested(receipt)
+    running_ref = first.mark_running(receipt.attempt_id, StableId("model.proposal.1"))
+
+    restarted = InMemoryCuratorProposalAttemptRepository(artifacts)
+    restored = restarted.restore(running_ref)
+
+    assert restored == first.load(receipt.attempt_id)
+    assert restarted.reference(receipt.attempt_id) == running_ref
+
+
+def test_pre_send_failure_abandons_attempt_and_persists_terminal_result() -> None:
+    artifacts = InMemoryArtifactRepository()
+    lineage = InMemoryCandidateLineageRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    attempts = InMemoryCuratorProposalAttemptRepository(artifacts)
+    workflow = _workflow(
+        artifacts=artifacts,
+        lineage=lineage,
+        checkpoint=checkpoint,
+        attempts=attempts,
+        curator=_PreSendCurator(),
+    )
+
+    result = asyncio.run(workflow.execute(_curator_request()))
+
+    assert result.status is MemoryWriteWorkflowStatus.FATAL
+    assert "CURATOR_PROPOSAL_PRE_SEND_FAILURE" in result.terminal_codes
+    assert result.checkpoint_ref is not None
+    saved = checkpoint.load(result.checkpoint_ref)
+    assert saved.terminal_result_ref is not None
+    assert saved.resume_state is MemoryWriteState.STOP
+    assert attempts.list_for_workflow(result.request_id)[0].status is (
+        CuratorProposalAttemptStatus.ABANDONED
+    )
+    terminal = MemoryWriteWorkflowStatus(
+        artifacts.read_model(saved.terminal_result_ref, type(result)).status
+    )
+    assert terminal is MemoryWriteWorkflowStatus.FATAL
+
+
+def test_preflight_budget_failure_stops_without_provider_usage() -> None:
+    artifacts = InMemoryArtifactRepository()
+    lineage = InMemoryCandidateLineageRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    attempts = InMemoryCuratorProposalAttemptRepository(artifacts)
+    workflow = _workflow(
+        artifacts=artifacts,
+        lineage=lineage,
+        checkpoint=checkpoint,
+        attempts=attempts,
+        curator=_BudgetCurator(),
+    )
+
+    result = asyncio.run(workflow.execute(_curator_request()))
+
+    assert result.status is MemoryWriteWorkflowStatus.BUDGET_EXHAUSTED
+    assert "CURATOR_PROPOSAL_BUDGET_EXHAUSTED" in result.terminal_codes
+    assert "SEMANTIC_REPAIR_BUDGET_EXHAUSTED" in result.terminal_codes
+    assert result.budget_usage is not None
+    assert result.budget_usage.total_model_calls == 0
+    assert result.budget_usage.tokens_used == 0
+    assert result.checkpoint_ref is not None
+    saved = checkpoint.load(result.checkpoint_ref)
+    assert saved.resume_state is MemoryWriteState.STOP
+    assert saved.terminal_result_ref is not None
+    assert attempts.list_for_workflow(result.request_id)[0].status is (
+        CuratorProposalAttemptStatus.ABANDONED
     )
 
 
@@ -1216,6 +1333,89 @@ def test_poison_loop_stops_without_candidate_or_commit_and_uses_new_requests() -
     assert result.checkpoint_ref is not None
 
 
+def test_chapter_poison_loop_commits_text_with_quarantined_world_advisory() -> None:
+    artifacts = InMemoryArtifactRepository()
+    lineage = InMemoryCandidateLineageRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    attempts = InMemoryCuratorProposalAttemptRepository(artifacts)
+    curator = _RejectedCurator(artifacts)
+    commit = InMemoryCommitPort(current_commit=BASE)
+    workflow = _workflow(
+        artifacts=artifacts,
+        lineage=lineage,
+        checkpoint=checkpoint,
+        attempts=attempts,
+        curator=curator,
+        commit=commit,
+    )
+    request = _chapter_curator_request()
+    workflow_any: Any = workflow
+
+    def candidate_producer_receipt(*_: object, **__: object) -> ArtifactRef:
+        return _artifact(
+            "a",
+            "application/vnd.novel-agent.boundary-propagation-receipt+json",
+        )
+
+    workflow_any._candidate_producer_receipt = candidate_producer_receipt
+
+    result = asyncio.run(workflow.execute(request))
+
+    assert result.status is MemoryWriteWorkflowStatus.COMMITTED
+    assert result.canonical_commit_accepted is True
+    assert result.world_mutation_noop is True
+    assert result.degraded is False
+    assert result.quarantine_refs
+    assert "CURATOR_PROPOSAL_POISON_LOOP" in result.terminal_codes
+    assert "CURATOR_PROPOSAL_ADVISORY_ONLY" in result.terminal_codes
+    assert result.continuation_decision is ContinuationDecision.SAFE_TO_CONTINUE
+    assert result.quarantined_operation_ids == ()
+    assert result.committed_operation_ids == ()
+    assert lineage.list_for_request(request.request_id)
+    package = workflow._quarantine.packages[-1]
+    assert package.recommended_action == "retain advisory marker for downstream Writer"
+    assert commit.calls == 1
+
+
+def test_chapter_output_incomplete_curator_commits_text_with_advisory() -> None:
+    artifacts = InMemoryArtifactRepository()
+    lineage = InMemoryCandidateLineageRepository()
+    checkpoint = InMemoryCheckpointRepository(artifacts)
+    attempts = InMemoryCuratorProposalAttemptRepository(artifacts)
+    curator = _OutputIncompleteCurator(artifacts)
+    commit = InMemoryCommitPort(current_commit=BASE)
+    workflow = _workflow(
+        artifacts=artifacts,
+        lineage=lineage,
+        checkpoint=checkpoint,
+        attempts=attempts,
+        curator=curator,
+        commit=commit,
+    )
+    workflow_any: Any = workflow
+
+    def candidate_producer_receipt(*_: object, **__: object) -> ArtifactRef:
+        return _artifact(
+            "b",
+            "application/vnd.novel-agent.boundary-propagation-receipt+json",
+        )
+
+    workflow_any._candidate_producer_receipt = candidate_producer_receipt
+
+    result = asyncio.run(workflow.execute(_chapter_curator_request()))
+
+    assert result.status is MemoryWriteWorkflowStatus.COMMITTED
+    assert result.world_mutation_noop is True
+    assert result.quarantine_refs
+    assert result.continuation_decision is ContinuationDecision.SAFE_TO_CONTINUE
+    assert commit.calls == 1
+    package = workflow._quarantine.packages[-1]
+    assert package.recommended_action == "retain advisory marker for downstream Writer"
+    assert attempts.list_for_workflow(result.request_id)[-1].status is (
+        CuratorProposalAttemptStatus.REJECTED
+    )
+
+
 def test_proposal_attempt_budget_stops_with_checkpoint_before_candidate() -> None:
     artifacts = InMemoryArtifactRepository()
     lineage = InMemoryCandidateLineageRepository()
@@ -1293,6 +1493,7 @@ def test_transport_unavailable_is_typed_suspension_with_uncertain_attempt() -> N
     result = asyncio.run(workflow.execute(request))
 
     assert result.status is MemoryWriteWorkflowStatus.SUSPENDED
+    assert result.effect_uncertain is True
     assert result.checkpoint_ref is not None
     assert result.budget_usage.total_model_calls == 1
     assert attempts.list_for_workflow(request.request_id)[0].status is (
@@ -1344,6 +1545,7 @@ def test_new_workflow_instance_never_blindly_resends_inflight_attempt() -> None:
     ("point", "reject_first"),
     (
         ("attempt_checkpoint_committed", False),
+        ("proposal_running_checkpoint_committed", False),
         ("provider_outcome_committed", True),
         ("typed_rejection_committed", True),
         ("rejection_policy_checkpoint_committed", True),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -10,6 +11,7 @@ from pydantic import Field, model_validator
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, StableId
+from novel_agent.domain.model_calls import ModelCallLedgerAggregate, ModelCostAvailability
 from novel_agent.domain.stage3_evaluation import ContextScheme, EvaluatorScore, RuleAssessment
 from novel_agent.domain.writing_loop import WritingLoopResult
 
@@ -50,6 +52,9 @@ class Stage3FullChainSchemeResult(DomainModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     latency_ms: int = Field(ge=0)
+    model_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    model_cost_availability: ModelCostAvailability = ModelCostAvailability.UNKNOWN
+    model_call_aggregates: tuple[ModelCallLedgerAggregate, ...] = ()
 
     @model_validator(mode="after")
     def validate_binding(self) -> Stage3FullChainSchemeResult:

@@ -11,6 +11,7 @@ from novel_agent.domain.agent_context import (
     AgentContextView,
     ContextCompactionReceipt,
     ContextDelta,
+    LoopRoundProgress,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
@@ -31,9 +32,7 @@ from novel_agent.domain.generation import (
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
 from novel_agent.domain.model_calls import ModelCallRecord
 
-WRITING_LOOP_CHECKPOINT_MEDIA_TYPE = (
-    "application/vnd.novel-agent.writing-loop-checkpoint+json"
-)
+WRITING_LOOP_CHECKPOINT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-checkpoint+json"
 
 
 class WritingLoopPhase(StrEnum):
@@ -79,6 +78,7 @@ class WritingLoopCheckpoint(DomainModel):
     observation: CuratorObservation | None = None
     observation_artifact: ArtifactRef | None = None
     settled_artifacts: tuple[ArtifactRef, ...] = ()
+    round_progress: LoopRoundProgress | None = None
 
     @model_validator(mode="after")
     def validate_resume_state(self) -> WritingLoopCheckpoint:
@@ -108,10 +108,7 @@ class WritingLoopCheckpoint(DomainModel):
         if self.phase in {
             WritingLoopPhase.OBSERVER_PENDING,
             WritingLoopPhase.RECONCILIATION_PENDING,
-        } and (
-            not self.editorial_reports
-            or self.editorial_reports[-1].verdict.value != "PASS"
-        ):
+        } and (not self.editorial_reports or self.editorial_reports[-1].verdict.value != "PASS"):
             raise ValueError("post-Editor checkpoint requires a final PASS")
         if self.phase is WritingLoopPhase.RECONCILIATION_PENDING and (
             self.observation is None or self.observation_artifact is None
@@ -184,6 +181,7 @@ class WritingLoopResult(DomainModel):
     canon_mutated: Literal[False] = False
     memory_patch_generated: Literal[False] = False
     commit_called: Literal[False] = False
+    round_progress: LoopRoundProgress | None = None
 
     @model_validator(mode="after")
     def validate_terminal(self) -> WritingLoopResult:
@@ -218,9 +216,7 @@ class WritingLoopResult(DomainModel):
         if not ready and self.failure_detail is None:
             raise ValueError("non-ready Writing loop result requires failure detail")
         if resumable and (
-            self.checkpoint_ref is None
-            or self.work_plan is None
-            or self.context_view is None
+            self.checkpoint_ref is None or self.work_plan is None or self.context_view is None
         ):
             raise ValueError("resumable Writer result requires checkpoint state")
         if (

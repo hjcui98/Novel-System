@@ -239,6 +239,16 @@ def test_registration_identity_and_output_bindings_are_immutable() -> None:
     assert receipt_schema_version(receipt) == VERSION
 
 
+def test_same_source_can_be_revealed_under_a_distinct_retry_boundary() -> None:
+    port = InformationBoundaryPort(trusted_policy_hashes=(TRUSTED_POLICY,))
+    source = _artifact("2")
+
+    port.register_visibility(_visibility(source))
+    port.register_visibility(_visibility(source, boundary_id=StableId("boundary.retry")))
+
+    assert len(port._visibility_by_source) == 2
+
+
 def test_request_identity_and_source_shapes_fail_closed() -> None:
     basis = CanonicalWriteBasis(
         project_id=PROJECT,
@@ -746,3 +756,30 @@ def test_output_reference_alias_and_placeholder_metadata_are_verified() -> None:
             schema_version=VERSION,
         )
     )
+
+
+def test_memory_write_rejects_evaluation_source_artifacts() -> None:
+    source = _artifact("2").model_copy(
+        update={"media_type": "application/vnd.novel-agent.evaluation.context-writer-response+json"}
+    )
+    request = _request()
+    visibility = _visibility(
+        source,
+        boundary_id=request.information_boundary.boundary_id,
+    )
+    tainted = request.model_copy(
+        update={
+            "source_artifacts": (source,),
+            "source_visibility_receipts": (visibility,),
+            "source_provenance": (SourceProvenance.REVEALED_TEXT,),
+        }
+    )
+    basis = CanonicalWriteBasis(
+        project_id=PROJECT,
+        commit_id=CommitId("sha256:" + "1" * 64),
+        root_manifest=_manifest(),
+    )
+    with pytest.raises(InformationBoundaryViolation, match="evaluation"):
+        InformationBoundaryPort(
+            trusted_policy_hashes=(TRUSTED_POLICY,)
+        ).verify_request_and_derivation_graph(tainted, basis)

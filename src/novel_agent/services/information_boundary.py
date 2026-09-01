@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.artifacts import ArtifactRef, is_evaluation_artifact_media_type
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import ArtifactId, SchemaVersion
+from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.memory_write import (
     BoundaryPropagationReceipt,
     CanonicalWriteBasis,
@@ -41,7 +41,13 @@ class InformationBoundaryPort:
         trusted_policy_hashes: Iterable[ArtifactId] = (),
     ) -> None:
         self._artifact_reader = artifact_reader
-        self._visibility_by_source: dict[ArtifactId, SourceVisibilityReceipt] = {}
+        # A source artifact may be revealed again under a new retry boundary.
+        # Identity is therefore scoped to the source/boundary pair, while the
+        # legacy ArtifactId key remains accepted below for fail-closed tests
+        # that deliberately corrupt this private index.
+        self._visibility_by_source: dict[
+            tuple[ArtifactId, StableId] | ArtifactId, SourceVisibilityReceipt
+        ] = {}
         self._derivation_by_receipt: dict[ArtifactId, BoundaryPropagationReceipt] = {}
         self._derivation_artifact_by_output: dict[ArtifactId, ArtifactId] = {}
         self._output_ref_by_artifact: dict[ArtifactId, ArtifactRef] = {}
@@ -49,10 +55,11 @@ class InformationBoundaryPort:
 
     def register_visibility(self, receipt: SourceVisibilityReceipt) -> None:
         self._validate_visibility_hash(receipt)
-        existing = self._visibility_by_source.get(receipt.source_artifact.artifact_id)
+        key = (receipt.source_artifact.artifact_id, receipt.boundary_id)
+        existing = self._visibility_by_source.get(key)
         if existing is not None and existing != receipt:
             raise InformationBoundaryViolation("source artifact has multiple visibility receipts")
-        self._visibility_by_source[receipt.source_artifact.artifact_id] = receipt
+        self._visibility_by_source[key] = receipt
 
     def register_derivation(
         self,
@@ -102,6 +109,7 @@ class InformationBoundaryPort:
         for index, (artifact, receipt) in enumerate(
             zip(request.source_artifacts, request.source_visibility_receipts, strict=True)
         ):
+            self._reject_evaluation_artifact(artifact)
             self.register_visibility(receipt)
             if receipt.source_artifact != artifact:
                 raise InformationBoundaryViolation(
@@ -120,6 +128,7 @@ class InformationBoundaryPort:
             self._verify_visibility(request.information_boundary, receipt, request.access_scope)
 
         for intent in request.root_update_intents:
+            self._reject_evaluation_artifact(intent.update_artifact)
             self.verify_derivation_chain(
                 artifact=intent.update_artifact,
                 producer_receipt=intent.producer_receipt,
@@ -129,11 +138,19 @@ class InformationBoundaryPort:
             )
         world_input = request.world_mutation
         if isinstance(world_input, TrustedWorldCandidateInput):
+            self._reject_evaluation_artifact(world_input.candidate_artifact)
             self.verify_derivation_chain(
                 artifact=world_input.candidate_artifact,
                 producer_receipt=world_input.producer_receipt,
                 boundary=request.information_boundary,
                 configuration_fingerprint=request.configuration_fingerprint,
+            )
+
+    @staticmethod
+    def _reject_evaluation_artifact(artifact: ArtifactRef) -> None:
+        if is_evaluation_artifact_media_type(artifact.media_type):
+            raise InformationBoundaryViolation(
+                "evaluation artifacts cannot enter Memory write sources"
             )
 
     def verify_derivation_chain(
@@ -225,7 +242,11 @@ class InformationBoundaryPort:
                 "derivation visibility receipts do not exactly cover source inputs"
             )
         for source in receipt.input_source_artifact_refs:
-            visibility = self._visibility_by_source.get(source.artifact_id)
+            visibility = self._visibility_by_source.get((source.artifact_id, boundary.boundary_id))
+            if visibility is None:
+                # Keep a deliberately corrupted legacy index fail-closed and
+                # preserve the diagnostic contract used by older adapters.
+                visibility = self._visibility_by_source.get(source.artifact_id)
             if visibility is None:
                 raise InformationBoundaryViolation(
                     "derivation has a source leaf without visibility receipt"

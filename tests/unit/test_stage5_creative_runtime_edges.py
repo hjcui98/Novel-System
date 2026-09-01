@@ -49,10 +49,22 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
-from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
+from novel_agent.domain.memory_write import (
+    MemoryWriteWorkflowPhase,
+    MemoryWriteWorkflowResult,
+    MemoryWriteWorkflowStatus,
+)
+from novel_agent.domain.runtime import (
+    FailureClass,
+    RunEventType,
+    TaskKind,
+    TaskRecord,
+    TaskStatus,
+)
 from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializer,
+    ChapterSettlementPort,
     PlanningLeafPort,
     WritingLeafPort,
 )
@@ -124,6 +136,31 @@ class _Writer:
         return _WritingResult(ref, status=self._status)
 
 
+class _UncertainChapterSettlement:
+    is_fixture = True
+
+    def __init__(self, artifacts: ArtifactRepository) -> None:
+        self._artifacts = artifacts
+
+    def effect_identity(self, accepted: AcceptedCandidateBinding) -> StableId:
+        return StableId(f"chapter-settlement.{accepted.project_id.root}"[:128])
+
+    def resolve_commit(self, accepted: AcceptedCandidateBinding) -> None:
+        return None
+
+    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult:
+        checkpoint = self._artifacts.put(b"uncertain", "application/json", SchemaVersion("1.0.0"))
+        return MemoryWriteWorkflowResult(
+            request_id=StableId("settlement.uncertain"),
+            status=MemoryWriteWorkflowStatus.SUSPENDED,
+            workflow_phase=MemoryWriteWorkflowPhase.PRECOMMIT,
+            canonical_commit_accepted=False,
+            base_commit=accepted.expected_project_commit,
+            checkpoint_ref=checkpoint,
+            effect_uncertain=True,
+        )
+
+
 class _Planner:
     is_fixture = True
 
@@ -153,9 +190,7 @@ class _Planner:
                 task_id=request.task_id,
                 status=self._status,
                 artifact_refs=(checkpoint,),
-                failure_code=(
-                    self._failure_code or f"planner_{self._status.value.lower()}"
-                ),
+                failure_code=(self._failure_code or f"planner_{self._status.value.lower()}"),
                 failure_detail="injected planner terminal",
             )
         artifact = self._artifacts.put(
@@ -304,6 +339,7 @@ def _build_runtime(
     snapshots: DerivedSnapshotRepository | None = None,
     project_id: ProjectId | None = None,
     task_reader: RuntimeTaskQueryRepository | None = None,
+    chapter_settlement: ChapterSettlementPort | None = None,
 ) -> CreativeRuntimeService:
     project_id = project_id or ProjectId("project.test")
     return CreativeRuntimeService(
@@ -323,6 +359,7 @@ def _build_runtime(
         snapshots or DerivedSnapshotRepository(factory),
         lambda policy_hash: policy_resolver(policy_hash),
         task_reader,
+        chapter_settlement,
     )
 
 
@@ -403,9 +440,7 @@ def _accept_bound_candidate(
             decision=AcceptanceDecision.ACCEPT,
             reason="approved",
             expected_project_commit=task.basis_commit,
-            idempotency_identity=StableId(
-                f"accept-bound.{waiting_task_id.root}.identity"
-            ),
+            idempotency_identity=StableId(f"accept-bound.{waiting_task_id.root}.identity"),
             issued_at=NOW,
         ),
         policy=_policy(),
@@ -766,8 +801,12 @@ def test_writer_request_factory_violation_is_rejected(
     assert projection.current_task_id is not None
     draft = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
     assert draft.current_task_id is not None
-    with pytest.raises(ValueError, match="durable task basis"):
-        asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer.bad-request"))
+    result = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer.bad-request"))
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
+    settled = commands.get_task(draft.current_task_id)
+    assert settled.status is TaskStatus.BLOCKED
+    assert settled.current_attempt_id is None
+    assert settled.block_cause == "validation_rejected"
 
 
 def test_validation_rejection_and_commit_rejection_are_audited(
@@ -1081,6 +1120,7 @@ def test_accepted_binding_and_candidate_for_task_guard_errors(
     commands.create_task(commit_task)
     with pytest.raises(ValueError, match="exactly one acceptance receipt"):
         asyncio.run(runtime.advance(commit_task.task_id, worker_id="commit"))
+    assert commands.get_task(commit_task.task_id).status is TaskStatus.BLOCKED
 
     # A commit task whose receipt is a rejected candidate.
     from novel_agent.domain.creative_runtime import AcceptanceReceipt
@@ -1128,6 +1168,7 @@ def test_accepted_binding_and_candidate_for_task_guard_errors(
     commands.create_task(rejected_commit)
     with pytest.raises(ValueError, match="rejected candidate cannot reach"):
         asyncio.run(runtime.advance(rejected_commit.task_id, worker_id="commit"))
+    assert commands.get_task(rejected_commit.task_id).status is TaskStatus.BLOCKED
 
     # Acceptance task missing its candidate binding ref.
     missing_task = commands.get_task(
@@ -1202,6 +1243,63 @@ def test_auto_accept_draft_flow_reaches_commit_and_rejection(
     assert commands.get_task(draft_commit.current_task_id).kind is TaskKind.DRAFT_COMMIT
     _ = asyncio.run(runtime.advance(draft_commit.current_task_id, worker_id="commit.draft"))
     assert commands.get_task(draft_commit.current_task_id).status is not TaskStatus.WAITING_INPUT
+
+
+def test_uncertain_chapter_settlement_blocks_without_provider_retry(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, _base = creative_kernel
+    project_id = ProjectId("project.uncertain-settlement")
+    fresh_base = _fresh_project(commits, project_id)
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=cast(PlanningLeafPort, _Planner(artifacts)),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+        project_id=project_id,
+        chapter_settlement=_UncertainChapterSettlement(artifacts),
+    )
+    request = CreativeRunRequest(
+        run_id=RunId("run.uncertain-settlement"),
+        project_id=project_id,
+        basis_commit=fresh_base,
+        policy=AUTO_POLICY,
+    )
+    start = runtime.start(request)
+    assert start.current_task_id is not None
+    plan_commit = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    assert plan_commit.current_task_id is not None
+    projection = asyncio.run(runtime.advance(plan_commit.current_task_id, worker_id="commit"))
+    assert projection.current_task_id is not None
+    freshness = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
+    assert freshness.current_task_id is not None
+    draft_commit = asyncio.run(runtime.advance(freshness.current_task_id, worker_id="writer"))
+    assert draft_commit.current_task_id is not None
+
+    result = asyncio.run(runtime.advance(draft_commit.current_task_id, worker_id="commit.draft"))
+
+    task = commands.get_task(draft_commit.current_task_id)
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
+    assert result.reason_code == "chapter_settlement_suspended"
+    assert task.status is TaskStatus.BLOCKED
+    settled_events = tuple(
+        event
+        for event in RunEventLogRepository(factory).replay(request.run_id)
+        if event.event_type is RunEventType.RUNTIME_ATTEMPT_SETTLED
+        and event.task_id == draft_commit.current_task_id
+    )
+    assert (
+        cast(dict[str, object], settled_events[-1].payload)["failure_class"]
+        == FailureClass.EFFECT_UNCERTAIN.value
+    )
 
 
 def test_commit_rejection_and_writer_review_required_branches(

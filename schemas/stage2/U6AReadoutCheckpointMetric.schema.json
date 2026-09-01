@@ -1,0 +1,59 @@
+{
+  "additionalProperties": false,
+  "description": "Trend row for one frozen checkpoint after its evaluation namespace closes.",
+  "properties": {
+    "checkpoint_chapter": {
+      "maximum": 300,
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "evidence_distance": {
+      "minimum": 0,
+      "title": "Evidence Distance",
+      "type": "integer"
+    },
+    "gap_count": {
+      "minimum": 0,
+      "title": "Gap Count",
+      "type": "integer"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "item_count": {
+      "minimum": 1,
+      "title": "Item Count",
+      "type": "integer"
+    },
+    "latency_ms": {
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "stage_loss_count": {
+      "minimum": 0,
+      "title": "Stage Loss Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "checkpoint_chapter",
+    "item_count",
+    "input_tokens",
+    "output_tokens",
+    "latency_ms",
+    "gap_count",
+    "evidence_distance",
+    "stage_loss_count"
+  ],
+  "title": "U6AReadoutCheckpointMetric",
+  "type": "object"
+}

@@ -207,6 +207,14 @@
     "MaintenanceTrigger": {
       "additionalProperties": false,
       "properties": {
+        "chapter_indices": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Chapter Indices",
+          "type": "array"
+        },
         "kind": {
           "const": "maintenance",
           "default": "maintenance",
@@ -222,6 +230,17 @@
       ],
       "title": "MaintenanceTrigger",
       "type": "object"
+    },
+    "MemoryRepairOwner": {
+      "enum": [
+        "projection",
+        "memory_gateway",
+        "graph_curator",
+        "ordinary_curator",
+        "operator"
+      ],
+      "title": "MemoryRepairOwner",
+      "type": "string"
     },
     "MemoryTransportBudget": {
       "additionalProperties": false,
@@ -509,6 +528,13 @@
       "title": "ProjectProfileRootRef",
       "type": "object"
     },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
     "ReferenceRootRef": {
       "additionalProperties": false,
       "properties": {
@@ -657,6 +683,43 @@
       "title": "SchemaVersion",
       "type": "string"
     },
+    "SourceBoundEvidenceRequirement": {
+      "additionalProperties": false,
+      "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
+      "properties": {
+        "required_consequence_markers": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Consequence Markers",
+          "type": "array"
+        },
+        "required_span": {
+          "$ref": "#/$defs/TextSpanRef"
+        },
+        "source_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "source_chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_chapter_index": {
+          "minimum": 0,
+          "title": "Source Chapter Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_artifact_id",
+        "source_chapter_index",
+        "source_chapter_id",
+        "required_span",
+        "required_consequence_markers"
+      ],
+      "title": "SourceBoundEvidenceRequirement",
+      "type": "object"
+    },
     "SourceProvenance": {
       "enum": [
         "author_input",
@@ -762,6 +825,35 @@
       "title": "TextRootRef",
       "type": "object"
     },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    },
     "TrustedWorldCandidateInput": {
       "additionalProperties": false,
       "properties": {
@@ -859,8 +951,33 @@
       "title": "Prompt Contract Refs",
       "type": "array"
     },
+    "repair_owner": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryRepairOwner"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "repair_policy_ref": {
       "$ref": "#/$defs/ContractRef"
+    },
+    "repair_query": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repair Query"
     },
     "request_id": {
       "$ref": "#/$defs/StableId"
@@ -902,6 +1019,17 @@
       },
       "title": "Source Artifacts",
       "type": "array"
+    },
+    "source_evidence_requirement": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SourceBoundEvidenceRequirement"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "source_provenance": {
       "default": [],
@@ -954,6 +1082,11 @@
         }
       ],
       "title": "Trigger"
+    },
+    "validation_only": {
+      "default": false,
+      "title": "Validation Only",
+      "type": "boolean"
     },
     "world_mutation": {
       "discriminator": {

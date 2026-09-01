@@ -82,7 +82,7 @@ class RecentProseAssembler:
             raise RecentProseAssemblyError(
                 f"accepted chapter {chapter.chapter_index} has no prose blocks"
             )
-        artifact = self._artifacts.put(
+        artifact = self._artifacts.put_or_reuse_existing(
             text.encode("utf-8"),
             RECENT_CHAPTER_TEXT_MEDIA_TYPE,
             self._schema_version,

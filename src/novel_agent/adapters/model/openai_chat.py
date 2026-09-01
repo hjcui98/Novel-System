@@ -18,6 +18,9 @@ from novel_agent.domain.model_calls import (
     ProviderModelResult,
 )
 from novel_agent.ports.model_endpoint import ModelEndpointError
+from novel_agent.services.effective_budget import (
+    ModelBudgetResolutionError,
+)
 
 
 class OpenAIChatEndpointError(ModelEndpointError):
@@ -33,6 +36,7 @@ class OpenAIChatEndpointError(ModelEndpointError):
         reasoning_tokens: int | None = None,
         raw_content: str | None = None,
         latency_ms: int | None = None,
+        provider_request_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.finish_reason = finish_reason
@@ -41,6 +45,7 @@ class OpenAIChatEndpointError(ModelEndpointError):
         self.reasoning_tokens = reasoning_tokens
         self.raw_content = raw_content
         self.latency_ms = latency_ms
+        self.provider_request_id = provider_request_id
 
 
 class OpenAIChatOutputLengthError(OpenAIChatEndpointError):
@@ -59,6 +64,8 @@ RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 class OpenAICompatibleChatEndpoint:
     """Call one version-pinned chat model and require structured JSON output."""
+
+    default_thinking = True
 
     def __init__(
         self,
@@ -191,6 +198,9 @@ class OpenAICompatibleChatEndpoint:
         )
         failure_raw_content = content if isinstance(content, str) else None
         failure_latency_ms = max(0, round((monotonic() - started_clock) * 1000))
+        provider_request_id = payload_dict.get("id")
+        if not isinstance(provider_request_id, str) or not provider_request_id:
+            provider_request_id = None
 
         if finish_reason == "length":
             raise OpenAIChatOutputLengthError(
@@ -201,6 +211,7 @@ class OpenAICompatibleChatEndpoint:
                 reasoning_tokens=failure_reasoning_tokens,
                 raw_content=failure_raw_content,
                 latency_ms=failure_latency_ms,
+                provider_request_id=provider_request_id,
             )
         if finish_reason != "stop":
             raise OpenAIChatEndpointError(
@@ -211,6 +222,7 @@ class OpenAICompatibleChatEndpoint:
                 reasoning_tokens=failure_reasoning_tokens,
                 raw_content=failure_raw_content,
                 latency_ms=failure_latency_ms,
+                provider_request_id=provider_request_id,
             )
         if not isinstance(content, str) or not content.strip():
             raise OpenAIChatEndpointError(
@@ -221,6 +233,7 @@ class OpenAICompatibleChatEndpoint:
                 reasoning_tokens=failure_reasoning_tokens,
                 raw_content=failure_raw_content,
                 latency_ms=failure_latency_ms,
+                provider_request_id=provider_request_id,
             )
 
         return ProviderModelResult(
@@ -234,6 +247,7 @@ class OpenAICompatibleChatEndpoint:
                 ),
                 cost_usd=Decimal("0"),
             ),
+            provider_request_id=provider_request_id,
         )
 
     def _build_payload(self, request: ModelRequest) -> dict[str, Any]:
@@ -252,11 +266,9 @@ class OpenAICompatibleChatEndpoint:
                     "strict": True,
                 },
             }
-        template_kwargs: dict[str, object] = {
-            "enable_thinking": (
-                request.enable_thinking if request.enable_thinking is not None else True
-            )
-        }
+        template_kwargs: dict[str, object] = {}
+        if request.enable_thinking is not None:
+            template_kwargs["enable_thinking"] = request.enable_thinking
         if request.thinking_token_budget is not None:
             template_kwargs["thinking_token_budget"] = request.thinking_token_budget
         print(
@@ -268,13 +280,20 @@ class OpenAICompatibleChatEndpoint:
             "model": self.model,
             "messages": [{"role": "user", "content": request.prompt}],
             "temperature": self.temperature,
-            "max_tokens": request.max_output_tokens or self.max_output_tokens,
+            "max_tokens": self._effective_max_tokens(request),
             "response_format": response_format,
             "chat_template_kwargs": template_kwargs,
         }
         if request.repetition_penalty is not None:
             payload["repetition_penalty"] = request.repetition_penalty
         return payload
+
+    def _effective_max_tokens(self, request: ModelRequest) -> int:
+        if request.budget_source is None or request.max_output_tokens is None:
+            raise ModelBudgetResolutionError(
+                "OpenAI adapter requires a gateway-bound EffectiveBudgetResult"
+            )
+        return request.max_output_tokens
 
     async def aclose(self) -> None:
         if self._client is not None:

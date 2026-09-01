@@ -1,0 +1,223 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvolutionCheckpointResult": {
+      "additionalProperties": false,
+      "properties": {
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "candidate_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "comparisons": {
+          "items": {
+            "$ref": "#/$defs/EvolutionMetricComparison"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Comparisons",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "hard_failure_codes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Hard Failure Codes",
+          "type": "array"
+        },
+        "use": {
+          "$ref": "#/$defs/EvolutionCheckpointUse"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "use",
+        "basis_commit",
+        "candidate_artifact_id",
+        "comparisons",
+        "evidence_refs"
+      ],
+      "title": "EvolutionCheckpointResult",
+      "type": "object"
+    },
+    "EvolutionCheckpointUse": {
+      "enum": [
+        "calibration",
+        "sealed_acceptance",
+        "canary"
+      ],
+      "title": "EvolutionCheckpointUse",
+      "type": "string"
+    },
+    "EvolutionDecision": {
+      "enum": [
+        "promote",
+        "reject",
+        "human_review"
+      ],
+      "title": "EvolutionDecision",
+      "type": "string"
+    },
+    "EvolutionMetricComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_value": {
+          "title": "Baseline Value",
+          "type": "number"
+        },
+        "candidate_value": {
+          "title": "Candidate Value",
+          "type": "number"
+        },
+        "metric": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "baseline_value",
+        "candidate_value"
+      ],
+      "title": "EvolutionMetricComparison",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "active_version_changed": {
+      "const": false,
+      "default": false,
+      "title": "Active Version Changed",
+      "type": "boolean"
+    },
+    "calibration_results": {
+      "items": {
+        "$ref": "#/$defs/EvolutionCheckpointResult"
+      },
+      "minItems": 1,
+      "title": "Calibration Results",
+      "type": "array"
+    },
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "canary_results": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvolutionCheckpointResult"
+      },
+      "title": "Canary Results",
+      "type": "array"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "decision": {
+      "$ref": "#/$defs/EvolutionDecision"
+    },
+    "decision_codes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Decision Codes",
+      "type": "array"
+    },
+    "evaluator_feedback_written_back": {
+      "const": false,
+      "default": false,
+      "title": "Evaluator Feedback Written Back",
+      "type": "boolean"
+    },
+    "sealed_opened_once": {
+      "title": "Sealed Opened Once",
+      "type": "boolean"
+    },
+    "sealed_results": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvolutionCheckpointResult"
+      },
+      "title": "Sealed Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "campaign_id",
+    "candidate_id",
+    "decision",
+    "calibration_results",
+    "decision_codes",
+    "sealed_opened_once"
+  ],
+  "title": "EvolutionCampaignResult",
+  "type": "object"
+}

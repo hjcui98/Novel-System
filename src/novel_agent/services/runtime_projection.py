@@ -127,11 +127,7 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
             elif control_payload.action == "resume":
                 paused = False
                 cancel_requested = False
-                status = (
-                    TaskStatus.READY
-                    if task.failure_budget > 0
-                    else TaskStatus.BUDGET_REVIEW
-                )
+                status = TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
             elif control_payload.action == "cancel":
                 paused = True
                 cancel_requested = True
@@ -141,11 +137,7 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                     else TaskStatus.RECOVERY_PENDING
                 )
             elif control_payload.action in {"retry", "unblock"}:
-                status = (
-                    TaskStatus.READY
-                    if task.failure_budget > 0
-                    else TaskStatus.BUDGET_REVIEW
-                )
+                status = TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
             elif control_payload.action == "extend_budget":
                 status = (
                     TaskStatus.READY
@@ -172,6 +164,11 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                         + control_payload.additional_planner_memory_tranches
                         if control_payload.action == "extend_budget"
                         else task.planner_memory_budget_extensions
+                    ),
+                    "writer_generation": (
+                        task.writer_generation
+                        if control_payload.writer_generation_after is None
+                        else control_payload.writer_generation_after
                     ),
                     "task_revision": task.task_revision + 1,
                 }

@@ -222,6 +222,33 @@ def test_structured_controller_receives_current_legal_need_tool_actions() -> Non
     )
 
 
+def test_structured_controller_records_c0_observation_telemetry() -> None:
+    class CapturingRunner:
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                output=ControllerPolicyDraft(
+                    action="stop",
+                    rationale_code="NO_HIT",
+                ),
+                model_call=SimpleNamespace(request_id=StableId("model-call.c0")),
+                receipt=SimpleNamespace(),
+            )
+
+    policy = StructuredControllerPolicy(
+        cast(Any, CapturingRunner()),
+        cast(Any, structured_controller_spec()),
+        controller_request_factory,
+        compact_prompt=False,
+    )
+    policy.decide({"request": request(max_tool_calls=4), "tool_calls": ()})
+
+    assert policy.last_observation is not None
+    telemetry = policy.last_observation.telemetry()
+    assert telemetry["context_level"] == "C0"
+    assert telemetry["preview_count"] == 0
+    assert telemetry["c3_admission"] == "NOT_ADMITTED"
+
+
 def test_structured_controller_repairs_missing_call_fields_from_sealed_actions() -> None:
     class DraftRunner:
         async def run(self, *args: Any, **kwargs: Any) -> Any:
@@ -584,6 +611,39 @@ def test_bounded_controller_resolves_with_typed_tools_and_freezes_context() -> N
     assert saver is not None
 
 
+def test_bounded_controller_persists_observation_telemetry_on_resolution_receipt() -> None:
+    class TelemetryPolicy(RouteBoundControllerPolicy):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_observation = SimpleNamespace(
+                telemetry=lambda: {
+                    "context_level": "C1",
+                    "available_input_tokens": 128,
+                    "input_tokens": 96,
+                    "preview_count": 0,
+                    "zero_preview_cause": "no_resolved_hits",
+                    "c3_admission": "NOT_ADMITTED",
+                }
+            )
+
+    unit = RetrievalUnit(
+        unit_id=StableId("anchor.hero.injury.telemetry"),
+        unit_kind=RetrievalUnitKind.STATE_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="hero remains injured",
+        mandatory=True,
+    )
+    runtime, _ = controller((unit,), policy=TelemetryPolicy())
+    resolution = runtime.resolve(request(), text_root(), thread_id="controller-telemetry")
+
+    assert resolution["resolution"].receipt.context_telemetry["context_level"] == "C1"
+    assert (
+        resolution["resolution"].receipt.context_telemetry["zero_preview_cause"]
+        == "no_resolved_hits"
+    )
+
+
 def test_bounded_controller_blocks_stale_snapshot_before_any_tool_call() -> None:
     runtime, _ = controller((), freshness=False)
     result = runtime.resolve(request(), text_root(), thread_id="controller-stale")
@@ -715,7 +775,11 @@ def test_registered_route_policy_covers_budget_missing_plan_and_fallback_exhaust
     )
     exhausted = policy.decide(
         {
-            "request": request(need=semantic_need),
+            "request": request(
+                need=semantic_need,
+                max_rounds=len(all_steps),
+                max_tool_calls=len(all_steps),
+            ),
             "tool_calls": exhausted_calls,
         }
     )

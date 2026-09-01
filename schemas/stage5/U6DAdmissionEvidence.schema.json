@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "acquired_requests": {
+      "minimum": 0,
+      "title": "Acquired Requests",
+      "type": "integer"
+    },
+    "endpoint_admission_shared": {
+      "title": "Endpoint Admission Shared",
+      "type": "boolean"
+    },
+    "endpoint_request_limit": {
+      "minimum": 1,
+      "title": "Endpoint Request Limit",
+      "type": "integer"
+    },
+    "inflight_requests_after_run": {
+      "minimum": 0,
+      "title": "Inflight Requests After Run",
+      "type": "integer"
+    },
+    "max_inflight_requests": {
+      "minimum": 0,
+      "title": "Max Inflight Requests",
+      "type": "integer"
+    },
+    "released_requests": {
+      "minimum": 0,
+      "title": "Released Requests",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "endpoint_request_limit",
+    "acquired_requests",
+    "released_requests",
+    "max_inflight_requests",
+    "inflight_requests_after_run",
+    "endpoint_admission_shared"
+  ],
+  "title": "U6DAdmissionEvidence",
+  "type": "object"
+}

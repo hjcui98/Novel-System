@@ -1,5 +1,13 @@
 {
   "$defs": {
+    "RecoveryCheckpoint": {
+      "enum": [
+        "latest_settled_checkpoint",
+        "none"
+      ],
+      "title": "RecoveryCheckpoint",
+      "type": "string"
+    },
     "RetryOwner": {
       "enum": [
         "model_gateway",
@@ -15,13 +23,40 @@
       ],
       "title": "RetryOwner",
       "type": "string"
+    },
+    "TaskStatus": {
+      "enum": [
+        "pending",
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_retry",
+        "budget_review",
+        "recovery_pending",
+        "blocked",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "properties": {
+    "consumes_creative_budget": {
+      "title": "Consumes Creative Budget",
+      "type": "boolean"
+    },
     "consumes_task_budget": {
       "title": "Consumes Task Budget",
       "type": "boolean"
+    },
+    "fallback_status": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "resume_from": {
+      "$ref": "#/$defs/RecoveryCheckpoint"
     },
     "retry_owner": {
       "$ref": "#/$defs/RetryOwner"
@@ -34,7 +69,10 @@
   "required": [
     "retry_owner",
     "retryable",
-    "consumes_task_budget"
+    "consumes_task_budget",
+    "consumes_creative_budget",
+    "resume_from",
+    "fallback_status"
   ],
   "title": "FailurePolicy",
   "type": "object"

@@ -198,7 +198,9 @@ class FailureClass(StrEnum):
     WORKER_STARTUP = "worker_startup"
     WORKER_LEASE_EXPIRED = "worker_lease_expired"
     PROVIDER_TRANSIENT = "provider_transient"
+    LEAF_SCHEMA_REJECTED = "leaf_schema_rejected"
     LEAF_REVIEW_REQUIRED = "leaf_review_required"
+    CANON_EXTRACTION_GAP = "canon_extraction_gap"
     BASIS_CHANGED = "basis_changed"
     PERMISSION_DENIED = "permission_denied"
     VALIDATION_REJECTED = "validation_rejected"
@@ -206,10 +208,14 @@ class FailureClass(StrEnum):
     PROJECTION_FAILED = "projection_failed"
     FRESHNESS_WAITING = "freshness_waiting"
     FRESHNESS_BLOCKED = "freshness_blocked"
+    WRITER_LANE_BUSY = "writer_lane_busy"
     EFFECT_UNCERTAIN = "effect_uncertain"
     POISON_LOOP = "poison_loop"
     BUDGET_EXHAUSTED = "budget_exhausted"
     CANCELLED = "cancelled"
+    RUNTIME_CAPABILITY_UNAVAILABLE = "runtime_capability_unavailable"
+    EXTERNAL_RESOURCE_UNAVAILABLE = "external_resource_unavailable"
+    UNKNOWN = "unknown"
 
 
 class RetryOwner(StrEnum):
@@ -225,65 +231,216 @@ class RetryOwner(StrEnum):
     NONE = "none"
 
 
+class RecoveryCheckpoint(StrEnum):
+    LATEST_SETTLED = "latest_settled_checkpoint"
+    NONE = "none"
+
+
 class FailurePolicy(DomainModel):
     retry_owner: RetryOwner
     retryable: bool
     consumes_task_budget: bool
+    consumes_creative_budget: bool
+    resume_from: RecoveryCheckpoint
+    fallback_status: TaskStatus
 
 
 _FAILURE_POLICIES: dict[FailureClass, FailurePolicy] = {
     FailureClass.WORKER_STARTUP: FailurePolicy(
-        retry_owner=RetryOwner.RUNTIME, retryable=True, consumes_task_budget=True
+        retry_owner=RetryOwner.RUNTIME,
+        retryable=True,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.WORKER_LEASE_EXPIRED: FailurePolicy(
-        retry_owner=RetryOwner.RUNTIME, retryable=True, consumes_task_budget=False
+        retry_owner=RetryOwner.RUNTIME,
+        retryable=True,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.PROVIDER_TRANSIENT: FailurePolicy(
-        retry_owner=RetryOwner.MODEL_GATEWAY, retryable=True, consumes_task_budget=False
+        retry_owner=RetryOwner.MODEL_GATEWAY,
+        retryable=True,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
+    ),
+    FailureClass.LEAF_SCHEMA_REJECTED: FailurePolicy(
+        retry_owner=RetryOwner.LEAF,
+        retryable=True,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.LEAF_REVIEW_REQUIRED: FailurePolicy(
-        retry_owner=RetryOwner.LEAF, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.LEAF,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.RECOVERY_PENDING,
+    ),
+    FailureClass.CANON_EXTRACTION_GAP: FailurePolicy(
+        retry_owner=RetryOwner.NONE,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.BASIS_CHANGED: FailurePolicy(
-        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.PERMISSION_DENIED: FailurePolicy(
-        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.VALIDATION_REJECTED: FailurePolicy(
-        retry_owner=RetryOwner.TRUSTED_COMMIT, retryable=False, consumes_task_budget=True
+        retry_owner=RetryOwner.TRUSTED_COMMIT,
+        retryable=False,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.COMMIT_CONFLICT: FailurePolicy(
-        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=True
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.PROJECTION_FAILED: FailurePolicy(
-        retry_owner=RetryOwner.PROJECTION, retryable=True, consumes_task_budget=True
+        retry_owner=RetryOwner.PROJECTION,
+        retryable=True,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.FRESHNESS_WAITING: FailurePolicy(
-        retry_owner=RetryOwner.FRESHNESS, retryable=True, consumes_task_budget=False
+        retry_owner=RetryOwner.FRESHNESS,
+        retryable=True,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.FRESHNESS_BLOCKED: FailurePolicy(
-        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
+    ),
+    FailureClass.WRITER_LANE_BUSY: FailurePolicy(
+        retry_owner=RetryOwner.RUNTIME,
+        retryable=True,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
     ),
     FailureClass.EFFECT_UNCERTAIN: FailurePolicy(
-        retry_owner=RetryOwner.RECONCILER, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.RECONCILER,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.RECOVERY_PENDING,
     ),
     FailureClass.POISON_LOOP: FailurePolicy(
-        retry_owner=RetryOwner.OPERATOR, retryable=False, consumes_task_budget=True
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=True,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BUDGET_REVIEW,
     ),
     FailureClass.BUDGET_EXHAUSTED: FailurePolicy(
-        retry_owner=RetryOwner.NONE, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.NONE,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BUDGET_REVIEW,
     ),
     FailureClass.CANCELLED: FailurePolicy(
-        retry_owner=RetryOwner.NONE, retryable=False, consumes_task_budget=False
+        retry_owner=RetryOwner.NONE,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.CANCELLED,
+    ),
+    FailureClass.RUNTIME_CAPABILITY_UNAVAILABLE: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.RECOVERY_PENDING,
+    ),
+    FailureClass.EXTERNAL_RESOURCE_UNAVAILABLE: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.RECOVERY_PENDING,
+    ),
+    FailureClass.UNKNOWN: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.RECOVERY_PENDING,
     ),
 }
 
 
-def failure_policy(failure: FailureClass) -> FailurePolicy:
+_FAILURE_CODE_ALIASES = {
+    "StructuredGenerationExhausted": FailureClass.LEAF_SCHEMA_REJECTED,
+    "structured_generation_exhausted": FailureClass.LEAF_SCHEMA_REJECTED,
+    "UpdateWorkerBuildIdCompatibility": FailureClass.RUNTIME_CAPABILITY_UNAVAILABLE,
+    "external_resource_unavailable": FailureClass.EXTERNAL_RESOURCE_UNAVAILABLE,
+}
+
+
+def normalize_failure_class(failure: FailureClass | str | None) -> FailureClass | None:
+    if failure is None or isinstance(failure, FailureClass):
+        return failure
+    try:
+        return FailureClass(failure)
+    except ValueError:
+        return _FAILURE_CODE_ALIASES.get(failure, FailureClass.UNKNOWN)
+
+
+def failure_policy(failure: FailureClass | str) -> FailurePolicy:
     if set(_FAILURE_POLICIES) != set(FailureClass):  # pragma: no cover - import-time invariant
         raise RuntimeError("FailureClass policy mapping is not exhaustive")
-    return _FAILURE_POLICIES[failure]
+    normalized = normalize_failure_class(failure)
+    if normalized is None:  # pragma: no cover - type guard for callers outside the contract
+        return _FAILURE_POLICIES[FailureClass.UNKNOWN]
+    return _FAILURE_POLICIES[normalized]
 
 
 class TaskEligibility(DomainModel):
@@ -353,6 +510,12 @@ class TaskRecord(DomainModel):
             or self.horizon_start <= self.protected_chapter_index
         ):
             raise ValueError("lookahead requires a future Plan horizon and protected chapter")
+        if self.purpose is TaskPurpose.DERIVED_MAINTENANCE and (
+            self.kind is not TaskKind.MAINTENANCE or not self.input_artifact_refs
+        ):
+            raise ValueError(
+                "derived maintenance requires a maintenance task with a finding artifact"
+            )
         if self.affects_future_plan is not None and self.kind not in {
             TaskKind.DRAFT_ACCEPTANCE,
             TaskKind.DRAFT_COMMIT,
@@ -507,6 +670,7 @@ class ControlIntentPayload(DomainModel):
     reason: str = Field(min_length=1, max_length=512)
     additional_attempts: int = Field(default=0, ge=0)
     additional_planner_memory_tranches: int = Field(default=0, ge=0)
+    writer_generation_after: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_budget_extension(self) -> ControlIntentPayload:
@@ -514,6 +678,10 @@ class ControlIntentPayload(DomainModel):
             self.additional_attempts or self.additional_planner_memory_tranches
         ):
             raise ValueError("budget extension must add a retry or Planner Memory tranche")
+        if self.writer_generation_after is not None and (
+            self.action != "retry" or self.writer_generation_after != 0
+        ):
+            raise ValueError("only retry may release writer generation")
         return self
 
 

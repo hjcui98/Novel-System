@@ -557,6 +557,8 @@ class Stage2PairedPilotRunner:
             (plan if profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED else None),
             planning_context=planning_context,
             frozen_planner_artifact=frozen_planner_artifact,
+            history_text=history,
+            snapshot_id=snapshot_id,
         )
         needs = generation.needs
         needs = self._scope_needs(needs, profile)

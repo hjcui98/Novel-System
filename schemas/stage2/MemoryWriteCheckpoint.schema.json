@@ -473,6 +473,14 @@
     "budget_usage": {
       "$ref": "#/$defs/MemoryWriteBudgetUsage"
     },
+    "candidate_revision_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Candidate Revision Refs",
+      "type": "array"
+    },
     "checkpoint_id": {
       "$ref": "#/$defs/StableId"
     },

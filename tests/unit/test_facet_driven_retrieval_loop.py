@@ -9,6 +9,7 @@ from novel_agent.domain.memory import (
     FacetClosureStatus,
     FacetEvidenceRequirement,
     NeedCompletionSpec,
+    NeedExecutionStatus,
     NeedFacet,
     NeedFacetKind,
     NeedGapPolicy,
@@ -63,9 +64,7 @@ def _need(
         gap_policy=NeedGapPolicy.FAIL_MANDATORY,
         producer="test",
         producer_version="v1",
-        predicates_by_facet={
-            item.need_facet_id.root: predicates for item in need_facets
-        },
+        predicates_by_facet={item.need_facet_id.root: predicates for item in need_facets},
     )
     return Stage1MemoryNeed(
         need_id=need_id,
@@ -150,6 +149,29 @@ def test_loop_stops_on_first_window_when_all_facets_served() -> None:
     assert trace.retrieval_pages == 1
     assert trace.closed_need_facet_ids == (trace.required_need_facet_ids[0],)
     assert trace.facet_receipts[0].status is FacetClosureStatus.SUPPORTED
+
+
+def test_no_executable_query_preserves_facet_contract_diagnostics() -> None:
+    need = _need((NeedFacetKind.CURRENT_STATE,)).model_copy(
+        update={
+            "query_intent": Stage1QueryIntent.RELATION_CHAIN,
+            "entity_ids": (),
+            "predicates": (),
+            "allowed_candidate_pools": (CandidatePool.GRAPH,),
+        }
+    )
+
+    trace = _orchestrator((), window=1).retrieve(need)
+
+    assert trace.need_execution_status is NeedExecutionStatus.NOT_EXECUTED_NO_EXECUTABLE_QUERY
+    assert trace.stop_reason is RetrievalStopReason.NO_EXECUTABLE_QUERY
+    completion_spec = need.completion_spec
+    assert completion_spec is not None
+    assert trace.required_need_facet_ids == completion_spec.required_need_facet_ids
+    assert trace.irreducible_need_facet_ids == completion_spec.irreducible_need_facet_ids
+    assert tuple(item.need_facet_id for item in trace.facet_receipts) == (
+        completion_spec.required_need_facet_ids
+    )
 
 
 def test_loop_expands_window_until_missing_facet_is_served() -> None:

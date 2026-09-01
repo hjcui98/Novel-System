@@ -2,11 +2,13 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-08-13
+> Updated: 2026-08-18
 >
 > Current progress source: `docs/project_status.md`
 >
 > Stage naming authority: `docs/adr/0006-three-product-stage-topology.md`
+>
+> Target Runtime authority: `docs/adr/0010-temporal-outer-langgraph-leaf-target-runtime.md`
 
 ## 1. How to read this repository
 
@@ -39,15 +41,17 @@ reproducibility, and active Gates remain mandatory.
 | Stage 2A | Memory Agent Harness and Real-Project Validation | `DEVELOPMENT_COMPLETE / CONDITIONAL_PASS` |
 | Stage 2R | Stage 2A real hybrid retrieval workstream | `COMPLETE` |
 | Stage 2W | Stage 2A memory write and repair workstream | `COMPLETE` |
-| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ARCHITECTURE_REPAIR_ACCEPTED / NEW_EXECUTABLE_BENCHMARK_RUNNING` |
-| Stage 3 | Writer Agent and Writing Context Loop | `ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING` |
-| Stage 4 | Planner Agent and Planning Context Loop | `ENGINEERING_INTEGRATED / REAL_SEMANTIC_GATE_PENDING` |
-| Stage 5 | Long-running Creative Runtime | `ENGINEERING_READY_FOR_REAL_PILOT / REAL_PILOT_NOT_RUN` |
+| Stage 2M | Stage 2A writer-facing memory benchmark workstream | `ENGINEERING_CLOSED / SOURCE_COMMITTED_AT_0bc7757 / REAL_TESTED_USABLE_WITH_EXPLICIT_GAPS / DETACHED_REF_AND_INTEGRATION_PENDING` |
+| Stage 3 | Writer Agent and Writing Context Loop | `ENGINEERING_INTEGRATED / TRUST_REPAIRS_AND_REAL_SEMANTIC_GATE_PENDING` |
+| Stage 4 | Planner Agent and Planning Context Loop | `ENGINEERING_INTEGRATED / RETRIEVAL_MATURITY_AND_REAL_SEMANTIC_GATE_PENDING` |
+| Stage 5 | Long-running Creative Runtime | `ENGINEERING_INTEGRATED / PRODUCTION_ASSEMBLY_AND_REAL_PILOT_PENDING` |
 
 ADR-0006 supersedes ADR-0005 only for Stage 3 and later: Writer and Planner are independent Stage 3/4
 products over the shared Stage 2 Memory foundation, and Stage 5 integrates them into long-running
 operation. Historical Stage 4–7 names remain valid provenance only. `Stage 2R/2W/2M` remain Stage 2A
-workstream codes.
+workstream codes. ADR-0010 supersedes only ADR-0006's prior non-adoption stance for the Stage 5
+technical Runtime: Temporal outer + LangGraph leaf is the long-term target, while the current
+PostgreSQL Runtime remains the migration production baseline.
 
 ## 3. Long-lived authoritative documents
 
@@ -67,17 +71,20 @@ canonical project `Stage` numbering.
 
 | Document | Lifecycle | Current use |
 |---|---|---|
-| `docs/stage2_memory_benchmark_task_closure_execution.md` | `ACTIVE` | Stage 2M contract; current exact paragraph/window slicing and evidence-first Writer package/Ledger delivery |
+| `docs/stage2_memory_benchmark_task_closure_execution.md` | `HISTORICAL_EXECUTION_BASELINE` | Legacy benchmark task closure; current evidence-first product semantics are ADR-0008/0009 |
 | `docs/stage2_memory_architecture_repair_execution_20260811.md` | `ACCEPTED` | Accepted mechanical architecture-repair baseline and historical §29 evidence; current semantic repair direction is the 2026-08-13 document |
-| `docs/stage2_memory_semantic_repair_execution_20260813.md` | `ACTIVE` | Current Stage 2M repair authority: make Need, facet retrieval, exact-L0 packing and durable World memory work together, then verify from clean Genesis |
-| `docs/stage2m_support_closure_campaign_20260802.md` | `ACTIVE` | 2026-08-02 support-closure campaign execution log: quality closure + real C60 ×3 (A0/A1/A2, producer v25→v27) + first-loss repairs; ended `CAMPAIGN_HOLD / C60_BUDGET_EXHAUSTED` (mechanism gain confirmed, G06/G09 complete claims not formed) |
+| `docs/stage2_memory_semantic_repair_execution_20260813.md` | `ACCEPTED_REPAIR_BASELINE` | 2026-08-13 semantic repair analysis; implemented latest Stage 2 direction is ADR-0009 and no longer the next action |
 | `docs/stage3_writer_core_overall_design.md` | `ACTIVE` | Writer product, plan-conditioned Memory, dynamic Context View, Skills and candidate Gate |
 | `docs/stage3_writer_context_loop_execution.md` | `ACTIVE` | Implemented Stage 3 Writer/Editor/Observer/Context loop; current accepted-identity convergence and real infrastructure/model Gates remain |
 | `docs/stage4_planner_core_overall_design.md` | `ACTIVE` | Planner product, inquiry-conditioned Memory, independent Plan Review and candidate Gate |
 | `docs/stage4_planner_context_loop_execution.md` | `ACTIVE` | Active Stage 4 implementation path: inquiry-conditioned Memory, Planner Context, Reviewer, conditional Graph adoption, then final unified testing |
 | `docs/stage5_long_running_creative_runtime_overall_design.md` | `ACTIVE` | Fixed Plan/Write/Accept/Commit topology, Task/Attempt, recovery, maintenance, controlled evolution and admission boundaries |
 | `docs/stage5_long_running_creative_runtime_execution.md` | `ACTIVE` | Detailed Stage 5 implementation path: isolated Runtime Kernel now, real Stage 4 integration after its Gate, evidence-triggered operations/evolution later |
-| `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md` | `ACTIVE` | Current next-development authority: production Stage 2～5 vertical loop, completed G1～G8 engineering closure, composition contract and real-novel Pilot procedure |
+| `docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md` | `ACTIVE` | Current cross-Stage authority: branch/worktree convergence, production assembly, U4-L0 model-budget/progressive-context closure, V0.5 real-Writer evidence, Stage 3/4/5 leaf Gates, continuous/real long runs, early Temporal feasibility, target-Runtime migration/cutover and bounded self-correction |
+| `docs/stage2_model_budget_runtime_policy.md` | `PROPOSED` | U4-L0 input: unique effective budget, Controller C1+C2, Memory Planner P1; not yet a production default. The worktree copy is retired by this root path. |
+| `docs/novelmem_v0.5_plan_write_extension_design.md` | `ACTIVE_CANARY_EXECUTION` | V0.5 Track B wiring → C-ROLL → D-SHORT canary; defines Track B two-layer product, Track C/D contracts, four-condition attribution, Oracle/Gap protocol and U4-L0 variable isolation |
+| `docs/novelmem_ztj_v0.5_benchmark_development_plan.md` | `ACTIVE_DEVELOPMENT_PLAN` | Concrete build plan for the ZTJ V0.5 benchmark: WP0 → WP-BASIS → WP1 → WP3 → WP2 → WP4 → WP7, with production basis, Track C run/score, unified four-condition Writer input contract, and acceptance red lines |
+| `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md` | `ACTIVE_SUBPROTOCOL` | U5 real-novel C20→25 Pilot request, assembly, report and product acceptance procedure |
 
 ## 5. Accepted decisions, baselines, and gate evidence
 
@@ -91,6 +98,8 @@ canonical project `Stage` numbering.
 | `docs/adr/0006-three-product-stage-topology.md` | `ACCEPTED` | Stage 3 Writer, Stage 4 Planner and Stage 5 long-running topology; supersedes ADR-0005 later-stage mapping |
 | `docs/adr/0007-event-derived-agent-context-view.md` | `ACCEPTED` | Shared event-derived Context View, ContextDelta and safe compaction contract |
 | `docs/adr/0008-evidence-first-writer-context-product.md` | `ACCEPTED` | Evidence-first Stage 2M Writer package; Claim/Evaluator removed from the Agent default path |
+| `docs/adr/0009-need-evidence-semantic-closure.md` | `ACCEPTED` | Need–evidence semantic judgement; separates assembly, semantic completeness and usable-with-gaps without restoring Claim/Gold |
+| `docs/adr/0010-temporal-outer-langgraph-leaf-target-runtime.md` | `ACCEPTED` | Temporal outer + LangGraph leaf is the target Runtime; PostgreSQL remains the migration production baseline and plugin maturity does not decide Temporal adoption |
 | `docs/retrieval_model_runtime.md` | `ACCEPTED_RUNTIME_BASELINE` | Locked Stage 1 retrieval-model revisions and runtime semantics |
 | `docs/stage2_memory_gate_c95_acceptance.md` | `ACCEPTED` | C95 infrastructure and safety gate |
 
@@ -129,6 +138,7 @@ maintenance and regression analysis but do not define current progress:
 | `docs/stage3_context_handoff_integration_execution.md` | `SUPERSEDED` | Legacy workstream A; replaced by current WCP/Context View convergence |
 | `docs/stage3_acceptance_test_execution.md` | `SUPERSEDED` | Legacy A/B/C/D acceptance plan; current Gate lives in the Stage 3 design/execution pair |
 | `长篇小说Agent技术与执行评审建议_v0.1.md` | `HISTORICAL_REVIEW` | Initial review whose accepted decisions were incorporated into the execution plan |
+| `docs/current_implementation_architecture_review_20260816.md` | `CURRENT_REVIEW_INPUT / NON_AUTHORITATIVE` | Code-based review at `6a195e0`; adopted/current findings are resolved in the 2026-08-18 unified execution plan |
 
 ## 8. Technical reference inputs
 
@@ -157,15 +167,15 @@ status entry, not by rewriting old evidence.
 
 ## 10. Updating progress
 
-Document ownership in the Codex–OpenCode implementation loop:
+Document ownership in the automated Codex–DSH loop (the loop contract lives in `AGENTS.md`):
 
 - Codex creates or edits architecture, design, planning, active execution, current-status, ADR,
-  `.agent/task.md`, `.agent/plan.md`, and `.agent/review.md` files.
+  `.agent/task.md`, `.agent/plan.md`, `.agent/reviews/`, and `.agent/handover.md` files.
 - `.agent/plan.md` supplements the applicable upper-level documents for one implementation task; it
-  does not replace or duplicate them.
-- OpenCode reads those documents and writes code, tests, runtime artifacts, and
-  `.agent/implementation.md`. It writes a separate result/summary document only when the Codex plan
-  explicitly names one.
+  does not replace or duplicate them, and every update bumps its version header.
+- The DSH execution engine reads those documents and writes code, tests, runtime artifacts,
+  `.agent/implementation.md`, and `.agent/loop.md`. It writes a separate result/summary document
+  only when the Codex plan explicitly names one.
 - After review, Codex integrates accepted evidence into existing project documents. A new design,
   remediation, or execution document is created only for a materially new decision that the current
   hierarchy cannot represent.
@@ -180,3 +190,9 @@ When a gate or work package changes:
 3. create or supersede an ADR if a stage boundary, default path, or invariant changes;
 4. create a dated result document for immutable metrics;
 5. update this index only if document lifecycle or navigation changes.
+
+## 11. Development workflow reference
+
+| Document | Lifecycle | Notes |
+|---|---|---|
+| `docs/codex_dsh_automated_loop_reference.md` | `AUTHORITATIVE` | Full overview of the automated Codex–DSH loop: planes, document library, Codex session contract, verdicts, gates, and operating manual; the operative contract lives in `AGENTS.md` |

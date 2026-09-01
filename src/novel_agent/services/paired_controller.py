@@ -44,6 +44,7 @@ from novel_agent.services.retrieval import (
     RerankService,
     RetrievalBackend,
     RetrievalOrchestrator,
+    retain_related_graph_paths,
 )
 from novel_agent.tools import RetrievalToolAdapter, ToolBinding
 from novel_agent.tools.retrieval import PLAN_INTENTS
@@ -1054,7 +1055,7 @@ class PairedMemoryControllerRunner:
         unique: dict[StableId, FusedCandidate] = {}
         for candidate in ordered:
             unique.setdefault(candidate.unit.unit_id, candidate)
-        return tuple(
+        ranked = tuple(
             candidate.model_copy(
                 update={
                     "fused_rank": rank,
@@ -1066,6 +1067,7 @@ class PairedMemoryControllerRunner:
             )
             for rank, candidate in enumerate(unique.values(), start=1)
         )
+        return retain_related_graph_paths(ranked)
 
     @staticmethod
     def _protect_historical_evidence(
@@ -1157,6 +1159,20 @@ class PairedMemoryControllerRunner:
     ) -> bool:
         has_candidates = any(candidate.selected for candidate in candidates)
         if condition == "anchor_evidence_insufficient":
+            if need is not None and need.query_intent in {
+                Stage1QueryIntent.RELATION_CHAIN,
+                Stage1QueryIntent.CAUSAL_MULTI_HOP,
+            }:
+                if not has_candidates:
+                    return True
+                receipts = FacetSupportEvaluator.evaluate(
+                    need,
+                    tuple(candidate for candidate in candidates if candidate.selected),
+                )
+                # Relation/causal routes may use an anchor as soon as its
+                # declared facet is exactly supported.  A typed-graph expand
+                # is legal only for the remaining facet gap.
+                return bool(receipts) and not FacetSupportEvaluator.mandatory_closed(need, receipts)
             if not has_candidates:
                 return True
             if need is None:

@@ -30,10 +30,46 @@ from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+from novel_agent.services.model_gateway import StructuredGenerationExhausted
 
 REPAIRED_TEXT_MEDIA_TYPE: Final[str] = "text/plain; charset=utf-8"
 REWRITE_DIRECTIVE_MEDIA_TYPE: Final[str] = (
     "application/vnd.novel-agent.editor-rewrite-directive+json"
+)
+_EDITOR_CONTRACT_RETRY_SUFFIX = ".contract-retry1"
+_EDITOR_CONTRACT_RETRY_FIELD = "host_contract_retry"
+_EDITOR_CONTRACT_RETRY_INSTRUCTION = (
+    "The previous Editor response was rejected by the host contract. Return one complete "
+    "replacement JSON object. For LOCAL_REPAIR, include non-empty repair_instructions and "
+    "an exact contiguous evidence_quote from the supplied Draft for every blocking issue; "
+    "do not invent or paraphrase a quote. If a blocking issue has no exact Draft location, "
+    "use MAJOR_REWRITE with non-empty rewrite_targets instead. Keep unresolved_needs "
+    "advisory and never use them as a substitute for the required fields."
+)
+_EDITOR_NO_CHANGE_RETRY_SUFFIX = ".no-change-retry1"
+_EDITOR_NO_CHANGE_RETRY_FIELD = "host_no_change_retry"
+_EDITOR_NO_CHANGE_RETRY_REPETITION_PENALTY = 1.10
+_EDITOR_NO_CHANGE_RETRY_INSTRUCTION = (
+    "The previous LOCAL_REPAIR response returned the Draft unchanged, which is invalid. "
+    "Return one complete replacement JSON object with repaired_text changed inside the "
+    "frozen allowed spans. Preserve every character outside those spans exactly, make the "
+    "smallest repair that addresses the blocking issue, and do not return the original "
+    "Draft again."
+)
+_EDITOR_REPAIR_COMPLETENESS_FIELD = "host_repair_completeness"
+_EDITOR_REPAIR_COMPLETENESS_INSTRUCTION = (
+    "Address every blocking issue in the supplied issues list before returning. Do not stop "
+    "after repairing the first issue: resolve each issue_id in its corresponding allowed "
+    "span, while preserving every character outside the frozen allowed spans. Return one "
+    "complete JSON object."
+)
+_EDITOR_REPAIR_BOUNDARY_FIELD = "host_repair_boundary_semantics"
+_EDITOR_REPAIR_BOUNDARY_INSTRUCTION = (
+    "An allowed span is a replacement boundary, not a fixed-length quota. Construct the "
+    "complete result as draft_text[:start] + replacement_text + draft_text[end:] for each "
+    "span: replacement_text may be longer or shorter than the supplied span, including an "
+    "inserted sentence or paragraph. The returned repaired_text must contain the actual "
+    "replacement; self_observations do not count as a repair."
 )
 
 
@@ -58,7 +94,7 @@ class _DraftBlock:
 
 
 class EditorialService:
-    """Run independent review and exactly one bounded local repair."""
+    """Run independent review and one bounded local repair with one no-change retry."""
 
     def __init__(
         self,
@@ -80,28 +116,50 @@ class EditorialService:
         text = self._read_draft_text(review_input)
         blocks = _draft_blocks(review_input.draft.draft_id, text)
         payload = _review_payload(review_input, text, blocks)
-        try:
-            run = await self._editor.review(
-                request,
-                payload,
-                source_hashes=(review_input.draft.text_artifact.artifact_id,),
-                input_artifacts=(review_input.draft.text_artifact,),
-                base_commit=review_input.context.base_commit,
-            )
-        except (ValidationError, ValueError, RuntimeError) as error:
-            raise EditorialReviewError("Editor REVIEW failed without a report") from error
-        try:
-            return self._build_report(
-                review_input,
-                review_input.draft.draft_id,
-                text,
-                blocks,
-                run,
-            )
-        except (ValidationError, ValueError, RuntimeError) as error:
-            raise EditorialReviewError(
-                "Editor REVIEW output did not form a valid report"
-            ) from error
+        current_request = request
+        current_payload: Mapping[str, object] = payload
+        for attempt in range(2):
+            try:
+                run = await self._editor.review(
+                    current_request,
+                    current_payload,
+                    source_hashes=(review_input.draft.text_artifact.artifact_id,),
+                    input_artifacts=(review_input.draft.text_artifact,),
+                    base_commit=review_input.context.base_commit,
+                )
+            except (StructuredGenerationExhausted, ValidationError) as error:
+                if attempt == 0:
+                    current_request = _editor_contract_retry_request(request)
+                    current_payload = _editor_contract_retry_payload(payload)
+                    continue
+                raise EditorialReviewError(
+                    f"Editor REVIEW failed without a report: {error}"
+                ) from error
+            except (ValueError, RuntimeError) as error:
+                raise EditorialReviewError(
+                    f"Editor REVIEW failed without a report: {error}"
+                ) from error
+            try:
+                return self._build_report(
+                    review_input,
+                    review_input.draft.draft_id,
+                    text,
+                    blocks,
+                    run,
+                )
+            except (EditorialReviewError, ValidationError) as error:
+                if attempt == 0:
+                    current_request = _editor_contract_retry_request(request)
+                    current_payload = _editor_contract_retry_payload(payload)
+                    continue
+                raise EditorialReviewError(
+                    "Editor REVIEW output did not form a valid report"
+                ) from error
+            except (ValueError, RuntimeError) as error:
+                raise EditorialReviewError(
+                    "Editor REVIEW output did not form a valid report"
+                ) from error
+        raise AssertionError("Editor contract retry loop did not terminate")  # pragma: no cover
 
     async def review_repaired(
         self,
@@ -175,21 +233,33 @@ class EditorialService:
         original = self._read_draft_text(review_input)
         blocks = _draft_blocks(review_input.draft.draft_id, original)
         payload = _repair_payload(review_input, report, original, blocks)
-        try:
-            run = await self._editor.local_repair(
-                request,
-                payload,
-                source_hashes=(review_input.draft.text_artifact.artifact_id,),
-                input_artifacts=(review_input.draft.text_artifact,),
-                base_commit=review_input.context.base_commit,
-            )
-        except (ValidationError, ValueError, RuntimeError) as error:
-            raise EditorialRepairError("Editor LOCAL_REPAIR failed without a candidate") from error
+        current_request = request
+        current_payload: Mapping[str, object] = payload
+        for attempt in range(2):
+            try:
+                run = await self._editor.local_repair(
+                    current_request,
+                    current_payload,
+                    source_hashes=(review_input.draft.text_artifact.artifact_id,),
+                    input_artifacts=(review_input.draft.text_artifact,),
+                    base_commit=review_input.context.base_commit,
+                )
+            except (ValidationError, ValueError, RuntimeError) as error:
+                raise EditorialRepairError(
+                    "Editor LOCAL_REPAIR failed without a candidate"
+                ) from error
 
-        repaired_text = run.output.repaired_text
-        changed_spans = _changed_spans(review_input.draft.draft_id, original, repaired_text)
-        if not changed_spans:
+            repaired_text = run.output.repaired_text
+            changed_spans = _changed_spans(review_input.draft.draft_id, original, repaired_text)
+            if changed_spans:
+                break
+            if attempt == 0:
+                current_request = _editor_no_change_retry_request(request)
+                current_payload = _editor_no_change_retry_payload(payload)
+                continue
             raise EditorialRepairError("LOCAL_REPAIR produced no text change")
+        else:  # pragma: no cover - the bounded loop always returns or raises above
+            raise AssertionError("Editor LOCAL_REPAIR retry loop did not terminate")
         if any(not _span_inside(span, scope.allowed_spans) for span in changed_spans):
             raise EditorialRepairError("LOCAL_REPAIR changed text outside its frozen scope")
         try:
@@ -253,14 +323,23 @@ class EditorialService:
                 "payload": payload.model_dump(mode="json"),
             },
         )
+        require_exact_evidence = payload.verdict is not EditorialVerdict.MAJOR_REWRITE
         issues = tuple(
-            _materialize_issue(report_id, index, issue, text, blocks)
+            _materialize_issue(
+                report_id,
+                index,
+                issue,
+                text,
+                blocks,
+                require_exact_evidence=require_exact_evidence,
+            )
             for index, issue in enumerate(payload.issues)
         )
         repair_scope: LocalRepairScope | None = None
         rewrite_directive: RewriteDirective | None = None
         receipt = run.receipt
-        if payload.verdict is EditorialVerdict.LOCAL_REPAIR:
+        verdict = payload.verdict
+        if verdict is EditorialVerdict.LOCAL_REPAIR:
             blocking = tuple(
                 issue
                 for issue in issues
@@ -268,25 +347,32 @@ class EditorialService:
                 or issue.structural
                 or issue.severity in {EditorialSeverity.ERROR, EditorialSeverity.CRITICAL}
             )
-            if not blocking or any(issue.location is None for issue in blocking):
+            if not blocking:
+                # A model can over-route an advisory warning as LOCAL_REPAIR. It has no
+                # trusted repair scope, but it is still useful to the Writer as a nonblocking
+                # report. Keep the warning and its unresolved markers while normalizing the
+                # routing verdict so the report can continue through the pipeline.
+                verdict = EditorialVerdict.PASS
+            elif any(issue.location is None for issue in blocking):
                 raise EditorialReviewError(
                     "LOCAL_REPAIR requires a concrete trusted location for every blocking issue"
                 )
-            repair_scope = LocalRepairScope(
-                issue_ids=tuple(issue.issue_id for issue in blocking),
-                allowed_spans=tuple(
-                    DraftSpan(
-                        block_id=issue.location.block_id,
-                        start=issue.location.start or 0,
-                        end=issue.location.end or 0,
-                    )
-                    for issue in blocking
-                    if issue.location is not None
-                ),
-                instructions=payload.repair_instructions,
-                preserve_requirements=payload.preserve_requirements,
-            )
-        elif payload.verdict is EditorialVerdict.MAJOR_REWRITE:
+            else:
+                repair_scope = LocalRepairScope(
+                    issue_ids=tuple(issue.issue_id for issue in blocking),
+                    allowed_spans=tuple(
+                        DraftSpan(
+                            block_id=issue.location.block_id,
+                            start=issue.location.start or 0,
+                            end=issue.location.end or 0,
+                        )
+                        for issue in blocking
+                        if issue.location is not None
+                    ),
+                    instructions=payload.repair_instructions,
+                    preserve_requirements=payload.preserve_requirements,
+                )
+        elif verdict is EditorialVerdict.MAJOR_REWRITE:
             directive_payload = {
                 "parent_draft_id": draft_id.root,
                 "scope": RewriteScope.MAJOR_REWRITE.value,
@@ -315,7 +401,7 @@ class EditorialService:
             task_contract_id=review_input.writing_task.contract_id,
             context_id=review_input.context.context_id,
             base_commit=review_input.context.base_commit,
-            verdict=payload.verdict,
+            verdict=verdict,
             issues=issues,
             repair_scope=repair_scope,
             rewrite_directive=rewrite_directive,
@@ -351,15 +437,64 @@ def _review_payload(
     }
 
 
+def _editor_contract_retry_request(request: ModelRequest) -> ModelRequest:
+    suffix = _EDITOR_CONTRACT_RETRY_SUFFIX
+    request_id = request.request_id.root[: 128 - len(suffix)] + suffix
+    return request.model_copy(update={"request_id": StableId(request_id)})
+
+
+def _editor_contract_retry_payload(
+    payload: Mapping[str, object],
+) -> Mapping[str, object]:
+    return {
+        **payload,
+        _EDITOR_CONTRACT_RETRY_FIELD: _EDITOR_CONTRACT_RETRY_INSTRUCTION,
+    }
+
+
+def _editor_no_change_retry_request(request: ModelRequest) -> ModelRequest:
+    suffix = _EDITOR_NO_CHANGE_RETRY_SUFFIX
+    request_id = request.request_id.root[: 128 - len(suffix)] + suffix
+    return request.model_copy(
+        update={
+            "request_id": StableId(request_id),
+            "repetition_penalty": _EDITOR_NO_CHANGE_RETRY_REPETITION_PENALTY,
+        }
+    )
+
+
+def _editor_no_change_retry_payload(
+    payload: Mapping[str, object],
+) -> Mapping[str, object]:
+    return {
+        **payload,
+        _EDITOR_NO_CHANGE_RETRY_FIELD: _EDITOR_NO_CHANGE_RETRY_INSTRUCTION,
+    }
+
+
 def _repair_payload(
     review_input: EditorialReviewInput,
     report: EditorialReport,
     text: str,
     blocks: tuple[_DraftBlock, ...],
 ) -> Mapping[str, object]:
+    scope = report.repair_scope
+    if scope is None:  # pragma: no cover - protected by EditorialReport validation
+        raise EditorialRepairError("LOCAL_REPAIR report has no repair scope")
     return {
         "draft_id": review_input.draft.draft_id.root,
-        "repair_scope": report.repair_scope,
+        "repair_scope": scope,
+        _EDITOR_REPAIR_COMPLETENESS_FIELD: _EDITOR_REPAIR_COMPLETENESS_INSTRUCTION,
+        _EDITOR_REPAIR_BOUNDARY_FIELD: _EDITOR_REPAIR_BOUNDARY_INSTRUCTION,
+        "repair_scope_text": tuple(
+            {
+                "block_id": span.block_id.root if span.block_id is not None else None,
+                "start": span.start,
+                "end": span.end,
+                "text": text[span.start : span.end],
+            }
+            for span in scope.allowed_spans
+        ),
         "issues": report.issues,
         "writing_task": review_input.writing_task.model_dump(mode="json"),
         "context_summary": _context_summary(review_input),
@@ -421,23 +556,29 @@ def _materialize_issue(
     issue: EditorialIssueDraft,
     text: str,
     blocks: tuple[_DraftBlock, ...],
+    *,
+    require_exact_evidence: bool = True,
 ) -> EditorialIssue:
     location: EditorialLocation | None = None
     if issue.evidence_quote is not None:
         resolved = _resolve_quote(text, blocks, issue.evidence_quote, issue.occurrence)
         if resolved is None:
-            raise EditorialReviewError("Editor issue evidence quote is absent from the Draft")
-        block, start, end = resolved
-        if issue.block_hint is not None and issue.block_hint != block.block_id.root:
-            raise EditorialReviewError("Editor issue block hint does not match the Draft")
-        location = EditorialLocation(
-            block_id=block.block_id,
-            start=start,
-            end=end,
-            evidence_quote=issue.evidence_quote,
-            occurrence=issue.occurrence,
-        )
-    elif issue.block_hint is not None:
+            if require_exact_evidence:
+                raise EditorialReviewError("Editor issue evidence quote is absent from the Draft")
+        else:
+            block, start, end = resolved
+            if issue.block_hint is not None and issue.block_hint != block.block_id.root:
+                if require_exact_evidence:
+                    raise EditorialReviewError("Editor issue block hint does not match the Draft")
+            else:
+                location = EditorialLocation(
+                    block_id=block.block_id,
+                    start=start,
+                    end=end,
+                    evidence_quote=issue.evidence_quote,
+                    occurrence=issue.occurrence,
+                )
+    elif issue.block_hint is not None and require_exact_evidence:
         raise EditorialReviewError("Editor issue block hint requires an evidence quote")
     return EditorialIssue(
         issue_id=_stable_id(

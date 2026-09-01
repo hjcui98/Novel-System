@@ -80,7 +80,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -197,11 +200,27 @@
       "title": "Output Artifacts",
       "type": "array"
     },
+    "planned_checkpoints": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Planned Checkpoints",
+      "type": "array"
+    },
     "receipt_id": {
       "$ref": "#/$defs/StableId"
     },
     "run_id": {
       "$ref": "#/$defs/RunId"
+    },
+    "selected_checkpoints": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Selected Checkpoints",
+      "type": "array"
     },
     "skill": {
       "$ref": "#/$defs/SkillContractRef"

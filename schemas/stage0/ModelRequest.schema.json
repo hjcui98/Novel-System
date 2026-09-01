@@ -5,6 +5,16 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "BudgetSource": {
+      "enum": [
+        "explicit_request",
+        "invocation_budget",
+        "endpoint_default",
+        "model_max_auto"
+      ],
+      "title": "BudgetSource",
+      "type": "string"
+    },
     "JsonValue": {},
     "ModelCallPurpose": {
       "enum": [
@@ -69,6 +79,28 @@
       "anyOf": [
         {
           "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "budget_source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetSource"
         },
         {
           "type": "null"

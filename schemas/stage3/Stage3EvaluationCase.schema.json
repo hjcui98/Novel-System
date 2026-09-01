@@ -788,6 +788,16 @@
           "title": "Producer Version",
           "type": "string"
         },
+        "relation_bindings_by_facet": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/RelationFacetBinding"
+            },
+            "type": "array"
+          },
+          "title": "Relation Bindings By Facet",
+          "type": "object"
+        },
         "require_causal_history": {
           "default": false,
           "title": "Require Causal History",
@@ -931,6 +941,30 @@
       "title": "RangeUnit",
       "type": "string"
     },
+    "RelationFacetBinding": {
+      "additionalProperties": false,
+      "description": "One ordered relation triple that can close a relation facet.\n\n``RetrievalUnit.entity_ids`` preserves the canonical relation direction\n(subject first, object second).  Keeping that direction in the completion\ncontract prevents an anchor for the inverse edge, or an edge that merely\nshares one endpoint, from satisfying an explicit Planner relation.",
+      "properties": {
+        "object_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate": {
+          "minLength": 1,
+          "title": "Predicate",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "subject_id",
+        "predicate",
+        "object_id"
+      ],
+      "title": "RelationFacetBinding",
+      "type": "object"
+    },
     "RetrievalChannel": {
       "enum": [
         "r0",
@@ -1073,6 +1107,25 @@
           "title": "Fusion Applied",
           "type": "boolean"
         },
+        "graph_exhausted": {
+          "default": false,
+          "title": "Graph Exhausted",
+          "type": "boolean"
+        },
+        "graph_path_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Graph Path Count",
+          "type": "integer"
+        },
+        "graph_seed_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Graph Seed Entity Ids",
+          "type": "array"
+        },
         "intent": {
           "$ref": "#/$defs/Stage1QueryIntent"
         },
@@ -1083,6 +1136,27 @@
           },
           "title": "Irreducible Need Facet Ids",
           "type": "array"
+        },
+        "l0_fallback_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "L0 Fallback Evidence Refs",
+          "type": "array"
+        },
+        "l0_fallback_slice_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "L0 Fallback Slice Ids",
+          "type": "array"
+        },
+        "l0_fallback_truncated": {
+          "default": false,
+          "title": "L0 Fallback Truncated",
+          "type": "boolean"
         },
         "l0_tokens": {
           "default": 0,
@@ -1131,6 +1205,40 @@
           "minimum": 0,
           "title": "Scenes Expanded",
           "type": "integer"
+        },
+        "semantic_fallback_reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Fallback Reason"
+        },
+        "semantic_fallback_status": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Fallback Status"
+        },
+        "semantic_receipt_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Semantic Receipt Refs",
+          "type": "array"
         },
         "spans_expanded": {
           "default": 0,

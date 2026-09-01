@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "chapter_index": {
+      "minimum": 0,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "detail": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Detail",
+      "type": "string"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
+    },
+    "probe_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Probe Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_count": {
+      "minimum": 0,
+      "title": "Task Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "probe_id",
+    "chapter_index",
+    "status",
+    "event_count",
+    "task_count",
+    "model_call_count",
+    "detail"
+  ],
+  "title": "U6EHealthProbe",
+  "type": "object"
+}

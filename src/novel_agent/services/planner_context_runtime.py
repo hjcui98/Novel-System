@@ -42,6 +42,34 @@ PLANNER_COMPACTION_RECEIPT_MEDIA_TYPE = (
 )
 
 
+def _checkpoint_id(view: AgentContextView, label: str) -> StableId:
+    """Build a bounded, collision-resistant identity for a settled Context View.
+
+    Task ids are allowed to be 128 characters long.  Truncating the readable
+    checkpoint identity therefore aliases every label/position for a long
+    task, which breaks the first Planner retry after a suspension.  Keep the
+    readable form when it fits and otherwise hash the complete identity into a
+    stable bounded suffix.
+    """
+
+    readable = (
+        f"checkpoint.stage4.{view.run_id.root}.{view.task_id.root}."
+        f"{label}.{view.basis_event_position}"
+    )
+    if len(readable) <= 128:
+        return StableId(readable)
+    digest = content_id(
+        (
+            view.run_id.root,
+            view.task_id.root,
+            view.consumer.value,
+            label,
+            view.basis_event_position,
+        )
+    ).root.removeprefix("sha256:")
+    return StableId(f"checkpoint.stage4.{digest}")
+
+
 class PlannerContextRuntimeError(PlannerContextRuntimeFailure):
     """The shared Context Runtime cannot serve this Planner stream."""
 
@@ -74,16 +102,33 @@ class SharedPlannerContextRuntime:
         seed: PlannerContextPackage,
         seed_ref: ArtifactRef,
     ) -> PlannerContextProjection:
-        if (
-            self._runtime.restore_latest(
-                run_id,
-                task_id=task_id,
-                consumer=ContextConsumer.PLANNER,
-            )
-            is not None
-        ):
-            raise PlannerContextRuntimeError("Planner Context stream already exists")
-        protected, memory = self._split_items(seed.items)
+        existing = self._runtime.restore_latest(
+            run_id,
+            task_id=task_id,
+            consumer=ContextConsumer.PLANNER,
+        )
+        if existing is not None:
+            if seed.base_commit is None:
+                # Bootstrap streams have no committed basis to resume; retain
+                # the original duplicate-start rejection for that boundary.
+                raise PlannerContextRuntimeError("Planner Context stream already exists")
+            # A worker can fail after the Context stream is durably started but
+            # before the enclosing runtime Attempt settles.  A retry must
+            # resume that same stream instead of trying to append a duplicate
+            # seed event.  Only the immutable basis/profile/inquiry identity
+            # may authorize this recovery; a changed basis remains fail-closed.
+            if (
+                existing.base_commit != seed.base_commit
+                or existing.snapshot_id != seed.snapshot_id
+                or not self._same_artifact_ref(existing.profile_ref, seed.profile_ref)
+                or not self._same_artifact_ref(existing.plan_ref, seed.reviewed_inquiry_ref)
+            ):
+                raise PlannerContextRuntimeError("Planner Context stream basis changed")
+            return self._projection(existing)
+        protected, memory = self._split_items(
+            seed.items,
+            atomic_group_scope=seed.package_id,
+        )
         view = self._projector.seed(
             run_id=run_id,
             task_id=task_id,
@@ -127,11 +172,36 @@ class SharedPlannerContextRuntime:
             raise PlannerContextRuntimeError("Planner Context delta basis changed")
         if view.base_commit is None or package.stage1_context_ref is None:
             raise PlannerContextRuntimeError("bootstrap Planner Context cannot append Memory")
-        _protected, incoming = self._split_items(package.items)
+        _protected, incoming = self._split_items(
+            package.items,
+            atomic_group_scope=package.package_id,
+        )
         existing = {item.item_id: item for item in view.active_memory_items}
         for item in incoming:
-            if item.item_id in existing and existing[item.item_id] != item:
-                raise PlannerContextRuntimeError("Planner Context item identity changed")
+            current = existing.get(item.item_id)
+            if current is None or current == item:
+                continue
+            same_content = current.model_copy(
+                update={
+                    "mandatory": item.mandatory,
+                    "source_artifact_refs": item.source_artifact_refs,
+                }
+            ) == item.model_copy(
+                update={
+                    # Atomic group ids are scoped to the package that
+                    # introduced an item. Preserve the existing group's
+                    # identity when the same Context item is reselected.
+                    "atomic_group_id": current.atomic_group_id,
+                }
+            )
+            if same_content:
+                # ``mandatory`` is a context-priority property, and source
+                # refs are re-derived provenance. A later Need may reselect
+                # the same evidence through another graph route or with a
+                # different priority; retain the existing item in this
+                # append-only Context stream.
+                continue
+            raise PlannerContextRuntimeError("Planner Context item identity changed")
         known_ids = {*existing, *view.compacted_item_ids}
         additions = tuple(item for item in incoming if item.item_id not in known_ids)
         if not additions:
@@ -217,10 +287,7 @@ class SharedPlannerContextRuntime:
             suspension_reason = "CONTEXT_HARD_LIMIT"
         checkpoint = self._runtime.checkpoint(
             view,
-            StableId(
-                f"checkpoint.stage4.{view.run_id.root}.{view.task_id.root}."
-                f"{label}.{view.basis_event_position}"[:128]
-            ),
+            _checkpoint_id(view, label),
         )
         return self._projection(
             view,
@@ -280,25 +347,57 @@ class SharedPlannerContextRuntime:
             suspension_reason=suspension_reason,
         )
 
+    @staticmethod
+    def _same_artifact_ref(left: ArtifactRef | None, right: ArtifactRef | None) -> bool:
+        """Compare persisted artifact identity without subclass-only metadata."""
+
+        if left is None or right is None:
+            return left is right
+        return (
+            left.artifact_id == right.artifact_id
+            and left.media_type == right.media_type
+            and left.byte_length == right.byte_length
+            and left.schema_version == right.schema_version
+        )
+
     @classmethod
     def _split_items(
         cls,
         items: tuple[PlannerContextItem, ...],
+        *,
+        atomic_group_scope: StableId | None = None,
     ) -> tuple[tuple[ContextViewItem, ...], tuple[ContextViewItem, ...]]:
-        converted = tuple(cls._item(item) for item in items)
+        converted = tuple(cls._item(item, atomic_group_scope=atomic_group_scope) for item in items)
         return (
             tuple(item for item in converted if item.layer is ContextLayer.PROTECTED),
             tuple(item for item in converted if item.layer is ContextLayer.MEMORY),
         )
 
     @staticmethod
-    def _item(item: PlannerContextItem) -> ContextViewItem:
+    def _item(
+        item: PlannerContextItem,
+        *,
+        atomic_group_scope: StableId | None = None,
+    ) -> ContextViewItem:
         kinds = {
             PlannerContextSection.AUTHOR_INTENT: ContextItemKind.AUTHOR_INTENT,
             PlannerContextSection.ACCEPTED_PLAN: ContextItemKind.ACCEPTED_PLAN,
             PlannerContextSection.WORKING_PROPOSAL: ContextItemKind.GOAL_PROPOSAL,
             PlannerContextSection.UNRESOLVED: ContextItemKind.UNRESOLVED_NEED,
         }
+        atomic_group_id = item.compact_handle
+        if atomic_group_id is not None and atomic_group_scope is not None:
+            # A compact handle groups excerpts within one Memory package. A
+            # later package may select another excerpt from the same source;
+            # the append-only Context stream must not join those two groups
+            # across the items inserted between them.
+            scoped_digest = content_id(
+                {
+                    "compact_handle": atomic_group_id.root,
+                    "package_id": atomic_group_scope.root,
+                }
+            ).root
+            atomic_group_id = StableId(f"planner-atomic.{scoped_digest}")
         return ContextViewItem(
             item_id=item.context_item_id,
             layer=ContextLayer.PROTECTED if item.protected else ContextLayer.MEMORY,
@@ -308,7 +407,7 @@ class SharedPlannerContextRuntime:
             source_artifact_refs=tuple(
                 dict.fromkeys((*item.source_artifact_refs, *item.graph_path_receipt_refs))
             ),
-            atomic_group_id=item.compact_handle,
+            atomic_group_id=atomic_group_id,
             mandatory=item.mandatory or item.protected,
             information_scope="planner_safe",
             instruction_boundary=item.protected,

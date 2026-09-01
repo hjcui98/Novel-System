@@ -31,6 +31,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -335,6 +342,17 @@
           "title": "Source Artifacts",
           "type": "array"
         },
+        "source_evidence_requirement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceBoundEvidenceRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "supersedes_candidate_id": {
           "anyOf": [
             {
@@ -472,7 +490,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -556,6 +577,7 @@
       "title": "GuardianOutcome",
       "type": "string"
     },
+    "JsonValue": {},
     "MemoryWriteBudgetRemaining": {
       "additionalProperties": false,
       "properties": {
@@ -907,11 +929,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"
@@ -958,6 +996,43 @@
         "latency_ms"
       ],
       "title": "SkillExecutionReceipt",
+      "type": "object"
+    },
+    "SourceBoundEvidenceRequirement": {
+      "additionalProperties": false,
+      "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
+      "properties": {
+        "required_consequence_markers": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Consequence Markers",
+          "type": "array"
+        },
+        "required_span": {
+          "$ref": "#/$defs/TextSpanRef"
+        },
+        "source_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "source_chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_chapter_index": {
+          "minimum": 0,
+          "title": "Source Chapter Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_artifact_id",
+        "source_chapter_index",
+        "source_chapter_id",
+        "required_span",
+        "required_consequence_markers"
+      ],
+      "title": "SourceBoundEvidenceRequirement",
       "type": "object"
     },
     "StableId": {

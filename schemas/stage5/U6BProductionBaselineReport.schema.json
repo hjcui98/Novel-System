@@ -1,0 +1,413 @@
+{
+  "$defs": {
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    },
+    "U6BCompactionEvidence": {
+      "additionalProperties": false,
+      "description": "One truthful compaction observation, including the no-pressure case.",
+      "properties": {
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "covered_event_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Covered Event Range",
+          "type": "array"
+        },
+        "input_context_tokens": {
+          "minimum": 0,
+          "title": "Input Context Tokens",
+          "type": "integer"
+        },
+        "min_reduction_ratio": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Reduction Ratio",
+          "type": "number"
+        },
+        "outcome": {
+          "$ref": "#/$defs/U6BCompactionOutcome"
+        },
+        "output_context_tokens": {
+          "minimum": 0,
+          "title": "Output Context Tokens",
+          "type": "integer"
+        },
+        "pending_effects_retained": {
+          "title": "Pending Effects Retained",
+          "type": "boolean"
+        },
+        "protected_items_retained": {
+          "title": "Protected Items Retained",
+          "type": "boolean"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reduction_ratio": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Reduction Ratio",
+          "type": "number"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "safe_cut": {
+          "title": "Safe Cut",
+          "type": "boolean"
+        },
+        "semantic_retention_passed": {
+          "title": "Semantic Retention Passed",
+          "type": "boolean"
+        },
+        "source_receipt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "task_id",
+        "chapter_index",
+        "outcome",
+        "input_context_tokens",
+        "output_context_tokens",
+        "reduction_ratio",
+        "min_reduction_ratio",
+        "covered_event_range",
+        "protected_items_retained",
+        "pending_effects_retained",
+        "safe_cut",
+        "semantic_retention_passed"
+      ],
+      "title": "U6BCompactionEvidence",
+      "type": "object"
+    },
+    "U6BCompactionOutcome": {
+      "enum": [
+        "COMPACTED",
+        "NO_OP",
+        "INEFFECTIVE"
+      ],
+      "title": "U6BCompactionOutcome",
+      "type": "string"
+    },
+    "U6BPhaseUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_count": {
+          "minimum": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "chapter_index": {
+          "minimum": 1,
+          "title": "Chapter Index",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model_call_count": {
+          "minimum": 0,
+          "title": "Model Call Count",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "phase": {
+          "enum": [
+            "plan",
+            "memory",
+            "writer",
+            "editor",
+            "settlement",
+            "recovery"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "wall_clock_ms": {
+          "minimum": 0,
+          "title": "Wall Clock Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "chapter_index",
+        "phase",
+        "wall_clock_ms",
+        "model_call_count",
+        "input_tokens",
+        "output_tokens",
+        "attempt_count"
+      ],
+      "title": "U6BPhaseUsage",
+      "type": "object"
+    },
+    "U6BWorkerPhaseReport": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_chapters_after": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Completed Chapters After",
+          "type": "array"
+        },
+        "completed_chapters_before": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Completed Chapters Before",
+          "type": "array"
+        },
+        "phase_index": {
+          "minimum": 1,
+          "title": "Phase Index",
+          "type": "integer"
+        },
+        "report_path": {
+          "minLength": 1,
+          "title": "Report Path",
+          "type": "string"
+        },
+        "restarted_from_process": {
+          "title": "Restarted From Process",
+          "type": "boolean"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase_index",
+        "report_path",
+        "status",
+        "restarted_from_process"
+      ],
+      "title": "U6BWorkerPhaseReport",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Rebuildable summary for one isolated 20-chapter production campaign.",
+  "properties": {
+    "artifact_count": {
+      "minimum": 0,
+      "title": "Artifact Count",
+      "type": "integer"
+    },
+    "attempt_count": {
+      "minimum": 0,
+      "title": "Attempt Count",
+      "type": "integer"
+    },
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "commit_count": {
+      "minimum": 0,
+      "title": "Commit Count",
+      "type": "integer"
+    },
+    "compaction": {
+      "items": {
+        "$ref": "#/$defs/U6BCompactionEvidence"
+      },
+      "title": "Compaction",
+      "type": "array"
+    },
+    "completed_chapters": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Completed Chapters",
+      "type": "array"
+    },
+    "duplicate_effect_count": {
+      "minimum": 0,
+      "title": "Duplicate Effect Count",
+      "type": "integer"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "expected_chapters": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Expected Chapters",
+      "type": "array"
+    },
+    "final_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "phase_usage": {
+      "items": {
+        "$ref": "#/$defs/U6BPhaseUsage"
+      },
+      "title": "Phase Usage",
+      "type": "array"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "projection_rebuild_verified": {
+      "title": "Projection Rebuild Verified",
+      "type": "boolean"
+    },
+    "repair_count": {
+      "minimum": 0,
+      "title": "Repair Count",
+      "type": "integer"
+    },
+    "report_schema": {
+      "const": "u6b-production-baseline.v1",
+      "default": "u6b-production-baseline.v1",
+      "title": "Report Schema",
+      "type": "string"
+    },
+    "restart_boundary_chapter": {
+      "minimum": 1,
+      "title": "Restart Boundary Chapter",
+      "type": "integer"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "semantic_findings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Semantic Findings",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED",
+        "RESOURCE_BLOCKED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_count": {
+      "minimum": 0,
+      "title": "Task Count",
+      "type": "integer"
+    },
+    "worker_phases": {
+      "items": {
+        "$ref": "#/$defs/U6BWorkerPhaseReport"
+      },
+      "title": "Worker Phases",
+      "type": "array"
+    }
+  },
+  "required": [
+    "status",
+    "run_id",
+    "project_id",
+    "basis_commit",
+    "final_commit",
+    "expected_chapters",
+    "completed_chapters",
+    "restart_boundary_chapter",
+    "worker_phases",
+    "phase_usage",
+    "compaction",
+    "model_call_count",
+    "input_tokens",
+    "output_tokens",
+    "event_count",
+    "task_count",
+    "attempt_count",
+    "commit_count",
+    "artifact_count",
+    "future_leakage_count",
+    "duplicate_effect_count",
+    "projection_rebuild_verified",
+    "repair_count"
+  ],
+  "title": "U6BProductionBaselineReport",
+  "type": "object"
+}

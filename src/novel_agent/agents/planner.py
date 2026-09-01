@@ -53,6 +53,37 @@ PLANNER_MODES = (
 )
 DEFAULT_PLANNER_CONTRACT_VERSION = SchemaVersion("1.0.0")
 
+INQUIRY_OUTPUT_CONSTRAINTS = (
+    "OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. Do not quote or restate "
+    "SOURCE_DATA; do not emit markdown, reasoning, or commentary outside JSON. Use at most "
+    "three goal_proposals, three assumptions, and three questions, and keep every free-text "
+    "field under 240 characters. PROVENANCE_CONSTRAINT=For every goal_proposals, assumptions, "
+    'and questions item, set provenance exactly to {"provenance":"planner_proposed", '
+    '"reference_ids":[],"artifact_refs":[]}; never put source IDs in those arrays and '
+    "never use author_supplied, accepted_plan_derived, canon_derived, or reviewer_derived. "
+    "GROUNDING_CONSTRAINT=For fact or relation questions, use exact labels from "
+    "WORLD_ENTITY_LABELS in entity_labels or relation_subject/relation_object; never invent "
+    "translated labels that are not listed. "
+    "LINEAGE_CONSTRAINT=For every assumptions and questions item, goal_id must exactly match "
+    "one of the goal_proposals goal_id values; never use the item's own question_id as goal_id. "
+    "RELATION_CONSTRAINT=For every assumptions and questions item, either omit "
+    "relation_subject, relation_predicate, and relation_object entirely, or provide all three; "
+    "never provide only one or two relation fields. PLANNING_SCOPE_CONSTRAINT=planning_scope "
+    "must contain at least one string; for CHAPTER_SET include exactly the horizon scope "
+    "chapters:{horizon_start}-{horizon_end}. HORIZON_CONSTRAINT=Always include numeric "
+    "horizon_start and horizon_end, copying the HORIZON values exactly; never omit them."
+)
+
+PLANNING_TURN_OUTPUT_CONSTRAINTS = (
+    "TURN_OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. If action is "
+    "REQUEST_MEMORY, every memory_questions item must be a concrete fact or relation question "
+    "and must copy at least one exact internal label or alias from WORLD_ENTITY_LABELS in "
+    "SOURCE_DATA; never use translated or generic descriptors when an exact label is available. "
+    "Keep the request bounded to at most three unique memory_questions. "
+    "For a relation question, use exact labels for every named subject and object. Do not emit "
+    "markdown, reasoning, or commentary outside JSON."
+)
+
 _MODE_ASSETS = {
     AgentMode.PROJECT_BOOTSTRAP: (
         "stage4_planner_project_bootstrap_v1.md",
@@ -332,7 +363,7 @@ class PlannerAgent:
             request,
             f"PLANNING_PHASE=plan_turn\nPLANNING_TASK={task.model_dump_json()}\n"
             "Return PLAN_READY with plan_proposal_draft, or REQUEST_MEMORY with only "
-            f"memory_questions.\nSOURCE_DATA={source_payload}",
+            f"memory_questions.\n{PLANNING_TURN_OUTPUT_CONSTRAINTS}\nSOURCE_DATA={source_payload}",
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
@@ -518,6 +549,7 @@ class PlannerAgent:
                 f"PLANNING_TASK={task.model_dump_json()}\n"
                 f"HORIZON={horizon_start}:{horizon_end}\n"
                 f"AUTHOR_OVERRIDES={explicit_overrides}\n"
+                f"{INQUIRY_OUTPUT_CONSTRAINTS}\n"
                 f"SOURCE_DATA={source_payload}"
             ),
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),

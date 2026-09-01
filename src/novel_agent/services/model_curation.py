@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from pydantic import Field, ValidationError, create_model
 
+from novel_agent.adapters.model.openai_chat import OpenAIChatOutputLengthError
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import ChapterDocument, TextRootDocument
@@ -46,7 +48,12 @@ from novel_agent.domain.memory_write import (
     ProposalEvidenceMergeReceipt,
 )
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
-from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
+from novel_agent.domain.text import (
+    EvidenceRef,
+    EvidenceSupportStatus,
+    SourceBoundEvidenceRequirement,
+    TextSpanRef,
+)
 from novel_agent.domain.world import (
     GraphCandidatePageDraft,
     GraphCandidatePageStatus,
@@ -54,6 +61,7 @@ from novel_agent.domain.world import (
     GraphEntityCandidateDraft,
     GraphRelationCandidateDraft,
     GraphSourceUnitStatus,
+    GraphStoryTime,
     StateRecord,
     WorldGraphCandidateBatch,
     WorldGraphEntityCandidate,
@@ -65,11 +73,54 @@ from novel_agent.services.content_addressing import canonical_json_bytes, quote_
 from novel_agent.services.curation import Stage1Curator
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.evidence_support import EvidenceSupportGate
+from novel_agent.services.model_call_ledger import bounded_model_request_id
 from novel_agent.services.model_gateway import ModelGateway
 
 
 class ModelCurationContractError(ValueError):
     pass
+
+
+def _source_bound_prompt(requirement: SourceBoundEvidenceRequirement | None) -> str:
+    """Render a trusted, source-local evidence contract for a repair model."""
+
+    if requirement is None:
+        return ""
+    markers = canonical_json_bytes(list(requirement.required_consequence_markers)).decode("utf-8")
+    return (
+        '\n<SOURCE_BOUND_EVIDENCE_CONTRACT trusted="true">\n'
+        "This repair carries a pre-registered source-bound evidence contract. "
+        "It does not authorize inference or invented facts. When the supplied "
+        "source catalog contains directly stated support, the replacement "
+        "candidate must quote the exact source text for every required marker; "
+        "keep each quote inside the declared chapter/block/range. If this source "
+        "unit does not directly support a durable graph fact, return a complete "
+        "empty page rather than borrowing evidence from another unit.\n"
+        f"SOURCE_CHAPTER_ID={requirement.source_chapter_id.root}\n"
+        f"SOURCE_CHAPTER_INDEX={requirement.source_chapter_index}\n"
+        f"SOURCE_BLOCK_ID={requirement.required_span.block_id.root}\n"
+        f"SOURCE_RANGE_START={requirement.required_span.start}\n"
+        f"SOURCE_RANGE_END={requirement.required_span.end}\n"
+        f"REQUIRED_CONSEQUENCE_MARKERS={markers}\n"
+        "</SOURCE_BOUND_EVIDENCE_CONTRACT>\n"
+    )
+
+
+def _bounded_child_model_request_id(request: ModelRequest, suffix: str) -> StableId:
+    """Map an unrepresentable child identity to a deterministic contract failure."""
+
+    try:
+        return bounded_model_request_id(request, suffix)
+    except ValueError as error:
+        raise ModelCurationContractError(
+            "model request child identity has no bounded request, attempt, or task scope"
+        ) from error
+
+
+class ModelCurationOutputIncomplete(ModelCurationContractError):
+    """The provider returned a durable but unusable truncated Curator object."""
+
+    reason_code = "CURATOR_PROPOSAL_OUTPUT_INCOMPLETE"
 
 
 _QUOTE_HINT_TOTAL_CHARS = 240
@@ -78,6 +129,9 @@ _GRAPH_PAGE_SIZE = 12
 _GRAPH_SOURCE_UNIT_TOKENS = 1_500
 _GRAPH_MAX_PAGES_PER_UNIT = 16
 _GRAPH_MAX_CONCURRENT_UNITS = 8
+_GRAPH_SCHEMA_RETRY_SUFFIX = ".schema-retry1"
+_COMPACT_OUTPUT_RETRY_SUFFIX = ".compact"
+_COMPACT_OUTPUT_RETRY_MAX_TOKENS = 8_192
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +477,9 @@ class ModelCurator:
         *,
         contract_prompt: str | None = None,
         repair_feedback: str | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_tokens_used: int = 0,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[ObservedChangeSet, ModelCallRecord, ChapterChangeDraftV2]:
         """Semantic-quote evidence contract: the model never emits ids or offsets.
 
@@ -471,15 +528,21 @@ class ModelCurator:
             update={
                 "repetition_penalty": 1.10,
                 "prompt": (
-                    contract + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
+                    contract
+                    + _source_bound_prompt(source_evidence_requirement)
+                    + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
                     "only. "
                     "The operations key is required. An empty operations array is valid only "
-                    "for a complete no-durable-delta result: coverage must equal 1, unresolved "
-                    "and declared_vs_observed_diff must be empty, and the draft must include "
+                    "for a complete no-durable-delta result: coverage must equal 1, "
+                    "declared_vs_observed_diff must be empty, and the draft must include "
                     "no_durable_delta_reason plus supporting no_op_evidence_quotes. "
-                    "For an empty delta, keep no_durable_delta_reason under 80 characters and "
+                    "Unresolved items may still carry short advisory context gaps; retain them "
+                    "for downstream consumers and do not treat their presence alone as a "
+                    "durable delta. For an empty delta, keep no_durable_delta_reason under 80 "
+                    "characters and "
                     "emit this compact shape before any explanation: operations=[], coverage=1, "
-                    "unresolved=[], declared_vs_observed_diff=[], a short reason, and "
+                    "unresolved=[advisory gaps], declared_vs_observed_diff=[], a short reason, "
+                    "and "
                     "no_op_evidence_quotes containing one to four fragments copied verbatim from "
                     "this chapter's catalog. Never emit an empty no_op_evidence_quotes. "
                     "Evidence references are semantic quotes, never ids; no start/end offsets. "
@@ -491,7 +554,12 @@ class ModelCurator:
                     "and unresolved possibilities. Every predicate and value must describe "
                     "exactly what its cited evidence states; do not convert general rules, "
                     "hypotheticals, maxima, or other characters' achievements into a fact about "
-                    "the subject.\n"
+                    "the subject. A new clue, secret, open conflict, or explicit hypothesis "
+                    "that changes what later writing must carry is durable even when its "
+                    "mechanism or relationship is uncertain: encode the smallest supported "
+                    "event, state, or obligation with the source truth class and keep the "
+                    "uncertain details in unresolved. Do not choose an empty operations array "
+                    "merely because related details are uncertain.\n"
                     '<CURATOR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
                     "WORLD="
@@ -557,7 +625,9 @@ class ModelCurator:
                     "subject-bearing full-sentence quotes. "
                     "When operations is non-empty, no_durable_delta_reason MUST be null and "
                     "no_op_evidence_quotes MUST be an empty array. Those two no-op "
-                    "proof fields may be populated only when operations is empty. "
+                    "proof fields may be populated only when operations is empty. If both "
+                    "an operation and a no-op idea seem applicable, keep the operation and "
+                    "emit the no-op fields as null/empty; the operation is authoritative. "
                     "A state target id is immutable: each state id in WORLD is bound "
                     "to exactly one subject and predicate. Never reuse an existing "
                     "state id for a different subject or predicate; emit a new "
@@ -569,6 +639,12 @@ class ModelCurator:
             }
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
+        if cumulative_token_budget is not None:
+            self._gateway.preflight_cumulative_token_budget(
+                safe_request,
+                token_budget=cumulative_token_budget,
+                tokens_used=cumulative_tokens_used,
+            )
         # Strict json_schema framing: the endpoint's guided grammar binds the
         # output fields so the model cannot emit legacy fields (evidence_refs,
         # evidence_candidate_ids) or malformed record payloads, and the draft
@@ -578,10 +654,50 @@ class ModelCurator:
         # ceiling, and thinking is not grammar-constrained.  Host-side pydantic
         # validation plus contract-feedback retries remain the fail-closed
         # backstop exactly as in the semantic-support corridor.
-        evidence_draft, call = await self._gateway.generate_structured(
-            safe_request,
-            CuratorV2EvidenceDraft,
-        )
+        try:
+            evidence_draft, call = await self._gateway.generate_structured(
+                safe_request,
+                CuratorV2EvidenceDraft,
+            )
+        except OpenAIChatOutputLengthError:
+            # A truncated JSON object cannot be admitted or safely repaired from
+            # its prefix. Give the same chapter one bounded, independently
+            # identifiable request whose only change is an explicit compact
+            # output contract. This keeps durable deltas and unresolved context
+            # in the normal downstream pipeline without replaying the identical
+            # length-constrained request.
+            suffix = _COMPACT_OUTPUT_RETRY_SUFFIX
+            compact_request = safe_request.model_copy(
+                update={
+                    "request_id": _bounded_child_model_request_id(safe_request, suffix),
+                    "trace_id": f"{safe_request.trace_id}.compact"[:256],
+                    "max_output_tokens": min(
+                        safe_request.max_output_tokens or _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
+                        _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
+                    ),
+                    "prompt": (
+                        safe_request.prompt + '\n\n<COMPACT_OUTPUT_RETRY trusted="true">\n'
+                        "The previous response reached the output limit before completing "
+                        "JSON. Return one complete replacement JSON object only; never "
+                        "return a prefix, explanation, markdown, or a copy of WORLD or "
+                        "EVIDENCE_CANDIDATES. Keep the output compact: at most four "
+                        "durable operations, short field values, and only the evidence "
+                        "quotes needed to support each operation. Preserve every durable "
+                        "delta that can be supported by the chapter; put uncertain "
+                        "details in short unresolved items rather than inventing them. "
+                        "Do not restate the input catalog.\n"
+                        "</COMPACT_OUTPUT_RETRY>"
+                    ),
+                }
+            )
+            try:
+                evidence_draft, call = await self._gateway.generate_structured(
+                    compact_request,
+                    CuratorV2EvidenceDraft,
+                    json_object_framing=True,
+                )
+            except OpenAIChatOutputLengthError as error:
+                raise ModelCurationOutputIncomplete() from error
         self.last_no_op_verification = None
         if evidence_draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
@@ -644,8 +760,6 @@ class ModelCurator:
             proof_errors = []
             if draft.coverage != 1.0:
                 proof_errors.append("coverage must equal 1")
-            if draft.unresolved:
-                proof_errors.append("unresolved must be empty")
             if draft.declared_vs_observed_diff:
                 proof_errors.append("declared_vs_observed_diff must be empty")
             if draft.no_durable_delta_reason is None:
@@ -744,7 +858,7 @@ class ModelCurator:
                 try:
                     model_verifications = await self._verify_partial_batch(
                         partial_decisions,
-                        draft,
+                        draft.operations,
                         catalog,
                         request,
                     )
@@ -935,6 +1049,8 @@ class ModelCurator:
         current_world: WorldRootDocument,
         request: ModelRequest,
         repair_feedback: str | None = None,
+        repair_query: str | None = None,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[ModelCallRecord, ...]]:
         """Run stable graph source units concurrently and continuation pages serially."""
         candidates = self._evidence_generator.generate(text_root, chapter_index)
@@ -967,6 +1083,8 @@ class ModelCurator:
                         page_index=page_index,
                         emitted_keys=tuple(emitted_keys),
                         repair_feedback=repair_feedback,
+                        repair_query=repair_query,
+                        source_evidence_requirement=source_evidence_requirement,
                     )
                     calls.append(call)
                     new_keys = tuple(key for key in page_keys if key not in emitted_keys)
@@ -1016,6 +1134,8 @@ class ModelCurator:
         page_index: int,
         emitted_keys: tuple[str, ...],
         repair_feedback: str | None = None,
+        repair_query: str | None = None,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[WorldGraphCandidateBatch, ModelCallRecord, tuple[str, ...], bool]:
         """Propose one bounded, evidence-bound graph-repair page.
 
@@ -1082,7 +1202,21 @@ class ModelCurator:
                 "repetition_penalty": 1.10,
                 "prompt": (
                     "Extract one GRAPH_CANDIDATE_PAGE JSON from this revealed source unit. "
-                    "Return at most 12 candidates in the single candidates array. Every item "
+                    + (
+                        "A Planner-gap target follows. It is the primary extraction focus "
+                        "for this repair: emit only directly evidenced entity/relation "
+                        "candidates that answer that target (including all such answers in "
+                        "this source unit); if this source unit does not answer it, return "
+                        "an empty complete page. Never substitute an unrelated fact merely "
+                        "because it is present. The target is advisory for truth and evidence "
+                        "rules, not permission to infer or invent.\n"
+                        '<MEMORY_REPAIR_TARGET trusted="false">\n'
+                        + repair_query.strip()
+                        + "\n</MEMORY_REPAIR_TARGET>\n"
+                        if repair_query is not None and repair_query.strip()
+                        else ""
+                    )
+                    + "Return at most 12 candidates in the single candidates array. Every item "
                     "must carry kind=entity or kind=relation. Propose only directly stated "
                     "entity and relation candidates. Copy "
                     "subject_surface, object_surface, entity surface, and every evidence_quote "
@@ -1093,8 +1227,15 @@ class ModelCurator:
                     "exact WORLD entity label or alias already matches that surface. Do not "
                     "emit an entity candidate for an existing WORLD surface. Do not emit "
                     "canonical IDs, infer aliases, merge "
-                    "entities, use pronouns as entities, or invent end times. Preserve the "
-                    "statement's source_truth_class; do not promote non-factual statements. "
+                    "entities, use pronouns as entities, or invent end times. For every "
+                    "relation, source_truth_class must be explicit: use accepted_world_fact "
+                    "only for a directly stated narrator fact whose evidence makes the "
+                    "relation factual; use assertion for dialogue, belief, intention, or "
+                    "subjective interpretation; preserve rumor, dream, prediction, or "
+                    "hypothetical when the text signals it. Never use unknown or "
+                    "not_applicable for a relation, and omit a relation whose truth status "
+                    "cannot be classified without inference. Do not promote non-factual "
+                    "statements. "
                     "Existing WORLD entities are context for exact surface discovery only; the "
                     "host decides their identity. If no directly supported candidate exists, "
                     "return status=complete, empty candidates, and a short "
@@ -1114,12 +1255,59 @@ class ModelCurator:
                     f"{canonical_json_bytes(emitted_keys).decode('utf-8')}\n"
                     "EVIDENCE_CANDIDATES="
                     f"{evidence_views}\n"
-                    "</GRAPH_REPAIR_INPUT>" + repair_contract
+                    "</GRAPH_REPAIR_INPUT>"
+                    + _source_bound_prompt(source_evidence_requirement)
+                    + repair_contract
                 ),
             }
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
-        draft, call = await self._gateway.generate_structured(safe_request, GraphCandidatePageDraft)
+        try:
+            draft, call = await self._gateway.generate_structured(
+                safe_request,
+                GraphCandidatePageDraft,
+            )
+        except ValidationError as error:
+            # Production keeps the shared gateway's global structured retry
+            # count at zero: ordinary Curator/Planner retries are workflow
+            # decisions, not transport retries.  A graph page is different in
+            # one important way: its source units run concurrently, so a
+            # single malformed page would otherwise cancel valid pages from
+            # the same chapter and lose evidence that already round-tripped.
+            # Give only this failed page one bounded, schema-feedback retry.
+            # If the gateway is already configured with structured retries,
+            # leave that policy in charge and do not add a third attempt.
+            if self._gateway.structured_max_retries > 0:
+                raise
+            validation_detail = json.dumps(
+                error.errors(include_url=False, include_input=False),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            retry_request = safe_request.model_copy(
+                update={
+                    "request_id": _bounded_child_model_request_id(
+                        safe_request,
+                        _GRAPH_SCHEMA_RETRY_SUFFIX,
+                    ),
+                    "trace_id": f"{safe_request.trace_id}.schema-retry1"[:256],
+                    "prompt": (
+                        safe_request.prompt + '\n\n<STRUCTURED_OUTPUT_RETRY trusted="true">\n'
+                        "The previous GRAPH_CANDIDATE_PAGE violated the required domain "
+                        "contract. Return one complete replacement JSON object only. Keep "
+                        "the same evidence-bound extraction scope, correct every validation "
+                        "error below, and do not return markdown, a JSON prefix, or an "
+                        "explanation.\n"
+                        f"VALIDATION_ERRORS={validation_detail}\n"
+                        "</STRUCTURED_OUTPUT_RETRY>"
+                    ),
+                }
+            )
+            draft, call = await self._gateway.generate_structured(
+                retry_request,
+                GraphCandidatePageDraft,
+            )
         page_saturated = len(draft.candidates) == _GRAPH_PAGE_SIZE
         raw_page_keys = tuple(self._graph_candidate_key(item) for item in draft.candidates)
         page_keys = tuple(dict.fromkeys(raw_page_keys))
@@ -1134,6 +1322,16 @@ class ModelCurator:
             page_seen.add(key)
             new_candidates.append(item)
         draft = draft.model_copy(update={"candidates": tuple(new_candidates)})
+
+        # A chapter-scoped graph observation must remain distinguishable from
+        # an older timeless relation.  The provider is allowed to describe the
+        # source time with a label, and real providers have returned that label
+        # while leaving both numeric ordinals null.  Bind that already-declared
+        # source chapter to the canonical main timeline; do not invent an end
+        # time or alter an explicitly supplied interval.
+        relation_times = tuple(
+            self._bind_graph_time(item.valid_time, chapter_index) for item in draft.relations
+        )
 
         def resolve_candidate_quotes(
             quotes: tuple[str, ...],
@@ -1194,6 +1392,7 @@ class ModelCurator:
 
         support_operations_list: list[CuratedOperationDraftV2] = []
         support_targets: list[int] = []
+        semantic_hints: dict[int, Mapping[str, str]] = {}
         for index, entity_item in enumerate(draft.entities):
             resolved, rejection_reason = entity_evidence[index]
             if rejection_reason is not None:
@@ -1216,6 +1415,7 @@ class ModelCurator:
             resolved, rejection_reason = relation_evidence[index]
             if rejection_reason is not None:
                 continue
+            operation_index = len(support_operations_list)
             support_targets.append(relation_offset + index)
             support_operations_list.append(
                 CuratedOperationDraftV2(
@@ -1227,13 +1427,23 @@ class ModelCurator:
                         subject_id=StableId("graph-support.subject"),
                         object_id=StableId("graph-support.object"),
                         valid_time=CuratorStoryTime.model_validate(
-                            relation_item.valid_time.model_dump()
+                            relation_times[index].model_dump()
                         ),
                         truth_class=relation_item.source_truth_class,
                     ),
                     evidence_candidate_ids=tuple(candidate.candidate_id for candidate in resolved),
                 )
             )
+            # CuratorRelationRecord carries canonical endpoint IDs only; those
+            # IDs are deliberately unresolved placeholders at this stage. Give
+            # the semantic support verifier the model-emitted endpoint surfaces
+            # as metadata so it can judge a relation against Chinese evidence
+            # without treating the placeholder IDs as evidence.
+            semantic_hints[operation_index] = {
+                "subject_surface": relation_item.subject_surface,
+                "predicate": relation_item.predicate,
+                "object_surface": relation_item.object_surface,
+            }
         support_operations = tuple(support_operations_list)
         support_decisions = self._support_gate.evaluate_draft(support_operations, catalog)
         support_by_candidate: dict[int, tuple[GraphCandidateSupportStatus, str]] = {}
@@ -1248,13 +1458,10 @@ class ModelCurator:
             try:
                 model_verifications = await self._verify_partial_batch(
                     partial_decisions,
-                    ChapterChangeDraftV2(
-                        chapter_index=chapter_index,
-                        operations=support_operations,
-                        coverage=1.0,
-                    ),
+                    support_operations,
                     catalog,
                     request,
+                    operation_hints=semantic_hints,
                 )
             except ValidationError:
                 semantic_verifier_rejected = True
@@ -1361,7 +1568,7 @@ class ModelCurator:
                 subject_surface=item.subject_surface,
                 predicate=item.predicate,
                 object_surface=item.object_surface,
-                valid_time=item.valid_time,
+                valid_time=relation_times[index],
                 evidence_refs=bind(relation_evidence[index][0]),
                 source_truth_class=item.source_truth_class,
                 support_status=(
@@ -1402,6 +1609,25 @@ class ModelCurator:
             page_keys,
             should_continue,
         )
+
+    @staticmethod
+    def _bind_graph_time(valid_time: GraphStoryTime, chapter_index: int) -> GraphStoryTime:
+        """Bind an ordinal-free observation to its source chapter.
+
+        ``GraphStoryTime`` deliberately permits a nullable interval because a
+        model may omit temporal detail.  For a graph page, however, every
+        evidence quote is generated solely from ``chapter_index``.  When the
+        model supplies no ordinals (with or without a descriptive label),
+        retaining a timeless interval would make a current observation
+        exact-dedupe an older fact and silently drop the maintenance delta.
+        The source chapter is the only bounded temporal fact available, so use
+        it as the start and keep the end open.  Explicit intervals remain
+        untouched.
+        """
+
+        if valid_time.start_ordinal is not None or valid_time.end_ordinal is not None:
+            return valid_time
+        return valid_time.model_copy(update={"start_ordinal": chapter_index})
 
     def _graph_source_units(
         self,
@@ -1460,7 +1686,7 @@ class ModelCurator:
         suffix = f".u{unit.index:03d}.p{page_index:02d}"
         return request.model_copy(
             update={
-                "request_id": StableId(request.request_id.root[: 128 - len(suffix)] + suffix),
+                "request_id": _bounded_child_model_request_id(request, suffix),
                 "trace_id": f"{request.trace_id}.u{unit.index}.p{page_index}",
                 "scheduling_dependency_ids": (
                     (previous_request_id,) if previous_request_id is not None else ()
@@ -2119,86 +2345,111 @@ class ModelCurator:
     async def _verify_partial_batch(
         self,
         partial_decisions: tuple[EvidenceSupportDecision, ...],
-        draft: ChapterChangeDraftV2,
+        operations: tuple[CuratedOperationDraftV2, ...],
         catalog: dict[StableId, EvidenceCandidate],
         request: ModelRequest,
+        *,
+        operation_hints: Mapping[int, Mapping[str, str]] | None = None,
     ) -> dict[int, tuple[EvidenceSupportDisposition, str]]:
-        """Resolve PARTIAL operations by evaluating each operation's evidence jointly."""
+        """Resolve PARTIAL operations by evaluating each operation's evidence jointly.
+
+        The structured verifier contract is intentionally capped at four decisions per
+        response.  Graph pages can contain more than four partial relation candidates, so
+        split the frozen operation set into deterministic child requests instead of
+        silently dropping the entire page.  A single batch keeps the historical request
+        identity for replay compatibility; additional batches carry a stable ordinal.
+        """
 
         operation_indexes = tuple(dict.fromkeys(item.operation_index for item in partial_decisions))
-        items: list[dict[str, object]] = []
-        expected: dict[int, tuple[StableId, ...]] = {}
-        for operation_index in operation_indexes:
-            operation = draft.operations[operation_index]
-            candidate_ids = operation.evidence_candidate_ids
-            expected[operation_index] = candidate_ids
-            items.append(
-                {
-                    "operation_index": operation_index,
-                    "candidate_ids": tuple(item.root for item in candidate_ids),
-                    "record": operation.record.model_dump(mode="json"),
-                    "evidence": tuple(
-                        {
-                            "candidate_id": candidate_id.root,
-                            "text": catalog[candidate_id].text,
-                        }
-                        for candidate_id in candidate_ids
+        batches = tuple(
+            operation_indexes[offset : offset + 4] for offset in range(0, len(operation_indexes), 4)
+        )
+        resolved: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
+        for batch_index, batch_indexes in enumerate(batches):
+            items: list[dict[str, object]] = []
+            expected: dict[int, tuple[StableId, ...]] = {}
+            for operation_index in batch_indexes:
+                operation = operations[operation_index]
+                candidate_ids = operation.evidence_candidate_ids
+                expected[operation_index] = candidate_ids
+                items.append(
+                    {
+                        "operation_index": operation_index,
+                        "candidate_ids": tuple(item.root for item in candidate_ids),
+                        "record": operation.record.model_dump(mode="json"),
+                        **(
+                            {"relation_surface_hints": dict(operation_hints[operation_index])}
+                            if operation_hints is not None and operation_index in operation_hints
+                            else {}
+                        ),
+                        "evidence": tuple(
+                            {
+                                "candidate_id": candidate_id.root,
+                                "text": catalog[candidate_id].text,
+                            }
+                            for candidate_id in candidate_ids
+                        ),
+                    }
+                )
+            suffix = (
+                ".semantic-verifier"
+                if len(batches) == 1
+                else f".semantic-verifier.b{batch_index:02d}"
+            )
+            verifier_request = request.model_copy(
+                update={
+                    "request_id": _bounded_child_model_request_id(request, suffix),
+                    "timeout_seconds": request.timeout_seconds,
+                    "enable_thinking": False,
+                    "thinking_token_budget": None,
+                    "repetition_penalty": 1.10,
+                    "prompt": (
+                        "Verify whether each typed World record is directly supported by its "
+                        "complete evidence set. Evaluate all excerpts for one operation "
+                        "collectively; do not require every individual excerpt to support the "
+                        "whole composite record. Interpret English predicate/value labels and "
+                        "Chinese evidence semantically; lexical language mismatch is not a "
+                        "failure. For relation operations, relation_surface_hints gives the "
+                        "subject, predicate, and object surfaces emitted for the same record; "
+                        "use those hints to evaluate whether the excerpts directly support "
+                        "that relation, but treat them as metadata rather than evidence. "
+                        "Require exact units and quantities; traditional Chinese 时辰 equals two "
+                        "hours, so 半个时辰 is one hour and never half_hour. Preserve epistemic "
+                        "scope: 相信/认为/估计/believes/estimates supports only a record that "
+                        "explicitly encodes belief, self-assessment, or estimate, not an objective "
+                        "fact. A summary sentence does not support unstated method details. "
+                        "Reject transient reading progress, elapsed reading time, and one-scene "
+                        "actions as unrelated even when textually true; accepted records must be "
+                        "durable World state. Return exactly one decision for every operation. "
+                        "Do not return or choose candidate IDs; the system has already frozen each "
+                        "operation's evidence set and binds the decision by operation_index. "
+                        "Use supports only for "
+                        "direct support, contradicts for explicit conflict, unrelated for no "
+                        "material support, and partial only when the excerpt is genuinely "
+                        "insufficient. Do not infer future facts.\n"
+                        '<EVIDENCE_VERIFICATION_INPUT trusted="false">\n'
+                        f"{canonical_json_bytes(items).decode('utf-8')}\n"
+                        "</EVIDENCE_VERIFICATION_INPUT>"
                     ),
                 }
             )
-        suffix = ".semantic-verifier"
-        verifier_request = request.model_copy(
-            update={
-                "request_id": StableId(request.request_id.root[: 128 - len(suffix)] + suffix),
-                "timeout_seconds": request.timeout_seconds,
-                "enable_thinking": False,
-                "thinking_token_budget": None,
-                "repetition_penalty": 1.10,
-                "prompt": (
-                    "Verify whether each typed World record is directly supported by its "
-                    "complete evidence set. Evaluate all excerpts for one operation "
-                    "collectively; do not require every individual excerpt to support the "
-                    "whole composite record. Interpret English predicate/value labels and "
-                    "Chinese evidence semantically; lexical language mismatch is not a failure. "
-                    "Require exact units and quantities; traditional Chinese 时辰 equals two "
-                    "hours, so 半个时辰 is one hour and never half_hour. Preserve epistemic "
-                    "scope: 相信/认为/估计/believes/estimates supports only a record that "
-                    "explicitly encodes belief, self-assessment, or estimate, not an objective "
-                    "fact. A summary sentence does not support unstated method details. "
-                    "Reject transient reading progress, elapsed reading time, and one-scene "
-                    "actions as unrelated even when textually true; accepted records must be "
-                    "durable World state. Return exactly one decision for every operation. "
-                    "Do not return or choose candidate IDs; the system has already frozen each "
-                    "operation's evidence set and binds the decision by operation_index. "
-                    "Use supports only for "
-                    "direct support, contradicts for explicit conflict, unrelated for no "
-                    "material support, and partial only when the excerpt is genuinely "
-                    "insufficient. Do not infer future facts.\n"
-                    '<EVIDENCE_VERIFICATION_INPUT trusted="false">\n'
-                    f"{canonical_json_bytes(items).decode('utf-8')}\n"
-                    "</EVIDENCE_VERIFICATION_INPUT>"
-                ),
-            }
-        )
-        verification_type = self._semantic_verification_batch_type(len(expected))
-        result, _call = await self._gateway.generate_structured(
-            verifier_request,
-            verification_type,
-        )
-        resolved: dict[int, tuple[EvidenceSupportDisposition, str]] = {}
-        invalid_indexes: set[int] = set()
-        for item in result.decisions:
-            if item.operation_index in invalid_indexes:
-                continue
-            if item.operation_index in resolved:
+            verification_type = self._semantic_verification_batch_type(len(expected))
+            result, _call = await self._gateway.generate_structured(
+                verifier_request,
+                verification_type,
+            )
+            invalid_indexes: set[int] = set()
+            for item in result.decisions:
+                if item.operation_index in invalid_indexes:
+                    continue
+                if item.operation_index in resolved or item.operation_index in expected:
+                    if item.operation_index in expected and item.operation_index not in resolved:
+                        resolved[item.operation_index] = (item.disposition, item.reason_code)
+                    else:
+                        invalid_indexes.add(item.operation_index)
+                        resolved.pop(item.operation_index, None)
+                    continue
                 invalid_indexes.add(item.operation_index)
-                resolved.pop(item.operation_index, None)
-                continue
-            if item.operation_index not in expected:
-                invalid_indexes.add(item.operation_index)
-                resolved.pop(item.operation_index, None)
-                continue
-            resolved[item.operation_index] = (item.disposition, item.reason_code)
         return resolved
 
     async def _verify_no_op(
@@ -2229,7 +2480,7 @@ class ModelCurator:
         suffix = ".noop-verifier"
         verifier_request = request.model_copy(
             update={
-                "request_id": StableId(request.request_id.root[: 128 - len(suffix)] + suffix),
+                "request_id": _bounded_child_model_request_id(request, suffix),
                 "timeout_seconds": min(request.timeout_seconds, 300.0),
                 "enable_thinking": False,
                 "thinking_token_budget": None,
@@ -2326,9 +2577,12 @@ class ModelCurator:
                     "Each draft must specify operation_index, replacement_candidate_ids, "
                     "and action. Only choose from the supplied evidence_candidate_ids. "
                     "Do NOT rewrite target_id, record_kind, record payload, or operation type. "
-                    "Use action=replace_evidence to swap candidates, "
+                    "Use action=replace_evidence to swap candidates; it requires at least "
+                    "one replacement candidate. If no candidate supports the record, use "
+                    "action=mark_unresolved with an empty replacement_candidate_ids array. "
                     "action=drop_operation to remove the operation, "
-                    "or action=mark_unresolved if no candidate supports the record.\n"
+                    "or action=mark_unresolved if no candidate supports the record. An empty "
+                    "replacement_candidate_ids array must never erase the parent's evidence.\n"
                     '<EVIDENCE_REPAIR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
                     f"REPAIR_OPERATIONS={canonical_json_bytes(parent_ops).decode()}\n"
@@ -2361,7 +2615,16 @@ class ModelCurator:
             if repair.action is EvidenceRepairAction.DROP_OPERATION:
                 continue
             if repair.action is EvidenceRepairAction.MARK_UNRESOLVED:
-                new_operations.append(operation)
+                new_operations.append(
+                    self._sync_operation_evidence(operation, operation.evidence_refs)
+                )
+                continue
+            if not repair.replacement_candidate_ids:
+                # Treat a malformed empty replacement as unresolved rather than
+                # erasing evidence that the parent candidate already carried.
+                new_operations.append(
+                    self._sync_operation_evidence(operation, operation.evidence_refs)
+                )
                 continue
             # replace_evidence: bind new candidate IDs
             unknown = tuple(
@@ -2412,9 +2675,7 @@ class ModelCurator:
                 validate_evidence_ref(canonical_evidence, text_root)
                 bound_evidence.append(canonical_evidence)
             # Preserve operation_id, operation type, target_id, payload; only swap evidence.
-            new_operations.append(
-                operation.model_copy(update={"evidence_refs": tuple(bound_evidence)})
-            )
+            new_operations.append(self._sync_operation_evidence(operation, tuple(bound_evidence)))
         source_bytes = canonical_json_bytes(chapter.model_dump(mode="json"))
         return (
             ObservedChangeSet(
@@ -2433,6 +2694,29 @@ class ModelCurator:
             ),
             call,
             drafts,
+        )
+
+    @staticmethod
+    def _sync_operation_evidence(
+        operation: ChangeOperation,
+        evidence_refs: tuple[EvidenceRef, ...],
+    ) -> ChangeOperation:
+        """Keep the embedded non-entity evidence projection aligned with the operation."""
+
+        payload = operation.payload
+        if not isinstance(payload, dict) or payload.get("record_type") == "entity":
+            return operation.model_copy(update={"evidence_refs": evidence_refs})
+        record = payload.get("record")
+        if not isinstance(record, dict):
+            return operation.model_copy(update={"evidence_refs": evidence_refs})
+        updated_record = dict(record)
+        updated_record["evidence_refs"] = [
+            evidence.model_dump(mode="json") for evidence in evidence_refs
+        ]
+        updated_payload = dict(payload)
+        updated_payload["record"] = updated_record
+        return operation.model_copy(
+            update={"evidence_refs": evidence_refs, "payload": updated_payload}
         )
 
     def _normalize_operations(

@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "V05HistoryAccess": {
+      "enum": [
+        "history_only",
+        "author_plan_conditioned"
+      ],
+      "title": "V05HistoryAccess",
+      "type": "string"
+    },
+    "V05ReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "V05ReadoutTrack",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One unique V0.5 Writer readout identity. Public fields only.",
+  "properties": {
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "checkpoint_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "history_access": {
+      "$ref": "#/$defs/V05HistoryAccess"
+    },
+    "information_profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "plan_release": {
+      "const": "after_checkpoint_freeze",
+      "default": "after_checkpoint_freeze",
+      "title": "Plan Release",
+      "type": "string"
+    },
+    "question_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "question_release": {
+      "anyOf": [
+        {
+          "const": "after_checkpoint_freeze",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Question Release"
+    },
+    "target_chapter_end": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Chapter End"
+    },
+    "target_chapter_start": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Chapter Start"
+    },
+    "task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "track": {
+      "$ref": "#/$defs/V05ReadoutTrack"
+    }
+  },
+  "required": [
+    "task_id",
+    "track",
+    "checkpoint_id",
+    "checkpoint_chapter",
+    "history_access",
+    "information_profile"
+  ],
+  "title": "V05ReadoutTaskIdentity",
+  "type": "object"
+}

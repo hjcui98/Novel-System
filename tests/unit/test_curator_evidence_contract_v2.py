@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
-from novel_agent.adapters.model import FakeModelEndpoint
+from novel_agent.adapters.model import FakeModelEndpoint, OpenAIChatOutputLengthError
 from novel_agent.domain.benchmark import ChapterDocument, SceneDocument, TextRootDocument
 from novel_agent.domain.changes import (
     ChangeOperationType,
@@ -49,6 +49,7 @@ from novel_agent.services.model_curation import (
     EvidenceSemanticVerificationDraft,
     EvidenceSemanticVerificationItem,
     ModelCurationContractError,
+    ModelCurationOutputIncomplete,
     ModelCurator,
     NoOpSemanticVerificationDraft,
 )
@@ -76,6 +77,48 @@ class _FakeGateway:
             },
         )()
         return self._draft, call
+
+
+class _OutputLengthThenDraftGateway(_FakeGateway):
+    def __init__(self, draft: CuratorV2EvidenceDraft) -> None:
+        super().__init__(draft)
+
+    async def generate_structured(self, request, model_type, **kwargs):
+        self.requests.append(request)
+        assert model_type is CuratorV2EvidenceDraft
+        assert "EVIDENCE_CANDIDATES" in request.prompt
+        if len(self.requests) == 1:
+            assert "json_object_framing" not in kwargs
+            raise OpenAIChatOutputLengthError(
+                "chat completion was truncated by output length limit",
+                finish_reason="length",
+                input_tokens=100,
+                output_tokens=12_000,
+                raw_content='{"chapter_index":21,"operations":[',
+            )
+        call = type(
+            "Call",
+            (),
+            {
+                "request_id": request.request_id,
+                "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
+            },
+        )()
+        assert kwargs["json_object_framing"] is True
+        return self._draft, call
+
+
+class _OutputLengthAlwaysGateway(_FakeGateway):
+    async def generate_structured(self, request, model_type, **kwargs):
+        self.requests.append(request)
+        assert model_type is CuratorV2EvidenceDraft
+        raise OpenAIChatOutputLengthError(
+            "chat completion was truncated by output length limit",
+            finish_reason="length",
+            input_tokens=100,
+            output_tokens=8_192,
+            raw_content='{"chapter_index":21,"operations":[',
+        )
 
 
 class _ModelVerifierGateway:
@@ -522,6 +565,66 @@ def _v2_state_draft(evidence: object, chapter_index: int = 21) -> CuratorV2Evide
     )
 
 
+def test_v2_retries_truncated_output_with_compact_independent_request() -> None:
+    root = _root_with("chen holds extreme_confidence firmly! cultivation-attitude is strong.")
+    candidates = EvidenceCandidateGenerator().generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    gateway = _OutputLengthThenDraftGateway(_v2_state_draft(good))
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=EvidenceCandidateGenerator(),
+        enforce_support_gate=False,
+    )
+
+    changes, _call, _draft = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.output-length").model_copy(update={"max_output_tokens": 12_000}),
+        )
+    )
+
+    assert len(gateway.requests) == 2
+    first, compact = gateway.requests
+    assert compact.request_id.root == "req.v2.output-length.compact"
+    assert compact.request_id != first.request_id
+    assert compact.max_output_tokens == 8_192
+    assert '<COMPACT_OUTPUT_RETRY trusted="true">' in compact.prompt
+    assert "put uncertain details in short unresolved items" in compact.prompt
+    assert len(changes.operations) == 1
+
+
+def test_v2_compact_truncation_becomes_typed_content_failure() -> None:
+    root = _root_with("chen holds extreme_confidence firmly! cultivation-attitude is strong.")
+    candidates = EvidenceCandidateGenerator().generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    gateway = _OutputLengthAlwaysGateway(_v2_state_draft(good))
+    curator = ModelCurator(
+        cast(Any, gateway),
+        evidence_generator=EvidenceCandidateGenerator(),
+        enforce_support_gate=False,
+    )
+
+    with pytest.raises(ModelCurationOutputIncomplete) as raised:
+        asyncio.run(
+            curator.extract_reported_v2(
+                root,
+                21,
+                _COMMIT,
+                _world(),
+                _request("req.v2.output-length-both").model_copy(
+                    update={"max_output_tokens": 12_000}
+                ),
+            )
+        )
+
+    assert raised.value.reason_code == "CURATOR_PROPOSAL_OUTPUT_INCOMPLETE"
+    assert len(gateway.requests) == 2
+    assert gateway.requests[1].request_id.root.endswith(".compact")
+
+
 def _v2_no_op_draft(evidence: object) -> CuratorV2EvidenceDraft:
     quote = evidence.text if isinstance(evidence, EvidenceCandidate) else str(evidence)
     return CuratorV2EvidenceDraft(
@@ -576,10 +679,11 @@ def test_v2_evidence_draft_domain_edges() -> None:
         no_durable_delta_reason="chapter only repeats accepted durable facts",
         no_op_evidence_quotes=("有效引用",),
     )
-    with pytest.raises(ValidationError, match="non-empty Curator draft"):
-        CuratorV2EvidenceDraft.model_validate(
-            base | {"operations": (_v2_state_draft("有效引用").operations[0],)}
-        )
+    normalized = CuratorV2EvidenceDraft.model_validate(
+        base | {"operations": (_v2_state_draft("有效引用").operations[0],)}
+    )
+    assert normalized.no_durable_delta_reason is None
+    assert normalized.no_op_evidence_quotes == ()
     with pytest.raises(ValidationError, match="requires a no-durable-delta reason"):
         CuratorV2EvidenceDraft.model_validate(base | {"no_durable_delta_reason": None})
     with pytest.raises(ValidationError, match="must not be blank"):
@@ -900,7 +1004,6 @@ def test_v2_explicit_no_op_fails_closed_without_trusted_verifier() -> None:
     ("update", "feedback"),
     (
         ({"coverage": 0.85}, "coverage must equal 1"),
-        ({"unresolved": ("durable candidate omitted",)}, "unresolved must be empty"),
         (
             {"declared_vs_observed_diff": ("durable state differs",)},
             "declared_vs_observed_diff must be empty",
@@ -949,6 +1052,38 @@ def test_v2_incomplete_empty_draft_fails_closed_at_support_gate(
         "/no_durable_delta_reason",
         "/no_op_evidence_quotes",
     )
+
+
+def test_v2_explicit_no_op_preserves_advisory_unresolved() -> None:
+    text = "chen repeats an already accepted durable fact."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidate = gen.generate(root, 21)[0]
+    advisory_gap = "specific breathing technique remains unverified"
+    draft = _v2_no_op_draft(candidate).model_copy(update={"unresolved": (advisory_gap,)})
+
+    def verifier(reason, selected, world) -> tuple[bool, str]:
+        return (True, "NO_DURABLE_DELTA_CONFIRMED")
+
+    curator = ModelCurator(
+        _FakeGateway(draft),
+        evidence_generator=gen,
+        enforce_support_gate=True,
+        no_op_verifier=verifier,
+    )
+    changes, _call, returned_draft = asyncio.run(
+        curator.extract_reported_v2(
+            root,
+            21,
+            _COMMIT,
+            _world(),
+            _request("req.v2.noop.advisory-unresolved"),
+        )
+    )
+
+    assert changes.operations == ()
+    assert returned_draft.unresolved == (advisory_gap,)
+    assert curator.last_no_op_verification == (True, "NO_DURABLE_DELTA_CONFIRMED")
 
 
 def test_v2_explicit_no_op_passes_when_trusted_verifier_accepts() -> None:
@@ -1425,11 +1560,27 @@ def test_evidence_repair_v2_replaces_evidence_with_new_candidate_ids() -> None:
     assert new_evidence.span.start == other.start
     assert new_evidence.span.end == other.end
     assert changes.change_set_id.root.startswith("changes.model.repair.")
-    # Operation identity and payload are preserved; only evidence_refs change.
+    # Operation identity and record content are preserved; both evidence
+    # projections change together.
     assert changes.operations[0].operation_id == parent_changes.operations[0].operation_id
     assert changes.operations[0].target_id == parent_changes.operations[0].target_id
     assert changes.operations[0].operation == parent_changes.operations[0].operation
-    assert changes.operations[0].payload == parent_changes.operations[0].payload
+    new_payload = changes.operations[0].payload
+    parent_payload = parent_changes.operations[0].payload
+    assert isinstance(new_payload, dict)
+    assert isinstance(parent_payload, dict)
+    new_record_value = new_payload["record"]
+    parent_record_value = parent_payload["record"]
+    assert isinstance(new_record_value, dict)
+    assert isinstance(parent_record_value, dict)
+    new_record = dict(new_record_value)
+    parent_record = dict(parent_record_value)
+    assert new_record.pop("evidence_refs") == [
+        evidence.model_dump(mode="json") for evidence in changes.operations[0].evidence_refs
+    ]
+    new_record.pop("evidence_refs", None)
+    parent_record.pop("evidence_refs", None)
+    assert new_record == parent_record
     assert "EVIDENCE_REPAIR_INPUT" in gateway.requests[0].prompt
     assert curator.last_evidence_candidates
 
@@ -1482,6 +1633,33 @@ def test_evidence_repair_v2_keeps_operation_on_mark_unresolved() -> None:
 
     assert drafts == (repair,)
     assert changes.operations == parent_changes.operations
+
+
+def test_evidence_repair_v2_does_not_erase_evidence_on_empty_replacement() -> None:
+    text = "chen holds extreme_confidence firmly! cultivation-attitude is strong."
+    root = _root_with(text)
+    gen = EvidenceCandidateGenerator()
+    candidates = gen.generate(root, 21)
+    good = next(item for item in candidates if "confidence" in item.text)
+    parent_changes = _v2_parent_changes(root, gen, good)
+
+    repair = EvidenceRepairDraft(
+        operation_index=0,
+        replacement_candidate_ids=(),
+        action=EvidenceRepairAction.REPLACE_EVIDENCE,
+    )
+    curator = ModelCurator(
+        _RepairGateway([repair]), evidence_generator=gen, enforce_support_gate=True
+    )
+    changes, _call, drafts = asyncio.run(
+        curator.evidence_repair_v2(
+            root, 21, _COMMIT, parent_changes, _request("req.repair.empty-replacement")
+        )
+    )
+
+    assert drafts == (repair,)
+    assert changes.operations[0].evidence_refs == parent_changes.operations[0].evidence_refs
+    assert changes.operations[0].payload == parent_changes.operations[0].payload
 
 
 def test_evidence_repair_v2_passes_through_operations_without_repair_draft() -> None:
@@ -1790,6 +1968,11 @@ def test_v2_model_semantic_verifier_batches_partial_evidence_once() -> None:
     assert "Emit only durable world-state deltas" in gateway.requests[0].prompt
     assert "one-scene encounters" in gateway.requests[0].prompt
     assert "general rules, hypotheticals, maxima" in gateway.requests[0].prompt
+    assert "A new clue, secret, open conflict, or explicit hypothesis" in gateway.requests[0].prompt
+    assert (
+        "Do not choose an empty operations array merely because related details are uncertain"
+        in gateway.requests[0].prompt
+    )
     prompt = gateway.requests[0].prompt
     assert prompt.index("</CURATOR_INPUT>") < prompt.index("<CURATOR_OUTPUT_CONTRACT")
     assert "MUST be copied verbatim" in prompt

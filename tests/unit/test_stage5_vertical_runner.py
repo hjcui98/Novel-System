@@ -77,7 +77,7 @@ def test_vertical_runner_executes_dispatcher_and_freezes_only_after_completion()
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             assert max_tasks == 1
             self.calls += 1
             if self.calls == 1:
@@ -90,7 +90,7 @@ def test_vertical_runner_executes_dispatcher_and_freezes_only_after_completion()
         def __init__(self) -> None:
             self.calls = 0
 
-        def list_run(self, run_id: RunId):
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
             assert run_id == RunId("run.vertical")
             self.calls += 1
             if self.calls == 1:
@@ -136,12 +136,12 @@ def test_vertical_runner_recognizes_an_already_completed_run() -> None:
             raise AssertionError("an existing run must not be started again")
 
     class _Dispatcher:
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             assert max_tasks == 1
             return ()
 
     class _Tasks:
-        def list_run(self, run_id: RunId):
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
             return (
                 TaskRecord(
                     task_id=TaskId("task.vertical.chapter.21.projection"),
@@ -193,7 +193,7 @@ def test_vertical_runner_yields_only_at_an_explicit_slice_limit() -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             assert max_tasks == 1
             self.calls += 1
             return (_result(CreativeRunTerminal.PROGRESSED, FINAL),)
@@ -202,7 +202,7 @@ def test_vertical_runner_yields_only_at_an_explicit_slice_limit() -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        def list_run(self, run_id: RunId):
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
             self.calls += 1
             return (_ready_task(f"task.vertical.slice.{self.calls}"),)
 
@@ -222,17 +222,65 @@ def test_vertical_runner_yields_only_at_an_explicit_slice_limit() -> None:
     assert report.tasks[0].status is TaskStatus.READY
 
 
+def test_vertical_runner_yields_after_a_natural_chapter_boundary() -> None:
+    request = _request().model_copy(update={"target_chapters": 22})
+    state: dict[str, tuple[TaskRecord, ...]] = {"tasks": (_ready_task("task.vertical.chapter.21"),)}
+
+    class _Runtime:
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("an existing run must not be started again")
+
+    class _Dispatcher:
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            assert max_tasks == 1
+            state["tasks"] = (
+                TaskRecord(
+                    task_id=TaskId("task.vertical.chapter.21.projection"),
+                    run_id=request.run_id,
+                    project_id=request.project_id,
+                    kind=TaskKind.PROJECTION_FRESHNESS,
+                    task_revision=1,
+                    status=TaskStatus.SUCCEEDED,
+                    basis_commit=FINAL,
+                    policy_hash=HASH,
+                    permission_hash=HASH,
+                    chapter_index=21,
+                    target_chapters=22,
+                    projection_after="draft",
+                ),
+            )
+            return (_result(CreativeRunTerminal.PROGRESSED, FINAL),)
+
+    class _Tasks:
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            assert run_id == request.run_id
+            return state["tasks"]
+
+    report = asyncio.run(
+        VerticalCreativeRunner(
+            runtime=cast(CreativeRuntimeService, _Runtime()),
+            dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+            tasks=cast(RuntimeTaskReader, _Tasks()),
+        ).run(request, max_tasks=1, stop_after_chapter=21)
+    )
+
+    assert report.status is VerticalRunStatus.YIELDED
+    assert report.outputs_frozen is False
+    assert report.completed_chapters == (21,)
+    assert report.dispatch_slices == 1
+
+
 def test_vertical_runner_ignores_cancelled_or_superseded_background_work() -> None:
     class _Runtime:
         def start(self, request: CreativeRunRequest) -> CreativeRunResult:
             raise AssertionError("an existing run must not be started again")
 
     class _Dispatcher:
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             raise AssertionError("a waiting run has no runnable work")
 
     class _Tasks:
-        def list_run(self, run_id: RunId):
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
             return (
                 TaskRecord(
                     task_id=TaskId("task.vertical.waiting"),
@@ -299,11 +347,11 @@ def test_vertical_runner_reports_foreground_crash_frontier_as_recovery_pending()
             raise AssertionError("an existing run must not be started again")
 
     class _Dispatcher:
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             raise AssertionError("a recovery frontier must not be redispatched")
 
     class _Tasks:
-        def list_run(self, run_id: RunId):
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
             return (
                 _ready_task("task.vertical.crashed").model_copy(
                     update={
@@ -357,7 +405,7 @@ def test_vertical_runner_repairs_auto_acceptance_before_polling_ready_work() -> 
     class _Dispatcher:
         calls = 0
 
-        async def run_bounded(self, *, max_tasks: int):
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
             assert max_tasks == 1
             self.calls += 1
             state["tasks"] = (

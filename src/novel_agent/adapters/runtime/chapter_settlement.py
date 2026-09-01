@@ -11,7 +11,7 @@ from novel_agent.domain.artifacts import RootKind
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.changes import CommitResult, ValidationStatus
 from novel_agent.domain.creative_runtime import AcceptedCandidateBinding
-from novel_agent.domain.ids import ArtifactId, StableId
+from novel_agent.domain.ids import ArtifactId, StableId, bounded_stable_id
 from novel_agent.domain.memory_write import (
     ChapterRevealTrigger,
     CuratorWorldProposalInput,
@@ -75,16 +75,18 @@ class AtomicChapterSettlementAdapter:
 
     @staticmethod
     def effect_identity(accepted: AcceptedCandidateBinding) -> StableId:
-        return StableId(f"chapter-settlement.{accepted.acceptance_id.root}"[:128])
+        return bounded_stable_id(
+            f"chapter-settlement.{accepted.acceptance_id.root}",
+            f"chapter-settlement.{accepted.candidate.candidate_hash}",
+            f"chapter-settlement.{accepted.expected_project_commit.root}",
+        )
 
     def resolve_commit(self, accepted: AcceptedCandidateBinding) -> CommitResult | None:
         return self._commits.result_for_idempotency(
             accepted.project_id, self.effect_identity(accepted)
         )
 
-    async def settle(
-        self, accepted: AcceptedCandidateBinding
-    ) -> MemoryWriteWorkflowResult:
+    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult:
         if self._commits.current_commit(accepted.project_id) != accepted.expected_project_commit:
             raise ValueError("Chapter Settlement basis is no longer current")
         manifest = self._commits.load_manifest(accepted.expected_project_commit)
@@ -102,7 +104,11 @@ class AtomicChapterSettlementAdapter:
         chapter = updated_text.chapters[-1]
         position = NarrativePosition(chapter_index=chapter.chapter_index)
         boundary = InformationBoundary(
-            boundary_id=StableId(f"boundary.{accepted.acceptance_id.root}"[:128]),
+            boundary_id=bounded_stable_id(
+                f"boundary.{accepted.acceptance_id.root}",
+                f"boundary.{accepted.candidate.candidate_hash}",
+                f"boundary.{accepted.expected_project_commit.root}",
+            ),
             base_commit=accepted.expected_project_commit,
             reveal_position=position,
             maximum_visible_position=position,
@@ -127,7 +133,11 @@ class AtomicChapterSettlementAdapter:
             access_scope=AccessScope.WRITER_SAFE,
         )
         text_intent = RootUpdateIntent(
-            intent_id=StableId(f"intent.text.{accepted.acceptance_id.root}"[:128]),
+            intent_id=bounded_stable_id(
+                f"intent.text.{accepted.acceptance_id.root}",
+                f"intent.text.{accepted.candidate.candidate_hash}",
+                f"intent.text.{accepted.expected_project_commit.root}",
+            ),
             root_kind=RootKind.TEXT,
             update_kind=RootUpdateKind.REPLACE,
             expected_base_root=manifest.text_root,

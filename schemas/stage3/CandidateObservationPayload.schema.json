@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CuratorChangeObservation": {
+      "additionalProperties": false,
+      "description": "A minimal independent observation extracted from the repaired/current Draft.",
+      "properties": {
+        "change_kind": {
+          "$ref": "#/$defs/MemoryHintChangeKind"
+        },
+        "evidence_quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Quote"
+        },
+        "observation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "predicate_hint": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predicate Hint"
+        },
+        "subject_hint": {
+          "minLength": 1,
+          "title": "Subject Hint",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "value_hint": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value Hint"
+        }
+      },
+      "required": [
+        "observation_id",
+        "subject_hint",
+        "change_kind"
+      ],
+      "title": "CuratorChangeObservation",
+      "type": "object"
+    },
+    "MemoryHintChangeKind": {
+      "enum": [
+        "ADD",
+        "CHANGE",
+        "END",
+        "UNCERTAIN"
+      ],
+      "title": "MemoryHintChangeKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Model-only observation output; service telemetry is bound after generation.",
+  "properties": {
+    "changes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CuratorChangeObservation"
+      },
+      "maxItems": 4,
+      "title": "Changes",
+      "type": "array"
+    },
+    "draft_id": {
+      "$ref": "#/$defs/ArtifactId"
+    }
+  },
+  "required": [
+    "draft_id"
+  ],
+  "title": "CandidateObservationPayload",
+  "type": "object"
+}

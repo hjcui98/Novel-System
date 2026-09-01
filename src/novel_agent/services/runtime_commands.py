@@ -25,6 +25,12 @@ from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.changes import CommitRequest, CommitResult, CommitStatus
 from novel_agent.domain.creative_runtime import AcceptanceReceipt, CreativeRunRequest
 from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
+from novel_agent.domain.memory_write import (
+    MemoryGapClassification,
+    MemoryRepairFinding,
+    MemoryWriteWorkflowResult,
+    MemoryWriteWorkflowStatus,
+)
 from novel_agent.domain.runtime import (
     STAGE5_EVENT_SCHEMA_VERSION,
     AcceptanceRecordedPayload,
@@ -48,14 +54,19 @@ from novel_agent.domain.runtime import (
     TaskClaimedPayload,
     TaskCreatedPayload,
     TaskKind,
+    TaskPurpose,
     TaskRecord,
     TaskStatus,
     WriterClaimedPayload,
     evaluate_task_eligibility,
     failure_policy,
+    normalize_failure_class,
 )
+from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.event_log import RunEventLogRepository
+
+MEMORY_WRITE_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.memory-write-workflow-result+json"
 
 
 class RuntimeCommandError(RuntimeError):
@@ -70,8 +81,41 @@ class RuntimeCommandConflictError(RuntimeCommandError):
     pass
 
 
+class WriterLaneBusyError(RuntimeCommandConflictError):
+    """A different live attempt currently owns the project's write lane."""
+
+
 def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
+
+
+def bounded_runtime_identity(
+    primary: str,
+    *fallbacks: str,
+) -> StableId:
+    """Keep runtime identities readable while honoring the StableId limit."""
+
+    for value in (primary, *fallbacks):
+        try:
+            return StableId(value)
+        except ValueError:
+            continue
+    raise RuntimeCommandConflictError("runtime identity is too long")
+
+
+def _bounded_runtime_identity(
+    primary: str,
+    *fallbacks: str,
+) -> StableId:
+    """Compatibility wrapper for the runtime command owner's internal calls."""
+
+    return bounded_runtime_identity(primary, *fallbacks)
+
+
+def _task_created_identity(task_id: TaskId) -> StableId:
+    """Use the task identity itself when the readable created suffix cannot fit."""
+
+    return _bounded_runtime_identity(f"{task_id.root}.created", task_id.root)
 
 
 class RuntimeCommandService:
@@ -84,6 +128,7 @@ class RuntimeCommandService:
         permission_hash_resolver: Callable[[str], str],
         *,
         attempt_lease_seconds: int = 300,
+        artifacts: ArtifactRepository | None = None,
     ) -> None:
         if attempt_lease_seconds < 3:
             raise ValueError("Attempt lease must be at least three seconds")
@@ -91,6 +136,7 @@ class RuntimeCommandService:
         self._events = events
         self._permission_hash_resolver = permission_hash_resolver
         self._attempt_lease = timedelta(seconds=attempt_lease_seconds)
+        self._artifacts = artifacts
 
     @property
     def heartbeat_interval_seconds(self) -> float:
@@ -98,7 +144,12 @@ class RuntimeCommandService:
 
     def create_run_and_initial_task(self, request: CreativeRunRequest) -> TaskRecord:
         task = TaskRecord(
-            task_id=TaskId(f"{request.run_id.root}.plan"),
+            task_id=TaskId(
+                _bounded_runtime_identity(
+                    f"{request.run_id.root}.plan",
+                    request.run_id.root,
+                ).root
+            ),
             run_id=request.run_id,
             project_id=request.project_id,
             kind=TaskKind.PLAN_CANDIDATE,
@@ -109,6 +160,7 @@ class RuntimeCommandService:
             policy_hash=request.policy.policy_hash,
             permission_hash=request.policy.permission_hash,
             input_artifact_refs=request.input_artifact_refs,
+            terminal_artifact_refs=request.continuation_artifact_refs,
             failure_budget=request.policy.max_task_attempts,
             retry_tranche_size=request.policy.max_task_attempts,
             chapter_index=request.current_chapter,
@@ -137,7 +189,7 @@ class RuntimeCommandService:
                 task.task_id,
                 RunEventType.RUNTIME_TASK_CREATED,
                 TaskCreatedPayload(task=task).model_dump(mode="json"),
-                StableId(f"{task.task_id.root}.created"),
+                _task_created_identity(task.task_id),
             )
             self._insert_task(session, task, now)
         return task
@@ -164,7 +216,7 @@ class RuntimeCommandService:
                 task.task_id,
                 RunEventType.RUNTIME_TASK_CREATED,
                 TaskCreatedPayload(task=task).model_dump(mode="json"),
-                StableId(f"{task.task_id.root}.created"),
+                _task_created_identity(task.task_id),
             )
             self._insert_task(session, task, now)
             return task
@@ -201,12 +253,18 @@ class RuntimeCommandService:
                 task.task_id,
                 RunEventType.RUNTIME_CONTROL_RECORDED,
                 ControlIntentPayload(
-                    command_id=StableId(f"supersede.{task.task_id.root}"[:128]),
+                    command_id=_bounded_runtime_identity(
+                        f"supersede.{task.task_id.root}",
+                        f"supersede.{task.run_id.root}.{task.task_revision}",
+                    ),
                     action="supersede",
                     actor_id="creative-runtime",
                     reason=reason,
                 ).model_dump(mode="json"),
-                StableId(f"{task.task_id.root}.superseded"[:128]),
+                _bounded_runtime_identity(
+                    f"{task.task_id.root}.superseded",
+                    f"superseded.{task.run_id.root}.{task.task_revision}",
+                ),
             )
             return updated
 
@@ -452,10 +510,7 @@ class RuntimeCommandService:
         with self._session_factory() as session, session.begin():
             task = self._load_task(session, task_id, lock=True)
             self._require_observed_revision(task, observed_revision)
-            if (
-                task.status is not TaskStatus.RECOVERY_PENDING
-                or task.current_attempt_id is None
-            ):
+            if task.status is not TaskStatus.RECOVERY_PENDING or task.current_attempt_id is None:
                 raise RuntimeCommandConflictError(
                     "lease reclaim requires RECOVERY_PENDING with a current Attempt"
                 )
@@ -518,7 +573,10 @@ class RuntimeCommandService:
                     failure_class=FailureClass.WORKER_LEASE_EXPIRED,
                     ended_at=observed_at,
                 ).model_dump(mode="json"),
-                StableId(f"{command_id.root}.attempt-settled"[:128]),
+                _bounded_runtime_identity(
+                    f"{command_id.root}.attempt-settled",
+                    f"{attempt.attempt_id.root}.attempt-settled",
+                ),
             )
             return settled_task
 
@@ -529,16 +587,21 @@ class RuntimeCommandService:
         outcome: AttemptOutcome,
         terminal_status: TaskStatus,
         artifact_refs: tuple[ArtifactRef, ...] = (),
-        failure_class: FailureClass | None = None,
+        failure_class: FailureClass | str | None = None,
         successor_tasks: tuple[TaskRecord, ...] = (),
     ) -> TaskRecord:
+        failure_class = normalize_failure_class(failure_class)
+        if failure_class is FailureClass.UNKNOWN:
+            terminal_status = failure_policy(failure_class).fallback_status
         if terminal_status not in {
             TaskStatus.READY,
             TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
             TaskStatus.BLOCKED,
+            TaskStatus.RECOVERY_PENDING,
             TaskStatus.WAITING_RETRY,
+            TaskStatus.WAITING_INPUT,
             TaskStatus.BUDGET_REVIEW,
         }:
             raise ValueError("attempt settlement requires a terminal or explicit waiting status")
@@ -626,6 +689,399 @@ class RuntimeCommandService:
             self._insert_successor_tasks(session, settled_task, successor_tasks, now)
             return settled_task
 
+    def settle_gap_and_create_maintenance(
+        self,
+        fence: AttemptFence,
+        *,
+        finding_ref: ArtifactRef,
+        maintenance_task: TaskRecord,
+    ) -> TaskRecord:
+        """Atomically block a Planner gap and create its derived maintenance task."""
+
+        finding = self._load_memory_repair_finding(finding_ref)
+        expected_task_id = self._maintenance_task_id(finding)
+        if maintenance_task.task_id != expected_task_id:
+            raise RuntimeCommandConflictError("maintenance task identity is not finding-bound")
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            current = self._load_task(session, fence.task_id, lock=True)
+            existing = session.get(RuntimeTaskProjectionRow, maintenance_task.task_id.root)
+            if current.status is TaskStatus.BLOCKED and current.current_attempt_id is None:
+                if existing is None:
+                    raise RuntimeCommandConflictError(
+                        "blocked Planner gap is missing its maintenance task"
+                    )
+                restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
+                if restored != maintenance_task:
+                    raise RuntimeCommandConflictError("maintenance task identity collision")
+                if restored.input_artifact_refs != (finding_ref,):
+                    raise RuntimeCommandConflictError("maintenance task finding binding changed")
+                return restored
+
+            task, attempt = self._require_fence(session, fence)
+            self._validate_gap_finding(task, attempt, finding)
+            self._validate_maintenance_task(
+                task,
+                maintenance_task,
+                finding_ref=finding_ref,
+            )
+            if existing is not None:
+                restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
+                if restored != maintenance_task:
+                    raise RuntimeCommandConflictError("maintenance task identity collision")
+                raise RuntimeCommandConflictError(
+                    "maintenance task exists before Planner gap settlement"
+                )
+
+            settled_attempt = attempt.model_copy(
+                update={
+                    "ended_at": now,
+                    "outcome": AttemptOutcome.FAILED,
+                    "failure_class": FailureClass.CANON_EXTRACTION_GAP,
+                }
+            )
+            blocked = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.BLOCKED,
+                    "current_attempt_id": None,
+                    "terminal_artifact_refs": (finding_ref,),
+                    "block_cause": FailureClass.CANON_EXTRACTION_GAP.value,
+                }
+            )
+            self._update_attempt(session, settled_attempt)
+            self._update_task(session, blocked, now)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_TASK_BLOCKED,
+                TaskBlockedPayload(
+                    failure_class=FailureClass.CANON_EXTRACTION_GAP,
+                    cause_fingerprint=_digest(finding.finding_id.root),
+                    sanitized_message=FailureClass.CANON_EXTRACTION_GAP.value,
+                    error_artifact_ref=finding_ref,
+                ).model_dump(mode="json"),
+                StableId(f"{attempt.attempt_id.root}.gap-blocked"),
+                artifact_refs=(finding_ref,),
+            )
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_ATTEMPT_SETTLED,
+                TaskAttemptSettledPayload(
+                    attempt_id=attempt.attempt_id,
+                    outcome=AttemptOutcome.FAILED,
+                    task_status=TaskStatus.BLOCKED,
+                    failure_class=FailureClass.CANON_EXTRACTION_GAP,
+                    block_cause=FailureClass.CANON_EXTRACTION_GAP.value,
+                    terminal_artifact_refs=(finding_ref,),
+                    ended_at=now,
+                ).model_dump(mode="json"),
+                StableId(f"{attempt.attempt_id.root}.settled"),
+                artifact_refs=(finding_ref,),
+            )
+            self._append(
+                session,
+                maintenance_task.run_id,
+                maintenance_task.task_id,
+                RunEventType.RUNTIME_TASK_CREATED,
+                TaskCreatedPayload(task=maintenance_task).model_dump(mode="json"),
+                _task_created_identity(maintenance_task.task_id),
+                artifact_refs=(finding_ref,),
+            )
+            self._insert_task(session, maintenance_task, now)
+            return maintenance_task
+
+    def settle_maintenance_and_retry_planner(
+        self,
+        fence: AttemptFence,
+        *,
+        workflow_result_ref: ArtifactRef,
+        artifact_refs: tuple[ArtifactRef, ...] = (),
+        retry_task: TaskRecord,
+    ) -> TaskRecord:
+        """Settle a committed Memory repair and atomically create the new-basis Planner task."""
+
+        workflow_result = self._load_memory_write_result(workflow_result_ref)
+        settlement_refs = tuple(dict.fromkeys((workflow_result_ref, *artifact_refs)))
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, fence.task_id, lock=True)
+            if (
+                task.kind is not TaskKind.MAINTENANCE
+                or task.purpose is not TaskPurpose.DERIVED_MAINTENANCE
+            ):
+                raise RuntimeCommandConflictError("only derived maintenance may retry a Planner")
+            if not task.input_artifact_refs:
+                raise RuntimeCommandConflictError("maintenance task is missing its finding")
+            finding = self._load_memory_repair_finding(task.input_artifact_refs[0])
+            planner = self._load_task(session, finding.planner_task_id, lock=True)
+            expected_retry_id = self._planner_retry_task_id(planner, workflow_result)
+            if retry_task.task_id != expected_retry_id:
+                raise RuntimeCommandConflictError("Planner retry identity is not basis-bound")
+            existing = session.get(RuntimeTaskProjectionRow, retry_task.task_id.root)
+            if task.status is TaskStatus.SUCCEEDED and task.current_attempt_id is None:
+                if existing is None:
+                    raise RuntimeCommandConflictError(
+                        "settled maintenance is missing its Planner retry task"
+                    )
+                restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
+                if restored != retry_task or not planner.superseded:
+                    raise RuntimeCommandConflictError("Planner retry identity collision")
+                return restored
+
+            task, attempt = self._require_fence(session, fence)
+            self._validate_gap_finding(planner, None, finding)
+            project = session.get(ProjectRow, task.project_id.root)
+            if project is None or project.current_commit_id is None:
+                raise RuntimeCommandConflictError("project has no current commit")
+            self._validate_committed_repair(
+                task,
+                planner,
+                finding,
+                workflow_result,
+                workflow_result_ref=workflow_result_ref,
+                retry_task=retry_task,
+                current_commit=CommitId(project.current_commit_id),
+            )
+            if existing is not None:
+                restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
+                if restored != retry_task:
+                    raise RuntimeCommandConflictError("Planner retry task identity collision")
+                raise RuntimeCommandConflictError("Planner retry task exists before settlement")
+
+            settled_attempt = attempt.model_copy(
+                update={"ended_at": now, "outcome": AttemptOutcome.SUCCEEDED, "failure_class": None}
+            )
+            settled = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.SUCCEEDED,
+                    "current_attempt_id": None,
+                    "terminal_artifact_refs": settlement_refs,
+                    "block_cause": None,
+                }
+            )
+            superseded_planner = planner.model_copy(
+                update={
+                    "task_revision": planner.task_revision + 1,
+                    "status": TaskStatus.CANCELLED,
+                    "superseded": True,
+                    "block_cause": "canon extraction maintenance committed",
+                }
+            )
+            self._update_attempt(session, settled_attempt)
+            self._update_task(session, settled, now)
+            self._update_task(session, superseded_planner, now)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_ATTEMPT_SETTLED,
+                TaskAttemptSettledPayload(
+                    attempt_id=attempt.attempt_id,
+                    outcome=AttemptOutcome.SUCCEEDED,
+                    task_status=TaskStatus.SUCCEEDED,
+                    terminal_artifact_refs=settlement_refs,
+                    ended_at=now,
+                ).model_dump(mode="json"),
+                StableId(f"{attempt.attempt_id.root}.settled"),
+                artifact_refs=settlement_refs,
+            )
+            self._append(
+                session,
+                planner.run_id,
+                planner.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=_bounded_runtime_identity(
+                        f"supersede.{task.task_id.root}",
+                        f"supersede.{task.run_id.root}.{task.task_revision}",
+                    ),
+                    action="supersede",
+                    actor_id="memory-maintenance",
+                    reason="canon extraction maintenance committed on a new basis",
+                ).model_dump(mode="json"),
+                _bounded_runtime_identity(
+                    f"{task.task_id.root}.planner-superseded",
+                    f"{attempt.attempt_id.root}.planner-superseded",
+                ),
+                artifact_refs=(finding.planner_intent_ref, workflow_result_ref),
+            )
+            self._append(
+                session,
+                retry_task.run_id,
+                retry_task.task_id,
+                RunEventType.RUNTIME_TASK_CREATED,
+                TaskCreatedPayload(task=retry_task).model_dump(mode="json"),
+                _task_created_identity(retry_task.task_id),
+                artifact_refs=(finding.planner_intent_ref, workflow_result_ref),
+            )
+            self._insert_task(session, retry_task, now)
+            return retry_task
+
+    def _load_memory_repair_finding(self, finding_ref: ArtifactRef) -> MemoryRepairFinding:
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError(
+                "memory repair commands require an ArtifactRepository"
+            )
+        try:
+            return MemoryRepairFinding.model_validate_json(
+                self._artifacts.read_verified(finding_ref)
+            )
+        except (ValueError, RuntimeError) as error:
+            raise RuntimeCommandConflictError(
+                "finding artifact is not a valid memory repair finding"
+            ) from error
+
+    def _load_memory_write_result(self, result_ref: ArtifactRef) -> MemoryWriteWorkflowResult:
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError(
+                "memory repair commands require an ArtifactRepository"
+            )
+        try:
+            return MemoryWriteWorkflowResult.model_validate_json(
+                self._artifacts.read_verified(result_ref)
+            )
+        except (ValueError, RuntimeError) as error:
+            raise RuntimeCommandConflictError("workflow result artifact is invalid") from error
+
+    @staticmethod
+    def _maintenance_task_id(finding: MemoryRepairFinding) -> TaskId:
+        owner = finding.repair_owner.value
+        value = _bounded_runtime_identity(
+            f"maintenance.{finding.finding_id.root}.{owner}",
+            f"maintenance.{finding.incident_id.root}.{finding.planner_attempt_id.root}.{owner}",
+            f"maintenance.{finding.no_progress_key.root}.{finding.planner_attempt_id.root}.{owner}",
+            f"maintenance.{finding.planner_task_id.root}.{finding.planner_attempt_id.root}.{owner}",
+        )
+        return TaskId(value.root)
+
+    @staticmethod
+    def _planner_retry_task_id(
+        planner: TaskRecord, workflow_result: MemoryWriteWorkflowResult
+    ) -> TaskId:
+        if workflow_result.resulting_commit is None:  # pragma: no cover - validated by caller
+            raise RuntimeCommandConflictError("committed repair has no resulting commit")
+        digest = workflow_result.resulting_commit.root.removeprefix("sha256:")[:32]
+        value = _bounded_runtime_identity(
+            f"{planner.task_id.root}.retry.{digest}",
+            f"{planner.run_id.root}.retry.{digest}",
+            f"retry.{digest}",
+        )
+        return TaskId(value.root)
+
+    @staticmethod
+    def _validate_gap_finding(
+        planner: TaskRecord,
+        attempt: TaskAttempt | None,
+        finding: MemoryRepairFinding,
+    ) -> None:
+        if planner.kind is not TaskKind.PLAN_CANDIDATE:
+            raise RuntimeCommandConflictError(
+                "memory repair finding must originate at a Planner task"
+            )
+        if finding.classification is not MemoryGapClassification.CANON_EXTRACTION_GAP:
+            raise RuntimeCommandConflictError("only CANON_EXTRACTION_GAP creates maintenance")
+        if (
+            finding.planner_run_id != planner.run_id
+            or finding.planner_task_id != planner.task_id
+            or finding.project_id != planner.project_id
+            or finding.base_commit != planner.basis_commit
+            or finding.basis_snapshot_id != planner.basis_snapshot
+        ):
+            raise RuntimeCommandConflictError("memory repair finding does not match Planner basis")
+        if attempt is not None and finding.planner_attempt_id != attempt.attempt_id:
+            raise RuntimeCommandConflictError(
+                "memory repair finding does not match Planner attempt"
+            )
+
+    @staticmethod
+    def _validate_maintenance_task(
+        planner: TaskRecord,
+        maintenance: TaskRecord,
+        *,
+        finding_ref: ArtifactRef,
+    ) -> None:
+        if (
+            maintenance.kind is not TaskKind.MAINTENANCE
+            or maintenance.purpose is not TaskPurpose.DERIVED_MAINTENANCE
+            or maintenance.status is not TaskStatus.READY
+            or maintenance.task_revision != 0
+            or maintenance.current_attempt_id is not None
+        ):
+            raise RuntimeCommandConflictError("maintenance task is not an unclaimed derived task")
+        if (
+            maintenance.run_id != planner.run_id
+            or maintenance.project_id != planner.project_id
+            or maintenance.policy_hash != planner.policy_hash
+            or maintenance.permission_hash != planner.permission_hash
+            or maintenance.basis_commit != planner.basis_commit
+            or maintenance.basis_snapshot != planner.basis_snapshot
+        ):
+            raise RuntimeCommandConflictError("maintenance task differs from Planner owner")
+        if maintenance.input_artifact_refs != (finding_ref,):
+            raise RuntimeCommandConflictError("maintenance task must carry exactly its finding")
+        if maintenance.dependency_task_ids:
+            raise RuntimeCommandConflictError(
+                "maintenance task must not depend on the blocked Planner"
+            )
+
+    def _validate_committed_repair(
+        self,
+        maintenance: TaskRecord,
+        planner: TaskRecord,
+        finding: MemoryRepairFinding,
+        workflow_result: MemoryWriteWorkflowResult,
+        *,
+        workflow_result_ref: ArtifactRef,
+        retry_task: TaskRecord,
+        current_commit: CommitId,
+    ) -> None:
+        if planner.status is not TaskStatus.BLOCKED or planner.superseded:
+            raise RuntimeCommandConflictError("Planner must be blocked and not yet superseded")
+        if workflow_result.status is not MemoryWriteWorkflowStatus.COMMITTED:
+            raise RuntimeCommandConflictError("Planner retry requires a committed memory repair")
+        if (
+            not workflow_result.canonical_commit_accepted
+            or workflow_result.resulting_commit is None
+        ):
+            raise RuntimeCommandConflictError("Planner retry requires an accepted resulting commit")
+        if workflow_result.base_commit != maintenance.basis_commit:
+            raise RuntimeCommandConflictError("workflow result base differs from maintenance basis")
+        if workflow_result.projection_snapshot_id is None or workflow_result.freshness is None:
+            raise RuntimeCommandConflictError("committed repair is missing projection freshness")
+        if workflow_result.freshness.canonical_commit != workflow_result.resulting_commit:
+            raise RuntimeCommandConflictError("workflow freshness is bound to another commit")
+        if current_commit != workflow_result.resulting_commit:
+            raise RuntimeCommandConflictError(
+                "resulting repair commit is not the current project commit"
+            )
+        if planner.basis_snapshot is not None and (
+            planner.basis_snapshot == workflow_result.projection_snapshot_id
+        ):
+            raise RuntimeCommandConflictError("Planner retry must establish a new basis namespace")
+        expected = planner.model_copy(
+            update={
+                "task_id": self._planner_retry_task_id(planner, workflow_result),
+                "task_revision": 0,
+                "status": TaskStatus.READY,
+                "basis_commit": workflow_result.resulting_commit,
+                "basis_snapshot": workflow_result.projection_snapshot_id,
+                "dependency_task_ids": (maintenance.task_id,),
+                "terminal_artifact_refs": (),
+                "block_cause": None,
+                "superseded": False,
+            }
+        )
+        if retry_task != expected:
+            raise RuntimeCommandConflictError("Planner retry does not preserve task intent")
+        self._validate_gap_finding(planner, None, finding)
+        if workflow_result_ref in retry_task.input_artifact_refs:
+            raise RuntimeCommandConflictError("Planner retry must not inject workflow output")
+
     def record_effect_requested(self, fence: AttemptFence, receipt: EffectReceipt) -> EffectReceipt:
         if receipt.status is not EffectStatus.REQUESTED:
             raise ValueError("requested effect command requires REQUESTED receipt")
@@ -660,7 +1116,10 @@ class RuntimeCommandService:
                 EffectRequestedPayload(
                     effect=receipt, task_id=task.task_id, attempt_id=attempt.attempt_id
                 ).model_dump(mode="json"),
-                StableId(f"{receipt.effect_identity.root}.requested"),
+                _bounded_runtime_identity(
+                    f"{receipt.effect_identity.root}.requested",
+                    f"{attempt.attempt_id.root}.effect-requested",
+                ),
             )
             return receipt
 
@@ -720,7 +1179,10 @@ class RuntimeCommandService:
                 EffectTerminalPayload(
                     effect=receipt, task_id=task.task_id, attempt_id=attempt.attempt_id
                 ).model_dump(mode="json"),
-                StableId(f"{receipt.effect_identity.root}.{receipt.status.value}"),
+                _bounded_runtime_identity(
+                    f"{receipt.effect_identity.root}.{receipt.status.value}",
+                    f"{attempt.attempt_id.root}.effect-{receipt.status.value}",
+                ),
                 artifact_refs=refs,
             )
             return receipt
@@ -784,6 +1246,7 @@ class RuntimeCommandService:
         terminal_status: TaskStatus = TaskStatus.WAITING_RETRY,
         failure_class: FailureClass | None = None,
         observed_revision: int | None = None,
+        artifact_refs: tuple[ArtifactRef, ...] = (),
     ) -> TaskRecord:
         if terminal_status not in {
             TaskStatus.WAITING_RETRY,
@@ -791,6 +1254,7 @@ class RuntimeCommandService:
             TaskStatus.CANCELLED,
         }:
             raise ValueError("operator reconciliation may only retry, block, or cancel")
+        settlement_refs = tuple(dict.fromkeys(artifact_refs))
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
             task = self._load_task(session, task_id, lock=True)
@@ -836,6 +1300,9 @@ class RuntimeCommandService:
                     "task_revision": task.task_revision + 1,
                     "status": settled_status,
                     "current_attempt_id": None,
+                    "terminal_artifact_refs": tuple(
+                        dict.fromkeys((*task.terminal_artifact_refs, *settlement_refs))
+                    ),
                     "failure_budget": max(0, remaining),
                     "paused": settled_status is TaskStatus.CANCELLED,
                     "block_cause": (
@@ -857,6 +1324,7 @@ class RuntimeCommandService:
                     reason=reason,
                 ).model_dump(mode="json"),
                 command_id,
+                artifact_refs=settlement_refs,
             )
             if settled_status is TaskStatus.BLOCKED:
                 self._append(
@@ -869,7 +1337,11 @@ class RuntimeCommandService:
                         cause_fingerprint=_digest(reason),
                         sanitized_message=reason[:512],
                     ).model_dump(mode="json"),
-                    StableId(f"blocked.{command_id.root}"[:128]),
+                    _bounded_runtime_identity(
+                        f"blocked.{command_id.root}",
+                        f"{attempt.attempt_id.root}.operator-blocked",
+                    ),
+                    artifact_refs=settlement_refs,
                 )
             self._append(
                 session,
@@ -881,9 +1353,14 @@ class RuntimeCommandService:
                     outcome=outcome,
                     task_status=settled_status,
                     failure_class=failure,
+                    terminal_artifact_refs=settlement_refs,
                     ended_at=now,
                 ).model_dump(mode="json"),
-                StableId(f"{command_id.root}.attempt-settled"),
+                _bounded_runtime_identity(
+                    f"{command_id.root}.attempt-settled",
+                    f"{attempt.attempt_id.root}.operator-settled",
+                ),
+                artifact_refs=settlement_refs,
             )
             return settled_task
 
@@ -989,7 +1466,10 @@ class RuntimeCommandService:
                     task_id=task.task_id,
                     attempt_id=attempt.attempt_id,
                 ).model_dump(mode="json"),
-                StableId(f"{checkpoint.checkpoint_id.root}.saved"),
+                _bounded_runtime_identity(
+                    f"{checkpoint.checkpoint_id.root}.saved",
+                    f"{attempt.attempt_id.root}.checkpoint-saved.{checkpoint.event_position}",
+                ),
                 artifact_refs=(checkpoint.state_artifact_ref,),
             )
             return checkpoint
@@ -1026,12 +1506,26 @@ class RuntimeCommandService:
                     if task.current_attempt_id is None
                     else TaskStatus.RECOVERY_PENDING
                 )
+            writer_generation_after = (
+                0
+                if (
+                    action == "retry"
+                    and task.kind in {TaskKind.PLAN_COMMIT, TaskKind.DRAFT_COMMIT}
+                    and task.writer_generation > 0
+                )
+                else None
+            )
             updated = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
                     "status": status,
                     "paused": action in {"pause", "cancel"},
                     "cancel_requested": action == "cancel",
+                    "writer_generation": (
+                        task.writer_generation
+                        if writer_generation_after is None
+                        else writer_generation_after
+                    ),
                 }
             )
             self._update_task(session, updated, now)
@@ -1041,7 +1535,11 @@ class RuntimeCommandService:
                 task.task_id,
                 RunEventType.RUNTIME_CONTROL_RECORDED,
                 ControlIntentPayload(
-                    command_id=command_id, action=action, actor_id=actor_id, reason=reason
+                    command_id=command_id,
+                    action=action,
+                    actor_id=actor_id,
+                    reason=reason,
+                    writer_generation_after=writer_generation_after,
                 ).model_dump(mode="json"),
                 command_id,
             )
@@ -1086,8 +1584,7 @@ class RuntimeCommandService:
                     "status": TaskStatus.READY,
                     "failure_budget": task.failure_budget + additional_attempts,
                     "planner_memory_budget_extensions": (
-                        task.planner_memory_budget_extensions
-                        + additional_planner_memory_tranches
+                        task.planner_memory_budget_extensions + additional_planner_memory_tranches
                     ),
                 }
             )
@@ -1103,9 +1600,7 @@ class RuntimeCommandService:
                     actor_id=actor_id,
                     reason=reason,
                     additional_attempts=additional_attempts,
-                    additional_planner_memory_tranches=(
-                        additional_planner_memory_tranches
-                    ),
+                    additional_planner_memory_tranches=(additional_planner_memory_tranches),
                 ).model_dump(mode="json"),
                 command_id,
             )
@@ -1135,9 +1630,7 @@ class RuntimeCommandService:
                 update={
                     "task_revision": task.task_revision + 1,
                     "status": (
-                        TaskStatus.READY
-                        if task.failure_budget > 0
-                        else TaskStatus.BUDGET_REVIEW
+                        TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
                     ),
                     "block_cause": None,
                 }
@@ -1172,7 +1665,13 @@ class RuntimeCommandService:
         with self._session_factory() as session, session.begin():
             task = self._load_task(session, task_id, lock=True)
             self._require_observed_revision(task, observed_revision)
-            if not task.paused or task.current_attempt_id is not None:
+            if (
+                task.kind is TaskKind.MAINTENANCE
+                and task.status is TaskStatus.WAITING_INPUT
+                and not task.paused
+            ):
+                self._require_waiting_input_checkpoint(task)
+            elif not task.paused or task.current_attempt_id is not None:
                 raise RuntimeCommandConflictError(
                     "resume requires a paused task without active attempt"
                 )
@@ -1180,9 +1679,7 @@ class RuntimeCommandService:
                 update={
                     "task_revision": task.task_revision + 1,
                     "status": (
-                        TaskStatus.READY
-                        if task.failure_budget > 0
-                        else TaskStatus.BUDGET_REVIEW
+                        TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
                     ),
                     "paused": False,
                     "cancel_requested": False,
@@ -1201,17 +1698,67 @@ class RuntimeCommandService:
             )
             return updated
 
+    def _require_waiting_input_checkpoint(self, task: TaskRecord) -> None:
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError("maintenance resume requires an ArtifactRepository")
+        result_refs = tuple(
+            reference
+            for reference in task.terminal_artifact_refs
+            if reference.media_type == MEMORY_WRITE_RESULT_MEDIA_TYPE
+        )
+        if len(result_refs) != 1:
+            raise RuntimeCommandConflictError(
+                "maintenance resume requires one workflow result artifact"
+            )
+        try:
+            result = MemoryWriteWorkflowResult.model_validate_json(
+                self._artifacts.read_verified(result_refs[0]), strict=True
+            )
+        except (KeyError, RuntimeError, ValueError) as error:
+            raise RuntimeCommandConflictError(
+                "maintenance resume workflow result is invalid"
+            ) from error
+        if result.status is not MemoryWriteWorkflowStatus.HUMAN_REQUIRED:
+            raise RuntimeCommandConflictError(
+                "maintenance resume requires a HUMAN_REQUIRED workflow result"
+            )
+        if result.checkpoint_ref is None or result.base_commit != task.basis_commit:
+            raise RuntimeCommandConflictError(
+                "maintenance resume requires a basis-bound workflow checkpoint"
+            )
+
     def claim_writer_lane(self, fence: AttemptFence) -> AttemptFence:
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
             task, attempt = self._require_fence(session, fence)
-            if task.kind not in {TaskKind.PLAN_COMMIT, TaskKind.DRAFT_COMMIT}:
-                raise RuntimeCommandConflictError("only commit tasks may claim the writer lane")
+            if task.kind not in {
+                TaskKind.PLAN_COMMIT,
+                TaskKind.DRAFT_COMMIT,
+                TaskKind.MAINTENANCE,
+            }:
+                raise RuntimeCommandConflictError(
+                    "only commit tasks or maintenance tasks may claim the writer lane"
+                )
             row = session.scalar(
                 select(ProjectWriterClaimRow)
                 .where(ProjectWriterClaimRow.project_id == task.project_id.root)
                 .with_for_update()
             )
+            if row is not None:
+                if row.task_id == task.task_id.root and row.attempt_id == attempt.attempt_id.root:
+                    # Repeated calls from the same owner are idempotent.  Do
+                    # not advance the generation or emit a second claim event
+                    # for the same active attempt.
+                    return fence.model_copy(update={"writer_generation": row.generation})
+                owner = session.get(RuntimeTaskProjectionRow, row.task_id)
+                if (
+                    owner is not None
+                    and owner.status == TaskStatus.RUNNING.value
+                    and owner.current_attempt_id == row.attempt_id
+                ):
+                    raise WriterLaneBusyError(
+                        "project writer lane is already held by an active attempt"
+                    )
             generation = 1 if row is None else row.generation + 1
             if row is None:
                 session.add(
@@ -1523,8 +2070,9 @@ class RuntimeCommandService:
                     task_id=task.task_id,
                     attempt_id=attempt.attempt_id,
                 ).model_dump(mode="json"),
-                StableId(
-                    f"{effect_receipt.effect_identity.root}.{effect_receipt.status.value}"
+                _bounded_runtime_identity(
+                    f"{effect_receipt.effect_identity.root}.{effect_receipt.status.value}",
+                    f"{attempt.attempt_id.root}.effect-{effect_receipt.status.value}",
                 ),
                 artifact_refs=effect_refs,
             )
@@ -1675,7 +2223,7 @@ class RuntimeCommandService:
                 successor.task_id,
                 RunEventType.RUNTIME_TASK_CREATED,
                 TaskCreatedPayload(task=successor).model_dump(mode="json"),
-                StableId(f"{successor.task_id.root}.created"),
+                _task_created_identity(successor.task_id),
             )
             self._insert_task(session, successor, now)
 
@@ -1706,7 +2254,7 @@ class RuntimeCommandService:
             occurred_at=datetime.now(UTC),
             idempotency_identity=identity,
             payload_schema_version=STAGE5_EVENT_SCHEMA_VERSION,
-            trace_id=f"runtime.{run_id.root}",
+            trace_id=_bounded_runtime_identity(f"runtime.{run_id.root}", run_id.root).root,
             payload=payload,
             artifact_refs=artifact_refs,
         )
@@ -1803,4 +2351,6 @@ __all__ = [
     "RuntimeCommandError",
     "RuntimeCommandService",
     "StaleAttemptFenceError",
+    "WriterLaneBusyError",
+    "bounded_runtime_identity",
 ]

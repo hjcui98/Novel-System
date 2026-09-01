@@ -42,6 +42,31 @@ class ArtifactRepository:
             schema_version=schema_version,
         )
 
+    def put_or_reuse_existing(
+        self,
+        data: bytes,
+        media_type: str,
+        schema_version: SchemaVersion,
+    ) -> ArtifactRef:
+        """Persist a projection or reuse the immutable metadata for identical content.
+
+        Content-addressed text can already be stored by another read-only projection with a
+        different media label. Such projections must bind the existing object identity rather
+        than attempting to relabel the object; ordinary ``put`` remains strict for all other
+        callers.
+        """
+
+        artifact_id = sha256_id(data)
+        stored = self._object_store.put_if_absent(object_key(artifact_id), data, media_type)
+        if stored.byte_length != len(data):
+            raise ArtifactIntegrityError("object store byte length differs from produced artifact")
+        return ArtifactRef(
+            artifact_id=artifact_id,
+            media_type=stored.media_type,
+            byte_length=len(data),
+            schema_version=schema_version,
+        )
+
     def read_verified(self, artifact: ArtifactRef) -> bytes:
         key = object_key(artifact.artifact_id)
         try:

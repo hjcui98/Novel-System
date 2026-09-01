@@ -244,6 +244,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -468,6 +475,19 @@
         "input_context_hash": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "input_context_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Context Tokens"
+        },
         "kept_boundary": {
           "minimum": 0,
           "title": "Kept Boundary",
@@ -475,6 +495,19 @@
         },
         "output_context_hash": {
           "$ref": "#/$defs/ArtifactId"
+        },
+        "output_context_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Context Tokens"
         },
         "parent_generation": {
           "minimum": 0,
@@ -493,6 +526,20 @@
         },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "reduction_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reduction Ratio"
         },
         "removed_item_ids": {
           "items": {
@@ -1386,7 +1433,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -1446,6 +1496,7 @@
       "title": "FutureIsolationAttestation",
       "type": "object"
     },
+    "JsonValue": {},
     "LocalRepairScope": {
       "additionalProperties": false,
       "description": "The complete trusted boundary an Editor local repair may change.",
@@ -1492,6 +1543,80 @@
       ],
       "title": "LocalRepairScope",
       "type": "object"
+    },
+    "LoopRoundProgress": {
+      "additionalProperties": false,
+      "description": "Minimal evidence that one Writer/Planner/Editor/repair round changed work.",
+      "properties": {
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "basis_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "changed_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Changed Ids",
+          "type": "array"
+        },
+        "input_candidate_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/LoopRoundProgressKind"
+        },
+        "remaining_work": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remaining Work",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "LoopRoundProgress",
+      "type": "object"
+    },
+    "LoopRoundProgressKind": {
+      "description": "Durable per-round progress. Retry count or model self-praise is not progress.",
+      "enum": [
+        "PROGRESSED",
+        "NO_PROGRESS",
+        "WAITING",
+        "TERMINAL"
+      ],
+      "title": "LoopRoundProgressKind",
+      "type": "string"
     },
     "MemoryHintChangeKind": {
       "enum": [
@@ -1600,6 +1725,15 @@
       "title": "ModelCallRecord",
       "type": "object"
     },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "ModelRole": {
       "enum": [
         "implementation_model",
@@ -1611,6 +1745,10 @@
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
         "cost_usd": {
           "anyOf": [
             {
@@ -2059,11 +2197,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"
@@ -2710,6 +2864,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/DraftArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "round_progress": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoopRoundProgress"
         },
         {
           "type": "null"

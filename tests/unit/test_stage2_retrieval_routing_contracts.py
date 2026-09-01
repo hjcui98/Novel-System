@@ -245,6 +245,44 @@ def test_projection_attestation_requires_real_vector_evidence_for_exact_real_hyb
         )
 
 
+def test_projection_attestation_names_text_replay_without_faking_hybrid_evidence() -> None:
+    channels = (
+        RetrievalChannel.ANCHOR_BM25,
+        RetrievalChannel.ANCHOR_DENSE,
+        RetrievalChannel.GROUNDED_BM25,
+        RetrievalChannel.GROUNDED_DENSE,
+        RetrievalChannel.HIERARCHY,
+    )
+    replay = ProjectionAttestation(
+        attestation_id=StableId("attestation.text-replay"),
+        retrieval_backend_profile=RetrievalBackendProfile.BENCHMARK_TEXT_REPLAY,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        capability=SnapshotCapability(
+            source_commit=COMMIT,
+            snapshot_id=SNAPSHOT,
+            status=SnapshotCapabilityStatus.EXACT,
+            available_channels=channels,
+            coverage_by_channel=tuple(
+                ChannelCoverage(channel=channel, expected_units=1, ready_units=1)
+                for channel in channels
+            ),
+        ),
+        r1_record_count=0,
+        r1_entity_association_count=0,
+        graph_node_count=0,
+        graph_edge_count=0,
+        reranker_model="deterministic-text-replay",
+        reranker_revision="v1",
+    )
+    assert replay.retrieval_backend_profile is RetrievalBackendProfile.BENCHMARK_TEXT_REPLAY
+    assert replay.quality_eligible is False
+    with pytest.raises(ValidationError, match="embedding runtime"):
+        ProjectionAttestation.model_validate(
+            replay.model_dump(mode="python") | {"embedding_model": "not-a-text-replay"}
+        )
+
+
 def test_routing_features_and_route_contracts_reject_fanout_and_unsafe_graph_proof() -> None:
     features = RetrievalRoutingFeatures(
         query_intent=Stage1QueryIntent.EXACT_QUOTE,

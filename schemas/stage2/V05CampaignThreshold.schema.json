@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "metric": {
+      "minLength": 1,
+      "title": "Metric",
+      "type": "string"
+    },
+    "operator": {
+      "enum": [
+        ">=",
+        "<=",
+        "=="
+      ],
+      "title": "Operator",
+      "type": "string"
+    },
+    "value": {
+      "title": "Value",
+      "type": "number"
+    }
+  },
+  "required": [
+    "metric",
+    "operator",
+    "value"
+  ],
+  "title": "V05CampaignThreshold",
+  "type": "object"
+}

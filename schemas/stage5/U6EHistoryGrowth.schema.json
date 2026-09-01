@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_count": {
+      "minimum": 0,
+      "title": "Artifact Count",
+      "type": "integer"
+    },
+    "attempt_count": {
+      "minimum": 0,
+      "title": "Attempt Count",
+      "type": "integer"
+    },
+    "chapter_index": {
+      "minimum": 0,
+      "title": "Chapter Index",
+      "type": "integer"
+    },
+    "effect_count": {
+      "minimum": 0,
+      "title": "Effect Count",
+      "type": "integer"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
+    },
+    "task_count": {
+      "minimum": 0,
+      "title": "Task Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "chapter_index",
+    "event_count",
+    "task_count",
+    "attempt_count",
+    "effect_count",
+    "model_call_count",
+    "artifact_count"
+  ],
+  "title": "U6EHistoryGrowth",
+  "type": "object"
+}

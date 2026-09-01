@@ -1,5 +1,40 @@
 {
   "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "EvidenceFirstGap": {
       "additionalProperties": false,
       "properties": {
@@ -66,6 +101,11 @@
       "title": "NeedEvidenceSemanticStatus",
       "type": "string"
     },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -98,6 +138,14 @@
   "additionalProperties": false,
   "description": "Writer-visible evidence item: purpose plus ledger refs or a typed gap.\n\n``purpose`` is derived only from the public Need's semantic question /\nwhy-needed / facet metadata; it never rewrites material into a claim and\nnever reads Gold or future text.  ``raw_preview`` is a bounded prefix of\nthe exact Ledger text (never a model rewrite) with an explicit truncation\nflag.",
   "properties": {
+    "advisory_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Advisory Artifact Refs",
+      "type": "array"
+    },
     "evidence_ledger_ids": {
       "default": [],
       "items": {
@@ -206,6 +254,11 @@
       "default": "",
       "title": "Source Scope",
       "type": "string"
+    },
+    "unverified": {
+      "default": false,
+      "title": "Unverified",
+      "type": "boolean"
     },
     "validity": {
       "$ref": "#/$defs/WriterContextValidity",

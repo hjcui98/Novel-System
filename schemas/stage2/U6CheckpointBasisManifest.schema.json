@@ -1,0 +1,354 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "ProjectProfileRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "project_profile",
+          "default": "project_profile",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ProjectProfileRootRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "TextRootRef",
+      "type": "object"
+    },
+    "U6BasisKind": {
+      "enum": [
+        "public_declared",
+        "internal_n_minus_1"
+      ],
+      "title": "U6BasisKind",
+      "type": "string"
+    },
+    "U6BasisStatus": {
+      "enum": [
+        "PENDING_REPLAY",
+        "FROZEN"
+      ],
+      "title": "U6BasisStatus",
+      "type": "string"
+    },
+    "U6CheckpointBasis": {
+      "additionalProperties": false,
+      "description": "One unique chapter basis with optional Track C/D fan-out jobs.",
+      "properties": {
+        "basis_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "commit_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "jobs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Jobs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/U6BasisKind"
+        },
+        "plan_root_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanRootRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "profile_root_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectProfileRootRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "release_policy": {
+          "const": "internal_basis_only",
+          "default": "internal_basis_only",
+          "title": "Release Policy",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/U6BasisStatus"
+        },
+        "text_root_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextRootRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "world_root_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorldRootRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "basis_id",
+        "checkpoint_chapter",
+        "kind",
+        "status"
+      ],
+      "title": "U6CheckpointBasis",
+      "type": "object"
+    },
+    "WorldRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "world",
+          "default": "world",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "WorldRootRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Frozen basis manifest shared by public checkpoints and canary jobs.",
+  "properties": {
+    "basis_nodes": {
+      "items": {
+        "$ref": "#/$defs/U6CheckpointBasis"
+      },
+      "title": "Basis Nodes",
+      "type": "array"
+    },
+    "benchmark_id": {
+      "minLength": 1,
+      "title": "Benchmark Id",
+      "type": "string"
+    },
+    "frozen_build_id": {
+      "minLength": 1,
+      "title": "Frozen Build Id",
+      "type": "string"
+    },
+    "replay_scope": {
+      "const": "0..300 sequential_once",
+      "title": "Replay Scope",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/U6BasisStatus"
+    },
+    "status_machine": {
+      "default": [
+        "PENDING_REPLAY",
+        "FROZEN"
+      ],
+      "items": {
+        "$ref": "#/$defs/U6BasisStatus"
+      },
+      "title": "Status Machine",
+      "type": "array"
+    },
+    "status_note": {
+      "minLength": 1,
+      "title": "Status Note",
+      "type": "string"
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "benchmark_id",
+    "version",
+    "frozen_build_id",
+    "status",
+    "replay_scope",
+    "status_note",
+    "basis_nodes"
+  ],
+  "title": "U6CheckpointBasisManifest",
+  "type": "object"
+}

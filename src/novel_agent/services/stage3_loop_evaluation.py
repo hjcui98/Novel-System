@@ -21,6 +21,11 @@ from novel_agent.domain.stage3_loop_evaluation import (
 )
 from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.model_call_ledger import (
+    ModelCallLedgerPort,
+    aggregate_model_calls,
+    summarize_model_cost,
+)
 from novel_agent.services.stage3_evaluation import evaluate_rules
 from novel_agent.services.writer_context_loop import WriterContextLoopService
 from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
@@ -61,6 +66,7 @@ class Stage3FullChainEvaluationService:
         manifest: Stage3FormalManifest,
         factory: Stage3FullChainRuntimeFactory,
         evaluator: Stage3PostFreezeEvaluator,
+        call_ledger: ModelCallLedgerPort | None = None,
     ) -> Stage3FullChainEvaluationReport:
         from datetime import UTC, datetime
 
@@ -88,7 +94,26 @@ class Stage3FullChainEvaluationService:
                     )
                     rules = evaluate_rules(case, scheme, final_text, sidecar)
                     scores = await evaluator.evaluate(case, scheme, final_text)
-                calls = result.model_call_records
+                ledger_entries = (
+                    tuple(
+                        entry
+                        for entry in call_ledger.list_for_run(prepared.request.run_id)
+                        if entry.task_id == prepared.request.task_id
+                    )
+                    if call_ledger is not None
+                    else ()
+                )
+                calls = (
+                    tuple(
+                        entry.call_record
+                        for entry in ledger_entries
+                        if entry.call_record is not None
+                    )
+                    if call_ledger is not None
+                    else result.model_call_records
+                )
+                call_aggregates = aggregate_model_calls(ledger_entries)
+                model_cost, model_cost_availability = summarize_model_cost(calls)
                 schemes.append(
                     Stage3FullChainSchemeResult(
                         case_id=case.case_id,
@@ -109,6 +134,9 @@ class Stage3FullChainEvaluationService:
                         input_tokens=sum(call.usage.input_tokens for call in calls),
                         output_tokens=sum(call.usage.output_tokens for call in calls),
                         latency_ms=sum(call.latency_ms for call in calls),
+                        model_cost_usd=model_cost,
+                        model_cost_availability=model_cost_availability,
+                        model_call_aggregates=call_aggregates,
                     )
                 )
             case_results.append(

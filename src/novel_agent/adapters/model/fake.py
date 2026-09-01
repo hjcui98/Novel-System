@@ -7,6 +7,7 @@ from novel_agent.domain.model_calls import ModelRequest, ModelUsage, ProviderMod
 
 class FakeModelEndpoint:
     is_external = False
+    default_thinking = False
 
     def __init__(
         self,
@@ -19,6 +20,7 @@ class FakeModelEndpoint:
         self.model_version = model_version
         self.error = error
         self.requests: list[ModelRequest] = []
+        self.max_output_tokens: int | None = None
 
     async def generate(self, request: ModelRequest) -> ProviderModelResult:
         self.requests.append(request)

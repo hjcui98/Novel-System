@@ -82,6 +82,14 @@
   },
   "additionalProperties": false,
   "properties": {
+    "advisory_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Advisory Artifact Refs",
+      "type": "array"
+    },
     "assembler_version": {
       "minLength": 1,
       "title": "Assembler Version",

@@ -22,7 +22,11 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.prompts import PromptRegistry, PromptTemplate
 from novel_agent.prompts.registry import content_hash
-from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from novel_agent.services.model_gateway import (
+    ModelGateway,
+    RegisteredModelEndpoint,
+    StructuredGenerationExhausted,
+)
 from novel_agent.skills import SkillRegistry, SkillTemplate
 
 HASH_A = ArtifactId("sha256:" + "a" * 64)
@@ -145,6 +149,33 @@ def test_runner_layers_untrusted_payload_and_records_configuration(tmp_path: Pat
     assert sent.skill_contract_hashes == (spec.skills[0].content_hash,)
     assert result.receipt.skill_receipts[0].skill == spec.skills[0]
     assert result.receipt.started_at == result.model_call.started_at
+
+
+def test_runner_binds_one_effective_budget_for_later_call(tmp_path: Path) -> None:
+    runner, _endpoint, _spec = harness(tmp_path)
+
+    bound, budget = runner.bind_effective_budget(request())
+
+    assert bound.max_output_tokens == budget.total_output_budget
+    assert bound.budget_source is budget.budget_source
+    assert runner._gateway.budget_results[bound.request_id.root] == budget
+
+
+def test_runner_exposes_audited_structured_failure(tmp_path: Path) -> None:
+    runner, endpoint, _spec = harness(tmp_path)
+    endpoint.response_text = "{}"
+
+    with pytest.raises(StructuredGenerationExhausted):
+        asyncio.run(
+            runner.run(
+                AgentType.PLANNER,
+                AgentMode.PROJECT_BOOTSTRAP,
+                "1.0.0",
+                request(),
+                "payload",
+                Answer,
+            )
+        )
 
 
 @pytest.mark.parametrize("mismatch", ["skill", "prompt"])

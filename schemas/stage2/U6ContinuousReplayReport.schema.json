@@ -1,0 +1,430 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "ProjectProfileRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "project_profile",
+          "default": "project_profile",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ProjectProfileRootRef",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "TextRootRef",
+      "type": "object"
+    },
+    "U6CheckpointLineage": {
+      "additionalProperties": false,
+      "description": "Durable identity comparison recorded after a checkpoint namespace closes.",
+      "properties": {
+        "basis_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_chapter": {
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "control_replay_identity": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "evaluation_namespace": {
+          "enum": [
+            "PENDING_READOUT",
+            "DISCARDED"
+          ],
+          "title": "Evaluation Namespace",
+          "type": "string"
+        },
+        "identity_match": {
+          "title": "Identity Match",
+          "type": "boolean"
+        },
+        "index_lineage_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "memory_identity_after": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "memory_identity_before": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "plan_root_ref": {
+          "$ref": "#/$defs/PlanRootRef"
+        },
+        "profile_root_ref": {
+          "$ref": "#/$defs/ProjectProfileRootRef"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "text_root_ref": {
+          "$ref": "#/$defs/TextRootRef"
+        },
+        "world_root_ref": {
+          "$ref": "#/$defs/WorldRootRef"
+        }
+      },
+      "required": [
+        "basis_id",
+        "checkpoint_chapter",
+        "commit_id",
+        "snapshot_id",
+        "plan_root_ref",
+        "text_root_ref",
+        "world_root_ref",
+        "profile_root_ref",
+        "index_lineage_ref",
+        "memory_identity_before",
+        "memory_identity_after",
+        "control_replay_identity",
+        "evaluation_namespace",
+        "identity_match"
+      ],
+      "title": "U6CheckpointLineage",
+      "type": "object"
+    },
+    "WorldRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "world",
+          "default": "world",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "WorldRootRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Report that distinguishes frozen basis preparation from readout completion.",
+  "properties": {
+    "basis_count": {
+      "minimum": 0,
+      "title": "Basis Count",
+      "type": "integer"
+    },
+    "basis_manifest_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "benchmark_id": {
+      "minLength": 1,
+      "title": "Benchmark Id",
+      "type": "string"
+    },
+    "benchmark_version": {
+      "minLength": 1,
+      "title": "Benchmark Version",
+      "type": "string"
+    },
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "canary_job_count": {
+      "minimum": 0,
+      "title": "Canary Job Count",
+      "type": "integer"
+    },
+    "chapters_declared": {
+      "minimum": 0,
+      "title": "Chapters Declared",
+      "type": "integer"
+    },
+    "chapters_ingested": {
+      "minimum": 0,
+      "title": "Chapters Ingested",
+      "type": "integer"
+    },
+    "completed_readout_task_count": {
+      "minimum": 0,
+      "title": "Completed Readout Task Count",
+      "type": "integer"
+    },
+    "control_replay_identity": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "duplicate_checkpoint_declarations": {
+      "minimum": 0,
+      "title": "Duplicate Checkpoint Declarations",
+      "type": "integer"
+    },
+    "evaluation_discard_count": {
+      "minimum": 0,
+      "title": "Evaluation Discard Count",
+      "type": "integer"
+    },
+    "expected_readout_task_count": {
+      "minimum": 0,
+      "title": "Expected Readout Task Count",
+      "type": "integer"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "ingest_passes": {
+      "minimum": 0,
+      "title": "Ingest Passes",
+      "type": "integer"
+    },
+    "internal_basis_count": {
+      "minimum": 0,
+      "title": "Internal Basis Count",
+      "type": "integer"
+    },
+    "lineage": {
+      "items": {
+        "$ref": "#/$defs/U6CheckpointLineage"
+      },
+      "title": "Lineage",
+      "type": "array"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "public_basis_count": {
+      "minimum": 0,
+      "title": "Public Basis Count",
+      "type": "integer"
+    },
+    "readout_report_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "schema": {
+      "const": "u6-continuous-replay-report.v1",
+      "default": "u6-continuous-replay-report.v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "BASIS_FROZEN",
+        "REVIEW_REQUIRED",
+        "COMPLETED"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "campaign_id",
+    "run_id",
+    "project_id",
+    "benchmark_id",
+    "benchmark_version",
+    "basis_manifest_ref",
+    "chapters_declared",
+    "chapters_ingested",
+    "ingest_passes",
+    "public_basis_count",
+    "internal_basis_count",
+    "basis_count",
+    "canary_job_count",
+    "expected_readout_task_count",
+    "completed_readout_task_count",
+    "evaluation_discard_count",
+    "future_leakage_count",
+    "duplicate_checkpoint_declarations",
+    "control_replay_identity",
+    "lineage",
+    "status"
+  ],
+  "title": "U6ContinuousReplayReport",
+  "type": "object"
+}

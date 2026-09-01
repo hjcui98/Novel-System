@@ -21,7 +21,22 @@ from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.agent_context import ContextConsumer, ContextItemKind
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
-from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
+from novel_agent.domain.memory import (
+    ChannelHit,
+    ContextBudgetReport,
+    FacetClosureStatus,
+    FacetEvidenceReceipt,
+    FusedCandidate,
+    NeedExecutionStatus,
+    NeedFacetKind,
+    RetrievalChannel,
+    RetrievalStopReason,
+    RetrievalTrace,
+    RetrievalUnit,
+    RetrievalUnitKind,
+    Stage1ContextPackage,
+    Stage1MemoryNeed,
+)
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
     PlannerContextBudgetReport,
@@ -37,12 +52,16 @@ from novel_agent.domain.planning import (
     PlanningEvaluationProfile,
     PlanningEvaluationRubric,
     PlanningEvaluationThresholds,
+    PlanningInquiry,
     PlanningInquiryDraft,
     PlanningLoopCheckpoint,
     PlanningLoopRequest,
     PlanningLoopResult,
     PlanningLoopTerminal,
+    PlanningProblemIdentitySeed,
     PlanningProvenance,
+    PlanningTurnAction,
+    PlanningTurnOutput,
     PlanReview,
     PlanReviewDraft,
     PlanReviewIssue,
@@ -55,6 +74,7 @@ from novel_agent.domain.stage2 import (
     AgentType,
     ControllerStopReason,
     PlannerExecutionResult,
+    PlannerProposalDraft,
     PlanningTask,
     PlanProposal,
     ProjectIntentModel,
@@ -75,7 +95,7 @@ from novel_agent.services.agent_context import (
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
 from novel_agent.services.memory_gateway import MemoryGateway, MemoryGatewayBlockedError
-from novel_agent.services.model_gateway import ModelRoutingError
+from novel_agent.services.model_gateway import ModelRoutingError, StructuredGenerationExhausted
 from novel_agent.services.planner_context_assembler import (
     PlannerContextAssembler,
     PlannerContextAssemblyError,
@@ -84,7 +104,11 @@ from novel_agent.services.planner_context_runtime import (
     PlannerContextRuntimeError,
     SharedPlannerContextRuntime,
 )
-from novel_agent.services.planning_context_loop import PlanningContextLoopService
+from novel_agent.services.planning_context_loop import (
+    PlanningContextLoopService,
+    _planner_memory_question_chunk_size,
+    _requested_planner_memory_question_ids,
+)
 from novel_agent.services.planning_evaluation import (
     REQUIRED_BLIND_REVIEW_METRICS,
     ConfiguredPlanningEvaluationAdapter,
@@ -117,6 +141,7 @@ from tests.unit.test_stage2_planner_agent import (
     task as _agent_task,
 )
 from tests.unit.test_stage4_planning_contracts import (
+    BASE,
     HASH,
     PROJECT,
     VERSION,
@@ -267,10 +292,13 @@ class _ModePlanner(_BootstrapPlanner):
         self._unresolved = unresolved
         self.inquiry_calls = 0
         self.plan_calls = 0
+        self.turn_calls = 0
         self.plan_requests: list[dict[str, object]] = []
+        self.inquiry_source_payloads: list[str] = []
 
     async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
         self.inquiry_calls += 1
+        self.inquiry_source_payloads.append(cast(str, kwargs["source_payload"]))
         source_artifacts = cast(tuple[ArtifactRef, ...], kwargs["source_artifacts"])
         inquiry = _inquiry(self._mode, source_artifacts[0])
         parent = cast(StableId | None, kwargs.get("parent_inquiry_id"))
@@ -330,6 +358,313 @@ class _ModePlanner(_BootstrapPlanner):
         )
 
 
+class _TurnPlanner(_ModePlanner):
+    """Planner that exposes run_turn so the loop can request reactive Memory."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self.turn_calls = 0
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        del kwargs
+        self.turn_calls += 1
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.REQUEST_MEMORY,
+            memory_questions=self._questions,
+        )
+        return turn, None, cast(ModelCallRecord, object())
+
+
+class _MemoryThenReadyPlanner(_ModePlanner):
+    """First turn requests Memory; the follow-up turn authors the Plan."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+        first_turn_usage: object | None = None,
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self._first_turn_usage = first_turn_usage
+        self.turn_calls = 0
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        if self.turn_calls == 1:
+            turn = PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=self._questions,
+            )
+            return turn, None, self._first_turn_usage or cast(ModelCallRecord, object())
+        result, call = await self.run(**kwargs)
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.PLAN_READY,
+            plan_proposal=result.plan_proposal,
+        )
+        return turn, result, call
+
+
+class _HandledMemoryThenReadyPlanner(_ModePlanner):
+    """Repeats a closed Memory request once, then accepts the existing context."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self.turn_source_payloads: list[str] = []
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        self.turn_source_payloads.append(cast(str, kwargs["source_payload"]))
+        if self.turn_calls <= 2:
+            turn = PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=self._questions,
+            )
+            return turn, None, cast(ModelCallRecord, object())
+        result, call = await self.run(**kwargs)
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.PLAN_READY,
+            plan_proposal=result.plan_proposal,
+        )
+        return turn, result, call
+
+
+class _RejectedMemoryThenReadyPlanner(_ModePlanner):
+    """Requests an ungroundable fact once, then uses the rejection status."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("文风和句式参考是什么?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self.turn_source_payloads: list[str] = []
+
+    async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
+        inquiry, _ref, receipt, call = await super().propose_inquiry(**kwargs)
+        inquiry = cast(PlanningInquiry, inquiry).model_copy(
+            update={
+                "goal_proposals": tuple(
+                    goal.model_copy(update={"summary": "unanchored planner goal"})
+                    for goal in cast(PlanningInquiry, inquiry).goal_proposals
+                )
+            }
+        )
+        ref = self._artifacts.put(inquiry.model_dump_json().encode(), "application/json", VERSION)
+        return inquiry, ref, receipt, call
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        self.turn_source_payloads.append(cast(str, kwargs["source_payload"]))
+        if self.turn_calls == 1:
+            turn = PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=self._questions,
+            )
+            return turn, None, cast(ModelCallRecord, object())
+        result, call = await self.run(**kwargs)
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.PLAN_READY,
+            plan_proposal=result.plan_proposal,
+        )
+        return turn, result, call
+
+
+class _UnsupportedMemoryThenReadyPlanner(_ModePlanner):
+    """Receives a typed unsupported-content status before authoring the Plan."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self.turn_source_payloads: list[str] = []
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        self.turn_source_payloads.append(cast(str, kwargs["source_payload"]))
+        if self.turn_calls == 1:
+            turn = PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=self._questions,
+            )
+            return turn, None, cast(ModelCallRecord, object())
+        result, call = await self.run(**kwargs)
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.PLAN_READY,
+            plan_proposal=result.plan_proposal,
+        )
+        return turn, result, call
+
+
+class _UnsupportedRepeatsThenReadyPlanner(_ModePlanner):
+    """Repeats an unsupported request once; the bounded fallback then authors the Plan."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self.turn_source_payloads: list[str] = []
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        self.turn_source_payloads.append(cast(str, kwargs["source_payload"]))
+        return (
+            PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=self._questions,
+            ),
+            None,
+            cast(ModelCallRecord, object()),
+        )
+
+
+class _UnsupportedThenNarrowerThenReadyPlanner(_ModePlanner):
+    """Narrows an unsupported request once before authoring the Plan."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+        narrower_questions: tuple[str, ...] = ("what is the current state of 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode)
+        self._questions = questions
+        self._narrower_questions = narrower_questions
+        self.turn_source_payloads: list[str] = []
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        self.turn_calls += 1
+        self.turn_source_payloads.append(cast(str, kwargs["source_payload"]))
+        questions = (
+            self._questions
+            if self.turn_calls == 1
+            else self._narrower_questions
+            if self.turn_calls == 2
+            else ()
+        )
+        if questions:
+            turn = PlanningTurnOutput(
+                action=PlanningTurnAction.REQUEST_MEMORY,
+                memory_questions=questions,
+            )
+            return turn, None, cast(ModelCallRecord, object())
+        result, call = await self.run(**kwargs)
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.PLAN_READY,
+            plan_proposal=result.plan_proposal,
+        )
+        return turn, result, call
+
+
+def _fixture_supported_trace(
+    need: Stage1MemoryNeed,
+    *,
+    supported: bool,
+    with_candidate: bool = False,
+    snapshot_id: StableId | None = None,
+) -> RetrievalTrace:
+    required = (
+        tuple(need.completion_spec.required_need_facet_ids)
+        if need.completion_spec is not None
+        else tuple(facet.need_facet_id for facet in need.need_facets)
+    )
+    facet_by_id = {facet.need_facet_id: facet for facet in need.need_facets}
+    receipts = tuple(
+        FacetEvidenceReceipt(
+            need_id=need.need_id,
+            need_facet_id=facet_id,
+            facet_kind=facet_by_id[facet_id].facet_kind,
+            mandatory=need.requirement.value == "mandatory",
+            status=(FacetClosureStatus.SUPPORTED if supported else FacetClosureStatus.UNSUPPORTED),
+            stop_reason="fixture",
+        )
+        for facet_id in required
+        if facet_id in facet_by_id
+    )
+    candidates = ()
+    if with_candidate:
+        unit = RetrievalUnit(
+            unit_id=StableId(f"fixture-unit.{need.need_id.root}"),
+            unit_kind=RetrievalUnitKind.FACT_ANCHOR,
+            source_commit=need.base_commit,
+            snapshot_id=snapshot_id or StableId("fixture-snapshot"),
+            text="fixture evidence",
+        )
+        candidates = (
+            FusedCandidate(
+                unit=unit,
+                fused_rank=1,
+                rrf_score=1.0,
+                channel_hits=(
+                    ChannelHit(
+                        unit=unit,
+                        channel=RetrievalChannel.R0,
+                        channel_rank=1,
+                        raw_score=1.0,
+                        candidate_count=1,
+                        hit_reason="fixture",
+                    ),
+                ),
+            ),
+        )
+    return RetrievalTrace(
+        need_id=need.need_id,
+        intent=need.query_intent,
+        allowed_channels=(),
+        channel_candidate_counts={},
+        candidates=candidates,
+        fusion_applied=False,
+        stop_reason=(
+            RetrievalStopReason.BUDGET_SATISFIED
+            if candidates
+            else RetrievalStopReason.NO_EXECUTABLE_QUERY
+        ),
+        need_execution_status=(
+            NeedExecutionStatus.EXECUTED_WITH_CANDIDATES
+            if candidates
+            else NeedExecutionStatus.EXECUTED_EMPTY
+        ),
+        required_need_facet_ids=required,
+        closed_need_facet_ids=tuple(
+            receipt.need_facet_id
+            for receipt in receipts
+            if receipt.status is FacetClosureStatus.SUPPORTED
+        ),
+        facet_receipts=receipts,
+    )
+
+
 class _FixtureMemory:
     def __init__(
         self,
@@ -340,6 +675,7 @@ class _FixtureMemory:
         blocked: bool = False,
         mandatory_facets_total: int = 1,
         mandatory_facets_closed: int = 1,
+        with_candidate: bool = False,
     ) -> None:
         self._artifacts = artifacts
         self._stop_reason = stop_reason
@@ -347,6 +683,7 @@ class _FixtureMemory:
         self._blocked = blocked
         self._mandatory_facets_total = mandatory_facets_total
         self._mandatory_facets_closed = mandatory_facets_closed
+        self._with_candidate = with_candidate
         self.calls = 0
         self.requests: list[object] = []
 
@@ -357,11 +694,23 @@ class _FixtureMemory:
         if self._blocked:
             raise MemoryGatewayBlockedError("blocked")
         typed_request = cast(SimpleNamespace, request)
+        closed = self._mandatory_facets_closed >= self._mandatory_facets_total
+        traces = tuple(
+            _fixture_supported_trace(
+                need,
+                supported=closed,
+                with_candidate=self._with_candidate,
+                snapshot_id=typed_request.snapshot_id,
+            )
+            for need in tuple(getattr(typed_request, "initial_memory_needs", ()) or ())
+            if isinstance(need, Stage1MemoryNeed)
+        )
         package = Stage1ContextPackage(
             context_id=StableId(f"context.memory.{self.calls}"),
             base_commit=typed_request.base_commit,
             snapshot_id=typed_request.snapshot_id,
             task_contract="stage4",
+            retrieval_traces=traces,
             budget_report=ContextBudgetReport(
                 token_budget=100,
                 mandatory_tokens=0,
@@ -383,6 +732,35 @@ class _FixtureMemory:
                 mandatory_need_facets_closed=self._mandatory_facets_closed,
             ),
         )
+
+
+class _SupportThenUnresolvedMemory(_FixtureMemory):
+    """Keeps the inquiry supported, then returns an honest planner facet gap."""
+
+    def resolve(self, request: object, text_root: object, **kwargs: object) -> object:
+        if self.calls >= 1:
+            self._mandatory_facets_closed = 0
+        return super().resolve(request, text_root, **kwargs)
+
+
+class _SupportedThenReviewerUnresolvedMemory(_FixtureMemory):
+    """Keeps inquiry/planner Memory supported, then leaves reviewer Memory unresolved."""
+
+    def resolve(self, request: object, text_root: object, **kwargs: object) -> object:
+        if self.calls >= 1:
+            self._mandatory_facets_closed = 0
+        return super().resolve(request, text_root, **kwargs)
+
+
+class _UnresolvedThenSupportMemory(_FixtureMemory):
+    """Returns one content gap, then supports a narrower bounded question."""
+
+    def resolve(self, request: object, text_root: object, **kwargs: object) -> object:
+        if self.calls == 1:
+            self._mandatory_facets_closed = 0
+        else:
+            self._mandatory_facets_closed = self._mandatory_facets_total
+        return super().resolve(request, text_root, **kwargs)
 
 
 class _NoProgressPlanner(_ModePlanner):
@@ -575,6 +953,106 @@ def _shared_context_runtime(
     )
 
 
+def test_shared_runtime_long_task_checkpoints_do_not_alias_labels(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "long-task-runtime"))
+    inquiry_ref = _put(artifacts, "reviewed inquiry", "application/json")
+    stage1_ref = _put(artifacts, "memory context", "application/json")
+    profile_ref = _put(artifacts, "profile")
+    package = PlannerContextPackage(
+        package_id=StableId("planner-context.long.initial"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=BASE,
+        snapshot_id=StableId("snapshot.stage4.long"),
+        profile_ref=profile_ref,
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=stage1_ref,
+        items=(),
+        budget_report=PlannerContextBudgetReport(
+            token_budget=300,
+            mandatory_tokens=0,
+            selected_tokens=0,
+        ),
+        rendered_context="seed",
+    )
+    package_ref = artifacts.put(
+        package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    adapter, runtime = _shared_context_runtime(tmp_path, artifacts)
+    run_id = RunId("run.stage4.long-checkpoint")
+    task_id = TaskId("task.stage4.long." + "x" * 105)
+
+    initial = adapter.start(
+        run_id=run_id,
+        task_id=task_id,
+        seed=package,
+        seed_ref=package_ref,
+    )
+    first = PlannerContextItem(
+        context_item_id=StableId("planner-context.long.first"),
+        section=PlannerContextSection.CURRENT_STATE,
+        text="first fact",
+        token_count=10,
+    )
+    second = PlannerContextItem(
+        context_item_id=StableId("planner-context.long.second"),
+        section=PlannerContextSection.RELATION_CAUSAL,
+        text="second fact",
+        token_count=10,
+    )
+    delta_one = package.model_copy(
+        update={
+            "package_id": StableId("planner-context.long.delta-one"),
+            "items": (first,),
+            "budget_report": PlannerContextBudgetReport(
+                token_budget=300,
+                mandatory_tokens=0,
+                selected_tokens=10,
+            ),
+        }
+    )
+    delta_one_ref = artifacts.put(
+        delta_one.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    first_projection = adapter.append_delta(
+        run_id=run_id,
+        task_id=task_id,
+        delta_ref=delta_one_ref,
+    )
+    delta_two = delta_one.model_copy(
+        update={
+            "package_id": StableId("planner-context.long.delta-two"),
+            "items": (first, second),
+            "budget_report": PlannerContextBudgetReport(
+                token_budget=300,
+                mandatory_tokens=0,
+                selected_tokens=20,
+            ),
+        }
+    )
+    delta_two_ref = artifacts.put(
+        delta_two.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    second_projection = adapter.append_delta(
+        run_id=run_id,
+        task_id=task_id,
+        delta_ref=delta_two_ref,
+    )
+
+    assert initial.basis_event_position == 1
+    assert first_projection.basis_event_position > initial.basis_event_position
+    assert second_projection.basis_event_position > first_projection.basis_event_position
+    assert runtime.restore_latest(run_id, task_id=task_id, consumer=ContextConsumer.PLANNER)
+
+
 def test_shared_runtime_seeds_and_recovers_bootstrap_planner_context(tmp_path: Path) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "bootstrap-runtime"))
     source = _put(artifacts, "author source")
@@ -727,7 +1205,10 @@ def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: P
             sequence_limit=300,
             reserved_output_tokens=20,
             safety_allowance_tokens=20,
-            soft_limit_tokens=180,
+            # The rendered context carries stable item ids. Keep the
+            # post-compaction author+new fixture below the soft limit while
+            # the initial author+retired fixture still requires compaction.
+            soft_limit_tokens=220,
             tokenizer="test",
             tokenizer_version="v1",
         ),
@@ -824,6 +1305,214 @@ def test_shared_runtime_compacts_and_does_not_reexpand_retired_items(tmp_path: P
         )
     with pytest.raises(PlannerContextRuntimeError, match="unavailable"):
         adapter.project(run_id=initial.run_id, task_id=TaskId("task.wrong"))
+
+
+def test_shared_runtime_accepts_same_evidence_with_new_graph_provenance(
+    tmp_path: Path,
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "graph-provenance-runtime"))
+    author_ref = _put(artifacts, "author")
+    inquiry_ref = _put(artifacts, "reviewed inquiry", "application/json")
+    stage1_ref = _put(artifacts, "memory context", "application/json")
+    profile_ref = _put(artifacts, "profile")
+    graph_one = _put(artifacts, "graph path one", "application/vnd.novel-agent.graph-path+json")
+    graph_two = _put(artifacts, "graph path two", "application/vnd.novel-agent.graph-path+json")
+    author = PlannerContextItem(
+        context_item_id=StableId("planner-context.graph.author"),
+        section=PlannerContextSection.AUTHOR_INTENT,
+        text="author intent",
+        protected=True,
+        mandatory=True,
+        token_count=13,
+        source_artifact_refs=(author_ref,),
+    )
+    memory = PlannerContextItem(
+        context_item_id=StableId("planner-context.graph.memory"),
+        section=PlannerContextSection.CURRENT_STATE,
+        text="same evidence",
+        token_count=12,
+        graph_path_receipt_refs=(graph_one,),
+    )
+    package = PlannerContextPackage(
+        package_id=StableId("planner-context.graph.initial"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=CommitId("sha256:" + "a" * 64),
+        snapshot_id=StableId("snapshot.graph"),
+        profile_ref=profile_ref,
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=stage1_ref,
+        items=(author, memory),
+        budget_report=PlannerContextBudgetReport(
+            token_budget=300,
+            mandatory_tokens=13,
+            selected_tokens=25,
+        ),
+        rendered_context="seed",
+    )
+    package_ref = artifacts.put(
+        package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    adapter, runtime = _shared_context_runtime(tmp_path, artifacts)
+    initial = adapter.start(
+        run_id=RunId("run.stage4.graph-provenance"),
+        task_id=TaskId("task.stage4.graph-provenance"),
+        seed=package,
+        seed_ref=package_ref,
+    )
+
+    rerouted = memory.model_copy(
+        update={"graph_path_receipt_refs": (graph_two,), "mandatory": True}
+    )
+    delta = package.model_copy(
+        update={
+            "package_id": StableId("planner-context.graph.delta"),
+            "items": (author, rerouted),
+        }
+    )
+    delta_ref = artifacts.put(
+        delta.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    updated = adapter.append_delta(
+        run_id=initial.run_id,
+        task_id=initial.task_id,
+        delta_ref=delta_ref,
+    )
+
+    assert not updated.suspended
+    view = runtime.restore_latest(
+        initial.run_id,
+        task_id=initial.task_id,
+        consumer=ContextConsumer.PLANNER,
+    )
+    assert view is not None
+    assert tuple(item.item_id for item in view.active_memory_items) == (memory.context_item_id,)
+    assert view.active_memory_items[0].mandatory is False
+
+
+def test_shared_runtime_scopes_compact_groups_per_memory_package(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "scoped-compact-groups"))
+    author_ref = _put(artifacts, "author")
+    inquiry_ref = _put(artifacts, "reviewed inquiry", "application/json")
+    stage1_ref = _put(artifacts, "memory context", "application/json")
+    profile_ref = _put(artifacts, "profile")
+    author = PlannerContextItem(
+        context_item_id=StableId("planner-context.scoped.author"),
+        section=PlannerContextSection.AUTHOR_INTENT,
+        text="author intent",
+        protected=True,
+        mandatory=True,
+        token_count=13,
+        source_artifact_refs=(author_ref,),
+    )
+    first_excerpt = PlannerContextItem(
+        context_item_id=StableId("planner-context.scoped.first"),
+        section=PlannerContextSection.HISTORY_DEVIATION,
+        text="first excerpt",
+        token_count=12,
+        compact_handle=StableId("compact.source.chapter-2"),
+    )
+    package = PlannerContextPackage(
+        package_id=StableId("planner-context.scoped.initial"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=BASE,
+        snapshot_id=StableId("snapshot.scoped-compact-groups"),
+        profile_ref=profile_ref,
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=stage1_ref,
+        items=(author, first_excerpt),
+        budget_report=PlannerContextBudgetReport(
+            token_budget=300,
+            mandatory_tokens=13,
+            selected_tokens=25,
+        ),
+        rendered_context="seed",
+    )
+    package_ref = artifacts.put(
+        package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    adapter, runtime = _shared_context_runtime(tmp_path, artifacts)
+    initial = adapter.start(
+        run_id=RunId("run.stage4.scoped-compact-groups"),
+        task_id=TaskId("task.stage4.scoped-compact-groups"),
+        seed=package,
+        seed_ref=package_ref,
+    )
+
+    second_excerpt = first_excerpt.model_copy(
+        update={
+            "context_item_id": StableId("planner-context.scoped.second"),
+            "text": "second excerpt from the same source",
+        }
+    )
+    delta = package.model_copy(
+        update={
+            "package_id": StableId("planner-context.scoped.delta"),
+            "items": (author, first_excerpt, second_excerpt),
+            "budget_report": PlannerContextBudgetReport(
+                token_budget=300,
+                mandatory_tokens=13,
+                selected_tokens=37,
+            ),
+        }
+    )
+    delta_ref = artifacts.put(
+        delta.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    updated = adapter.append_delta(
+        run_id=initial.run_id,
+        task_id=initial.task_id,
+        delta_ref=delta_ref,
+    )
+
+    assert not updated.suspended
+    view = runtime.restore_latest(
+        initial.run_id,
+        task_id=initial.task_id,
+        consumer=ContextConsumer.PLANNER,
+    )
+    assert view is not None
+    assert view.provider_validity_receipt is not None
+    assert view.provider_validity_receipt.atomic_groups_valid
+    assert tuple(item.item_id for item in view.active_memory_items) == (
+        first_excerpt.context_item_id,
+        second_excerpt.context_item_id,
+    )
+    assert (
+        view.active_memory_items[0].atomic_group_id != view.active_memory_items[1].atomic_group_id
+    )
+
+
+def test_planner_compact_excerpt_identity_includes_content(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "compact-item-identity"))
+    assembler = PlannerContextAssembler(artifacts, schema_version=VERSION)
+    first = RetrievalUnit(
+        unit_id=StableId("compact.grounded.block.chapter-1"),
+        unit_kind=RetrievalUnitKind.GROUNDED_SPAN,
+        source_commit=BASE,
+        snapshot_id=StableId("snapshot.compact-item-identity"),
+        text="first query-shaped excerpt",
+    )
+    second = first.model_copy(update={"text": "second query-shaped excerpt"})
+
+    first_item, _ = assembler._unit_item(first, (), compact_handle=first.unit_id)
+    second_item, _ = assembler._unit_item(second, (), compact_handle=second.unit_id)
+
+    assert first_item.context_item_id != second_item.context_item_id
+    assert first_item.context_item_id.root.startswith("planner-context.unit.compact.")
 
 
 def test_shared_runtime_soft_pressure_hard_limit_and_provider_gate(tmp_path: Path) -> None:
@@ -1165,6 +1854,60 @@ def test_bootstrap_full_loop_never_calls_memory_and_returns_reviewed_candidate(
     assert result.event_artifacts
 
 
+def test_post_genesis_inquiry_receives_exact_world_entity_labels(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    source = _put(artifacts, "author-approved source")
+    accepted = (
+        _put(artifacts, "accepted-0"),
+        _put(artifacts, "accepted-1"),
+        _put(artifacts, "accepted-2"),
+    )
+    service, planner, _memory = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]),
+    )
+
+    asyncio.run(
+        service.run(
+            request=_request(AgentMode.CHAPTER_SET, source, accepted=accepted),
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert len(planner.inquiry_source_payloads) == 1
+    payload = planner.inquiry_source_payloads[0]
+    assert "WORLD_ENTITY_LABELS=" in payload
+    assert world.entities[0].internal_label in payload
+
+
+def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    service, _planner, _memory = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT]),
+    )
+    package = Stage1ContextPackage(
+        context_id=StableId("context.resume"),
+        base_commit=BASE,
+        snapshot_id=StableId("snapshot.resume"),
+        task_contract="stage4",
+        budget_report=ContextBudgetReport(
+            token_budget=1,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    ref = artifacts.put(package.model_dump_json().encode(), "application/json", VERSION)
+
+    assert service._read(ref, Stage1ContextPackage) == package
+
+
 @pytest.mark.parametrize(
     ("planner_error", "reviewer_fails", "runtime_fails", "expected"),
     (
@@ -1230,6 +1973,36 @@ def test_loop_maps_owner_failures_to_typed_terminals(
     assert result.diagnostic_codes
     if reviewer_fails or runtime_fails:
         assert result.event_artifacts
+
+
+def test_loop_maps_structured_planner_rejection_to_typed_contract_failure(
+    tmp_path: Path,
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "structured-rejection"))
+    source = _put(artifacts, "author-approved source")
+    with pytest.raises(ValidationError) as captured:
+        PlannerProposalDraft.model_validate({"mode": AgentMode.CHAPTER_SET, "coverage": 0.6})
+    planner_error = StructuredGenerationExhausted(captured.value, ())
+    service = PlanningContextLoopService(
+        planner=cast(PlannerAgent, _FailingPlanner(artifacts, planner_error)),
+        reviewer=cast(PlanReviewerAgent, _AcceptingReviewer(artifacts)),
+        need_generator=PlanningInquiryConditionedNeedGenerator(),
+        memory_gateway=cast(MemoryGateway, _ForbiddenMemory()),
+        context_assembler=PlannerContextAssembler(artifacts, schema_version=VERSION),
+        context_runtime=cast(PlannerContextRuntimePort, _FixtureContextRuntime(artifacts)),
+        artifacts=artifacts,
+        schema_version=VERSION,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=_request(AgentMode.PROJECT_BOOTSTRAP, source),
+            model_request=_model_request,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.BLOCKED
+    assert result.diagnostic_codes == ("PLANNER_STRUCTURED_OUTPUT_REJECTED",)
 
 
 def _post_genesis_service(
@@ -1453,7 +2226,7 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
     outcome_cases = (
         (
             "plan-budget",
-            [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
+            [ReviewDecision.ACCEPT, ReviewDecision.REVISE, ReviewDecision.ACCEPT],
             (),
             0,
             PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
@@ -1477,7 +2250,7 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
             [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT],
             ("unresolved author choice",),
             1,
-            PlanningLoopTerminal.DEGRADED_NOT_PROMOTABLE,
+            PlanningLoopTerminal.PLAN_CANDIDATE_READY,
         ),
     )
     for name, decisions, unresolved, revision_budget, expected in outcome_cases:
@@ -1853,6 +2626,102 @@ def test_planning_memory_budget_yields_checkpoint_and_incomplete_facets_never_re
     assert incomplete.terminal is PlanningLoopTerminal.MEMORY_INSUFFICIENT
     assert incomplete.diagnostic_codes == ("MANDATORY_MEMORY_FACETS_UNRESOLVED",)
     assert facet_planner.plan_calls == 0
+
+    advisory_artifacts, advisory_request = setup("reviewer-memory-advisory")
+    advisory_memory = _SupportedThenReviewerUnresolvedMemory(advisory_artifacts)
+    # Keep the initial inquiry Memory supported, then exercise the plan-review
+    # Memory gap directly.  A turn planner would consume the scripted reviewer
+    # decision as a planner-memory review before reaching the reviewer gap.
+    advisory_planner = _ModePlanner(advisory_artifacts, AgentMode.CHAPTER_SET)
+    advisory_service, _, _ = _post_genesis_service(
+        advisory_artifacts,
+        reviewer=_ScriptedReviewer(
+            advisory_artifacts,
+            [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
+            memory_gap=True,
+        ),
+        planner=advisory_planner,
+        memory=advisory_memory,
+    )
+    advisory = asyncio.run(
+        advisory_service.run(
+            request=advisory_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert advisory.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY, advisory.diagnostic_codes
+    assert advisory.diagnostic_codes == ("REVIEWER_MEMORY_UNRESOLVED_ADVISORY",)
+    assert advisory.proposal is not None
+    assert any("reviewer_memory_gap" in item for item in advisory.proposal.unresolved)
+    assert advisory.plan_review_ref is not None
+    advisory_review = PlanReview.model_validate_json(
+        advisory_artifacts.read_verified(advisory.plan_review_ref),
+        strict=True,
+    )
+    assert advisory_review.decision is ReviewDecision.ACCEPT
+    assert advisory_review.memory_gap_questions
+    assert all(not issue.blocking for issue in advisory_review.issues)
+    assert advisory_review.target_artifact_ref in advisory_review.receipt.input_artifacts
+
+    no_evidence_artifacts, no_evidence_request = setup("reviewer-memory-no-evidence")
+    no_evidence_memory = _SupportedThenReviewerUnresolvedMemory(
+        no_evidence_artifacts,
+        stop_reason=ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+        mandatory_facets_total=1,
+        mandatory_facets_closed=1,
+    )
+    no_evidence_service, _, _ = _post_genesis_service(
+        no_evidence_artifacts,
+        reviewer=_ScriptedReviewer(
+            no_evidence_artifacts,
+            [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
+            memory_gap=True,
+        ),
+        planner=_ModePlanner(no_evidence_artifacts, AgentMode.CHAPTER_SET),
+        memory=no_evidence_memory,
+    )
+    no_evidence = asyncio.run(
+        no_evidence_service.run(
+            request=no_evidence_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert no_evidence.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert no_evidence.diagnostic_codes == ("REVIEWER_MEMORY_UNRESOLVED_ADVISORY",)
+
+    partial_artifacts, partial_request = setup("partial-budget")
+    partial_memory = _FixtureMemory(
+        partial_artifacts,
+        stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+        mandatory_facets_total=1,
+        mandatory_facets_closed=0,
+        with_candidate=True,
+    )
+    partial_service, _, _ = _post_genesis_service(
+        partial_artifacts,
+        reviewer=_AcceptingReviewer(partial_artifacts),
+        memory=partial_memory,
+    )
+    partial = asyncio.run(
+        partial_service.run(
+            request=partial_request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert partial.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert partial.memory_context_ref is not None
+    partial_context = Stage1ContextPackage.model_validate_json(
+        partial_artifacts.read_verified(partial.memory_context_ref),
+        strict=False,
+    )
+    assert any("budget exhausted" in gap for gap in partial_context.unresolved_gaps)
+    assert any(trace.candidates for trace in partial_context.retrieval_traces)
 
 
 def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
@@ -2335,3 +3204,537 @@ def test_evaluation_freezes_manifest_before_blind_export_and_reports_arms(
             artifacts=artifacts,
             schema_version=VERSION,
         )
+
+
+def test_planner_memory_turn_yields_or_forbids_bootstrap(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-turn"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    base_request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    request = base_request.model_copy(
+        update={"budgets": base_request.budgets.model_copy(update={"planner_memory_rounds": 0})}
+    )
+    service, planner, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT]),
+        planner=_TurnPlanner(artifacts, AgentMode.CHAPTER_SET),
+    )
+    yielded = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert yielded.terminal is PlanningLoopTerminal.YIELDED
+    assert yielded.diagnostic_codes == ("PLANNER_MEMORY_SLICE_EXHAUSTED",)
+    assert planner.turn_calls == 1
+
+    bootstrap_artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "bootstrap-memory"))
+    bootstrap_source = _put(bootstrap_artifacts, "author source")
+    bootstrap_planner = _TurnPlanner(bootstrap_artifacts, AgentMode.PROJECT_BOOTSTRAP)
+    bootstrap_service = PlanningContextLoopService(
+        planner=cast(PlannerAgent, bootstrap_planner),
+        reviewer=cast(
+            PlanReviewerAgent,
+            _ScriptedReviewer(bootstrap_artifacts, [ReviewDecision.ACCEPT]),
+        ),
+        need_generator=PlanningInquiryConditionedNeedGenerator(),
+        memory_gateway=cast(MemoryGateway, _ForbiddenMemory()),
+        context_assembler=PlannerContextAssembler(bootstrap_artifacts, schema_version=VERSION),
+        context_runtime=cast(
+            PlannerContextRuntimePort, _FixtureContextRuntime(bootstrap_artifacts)
+        ),
+        artifacts=bootstrap_artifacts,
+        schema_version=VERSION,
+    )
+    forbidden = asyncio.run(
+        bootstrap_service.run(
+            request=_request(AgentMode.PROJECT_BOOTSTRAP, bootstrap_source),
+            model_request=_model_request,
+        )
+    )
+    assert forbidden.terminal is PlanningLoopTerminal.REVIEW_REQUIRED
+    assert forbidden.diagnostic_codes == ("BOOTSTRAP_PLANNER_MEMORY_FORBIDDEN",)
+    assert bootstrap_planner.turn_calls == 1
+
+
+def test_planner_memory_turn_resolves_or_fails_closed_when_slice_allows(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-resolve"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    shared_runtime, _ = _shared_context_runtime(tmp_path, artifacts)
+    service, planner, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(
+            artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]
+        ),
+        planner=_TurnPlanner(artifacts, AgentMode.CHAPTER_SET),
+        runtime=cast(_FixtureContextRuntime, shared_runtime),
+    )
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert planner.turn_calls >= 1
+    assert result.terminal in {
+        PlanningLoopTerminal.YIELDED,
+        PlanningLoopTerminal.REVIEW_REQUIRED,
+        PlanningLoopTerminal.PLAN_CANDIDATE_READY,
+        PlanningLoopTerminal.MEMORY_INSUFFICIENT,
+        PlanningLoopTerminal.HUMAN_REQUIRED,
+    }
+
+
+def test_repeated_supported_planner_memory_falls_back_to_plan_review(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(
+        FilesystemObjectStore(tmp_path / "planner-memory-supported-fallback")
+    )
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _TurnPlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, memory = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 3
+    assert planner.plan_calls == 1
+    assert memory.calls == 2
+
+
+def test_planner_memory_fanout_is_carried_across_retrieval_tranches(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-fanout"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"planner_memory_rounds": 3})}
+    )
+    questions = tuple(f"林澈当前的伤势状态是什么 (证据角度 {index})?" for index in range(8))
+    planner = _TurnPlanner(artifacts, AgentMode.CHAPTER_SET, questions=questions)
+    service, _, memory = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 9),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.plan_calls == 1
+    assert _planner_memory_question_chunk_size(request) == 3
+    request_sizes = [len(getattr(item, "initial_memory_needs", ())) for item in memory.requests]
+    planner_request_sizes = request_sizes[1:]
+    assert planner_request_sizes
+    assert max(planner_request_sizes) <= 3
+    assert sum(planner_request_sizes) == 8
+
+
+def test_supported_planner_memory_request_gets_one_bounded_reprompt(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-reprompt"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _HandledMemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 3
+    assert "PLANNER_MEMORY_STATUS=SUPPORTED" in planner.turn_source_payloads[-1]
+    assert (
+        "SUPPORTED_MEMORY_QUESTIONS=what is the causal relation with 北塔?"
+        in (planner.turn_source_payloads[-1])
+    )
+
+
+def test_seeded_mixed_memory_request_reuses_handled_problem_identity() -> None:
+    """Extra model follow-ups must not turn an already-closed seed into no-progress."""
+
+    source = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "a" * 64),
+        media_type="text/plain",
+        byte_length=1,
+        schema_version=VERSION,
+    )
+    inquiry = _inquiry(AgentMode.CHAPTER_SET, source)
+    seed = PlanningProblemIdentitySeed(
+        need_id=StableId("need.u8c.seed"),
+        question_id=StableId("question.u8c.seed"),
+        need_query="林澈当前的伤势状态是什么?",
+        semantic_question="预注册: 林澈当前的伤势状态是什么?",
+        facet=NeedFacetKind.CURRENT_STATE,
+        source_commit=BASE,
+        source_text_root=source.artifact_id,
+        cutoff_chapter=20,
+    )
+
+    assert _requested_planner_memory_question_ids(
+        (seed.need_query, "unregistered follow-up?"), inquiry, seed
+    ) == (seed.question_id,)
+
+
+def test_rejected_planner_memory_request_gets_grounding_status_before_plan(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-rejected"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _RejectedMemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 2
+    assert "PLANNER_MEMORY_STATUS=UNEXECUTABLE_REQUESTS" in planner.turn_source_payloads[-1]
+    assert "文风和句式参考是什么?" in planner.turn_source_payloads[-1]
+
+
+def test_unsupported_planner_memory_gets_content_status_without_being_handled(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-unsupported"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _UnsupportedMemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    memory = _SupportThenUnresolvedMemory(
+        artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+        ),
+    )
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+        memory=memory,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 2
+    assert memory.calls == 2
+    assert "PLANNER_MEMORY_STATUS=UNSUPPORTED_CONTENT" in planner.turn_source_payloads[-1]
+    assert "current_state" in planner.turn_source_payloads[-1]
+    assert "final bounded content-recovery turn" in planner.turn_source_payloads[-1]
+    assert "do not issue new memory_questions" in planner.turn_source_payloads[-1]
+
+
+def test_evidence_bound_unsupported_planner_memory_enters_gap_terminal(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-gap"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _UnsupportedMemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    memory = _SupportThenUnresolvedMemory(
+        artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+        ),
+        with_candidate=True,
+    )
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+        memory=memory,
+    )
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert result.terminal is PlanningLoopTerminal.REVIEW_REQUIRED
+    assert result.diagnostic_codes == ("PLANNER_MEMORY_FACETS_UNRESOLVED",)
+    assert result.proposal is None
+    assert planner.turn_calls == 1
+    assert planner.plan_calls == 0
+    assert memory.calls == 2
+
+
+def test_repeated_unsupported_planner_memory_returns_marked_candidate(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(
+        FilesystemObjectStore(tmp_path / "planner-memory-unsupported-repeated")
+    )
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _UnsupportedRepeatsThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    memory = _SupportThenUnresolvedMemory(
+        artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+        ),
+    )
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+        memory=memory,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert result.proposal.unresolved
+    assert planner.turn_calls == 2
+    assert planner.plan_calls == 1
+    assert memory.calls == 2
+    assert "PLANNER_MEMORY_FALLBACK" in planner.plan_requests[0]["source_payload"]
+
+
+def test_unsupported_planner_memory_allows_one_narrower_followup(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-narrower"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"planner_memory_rounds": 2})}
+    )
+    planner = _UnsupportedThenNarrowerThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    memory = _UnresolvedThenSupportMemory(
+        artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+            ControllerStopReason.SUFFICIENT,
+        ),
+    )
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 4),
+        planner=planner,
+        memory=memory,
+    )
+    request_ids: list[str] = []
+
+    def capture_model_request(stage: str, mode: AgentMode, attempt: int) -> ModelRequest:
+        del mode
+        request_ids.append(f"{stage}.{attempt}")
+        return cast(ModelRequest, object())
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=capture_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 3
+    assert memory.calls == 3
+    assert "PLANNER_MEMORY_STATUS=UNSUPPORTED_CONTENT" in planner.turn_source_payloads[1]
+    assert "what is the current state of 北塔?" in {
+        need.query_text for need in memory.requests[2].initial_memory_needs
+    }
+    planner_request_ids = [item for item in request_ids if item.startswith("plan_turn")]
+    assert len(planner_request_ids) == len(set(planner_request_ids))
+
+
+def test_token_slice_does_not_abort_plan_turn_after_memory_close(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "token-slice-after-memory"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    base_request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    request = base_request.model_copy(
+        update={"budgets": base_request.budgets.model_copy(update={"model_token_budget": 50})}
+    )
+    heavy_call = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=80, output_tokens=20, reasoning_tokens=0)
+    )
+    service, planner, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(
+            artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]
+        ),
+        planner=_MemoryThenReadyPlanner(
+            artifacts,
+            AgentMode.CHAPTER_SET,
+            first_turn_usage=heavy_call,
+        ),
+    )
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+    assert planner.turn_calls == 2
+    assert result.proposal is not None
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert "MODEL_TOKEN_SLICE_EXHAUSTED" not in result.diagnostic_codes

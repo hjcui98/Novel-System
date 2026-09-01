@@ -40,6 +40,96 @@
       "title": "CommitId",
       "type": "string"
     },
+    "LoopRoundProgress": {
+      "additionalProperties": false,
+      "description": "Minimal evidence that one Writer/Planner/Editor/repair round changed work.",
+      "properties": {
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "basis_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "changed_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Changed Ids",
+          "type": "array"
+        },
+        "input_candidate_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/LoopRoundProgressKind"
+        },
+        "remaining_work": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remaining Work",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "LoopRoundProgress",
+      "type": "object"
+    },
+    "LoopRoundProgressKind": {
+      "description": "Durable per-round progress. Retry count or model self-praise is not progress.",
+      "enum": [
+        "PROGRESSED",
+        "NO_PROGRESS",
+        "WAITING",
+        "TERMINAL"
+      ],
+      "title": "LoopRoundProgressKind",
+      "type": "string"
+    },
+    "NeedFacetKind": {
+      "enum": [
+        "current_state",
+        "relation_state",
+        "capability_status",
+        "limitation",
+        "knowledge_boundary",
+        "causal_history",
+        "setup",
+        "unresolved_status",
+        "commitment",
+        "plan_node"
+      ],
+      "title": "NeedFacetKind",
+      "type": "string"
+    },
     "PlanningLoopPhase": {
       "enum": [
         "preflight",
@@ -55,15 +145,149 @@
       "title": "PlanningLoopPhase",
       "type": "string"
     },
+    "PlanningProblemIdentitySeed": {
+      "additionalProperties": false,
+      "description": "Pre-registered, source-bound identity for one Planner Memory problem.\n\nThe seed is execution input, not a model conclusion.  ``source_commit`` and\n``source_text_root`` identify the frozen source from which the seed was\nprepared; the destination run may have a different project Commit after\nthe canonical roots are copied into an isolated object store.",
+      "properties": {
+        "cutoff_chapter": {
+          "minimum": 0,
+          "title": "Cutoff Chapter",
+          "type": "integer"
+        },
+        "facet": {
+          "$ref": "#/$defs/NeedFacetKind"
+        },
+        "need_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "need_query": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Need Query",
+          "type": "string"
+        },
+        "question_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "semantic_question": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Semantic Question",
+          "type": "string"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "source_evidence_requirement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceBoundEvidenceRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_text_root": {
+          "$ref": "#/$defs/ArtifactId"
+        }
+      },
+      "required": [
+        "need_id",
+        "question_id",
+        "need_query",
+        "semantic_question",
+        "facet",
+        "source_commit",
+        "source_text_root",
+        "cutoff_chapter"
+      ],
+      "title": "PlanningProblemIdentitySeed",
+      "type": "object"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
     "SchemaVersion": {
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
       "title": "SchemaVersion",
       "type": "string"
     },
+    "SourceBoundEvidenceRequirement": {
+      "additionalProperties": false,
+      "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
+      "properties": {
+        "required_consequence_markers": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Consequence Markers",
+          "type": "array"
+        },
+        "required_span": {
+          "$ref": "#/$defs/TextSpanRef"
+        },
+        "source_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "source_chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_chapter_index": {
+          "minimum": 0,
+          "title": "Source Chapter Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_artifact_id",
+        "source_chapter_index",
+        "source_chapter_id",
+        "required_span",
+        "required_consequence_markers"
+      ],
+      "title": "SourceBoundEvidenceRequirement",
+      "type": "object"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -227,6 +451,17 @@
       "title": "Planner Memory Rounds Used",
       "type": "integer"
     },
+    "problem_identity_seed": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanningProblemIdentitySeed"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "proposal_ref": {
       "anyOf": [
         {
@@ -262,6 +497,17 @@
       "minimum": 0,
       "title": "Reviewer Memory Rounds Used",
       "type": "integer"
+    },
+    "round_progress": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoopRoundProgress"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "snapshot_id": {
       "anyOf": [

@@ -69,7 +69,8 @@ def render_context(view: AgentContextView) -> str:
         *view.recent_settled_tail,
     )
     return "\n\n".join(
-        f'<CONTEXT_ITEM layer="{item.layer.value}" kind="{item.kind.value}">\n'
+        f'<CONTEXT_ITEM id="{item.item_id.root}" layer="{item.layer.value}" '
+        f'kind="{item.kind.value}">\n'
         f"{item.content}\n</CONTEXT_ITEM>"
         for item in ordered
     )
@@ -526,6 +527,13 @@ class ContextCompactor:
             }
         )
         prepared = self._projector.refresh_tokens(_with_hash(prepared))
+        input_context_tokens = pressure.rendered_input_tokens
+        output_context_tokens = self._count_tokens(render_context(prepared))
+        reduction_ratio = (
+            (input_context_tokens - output_context_tokens) / input_context_tokens
+            if input_context_tokens
+            else 0.0
+        )
         receipt = ContextCompactionReceipt(
             receipt_id=StableId(f"compaction.{view.run_id.root}.{view.generation + 1}"),
             run_id=view.run_id,
@@ -540,6 +548,9 @@ class ContextCompactor:
             detail_artifact=detail_ref,
             input_context_hash=view.context_hash,
             output_context_hash=prepared.context_hash,
+            input_context_tokens=input_context_tokens,
+            output_context_tokens=output_context_tokens,
+            reduction_ratio=reduction_ratio,
             deterministic=self._summary is None,
             safe_cut=True,
             published_generation=view.generation + 1,

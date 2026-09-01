@@ -23,7 +23,6 @@ from novel_agent.domain.creative_runtime import (
     AcceptanceDecision,
     ActorKind,
     AutomationMode,
-    CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
     CreativeRunRequest,
@@ -163,21 +162,15 @@ def _accept(
 ) -> TaskId:
     task = commands.get_task(task_id)
     assert len(task.input_artifact_refs) == 1
-    ref = task.input_artifact_refs[0]
+    candidate = runtime._candidate_for_task(task)
+    assert candidate.kind is kind
     result = runtime.submit_acceptance(
         AcceptanceCommand(
             command_id=StableId(f"accept.command.{number}"),
             project_id=task.project_id,
             run_id=task.run_id,
             task_id=task.task_id,
-            candidate=CandidateBinding(
-                candidate_id=StableId(f"candidate.{kind.value}.{number}"),
-                kind=kind,
-                artifact_ref=ref,
-                candidate_hash=ref.artifact_id.root,
-                basis_commit=task.basis_commit,
-                basis_snapshot=task.basis_snapshot,
-            ),
+            candidate=candidate,
             acceptance_policy_hash=policy.policy_hash,
             actor_kind=ActorKind.AUTHOR,
             actor_id="author",
@@ -337,8 +330,7 @@ def test_two_lane_lookahead_is_revalidated_before_plan_acceptance(tmp_path: Path
     lookahead_waiting = next(
         task
         for task in run_tasks
-        if task.kind is TaskKind.PLAN_ACCEPTANCE
-        and task.purpose is TaskPurpose.LOOKAHEAD
+        if task.kind is TaskKind.PLAN_ACCEPTANCE and task.purpose is TaskPurpose.LOOKAHEAD
     )
     assert lookahead_waiting.status is TaskStatus.WAITING_INPUT
 

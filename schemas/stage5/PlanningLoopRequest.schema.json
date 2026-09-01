@@ -78,6 +78,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "basis_commit": {
       "$ref": "#/$defs/CommitId"
     },

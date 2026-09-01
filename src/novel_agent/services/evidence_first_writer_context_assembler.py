@@ -48,8 +48,12 @@ from novel_agent.domain.writer_context import (
     WriterContextValidity,
 )
 from novel_agent.services.artifacts import sha256_id
-from novel_agent.services.content_addressing import canonical_json_bytes, quote_hash
-from novel_agent.services.evidence_slice_resolver import EvidenceSliceResolver
+from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.evidence_slice_resolver import (
+    EvidenceSliceResolver,
+    LiveEvidenceBasis,
+    text_root_indexes,
+)
 from novel_agent.services.memory_benchmark_contract import assert_safe_public_payload
 
 TokenCounter = Callable[[str], int]
@@ -144,6 +148,7 @@ class EvidenceFirstWriterContextAssembler:
         planner_artifact_hash: ArtifactId | None = None,
         planner_fallback_used: bool = False,
         unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...] = (),
+        advisory_items: tuple[tuple[ArtifactRef, str], ...] = (),
     ) -> EvidenceFirstAssemblyResult:
         """Build a v2 package + ledger from selected exact slices only.
 
@@ -161,7 +166,9 @@ class EvidenceFirstWriterContextAssembler:
             raise ValueError("writer and ledger budgets must be positive")
         if not selections:
             raise ValueError("evidence-first assembly requires at least one Need selection")
-        blocks = self._blocks(text_root)
+        if any(not ref.media_type or not text.strip() for ref, text in advisory_items):
+            raise ValueError("advisory items require a source artifact and non-empty text")
+        blocks, chapter_indexes = text_root_indexes(text_root)
         need_ids = tuple(selection.need.need_id for selection in selections)
         if len(need_ids) != len(set(need_ids)):
             raise ValueError("evidence-first selections must be unique by Need")
@@ -244,7 +251,14 @@ class EvidenceFirstWriterContextAssembler:
                 if slice_ is None:
                     diagnostics.append(f"SELECTED_SLICE_MISSING:{trace.slice_id.root}")
                     continue
-                reverified, rejection = self._reverify_slice(slice_, blocks, task, need)
+                reverified, rejection = self._reverify_slice(
+                    slice_,
+                    blocks,
+                    task,
+                    need,
+                    chapter_indexes=chapter_indexes,
+                    request_snapshot_id=basis_snapshot_id,
+                )
                 if reverified is None:
                     reason = rejection or "dereference_failed"
                     mechanical_failure_counts[reason.removesuffix("_failed")] += 1
@@ -589,7 +603,7 @@ class EvidenceFirstWriterContextAssembler:
                 key=lambda item: (
                     item.mandatory is not True,
                     -self._need_priority(need_by_id, item),
-                    item.need_ids[0].root,
+                    item.need_ids[0].root if item.need_ids else item.item_id.root,
                 ),
             )
         )
@@ -626,7 +640,7 @@ class EvidenceFirstWriterContextAssembler:
                 key=lambda item: (
                     item.mandatory is not True,
                     -self._need_priority(need_by_id, item),
-                    item.need_ids[0].root,
+                    item.need_ids[0].root if item.need_ids else item.item_id.root,
                 ),
             )
         )
@@ -765,10 +779,38 @@ class EvidenceFirstWriterContextAssembler:
                 key=lambda item: (
                     item.mandatory is not True,
                     -self._need_priority(need_by_id, item),
-                    item.need_ids[0].root,
+                    item.need_ids[0].root if item.need_ids else item.item_id.root,
                 ),
             )
         )
+        if advisory_items:
+            for index, (artifact_ref, text) in enumerate(advisory_items):
+                digest = artifact_ref.artifact_id.root.removeprefix("sha256:")[:32]
+                gap = EvidenceFirstGap(
+                    gap_id=StableId(f"gap.advisory.{digest}.{index}"[:128]),
+                    need_ids=(),
+                    need_facet_ids=(),
+                    kind=EvidenceGapKind.SEMANTIC_UNRESOLVED,
+                    reason="upstream Memory proposal is retained as an unverified advisory",
+                )
+                packed_items = (
+                    *packed_items,
+                    WriterContextEvidenceItem(
+                        item_id=StableId(f"context-item.advisory.{digest}.{index}"[:128]),
+                        section=WriterContextSection.CONTINUITY_CONSTRAINTS,
+                        need_ids=(),
+                        need_facet_ids=(),
+                        purpose=text.strip()[:1200],
+                        source_scope="writer_safe",
+                        source_kind="quarantine_advisory",
+                        validity=WriterContextValidity.UNCERTAIN,
+                        semantic_status=NeedEvidenceSemanticStatus.UNRESOLVED,
+                        advisory_artifact_refs=(artifact_ref,),
+                        unverified=True,
+                        gap=gap,
+                    ),
+                )
+            diagnostics.append("UNVERIFIED_ADVISORY_PRESENT")
         gaps = tuple(item.gap for item in packed_items if item.gap is not None)
         rendered = self._render(packed_items)
         rendered_tokens = self._count(rendered)
@@ -835,6 +877,8 @@ class EvidenceFirstWriterContextAssembler:
             )
         else:
             semantic_status = "UNASSESSED"
+        if advisory_items:
+            semantic_status = "INCOMPLETE"
         unclosed_mandatory_need_facets = tuple(
             dict.fromkeys(
                 receipt.need_facet_id
@@ -845,7 +889,7 @@ class EvidenceFirstWriterContextAssembler:
         usable_with_gaps = (
             status is ContextAssemblyStatus.READY
             and not any(mechanical_failure_counts.values())
-            and bool(ledger.entries)
+            and (bool(ledger.entries) or bool(advisory_items))
             and semantic_status == "INCOMPLETE"
         )
         budget_report = WriterContextBudgetReportV2(
@@ -882,6 +926,7 @@ class EvidenceFirstWriterContextAssembler:
             planner_artifact_hash=planner_artifact_hash,
             planner_fallback_used=planner_fallback_used,
             unresolved_lexical_anchors=unresolved_lexical_anchors,
+            advisory_artifact_refs=tuple(dict.fromkeys(ref for ref, _text in advisory_items)),
         )
         package = WriterContextPackageV2(
             contract_version=cast(Literal["writer_context.v2"], self.contract_version),
@@ -995,13 +1040,15 @@ class EvidenceFirstWriterContextAssembler:
     def _span_hash(cls, slice_: EvidenceSlice) -> ArtifactId:
         return sha256_id(f"{slice_.object_hash.root}:{slice_.start}:{slice_.end}".encode())
 
-    @classmethod
     def _reverify_slice(
-        cls,
+        self,
         slice_: EvidenceSlice,
         blocks: dict[StableId, TextBlock],
         task: BenchmarkTaskContract,
         need: Stage1MemoryNeed,
+        *,
+        chapter_indexes: dict[StableId, int] | None = None,
+        request_snapshot_id: StableId | None = None,
     ) -> tuple[EvidenceSlice | None, str | None]:
         """Re-verify one slice against the immutable text root.
 
@@ -1009,25 +1056,30 @@ class EvidenceFirstWriterContextAssembler:
         rejection so mechanical failure counts stay typed:
         ``scope_failed`` / ``cutoff_failed`` / ``dereference_failed``.
         """
-        if slice_.source_commit != need.base_commit:
-            return None, "dereference_failed"
         if slice_.access_scope != need.access_scope:
             return None, "scope_failed"
         block = blocks.get(slice_.parent_block_id)
-        if block is None:
-            return None, "dereference_failed"
-        if (
-            slice_.end > len(block.text)
-            or slice_.chapter_id != block.chapter_id
-            or slice_.object_hash != sha256_id(block.text.encode("utf-8"))
-            or block.text[slice_.start : slice_.end] != slice_.text
-            or quote_hash(slice_.text) != slice_.quote_hash
-        ):
-            return None, "dereference_failed"
-        chapter = cls._chapter_number(slice_.chapter_id)
-        if chapter is not None and chapter > task.checkpoint_chapter:
+        indexes = chapter_indexes or {}
+        chapter_index = None if block is None else indexes.get(block.chapter_id)
+        if chapter_index is None:
+            chapter_index = self._chapter_number(slice_.chapter_id)
+        decision = self._resolver.live_decision(
+            basis=LiveEvidenceBasis(
+                request_commit=need.base_commit,
+                request_snapshot_id=request_snapshot_id or slice_.snapshot_id,
+                checkpoint_chapter=task.checkpoint_chapter,
+            ),
+            unit_source_commit=slice_.source_commit,
+            unit_snapshot_id=slice_.snapshot_id,
+            block=block,
+            chapter_index=chapter_index,
+            slice_=slice_,
+        )
+        if decision.live:
+            return slice_, None
+        if decision.reason == "cutoff":
             return None, "cutoff_failed"
-        return slice_, None
+        return None, "dereference_failed"
 
     @staticmethod
     def _chapter_number(chapter_id: StableId) -> int | None:

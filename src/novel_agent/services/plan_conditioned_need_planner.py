@@ -8,7 +8,7 @@ import re
 from typing import ClassVar, cast
 
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.benchmark import AuthorPlanningContext, ChapterGoal
+from novel_agent.domain.benchmark import AuthorPlanningContext, ChapterGoal, TextRootDocument
 from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
 from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
@@ -30,6 +30,7 @@ from novel_agent.domain.planning_memory import (
     PlannerPageStatus,
     PlannerRelationSummary,
     PlannerRunResult,
+    PlannerSourceExpansion,
     PlannerStateSummary,
     PlannerTargetStateCoverage,
     PlannerWorldSummary,
@@ -40,6 +41,9 @@ from novel_agent.domain.writer_context import BenchmarkTaskContract
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.benchmark_importer import content_id
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.planner_source_expander import (
+    PlannerSourceExpander,
+)
 
 
 class PlannerCoverageAuditOutput(DomainModel):
@@ -174,6 +178,14 @@ class PlannerWorldSummaryBuilder:
                 ),
             )
         )
+        selected_obligations = ranked_obligations[: cls._MAX_OBLIGATIONS]
+        selected_relations = ranked_relations[: cls._MAX_RELATIONS]
+        selected_record_ids = (
+            tuple(state.state_id for state in selected_states)
+            + tuple(obligation.obligation_id for obligation in selected_obligations)
+            + tuple(event.event_id for event in recent_events)
+            + tuple(relation.relation_id for relation in selected_relations)
+        )
         plan_intent = " ".join(
             dict.fromkeys(
                 text
@@ -224,7 +236,7 @@ class PlannerWorldSummaryBuilder:
                     ),
                     status=obligation.status.value,
                 )
-                for obligation in ranked_obligations[: cls._MAX_OBLIGATIONS]
+                for obligation in selected_obligations
             ),
             recent_events=tuple(
                 PlannerEventSummary(
@@ -247,9 +259,10 @@ class PlannerWorldSummaryBuilder:
                     predicate=relation.predicate,
                     object_label=label_by_id.get(relation.object_id, relation.object_id.root),
                 )
-                for relation in ranked_relations[: cls._MAX_RELATIONS]
+                for relation in selected_relations
             ),
             target_state_coverage=target_coverages,
+            selected_record_ids=selected_record_ids,
             entity_count=len(world.entities),
             state_count=len(world.states),
             event_count=len(world.events),
@@ -423,6 +436,8 @@ class PlanConditionedNeedPlanner:
         max_retries: int = 1,
         max_output_tokens: int = 8192,
         max_input_tokens: int = 12_000,
+        thinking_enabled: bool | None = False,
+        thinking_token_budget: int | None = None,
     ) -> None:
         if max_drafts is not None and max_drafts < 1:
             raise ValueError("planner max drafts must be positive")
@@ -434,6 +449,8 @@ class PlanConditionedNeedPlanner:
             raise ValueError("planner max output tokens must be between 512 and 32768")
         if max_input_tokens < 256:
             raise ValueError("planner max input tokens must be at least 256")
+        if thinking_token_budget is not None and thinking_token_budget < 0:
+            raise ValueError("planner thinking token budget must be non-negative")
         self._gateway = gateway
         self._model_role = model_role
         self._temperature = temperature
@@ -441,6 +458,10 @@ class PlanConditionedNeedPlanner:
         self._max_retries = max_retries
         self._max_output_tokens = max_output_tokens
         self._max_input_tokens = max_input_tokens
+        self._thinking_enabled = thinking_enabled
+        self._thinking_token_budget = thinking_token_budget
+        self._source_expander = PlannerSourceExpander()
+        self.last_source_expansion: PlannerSourceExpansion | None = None
 
     def partition_goal_pages(
         self,
@@ -563,6 +584,8 @@ class PlanConditionedNeedPlanner:
         run_id: RunId | None = None,
         planner_model: str = "",
         planner_model_revision: str = "",
+        history_text: TextRootDocument | None = None,
+        snapshot_id: StableId | None = None,
     ) -> PlannerRunResult:
         """Run one logical generation phase over all capacity-bounded pages."""
 
@@ -574,6 +597,13 @@ class PlanConditionedNeedPlanner:
         ):
             page = page_inputs[0][0]
             summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
+            expansion = self._expand_p1(
+                task,
+                world,
+                summary.selected_record_ids,
+                history_text,
+                snapshot_id,
+            )
             return PlannerRunResult(
                 drafts=(),
                 metadata=None,
@@ -583,6 +613,7 @@ class PlanConditionedNeedPlanner:
                 world_summary=summary,
                 exact_prompt="",
                 generation_pages=tuple(page for page, _context in page_inputs),
+                source_expansion=expansion,
             )
 
         results: list[PlannerRunResult] = []
@@ -598,6 +629,8 @@ class PlanConditionedNeedPlanner:
                 run_id=run_id,
                 planner_model=planner_model,
                 planner_model_revision=planner_model_revision,
+                history_text=history_text,
+                snapshot_id=snapshot_id,
             )
             # An output-length failure on a multi-chapter page is a capacity
             # signal, not a reason to lose every chapter in that page.  Split
@@ -622,6 +655,8 @@ class PlanConditionedNeedPlanner:
                         run_id=run_id,
                         planner_model=planner_model,
                         planner_model_revision=planner_model_revision,
+                        history_text=history_text,
+                        snapshot_id=snapshot_id,
                     )
                     results.append(chapter_result)
                     pages.append(
@@ -642,6 +677,14 @@ class PlanConditionedNeedPlanner:
             pages.append(self._page_result(page, result))
 
         full_summary = PlannerWorldSummaryBuilder.build(task, world, planning_context)
+        full_expansion = self._expand_p1(
+            task,
+            world,
+            full_summary.selected_record_ids,
+            history_text,
+            snapshot_id,
+        )
+        self.last_source_expansion = full_expansion
         drafts = tuple(draft for result in results for draft in result.drafts)
         attempts = tuple(attempt for result in results for attempt in result.attempts)
         raw_response = "\n\n".join(result.raw_response for result in results if result.raw_response)
@@ -695,6 +738,7 @@ class PlanConditionedNeedPlanner:
             raw_response=raw_response,
             attempts=attempts,
             generation_pages=tuple(pages),
+            source_expansion=full_expansion,
         )
 
     @staticmethod
@@ -783,7 +827,8 @@ class PlanConditionedNeedPlanner:
             prompt=prompt,
             max_output_tokens=min(self._max_output_tokens, 4096),
             timeout_seconds=900.0,
-            enable_thinking=False,
+            enable_thinking=self._thinking_enabled,
+            thinking_token_budget=self._thinking_token_budget,
             scheduling_stage="planner_coverage_audit",
         )
         try:
@@ -841,6 +886,8 @@ class PlanConditionedNeedPlanner:
         planner_model_revision: str = "",
         repair_instruction: str | None = None,
         max_retries: int | None = None,
+        history_text: TextRootDocument | None = None,
+        snapshot_id: StableId | None = None,
     ) -> PlannerRunResult:
         attempt_retries = self._max_retries if max_retries is None else max_retries
         if attempt_retries < 0 or attempt_retries > 2:
@@ -854,11 +901,20 @@ class PlanConditionedNeedPlanner:
                 if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
             )
         )
+        expansion = self._expand_p1(
+            task,
+            world,
+            summary.selected_record_ids,
+            history_text,
+            snapshot_id,
+        )
+        self.last_source_expansion = expansion
         prompt = self._build_prompt(
             planning_context,
             summary,
             required_goal_chapters=required_goal_chapters,
             repair_instruction=repair_instruction,
+            p1_block=expansion.prompt_block(),
         )
         prompt_hash = content_id({"prompt_version": self.prompt_version, "prompt": prompt})
         if self._gateway is None:
@@ -869,6 +925,7 @@ class PlanConditionedNeedPlanner:
                 planning_context=planning_context,
                 world_summary=summary,
                 exact_prompt=prompt,
+                source_expansion=expansion,
             )
         resolved_run_id = run_id or RunId(f"run.stage2m.{task.task_id.root}"[:128])
         task_id = TaskId(task.task_id.root)
@@ -897,7 +954,8 @@ class PlanConditionedNeedPlanner:
                 prompt=prompt,
                 max_output_tokens=self._max_output_tokens,
                 timeout_seconds=900.0,
-                enable_thinking=False,
+                enable_thinking=self._thinking_enabled,
+                thinking_token_budget=self._thinking_token_budget,
                 scheduling_stage="need_planner",
             )
             attempt_raw = ""
@@ -966,6 +1024,7 @@ class PlanConditionedNeedPlanner:
                     exact_prompt=prompt,
                     raw_response=raw_text,
                     attempts=tuple(attempts),
+                    source_expansion=expansion,
                 )
             except Exception as error:
                 last_category = type(error).__name__
@@ -1028,6 +1087,7 @@ class PlanConditionedNeedPlanner:
             exact_prompt=prompt,
             raw_response=raw_text or "",
             attempts=tuple(attempts),
+            source_expansion=expansion,
         )
 
     def replay(
@@ -1051,6 +1111,9 @@ class PlanConditionedNeedPlanner:
                 page_context,
                 PlannerWorldSummaryBuilder.build(task, world, page_context),
                 required_goal_chapters=page.target_chapters,
+                p1_block=(
+                    artifact.source_expansion.prompt_block() if artifact.source_expansion else ""
+                ),
             )
             for page, page_context in page_inputs
         )
@@ -1090,6 +1153,7 @@ class PlanConditionedNeedPlanner:
             raw_response=artifact.raw_response,
             attempts=artifact.attempts,
             generation_pages=artifact.generation_pages,
+            source_expansion=artifact.source_expansion,
         )
 
     def _build_prompt(
@@ -1099,6 +1163,7 @@ class PlanConditionedNeedPlanner:
         *,
         required_goal_chapters: tuple[int, ...] = (),
         repair_instruction: str | None = None,
+        p1_block: str = "",
     ) -> str:
         outline = "\n".join(f"- {node.summary}" for node in context.visible_outline_nodes)
         goals = "\n".join(
@@ -1198,6 +1263,7 @@ class PlanConditionedNeedPlanner:
             f"未决义务:\n{obligations or '(无)'}\n"
             f"近期事件(最近 {len(summary.recent_events)} 条):\n{events or '(无)'}\n"
             f"关键关系:\n{relations or '(无)'}\n"
+            + (f"{p1_block}\n" if p1_block else "")
             + (
                 "\n【修复要求】(一次有界修复):\n"
                 "返回完整替代 drafts 批次, 不是增量补丁。保留仍然合格且必要的原条目, "
@@ -1207,6 +1273,45 @@ class PlanConditionedNeedPlanner:
                 else ""
             )
         )
+
+    def _expand_p1(
+        self,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        selected_record_ids: tuple[StableId, ...],
+        history_text: TextRootDocument | None,
+        snapshot_id: StableId | None,
+    ) -> PlannerSourceExpansion:
+        if history_text is None or snapshot_id is None:
+            return PlannerSourceExpansion(
+                context_level="P0",
+                hit_record_count=0,
+                resolved_count=0,
+                missing_count=0,
+                stale_count=0,
+                cutoff_excluded_count=0,
+                preview_tokens=0,
+                selected_record_ids=selected_record_ids,
+            )
+        return self._source_expander.expand(
+            task=task,
+            world=world,
+            text=history_text,
+            snapshot_id=snapshot_id,
+            selected_record_ids=selected_record_ids,
+        )
+
+    def _p1_block(
+        self,
+        task: BenchmarkTaskContract,
+        world: WorldRootDocument,
+        selected_record_ids: tuple[StableId, ...],
+        history_text: TextRootDocument | None,
+        snapshot_id: StableId | None,
+    ) -> str:
+        return self._expand_p1(
+            task, world, selected_record_ids, history_text, snapshot_id
+        ).prompt_block()
 
     @classmethod
     def _parse_drafts(cls, raw: str) -> tuple[PlannedNeedDraft, ...]:

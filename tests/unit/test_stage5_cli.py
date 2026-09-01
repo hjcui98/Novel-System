@@ -13,7 +13,9 @@ from sqlalchemy import create_engine
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.cli import main
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
     AcceptanceDecision,
@@ -116,6 +118,10 @@ def cli_db(tmp_path: Path) -> Path:
         b'{"plan":"candidate"}',
         "application/vnd.novel-agent.stage5-plan-candidate+json",
         SchemaVersion("1.0.0"),
+    )
+    (tmp_path / "artifact-refs.json").write_text(
+        json.dumps([candidate_ref.model_dump(mode="json")]),
+        encoding="utf-8",
     )
     (tmp_path / "policy.json").write_text(
         json.dumps(
@@ -399,7 +405,11 @@ def test_runtime_reconcile_attempt_and_unblock_subcommands(cli_db: Path) -> None
                 "--reason",
                 "reconcile via cli",
                 "--terminal-status",
-                "waiting_retry",
+                "blocked",
+                "--failure-class",
+                "validation_rejected",
+                "--artifact-refs",
+                str(cli_db.parent / "artifact-refs.json"),
             ]
         )
         == 0
@@ -424,6 +434,16 @@ def test_runtime_reconcile_attempt_and_unblock_subcommands(cli_db: Path) -> None
         )
         == 0
     )
+    settled = RuntimeTaskQueryRepository(build_session_factory(create_engine(url))).list_run(
+        RunId("run.cli")
+    )
+    plan = next(item for item in settled if item.task_id == TaskId("run.cli.plan"))
+    artifact_ref = ArtifactRef.model_validate(
+        json.loads((cli_db.parent / "artifact-refs.json").read_text(encoding="utf-8"))[0],
+        strict=True,
+    )
+    assert plan.status is TaskStatus.BLOCKED
+    assert artifact_ref in plan.terminal_artifact_refs
 
 
 def test_runtime_pause_resume_and_unblock_subcommands(cli_db: Path) -> None:
@@ -780,12 +800,32 @@ def test_runtime_advance_no_ready_task_reports_progressed_zero(
     assert len(contexts) == 1
 
 
-def test_runtime_advance_requires_production_assembly_factory(cli_db: Path) -> None:
+def test_runtime_advance_defaults_to_repo_production_factory(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from novel_agent.runtime.creative_assembly import DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
+
     url = f"sqlite+pysqlite:///{cli_db}"
     manifest_path = (
         Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
     )
-    with pytest.raises(SystemExit):
+    specs: list[str] = []
+
+    def _load(spec: str, context: object) -> object:
+        specs.append(spec)
+
+        class _Dispatcher:
+            async def run_bounded(self, *, max_tasks: int) -> tuple[object, ...]:
+                del max_tasks
+                return ()
+
+        return type("Assembly", (), {"dispatcher": _Dispatcher()})()
+
+    monkeypatch.setattr(
+        "novel_agent.runtime.creative_assembly.load_production_runtime_assembly",
+        _load,
+    )
+    assert (
         main(
             [
                 "runtime",
@@ -802,8 +842,13 @@ def test_runtime_advance_requires_production_assembly_factory(cli_db: Path) -> N
                 str(manifest_path),
                 "--object-store-root",
                 str(cli_db.parent / "objects"),
+                "--max-tasks",
+                "1",
             ]
         )
+        == 0
+    )
+    assert specs == [DEFAULT_PRODUCTION_ASSEMBLY_FACTORY]
 
 
 def test_runtime_advance_binds_run_identity_under_same_project(

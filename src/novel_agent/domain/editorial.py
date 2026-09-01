@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol
@@ -207,8 +208,95 @@ class EditorReviewPayload(DomainModel):
     planner_replan_required: bool = False
     unresolved_needs: tuple[_NonEmptyText, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_advisory_route(cls, value: object) -> object:
+        """Keep unresolved-but-related context advisory instead of inventing a rewrite."""
+
+        if not isinstance(value, Mapping):
+            return value
+        raw = dict(value)
+        for field in (
+            "issues",
+            "repair_instructions",
+            "preserve_requirements",
+            "rewrite_targets",
+            "rewrite_preserve_requirements",
+            "unresolved_needs",
+        ):
+            sequence = raw.get(field)
+            if isinstance(sequence, list):
+                raw[field] = tuple(sequence)
+        verdict = raw.get("verdict")
+        issues = raw.get("issues", ())
+        unresolved_needs = raw.get("unresolved_needs", ())
+        if (
+            verdict not in {EditorialVerdict.PASS, EditorialVerdict.PASS.value}
+            and not issues
+            and unresolved_needs
+            and not any(
+                raw.get(field)
+                for field in (
+                    "repair_instructions",
+                    "preserve_requirements",
+                    "rewrite_targets",
+                    "rewrite_preserve_requirements",
+                )
+            )
+        ):
+            raw["verdict"] = EditorialVerdict.PASS.value
+            raw["planner_replan_required"] = False
+        if verdict in {
+            EditorialVerdict.MAJOR_REWRITE,
+            EditorialVerdict.MAJOR_REWRITE.value,
+        } and not raw.get("rewrite_targets"):
+            blocking_descriptions = tuple(
+                description
+                for issue in issues
+                for description in (
+                    issue.get("description")
+                    if isinstance(issue, Mapping)
+                    else getattr(issue, "description", None),
+                )
+                if isinstance(description, str)
+                and description.strip()
+                and (
+                    (
+                        issue.get("structural")
+                        if isinstance(issue, Mapping)
+                        else getattr(issue, "structural", False)
+                    )
+                    is True
+                    or (
+                        issue.get("severity")
+                        if isinstance(issue, Mapping)
+                        else getattr(issue, "severity", None)
+                    )
+                    in {EditorialSeverity.CRITICAL, EditorialSeverity.CRITICAL.value}
+                )
+            )
+            if blocking_descriptions:
+                raw["rewrite_targets"] = tuple(
+                    f"Resolve the blocking editorial issue: {description}"
+                    for description in blocking_descriptions
+                )
+        return raw
+
     @model_validator(mode="after")
     def validate_model_route(self) -> EditorReviewPayload:
+        if self.verdict is EditorialVerdict.LOCAL_REPAIR:
+            aligned = tuple(
+                issue.model_copy(update={"repairable": True})
+                if (
+                    issue.severity in {EditorialSeverity.ERROR, EditorialSeverity.CRITICAL}
+                    and not issue.structural
+                    and not issue.repairable
+                )
+                else issue
+                for issue in self.issues
+            )
+            if aligned != self.issues:
+                self = self.model_copy(update={"issues": aligned})
         if self.verdict is EditorialVerdict.PASS:
             if (
                 self.repair_instructions
@@ -216,9 +304,8 @@ class EditorReviewPayload(DomainModel):
                 or self.rewrite_targets
                 or self.rewrite_preserve_requirements
                 or self.planner_replan_required
-                or self.unresolved_needs
             ):
-                raise ValueError("PASS cannot include repair, rewrite, or unresolved instructions")
+                raise ValueError("PASS cannot include repair, rewrite, or replan instructions")
             if any(
                 issue.repairable
                 or issue.structural
@@ -300,8 +387,6 @@ class EditorialReport(DomainModel):
                 or self.planner_replan_required
             ):
                 raise ValueError("PASS cannot carry a repair scope or rewrite directive")
-            if self.unresolved_needs:
-                raise ValueError("PASS cannot carry unresolved needs")
             if any(
                 issue.repairable
                 or issue.structural
@@ -394,6 +479,13 @@ class CuratorChangeObservation(DomainModel):
     value_hint: _NonEmptyText | None = None
     evidence_quote: _NonEmptyText | None = None
     target_id: StableId | None = None
+
+
+class CandidateObservationPayload(DomainModel):
+    """Model-only observation output; service telemetry is bound after generation."""
+
+    draft_id: ArtifactId
+    changes: tuple[CuratorChangeObservation, ...] = Field(default=(), max_length=4)
 
 
 class CuratorObservation(DomainModel):
@@ -516,6 +608,7 @@ class ReconciliationResult(DomainModel):
 
 
 __all__ = [
+    "CandidateObservationPayload",
     "CuratorChangeObservation",
     "CuratorObservation",
     "DraftSpan",

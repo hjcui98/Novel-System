@@ -149,6 +149,7 @@ def test_complete_checkpoint_replays_valid_terminal_result() -> None:
     assert isinstance(restored, MemoryWriteWorkflowResult)
     assert restored.status is MemoryWriteWorkflowStatus.NOOP
     assert restored.checkpoint_ref == saved_ref
+    assert restored.terminal_result_ref == terminal_ref
 
 
 def test_new_process_restores_human_approval_artifact() -> None:
@@ -196,6 +197,10 @@ def test_new_process_missing_lineage_and_corrupt_materialization_fail_closed() -
         checkpoint=repository,
         information_boundary=workflow._boundary,
     )
+    legacy_without_revision_refs = checkpoint.model_copy(update={"candidate_revision_refs": ()})
+    fresh._checkpoint = type(
+        "MissingLineage", (), {"load": lambda self, ref: legacy_without_revision_refs}
+    )()
     result = asyncio.run(fresh._initialize(_resume_request(data, ref)))
     assert isinstance(result, MemoryWriteWorkflowResult)
     assert result.status is MemoryWriteWorkflowStatus.FATAL

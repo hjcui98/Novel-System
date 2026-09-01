@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory import (
     CandidatePool,
     ChannelHit,
+    ExpectedClaimScope,
+    FacetEvidenceRequirement,
+    NeedCompletionSpec,
+    NeedFacet,
+    NeedFacetKind,
+    NeedGapPolicy,
     NeedRisk,
+    NeedUncertaintyPolicy,
     RequirementLevel,
     ResolutionPath,
     RetrievalChannel,
@@ -20,6 +27,7 @@ from novel_agent.domain.retrieval_routing import (
     SnapshotCapability,
     SnapshotCapabilityStatus,
 )
+from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus, TextSpanRef
 from novel_agent.domain.world import StoryTime
 from novel_agent.services.paired_controller import PairedMemoryControllerRunner
 from novel_agent.services.retrieval_routing import (
@@ -242,6 +250,86 @@ class _RecordedBackend:
         )
 
 
+class _RouteProbeBackend:
+    def __init__(self, unit: RetrievalUnit) -> None:
+        self.unit = unit
+        self.calls: list[RetrievalChannel] = []
+
+    def search(
+        self,
+        memory_need: Stage1MemoryNeed,
+        channel: RetrievalChannel,
+        limit: int,
+    ) -> tuple[ChannelHit, ...]:
+        del memory_need, limit
+        self.calls.append(channel)
+        return (
+            ChannelHit(
+                unit=self.unit,
+                channel=channel,
+                channel_rank=1,
+                raw_score=1.0,
+                candidate_count=1,
+                hit_reason="route-probe",
+            ),
+        )
+
+
+def _relation_facet_need(intent: Stage1QueryIntent) -> Stage1MemoryNeed:
+    item = need(
+        intent,
+        (CandidatePool.ANCHOR, CandidatePool.GRAPH),
+        entities=(ENTITY,),
+        predicates=("member_of",),
+    )
+    facet = NeedFacet(
+        need_facet_id=StableId(f"facet.routing.{intent.value}"),
+        need_id=item.need_id,
+        facet_kind=NeedFacetKind.RELATION_STATE,
+        expected_claim_scope=ExpectedClaimScope.CURRENT,
+        derivation_refs=(item.need_id,),
+        producer="routing-test",
+        producer_version="v1",
+        information_scope="cutoff_safe",
+    )
+    completion = NeedCompletionSpec(
+        need_id=item.need_id,
+        required_need_facet_ids=(facet.need_facet_id,),
+        irreducible_need_facet_ids=(facet.need_facet_id,),
+        evidence_requirement_by_facet={
+            facet.need_facet_id.root: FacetEvidenceRequirement.TRACEABLE_CUTOFF_SOURCE,
+        },
+        uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
+        gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+        producer="routing-test",
+        producer_version="v1",
+        predicates_by_facet={facet.need_facet_id.root: ("member_of",)},
+    )
+    return item.model_copy(update={"need_facets": (facet,), "completion_spec": completion})
+
+
+def _evidenced_relation_unit() -> RetrievalUnit:
+    return RetrievalUnit(
+        unit_id=StableId("unit.routing.relation"),
+        unit_kind=RetrievalUnitKind.RELATION_ANCHOR,
+        source_commit=COMMIT,
+        snapshot_id=SNAPSHOT,
+        text="entity.routing.hero member_of entity.routing.school",
+        entity_ids=(ENTITY,),
+        predicate="member_of",
+        evidence_refs=(
+            EvidenceRef(
+                evidence_id=StableId("evidence.routing.relation"),
+                root_hash=ArtifactId("sha256:" + "b" * 64),
+                object_hash=ArtifactId("sha256:" + "c" * 64),
+                span=TextSpanRef(block_id=StableId("block.routing"), start=0, end=1),
+                support_status=EvidenceSupportStatus.CURRENT,
+                resolved_at_commit=COMMIT,
+            ),
+        ),
+    )
+
+
 def test_deterministic_pair_arm_executes_only_registered_primary_and_fallback_channels() -> None:
     memory_need = need(
         Stage1QueryIntent.SEMANTIC_HISTORY,
@@ -267,6 +355,53 @@ def test_deterministic_pair_arm_executes_only_registered_primary_and_fallback_ch
     assert trace.fusion_applied is True
     assert trace.fallback_used is True
     assert trace.fallback_reason == "anchor_evidence_insufficient"
+
+
+def test_relation_and_causal_routes_call_graph_only_for_an_unclosed_facet() -> None:
+    for intent in (Stage1QueryIntent.RELATION_CHAIN, Stage1QueryIntent.CAUSAL_MULTI_HOP):
+        closed_need = _relation_facet_need(intent)
+        closed_backend = _RouteProbeBackend(_evidenced_relation_unit())
+        closed_plan = DeterministicChannelPlanner().plan(closed_need, capability())
+        closed_trace = PairedMemoryControllerRunner._retrieve_route_plan(
+            closed_backend,
+            closed_need,
+            closed_plan,
+            per_channel_limit=100,
+        )
+        assert closed_backend.calls == [
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+        ]
+        assert closed_trace.fallback_used is False
+        completion_spec = closed_need.completion_spec
+        assert completion_spec is not None
+        assert closed_trace.closed_need_facet_ids == (completion_spec.required_need_facet_ids[0],)
+
+        unresolved_need = _relation_facet_need(intent)
+        unresolved_backend = _RouteProbeBackend(
+            RetrievalUnit(
+                unit_id=StableId(f"unit.routing.unresolved.{intent.value}"),
+                unit_kind=RetrievalUnitKind.EVENT_ANCHOR,
+                source_commit=COMMIT,
+                snapshot_id=SNAPSHOT,
+                text="unresolved anchor",
+                entity_ids=(ENTITY,),
+            )
+        )
+        unresolved_plan = DeterministicChannelPlanner().plan(unresolved_need, capability())
+        unresolved_trace = PairedMemoryControllerRunner._retrieve_route_plan(
+            unresolved_backend,
+            unresolved_need,
+            unresolved_plan,
+            per_channel_limit=100,
+        )
+        assert unresolved_backend.calls == [
+            RetrievalChannel.ANCHOR_BM25,
+            RetrievalChannel.ANCHOR_DENSE,
+            RetrievalChannel.TYPED_GRAPH,
+        ]
+        assert unresolved_trace.fallback_used is True
+        assert unresolved_trace.fallback_reason == "anchor_evidence_insufficient"
 
 
 def test_counterfactual_route_ablation_is_evaluator_only_and_separate() -> None:

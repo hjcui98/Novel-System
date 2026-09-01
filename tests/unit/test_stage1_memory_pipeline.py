@@ -28,6 +28,7 @@ from novel_agent.services.memory_pipeline import (
     _compact_block_unit,
     _estimate_tokens,
     _query_terms,
+    _segment_evidence_ref,
     _with_content_metadata,
 )
 from novel_agent.services.retrieval import (
@@ -965,10 +966,6 @@ def test_context_compiler_deep_grounded_block_survives_budget_competition() -> N
 
 
 def test_compact_segment_ref_requires_source_evidence() -> None:
-    import pytest as _pytest
-
-    from novel_agent.services.memory_pipeline import _segment_evidence_ref
-
     bundle = make_synthetic_bundle()
     world = bundle.world_roots[0]
     no_evidence = RetrievalUnit(
@@ -979,12 +976,35 @@ def test_compact_segment_ref_requires_source_evidence() -> None:
         text="落落说道 这是第一句。",
         entity_ids=(StableId("entity.subject"),),
     )
-    with _pytest.raises(ValueError, match="requires an evidence reference"):
+    with pytest.raises(ValueError, match="requires an evidence reference"):
         _segment_evidence_ref(no_evidence, "落落说道 这是第一句。", 0, 10)
     spanless = no_evidence.model_copy(
         update={
             "evidence_refs": (world.states[0].evidence_refs[0].model_copy(update={"span": None}),)
         }
     )
-    with _pytest.raises(ValueError, match="requires a precise span"):
+    with pytest.raises(ValueError, match="requires a precise span"):
         _segment_evidence_ref(spanless, "落落说道 这是第一句。", 0, 10)
+
+
+def test_compact_segment_ref_bounds_long_expanded_unit_identity() -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    unit = RetrievalUnit(
+        unit_id=StableId("grounded.block." + "expanded-lineage-" * 6),
+        unit_kind=RetrievalUnitKind.GROUNDED_BLOCK,
+        source_commit=world.source_commit,
+        snapshot_id=StableId("snapshot.synthetic.long-segment-ref"),
+        text="落落说道 这是第一句。",
+        entity_ids=(StableId("entity.subject"),),
+        evidence_refs=(world.states[0].evidence_refs[0],),
+    )
+
+    first = _segment_evidence_ref(unit, "落落说道 这是第一句。", 0, 10)
+    same = _segment_evidence_ref(unit, "落落说道 这是第一句。", 0, 10)
+    later = _segment_evidence_ref(unit, "落落说道 这是第一句。", 1, 11)
+
+    assert len(first.evidence_id.root) <= 128
+    assert first.evidence_id.root.startswith("evidence.segment.")
+    assert first.evidence_id == same.evidence_id
+    assert first.evidence_id != later.evidence_id

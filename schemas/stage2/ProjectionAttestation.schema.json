@@ -160,10 +160,11 @@
       "type": "object"
     },
     "RetrievalBackendProfile": {
-      "description": "Whether a run is a scripted contract smoke or a real hybrid retrieval run.",
+      "description": "Identity of the retrieval implementation behind an attestation.",
       "enum": [
         "scripted_smoke",
-        "real_hybrid"
+        "real_hybrid",
+        "benchmark_text_replay"
       ],
       "title": "RetrievalBackendProfile",
       "type": "string"

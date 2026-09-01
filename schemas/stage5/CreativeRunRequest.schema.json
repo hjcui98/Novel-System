@@ -159,6 +159,14 @@
       ],
       "default": null
     },
+    "continuation_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Continuation Artifact Refs",
+      "type": "array"
+    },
     "current_chapter": {
       "default": 0,
       "maximum": 9999,

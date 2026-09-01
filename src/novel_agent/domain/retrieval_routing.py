@@ -23,10 +23,11 @@ from novel_agent.domain.planning_memory import RetrievalQueryBundle
 
 
 class RetrievalBackendProfile(StrEnum):
-    """Whether a run is a scripted contract smoke or a real hybrid retrieval run."""
+    """Identity of the retrieval implementation behind an attestation."""
 
     SCRIPTED_SMOKE = "scripted_smoke"
     REAL_HYBRID = "real_hybrid"
+    BENCHMARK_TEXT_REPLAY = "benchmark_text_replay"
 
 
 class SnapshotCapabilityStatus(StrEnum):
@@ -212,7 +213,10 @@ class ProjectionAttestation(DomainModel):
                 )
             ):
                 raise ValueError("scripted smoke cannot attest a real embedding runtime")
-        elif self.capability.status is SnapshotCapabilityStatus.EXACT:
+        elif (
+            self.retrieval_backend_profile is RetrievalBackendProfile.REAL_HYBRID
+            and self.capability.status is SnapshotCapabilityStatus.EXACT
+        ):
             if (
                 self.r1_record_count < 1
                 or self.embedding_model is None
@@ -226,6 +230,29 @@ class ProjectionAttestation(DomainModel):
                 raise ValueError(
                     "exact real-hybrid attestation lacks R1 or locked retrieval-model evidence"
                 )
+        elif (
+            self.retrieval_backend_profile is RetrievalBackendProfile.BENCHMARK_TEXT_REPLAY
+            and self.capability.status is SnapshotCapabilityStatus.EXACT
+        ):
+            if any(
+                value is not None
+                for value in (
+                    self.embedding_model,
+                    self.embedding_revision,
+                    self.embedding_dimension,
+                    self.embedding_normalized,
+                    self.embedding_runtime_fingerprint,
+                )
+            ):
+                raise ValueError("text replay cannot attest an embedding runtime")
+            if self.r1_record_count or self.r1_entity_association_count:
+                raise ValueError("text replay cannot attest R1 records")
+            if self.graph_node_count or self.graph_edge_count:
+                raise ValueError("text replay cannot attest graph records")
+            if self.indexes:
+                raise ValueError("text replay cannot attest physical indexes")
+            if self.reranker_model is None or self.reranker_revision is None:
+                raise ValueError("text replay requires a locked deterministic reranker identity")
         return self
 
     @property

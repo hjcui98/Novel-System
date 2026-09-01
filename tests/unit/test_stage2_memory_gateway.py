@@ -72,6 +72,15 @@ def test_memory_gateway_selects_and_freezes_safe_bounded_context(tmp_path: Path)
     assert repository.read_verified(result.frozen_context_artifact)
 
 
+def test_memory_gateway_output_assembly_is_the_live_l0_owner(tmp_path: Path) -> None:
+    service, _ = gateway(tmp_path, MemoryGatewayMode.DETERMINISTIC)
+    item = need()
+    result = service.resolve(request(item), text_root(), thread_id="gateway-live-owner")
+    assert result.context == result.selected_result.context
+    assert not hasattr(service, "_try_graph_zero_l0_fallback")
+    assert callable(service._assemble_live_output)
+
+
 def test_memory_gateway_supports_frozen_deterministic_profile(tmp_path: Path) -> None:
     service, repository = gateway(tmp_path, MemoryGatewayMode.DETERMINISTIC)
     item = need()

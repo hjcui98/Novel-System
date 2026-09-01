@@ -8,8 +8,13 @@ from typing import Protocol
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
-from novel_agent.domain.changes import ValidationFinding, ValidationReport, ValidationStatus
-from novel_agent.domain.ids import StableId
+from novel_agent.domain.changes import (
+    CandidateChangeBundle,
+    ValidationFinding,
+    ValidationReport,
+    ValidationStatus,
+)
+from novel_agent.domain.ids import StableId, bounded_stable_id
 from novel_agent.domain.memory_write import (
     BlockingScope,
     CandidateMaterialization,
@@ -23,6 +28,8 @@ from novel_agent.domain.memory_write import (
     ValidationFindingV2,
     ValidationSeverity,
 )
+from novel_agent.domain.text import EvidenceRef
+from novel_agent.services.benchmark_importer import BenchmarkImportError, validate_evidence_ref
 from novel_agent.services.memory_repair_policy import FINDING_REGISTRY
 from novel_agent.services.overlay import WorldOverlay
 from novel_agent.services.validation import Stage1Validator
@@ -150,7 +157,7 @@ class Stage2ValidationV2Adapter:
                 "BASE_COMMIT_MISMATCH",
                 "candidate/materialization basis differs from canonical basis",
             )
-        report = self._deterministic_report(bundle, canonical)
+        report = self._deterministic_report(bundle, canonical, candidate)
         decision = ValidationV1Adapter.convert(
             report,
             candidate=candidate,
@@ -174,75 +181,251 @@ class Stage2ValidationV2Adapter:
 
     def _deterministic_report(
         self,
-        bundle: object,
+        bundle: CandidateChangeBundle,
         canonical: CanonicalWriteBasis,
+        candidate: CandidateRevision,
     ) -> ValidationReport:
+        source_bound_finding = self._source_bound_evidence_finding(bundle, canonical, candidate)
         if canonical.canonical_world is None or canonical.canonical_text is None:
             # Without the typed legacy roots the structural adapter can still
             # prove the basis and bundle binding; a richer port may add Stage 1.
-            return ValidationReport(
-                report_id=StableId(f"validation.structural.{bundle.bundle_id.root}"),  # type: ignore[attr-defined]
-                bundle_id=bundle.bundle_id,  # type: ignore[attr-defined]
+            report = ValidationReport(
+                report_id=_validation_report_id("validation.structural", bundle, candidate),
+                bundle_id=bundle.bundle_id,
                 status=ValidationStatus.PASSED,
-                schema_version=bundle.proposed_roots.schema_version,  # type: ignore[attr-defined]
+                schema_version=bundle.proposed_roots.schema_version,
                 validation_profile="stage2w-structural-v2",
                 validated_at=datetime.now(UTC),
             )
+            if source_bound_finding is not None:
+                return report.model_copy(
+                    update={
+                        "status": ValidationStatus.FAILED,
+                        "findings": (source_bound_finding,),
+                        "validation_profile": "stage2w-source-bound-v2",
+                    }
+                )
+            return report
         try:
             proposed = WorldOverlay().apply(
                 canonical.canonical_world,
-                bundle.observed_changes,  # type: ignore[attr-defined]
+                bundle.observed_changes,
                 canonical_commit=canonical.commit_id,
             )
         except Exception as error:
             return ValidationReport(
-                report_id=StableId(f"validation.overlay.{bundle.bundle_id.root}"),  # type: ignore[attr-defined]
-                bundle_id=bundle.bundle_id,  # type: ignore[attr-defined]
+                report_id=_validation_report_id("validation.overlay", bundle, candidate),
+                bundle_id=bundle.bundle_id,
                 status=ValidationStatus.FAILED,
                 findings=(
                     ValidationFinding(code="INVALID_OVERLAY", severity="error", message=str(error)),
                 ),
-                schema_version=bundle.proposed_roots.schema_version,  # type: ignore[attr-defined]
+                schema_version=bundle.proposed_roots.schema_version,
                 validation_profile="stage2w-structural-v2",
                 validated_at=datetime.now(UTC),
             )
         validation_text = canonical.canonical_text
         manifest = canonical.root_manifest
         evidence_present = any(
-            operation.evidence_refs
-            for operation in bundle.observed_changes.operations  # type: ignore[attr-defined]
+            operation.evidence_refs for operation in bundle.observed_changes.operations
         )
-        proposed_text_ref = bundle.proposed_roots.text_root  # type: ignore[attr-defined]
+        proposed_text_ref = bundle.proposed_roots.text_root
         if (
             evidence_present
             and manifest is not None
             and proposed_text_ref.artifact_id != manifest.text_root.artifact_id
         ):
             if self._proposed_text_loader is None:
-                return self._text_unavailable_report(
+                report = self._text_unavailable_report(
                     bundle,
+                    candidate,
                     "proposed TextRoot loader is not configured",
                 )
+                if source_bound_finding is not None:
+                    return report.model_copy(
+                        update={"findings": (*report.findings, source_bound_finding)}
+                    )
+                return report
             try:
                 validation_text = self._proposed_text_loader(proposed_text_ref)
             except Exception as error:
-                return self._text_unavailable_report(
+                report = self._text_unavailable_report(
                     bundle,
+                    candidate,
                     f"proposed TextRoot cannot be loaded: {error}",
                 )
-        return self._deterministic.validate(
-            bundle,  # type: ignore[arg-type]
+                if source_bound_finding is not None:
+                    return report.model_copy(
+                        update={"findings": (*report.findings, source_bound_finding)}
+                    )
+                return report
+        report = self._deterministic.validate(
+            bundle,
             canonical.canonical_world,
             proposed,
             validation_text,
             canonical_commit=canonical.commit_id,
         )
+        if source_bound_finding is not None:
+            report = report.model_copy(
+                update={
+                    "status": ValidationStatus.FAILED,
+                    "findings": (*report.findings, source_bound_finding),
+                    "validation_profile": f"{report.validation_profile}+source-bound-v1",
+                }
+            )
+        return report
 
     @staticmethod
-    def _text_unavailable_report(bundle: object, message: str) -> ValidationReport:
+    def _source_bound_evidence_finding(
+        bundle: CandidateChangeBundle,
+        canonical: CanonicalWriteBasis,
+        candidate: CandidateRevision,
+    ) -> ValidationFinding | None:
+        """Require candidate evidence to cover the pre-registered source span.
+
+        The requirement is attached to the immutable candidate envelope, so a
+        validator cannot infer it from the model's query or from whichever
+        chapter happened to produce a structurally valid operation.  Evidence
+        must reference the registered TextRoot/chapter/block, keep every
+        individual span inside the required range, pass the normal immutable-root
+        checks, and collectively cover all consequence markers in that range.
+        """
+
+        requirement = candidate.source_evidence_requirement
+        if requirement is None:
+            return None
+
+        def finding(
+            code: str, message: str, refs: tuple[EvidenceRef, ...] = ()
+        ) -> ValidationFinding:
+            return ValidationFinding(
+                code=code,
+                severity="error",
+                message=message,
+                evidence_refs=refs,
+            )
+
+        if requirement.source_artifact_id not in {
+            source.artifact_id for source in candidate.source_artifacts
+        }:
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_SOURCE_MISMATCH",
+                "candidate source artifacts do not retain the registered source TextRoot",
+            )
+
+        text_root = canonical.canonical_text
+        if text_root is None:
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_UNVERIFIABLE",
+                "source-bound evidence requires the canonical TextRoot for deterministic checking",
+            )
+        # ``RootManifest.text_root.artifact_id`` is the CAS identity of the
+        # serialized TextRoot blob (the source artifact carried by the
+        # request), while ``TextRootDocument.root_hash`` is the canonical
+        # semantic root used by EvidenceRef.  They are intentionally
+        # different identities: the former hashes the envelope including
+        # ``root_hash`` and the latter hashes the document content excluding
+        # that self-referential field.  Compare each identity in its own
+        # namespace instead of treating them as interchangeable.
+        manifest = canonical.root_manifest
+        if manifest is None or manifest.text_root.artifact_id != requirement.source_artifact_id:
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_ROOT_MISMATCH",
+                "canonical TextRoot artifact differs from the registered "
+                "source-bound evidence root",
+            )
+
+        chapters = {
+            chapter.chapter_id: chapter
+            for chapter in text_root.chapters
+            if chapter.chapter_index == requirement.source_chapter_index
+        }
+        chapter = chapters.get(requirement.source_chapter_id)
+        if chapter is None:
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_REQUIREMENT_INVALID",
+                "registered source-bound chapter is not present at its declared index",
+            )
+        blocks = {block.block_id: block for scene in chapter.scenes for block in scene.blocks}
+        block = blocks.get(requirement.required_span.block_id)
+        if block is None:
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_REQUIREMENT_INVALID",
+                "registered source-bound block is not present in its declared chapter",
+            )
+        required_text = block.text[requirement.required_span.start : requirement.required_span.end]
+        if any(marker not in required_text for marker in requirement.required_consequence_markers):
+            return finding(
+                "SOURCE_BOUND_EVIDENCE_REQUIREMENT_INVALID",
+                "registered consequence markers are not contained by the registered span",
+            )
+
+        evidence_refs: list[EvidenceRef] = []
+        for operation in bundle.observed_changes.operations:
+            for evidence in operation.evidence_refs:
+                if evidence.root_hash != text_root.root_hash:
+                    continue
+                evidence_refs.append(evidence)
+        admissible_evidence: list[EvidenceRef] = []
+        for evidence in evidence_refs:
+            span = evidence.span
+            if (
+                evidence.chapter_id != requirement.source_chapter_id
+                or span is None
+                or span.block_id != requirement.required_span.block_id
+                or span.start < requirement.required_span.start
+                or span.end > requirement.required_span.end
+            ):
+                continue
+            try:
+                validate_evidence_ref(evidence, text_root)
+            except BenchmarkImportError:
+                continue
+            admissible_evidence.append(evidence)
+
+        # Candidate evidence is intentionally split into bounded source
+        # units (normally one sentence each), so a registered incident span
+        # may be wider than any single EvidenceRef.  Require the evidence
+        # refs collectively to cover every registered consequence marker,
+        # while keeping each ref inside the immutable span.  This preserves
+        # exact quote/hash validation without making a multi-sentence source
+        # contract impossible for the model to satisfy.
+        span_start = requirement.required_span.start
+        span_end = requirement.required_span.end
+        marker_ranges = tuple(
+            (marker_start, marker_start + len(marker))
+            for marker in requirement.required_consequence_markers
+            for marker_start in (block.text.find(marker, span_start, span_end),)
+        )
+        if all(
+            any(
+                evidence.span is not None
+                and evidence.span.start <= marker_start
+                and evidence.span.end >= marker_end
+                for evidence in admissible_evidence
+            )
+            for marker_start, marker_end in marker_ranges
+        ):
+            return None
+
+        return finding(
+            "SOURCE_BOUND_EVIDENCE_MISSING",
+            "candidate evidence does not cover every consequence marker in the "
+            "pre-registered causal source span "
+            f"({requirement.source_chapter_id.root}/{requirement.required_span.block_id.root})",
+            tuple(admissible_evidence),
+        )
+
+    @staticmethod
+    def _text_unavailable_report(
+        bundle: CandidateChangeBundle,
+        candidate: CandidateRevision,
+        message: str,
+    ) -> ValidationReport:
         return ValidationReport(
-            report_id=StableId(f"validation.proposed-text.{bundle.bundle_id.root}"),  # type: ignore[attr-defined]
-            bundle_id=bundle.bundle_id,  # type: ignore[attr-defined]
+            report_id=_validation_report_id("validation.proposed-text", bundle, candidate),
+            bundle_id=bundle.bundle_id,
             status=ValidationStatus.FAILED,
             findings=(
                 ValidationFinding(
@@ -251,7 +434,7 @@ class Stage2ValidationV2Adapter:
                     message=message,
                 ),
             ),
-            schema_version=bundle.proposed_roots.schema_version,  # type: ignore[attr-defined]
+            schema_version=bundle.proposed_roots.schema_version,
             validation_profile="stage2w-proposed-text-v2",
             validated_at=datetime.now(UTC),
         )
@@ -285,6 +468,19 @@ class Stage2ValidationV2Adapter:
             deterministic_profile="stage2w-basis-v2",
             validated_at=datetime.now(UTC),
         )
+
+
+def _validation_report_id(
+    namespace: str,
+    bundle: CandidateChangeBundle,
+    candidate: CandidateRevision,
+) -> StableId:
+    """Keep the report identity bound when a readable bundle id is too long."""
+
+    return bounded_stable_id(
+        f"{namespace}.{bundle.bundle_id.root}",
+        f"{namespace}.{candidate.content_hash.root.removeprefix('sha256:')}",
+    )
 
 
 def _disposition(

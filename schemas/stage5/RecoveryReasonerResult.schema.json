@@ -1,0 +1,423 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "FailureClass": {
+      "enum": [
+        "worker_startup",
+        "worker_lease_expired",
+        "provider_transient",
+        "leaf_schema_rejected",
+        "leaf_review_required",
+        "canon_extraction_gap",
+        "basis_changed",
+        "permission_denied",
+        "validation_rejected",
+        "commit_conflict",
+        "projection_failed",
+        "freshness_waiting",
+        "freshness_blocked",
+        "writer_lane_busy",
+        "effect_uncertain",
+        "poison_loop",
+        "budget_exhausted",
+        "cancelled",
+        "runtime_capability_unavailable",
+        "external_resource_unavailable",
+        "unknown"
+      ],
+      "title": "FailureClass",
+      "type": "string"
+    },
+    "ModelCallPurpose": {
+      "enum": [
+        "development",
+        "batch_test",
+        "evaluation"
+      ],
+      "title": "ModelCallPurpose",
+      "type": "string"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "endpoint",
+        "model",
+        "model_version",
+        "usage",
+        "latency_ms",
+        "started_at",
+        "completed_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
+    "ModelRole": {
+      "enum": [
+        "implementation_model",
+        "batch_test_model"
+      ],
+      "title": "ModelRole",
+      "type": "string"
+    },
+    "ModelUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cost_usd"
+      ],
+      "title": "ModelUsage",
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RecoveryActionKind": {
+      "enum": [
+        "graph_curator",
+        "ordinary_curator",
+        "review_required"
+      ],
+      "title": "RecoveryActionKind",
+      "type": "string"
+    },
+    "RecoveryProposal": {
+      "additionalProperties": false,
+      "description": "A durable, rejectable proposal with no execution authority.",
+      "properties": {
+        "basis_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "considered_action_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 8,
+          "minItems": 2,
+          "title": "Considered Action Ids",
+          "type": "array"
+        },
+        "failure_class": {
+          "$ref": "#/$defs/FailureClass"
+        },
+        "incident_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "may_execute_tools": {
+          "const": false,
+          "default": false,
+          "title": "May Execute Tools",
+          "type": "boolean"
+        },
+        "may_mutate_active_skill": {
+          "const": false,
+          "default": false,
+          "title": "May Mutate Active Skill",
+          "type": "boolean"
+        },
+        "may_mutate_canon": {
+          "const": false,
+          "default": false,
+          "title": "May Mutate Canon",
+          "type": "boolean"
+        },
+        "model_call": {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "prompt_contract_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "proposal_only": {
+          "const": true,
+          "default": true,
+          "title": "Proposal Only",
+          "type": "boolean"
+        },
+        "rationale": {
+          "maxLength": 1200,
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "receipt_refs": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Receipt Refs",
+          "type": "array"
+        },
+        "rejected_action_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 7,
+          "title": "Rejected Action Ids",
+          "type": "array"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "safety_boundary_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "selected_action_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selected_action_kind": {
+          "$ref": "#/$defs/RecoveryActionKind"
+        },
+        "selected_action_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "selected_validation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "skill_contract_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "state_refs": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "State Refs",
+          "type": "array"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "request_id",
+        "project_id",
+        "run_id",
+        "task_id",
+        "incident_ref",
+        "failure_class",
+        "basis_commit",
+        "safety_boundary_id",
+        "selected_action_id",
+        "selected_action_kind",
+        "selected_action_ref",
+        "selected_validation_ref",
+        "considered_action_ids",
+        "rejected_action_ids",
+        "rationale",
+        "receipt_refs",
+        "state_refs",
+        "prompt_contract_hash",
+        "skill_contract_hash",
+        "model_call"
+      ],
+      "title": "RecoveryProposal",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "proposal": {
+      "$ref": "#/$defs/RecoveryProposal"
+    },
+    "proposal_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "proposal",
+    "proposal_ref"
+  ],
+  "title": "RecoveryReasonerResult",
+  "type": "object"
+}

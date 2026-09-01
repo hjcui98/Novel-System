@@ -73,9 +73,10 @@ class StateRelationRule:
 class PredicateRegistry:
     """Small Stage 2M relation vocabulary; not a general ontology."""
 
-    VERSION = "stage2m-predicate-registry.v1"
+    VERSION = "stage2m-predicate-registry.v2"
     _ANY_TYPES = ("*",)
     _CHARACTER_TYPES = ("character", "person")
+    _CREATURE_TYPES = ("creature", "animal", "beast")
     _PLACE_TYPES = ("location", "organization", "setting")
     _OBJECT_TYPES = ("artifact", "item", "object", "location", "organization")
 
@@ -93,6 +94,7 @@ class PredicateRegistry:
                 self._definition("mentor_of", "mentored_by", characters, characters),
                 self._definition("teacher_of", "student_of", characters, characters),
                 self._definition("travels_with", "travels_with", characters, characters),
+                self._definition("mounts", "mounted_by", characters, self._CREATURE_TYPES),
                 self._definition("protects", "protected_by", characters, any_types),
                 self._definition("opposes", "opposed_by", any_types, any_types),
                 self._definition("possesses", "possessed_by", any_types, objects),
@@ -663,10 +665,10 @@ class WorldGraphExtractionPass:
         reason: str | None = None
         if candidate.support_status is GraphCandidateSupportStatus.REJECTED:
             reason = candidate.support_reason
-        elif candidate.source_truth_class in {
-            TruthClass.UNKNOWN,
-            TruthClass.NOT_APPLICABLE,
-        }:
+        elif candidate.source_truth_class in {TruthClass.UNKNOWN, TruthClass.NOT_APPLICABLE} or (
+            candidate.source_state_id is None
+            and candidate.source_truth_class is not TruthClass.ACCEPTED_WORLD_FACT
+        ):
             reason = f"truth_class_not_admitted:{candidate.source_truth_class.value}"
         elif subject_id is None:
             reason = f"subject_entity_{subject_resolution.status.value}"

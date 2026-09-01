@@ -38,6 +38,7 @@ from novel_agent.services.agent_context import (
     ContextLimitError,
     ContextProjectionError,
     ContextWindowPolicy,
+    render_context,
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
@@ -113,6 +114,18 @@ def _view(**updates: object) -> AgentContextView:
     }
     values.update(updates)
     return AgentContextView.model_validate(values)
+
+
+def test_render_context_exposes_exact_item_ids_for_writer_memory_requests() -> None:
+    view = _view(
+        active_memory_items=(_item("visible-memory"),),
+    )
+
+    rendered = render_context(view)
+
+    assert '<CONTEXT_ITEM id="item.protected"' in rendered
+    assert '<CONTEXT_ITEM id="item.visible-memory"' in rendered
+    assert "visible fact" in rendered
 
 
 def _event(
@@ -512,7 +525,7 @@ def test_compactor_removes_only_safe_atomic_groups_and_hard_fails(tmp_path: Path
     )
     view = _view(recent_settled_tail=group)
     policy = ContextWindowPolicy(
-        sequence_limit=240,
+        sequence_limit=260,
         reserved_output_tokens=10,
         safety_allowance_tokens=10,
         soft_limit_tokens=180,
@@ -525,6 +538,11 @@ def test_compactor_removes_only_safe_atomic_groups_and_hard_fails(tmp_path: Path
     assert not compacted.recent_settled_tail
     assert receipt.summary_artifact is not None
     assert receipt.detail_artifact is not None
+    assert receipt.input_context_tokens is not None
+    assert receipt.output_context_tokens is not None
+    assert receipt.reduction_ratio is not None
+    assert receipt.input_context_tokens > receipt.output_context_tokens
+    assert 0 < receipt.reduction_ratio <= 1
     assert compactor.provider_receipt(compacted, policy).provider_valid
     applied = projector.apply_compaction(view, receipt)
     assert applied.context_hash == receipt.output_context_hash

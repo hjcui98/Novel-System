@@ -18,14 +18,14 @@
     },
     "max_local_repairs": {
       "default": 1,
-      "maximum": 1,
+      "maximum": 2,
       "minimum": 0,
       "title": "Max Local Repairs",
       "type": "integer"
     },
     "max_major_rewrites": {
       "default": 1,
-      "maximum": 1,
+      "maximum": 2,
       "minimum": 0,
       "title": "Max Major Rewrites",
       "type": "integer"

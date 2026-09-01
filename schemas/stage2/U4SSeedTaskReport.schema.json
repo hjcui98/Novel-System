@@ -1,0 +1,217 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "BenchmarkFailureLayer": {
+      "enum": [
+        "transport",
+        "raw",
+        "parse",
+        "package",
+        "writer-answer",
+        "answer-judge",
+        "evidence-judge",
+        "none"
+      ],
+      "title": "BenchmarkFailureLayer",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "V05ReadoutTrack": {
+      "enum": [
+        "novelmem_qa",
+        "novelmem_context"
+      ],
+      "title": "V05ReadoutTrack",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Public, evaluator-free receipt for one real U4-S Writer readout.",
+  "properties": {
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "checkpoint_chapter": {
+      "minimum": 0,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "evidence_ledger_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "first_failure_layer": {
+      "$ref": "#/$defs/BenchmarkFailureLayer"
+    },
+    "freeze_receipt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "future_leakage_count": {
+      "minimum": 0,
+      "title": "Future Leakage Count",
+      "type": "integer"
+    },
+    "information_profile": {
+      "$ref": "#/$defs/BenchmarkInformationProfile"
+    },
+    "judge_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Judge Receipt Refs",
+      "type": "array"
+    },
+    "package_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "package_status": {
+      "minLength": 1,
+      "title": "Package Status",
+      "type": "string"
+    },
+    "raw_response_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "readout_record_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "response_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "semantic_status": {
+      "minLength": 1,
+      "title": "Semantic Status",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "track": {
+      "$ref": "#/$defs/V05ReadoutTrack"
+    },
+    "writer_status": {
+      "enum": [
+        "SCHEMA_VALID",
+        "TYPED_FAILURE"
+      ],
+      "title": "Writer Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "track",
+    "checkpoint_chapter",
+    "information_profile",
+    "basis_commit_id",
+    "snapshot_id",
+    "freeze_receipt_id",
+    "writer_status",
+    "first_failure_layer",
+    "package_status",
+    "semantic_status",
+    "future_leakage_count"
+  ],
+  "title": "U4SSeedTaskReport",
+  "type": "object"
+}

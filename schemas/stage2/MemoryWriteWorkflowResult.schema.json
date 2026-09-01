@@ -319,6 +319,11 @@
       "title": "Degraded",
       "type": "boolean"
     },
+    "effect_uncertain": {
+      "default": false,
+      "title": "Effect Uncertain",
+      "type": "boolean"
+    },
     "freshness": {
       "anyOf": [
         {
@@ -404,6 +409,11 @@
       ],
       "default": null
     },
+    "safe_action_accepted": {
+      "default": false,
+      "title": "Safe Action Accepted",
+      "type": "boolean"
+    },
     "status": {
       "$ref": "#/$defs/MemoryWriteWorkflowStatus"
     },
@@ -425,6 +435,17 @@
       },
       "title": "Terminal Codes",
       "type": "array"
+    },
+    "terminal_result_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "validation_receipt": {
       "anyOf": [

@@ -1,0 +1,21 @@
+{
+  "spec_version": "1.0.0",
+  "factory_locator": "novel_agent.runtime.creative_assembly:build_production_assembly",
+  "runtime_contract_version": "1.0.0",
+  "expected_migration_head": "0010_model_call_ledger",
+  "expected_planner_adapter": "novel_agent.adapters.runtime.stage4_planner.Stage4PlanningLeafAdapter",
+  "expected_writer_adapter": "novel_agent.adapters.runtime.stage3_writer.Stage3WritingLeafAdapter",
+  "expected_plan_materializer": "novel_agent.adapters.runtime.materializers.PlanCandidateMaterializer",
+  "expected_draft_materializer": "novel_agent.adapters.runtime.materializers.DraftCandidateMaterializer",
+  "expected_chapter_settlement": "novel_agent.adapters.runtime.chapter_settlement.AtomicChapterSettlementAdapter",
+  "expected_memory_maintenance": "novel_agent.adapters.runtime.memory_maintenance.MemoryMaintenanceAdapter",
+  "model_policy": {
+    "require_admission": true,
+    "sequence_limit": 131072,
+    "default_output_limit": 8000,
+    "reasoning_billing_mode": "unknown_not_applicable"
+  },
+  "expected_prompt_ids": ["prompt.system-policy"],
+  "expected_skill_ids": ["skill.scene-composition"],
+  "reranker_required": false
+}

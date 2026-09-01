@@ -35,7 +35,86 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
     "JsonValue": {},
+    "LoopRoundProgress": {
+      "additionalProperties": false,
+      "description": "Minimal evidence that one Writer/Planner/Editor/repair round changed work.",
+      "properties": {
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "basis_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "changed_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Changed Ids",
+          "type": "array"
+        },
+        "input_candidate_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/LoopRoundProgressKind"
+        },
+        "remaining_work": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remaining Work",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "LoopRoundProgress",
+      "type": "object"
+    },
+    "LoopRoundProgressKind": {
+      "description": "Durable per-round progress. Retry count or model self-praise is not progress.",
+      "enum": [
+        "PROGRESSED",
+        "NO_PROGRESS",
+        "WAITING",
+        "TERMINAL"
+      ],
+      "title": "LoopRoundProgressKind",
+      "type": "string"
+    },
     "PlanningLoopPhase": {
       "enum": [
         "preflight",
@@ -92,6 +171,17 @@
     },
     "request_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "round_progress": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoopRoundProgress"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

@@ -1,0 +1,136 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "EvolutionTargetKind": {
+      "enum": [
+        "prompt",
+        "skill",
+        "policy",
+        "code"
+      ],
+      "title": "EvolutionTargetKind",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "affected_contract_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Affected Contract Ids",
+      "type": "array"
+    },
+    "base_artifact_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "bounded_single_change": {
+      "const": true,
+      "default": true,
+      "title": "Bounded Single Change",
+      "type": "boolean"
+    },
+    "candidate_artifact_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "change_summary": {
+      "maxLength": 1200,
+      "minLength": 1,
+      "title": "Change Summary",
+      "type": "string"
+    },
+    "incident_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "maxItems": 64,
+      "minItems": 2,
+      "title": "Incident Refs",
+      "type": "array"
+    },
+    "isolated_candidate": {
+      "const": true,
+      "default": true,
+      "title": "Isolated Candidate",
+      "type": "boolean"
+    },
+    "requires_human_gate": {
+      "default": false,
+      "title": "Requires Human Gate",
+      "type": "boolean"
+    },
+    "runtime_hot_mutation_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Hot Mutation Allowed",
+      "type": "boolean"
+    },
+    "target_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "target_kind": {
+      "$ref": "#/$defs/EvolutionTargetKind"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "target_id",
+    "target_kind",
+    "base_artifact_ref",
+    "candidate_artifact_ref",
+    "incident_refs",
+    "affected_contract_ids",
+    "change_summary"
+  ],
+  "title": "EvolutionCandidate",
+  "type": "object"
+}

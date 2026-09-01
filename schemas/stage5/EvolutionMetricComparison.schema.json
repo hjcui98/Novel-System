@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "baseline_value": {
+      "title": "Baseline Value",
+      "type": "number"
+    },
+    "candidate_value": {
+      "title": "Candidate Value",
+      "type": "number"
+    },
+    "metric": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Metric",
+      "type": "string"
+    }
+  },
+  "required": [
+    "metric",
+    "baseline_value",
+    "candidate_value"
+  ],
+  "title": "EvolutionMetricComparison",
+  "type": "object"
+}

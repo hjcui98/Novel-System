@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable call usage grouped by run, task, attempt, and logical phase.",
+  "properties": {
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cost_availability": {
+      "$ref": "#/$defs/ModelCostAvailability"
+    },
+    "cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "latency_ms": {
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "logical_phase": {
+      "minLength": 1,
+      "title": "Logical Phase",
+      "type": "string"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "reasoning_tokens": {
+      "minimum": 0,
+      "title": "Reasoning Tokens",
+      "type": "integer"
+    },
+    "request_count": {
+      "minimum": 0,
+      "title": "Request Count",
+      "type": "integer"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "schema_retry_count": {
+      "minimum": 0,
+      "title": "Schema Retry Count",
+      "type": "integer"
+    },
+    "status_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Status Counts",
+      "type": "object"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "run_id",
+    "task_id",
+    "logical_phase",
+    "request_count",
+    "schema_retry_count",
+    "status_counts",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "latency_ms",
+    "cost_availability"
+  ],
+  "title": "ModelCallLedgerAggregate",
+  "type": "object"
+}

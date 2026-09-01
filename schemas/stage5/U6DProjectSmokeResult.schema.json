@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "ProjectId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_count": {
+      "minimum": 0,
+      "title": "Attempt Count",
+      "type": "integer"
+    },
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "chain_task_kinds": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Chain Task Kinds",
+      "type": "array"
+    },
+    "commit_count": {
+      "minimum": 0,
+      "title": "Commit Count",
+      "type": "integer"
+    },
+    "completed_chapters": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Completed Chapters",
+      "type": "array"
+    },
+    "effect_count": {
+      "minimum": 0,
+      "title": "Effect Count",
+      "type": "integer"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "evidence_artifact_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "minItems": 1,
+      "title": "Evidence Artifact Refs",
+      "type": "array"
+    },
+    "final_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "model_call_count": {
+      "minimum": 0,
+      "title": "Model Call Count",
+      "type": "integer"
+    },
+    "notes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    },
+    "object_store_root": {
+      "minLength": 1,
+      "title": "Object Store Root",
+      "type": "string"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_count": {
+      "minimum": 0,
+      "title": "Task Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "project_id",
+    "run_id",
+    "basis_commit",
+    "final_commit",
+    "status",
+    "completed_chapters",
+    "chain_task_kinds",
+    "event_count",
+    "task_count",
+    "attempt_count",
+    "effect_count",
+    "commit_count",
+    "model_call_count",
+    "object_store_root",
+    "evidence_artifact_refs"
+  ],
+  "title": "U6DProjectSmokeResult",
+  "type": "object"
+}

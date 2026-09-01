@@ -96,9 +96,7 @@ class CreativeDispatcher:
             return None
 
     @staticmethod
-    def _parallel_batch(
-        ready: tuple[TaskRecord, ...], *, limit: int = 2
-    ) -> tuple[TaskRecord, ...]:
+    def _parallel_batch(ready: tuple[TaskRecord, ...], *, limit: int = 2) -> tuple[TaskRecord, ...]:
         if not ready:
             return ()
         first = ready[0]
@@ -106,9 +104,7 @@ class CreativeDispatcher:
         if first.kind not in leaf_kinds:
             return (first,)
         selected = [first]
-        selected_by_project: dict[ProjectId, list[TaskRecord]] = {
-            first.project_id: [first]
-        }
+        selected_by_project: dict[ProjectId, list[TaskRecord]] = {first.project_id: [first]}
         for candidate in ready[1:]:
             if len(selected) >= limit:
                 break

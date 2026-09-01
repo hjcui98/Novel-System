@@ -22,6 +22,7 @@ dist/
 *.egg-info/
 
 # Project Conda / virtual environments
+.conda-env
 .conda-env/
 .conda/
 .venv/
@@ -54,10 +55,12 @@ volumes/
 
 # Private benchmark and novel content
 data/private/
+benchmarks/private
 benchmarks/private/
 /择天记.txt
 
 # Local model weights and caches
+models
 models/
 checkpoints/
 *.safetensors

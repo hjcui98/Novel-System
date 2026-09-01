@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "PlanRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "PlanRootRef",
+      "type": "object"
+    },
+    "ProjectProfileRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "project_profile",
+          "default": "project_profile",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ProjectProfileRootRef",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "TextRootRef",
+      "type": "object"
+    },
+    "WorldRootRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "root_kind": {
+          "const": "world",
+          "default": "world",
+          "title": "Root Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "WorldRootRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable identity comparison recorded after a checkpoint namespace closes.",
+  "properties": {
+    "basis_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "checkpoint_chapter": {
+      "maximum": 300,
+      "minimum": 1,
+      "title": "Checkpoint Chapter",
+      "type": "integer"
+    },
+    "commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "control_replay_identity": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "evaluation_namespace": {
+      "enum": [
+        "PENDING_READOUT",
+        "DISCARDED"
+      ],
+      "title": "Evaluation Namespace",
+      "type": "string"
+    },
+    "identity_match": {
+      "title": "Identity Match",
+      "type": "boolean"
+    },
+    "index_lineage_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "memory_identity_after": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "memory_identity_before": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "plan_root_ref": {
+      "$ref": "#/$defs/PlanRootRef"
+    },
+    "profile_root_ref": {
+      "$ref": "#/$defs/ProjectProfileRootRef"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "text_root_ref": {
+      "$ref": "#/$defs/TextRootRef"
+    },
+    "world_root_ref": {
+      "$ref": "#/$defs/WorldRootRef"
+    }
+  },
+  "required": [
+    "basis_id",
+    "checkpoint_chapter",
+    "commit_id",
+    "snapshot_id",
+    "plan_root_ref",
+    "text_root_ref",
+    "world_root_ref",
+    "profile_root_ref",
+    "index_lineage_ref",
+    "memory_identity_before",
+    "memory_identity_after",
+    "control_replay_identity",
+    "evaluation_namespace",
+    "identity_match"
+  ],
+  "title": "U6CheckpointLineage",
+  "type": "object"
+}

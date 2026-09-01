@@ -57,7 +57,12 @@ from novel_agent.prompts.registry import content_hash
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.controller_legal_actions import LegalActionProvider
 from novel_agent.services.memory_pipeline import ContextCompiler
-from novel_agent.services.retrieval import ROUTES, FusionService, RerankService
+from novel_agent.services.retrieval import (
+    ROUTES,
+    FusionService,
+    RerankService,
+    retain_related_graph_paths,
+)
 from novel_agent.tools.contracts import ControllerBudgetState, ToolBinding, ToolInvocation
 from novel_agent.tools.retrieval import CHANNEL_BY_TOOL, PLAN_INTENTS, POOL_BY_CHANNEL
 
@@ -195,12 +200,6 @@ class RouteBoundControllerPolicy:
             request.retrieval_budget.max_tool_calls,
             request.retrieval_budget.max_rounds * max(1, len(request.initial_memory_needs)),
         )
-        if len(calls) >= max_calls:
-            return ControllerPolicyDecision(
-                action=ControllerPolicyAction.STOP,
-                stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
-                rationale_code="REQUEST_CALL_BUDGET_EXHAUSTED",
-            )
         unresolved = False
         fallback_exhausted_without_gain = False
         access_scope = request.access_scope.value
@@ -241,6 +240,12 @@ class RouteBoundControllerPolicy:
                     and all(result.new_information_gain == 0 for result in fallback_results)
                 )
         if next_actions:
+            if len(calls) >= max_calls:
+                return ControllerPolicyDecision(
+                    action=ControllerPolicyAction.STOP,
+                    stop_reason=ControllerStopReason.BUDGET_EXHAUSTED,
+                    rationale_code="REQUEST_CALL_BUDGET_EXHAUSTED",
+                )
             # Deficit round-robin: no priority Need receives its N+1 call while
             # another actual priority Need has received fewer calls.  Stable
             # public risk/priority/Need ID fields break ties deterministically.
@@ -1043,6 +1048,10 @@ class BoundedMemoryController:
             evidence_strength_satisfied=evidence_strength_satisfied,
             stop_reason=stop_reason,
         )
+        observation = getattr(self._policy, "last_observation", None)
+        observation_telemetry = getattr(observation, "telemetry", None)
+        if callable(observation_telemetry):
+            receipt = receipt.model_copy(update={"context_telemetry": observation_telemetry()})
         resolution = ContextResolutionResult(
             resolution_id=StableId(f"resolution.{request.request_id.root}"),
             request_id=request.request_id,
@@ -1420,7 +1429,7 @@ class BoundedMemoryController:
         unique: dict[StableId, FusedCandidate] = {}
         for candidate in (*current, *incoming):
             unique.setdefault(candidate.unit.unit_id, candidate)
-        return tuple(
+        ranked = tuple(
             candidate.model_copy(
                 update={
                     "fused_rank": rank,
@@ -1434,6 +1443,7 @@ class BoundedMemoryController:
             )
             for rank, candidate in enumerate(unique.values(), start=1)
         )
+        return retain_related_graph_paths(ranked)
 
     def _receipt(
         self,

@@ -50,7 +50,7 @@ from novel_agent.domain.creative_runtime import (
     PlanningLoopRequest,
 )
 from novel_agent.domain.editorial import (
-    CuratorObservation,
+    CandidateObservationPayload,
     EditorialVerdict,
     EditorReviewPayload,
 )
@@ -81,6 +81,7 @@ from novel_agent.domain.model_calls import (
     ProviderModelResult,
 )
 from novel_agent.domain.planning import (
+    PlanningBudgets,
     PlanningLoopEventReceipt,
     PlanningLoopPhase,
     PlanReview,
@@ -101,6 +102,7 @@ from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
     AgentType,
+    ContextBudget,
     ContractRef,
     ExecutionStatus,
     FutureIsolationAttestation,
@@ -109,6 +111,7 @@ from novel_agent.domain.stage2 import (
     PlanProposal,
     ProposalProvenance,
     ProposedItem,
+    RetrievalBudget,
 )
 from novel_agent.domain.writing_loop import WritingLoopResult
 from novel_agent.ports.creative_runtime import WritingLeafPort
@@ -151,6 +154,11 @@ HASH = "sha256:" + "1" * 64
 PERMISSION_HASH = "sha256:" + "2" * 64
 NOW = datetime(2026, 8, 10, tzinfo=UTC)
 VERSION = SchemaVersion("1.0.0")
+_STAGE4_BUDGETS = PlanningBudgets(
+    retrieval=RetrievalBudget(),
+    context=ContextBudget(token_budget=4_000),
+)
+_STAGE4_FINGERPRINT = ArtifactId(HASH)
 PACKAGE_ROOT = Path(__file__).parents[2] / "src" / "novel_agent"
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
@@ -175,7 +183,7 @@ class _BoundObserverEndpoint(FakeModelEndpoint):
     async def generate(self, request: ModelRequest) -> ProviderModelResult:
         match = re.search(r'"draft_id":"(sha256:[0-9a-f]{64})"', request.prompt)
         assert match is not None
-        self.response_text = CuratorObservation(
+        self.response_text = CandidateObservationPayload(
             draft_id=ArtifactId(match.group(1)),
         ).model_dump_json()
         return await super().generate(request)
@@ -408,6 +416,9 @@ def _planning_leaf(
             accepted_text_ref=manifest.text_root,
             project_profile_ref=manifest.project_profile_root,
             snapshot_id=request.basis_snapshot,
+            budgets=_STAGE4_BUDGETS,
+            configuration_fingerprint=_STAGE4_FINGERPRINT,
+            model_fingerprint=_STAGE4_FINGERPRINT,
         )
         return Stage4PlanningInvocation(
             request=detailed,

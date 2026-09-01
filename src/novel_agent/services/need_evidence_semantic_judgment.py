@@ -43,23 +43,31 @@ class SemanticFacetDecision(DomainModel):
 
     @model_validator(mode="after")
     def validate_buckets(self) -> SemanticFacetDecision:
-        buckets = (
-            self.supporting_slice_ids,
-            self.partial_slice_ids,
-            self.unsupported_slice_ids,
+        supporting = tuple(dict.fromkeys(self.supporting_slice_ids))
+        partial = tuple(
+            item for item in dict.fromkeys(self.partial_slice_ids) if item not in set(supporting)
         )
-        values = tuple(item for bucket in buckets for item in bucket)
-        if len(values) != len(set(values)):
-            raise ValueError("semantic decision slice buckets must be disjoint")
-        if self.status == "SUPPORTED" and not self.supporting_slice_ids:
-            raise ValueError("SUPPORTED decision requires supporting slices")
-        if self.status == "PARTIAL" and (self.supporting_slice_ids or not self.partial_slice_ids):
-            raise ValueError("PARTIAL decision requires partial slices only")
-        if self.status == "UNSUPPORTED" and (
-            self.supporting_slice_ids or self.partial_slice_ids or not self.unsupported_slice_ids
-        ):
-            raise ValueError("UNSUPPORTED decision requires unsupported slices only")
-        return self
+        unsupported = tuple(
+            item
+            for item in dict.fromkeys(self.unsupported_slice_ids)
+            if item not in set(supporting) and item not in set(partial)
+        )
+        if supporting:
+            status: Literal["SUPPORTED", "PARTIAL", "UNSUPPORTED"] = "SUPPORTED"
+        elif partial:
+            status = "PARTIAL"
+        elif unsupported:
+            status = "UNSUPPORTED"
+        else:
+            raise ValueError("semantic decision must classify at least one slice")
+        return self.model_copy(
+            update={
+                "supporting_slice_ids": supporting,
+                "partial_slice_ids": partial,
+                "unsupported_slice_ids": unsupported,
+                "status": status,
+            }
+        )
 
 
 class SemanticJudgmentBatchOutput(DomainModel):
@@ -131,17 +139,38 @@ class NeedEvidenceSemanticJudge:
         max_input_tokens: int = 12_000,
         max_output_tokens: int = 2_048,
         token_counter: TokenCounter | None = None,
+        thinking_enabled: bool | None = False,
+        thinking_token_budget: int | None = None,
     ) -> None:
         if max_input_tokens < 256:
             raise ValueError("semantic judge input budget must be at least 256 tokens")
         if max_output_tokens < 256:
             raise ValueError("semantic judge output budget must be at least 256 tokens")
+        if thinking_token_budget is not None and thinking_token_budget < 0:
+            raise ValueError("semantic judge thinking token budget must be non-negative")
         self._gateway = gateway
         self._max_input_tokens = max_input_tokens
         self._max_output_tokens = max_output_tokens
+        self._thinking_enabled = thinking_enabled
+        self._thinking_token_budget = thinking_token_budget
         self._count = token_counter or self._default_token_count
 
     def judge(
+        self,
+        selections: tuple[NeedEvidenceSelection, ...],
+    ) -> NeedEvidenceSemanticResult:
+        """Sync entry for Writer and tests that are not already inside an event loop."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.judge_async(selections))
+        raise RuntimeError(
+            "NeedEvidenceSemanticJudge.judge cannot run inside a running event loop; "
+            "await judge_async on the same loop as ModelGateway"
+        )
+
+    async def judge_async(
         self,
         selections: tuple[NeedEvidenceSelection, ...],
     ) -> NeedEvidenceSemanticResult:
@@ -184,12 +213,13 @@ class NeedEvidenceSemanticJudge:
                 prompt=prompt,
                 max_output_tokens=self._max_output_tokens,
                 timeout_seconds=900.0,
-                enable_thinking=False,
+                enable_thinking=self._thinking_enabled,
+                thinking_token_budget=self._thinking_token_budget,
                 scheduling_stage="need_evidence_semantic_judge",
             )
             try:
-                output, call = asyncio.run(
-                    self._gateway.generate_structured(request, SemanticJudgmentBatchOutput)
+                output, call = await self._gateway.generate_structured(
+                    request, SemanticJudgmentBatchOutput
                 )
                 self._apply_output(output, batch, accumulated)
                 batch_receipts.append(
@@ -280,14 +310,17 @@ class NeedEvidenceSemanticJudge:
                 ),
             )
             ordered_slices = tuple((slice_id, by_id[slice_id].text) for slice_id in ordered_ids)
-            works.append(
-                _WorkItem(
-                    need_id=need.need_id,
-                    semantic_question=need.semantic_question,
-                    facets=facets,
-                    slices=ordered_slices,
+            # One facet per call. A two-facet Need with 18 live slices truncated
+            # the structured JSON at 8000 tokens on frozen C95.
+            for facet in facets:
+                works.append(
+                    _WorkItem(
+                        need_id=need.need_id,
+                        semantic_question=need.semantic_question,
+                        facets=(facet,),
+                        slices=ordered_slices,
+                    )
                 )
-            )
         return tuple(works)
 
     def _chunks(self, works: tuple[_WorkItem, ...]) -> tuple[_WorkChunk, ...]:
@@ -303,10 +336,7 @@ class NeedEvidenceSemanticJudge:
             current: list[tuple[StableId, str]] = []
             for slice_item in work.slices:
                 candidate = tuple((*current, slice_item))
-                if current and (
-                    self._count(self._prompt((_WorkChunk(work, candidate),)))
-                    > self._max_input_tokens
-                ):
+                if current and self._exceeds_capacity(_WorkChunk(work, candidate)):
                     chunks.append(_WorkChunk(work=work, slices=tuple(current)))
                     current = [slice_item]
                 else:
@@ -316,20 +346,22 @@ class NeedEvidenceSemanticJudge:
         return tuple(chunks)
 
     def _pack_batches(self, chunks: tuple[_WorkChunk, ...]) -> tuple[tuple[_WorkChunk, ...], ...]:
-        batches: list[list[_WorkChunk]] = []
-        for chunk in chunks:
-            placed = False
-            for batch in batches:
-                if any(existing.work.need_id == chunk.work.need_id for existing in batch):
-                    continue
-                candidate = tuple((*batch, chunk))
-                if self._count(self._prompt(candidate)) <= self._max_input_tokens:
-                    batch.append(chunk)
-                    placed = True
-                    break
-            if not placed:
-                batches.append([chunk])
-        return tuple(tuple(batch) for batch in batches)
+        # One Need chunk per call. Packing five relation Needs into one 2048-token
+        # structured answer truncated (OpenAIChatOutputLengthError) on frozen C95.
+        return tuple((chunk,) for chunk in chunks)
+
+    def _exceeds_capacity(self, chunk: _WorkChunk) -> bool:
+        batch = (chunk,)
+        return (
+            self._count(self._prompt(batch)) > self._max_input_tokens
+            or self._estimated_output_tokens(batch) > self._max_output_tokens
+        )
+
+    @staticmethod
+    def _estimated_output_tokens(batch: tuple[_WorkChunk, ...]) -> int:
+        decisions = sum(len(chunk.work.facets) for chunk in batch)
+        slice_ids = sum(len(chunk.slices) for chunk in batch)
+        return max(1, decisions * 256 + slice_ids * 96)
 
     def _apply_output(
         self,
@@ -342,26 +374,52 @@ class NeedEvidenceSemanticJudge:
             for chunk in batch
             for facet_id, _kind in chunk.work.facets
         }
-        decisions = {(item.need_id, item.need_facet_id): item for item in output.decisions}
-        if len(decisions) != len(output.decisions) or set(decisions) != set(expected):
+        expected_by_facet = {key[1]: key for key in expected}
+        seen_facets: set[StableId] = set()
+        matched: list[tuple[tuple[StableId, StableId], SemanticFacetDecision]] = []
+        for decision in output.decisions:
+            key = expected_by_facet.get(decision.need_facet_id)
+            if key is None or decision.need_facet_id in seen_facets:
+                raise ValueError(
+                    "semantic judge output must contain exactly one decision per Need facet"
+                )
+            seen_facets.add(decision.need_facet_id)
+            matched.append((key, decision))
+        if seen_facets != set(expected_by_facet):
             raise ValueError(
                 "semantic judge output must contain exactly one decision per Need facet"
             )
-        for key, decision in decisions.items():
+        for key, decision in matched:
             expected_slices = expected[key]
-            buckets = {
-                "supporting": set(decision.supporting_slice_ids),
-                "partial": set(decision.partial_slice_ids),
-                "unsupported": set(decision.unsupported_slice_ids),
-            }
-            classified = set().union(*buckets.values())
-            if classified != expected_slices:
-                raise ValueError("semantic judge output must classify every supplied slice exactly")
+            supporting = tuple(
+                item
+                for item in dict.fromkeys(decision.supporting_slice_ids)
+                if item in expected_slices
+            )
+            partial = tuple(
+                item
+                for item in dict.fromkeys(decision.partial_slice_ids)
+                if item in expected_slices and item not in set(supporting)
+            )
+            known_unsupported = tuple(
+                item
+                for item in dict.fromkeys(decision.unsupported_slice_ids)
+                if item in expected_slices
+                and item not in set(supporting)
+                and item not in set(partial)
+            )
+            # Models mistype one SHA in a long id list. Keep answering ids that
+            # still match; dropped or missing ids are unsupported, not a failed batch.
+            missing = expected_slices - (set(supporting) | set(partial) | set(known_unsupported))
+            unsupported = (
+                *known_unsupported,
+                *tuple(sorted(missing, key=lambda item: item.root)),
+            )
             state = accumulated[key]
-            state.evaluated.extend(sorted(classified, key=lambda item: item.root))
-            state.supporting.extend(sorted(buckets["supporting"], key=lambda item: item.root))
-            state.partial.extend(sorted(buckets["partial"], key=lambda item: item.root))
-            state.unsupported.extend(sorted(buckets["unsupported"], key=lambda item: item.root))
+            state.evaluated.extend(sorted(expected_slices, key=lambda item: item.root))
+            state.supporting.extend(supporting)
+            state.partial.extend(partial)
+            state.unsupported.extend(unsupported)
             state.reason = decision.reason
 
     def _finalize(

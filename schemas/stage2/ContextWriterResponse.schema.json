@@ -1,0 +1,384 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "BenchmarkInformationProfile": {
+      "enum": [
+        "visible_at_cutoff",
+        "task_intent_only",
+        "author_plan_conditioned"
+      ],
+      "title": "BenchmarkInformationProfile",
+      "type": "string"
+    },
+    "BenchmarkTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_chapter": {
+          "minimum": 0,
+          "title": "Checkpoint Chapter",
+          "type": "integer"
+        },
+        "information_profile": {
+          "$ref": "#/$defs/BenchmarkInformationProfile"
+        },
+        "output_contract_version": {
+          "minLength": 1,
+          "title": "Output Contract Version",
+          "type": "string"
+        },
+        "planning_context_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_chapter_end": {
+          "minimum": 1,
+          "title": "Target Chapter End",
+          "type": "integer"
+        },
+        "target_chapter_start": {
+          "minimum": 1,
+          "title": "Target Chapter Start",
+          "type": "integer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_intent": {
+          "default": "",
+          "title": "Task Intent",
+          "type": "string"
+        },
+        "task_kind": {
+          "const": "memory_context_for_target_range",
+          "default": "memory_context_for_target_range",
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "task_template_version": {
+          "minLength": 1,
+          "title": "Task Template Version",
+          "type": "string"
+        },
+        "task_text": {
+          "minLength": 1,
+          "title": "Task Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_text",
+        "checkpoint_chapter",
+        "target_chapter_start",
+        "target_chapter_end",
+        "information_profile",
+        "task_template_version",
+        "output_contract_version"
+      ],
+      "title": "BenchmarkTaskContract",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ContextWriterConclusion": {
+      "additionalProperties": false,
+      "description": "One evidence-backed conclusion the Writer returns in Track B.\n\nConclusions are not target-window prose. Each conclusion must cite at\nleast one evidence ref so the answer can be evaluated independently of\nthe WCP diagnostic layer.",
+      "properties": {
+        "conclusion_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "gap_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Gap Ids",
+          "type": "array"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conclusion_id",
+        "text",
+        "evidence_refs"
+      ],
+      "title": "ContextWriterConclusion",
+      "type": "object"
+    },
+    "ContextWriterExpectedAction": {
+      "enum": [
+        "request_memory",
+        "declare_assumption",
+        "defer_beat",
+        "ask_author"
+      ],
+      "title": "ContextWriterExpectedAction",
+      "type": "string"
+    },
+    "ContextWriterGap": {
+      "additionalProperties": false,
+      "description": "One typed gap declared by the real Writer in Track B.",
+      "properties": {
+        "blocking": {
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_available": {
+          "title": "Evidence Available",
+          "type": "boolean"
+        },
+        "expected_action": {
+          "$ref": "#/$defs/ContextWriterExpectedAction"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "gap_type": {
+          "$ref": "#/$defs/ContextWriterGapType"
+        }
+      },
+      "required": [
+        "gap_id",
+        "description",
+        "gap_type",
+        "blocking",
+        "evidence_available",
+        "expected_action"
+      ],
+      "title": "ContextWriterGap",
+      "type": "object"
+    },
+    "ContextWriterGapType": {
+      "enum": [
+        "MISSING_HISTORY",
+        "EPISTEMIC_BOUNDARY",
+        "UNRESOLVED_OBLIGATION",
+        "CONFLICT",
+        "FUTURE_REVEAL"
+      ],
+      "title": "ContextWriterGapType",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Track B product main result: the Writer benchmark answer.\n\nThis is intentionally separate from ``WriterContextPackageV2``. It is\nfrozen before Gold reveal and must not contain draft prose, target-window\ntext, or future text.",
+  "properties": {
+    "basis_commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "conclusions": {
+      "items": {
+        "$ref": "#/$defs/ContextWriterConclusion"
+      },
+      "minItems": 1,
+      "title": "Conclusions",
+      "type": "array"
+    },
+    "frozen_before_gold_reveal": {
+      "default": false,
+      "title": "Frozen Before Gold Reveal",
+      "type": "boolean"
+    },
+    "gaps": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContextWriterGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "rendered_response": {
+      "default": "",
+      "title": "Rendered Response",
+      "type": "string"
+    },
+    "response_version": {
+      "minLength": 1,
+      "title": "Response Version",
+      "type": "string"
+    },
+    "task_contract": {
+      "$ref": "#/$defs/BenchmarkTaskContract"
+    }
+  },
+  "required": [
+    "response_version",
+    "task_contract",
+    "basis_commit_id",
+    "conclusions"
+  ],
+  "title": "ContextWriterResponse",
+  "type": "object"
+}

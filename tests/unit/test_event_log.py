@@ -157,9 +157,12 @@ def test_append_is_ordered_idempotent_and_replayable(
     first = make_event(1)
     second = make_event(2)
 
+    assert events.next_sequence(RunId("run.test")) == 1
     assert events.append(first) == first
+    assert events.next_sequence(RunId("run.test")) == 2
     assert events.append(first) == first
     assert events.append(second) == second
+    assert events.next_sequence(RunId("run.test")) == 3
     assert events.replay(RunId("run.test")) == (first, second)
     assert events.replay(RunId("run.test"), after_sequence=1) == (second,)
     assert events.replay(RunId("run.missing")) == ()

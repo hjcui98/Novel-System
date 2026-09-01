@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
     BenchmarkBundle,
@@ -23,8 +26,10 @@ from novel_agent.domain.stage2 import (
     SourceClassification,
     SourceDestination,
 )
+from novel_agent.domain.v05_readout import V05ReadoutManifest
 from novel_agent.services.artifacts import sha256_id
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+from novel_agent.services.v05_readout_manifest import compile_v05_readout_manifest
 
 
 class BenchmarkScenarioCompiler:
@@ -162,6 +167,27 @@ class BenchmarkScenarioCompiler:
                 )
                 for case in ordered_cases
             ),
+        )
+
+    def compile_v05_readout_identities(
+        self,
+        *,
+        benchmark_id: str,
+        version: str,
+        checkpoints: Sequence[Mapping[str, Any]],
+        qa_questions: Sequence[Mapping[str, Any]],
+        context_windows: Mapping[str, Sequence[int]],
+        require_v05_seed_invariants: bool = True,
+    ) -> V05ReadoutManifest:
+        """Translate V0.5 public checkpoint identities; does not create a second runner."""
+
+        return compile_v05_readout_manifest(
+            benchmark_id=benchmark_id,
+            version=version,
+            checkpoints=checkpoints,
+            qa_questions=qa_questions,
+            context_windows=context_windows,
+            require_v05_seed_invariants=require_v05_seed_invariants,
         )
 
     def independent_rebuild_report(

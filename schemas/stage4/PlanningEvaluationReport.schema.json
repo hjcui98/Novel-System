@@ -31,6 +31,13 @@
         "configuration_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "context_telemetry": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Context Telemetry",
+          "type": "object"
+        },
         "escalations": {
           "default": [],
           "items": {
@@ -323,7 +330,10 @@
     },
     "ExecutionStatus": {
       "enum": [
+        "planned",
         "succeeded",
+        "partial",
+        "skipped",
         "failed",
         "suspended",
         "rejected"
@@ -332,6 +342,189 @@
       "type": "string"
     },
     "JsonValue": {},
+    "LoopRoundProgress": {
+      "additionalProperties": false,
+      "description": "Minimal evidence that one Writer/Planner/Editor/repair round changed work.",
+      "properties": {
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "basis_commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "changed_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Changed Ids",
+          "type": "array"
+        },
+        "input_candidate_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/LoopRoundProgressKind"
+        },
+        "remaining_work": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remaining Work",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "LoopRoundProgress",
+      "type": "object"
+    },
+    "LoopRoundProgressKind": {
+      "description": "Durable per-round progress. Retry count or model self-praise is not progress.",
+      "enum": [
+        "PROGRESSED",
+        "NO_PROGRESS",
+        "WAITING",
+        "TERMINAL"
+      ],
+      "title": "LoopRoundProgressKind",
+      "type": "string"
+    },
+    "ModelCallLedgerAggregate": {
+      "additionalProperties": false,
+      "description": "Durable call usage grouped by run, task, attempt, and logical phase.",
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "logical_phase": {
+          "minLength": 1,
+          "title": "Logical Phase",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "request_count": {
+          "minimum": 0,
+          "title": "Request Count",
+          "type": "integer"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "schema_retry_count": {
+          "minimum": 0,
+          "title": "Schema Retry Count",
+          "type": "integer"
+        },
+        "status_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Status Counts",
+          "type": "object"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "run_id",
+        "task_id",
+        "logical_phase",
+        "request_count",
+        "schema_retry_count",
+        "status_counts",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "latency_ms",
+        "cost_availability"
+      ],
+      "title": "ModelCallLedgerAggregate",
+      "type": "object"
+    },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "PlanProposal": {
       "additionalProperties": false,
       "properties": {
@@ -560,6 +753,17 @@
         "request_id": {
           "$ref": "#/$defs/StableId"
         },
+        "round_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopRoundProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "terminal": {
           "$ref": "#/$defs/PlanningLoopTerminal"
         }
@@ -755,11 +959,27 @@
           "title": "Output Artifacts",
           "type": "array"
         },
+        "planned_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planned Checkpoints",
+          "type": "array"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "selected_checkpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Checkpoints",
+          "type": "array"
         },
         "skill": {
           "$ref": "#/$defs/SkillContractRef"
@@ -878,6 +1098,14 @@
     },
     "manifest_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "model_call_aggregates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelCallLedgerAggregate"
+      },
+      "title": "Model Call Aggregates",
+      "type": "array"
     },
     "provenance_error_count": {
       "minimum": 0,

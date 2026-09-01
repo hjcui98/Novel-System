@@ -9,6 +9,15 @@
       "title": "ModelCallPurpose",
       "type": "string"
     },
+    "ModelCostAvailability": {
+      "enum": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "ModelCostAvailability",
+      "type": "string"
+    },
     "ModelRole": {
       "enum": [
         "implementation_model",
@@ -20,6 +29,10 @@
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
+        },
         "cost_usd": {
           "anyOf": [
             {
