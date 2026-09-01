@@ -199,8 +199,34 @@
       ],
       "default": null
     },
+    "body_output_budget": {
+      "anyOf": [
+        {
+          "maximum": 131072,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Body Output Budget"
+    },
     "call_record": {
       "$ref": "#/$defs/ModelCallRecord"
+    },
+    "enable_thinking": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enable Thinking"
     },
     "endpoint": {
       "minLength": 1,
@@ -287,6 +313,34 @@
     },
     "task_id": {
       "$ref": "#/$defs/TaskId"
+    },
+    "temperature": {
+      "anyOf": [
+        {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Temperature"
+    },
+    "thinking_token_budget": {
+      "anyOf": [
+        {
+          "maximum": 131072,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thinking Token Budget"
     }
   },
   "required": [

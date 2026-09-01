@@ -335,9 +335,9 @@ def test_major_rewrite_override_is_campaign_local_and_default_stays_one(tmp_path
     default_policy = default.writing_request_factory._policy
     campaign_policy = campaign.writing_request_factory._policy
     assert default_policy.budgets.max_major_rewrites == 1
-    assert default_policy.budgets.max_post_draft_model_calls == 5
+    assert default_policy.budgets.max_post_draft_model_calls == 6
     assert campaign_policy.budgets.max_major_rewrites == 2
-    assert campaign_policy.budgets.max_post_draft_model_calls == 7
+    assert campaign_policy.budgets.max_post_draft_model_calls == 9
     assert (
         campaign_policy.writer_configuration_fingerprint
         != default_policy.writer_configuration_fingerprint
@@ -352,8 +352,8 @@ def test_local_repair_override_is_campaign_local_and_default_stays_one(tmp_path:
 
     default_policy = default.writing_request_factory._policy
     campaign_policy = campaign.writing_request_factory._policy
-    assert default_policy.budgets.max_local_repairs == 1
-    assert default_policy.budgets.max_post_draft_model_calls == 5
+    assert default_policy.budgets.max_local_repairs == 2
+    assert default_policy.budgets.max_post_draft_model_calls == 6
     assert campaign_policy.budgets.max_local_repairs == 2
     assert campaign_policy.budgets.max_post_draft_model_calls == 9
     assert (

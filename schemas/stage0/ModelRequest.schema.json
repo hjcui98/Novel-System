@@ -275,6 +275,20 @@
     "task_id": {
       "$ref": "#/$defs/TaskId"
     },
+    "temperature": {
+      "anyOf": [
+        {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Temperature"
+    },
     "thinking_token_budget": {
       "anyOf": [
         {

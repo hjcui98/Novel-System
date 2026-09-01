@@ -225,6 +225,10 @@ class ProductionDispatchCoordinator:
         assembly_loader: Callable[
             [str, ProductionAssemblyContext], ProductionRuntimeAssembly
         ] = load_production_runtime_assembly,
+        retrieval_backend_profile: str = "memory",
+        opensearch_url: str | None = None,
+        embedding_url: str | None = None,
+        reranker_url: str | None = None,
     ) -> None:
         if not runs:
             raise ValueError("production dispatch requires at least one run")
@@ -265,6 +269,10 @@ class ProductionDispatchCoordinator:
         if actual_limit not in (1, 2):
             raise ValueError("production endpoint_request_limit must be 1 or 2")
         self._assembly_loader = assembly_loader
+        self._retrieval_backend_profile = retrieval_backend_profile
+        self._opensearch_url = opensearch_url
+        self._embedding_url = embedding_url
+        self._reranker_url = reranker_url
         self._assemblies: dict[tuple[ProjectId, RunId], ProductionRuntimeAssembly] = {}
         self._assembly_errors: dict[tuple[ProjectId, RunId], Exception] = {}
 
@@ -292,6 +300,10 @@ class ProductionDispatchCoordinator:
             settlement_output_tokens=descriptor.settlement_output_tokens,
             max_major_rewrites=descriptor.max_major_rewrites,
             max_local_repairs=descriptor.max_local_repairs,
+            retrieval_backend_profile=self._retrieval_backend_profile,
+            opensearch_url=self._opensearch_url,
+            embedding_url=self._embedding_url,
+            reranker_url=self._reranker_url,
         )
 
     def _ensure_assemblies(self) -> None:

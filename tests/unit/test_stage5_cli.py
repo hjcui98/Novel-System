@@ -948,6 +948,14 @@ def test_runtime_advance_wires_parallelism_and_admission_flags(
                 "1000",
                 "--scheduling-timeout-seconds",
                 "30",
+                "--retrieval-backend-profile",
+                "real_hybrid",
+                "--opensearch-url",
+                "http://127.0.0.1:9200",
+                "--embedding-url",
+                "http://127.0.0.1:8081/v1/embeddings",
+                "--reranker-url",
+                "http://127.0.0.1:8082/rerank",
             ]
         )
         == 0
@@ -957,6 +965,8 @@ def test_runtime_advance_wires_parallelism_and_admission_flags(
     assert contexts[0].endpoint_request_limit == 2
     assert contexts[0].kv_token_budget == 1000
     assert contexts[0].scheduling_timeout_seconds == 30.0
+    assert contexts[0].retrieval_backend_profile == "real_hybrid"
+    assert contexts[0].opensearch_url == "http://127.0.0.1:9200"
 
 
 def test_runtime_advance_rejects_lookahead_without_parallelism_two(

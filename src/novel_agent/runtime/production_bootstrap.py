@@ -152,12 +152,17 @@ from novel_agent.services.projection import (
     ArtifactProjectionSourceLoader,
     DerivedProjectionService,
     DerivedSnapshotRepository,
+    ProjectionBuilder,
     ProjectionOutboxRepository,
     snapshot_id_for_commit,
 )
 from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.replay import ExactReplayProjectionBuilder
-from novel_agent.services.retrieval import InMemoryRetrievalBackend, RetrievalBackend
+from novel_agent.services.retrieval import (
+    InMemoryRetrievalBackend,
+    RerankService,
+    RetrievalBackend,
+)
 from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import RuntimeCommandService
 from novel_agent.services.task_conditioned_need_generation import TaskPlanConditionedNeedGenerator
@@ -196,7 +201,7 @@ def resolve_registered_model_endpoints(
                 revision="production-fake-v1",
                 adapter=ProductionChapterEndpoint(),
                 sequence_limit=131_072,
-                output_limit=None,
+                output_limit=12_000,
                 safety_allowance_tokens=256,
                 estimated_reasoning_reserve=2_048,
                 default_thinking=False,
@@ -208,7 +213,7 @@ def resolve_registered_model_endpoints(
         adapter = OpenAICompatibleChatEndpoint(
             base_url=QWEN38_27B_FP8_8005_BASE_URL,
             model=QWEN38_27B_FP8_MODEL,
-            max_output_tokens=8_000,
+            max_output_tokens=12_000,
             temperature=0.0,
             local_only=True,
             max_retries=0,
@@ -221,7 +226,7 @@ def resolve_registered_model_endpoints(
                 revision=QWEN38_27B_FP8_MODEL,
                 adapter=adapter,
                 sequence_limit=131_072,
-                output_limit=8_000,
+                output_limit=12_000,
                 safety_allowance_tokens=1_000,
                 estimated_reasoning_reserve=2_048,
                 default_thinking=False,
@@ -323,10 +328,10 @@ def _validate_endpoint_contracts(
         if effective_output_limit < 1:
             raise RuntimeError("registered endpoint output limit must be positive")
         if endpoint.role is ModelRole.IMPLEMENTATION and (
-            effective_output_limit != spec.model_policy.default_output_limit
+            effective_output_limit < spec.model_policy.default_output_limit
         ):
             raise RuntimeError(
-                "registered Writer output limit does not match the production assembly spec"
+                "registered Writer output limit is below the production assembly spec"
             )
         if endpoint.global_output_cap < effective_output_limit:
             raise RuntimeError(
@@ -411,22 +416,27 @@ def preflight_production_environment(
 
 def _default_writing_policy(spec: ProductionAssemblySpec) -> WritingRequestPolicy:
     fingerprint = content_id({"factory": spec.factory_locator, "kind": "writing-request-policy"})
-    reserved = spec.model_policy.default_output_limit
     sequence = spec.model_policy.sequence_limit
     return WritingRequestPolicy(
         pov="third-person limited",
         narrative_person="third person limited",
         length_policy=WritingLengthPolicy(
-            minimum_characters=500,
-            target_characters=1_500,
-            maximum_characters=3_000,
+            minimum_characters=3_000,
+            target_characters=5_000,
+            maximum_characters=8_000,
         ),
         allowed_skills=spec.expected_skill_ids,
         budgets=WritingLoopBudgets(
+            max_reactive_memory_rounds=2,
+            max_memory_questions=6,
+            max_local_repairs=2,
+            max_major_rewrites=1,
+            max_writer_turns=3,
+            max_post_draft_model_calls=6,
             context_sequence_limit=sequence,
-            reserved_output_tokens=reserved,
+            reserved_output_tokens=14_048,
             context_safety_allowance_tokens=1_000,
-            context_soft_limit_tokens=max(1, sequence - reserved - 1_000),
+            context_soft_limit_tokens=max(1, sequence - 14_048 - 1_000),
         ),
         writer_configuration_fingerprint=fingerprint,
         model_configuration_fingerprint=fingerprint,
@@ -792,6 +802,36 @@ class _CommitScopedRetrievalBackend:
         return backend
 
 
+def _resolve_production_retrieval(
+    *,
+    context: ProductionAssemblyContext,
+    session_factory: sessionmaker[Session],
+    commits: CommitService,
+    artifacts: ArtifactRepository,
+) -> tuple[RetrievalBackend, RerankService | None, ProjectionBuilder | None]:
+    if context.retrieval_backend is not None:
+        return context.retrieval_backend, None, None
+    if context.retrieval_backend_profile == "real_hybrid":
+        from novel_agent.runtime.real_hybrid import assemble_production_real_hybrid
+
+        assembled = assemble_production_real_hybrid(
+            session_factory=session_factory,
+            commits=commits,
+            artifacts=artifacts,
+            project_id=context.project_id,
+            run_id=context.run_id,
+            opensearch_url=context.opensearch_url or "",
+            embedding_url=context.embedding_url or "",
+            reranker_url=context.reranker_url or "",
+        )
+        return assembled.backend, assembled.reranker, assembled.projection_builder
+    return (
+        _default_retrieval_backend(context=context, commits=commits, artifacts=artifacts),
+        None,
+        None,
+    )
+
+
 def _default_retrieval_backend(
     *,
     context: ProductionAssemblyContext,
@@ -1071,14 +1111,21 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     )
     task_reader = RuntimeTaskQueryRepository(session_factory)
     snapshots = DerivedSnapshotRepository(session_factory)
-    projection_builder = context.projection_builder or ExactReplayProjectionBuilder()
-    projections = DerivedProjectionService(
-        ProjectionOutboxRepository(session_factory), projection_builder
-    )
-    retrieval_backend: RetrievalBackend = context.retrieval_backend or _default_retrieval_backend(
+    retrieval_backend, injected_reranker, injected_builder = _resolve_production_retrieval(
         context=context,
+        session_factory=session_factory,
         commits=commits,
         artifacts=artifacts,
+    )
+    if injected_reranker is not None:
+        context = replace(context, reranker=injected_reranker)
+    projection_builder = (
+        injected_builder
+        if injected_builder is not None
+        else context.projection_builder or ExactReplayProjectionBuilder()
+    )
+    projections = DerivedProjectionService(
+        ProjectionOutboxRepository(session_factory), projection_builder
     )
     comparison_fingerprint = content_id(
         {
@@ -1093,11 +1140,11 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             version=schema_version,
             content_hash=_ZERO,
             allowed_tools=tuple(sorted(CHANNEL_BY_TOOL)),
-            max_rounds=2,
-            max_tool_calls=12,
+            max_rounds=3,
+            max_tool_calls=24,
             max_query_rewrites_per_need=0,
             wall_clock_budget_ms=120_000,
-            token_budget=12_000,
+            token_budget=40_000,
         )
     )
     model_gateway = ModelGateway(
@@ -1150,6 +1197,13 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     projector = AgentContextProjector(utf8_quarter_token_count)
     agent_runtime = AgentContextRuntime(projector, artifacts, events, checkpoints, schema_version)
     reserved = spec.model_policy.default_output_limit
+    writer_output_limit = next(
+        endpoint.output_limit
+        for endpoint in model_endpoints
+        if endpoint.role is ModelRole.IMPLEMENTATION
+    )
+    if writer_output_limit is None:
+        writer_output_limit = reserved
     sequence = spec.model_policy.sequence_limit
     window = ContextWindowPolicy(
         sequence_limit=sequence,
@@ -1235,8 +1289,11 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         ProductionWriterModelRequestFactory(
             role=ModelRole.IMPLEMENTATION,
             purpose=ModelCallPurpose.DEVELOPMENT,
-            max_output_tokens=spec.model_policy.default_output_limit,
+            max_output_tokens=12_000,
             timeout_seconds=120.0,
+            temperature=0.8,
+            enable_thinking=True,
+            thinking_token_budget=2_048,
         ),
         ProductionReactiveMemoryInputsFactory(commits, artifacts),
     )
@@ -1252,6 +1309,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             gateway=memory_gateway,
             assembler=EvidenceFirstWriterContextAssembler(token_counter=utf8_quarter_token_count),
             artifacts=artifacts,
+            schema_version=schema_version,
         ),
         policy=writing_policy,
         schema_version=schema_version,
@@ -1437,7 +1495,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         retrieval_backend=retrieval_backend,
         projection_builder=projection_builder,
         sequence_limit=sequence,
-        output_limit=reserved,
+        output_limit=writer_output_limit,
         prompt_pins=prompt_pins,
         skill_pins=skill_pins,
         reranker_resolved=context.reranker is not None,

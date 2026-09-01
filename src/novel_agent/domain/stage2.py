@@ -1502,6 +1502,7 @@ class MemoryGatewayResult(DomainModel):
     fallback_reason: str | None = None
     context: Stage1ContextPackage
     frozen_context_artifact: ArtifactRef
+    frozen_evidence_selections_artifact: ArtifactRef
     selected_result: PairedContextArmResult
     comparison: PairedContextComparison | None = None
     promotion_evidence: ArtifactRef | None = None

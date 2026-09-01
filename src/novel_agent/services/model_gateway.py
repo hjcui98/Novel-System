@@ -699,6 +699,10 @@ class ModelGateway:
             raw_response_text=raw_response_text,
             call_record=call_record,
             finish_reason=finish_reason,
+            temperature=request.temperature,
+            enable_thinking=request.enable_thinking,
+            thinking_token_budget=request.thinking_token_budget,
+            body_output_budget=request.max_output_tokens,
         )
         return self._raw_artifacts.put(
             canonical_json_bytes(envelope.model_dump(mode="json")),

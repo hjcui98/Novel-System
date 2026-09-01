@@ -102,6 +102,7 @@ class ModelRequest(DomainModel):
     scheduling_priority: int = Field(default=50, ge=0, le=100)
     scheduling_timeout_seconds: float | None = Field(default=None, gt=0.0, le=3600.0)
     repetition_penalty: float | None = Field(default=None, gt=0.0, le=2.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     budget_source: BudgetSource | None = None
 
 
@@ -251,6 +252,10 @@ class RawModelResponseArtifact(DomainModel):
     raw_response_text: str
     call_record: ModelCallRecord
     finish_reason: str | None = Field(default=None, min_length=1)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    enable_thinking: bool | None = None
+    thinking_token_budget: int | None = Field(default=None, ge=0, le=131072)
+    body_output_budget: int | None = Field(default=None, ge=1, le=131072)
 
 
 class ModelCallLedgerAggregate(DomainModel):

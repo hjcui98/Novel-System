@@ -49,7 +49,7 @@ _DRAFT_TEXT = (
     "Lin studies the moonlit groove along the tower gate and opens it without "
     "using her injured arm. She keeps the tower's final secret unsaid while the "
     "injured-arm constraint stays visible in every motion. "
-) * 6
+) * 20
 _CHAPTER_GOAL = "Enter the tower while protecting the injured arm."
 
 

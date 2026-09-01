@@ -3835,6 +3835,9 @@
     "frozen_context_artifact": {
       "$ref": "#/$defs/ArtifactRef"
     },
+    "frozen_evidence_selections_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
     "gateway_result_id": {
       "$ref": "#/$defs/StableId"
     },
@@ -3869,6 +3872,7 @@
     "fallback_used",
     "context",
     "frozen_context_artifact",
+    "frozen_evidence_selections_artifact",
     "selected_result",
     "policy_id",
     "configuration_fingerprint"

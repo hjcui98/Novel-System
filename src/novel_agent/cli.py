@@ -72,6 +72,14 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--endpoint-request-limit", type=int, choices=(1, 2), default=1)
     parser.add_argument("--kv-token-budget", type=int)
     parser.add_argument("--scheduling-timeout-seconds", type=float, default=120.0)
+    parser.add_argument(
+        "--retrieval-backend-profile",
+        choices=("memory", "real_hybrid"),
+        default="memory",
+    )
+    parser.add_argument("--opensearch-url")
+    parser.add_argument("--embedding-url")
+    parser.add_argument("--reranker-url")
 
 
 def _policy_with_runtime_options(
@@ -237,6 +245,25 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--manifest", type=Path, required=True)
     report.add_argument("--executable-commit", required=True)
     report.add_argument("--output", type=Path, required=True)
+    prepare = runtime_commands.add_parser("bootstrap-prepare")
+    prepare.add_argument("--brief", type=Path, required=True)
+    prepare.add_argument("--project-id", required=True)
+    prepare.add_argument("--object-store-root", type=Path, required=True)
+    prepare.add_argument("--endpoint-profile", required=True)
+    prepare.add_argument("--prepared", type=Path, required=True)
+    prepare.add_argument("--preview", type=Path)
+    prepare.add_argument("--run-id", required=True)
+    commit = runtime_commands.add_parser("bootstrap-commit")
+    commit.add_argument("--prepared", type=Path, required=True)
+    commit.add_argument("--author-id", required=True)
+    commit.add_argument("--reason", required=True)
+    commit.add_argument("--target-chapters", type=int, required=True)
+    commit.add_argument("--object-store-root", type=Path, required=True)
+    commit.add_argument("--run-id", required=True)
+    commit.add_argument("--policy", type=Path, required=True)
+    commit.add_argument("--request", type=Path, required=True)
+    commit.add_argument("--runs", type=Path, required=True)
+    _add_runtime_options(commit)
     return parser
 
 
@@ -301,6 +328,132 @@ def main(argv: Sequence[str] | None = None) -> int:
             tasks = RuntimeTaskQueryRepository(factory).list_run(RunId(args.run_id))
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
             return 0
+        if args.runtime_command == "bootstrap-prepare":
+            from novel_agent.domain.ids import ProjectId, RunId
+            from novel_agent.domain.stage2 import SourceClass
+            from novel_agent.runtime.production_novel_bootstrap import (
+                ProductionNovelBootstrap,
+                bind_bootstrap_model_agents,
+            )
+            from novel_agent.services.bootstrap import BootstrapIngestionService, RawBootstrapSource
+
+            brief_text = args.brief.read_text(encoding="utf-8")
+            artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
+            project_id = ProjectId(args.project_id)
+            run_id = RunId(args.run_id)
+            endpoints = resolve_registered_model_endpoints(args.endpoint_profile)
+            if not endpoints:
+                return _resource_blocked(RuntimeError("bootstrap prepare requires an endpoint"))
+            ingested_source = BootstrapIngestionService(artifacts).ingest(
+                project_id,
+                StableId("bootstrap.prepare.source"),
+                (
+                    RawBootstrapSource(
+                        source_id=StableId("source.author-initial-brief"),
+                        source_class=SourceClass.AUTHOR_INITIAL_BRIEF,
+                        media_type="text/plain",
+                        data=brief_text.encode("utf-8"),
+                    ),
+                ),
+            )[1][0]
+            planner, curator = bind_bootstrap_model_agents(
+                artifacts=artifacts,
+                endpoints=endpoints,
+                project_id=project_id,
+                run_id=run_id,
+                source_ids=(ingested_source.source.source_id,),
+                source_payload=brief_text,
+                source_artifacts=(ingested_source.source.artifact_ref,),
+            )
+            prepared = _run_async(
+                ProductionNovelBootstrap(
+                    artifacts=artifacts,
+                    session_factory=factory,
+                    planner=planner,
+                    curator=curator,
+                ).prepare(project_id=project_id, brief_text=brief_text)
+            )
+            _write_json_once(
+                args.prepared,
+                {
+                    "artifact": prepared.artifact.model_dump(mode="json"),
+                    "preview": prepared.document.preview,
+                    "approval_request": prepared.document.approval_request.model_dump(mode="json"),
+                    "validation_status": prepared.document.validation.status.value,
+                },
+            )
+            if args.preview is not None:
+                _write_json_once(args.preview, prepared.document.preview)
+            print(json.dumps(prepared.document.preview, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.runtime_command == "bootstrap-commit":
+            from novel_agent.domain.artifacts import ArtifactRef
+            from novel_agent.domain.ids import ProjectId, RunId, StableId
+            from novel_agent.runtime.production_novel_bootstrap import (
+                ProductionNovelBootstrap,
+                load_prepared_bootstrap,
+            )
+
+            artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
+            payload = json.loads(args.prepared.read_text(encoding="utf-8"))
+            reference = ArtifactRef.model_validate(payload["artifact"], strict=True)
+            document = load_prepared_bootstrap(artifacts, reference)
+            policy, request, descriptor = ProductionNovelBootstrap(
+                artifacts=artifacts,
+                session_factory=factory,
+            ).commit(
+                prepared=document,
+                author_id=StableId(args.author_id),
+                reason=args.reason,
+                target_chapters=args.target_chapters,
+                run_id=RunId(args.run_id),
+                object_store_root=args.object_store_root,
+            )
+            if args.retrieval_backend_profile == "real_hybrid":
+                from novel_agent.runtime.real_hybrid import assemble_production_real_hybrid
+                from novel_agent.services.commits import CommitService
+
+                assemble_production_real_hybrid(
+                    session_factory=factory,
+                    commits=CommitService(factory),
+                    artifacts=artifacts,
+                    project_id=request.project_id,
+                    run_id=request.run_id,
+                    opensearch_url=args.opensearch_url or "",
+                    embedding_url=args.embedding_url or "",
+                    reranker_url=args.reranker_url or "",
+                )
+            _write_json_once(args.policy, policy.model_dump(mode="json"))
+            _write_json_once(args.request, request.model_dump(mode="json"))
+            _write_json_once(
+                args.runs,
+                [
+                    {
+                        "project_id": descriptor.project_id.root,
+                        "run_id": descriptor.run_id.root,
+                        "object_store_root": str(descriptor.object_store_root),
+                        "policy": str(args.policy),
+                        "request": str(args.request),
+                        "stop_after_chapter": descriptor.stop_after_chapter,
+                    }
+                ],
+            )
+            print(
+                json.dumps(
+                    {
+                        "project_id": request.project_id.root,
+                        "run_id": request.run_id.root,
+                        "basis_commit": request.basis_commit.root,
+                        "basis_snapshot": (
+                            None if request.basis_snapshot is None else request.basis_snapshot.root
+                        ),
+                        "target_chapters": request.target_chapters,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.runtime_command == "dispatch":
             from novel_agent.domain.stage5_manifest import load_stage5_manifest
             from novel_agent.runtime.production_dispatch_coordinator import (
@@ -327,6 +480,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kv_token_budget=args.kv_token_budget,
                 scheduling_timeout_seconds=args.scheduling_timeout_seconds,
                 max_total_tasks=args.max_total_tasks,
+                retrieval_backend_profile=args.retrieval_backend_profile,
+                opensearch_url=args.opensearch_url,
+                embedding_url=args.embedding_url,
+                reranker_url=args.reranker_url,
             )
             try:
                 result = _run_async(
@@ -375,6 +532,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         endpoint_request_limit=args.endpoint_request_limit,
                         kv_token_budget=args.kv_token_budget,
                         scheduling_timeout_seconds=args.scheduling_timeout_seconds,
+                        retrieval_backend_profile=args.retrieval_backend_profile,
+                        opensearch_url=args.opensearch_url,
+                        embedding_url=args.embedding_url,
+                        reranker_url=args.reranker_url,
                     ),
                 )
             except RuntimeError as error:

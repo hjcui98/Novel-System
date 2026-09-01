@@ -91,10 +91,24 @@ class ProductionAssemblyContext:
     kv_token_budget: int | None = None
     kv_safety_reserve_ratio: float = 0.20
     scheduling_timeout_seconds: float = 120.0
+    retrieval_backend_profile: str = "memory"
+    opensearch_url: str | None = None
+    embedding_url: str | None = None
+    reranker_url: str | None = None
 
     def __post_init__(self) -> None:
         if self.endpoint_request_limit not in (1, 2):
             raise ValueError("production endpoint_request_limit must be 1 or 2")
+        if self.retrieval_backend_profile not in {"memory", "real_hybrid"}:
+            raise ValueError("retrieval_backend_profile must be memory or real_hybrid")
+        if self.retrieval_backend_profile == "real_hybrid" and (
+            not self.opensearch_url or not self.embedding_url or not self.reranker_url
+        ):
+            raise ValueError(
+                "real_hybrid retrieval requires OpenSearch, embedding, and reranker URLs"
+            )
+        if self.retrieval_backend is not None and self.retrieval_backend_profile == "real_hybrid":
+            raise ValueError("an explicit retrieval backend cannot be combined with real_hybrid")
         if self.admission is not None and (
             self.endpoint_request_limit != 1
             or self.kv_token_budget is not None

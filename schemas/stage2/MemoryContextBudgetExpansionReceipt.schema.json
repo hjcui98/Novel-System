@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "MemoryContextBudgetTier": {
+      "enum": [
+        "base",
+        "expand_1",
+        "expand_2"
+      ],
+      "title": "MemoryContextBudgetTier",
+      "type": "string"
+    },
+    "MemoryContextBudgetTierRecord": {
+      "additionalProperties": false,
+      "description": "One frozen Memory/Context budget attempt for a Need set and snapshot.",
+      "properties": {
+        "backend_call_budget": {
+          "minimum": 1,
+          "title": "Backend Call Budget",
+          "type": "integer"
+        },
+        "context_token_budget": {
+          "minimum": 1,
+          "title": "Context Token Budget",
+          "type": "integer"
+        },
+        "evidence_ledger_token_budget": {
+          "minimum": 1,
+          "title": "Evidence Ledger Token Budget",
+          "type": "integer"
+        },
+        "expansion_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expansion Reason"
+        },
+        "frozen_context_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "frozen_evidence_selections_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "mandatory_need_facets_closed": {
+          "minimum": 0,
+          "title": "Mandatory Need Facets Closed",
+          "type": "integer"
+        },
+        "mandatory_need_facets_total": {
+          "minimum": 0,
+          "title": "Mandatory Need Facets Total",
+          "type": "integer"
+        },
+        "reexecuted_retrieval": {
+          "title": "Reexecuted Retrieval",
+          "type": "boolean"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "retrieval_call_count": {
+          "minimum": 0,
+          "title": "Retrieval Call Count",
+          "type": "integer"
+        },
+        "stop_reason": {
+          "minLength": 1,
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/$defs/MemoryContextBudgetTier"
+        }
+      },
+      "required": [
+        "tier",
+        "request_id",
+        "context_token_budget",
+        "evidence_ledger_token_budget",
+        "backend_call_budget",
+        "retrieval_call_count",
+        "stop_reason",
+        "mandatory_need_facets_total",
+        "mandatory_need_facets_closed",
+        "frozen_context_artifact",
+        "frozen_evidence_selections_artifact",
+        "reexecuted_retrieval"
+      ],
+      "title": "MemoryContextBudgetTierRecord",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Auditable expansion history for one Writer Context resolution.",
+  "properties": {
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget_review": {
+      "default": false,
+      "title": "Budget Review",
+      "type": "boolean"
+    },
+    "contract_version": {
+      "const": "memory_context_budget_expansion.v1",
+      "default": "memory_context_budget_expansion.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "final_tier": {
+      "$ref": "#/$defs/MemoryContextBudgetTier"
+    },
+    "need_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Need Ids",
+      "type": "array"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "terminal_reason": {
+      "minLength": 1,
+      "title": "Terminal Reason",
+      "type": "string"
+    },
+    "tiers": {
+      "items": {
+        "$ref": "#/$defs/MemoryContextBudgetTierRecord"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Tiers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_id",
+    "base_commit",
+    "snapshot_id",
+    "need_ids",
+    "tiers",
+    "final_tier",
+    "terminal_reason"
+  ],
+  "title": "MemoryContextBudgetExpansionReceipt",
+  "type": "object"
+}

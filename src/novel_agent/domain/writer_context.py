@@ -695,6 +695,9 @@ class EvidenceFirstLineage(DomainModel):
     planner_fallback_used: bool = False
     unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...] = ()
     advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
+    gateway_context_artifact: ArtifactRef | None = None
+    frozen_evidence_selections_artifact: ArtifactRef | None = None
+    budget_expansion_receipt: ArtifactRef | None = None
 
 
 class WriterContextPackageV2(DomainModel):
@@ -890,6 +893,63 @@ class EvidenceFirstPackageManifest(DomainModel):
         return self
 
 
+class MemoryContextBudgetExhaustedError(RuntimeError):
+    """Writer Context remained resource-saturated after the last legal budget tier."""
+
+    def __init__(self, message: str, *, receipt: ArtifactRef) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+
+class MemoryContextBudgetTier(StrEnum):
+    BASE = "base"
+    EXPAND_1 = "expand_1"
+    EXPAND_2 = "expand_2"
+
+
+class MemoryContextBudgetTierRecord(DomainModel):
+    """One frozen Memory/Context budget attempt for a Need set and snapshot."""
+
+    tier: MemoryContextBudgetTier
+    request_id: StableId
+    context_token_budget: int = Field(ge=1)
+    evidence_ledger_token_budget: int = Field(ge=1)
+    backend_call_budget: int = Field(ge=1)
+    retrieval_call_count: int = Field(ge=0)
+    expansion_reason: str | None = None
+    stop_reason: str = Field(min_length=1)
+    mandatory_need_facets_total: int = Field(ge=0)
+    mandatory_need_facets_closed: int = Field(ge=0)
+    frozen_context_artifact: ArtifactRef
+    frozen_evidence_selections_artifact: ArtifactRef
+    reexecuted_retrieval: bool
+
+
+class MemoryContextBudgetExpansionReceipt(DomainModel):
+    """Auditable expansion history for one Writer Context resolution."""
+
+    contract_version: Literal["memory_context_budget_expansion.v1"] = (
+        "memory_context_budget_expansion.v1"
+    )
+    request_id: StableId
+    base_commit: CommitId
+    snapshot_id: StableId
+    need_ids: tuple[StableId, ...]
+    tiers: tuple[MemoryContextBudgetTierRecord, ...] = Field(min_length=1, max_length=3)
+    final_tier: MemoryContextBudgetTier
+    terminal_reason: str = Field(min_length=1)
+    budget_review: bool = False
+
+    @model_validator(mode="after")
+    def validate_tier_identity(self) -> MemoryContextBudgetExpansionReceipt:
+        identities = tuple(item.request_id for item in self.tiers)
+        if len(identities) != len(set(identities)):
+            raise ValueError("budget expansion tiers must use unique request identities")
+        if self.final_tier != self.tiers[-1].tier:
+            raise ValueError("budget expansion final tier must match the last recorded attempt")
+        return self
+
+
 __all__ = [
     "BenchmarkInformationProfile",
     "BenchmarkTaskContract",
@@ -914,6 +974,10 @@ __all__ = [
     "EvidenceSliceKind",
     "EvidenceSliceSourceRole",
     "FreezeReceipt",
+    "MemoryContextBudgetExhaustedError",
+    "MemoryContextBudgetExpansionReceipt",
+    "MemoryContextBudgetTier",
+    "MemoryContextBudgetTierRecord",
     "NeedEvidenceJudgmentBatchReceipt",
     "NeedEvidenceJudgmentBatchStatus",
     "NeedEvidenceSemanticStatus",

@@ -28,12 +28,15 @@ from novel_agent.domain.stage2 import (
 from novel_agent.domain.text import EvidenceRef, TextBlock
 from novel_agent.domain.writer_context import (
     EvidenceSlice,
+    NeedEvidenceJudgmentBatchReceipt,
     NeedEvidenceSemanticStatus,
     NeedFacetSemanticReceipt,
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.evidence_first_writer_context_assembler import (
+    NEED_EVIDENCE_SELECTIONS_MEDIA_TYPE,
+    FrozenNeedEvidenceSelections,
     NeedEvidenceSelection,
     SliceSelectionTrace,
 )
@@ -95,10 +98,11 @@ class MemoryGateway:
             thread_id=thread_id,
             evaluator_only_artifacts=evaluator_only_artifacts,
         )
-        selected = self._assemble_live_output(request, text_root, selected)
+        selected, selections = self._assemble_live_output(request, text_root, selected)
         return self._freeze_result(
             request,
             selected,
+            selections=selections,
             comparison=comparison,
             fallback=fallback,
             fallback_reason=fallback_reason,
@@ -118,10 +122,11 @@ class MemoryGateway:
             thread_id=thread_id,
             evaluator_only_artifacts=evaluator_only_artifacts,
         )
-        selected = await self._assemble_live_output_async(request, text_root, selected)
+        selected, selections = await self._assemble_live_output_async(request, text_root, selected)
         return self._freeze_result(
             request,
             selected,
+            selections=selections,
             comparison=comparison,
             fallback=fallback,
             fallback_reason=fallback_reason,
@@ -193,6 +198,7 @@ class MemoryGateway:
         request: MemoryResolutionRequest,
         selected: PairedContextArmResult,
         *,
+        selections: tuple[NeedEvidenceSelection, ...],
         comparison: PairedContextComparison | None,
         fallback: bool,
         fallback_reason: str | None,
@@ -207,6 +213,19 @@ class MemoryGateway:
             "application/vnd.novel-agent.context-package+json",
             self._schema_version,
         )
+        frozen_selections = self._artifacts.put(
+            canonical_json_bytes(
+                FrozenNeedEvidenceSelections(
+                    request_id=request.request_id,
+                    base_commit=request.base_commit,
+                    snapshot_id=request.snapshot_id,
+                    need_ids=tuple(need.need_id for need in request.initial_memory_needs),
+                    selections=selections,
+                ).model_dump(mode="json")
+            ),
+            NEED_EVIDENCE_SELECTIONS_MEDIA_TYPE,
+            self._schema_version,
+        )
         return MemoryGatewayResult(
             gateway_result_id=StableId(f"gateway-result.{request.request_id.root}"),
             request_id=request.request_id,
@@ -215,6 +234,7 @@ class MemoryGateway:
             fallback_reason=fallback_reason,
             context=selected.context,
             frozen_context_artifact=frozen,
+            frozen_evidence_selections_artifact=frozen_selections,
             selected_result=selected,
             comparison=comparison,
             promotion_evidence=self._policy.promotion_evidence,
@@ -227,28 +247,34 @@ class MemoryGateway:
         request: MemoryResolutionRequest,
         text_root: TextRootDocument,
         selected: PairedContextArmResult,
-    ) -> PairedContextArmResult:
+    ) -> tuple[PairedContextArmResult, tuple[NeedEvidenceSelection, ...]]:
         """Selected unit → exact L0 → facet Judge on the Gateway output path."""
 
         prepared = self._prepare_live_output(request, text_root, selected)
         if prepared is None:
-            return selected
+            return selected, self._empty_need_selections(request)
         semantic_result, judge_error = self._judge_selections(tuple(prepared.selections))
-        return self._commit_live_output(request, prepared, semantic_result, judge_error)
+        selected = self._commit_live_output(request, prepared, semantic_result, judge_error)
+        return selected, self._selections_with_semantics(
+            tuple(prepared.selections), semantic_result
+        )
 
     async def _assemble_live_output_async(
         self,
         request: MemoryResolutionRequest,
         text_root: TextRootDocument,
         selected: PairedContextArmResult,
-    ) -> PairedContextArmResult:
+    ) -> tuple[PairedContextArmResult, tuple[NeedEvidenceSelection, ...]]:
         prepared = self._prepare_live_output(request, text_root, selected)
         if prepared is None:
-            return selected
+            return selected, self._empty_need_selections(request)
         semantic_result, judge_error = await self._judge_selections_async(
             tuple(prepared.selections)
         )
-        return self._commit_live_output(request, prepared, semantic_result, judge_error)
+        selected = self._commit_live_output(request, prepared, semantic_result, judge_error)
+        return selected, self._selections_with_semantics(
+            tuple(prepared.selections), semantic_result
+        )
 
     def _prepare_live_output(
         self,
@@ -257,7 +283,7 @@ class MemoryGateway:
         selected: PairedContextArmResult,
     ) -> _PreparedLiveOutput | None:
         needs = {need.need_id: need for need in request.initial_memory_needs}
-        if not selected.context.retrieval_traces or not needs:
+        if not needs:
             return None
         blocks, chapter_indexes = text_root_indexes(text_root)
         basis = LiveEvidenceBasis(
@@ -265,7 +291,7 @@ class MemoryGateway:
             request_snapshot_id=request.snapshot_id,
             checkpoint_chapter=request.narrative_chapter,
         )
-        selections: list[NeedEvidenceSelection] = []
+        selections_by_need: dict[StableId, NeedEvidenceSelection] = {}
         assembled: list[
             tuple[RetrievalTrace, tuple[EvidenceRef, ...], tuple[StableId, ...], bool]
         ] = []
@@ -282,15 +308,55 @@ class MemoryGateway:
                 chapter_indexes=chapter_indexes,
                 access_scope=request.access_scope.value,
             )
-            selections.append(selection)
+            selections_by_need[need.need_id] = selection
             assembled.append((trace, evidence_refs, slice_ids, truncated))
-        if not any(refs or ids for _trace, refs, ids, _truncated in assembled):
-            return None
+        selections = [
+            selections_by_need.get(need.need_id, NeedEvidenceSelection(need=need))
+            for need in request.initial_memory_needs
+        ]
         return _PreparedLiveOutput(
             selected=selected,
             needs=needs,
             selections=selections,
             assembled=assembled,
+        )
+
+    @staticmethod
+    def _empty_need_selections(
+        request: MemoryResolutionRequest,
+    ) -> tuple[NeedEvidenceSelection, ...]:
+        return tuple(NeedEvidenceSelection(need=need) for need in request.initial_memory_needs)
+
+    @staticmethod
+    def _selections_with_semantics(
+        selections: tuple[NeedEvidenceSelection, ...],
+        semantic_result: NeedEvidenceSemanticResult | None,
+    ) -> tuple[NeedEvidenceSelection, ...]:
+        if semantic_result is None:
+            return selections
+        receipts_by_need: dict[StableId, list[NeedFacetSemanticReceipt]] = {}
+        for receipt in semantic_result.receipts:
+            receipts_by_need.setdefault(receipt.need_id, []).append(receipt)
+        batches_by_need: dict[StableId, list[NeedEvidenceJudgmentBatchReceipt]] = {}
+        for batch in semantic_result.batch_receipts:
+            for selection in selections:
+                required = (
+                    selection.need.completion_spec.required_need_facet_ids
+                    if selection.need.completion_spec is not None
+                    else tuple(facet.need_facet_id for facet in selection.need.need_facets)
+                )
+                if any(facet_id in batch.need_facet_ids for facet_id in required):
+                    batches_by_need.setdefault(selection.need.need_id, []).append(batch)
+        return tuple(
+            selection.model_copy(
+                update={
+                    "semantic_receipts": tuple(receipts_by_need.get(selection.need.need_id, ())),
+                    "semantic_batch_receipts": tuple(
+                        batches_by_need.get(selection.need.need_id, ())
+                    ),
+                }
+            )
+            for selection in selections
         )
 
     def _judge_selections(

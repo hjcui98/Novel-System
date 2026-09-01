@@ -48,6 +48,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.writer_context import MemoryContextBudgetExhaustedError
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializationError,
@@ -497,6 +498,19 @@ class CreativeRuntimeService:
                     or writing_request.snapshot_id != task.basis_snapshot
                 ):
                     raise ValueError("Writer request factory violated the durable task basis")
+            except MemoryContextBudgetExhaustedError as error:
+                settled = self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.SUSPENDED,
+                    terminal_status=TaskStatus.BUDGET_REVIEW,
+                    artifact_refs=(error.receipt,),
+                    failure_class=FailureClass.BUDGET_EXHAUSTED,
+                )
+                return self._result(
+                    settled,
+                    CreativeRunTerminal.BUDGET_REVIEW,
+                    "writer_context_budget_exhausted",
+                )
             except ValueError:
                 settled = self._commands.settle_attempt(
                     fence,

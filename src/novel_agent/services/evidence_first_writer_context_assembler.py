@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Literal, cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
@@ -87,6 +87,32 @@ class NeedEvidenceSelection(DomainModel):
     semantic_batch_receipts: tuple[NeedEvidenceJudgmentBatchReceipt, ...] = ()
 
 
+NEED_EVIDENCE_SELECTIONS_MEDIA_TYPE = "application/vnd.novel-agent.need-evidence-selections+json"
+NEED_EVIDENCE_SELECTIONS_CONTRACT = "memory_gateway.need_evidence_selections.v1"
+
+
+class FrozenNeedEvidenceSelections(DomainModel):
+    """Complete Need-set evidence selection frozen by Memory Gateway."""
+
+    contract_version: Literal["memory_gateway.need_evidence_selections.v1"] = (
+        "memory_gateway.need_evidence_selections.v1"
+    )
+    request_id: StableId
+    base_commit: CommitId
+    snapshot_id: StableId
+    need_ids: tuple[StableId, ...]
+    selections: tuple[NeedEvidenceSelection, ...]
+
+    @model_validator(mode="after")
+    def validate_complete_need_set(self) -> FrozenNeedEvidenceSelections:
+        observed = tuple(item.need.need_id for item in self.selections)
+        if observed != self.need_ids:
+            raise ValueError("frozen evidence selections must cover the bound Need set in order")
+        if len(set(observed)) != len(observed):
+            raise ValueError("frozen evidence selections must be unique by Need")
+        return self
+
+
 class EvidenceFirstAssemblyResult(DomainModel):
     status: ContextAssemblyStatus
     package: WriterContextPackageV2
@@ -149,6 +175,9 @@ class EvidenceFirstWriterContextAssembler:
         planner_fallback_used: bool = False,
         unresolved_lexical_anchors: tuple[UnresolvedLexicalAnchor, ...] = (),
         advisory_items: tuple[tuple[ArtifactRef, str], ...] = (),
+        gateway_context_artifact: ArtifactRef | None = None,
+        frozen_evidence_selections_artifact: ArtifactRef | None = None,
+        budget_expansion_receipt: ArtifactRef | None = None,
     ) -> EvidenceFirstAssemblyResult:
         """Build a v2 package + ledger from selected exact slices only.
 
@@ -927,6 +956,9 @@ class EvidenceFirstWriterContextAssembler:
             planner_fallback_used=planner_fallback_used,
             unresolved_lexical_anchors=unresolved_lexical_anchors,
             advisory_artifact_refs=tuple(dict.fromkeys(ref for ref, _text in advisory_items)),
+            gateway_context_artifact=gateway_context_artifact,
+            frozen_evidence_selections_artifact=frozen_evidence_selections_artifact,
+            budget_expansion_receipt=budget_expansion_receipt,
         )
         package = WriterContextPackageV2(
             contract_version=cast(Literal["writer_context.v2"], self.contract_version),
@@ -1194,9 +1226,12 @@ class EvidenceFirstWriterContextAssembler:
 
 
 __all__ = [
+    "NEED_EVIDENCE_SELECTIONS_CONTRACT",
+    "NEED_EVIDENCE_SELECTIONS_MEDIA_TYPE",
     "PREVIEW_CHAR_LIMIT",
     "EvidenceFirstAssemblyResult",
     "EvidenceFirstWriterContextAssembler",
+    "FrozenNeedEvidenceSelections",
     "NeedEvidenceSelection",
     "SliceSelectionTrace",
 ]

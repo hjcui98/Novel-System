@@ -279,7 +279,9 @@ class OpenAICompatibleChatEndpoint:
         payload: dict[str, object] = {
             "model": self.model,
             "messages": [{"role": "user", "content": request.prompt}],
-            "temperature": self.temperature,
+            "temperature": (
+                self.temperature if request.temperature is None else request.temperature
+            ),
             "max_tokens": self._effective_max_tokens(request),
             "response_format": response_format,
             "chat_template_kwargs": template_kwargs,

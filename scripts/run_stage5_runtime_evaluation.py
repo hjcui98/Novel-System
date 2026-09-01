@@ -54,6 +54,7 @@ from novel_agent.services.projection import (
 from novel_agent.services.r1 import R1WorldRepository
 from novel_agent.services.retrieval import RetrievalBackend
 from novel_agent.services.search_retrieval import Stage2RSearchIndexer
+from novel_agent.runtime.real_hybrid import CommitScopedRealHybridBackend
 from novel_agent.services.stage2_retrieval_backend import (
     RealHybridProjectionGateway,
     build_real_hybrid_backend,
@@ -168,30 +169,7 @@ def _isolated_stage4_policy(args: argparse.Namespace) -> Stage4InvocationPolicy 
     return replace(policy, budgets=policy.budgets.model_copy(update=budget_updates))
 
 
-class _CommitScopedRealHybridBackend:
-    """Route each Memory Need to the exact real-hybrid basis it names."""
-
-    def __init__(
-        self,
-        *,
-        project_id: Any,
-        initial_commit: CommitId,
-        initial_backend: RetrievalBackend,
-        gateway: RealHybridProjectionGateway,
-    ) -> None:
-        self._project_id = project_id
-        self._gateway = gateway
-        self._bundles: dict[CommitId, RetrievalBackend] = {initial_commit: initial_backend}
-
-    def backend_for(self, source_commit: CommitId) -> RetrievalBackend:
-        backend = self._bundles.get(source_commit)
-        if backend is None:
-            backend = self._gateway.backend_for(self._project_id, source_commit).backend
-            self._bundles[source_commit] = backend
-        return backend
-
-    def search(self, need: Any, channel: Any, limit: int) -> tuple[Any, ...]:
-        return self.backend_for(need.base_commit).search(need, channel, limit)
+_CommitScopedRealHybridBackend = CommitScopedRealHybridBackend
 
 
 def _native_models_module() -> Any:
