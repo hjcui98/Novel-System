@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Novel Agent
 
 Long-form fiction agent runtime developed from the contracts in the repository design documents.
