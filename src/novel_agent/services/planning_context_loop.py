@@ -228,15 +228,24 @@ def _unsupported_memory_gap_markers(
     )
 
 
-def _has_evidence_bound_unsupported_gap(context: Stage1ContextPackage) -> bool:
+def _has_evidence_bound_unsupported_gap(
+    context: Stage1ContextPackage,
+    text_root: TextRootDocument,
+) -> bool:
     """Return true only for an unsupported mandatory facet with source candidates.
 
     A pure graph-zero/L0 fallback remains read-only. A selected source
     candidate, however, is the evidence-bound shape that the U8-B maintenance
     handoff is allowed to repair; it must not be converted into a writable Plan
-    candidate by the bounded unresolved-content fallback.
+    candidate by the bounded unresolved-content fallback. Before chapter one,
+    the canonical TextRoot contains no chapter source for Curator to extract.
+    World/Plan anchors may still be retrieved at Genesis, but those candidates
+    cannot justify a chapter-zero maintenance write and must use the existing
+    read-only unsupported-content fallback.
     """
 
+    if not text_root.chapters:
+        return False
     return any(
         bool(trace.candidates)
         and any(
@@ -1402,7 +1411,10 @@ class PlanningContextLoopService:
                     if pending_planner_memory_questions:
                         continue
                     if unsupported_memory_questions:
-                        if _has_evidence_bound_unsupported_gap(planner_memory.context):
+                        if _has_evidence_bound_unsupported_gap(
+                            planner_memory.context,
+                            text_root,
+                        ):
                             return self._terminal(
                                 request,
                                 PlanningLoopTerminal.REVIEW_REQUIRED,

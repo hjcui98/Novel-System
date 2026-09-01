@@ -3588,6 +3588,53 @@ def test_evidence_bound_unsupported_planner_memory_enters_gap_terminal(
     assert memory.calls == 2
 
 
+def test_genesis_unsupported_planner_memory_uses_read_only_fallback(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0].model_copy(update={"chapters": ()})
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-memory-genesis"))
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _UnsupportedMemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    memory = _SupportThenUnresolvedMemory(
+        artifacts,
+        stop_reasons=(
+            ControllerStopReason.SUFFICIENT,
+            ControllerStopReason.MANDATORY_GAP_UNRESOLVED,
+        ),
+        with_candidate=True,
+    )
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+        memory=memory,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 2
+    assert planner.plan_calls == 1
+    assert memory.calls == 2
+    assert "PLANNER_MEMORY_STATUS=UNSUPPORTED_CONTENT" in planner.turn_source_payloads[-1]
+
+
 def test_repeated_unsupported_planner_memory_returns_marked_candidate(
     tmp_path: Path,
 ) -> None:
