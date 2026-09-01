@@ -73,10 +73,42 @@
     "configuration_fingerprint": {
       "$ref": "#/$defs/ArtifactId"
     },
+    "configured_kv_token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Configured Kv Token Budget"
+    },
     "draft_materializer": {
       "minLength": 1,
       "title": "Draft Materializer",
       "type": "string"
+    },
+    "effective_kv_token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective Kv Token Budget"
+    },
+    "endpoint_request_limit": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Endpoint Request Limit",
+      "type": "integer"
     },
     "endpoints": {
       "items": {
@@ -101,6 +133,13 @@
       "minimum": 1,
       "title": "Global Output Cap",
       "type": "integer"
+    },
+    "kv_safety_reserve_ratio": {
+      "default": 0.2,
+      "exclusiveMaximum": 1.0,
+      "minimum": 0.0,
+      "title": "Kv Safety Reserve Ratio",
+      "type": "number"
     },
     "memory_gateway": {
       "minLength": 1,
@@ -194,6 +233,12 @@
       ],
       "default": null,
       "title": "Safety Allowance Tokens"
+    },
+    "scheduling_timeout_seconds": {
+      "default": 120.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Scheduling Timeout Seconds",
+      "type": "number"
     },
     "sequence_limit": {
       "minimum": 1,

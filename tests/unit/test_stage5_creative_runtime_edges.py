@@ -72,6 +72,11 @@ from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.creative_runtime import CreativeRuntimeService
 from novel_agent.services.event_log import RunEventLogRepository
+from novel_agent.services.model_request_admission import (
+    ContextBudgetExceededError,
+    SchedulingBudgetUnsatisfiableError,
+    SchedulingTimeoutError,
+)
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -1524,3 +1529,151 @@ def test_advance_auto_accepts_a_waiting_acceptance_task_directly(
     assert result.terminal is CreativeRunTerminal.PROGRESSED
     assert result.current_task_id is not None
     assert commands.get_task(result.current_task_id).kind is TaskKind.PLAN_COMMIT
+
+
+class _SchedulingPlanner:
+    is_fixture = True
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def run(self, request: PlanningLoopRequest) -> PlanningLoopResult:
+        del request
+        raise self._error
+
+
+def test_scheduling_timeout_does_not_consume_failure_budget(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, _ = creative_kernel
+    project_id = ProjectId("project.scheduling-timeout")
+    base = _fresh_project(commits, project_id)
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=_SchedulingPlanner(
+            SchedulingTimeoutError(
+                "SCHEDULING_TIMEOUT: test",
+                request_id="planner-timeout",
+                waited_seconds=1.25,
+                queue_snapshot={"queue_depth": 1, "inflight_requests": 1},
+            )
+        ),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+        project_id=project_id,
+    )
+    start = runtime.start(_request(base, run_id="run.scheduling-timeout", project_id=project_id))
+    assert start.current_task_id is not None
+    before = commands.get_task(start.current_task_id).failure_budget
+    result = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    task = commands.get_task(start.current_task_id)
+    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    assert result.reason_code == "scheduling_timeout"
+    assert task.status is TaskStatus.WAITING_RETRY
+    assert task.failure_budget == before
+    settled = tuple(
+        event
+        for event in RunEventLogRepository(factory).replay(start.run_id)
+        if event.event_type is RunEventType.RUNTIME_ATTEMPT_SETTLED
+        and event.task_id == start.current_task_id
+    )
+    assert (
+        cast(dict[str, object], settled[-1].payload)["failure_class"]
+        == FailureClass.SCHEDULING_TIMEOUT.value
+    )
+    assert any(
+        ref.media_type == "application/vnd.novel-agent.model-scheduling-wait+json"
+        for ref in task.terminal_artifact_refs
+    )
+
+
+def test_unsatisfiable_scheduling_budget_blocks_without_retry_budget(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, _ = creative_kernel
+    project_id = ProjectId("project.scheduling-unsatisfiable")
+    base = _fresh_project(commits, project_id)
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=_SchedulingPlanner(
+            SchedulingBudgetUnsatisfiableError(
+                "SCHEDULING_BUDGET_UNSATISFIABLE: 100 > 10",
+                request_id="planner-unsatisfiable",
+                reserved_sequence_tokens=100,
+                effective_kv_token_budget=10,
+            )
+        ),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+        project_id=project_id,
+    )
+    start = runtime.start(
+        _request(base, run_id="run.scheduling-unsatisfiable", project_id=project_id)
+    )
+    assert start.current_task_id is not None
+    before = commands.get_task(start.current_task_id).failure_budget
+    result = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    task = commands.get_task(start.current_task_id)
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
+    assert result.reason_code == "scheduling_budget_unsatisfiable"
+    assert task.status is TaskStatus.BLOCKED
+    assert task.failure_budget == before
+    assert task.block_cause == FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE.value
+
+
+def test_context_budget_exceeded_is_unsatisfiable_and_keeps_wait_receipt(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, commands, _ = creative_kernel
+    project_id = ProjectId("project.context-budget")
+    base = _fresh_project(commits, project_id)
+    runtime = _build_runtime(
+        factory,
+        commits,
+        artifacts,
+        commands,
+        planner=_SchedulingPlanner(
+            ContextBudgetExceededError(
+                "CONTEXT_BUDGET_EXCEEDED: 200 > 100",
+                request_id="planner-context",
+                reserved_sequence_tokens=200,
+                model_sequence_limit=100,
+            )
+        ),
+        writer=cast(WritingLeafPort, _Writer(artifacts)),
+        project_id=project_id,
+    )
+    start = runtime.start(_request(base, run_id="run.context-budget", project_id=project_id))
+    assert start.current_task_id is not None
+    before = commands.get_task(start.current_task_id).failure_budget
+    result = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    task = commands.get_task(start.current_task_id)
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
+    assert task.status is TaskStatus.BLOCKED
+    assert task.failure_budget == before
+    assert any(
+        ref.media_type == "application/vnd.novel-agent.model-scheduling-wait+json"
+        for ref in task.terminal_artifact_refs
+    )

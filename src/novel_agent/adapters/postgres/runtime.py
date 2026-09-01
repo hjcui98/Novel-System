@@ -70,5 +70,70 @@ class RuntimeTaskQueryRepository:
             )
             return tuple(TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows)
 
+    def next_scheduled_at(
+        self,
+        *,
+        project_id: ProjectId | None = None,
+        run_id: RunId | None = None,
+        now: datetime | None = None,
+    ) -> datetime | None:
+        """Return the earliest future runnable schedule persisted in the projection."""
+
+        times = self._future_scheduled_times(
+            project_id=project_id,
+            run_id=run_id,
+            now=now,
+        )
+        return times[0] if times else None
+
+    def future_scheduled_count(
+        self,
+        *,
+        project_id: ProjectId | None = None,
+        run_id: RunId | None = None,
+        now: datetime | None = None,
+    ) -> int:
+        return len(
+            self._future_scheduled_times(
+                project_id=project_id,
+                run_id=run_id,
+                now=now,
+            )
+        )
+
+    def _future_scheduled_times(
+        self,
+        *,
+        project_id: ProjectId | None,
+        run_id: RunId | None,
+        now: datetime | None,
+    ) -> tuple[datetime, ...]:
+        observed_at = now or datetime.now(UTC)
+        with self._session_factory() as session:
+            statement = select(RuntimeTaskProjectionRow).where(
+                RuntimeTaskProjectionRow.status == TaskStatus.READY.value,
+                RuntimeTaskProjectionRow.scheduled_for.is_not(None),
+                RuntimeTaskProjectionRow.scheduled_for > observed_at,
+            )
+            if project_id is not None:
+                statement = statement.where(RuntimeTaskProjectionRow.project_id == project_id.root)
+            if run_id is not None:
+                statement = statement.where(RuntimeTaskProjectionRow.run_id == run_id.root)
+            scheduled: list[datetime] = []
+            for row in session.scalars(statement):
+                task = TaskRecord.model_validate_json(json.dumps(row.task_json))
+                task_time = task.scheduled_for
+                if (
+                    task_time is None
+                    or task_time <= observed_at
+                    or task.paused
+                    or task.superseded
+                    or task.current_attempt_id is not None
+                    or task.failure_budget <= 0
+                ):
+                    continue
+                scheduled.append(task_time)
+            return tuple(sorted(scheduled))
+
 
 __all__ = ["RuntimeTaskQueryRepository"]

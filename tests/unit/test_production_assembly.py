@@ -43,6 +43,7 @@ from novel_agent.runtime.production_bootstrap import (
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.model_gateway import RegisteredModelEndpoint
+from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 from novel_agent.services.retrieval import InMemoryRetrievalBackend, RetrievalBackend
 
 HASH = ArtifactId("sha256:" + "1" * 64)
@@ -274,13 +275,55 @@ def test_factory_starts_and_freezes_attestation_without_model_calls(tmp_path: Pa
     # A production maintenance task may be owned by Graph Curator.  The
     # attested memory-write owner must therefore carry the graph profile; an
     # ordinary-only assembly silently turns relation gaps into no-ops.
-    assert maintenance._workflow._curator._graph_curator is not None
-    assert maintenance._workflow._curator._graph_curator.gateway is assembly.model_gateway
+    graph_curator = cast(Any, maintenance._workflow._curator)._graph_curator
+    assert graph_curator is not None
+    assert graph_curator.gateway is assembly.model_gateway
     spec = load_production_assembly_spec()
     assert "migration_head" not in spec.model_dump()
     assert assembly.planner.is_fixture is False
     assert assembly.writer.is_fixture is False
     assert assembly.model_gateway.call_records == []
+    assert assembly.admission is assembly.model_gateway.admission_controller
+    assert assembly.attestation.endpoint_request_limit == 1
+    assert assembly.attestation.configured_kv_token_budget is None
+    assert assembly.attestation.scheduling_timeout_seconds == 120.0
+    snapshot = assembly.admission.snapshot()
+    assert snapshot["endpoint_request_limit"] == 1
+    assert snapshot["acquired_requests"] == snapshot["released_requests"]
+
+
+def test_production_admission_limit_two_is_attested_and_shared(tmp_path: Path) -> None:
+    campaign = tmp_path / "limit-two"
+    campaign.mkdir()
+    assembly = build_production_assembly(
+        _context(campaign, endpoint_request_limit=2, kv_token_budget=1_000)
+    )
+    assert assembly.attestation is not None
+    assert assembly.attestation.endpoint_request_limit == 2
+    assert assembly.attestation.configured_kv_token_budget == 1_000
+    assert assembly.attestation.effective_kv_token_budget == 800
+    assert assembly.admission is not None
+    leases = (assembly.admission.acquire(10), assembly.admission.acquire(10))
+    assert assembly.admission.inflight_requests == 2
+    for lease in leases:
+        lease.release()
+    snapshot = assembly.admission.snapshot()
+    assert snapshot["max_inflight_requests"] == 2
+    assert snapshot["acquired_requests"] == snapshot["released_requests"]
+
+
+def test_production_context_rejects_admission_with_numeric_overrides(tmp_path: Path) -> None:
+    admission = ModelRequestAdmissionController(endpoint_request_limit=2)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _context(tmp_path, admission=admission, endpoint_request_limit=2)
+    with pytest.raises(ValueError, match="must be 1 or 2"):
+        _context(tmp_path, endpoint_request_limit=3)
+    with pytest.raises(ValueError, match="kv_token_budget must be positive"):
+        _context(tmp_path, kv_token_budget=0)
+    with pytest.raises(ValueError, match="kv_safety_reserve_ratio"):
+        _context(tmp_path, kv_safety_reserve_ratio=1.0)
+    with pytest.raises(ValueError, match="scheduling_timeout_seconds"):
+        _context(tmp_path, scheduling_timeout_seconds=0.0)
 
 
 def test_major_rewrite_override_is_campaign_local_and_default_stays_one(tmp_path: Path) -> None:

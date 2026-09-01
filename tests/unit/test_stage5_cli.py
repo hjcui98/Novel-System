@@ -762,6 +762,7 @@ def test_runtime_advance_uses_explicit_production_assembly(
     assert contexts[0].project_id == ProjectId("project.test")
     assert contexts[0].run_id == RunId("run.cli.advance")
     assert contexts[0].object_store_root == cli_db.parent / "objects"
+    assert contexts[0].endpoint_request_limit == 1
 
 
 def test_runtime_advance_no_ready_task_reports_progressed_zero(
@@ -907,3 +908,208 @@ def test_runtime_advance_binds_run_identity_under_same_project(
         RunId("run.cli.identity-a"),
         RunId("run.cli.identity-missing"),
     ]
+
+
+def test_runtime_advance_wires_parallelism_and_admission_flags(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = f"sqlite+pysqlite:///{cli_db}"
+    manifest_path = (
+        Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
+    )
+    contexts = _install_production_loader(monkeypatch, progressed=False)
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "advance",
+                "--project-id",
+                "project.test",
+                "--run-id",
+                "run.cli",
+                "--policy",
+                str(cli_db.parent / "policy.json"),
+                "--manifest",
+                str(manifest_path),
+                "--object-store-root",
+                str(cli_db.parent / "objects"),
+                "--assembly-factory",
+                "tests.production_assembly:build",
+                "--max-tasks",
+                "2",
+                "--runtime-parallelism",
+                "2",
+                "--planner-lookahead",
+                "--endpoint-request-limit",
+                "2",
+                "--kv-token-budget",
+                "1000",
+                "--scheduling-timeout-seconds",
+                "30",
+            ]
+        )
+        == 0
+    )
+    assert contexts[0].policy.runtime_parallelism == 2
+    assert contexts[0].policy.enable_planner_lookahead is True
+    assert contexts[0].endpoint_request_limit == 2
+    assert contexts[0].kv_token_budget == 1000
+    assert contexts[0].scheduling_timeout_seconds == 30.0
+
+
+def test_runtime_advance_rejects_lookahead_without_parallelism_two(
+    cli_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = f"sqlite+pysqlite:///{cli_db}"
+    manifest_path = (
+        Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
+    )
+    _install_production_loader(monkeypatch, progressed=False)
+    with pytest.raises(ValueError, match="lookahead requires runtime parallelism 2"):
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "advance",
+                "--project-id",
+                "project.test",
+                "--run-id",
+                "run.cli",
+                "--policy",
+                str(cli_db.parent / "policy.json"),
+                "--manifest",
+                str(manifest_path),
+                "--object-store-root",
+                str(cli_db.parent / "objects"),
+                "--assembly-factory",
+                "tests.production_assembly:build",
+                "--max-tasks",
+                "2",
+                "--runtime-parallelism",
+                "1",
+                "--planner-lookahead",
+            ]
+        )
+
+
+def test_runtime_dispatch_once_and_watch(cli_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from novel_agent.runtime.production_dispatch_coordinator import ProductionDispatchResult
+
+    url = f"sqlite+pysqlite:///{cli_db}"
+    manifest_path = (
+        Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
+    )
+    runs_path = cli_db.parent / "runs.json"
+    runs_path.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "project_id": "project.test",
+                        "run_id": "run.cli",
+                        "object_store_root": str(cli_db.parent / "objects"),
+                        "policy": str(cli_db.parent / "policy.json"),
+                        "max_tasks": 2,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: list[Any] = []
+    watch_calls: list[float] = []
+
+    class _FakeCoordinator:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.append(kwargs)
+
+        async def run_once(self) -> ProductionDispatchResult:
+            return ProductionDispatchResult(
+                status="completed",
+                runtime_parallelism=2,
+                planner_lookahead=True,
+                project_parallelism=2,
+                endpoint_request_limit=2,
+                configured_kv_token_budget=1000,
+                effective_kv_token_budget=800,
+                queue_depth=0,
+                max_inflight_requests=1,
+                total_wait_seconds=0.0,
+                scheduling_timeouts=0,
+                acquired_requests=2,
+                released_requests=2,
+                per_project=(),
+                remaining_scheduled_tasks=0,
+                next_scheduled_at=None,
+                all_projects_terminal=True,
+            )
+
+        async def run_watch(self, *, poll_interval_seconds: float) -> ProductionDispatchResult:
+            watch_calls.append(poll_interval_seconds)
+            return await self.run_once()
+
+    monkeypatch.setattr(
+        "novel_agent.runtime.production_dispatch_coordinator.ProductionDispatchCoordinator",
+        _FakeCoordinator,
+    )
+    receipt = cli_db.parent / "dispatch-receipt.json"
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "dispatch",
+                "--runs",
+                str(runs_path),
+                "--manifest",
+                str(manifest_path),
+                "--once",
+                "--receipt",
+                str(receipt),
+                "--project-parallelism",
+                "2",
+                "--runtime-parallelism",
+                "2",
+                "--planner-lookahead",
+                "--endpoint-request-limit",
+                "2",
+                "--kv-token-budget",
+                "1000",
+                "--max-total-tasks",
+                "50",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["receipt_type"] == "runtime_cli_dispatch"
+    assert payload["endpoint_request_limit"] == 2
+    assert payload["runtime_parallelism"] == 2
+    assert payload["planner_lookahead"] is True
+    assert captured[0]["endpoint_request_limit"] == 2
+    assert captured[0]["project_parallelism"] == 2
+    assert captured[0]["kv_token_budget"] == 1000
+    assert captured[0]["runs"][0].policy.runtime_parallelism == 2
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "dispatch",
+                "--runs",
+                str(runs_path),
+                "--manifest",
+                str(manifest_path),
+                "--watch",
+                "--poll-interval-seconds",
+                "3",
+            ]
+        )
+        == 0
+    )
+    assert watch_calls == [3.0]

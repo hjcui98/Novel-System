@@ -12,6 +12,7 @@ from typing import Any
 
 from novel_agent.config import AppSettings
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.creative_runtime import CreativeRunPolicy
 from novel_agent.domain.ids import CommitId, ProjectId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
 from novel_agent.domain.runtime import FailureClass
@@ -62,6 +63,57 @@ def _load_artifact_refs(path: Path | None) -> tuple[ArtifactRef, ...]:
         raise ValueError("artifact refs file contains an invalid ArtifactRef") from error
 
 
+def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--runtime-parallelism", type=int, choices=(1, 2))
+    lookahead = parser.add_mutually_exclusive_group()
+    lookahead.add_argument("--planner-lookahead", dest="planner_lookahead", action="store_true")
+    lookahead.add_argument("--no-planner-lookahead", dest="planner_lookahead", action="store_false")
+    parser.set_defaults(planner_lookahead=None)
+    parser.add_argument("--endpoint-request-limit", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--kv-token-budget", type=int)
+    parser.add_argument("--scheduling-timeout-seconds", type=float, default=120.0)
+
+
+def _policy_with_runtime_options(
+    policy: CreativeRunPolicy,
+    *,
+    runtime_parallelism: int | None,
+    planner_lookahead: bool | None,
+) -> CreativeRunPolicy:
+    updates: dict[str, object] = {}
+    if runtime_parallelism is not None:
+        updates["runtime_parallelism"] = runtime_parallelism
+    if planner_lookahead is not None:
+        updates["enable_planner_lookahead"] = planner_lookahead
+    if not updates:
+        return policy
+    return CreativeRunPolicy.model_validate(
+        {**policy.model_dump(mode="json"), **updates}, strict=False
+    )
+
+
+def _admission_receipt(assembly: object) -> dict[str, object] | None:
+    gateway = getattr(assembly, "model_gateway", None)
+    controller = getattr(gateway, "admission_controller", None)
+    if controller is None or not callable(getattr(controller, "snapshot", None)):
+        return None
+    snapshot = controller.snapshot()
+    keys = (
+        "endpoint_request_limit",
+        "configured_kv_token_budget",
+        "effective_kv_token_budget",
+        "kv_safety_reserve_ratio",
+        "default_scheduling_timeout_seconds",
+        "queue_depth",
+        "max_inflight_requests",
+        "total_wait_seconds",
+        "scheduling_timeouts",
+        "acquired_requests",
+        "released_requests",
+    )
+    return {key: snapshot[key] for key in keys if key in snapshot}
+
+
 class _ProjectionBuilder:
     def build(self, project_id: ProjectId, source_commit: CommitId) -> DerivedSnapshotLite:
         from datetime import UTC, datetime
@@ -109,6 +161,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     advance.add_argument("--max-tasks", type=int, required=True)
     advance.add_argument("--receipt", type=Path)
+    _add_runtime_options(advance)
+    dispatch = runtime_commands.add_parser("dispatch")
+    dispatch.add_argument("--runs", type=Path, required=True)
+    dispatch.add_argument("--manifest", type=Path, required=True)
+    dispatch.add_argument("--endpoint-profile")
+    dispatch.add_argument("--assembly-factory", default=DEFAULT_PRODUCTION_ASSEMBLY_FACTORY)
+    dispatch.add_argument("--project-parallelism", type=int, default=1)
+    dispatch.add_argument("--max-total-tasks", type=int, default=100)
+    dispatch.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    dispatch.add_argument("--receipt", type=Path)
+    mode = dispatch.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true")
+    mode.add_argument("--watch", action="store_true")
+    _add_runtime_options(dispatch)
     for action in ("pause", "resume", "cancel", "retry"):
         control = runtime_commands.add_parser(action)
         control.add_argument("--project-id", required=True)
@@ -235,6 +301,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             tasks = RuntimeTaskQueryRepository(factory).list_run(RunId(args.run_id))
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
             return 0
+        if args.runtime_command == "dispatch":
+            from novel_agent.domain.stage5_manifest import load_stage5_manifest
+            from novel_agent.runtime.production_dispatch_coordinator import (
+                ProductionDispatchCoordinator,
+                load_production_run_descriptors,
+            )
+
+            manifest = load_stage5_manifest(args.manifest)
+            descriptors = tuple(
+                descriptor.with_runtime_options(
+                    runtime_parallelism=args.runtime_parallelism,
+                    planner_lookahead=args.planner_lookahead,
+                )
+                for descriptor in load_production_run_descriptors(args.runs)
+            )
+            coordinator = ProductionDispatchCoordinator(
+                database_url=args.database_url,
+                manifest=manifest,
+                runs=descriptors,
+                model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
+                assembly_factory=args.assembly_factory,
+                project_parallelism=args.project_parallelism,
+                endpoint_request_limit=args.endpoint_request_limit,
+                kv_token_budget=args.kv_token_budget,
+                scheduling_timeout_seconds=args.scheduling_timeout_seconds,
+                max_total_tasks=args.max_total_tasks,
+            )
+            try:
+                result = _run_async(
+                    coordinator.run_watch(poll_interval_seconds=args.poll_interval_seconds)
+                    if args.watch
+                    else coordinator.run_once()
+                )
+            except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
+                return _resource_blocked(error)
+            output = result.to_payload()
+            if args.receipt is not None:
+                _write_json_once(
+                    args.receipt,
+                    {
+                        "receipt_type": "runtime_cli_dispatch",
+                        **output,
+                    },
+                )
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+            return 2 if result.status in {"failed", "blocked"} else 0
         if args.runtime_command == "advance":
             from novel_agent.domain.stage5_manifest import load_stage5_manifest
             from novel_agent.runtime.creative_assembly import (
@@ -243,6 +355,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
             policy = CreativeRunPolicy.model_validate_json(args.policy.read_bytes())
+            policy = _policy_with_runtime_options(
+                policy,
+                runtime_parallelism=args.runtime_parallelism,
+                planner_lookahead=args.planner_lookahead,
+            )
             manifest = load_stage5_manifest(args.manifest)
             try:
                 assembly = load_production_runtime_assembly(
@@ -255,6 +372,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         policy=policy,
                         manifest=manifest,
                         model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
+                        endpoint_request_limit=args.endpoint_request_limit,
+                        kv_token_budget=args.kv_token_budget,
+                        scheduling_timeout_seconds=args.scheduling_timeout_seconds,
                     ),
                 )
             except RuntimeError as error:
@@ -269,6 +389,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "progressed": len(results),
                 "results": [item.model_dump(mode="json") for item in results],
             }
+            admission = _admission_receipt(assembly)
+            if admission is not None:
+                output["admission"] = admission
             if args.receipt is not None:
                 if assembly.attestation is None:
                     raise RuntimeError("production assembly did not provide a CLI attestation")

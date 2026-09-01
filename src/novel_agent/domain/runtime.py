@@ -198,6 +198,8 @@ class FailureClass(StrEnum):
     WORKER_STARTUP = "worker_startup"
     WORKER_LEASE_EXPIRED = "worker_lease_expired"
     PROVIDER_TRANSIENT = "provider_transient"
+    SCHEDULING_TIMEOUT = "scheduling_timeout"
+    SCHEDULING_BUDGET_UNSATISFIABLE = "scheduling_budget_unsatisfiable"
     LEAF_SCHEMA_REJECTED = "leaf_schema_rejected"
     LEAF_REVIEW_REQUIRED = "leaf_review_required"
     CANON_EXTRACTION_GAP = "canon_extraction_gap"
@@ -269,6 +271,22 @@ _FAILURE_POLICIES: dict[FailureClass, FailurePolicy] = {
         consumes_creative_budget=False,
         resume_from=RecoveryCheckpoint.LATEST_SETTLED,
         fallback_status=TaskStatus.WAITING_RETRY,
+    ),
+    FailureClass.SCHEDULING_TIMEOUT: FailurePolicy(
+        retry_owner=RetryOwner.MODEL_GATEWAY,
+        retryable=True,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.LATEST_SETTLED,
+        fallback_status=TaskStatus.WAITING_RETRY,
+    ),
+    FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE: FailurePolicy(
+        retry_owner=RetryOwner.OPERATOR,
+        retryable=False,
+        consumes_task_budget=False,
+        consumes_creative_budget=False,
+        resume_from=RecoveryCheckpoint.NONE,
+        fallback_status=TaskStatus.BLOCKED,
     ),
     FailureClass.LEAF_SCHEMA_REJECTED: FailurePolicy(
         retry_owner=RetryOwner.LEAF,

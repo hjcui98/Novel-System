@@ -811,6 +811,7 @@ class ModelGateway:
             return await asyncio.shield(completed)
         except asyncio.CancelledError:
             completed.cancel()
+            controller.abandon_request(scheduling_info.request_id)
             raise
 
     async def generate_structured(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
@@ -86,6 +87,34 @@ class ProductionAssemblyContext:
     worker_id: str = "production.dispatcher"
     admission: ModelRequestAdmissionController | None = None
     projection_builder: ProjectionBuilder | None = None
+    endpoint_request_limit: int = 1
+    kv_token_budget: int | None = None
+    kv_safety_reserve_ratio: float = 0.20
+    scheduling_timeout_seconds: float = 120.0
+
+    def __post_init__(self) -> None:
+        if self.endpoint_request_limit not in (1, 2):
+            raise ValueError("production endpoint_request_limit must be 1 or 2")
+        if self.admission is not None and (
+            self.endpoint_request_limit != 1
+            or self.kv_token_budget is not None
+            or self.kv_safety_reserve_ratio != 0.20
+            or self.scheduling_timeout_seconds != 120.0
+        ):
+            raise ValueError(
+                "an explicit admission controller cannot be combined with admission overrides"
+            )
+        if self.kv_token_budget is not None and self.kv_token_budget < 1:
+            raise ValueError("kv_token_budget must be positive")
+        if (
+            not math.isfinite(self.kv_safety_reserve_ratio)
+            or not 0.0 <= (self.kv_safety_reserve_ratio) < 1.0
+        ):
+            raise ValueError("kv_safety_reserve_ratio must be finite and in [0, 1)")
+        if not math.isfinite(self.scheduling_timeout_seconds) or (
+            self.scheduling_timeout_seconds <= 0.0
+        ):
+            raise ValueError("scheduling_timeout_seconds must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +135,7 @@ class ProductionRuntimeAssembly:
     model_gateway: ModelGateway | None = None
     memory_gateway: MemoryGateway | None = None
     attestation: ResolvedProductionAssemblyAttestation | None = None
+    admission: ModelRequestAdmissionController | None = None
 
     def __post_init__(self) -> None:
         if self.runtime.planner_leaf is not self.planner:
@@ -140,6 +170,12 @@ class ProductionRuntimeAssembly:
                 )
             if self.model_gateway.admission_controller is None:
                 raise ValueError("production ModelGateway must use endpoint admission")
+        if (
+            self.admission is not None
+            and self.model_gateway is not None
+            and self.model_gateway.admission_controller is not self.admission
+        ):
+            raise ValueError("production ModelGateway must reuse the declared admission")
         if self.artifacts is not None:
             runtime_artifacts = getattr(self.runtime, "_artifacts", None)
             if runtime_artifacts is not self.artifacts:

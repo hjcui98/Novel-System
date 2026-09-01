@@ -48,6 +48,16 @@ def test_every_failure_class_has_one_owner_budget_and_checkpoint_policy() -> Non
     assert failure_policy(FailureClass.WRITER_LANE_BUSY).retryable is True
     assert failure_policy(FailureClass.WRITER_LANE_BUSY).consumes_task_budget is False
     assert failure_policy(FailureClass.WRITER_LANE_BUSY).fallback_status is TaskStatus.WAITING_RETRY
+    timeout = failure_policy(FailureClass.SCHEDULING_TIMEOUT)
+    assert timeout.retryable is True
+    assert timeout.consumes_task_budget is False
+    assert timeout.consumes_creative_budget is False
+    assert timeout.fallback_status is TaskStatus.WAITING_RETRY
+    unsatisfiable = failure_policy(FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE)
+    assert unsatisfiable.retryable is False
+    assert unsatisfiable.consumes_task_budget is False
+    assert unsatisfiable.consumes_creative_budget is False
+    assert unsatisfiable.fallback_status is TaskStatus.BLOCKED
 
 
 def test_observed_failure_labels_route_to_their_narrow_owner() -> None:

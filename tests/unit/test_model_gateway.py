@@ -336,14 +336,17 @@ def test_gateway_cancelled_admission_releases_eventual_lease() -> None:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        blocker.release()
         for _ in range(100):
-            snapshot = controller.snapshot()
-            if snapshot["acquired_requests"] == 2 and controller.inflight_requests == 0:
+            if controller.snapshot()["queue_depth"] == 0:
                 break
             await asyncio.sleep(0.01)
-        assert controller.snapshot()["acquired_requests"] == 2
-        assert controller.inflight_requests == 0
+        assert controller.snapshot()["queue_depth"] == 0
+        blocker.release()
+        with controller.acquire(1, timeout_seconds=0.05):
+            pass
+        snapshot = controller.snapshot()
+        assert snapshot["inflight_requests"] == 0
+        assert snapshot["acquired_requests"] == snapshot["released_requests"]
 
         with pytest.raises(RuntimeError, match="not configured"):
             await ModelGateway(())._acquire_scheduled_lease(

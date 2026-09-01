@@ -122,12 +122,15 @@ def test_admission_controller_timeout_and_lease_double_release_are_typed() -> No
         kv_safety_reserve_ratio=0.0,
     )
     first = controller.acquire(100)
-    with pytest.raises(SchedulingTimeoutError, match="SCHEDULING_TIMEOUT"):
+    with pytest.raises(SchedulingTimeoutError, match="SCHEDULING_TIMEOUT") as raised:
         controller.acquire(100, timeout_seconds=0.02)
+    assert raised.value.queue_snapshot["queue_depth"] == 0
+    assert controller.snapshot()["queue_depth"] == 0
     first.release()
     with pytest.raises(RuntimeError, match="released twice"):
         first.release()
     assert controller.snapshot()["scheduling_timeouts"] == 1
+    assert controller.snapshot()["acquired_requests"] == controller.snapshot()["released_requests"]
 
 
 def test_admission_timeout_reports_active_and_queued_request_ids() -> None:
@@ -325,3 +328,74 @@ def test_admission_controller_is_shared_across_threads() -> None:
     assert snapshot["released_requests"] == 4
     assert snapshot["acquired_kv_tokens"] == 400
     assert snapshot["released_kv_tokens"] == 400
+
+
+def test_admission_limit_one_is_strictly_serial() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    first = controller.acquire(10)
+    waiting: list[bool] = []
+
+    def blocked() -> None:
+        with controller.acquire(10, timeout_seconds=2):
+            waiting.append(True)
+
+    thread = threading.Thread(target=blocked)
+    thread.start()
+    time.sleep(0.05)
+    assert controller.inflight_requests == 1
+    assert not waiting
+    first.release()
+    thread.join(timeout=5)
+    assert waiting == [True]
+    assert controller.inflight_requests == 0
+    snapshot = controller.snapshot()
+    assert snapshot["acquired_requests"] == snapshot["released_requests"]
+    assert snapshot["max_inflight_requests"] == 1
+
+
+def test_admission_timeout_clears_queue_and_cancel_releases_waiter() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    blocker = controller.acquire(1)
+    errors: list[BaseException] = []
+
+    def blocked() -> None:
+        try:
+            controller.acquire(1, timeout_seconds=5)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=blocked)
+    thread.start()
+    time.sleep(0.05)
+    snapshot = controller.snapshot()
+    assert snapshot["queue_depth"] == 1
+    queued_ids = cast(tuple[str, ...], snapshot["queued_request_ids"])
+    assert controller.abandon_request(queued_ids[0]) is True
+    thread.join(timeout=5)
+    assert controller.snapshot()["queue_depth"] == 0
+    assert errors
+    assert "cancelled" in str(errors[0])
+    blocker.release()
+    assert controller.abandon_request("missing-request") is False
+    assert controller.snapshot()["acquired_requests"] == controller.snapshot()["released_requests"]
+
+
+def test_admission_wait_then_acquires_capacity() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    blocker = controller.acquire(1)
+    acquired: list[str] = []
+
+    def waiter() -> None:
+        with controller.acquire(1, timeout_seconds=2) as lease:
+            acquired.append(lease.info.request_id)
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    time.sleep(0.05)
+    assert not acquired
+    blocker.release()
+    thread.join(timeout=5)
+    assert len(acquired) == 1
+    snapshot = controller.snapshot()
+    assert snapshot["inflight_requests"] == 0
+    assert snapshot["acquired_requests"] == snapshot["released_requests"]

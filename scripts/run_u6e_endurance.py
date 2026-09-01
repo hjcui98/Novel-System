@@ -5,24 +5,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Literal
 
 try:
     from scripts.run_u6b_production_baseline import (
+        ROOT,
         _database_counts,
         _load_attempts,
         _main_report,
-        _run_worker_phase,
+        _provider_transient_waiting_tasks,
+        _retry_provider_transient_task,
     )
 except ModuleNotFoundError as error:
     if error.name != "scripts":
         raise
     from run_u6b_production_baseline import (
+        ROOT,
         _database_counts,
         _load_attempts,
         _main_report,
-        _run_worker_phase,
+        _provider_transient_waiting_tasks,
+        _retry_provider_transient_task,
     )
 from sqlalchemy import func, select
 
@@ -56,6 +63,153 @@ def _write_once(path: Path, payload: object) -> None:
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _run_dispatch_phase(
+    *,
+    phase_index: int,
+    request: Path,
+    manifest: Path,
+    database_url: str,
+    object_store_root: Path,
+    endpoint_profile: str,
+    output_root: Path,
+    max_tasks: int,
+    max_slices: int,
+    stop_after_chapter: int | None,
+    before: tuple[int, ...],
+    max_provider_retries: int = 0,
+    settlement_timeout_seconds: float | None = None,
+    settlement_output_tokens: int | None = None,
+    max_major_rewrites: int | None = None,
+    max_local_repairs: int | None = None,
+) -> tuple[Stage5VerticalRunReport, U6BWorkerPhaseReport]:
+    if max_provider_retries < 0:
+        raise ValueError("max_provider_retries must be non-negative")
+    payload = json.loads(request.read_text(encoding="utf-8"))
+    recovery_index = 0
+    while True:
+        suffix = (
+            f"worker-phase-{phase_index}"
+            if recovery_index == 0
+            else f"worker-phase-{phase_index}-provider-retry-{recovery_index}"
+        )
+        report_path = output_root / f"{suffix}.vertical-run-report.json"
+        receipt_path = output_root / f"{suffix}.dispatch-receipt.json"
+        runs_path = output_root / f"{suffix}.runs.json"
+        stdout_path = output_root / f"{suffix}.stdout.log"
+        run_payload: dict[str, object] = {
+            "project_id": payload["project_id"],
+            "run_id": payload["run_id"],
+            "object_store_root": str(object_store_root),
+            "policy": payload["policy"],
+            "request": str(request),
+            "max_tasks": max_tasks,
+            "max_slices": max_slices,
+        }
+        if stop_after_chapter is not None:
+            run_payload["stop_after_chapter"] = stop_after_chapter
+        if settlement_timeout_seconds is not None:
+            run_payload["settlement_timeout_seconds"] = settlement_timeout_seconds
+        if settlement_output_tokens is not None:
+            run_payload["settlement_output_tokens"] = settlement_output_tokens
+        if max_major_rewrites is not None:
+            run_payload["max_major_rewrites"] = max_major_rewrites
+        if max_local_repairs is not None:
+            run_payload["max_local_repairs"] = max_local_repairs
+        _write_once(runs_path, {"runs": [run_payload]})
+        command = [
+            sys.executable,
+            "-c",
+            "from novel_agent.cli import main; raise SystemExit(main())",
+            "runtime",
+            "--database-url",
+            database_url,
+            "dispatch",
+            "--runs",
+            str(runs_path),
+            "--manifest",
+            str(manifest),
+            "--endpoint-profile",
+            endpoint_profile,
+            "--once",
+            "--receipt",
+            str(receipt_path),
+            "--max-total-tasks",
+            str(max(1, max_tasks * max_slices)),
+        ]
+        child_env = os.environ.copy()
+        paths = (ROOT / "src", ROOT / "scripts", ROOT)
+        existing_pythonpath = child_env.get("PYTHONPATH", "")
+        child_env["PYTHONPATH"] = os.pathsep.join(str(path) for path in paths) + (
+            os.pathsep + existing_pythonpath if existing_pythonpath else ""
+        )
+        with stdout_path.open("x", encoding="utf-8") as stream:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=child_env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        if not receipt_path.exists():
+            raise RuntimeError(
+                f"U6-E worker phase {phase_index} produced no dispatch receipt; "
+                f"exit={completed.returncode}, log={stdout_path}"
+            )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        projects = receipt.get("projects")
+        if not isinstance(projects, list) or not projects:
+            raise RuntimeError("U6-E dispatch receipt is missing project reports")
+        report_payload = projects[0].get("report")
+        if not isinstance(report_payload, dict):
+            raise RuntimeError(
+                f"U6-E worker phase {phase_index} did not return a project report; "
+                f"status={projects[0].get('status')}; log={stdout_path}"
+            )
+        _write_once(report_path, report_payload)
+        report = Stage5VerticalRunReport.model_validate(report_payload, strict=True)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"U6-E worker phase {phase_index} failed with exit={completed.returncode}; "
+                f"status={report.status.value}; log={stdout_path}"
+            )
+        retryable = _provider_transient_waiting_tasks(
+            database_url=database_url,
+            tasks=report.tasks,
+        )
+        if (
+            report.status is VerticalRunStatus.WAITING
+            and retryable
+            and recovery_index < max_provider_retries
+        ):
+            if len(retryable) != 1:
+                raise RuntimeError(
+                    "U6-E provider retry requires exactly one foreground WAITING_RETRY task"
+                )
+            _retry_provider_transient_task(
+                database_url=database_url,
+                task=retryable[0],
+                recovery_index=recovery_index + 1,
+            )
+            recovery_index += 1
+            continue
+        if stop_after_chapter is not None and report.status is not VerticalRunStatus.YIELDED:
+            raise RuntimeError(
+                "U6-E restart phase did not yield at the registered chapter boundary"
+            )
+        break
+    after = tuple(report.completed_chapters)
+    phase = U6BWorkerPhaseReport(
+        phase_index=phase_index,
+        report_path=str(report_path.resolve()),
+        status=report.status.value,
+        completed_chapters_before=before,
+        completed_chapters_after=after,
+        restarted_from_process=phase_index > 1,
+    )
+    return report, phase
 
 
 def _artifact_count(object_store_root: Path) -> int:
@@ -304,7 +458,7 @@ def _run_canary(
         },
     )
     try:
-        report, phase = _run_worker_phase(
+        report, phase = _run_dispatch_phase(
             phase_index=1,
             request=args.request,
             manifest=args.manifest,
@@ -469,7 +623,7 @@ def main() -> int:
         object_store_root=args.object_store_root,
         chapter_index=request.current_chapter,
     )
-    first, first_phase = _run_worker_phase(
+    first, first_phase = _run_dispatch_phase(
         phase_index=1,
         request=args.request,
         manifest=args.manifest,
@@ -493,7 +647,7 @@ def main() -> int:
         object_store_root=args.object_store_root,
         chapter_index=first.completed_chapters[-1],
     )
-    second, second_phase = _run_worker_phase(
+    second, second_phase = _run_dispatch_phase(
         phase_index=2,
         request=args.request,
         manifest=args.manifest,

@@ -73,6 +73,11 @@ class ResolvedProductionAssemblyAttestation(DomainModel):
     estimated_reasoning_reserve: int = Field(default=0, ge=0)
     safety_allowance_tokens: int | None = Field(default=None, ge=0)
     global_output_cap: int = Field(default=131_072, ge=1)
+    endpoint_request_limit: int = Field(default=1, ge=1)
+    configured_kv_token_budget: int | None = Field(default=None, ge=1)
+    effective_kv_token_budget: int | None = Field(default=None, ge=1)
+    kv_safety_reserve_ratio: float = Field(default=0.20, ge=0.0, lt=1.0)
+    scheduling_timeout_seconds: float = Field(default=120.0, gt=0.0)
     prompt_pins: tuple[ArtifactId, ...]
     skill_pins: tuple[ArtifactId, ...]
     reranker_declared: bool

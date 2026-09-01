@@ -23,15 +23,48 @@ class ModelSchedulingError(RuntimeError):
 
 
 class SchedulingTimeoutError(ModelSchedulingError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        waited_seconds: float | None = None,
+        queue_snapshot: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.waited_seconds = waited_seconds
+        self.queue_snapshot = dict(queue_snapshot or {})
 
 
 class SchedulingBudgetUnsatisfiableError(ModelSchedulingError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        reserved_sequence_tokens: int | None = None,
+        effective_kv_token_budget: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.reserved_sequence_tokens = reserved_sequence_tokens
+        self.effective_kv_token_budget = effective_kv_token_budget
 
 
 class ContextBudgetExceededError(ModelSchedulingError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        reserved_sequence_tokens: int | None = None,
+        model_sequence_limit: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.reserved_sequence_tokens = reserved_sequence_tokens
+        self.model_sequence_limit = model_sequence_limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +217,10 @@ class ModelRequestAdmissionController:
         with self._condition:
             return self._acquired_requests
 
+    @property
+    def default_scheduling_timeout_seconds(self) -> float:
+        return self._default_timeout
+
     def acquire(
         self,
         request: int | ModelRequestSchedulingInfo,
@@ -202,48 +239,84 @@ class ModelRequestAdmissionController:
             self._queue.append(entry)
             started = time.monotonic()
             waited = False
-            while True:
-                self._queue.sort(key=lambda item: (-item.info.priority, item.sequence))
-                is_head = self._queue[0] is entry
-                has_capacity = len(self._active) < self._endpoint_request_limit and (
-                    self._effective_kv_budget is None
-                    or self._inflight_kv_tokens + info.reserved_sequence_tokens
-                    <= self._effective_kv_budget
-                )
-                if is_head and has_capacity:
+            admitted = False
+            try:
+                while True:
+                    if entry not in self._queue:
+                        raise RuntimeError(
+                            f"model scheduling request was cancelled: {info.request_id}"
+                        )
+                    self._queue.sort(key=lambda item: (-item.info.priority, item.sequence))
+                    is_head = self._queue[0] is entry
+                    has_capacity = len(self._active) < self._endpoint_request_limit and (
+                        self._effective_kv_budget is None
+                        or self._inflight_kv_tokens + info.reserved_sequence_tokens
+                        <= self._effective_kv_budget
+                    )
+                    if is_head and has_capacity:
+                        self._queue.remove(entry)
+                        self._active[info.request_id] = info
+                        self._inflight_kv_tokens += info.reserved_sequence_tokens
+                        self._acquired_requests += 1
+                        self._acquired_kv_tokens += info.reserved_sequence_tokens
+                        self._max_inflight_requests = max(
+                            self._max_inflight_requests, len(self._active)
+                        )
+                        self._max_inflight_kv_tokens = max(
+                            self._max_inflight_kv_tokens, self._inflight_kv_tokens
+                        )
+                        self._admissions_by_endpoint[info.endpoint_id] = (
+                            self._admissions_by_endpoint.get(info.endpoint_id, 0) + 1
+                        )
+                        self._admitted_descriptors.append(info)
+                        self._wait_seconds += time.monotonic() - started
+                        admitted = True
+                        return ModelRequestLease(self, info.request_id, info)
+                    if not waited:
+                        self._waits_by_stage[info.stage] = (
+                            self._waits_by_stage.get(info.stage, 0) + 1
+                        )
+                        waited = True
+                    remaining = self._remaining_wait(info, started, timeout_seconds)
+                    if remaining <= 0:
+                        self._timeouts += 1
+                        self._wait_seconds += time.monotonic() - started
+                        active_request_ids = tuple(sorted(self._active))
+                        queued_request_ids = tuple(
+                            queued.info.request_id for queued in self._queue if queued is not entry
+                        )
+                        waited_seconds = time.monotonic() - started
+                        raise SchedulingTimeoutError(
+                            f"SCHEDULING_TIMEOUT: {info.request_id} waited for endpoint capacity; "
+                            f"active={active_request_ids!r}; queued={queued_request_ids!r}",
+                            request_id=info.request_id,
+                            waited_seconds=waited_seconds,
+                            queue_snapshot={
+                                "active_request_ids": active_request_ids,
+                                "queued_request_ids": queued_request_ids,
+                                "queue_depth": len(queued_request_ids),
+                                "endpoint_request_limit": self._endpoint_request_limit,
+                                "inflight_requests": len(self._active),
+                                "inflight_kv_tokens": self._inflight_kv_tokens,
+                                "effective_kv_token_budget": self._effective_kv_budget,
+                            },
+                        )
+                    self._condition.wait(timeout=remaining)
+            finally:
+                if not admitted and entry in self._queue:
                     self._queue.remove(entry)
-                    self._active[info.request_id] = info
-                    self._inflight_kv_tokens += info.reserved_sequence_tokens
-                    self._acquired_requests += 1
-                    self._acquired_kv_tokens += info.reserved_sequence_tokens
-                    self._max_inflight_requests = max(
-                        self._max_inflight_requests, len(self._active)
-                    )
-                    self._max_inflight_kv_tokens = max(
-                        self._max_inflight_kv_tokens, self._inflight_kv_tokens
-                    )
-                    self._admissions_by_endpoint[info.endpoint_id] = (
-                        self._admissions_by_endpoint.get(info.endpoint_id, 0) + 1
-                    )
-                    self._admitted_descriptors.append(info)
-                    self._wait_seconds += time.monotonic() - started
-                    return ModelRequestLease(self, info.request_id, info)
-                if not waited:
-                    self._waits_by_stage[info.stage] = self._waits_by_stage.get(info.stage, 0) + 1
-                    waited = True
-                remaining = self._remaining_wait(info, started, timeout_seconds)
-                if remaining <= 0:
-                    self._queue.remove(entry)
-                    self._timeouts += 1
-                    self._wait_seconds += time.monotonic() - started
                     self._condition.notify_all()
-                    active_request_ids = tuple(sorted(self._active))
-                    queued_request_ids = tuple(queued.info.request_id for queued in self._queue)
-                    raise SchedulingTimeoutError(
-                        f"SCHEDULING_TIMEOUT: {info.request_id} waited for endpoint capacity; "
-                        f"active={active_request_ids!r}; queued={queued_request_ids!r}"
-                    )
-                self._condition.wait(timeout=remaining)
+
+    def abandon_request(self, request_id: str) -> bool:
+        """Drop a waiting request so cancel/shutdown cannot occupy the queue."""
+
+        with self._condition:
+            remaining = [item for item in self._queue if item.info.request_id != request_id]
+            abandoned = len(remaining) != len(self._queue)
+            if abandoned:
+                self._queue = remaining
+                self._condition.notify_all()
+            return abandoned
 
     def release(self, estimated_tokens: int) -> None:
         """Compatibility release for older corridor callers."""
@@ -308,7 +381,10 @@ class ModelRequestAdmissionController:
         if info.reserved_sequence_tokens > self._model_sequence_limit:
             raise ContextBudgetExceededError(
                 f"CONTEXT_BUDGET_EXCEEDED: {info.reserved_sequence_tokens} > "
-                f"{self._model_sequence_limit}"
+                f"{self._model_sequence_limit}",
+                request_id=info.request_id,
+                reserved_sequence_tokens=info.reserved_sequence_tokens,
+                model_sequence_limit=self._model_sequence_limit,
             )
         if (
             self._effective_kv_budget is not None
@@ -318,7 +394,10 @@ class ModelRequestAdmissionController:
                 self._unsatisfiable += 1
             raise SchedulingBudgetUnsatisfiableError(
                 f"SCHEDULING_BUDGET_UNSATISFIABLE: {info.reserved_sequence_tokens} > "
-                f"{self._effective_kv_budget}"
+                f"{self._effective_kv_budget}",
+                request_id=info.request_id,
+                reserved_sequence_tokens=info.reserved_sequence_tokens,
+                effective_kv_token_budget=self._effective_kv_budget,
             )
 
     def _remaining_wait(
@@ -342,6 +421,7 @@ class ModelRequestAdmissionController:
                 "kv_token_budget": self._configured_kv_budget,
                 "kv_safety_reserve_ratio": self._kv_safety_reserve_ratio,
                 "model_sequence_limit": self._model_sequence_limit,
+                "default_scheduling_timeout_seconds": self._default_timeout,
                 "queue_depth": len(self._queue),
                 "queued_request_ids": tuple(item.info.request_id for item in self._queue),
                 "inflight_requests": len(self._active),

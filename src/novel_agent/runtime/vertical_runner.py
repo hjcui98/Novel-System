@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import cast
+from typing import Protocol, cast
 
 from novel_agent.domain.creative_runtime import (
     CreativeRunRequest,
@@ -17,6 +17,12 @@ from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, Vertic
 from novel_agent.ports.creative_runtime import RuntimeTaskReader
 from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
 from novel_agent.services.creative_runtime import CreativeRuntimeService
+
+
+class DispatchTaskBudget(Protocol):
+    def reserve(self, requested: int) -> int: ...
+
+    def release_unused(self, reserved: int, consumed: int) -> None: ...
 
 
 class VerticalCreativeRunner:
@@ -40,6 +46,7 @@ class VerticalCreativeRunner:
         max_tasks: int,
         max_slices: int | None = None,
         stop_after_chapter: int | None = None,
+        task_budget: DispatchTaskBudget | None = None,
     ) -> Stage5VerticalRunReport:
         if max_tasks < 1:
             raise ValueError("vertical runner dispatch slice size must be positive")
@@ -78,7 +85,17 @@ class VerticalCreativeRunner:
             if max_slices is not None and dispatch_slices >= max_slices:
                 break
 
-            progressed = await self._dispatcher.run_bounded(max_tasks=max_tasks)
+            reserved_tasks = max_tasks if task_budget is None else task_budget.reserve(max_tasks)
+            if reserved_tasks < 1:
+                break
+            try:
+                progressed = await self._dispatcher.run_bounded(max_tasks=reserved_tasks)
+            except BaseException:
+                if task_budget is not None:
+                    task_budget.release_unused(reserved_tasks, 0)
+                raise
+            if task_budget is not None:
+                task_budget.release_unused(reserved_tasks, len(progressed))
             dispatch_slices += 1
             results.extend(progressed)
             tasks = self._tasks.list_run(request.run_id)
@@ -242,4 +259,4 @@ class VerticalCreativeRunner:
         return VerticalRunStatus.WAITING
 
 
-__all__ = ["VerticalCreativeRunner"]
+__all__ = ["DispatchTaskBudget", "VerticalCreativeRunner"]

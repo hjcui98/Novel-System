@@ -40,6 +40,8 @@
         "worker_startup",
         "worker_lease_expired",
         "provider_transient",
+        "scheduling_timeout",
+        "scheduling_budget_unsatisfiable",
         "leaf_schema_rejected",
         "leaf_review_required",
         "canon_extraction_gap",

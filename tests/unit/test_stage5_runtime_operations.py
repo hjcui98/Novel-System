@@ -258,6 +258,21 @@ def test_query_maintenance_and_supervisor_are_read_only_and_no_model(
     with pytest.raises(ValueError, match="ready batch limit must be positive"):
         query.ready_batch(limit=0)
     assert query.list_run(task.run_id) == (task,)
+    future = datetime.now(UTC) + timedelta(hours=1)
+    with factory() as session, session.begin():
+        row = session.get(RuntimeTaskProjectionRow, task.task_id.root)
+        assert row is not None
+        payload = dict(row.task_json)
+        payload["scheduled_for"] = future.isoformat()
+        row.task_json = payload
+        row.scheduled_for = future
+    assert query.next_ready() is None
+    assert query.ready_batch(limit=8) == ()
+    scheduled = query.next_scheduled_at(now=datetime.now(UTC))
+    assert scheduled is not None
+    assert scheduled > datetime.now(UTC)
+    assert query.future_scheduled_count() == 1
+    assert query.next_scheduled_at(now=future + timedelta(seconds=1)) is None
 
     maintenance = RuntimeMaintenanceService(factory)
     projection = maintenance.precheck(

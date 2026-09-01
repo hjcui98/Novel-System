@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import create_engine, text
@@ -259,6 +260,25 @@ def _endpoint_revision(endpoint: RegisteredModelEndpoint) -> str | None:
     if not revision:
         revision = getattr(endpoint.adapter, "model_version", None)
     return str(revision) if revision else None
+
+
+def _resolve_production_admission(
+    context: ProductionAssemblyContext,
+    spec: ProductionAssemblySpec,
+) -> ModelRequestAdmissionController:
+    admission = context.admission
+    if admission is None:
+        return ModelRequestAdmissionController(
+            endpoint_request_limit=context.endpoint_request_limit,
+            kv_token_budget=context.kv_token_budget,
+            kv_safety_reserve_ratio=context.kv_safety_reserve_ratio,
+            model_sequence_limit=spec.model_policy.sequence_limit,
+            default_scheduling_timeout_seconds=context.scheduling_timeout_seconds,
+        )
+    endpoint_request_limit = cast(int, admission.snapshot()["endpoint_request_limit"])
+    if endpoint_request_limit not in (1, 2):
+        raise ValueError("production endpoint_request_limit must be 1 or 2")
+    return admission
 
 
 def _validate_endpoint_contracts(
@@ -834,6 +854,19 @@ def freeze_production_attestation(
         raise RuntimeError("attestation requires a registered Writer output limit")
     if writer_limits.output_limit != output_limit:
         raise RuntimeError("attestation output limit does not match the registered Writer endpoint")
+    admission = model_gateway.admission_controller
+    if admission is None:
+        raise RuntimeError("production attestation requires endpoint admission")
+    admission_snapshot = admission.snapshot()
+    endpoint_request_limit = cast(int, admission_snapshot["endpoint_request_limit"])
+    if endpoint_request_limit not in (1, 2):
+        raise RuntimeError("production attestation requires endpoint_request_limit 1 or 2")
+    configured_kv_token_budget = cast(int | None, admission_snapshot["configured_kv_token_budget"])
+    effective_kv_token_budget = cast(int | None, admission_snapshot["effective_kv_token_budget"])
+    kv_safety_reserve_ratio = cast(float, admission_snapshot["kv_safety_reserve_ratio"])
+    scheduling_timeout_seconds = cast(
+        float, admission_snapshot["default_scheduling_timeout_seconds"]
+    )
     fingerprint = content_id(
         {
             "factory": spec.factory_locator,
@@ -848,6 +881,13 @@ def freeze_production_attestation(
             "session": id(session_factory),
             "settlement_policy": settlement_policy_fingerprint.root,
             "memory_write_validation_only": context.memory_write_validation_only,
+            "admission": {
+                "endpoint_request_limit": endpoint_request_limit,
+                "configured_kv_token_budget": configured_kv_token_budget,
+                "effective_kv_token_budget": effective_kv_token_budget,
+                "kv_safety_reserve_ratio": kv_safety_reserve_ratio,
+                "scheduling_timeout_seconds": scheduling_timeout_seconds,
+            },
         }
     )
     return ResolvedProductionAssemblyAttestation(
@@ -888,6 +928,11 @@ def freeze_production_attestation(
         estimated_reasoning_reserve=writer_limits.estimated_reasoning_reserve,
         safety_allowance_tokens=writer_limits.safety_allowance_tokens,
         global_output_cap=writer_limits.global_output_cap,
+        endpoint_request_limit=endpoint_request_limit,
+        configured_kv_token_budget=configured_kv_token_budget,
+        effective_kv_token_budget=effective_kv_token_budget,
+        kv_safety_reserve_ratio=kv_safety_reserve_ratio,
+        scheduling_timeout_seconds=scheduling_timeout_seconds,
         prompt_pins=prompt_pins,
         skill_pins=skill_pins,
         reranker_declared=spec.reranker_required,
@@ -1012,10 +1057,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         if context.settlement_output_tokens is not None
         else spec.model_policy.default_output_limit
     )
-    admission = context.admission or ModelRequestAdmissionController(
-        endpoint_request_limit=1,
-        model_sequence_limit=spec.model_policy.sequence_limit,
-    )
+    admission = _resolve_production_admission(context, spec)
     session_factory = build_session_factory(build_engine(context.database_url))
     artifacts = ArtifactRepository(FilesystemObjectStore(context.object_store_root))
     events = RunEventLogRepository(session_factory)
@@ -1065,6 +1107,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         call_ledger=SqlModelCallLedger(session_factory),
         raw_artifacts=artifacts,
         raw_artifact_schema_version=schema_version,
+        scheduling_timeout_seconds=admission.default_scheduling_timeout_seconds,
         budget_profile=BudgetResolutionProfile.STRICT,
     )
     batch_endpoint = next(
@@ -1380,6 +1423,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         model_gateway=model_gateway,
         memory_gateway=memory_gateway,
         attestation=None,
+        admission=admission,
     )
     _assert_spec_identities(spec, assembly)
     attestation = freeze_production_attestation(

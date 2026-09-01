@@ -23,10 +23,7 @@ from novel_agent.adapters.postgres.models import (
 from novel_agent.domain.creative_runtime import CreativeRunRequest
 from novel_agent.domain.ids import ProjectId, RunId, SchemaVersion, StableId
 from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
-from novel_agent.domain.stage5_evaluation import (
-    Stage5VerticalRunReport,
-    VerticalRunStatus,
-)
+from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, VerticalRunStatus
 from novel_agent.domain.stage5_manifest import load_stage5_manifest
 from novel_agent.domain.u6d_two_project import (
     U6DAdmissionEvidence,
@@ -34,16 +31,15 @@ from novel_agent.domain.u6d_two_project import (
     U6DTwoProjectSmokeReport,
 )
 from novel_agent.runtime.creative_assembly import (
-    DEFAULT_PRODUCTION_ASSEMBLY_FACTORY,
-    ProductionAssemblyContext,
     ProductionRuntimeAssembly,
-    load_production_runtime_assembly,
 )
 from novel_agent.runtime.production_bootstrap import (
-    load_production_assembly_spec,
     resolve_registered_model_endpoints,
 )
-from novel_agent.runtime.vertical_runner import VerticalCreativeRunner
+from novel_agent.runtime.production_dispatch_coordinator import (
+    ProductionDispatchCoordinator,
+    ProductionRunDescriptor,
+)
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 from novel_agent.services.runtime_commands import RuntimeCommandService
@@ -311,41 +307,6 @@ def _cross_project_integrity_counts(
         engine.dispose()
 
 
-async def _run_pair(
-    assembly_one: ProductionRuntimeAssembly,
-    assembly_two: ProductionRuntimeAssembly,
-    request_one: CreativeRunRequest,
-    request_two: CreativeRunRequest,
-    *,
-    max_slices: int,
-    stop_after_chapter: int,
-) -> tuple[Stage5VerticalRunReport, Stage5VerticalRunReport]:
-    runner_one = VerticalCreativeRunner(
-        runtime=assembly_one.runtime,
-        dispatcher=assembly_one.dispatcher,
-        tasks=assembly_one.task_reader,
-    )
-    runner_two = VerticalCreativeRunner(
-        runtime=assembly_two.runtime,
-        dispatcher=assembly_two.dispatcher,
-        tasks=assembly_two.task_reader,
-    )
-    return await asyncio.gather(
-        runner_one.run(
-            request_one,
-            max_tasks=1,
-            max_slices=max_slices,
-            stop_after_chapter=stop_after_chapter,
-        ),
-        runner_two.run(
-            request_two,
-            max_tasks=1,
-            max_slices=max_slices,
-            stop_after_chapter=stop_after_chapter,
-        ),
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--request-one", type=Path, required=True)
@@ -369,40 +330,50 @@ def main() -> int:
         raise RuntimeError("U6-D requests must use two distinct project/run identities")
     if request_one.current_chapter != request_two.current_chapter:
         raise RuntimeError("U6-D projects must start from the same current chapter")
-    spec = load_production_assembly_spec()
     endpoints = resolve_registered_model_endpoints(args.endpoint_profile)
     admission = ModelRequestAdmissionController(
         endpoint_request_limit=2,
-        model_sequence_limit=spec.model_policy.sequence_limit,
     )
-    assembly_one = load_production_runtime_assembly(
-        DEFAULT_PRODUCTION_ASSEMBLY_FACTORY,
-        ProductionAssemblyContext(
-            database_url=args.database_url,
-            object_store_root=args.object_root_one,
-            project_id=request_one.project_id,
-            run_id=request_one.run_id,
-            policy=request_one.policy,
-            manifest=load_stage5_manifest(args.manifest),
-            model_endpoints=endpoints,
-            admission=admission,
-            worker_id="u6d.project-one.worker",
+    coordinator = ProductionDispatchCoordinator(
+        database_url=args.database_url,
+        manifest=load_stage5_manifest(args.manifest),
+        runs=(
+            ProductionRunDescriptor(
+                project_id=request_one.project_id,
+                run_id=request_one.run_id,
+                object_store_root=args.object_root_one,
+                policy=request_one.policy,
+                max_tasks=1,
+                max_slices=args.max_slices,
+                request=request_one,
+                stop_after_chapter=args.stop_after_chapter,
+            ),
+            ProductionRunDescriptor(
+                project_id=request_two.project_id,
+                run_id=request_two.run_id,
+                object_store_root=args.object_root_two,
+                policy=request_two.policy,
+                max_tasks=1,
+                max_slices=args.max_slices,
+                request=request_two,
+                stop_after_chapter=args.stop_after_chapter,
+            ),
         ),
+        model_endpoints=endpoints,
+        project_parallelism=2,
+        admission=admission,
     )
-    assembly_two = load_production_runtime_assembly(
-        DEFAULT_PRODUCTION_ASSEMBLY_FACTORY,
-        ProductionAssemblyContext(
-            database_url=args.database_url,
-            object_store_root=args.object_root_two,
-            project_id=request_two.project_id,
-            run_id=request_two.run_id,
-            policy=request_two.policy,
-            manifest=load_stage5_manifest(args.manifest),
-            model_endpoints=endpoints,
-            admission=admission,
-            worker_id="u6d.project-two.worker",
-        ),
-    )
+    dispatch_result = asyncio.run(coordinator.run_once())
+    assemblies = coordinator.assemblies
+    assembly_one = assemblies[(request_one.project_id, request_one.run_id)]
+    assembly_two = assemblies[(request_two.project_id, request_two.run_id)]
+    project_reports = {
+        (item.project_id, item.run_id): item.report for item in dispatch_result.per_project
+    }
+    report_one = project_reports[(request_one.project_id, request_one.run_id)]
+    report_two = project_reports[(request_two.project_id, request_two.run_id)]
+    if report_one is None or report_two is None:
+        raise RuntimeError("U6-D coordinator did not return both project reports")
     if assembly_one.attestation is None or assembly_two.attestation is None:
         raise RuntimeError("U6-D assemblies must expose startup attestations")
     attestation_one = assembly_one.attestation.model_dump(mode="json")
@@ -412,16 +383,6 @@ def main() -> int:
             payload.pop(field, None)
     shared_composition_verified = attestation_one == attestation_two
 
-    report_one, report_two = asyncio.run(
-        _run_pair(
-            assembly_one,
-            assembly_two,
-            request_one,
-            request_two,
-            max_slices=args.max_slices,
-            stop_after_chapter=args.stop_after_chapter,
-        )
-    )
     result_one = _make_project_result(
         database_url=args.database_url,
         request=request_one,

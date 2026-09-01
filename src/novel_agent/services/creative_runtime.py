@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import cast
 
@@ -64,6 +65,11 @@ from novel_agent.services.loop_round_progress import (
     planner_failure_is_no_progress,
     should_stop_for_no_progress,
 )
+from novel_agent.services.model_request_admission import (
+    ContextBudgetExceededError,
+    SchedulingBudgetUnsatisfiableError,
+    SchedulingTimeoutError,
+)
 from novel_agent.services.projection import (
     DerivedProjectionService,
     DerivedSnapshotRepository,
@@ -86,6 +92,7 @@ CHAPTER_SETTLEMENT_RECONCILIATION_MEDIA_TYPE = (
 QUARANTINE_PACKAGE_MEDIA_TYPE = "application/vnd.novel-agent.quarantine-package+json"
 MEMORY_REPAIR_FINDING_MEDIA_TYPE = "application/vnd.novel-agent.memory-repair-finding+json"
 MEMORY_WRITE_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.memory-write-workflow-result+json"
+SCHEDULING_WAIT_MEDIA_TYPE = "application/vnd.novel-agent.model-scheduling-wait+json"
 
 
 class CreativeRuntimeService:
@@ -349,13 +356,24 @@ class CreativeRuntimeService:
                 horizon_end=task.horizon_end,
                 protected_chapter_index=task.protected_chapter_index,
             )
-            planning_result = cast(
-                PlanningLoopResult,
-                await self._await_with_heartbeat(
+            try:
+                planning_result = cast(
+                    PlanningLoopResult,
+                    await self._await_with_heartbeat(
+                        fence,
+                        self._planner.run(planning_request),
+                    ),
+                )
+            except (
+                SchedulingTimeoutError,
+                SchedulingBudgetUnsatisfiableError,
+                ContextBudgetExceededError,
+            ) as error:
+                return self._settle_scheduling_failure(
                     fence,
-                    self._planner.run(planning_request),
-                ),
-            )
+                    error,
+                    artifact_refs=task.terminal_artifact_refs,
+                )
             if planning_result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY:
                 assert planning_result.candidate is not None
                 candidate = planning_result.candidate.model_copy(
@@ -491,13 +509,24 @@ class CreativeRuntimeService:
                     CreativeRunTerminal.REVIEW_REQUIRED,
                     "writer_request_rejected",
                 )
-            writing_result = cast(
-                WritingLoopResult,
-                await self._await_with_heartbeat(
+            try:
+                writing_result = cast(
+                    WritingLoopResult,
+                    await self._await_with_heartbeat(
+                        fence,
+                        self._writer.run(writing_request),
+                    ),
+                )
+            except (
+                SchedulingTimeoutError,
+                SchedulingBudgetUnsatisfiableError,
+                ContextBudgetExceededError,
+            ) as error:
+                return self._settle_scheduling_failure(
                     fence,
-                    self._writer.run(writing_request),
-                ),
-            )
+                    error,
+                    artifact_refs=task.terminal_artifact_refs,
+                )
             if isinstance(writing_result, WritingLoopResult):
                 result_ref = self._artifacts.put(
                     canonical_json_bytes(writing_result.model_dump(mode="json")),
@@ -635,6 +664,25 @@ class CreativeRuntimeService:
                             fence,
                             self._chapter_settlement.settle(accepted),
                         ),
+                    )
+                except (
+                    SchedulingTimeoutError,
+                    SchedulingBudgetUnsatisfiableError,
+                    ContextBudgetExceededError,
+                ) as error:
+                    self._commands.record_effect_terminal(
+                        fence,
+                        requested_effect.model_copy(
+                            update={
+                                "status": EffectStatus.COMPENSATED,
+                                "completed_at": datetime.now(UTC),
+                            }
+                        ),
+                    )
+                    return self._settle_scheduling_failure(
+                        fence,
+                        error,
+                        artifact_refs=task.terminal_artifact_refs,
                     )
                 except (CandidateMaterializationError, ValueError):
                     self._commands.record_effect_terminal(
@@ -917,14 +965,20 @@ class CreativeRuntimeService:
         """Await one long leaf operation while renewing its durable Attempt lease."""
 
         work = asyncio.ensure_future(operation)
-        while True:
-            done, _pending = await asyncio.wait(
-                {work},
-                timeout=self._commands.heartbeat_interval_seconds,
-            )
-            if done:
-                return work.result()
-            self._commands.heartbeat(fence)
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {work},
+                    timeout=self._commands.heartbeat_interval_seconds,
+                )
+                if done:
+                    return work.result()
+                self._commands.heartbeat(fence)
+        except asyncio.CancelledError:
+            work.cancel()
+            with suppress(BaseException):
+                await work
+            raise
 
     @staticmethod
     def _settlement_refs(settlement: object) -> tuple[ArtifactRef, ...]:
@@ -986,6 +1040,16 @@ class CreativeRuntimeService:
             )
             if not isinstance(workflow_result, MemoryWriteWorkflowResult):
                 raise ValueError("memory maintenance returned an invalid workflow result")
+        except (
+            SchedulingTimeoutError,
+            SchedulingBudgetUnsatisfiableError,
+            ContextBudgetExceededError,
+        ) as error:
+            return self._settle_scheduling_failure(
+                writer_fence,
+                error,
+                artifact_refs=task.terminal_artifact_refs,
+            )
         except ValueError:
             settled = self._commands.settle_attempt(
                 writer_fence,
@@ -1103,6 +1167,81 @@ class CreativeRuntimeService:
             failure_class=failure,
         )
         return self._result(settled, terminal, reason)
+
+    def _scheduling_wait_artifact(
+        self,
+        fence: AttemptFence,
+        error: SchedulingTimeoutError
+        | SchedulingBudgetUnsatisfiableError
+        | ContextBudgetExceededError,
+        failure_class: FailureClass,
+    ) -> ArtifactRef | None:
+        payload: dict[str, object] = {
+            "failure_class": failure_class.value,
+            "attempt_id": fence.attempt_id.root,
+            "request_id": getattr(error, "request_id", None),
+        }
+        if isinstance(error, SchedulingTimeoutError):
+            payload.update(
+                {
+                    "waited_seconds": (
+                        None if error.waited_seconds is None else round(error.waited_seconds, 3)
+                    ),
+                    "queue_snapshot": error.queue_snapshot,
+                }
+            )
+        elif isinstance(error, SchedulingBudgetUnsatisfiableError):
+            payload.update(
+                {
+                    "reserved_sequence_tokens": error.reserved_sequence_tokens,
+                    "effective_kv_token_budget": error.effective_kv_token_budget,
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "reserved_sequence_tokens": error.reserved_sequence_tokens,
+                    "model_sequence_limit": error.model_sequence_limit,
+                }
+            )
+        try:
+            return self._artifacts.put(
+                canonical_json_bytes(payload),
+                SCHEDULING_WAIT_MEDIA_TYPE,
+                SchemaVersion("1.0.0"),
+            )
+        except (ConnectionError, OSError, RuntimeError, ValueError):
+            return None
+
+    def _settle_scheduling_failure(
+        self,
+        fence: AttemptFence,
+        error: SchedulingTimeoutError
+        | SchedulingBudgetUnsatisfiableError
+        | ContextBudgetExceededError,
+        *,
+        artifact_refs: tuple[ArtifactRef, ...] = (),
+    ) -> CreativeRunResult:
+        timeout = isinstance(error, SchedulingTimeoutError)
+        failure_class = (
+            FailureClass.SCHEDULING_TIMEOUT
+            if timeout
+            else FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE
+        )
+        wait_ref = self._scheduling_wait_artifact(fence, error, failure_class)
+        refs = tuple(dict.fromkeys((*artifact_refs, *(() if wait_ref is None else (wait_ref,)))))
+        settled = self._commands.settle_attempt(
+            fence,
+            outcome=AttemptOutcome.SUSPENDED if timeout else AttemptOutcome.FAILED,
+            terminal_status=TaskStatus.WAITING_RETRY if timeout else TaskStatus.BLOCKED,
+            artifact_refs=refs,
+            failure_class=failure_class,
+        )
+        return self._result(
+            settled,
+            CreativeRunTerminal.WAITING_RETRY if timeout else CreativeRunTerminal.REVIEW_REQUIRED,
+            "scheduling_timeout" if timeout else "scheduling_budget_unsatisfiable",
+        )
 
     def _defer_writer_lane(self, fence: AttemptFence) -> CreativeRunResult:
         settled = self._commands.settle_attempt(
