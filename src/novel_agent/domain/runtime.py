@@ -697,9 +697,9 @@ class ControlIntentPayload(DomainModel):
         ):
             raise ValueError("budget extension must add a retry or Planner Memory tranche")
         if self.writer_generation_after is not None and (
-            self.action != "retry" or self.writer_generation_after != 0
+            self.action not in {"retry", "unblock"} or self.writer_generation_after != 0
         ):
-            raise ValueError("only retry may release writer generation")
+            raise ValueError("only retry or unblock may release writer generation")
         return self
 
 

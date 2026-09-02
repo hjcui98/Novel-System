@@ -40,7 +40,12 @@ class ChapterSettlementPort(Protocol):
 
     def resolve_commit(self, accepted: AcceptedCandidateBinding) -> CommitResult | None: ...
 
-    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult: ...
+    async def settle(
+        self,
+        accepted: AcceptedCandidateBinding,
+        *,
+        attempt_no: int = 1,
+    ) -> MemoryWriteWorkflowResult: ...
 
 
 class MemoryMaintenancePort(Protocol):

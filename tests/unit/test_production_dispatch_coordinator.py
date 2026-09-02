@@ -203,6 +203,7 @@ def test_load_production_run_descriptors_resolves_relative_paths(tmp_path: Path)
                         "policy": "policy.json",
                         "settlement_timeout_seconds": 90,
                         "settlement_output_tokens": 12000,
+                        "settlement_token_budget": 128000,
                         "max_major_rewrites": 2,
                         "max_local_repairs": 1,
                     }
@@ -214,6 +215,7 @@ def test_load_production_run_descriptors_resolves_relative_paths(tmp_path: Path)
     campaign = load_production_run_descriptors(tmp_path / "campaign-runs.json")[0]
     assert campaign.settlement_timeout_seconds == 90.0
     assert campaign.settlement_output_tokens == 12000
+    assert campaign.settlement_token_budget == 128000
     assert campaign.max_major_rewrites == 2
     assert campaign.max_local_repairs == 1
 

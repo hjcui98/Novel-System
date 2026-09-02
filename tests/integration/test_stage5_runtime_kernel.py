@@ -599,6 +599,61 @@ def test_retry_releases_settled_commit_writer_lane(
     )
 
 
+def test_claim_writer_lane_after_blocked_commit_without_retry(
+    kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _, artifacts, events, commands, base = kernel
+    task = TaskRecord(
+        task_id=TaskId("task.unblock-commit-lane"),
+        run_id=RunId("run.unblock-commit-lane"),
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_COMMIT,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=base,
+        policy_hash=POLICY_HASH,
+        permission_hash=PERMISSION_HASH,
+    )
+    commands.create_task(task)
+    first_attempt, first_fence = commands.claim(task.task_id, worker_id="commit-worker.block")
+    commands.mark_started(first_fence)
+    first_fence = commands.claim_writer_lane(first_fence)
+    blocked = commands.settle_attempt(
+        first_fence,
+        outcome=AttemptOutcome.FAILED,
+        terminal_status=TaskStatus.BLOCKED,
+        failure_class=FailureClass.LEAF_REVIEW_REQUIRED,
+    )
+    assert blocked.writer_generation == first_fence.writer_generation
+    evidence = artifacts.put(b"changed", "text/plain", SchemaVersion("1.0.0"))
+    ready = commands.unblock(
+        blocked.task_id,
+        command_id=StableId("unblock.commit-lane"),
+        actor_id="operator",
+        block_cause_fingerprint=_digest("leaf_review_required"),
+        changed_evidence_refs=(evidence,),
+    )
+    assert ready.status is TaskStatus.READY
+    assert ready.writer_generation == 0
+
+    second_attempt, second_fence = commands.claim(ready.task_id, worker_id="commit-worker.retry")
+    assert second_attempt.attempt_no == first_attempt.attempt_no + 1
+    commands.mark_started(second_fence)
+    second_fence = commands.claim_writer_lane(second_fence)
+    assert second_fence.writer_generation == first_fence.writer_generation + 1
+    commands.verify_writer_lane(second_fence)
+    assert_task_projection_matches(
+        events.replay(task.run_id), RuntimeTaskQueryRepository(factory).list_run(task.run_id)
+    )
+
+
 def test_writer_lane_rejects_a_second_active_project_writer(
     kernel: tuple[
         sessionmaker[Session],

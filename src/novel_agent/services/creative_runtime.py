@@ -16,6 +16,7 @@ from novel_agent.domain.creative_runtime import (
     AcceptanceReceipt,
     AcceptedCandidateBinding,
     ActorKind,
+    AutomationMode,
     CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
@@ -87,6 +88,7 @@ from novel_agent.services.runtime_commands import (
 CANDIDATE_BINDING_MEDIA_TYPE = "application/vnd.novel-agent.stage5-candidate-binding+json"
 WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
 CHAPTER_SETTLEMENT_EXTERNAL_SYSTEM = "stage2w.chapter_reveal_atomic"
+AUTO_PLANNER_MEMORY_TRANCHE_LIMIT = 3
 CHAPTER_SETTLEMENT_RECONCILIATION_MEDIA_TYPE = (
     "application/vnd.novel-agent.chapter-settlement-reconciliation+json"
 )
@@ -184,6 +186,8 @@ class CreativeRuntimeService:
             and task.status is TaskStatus.SUCCEEDED
         ):
             return self._repair_post_draft_projection(task)
+        if task.status is TaskStatus.BUDGET_REVIEW:
+            return self._auto_extend_budget(task)
         return None
 
     def _recover_chapter_settlement(self, task: TaskRecord) -> CreativeRunResult:
@@ -374,6 +378,19 @@ class CreativeRuntimeService:
                     fence,
                     error,
                     artifact_refs=task.terminal_artifact_refs,
+                )
+            except ValueError as error:
+                settled = self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.FAILED,
+                    terminal_status=TaskStatus.WAITING_RETRY,
+                    artifact_refs=task.terminal_artifact_refs,
+                    failure_class=FailureClass.VALIDATION_REJECTED,
+                )
+                return self._result(
+                    settled,
+                    CreativeRunTerminal.WAITING_RETRY,
+                    str(error),
                 )
             if planning_result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY:
                 assert planning_result.candidate is not None
@@ -676,7 +693,10 @@ class CreativeRuntimeService:
                         MemoryWriteWorkflowResult,
                         await self._await_with_heartbeat(
                             fence,
-                            self._chapter_settlement.settle(accepted),
+                            self._chapter_settlement.settle(
+                                accepted,
+                                attempt_no=attempt.attempt_no,
+                            ),
                         ),
                     )
                 except (
@@ -1870,10 +1890,8 @@ class CreativeRuntimeService:
             and task.protected_chapter_index == projection.chapter_index
             and not task.superseded
         )
-        if any(
-            task.status in {TaskStatus.PENDING, TaskStatus.READY, TaskStatus.RUNNING}
-            for task in lookahead
-        ):
+        current_commit = self._commits.current_commit(projection.project_id)
+        if any(self._lookahead_is_live(task, current_commit) for task in lookahead):
             return None
         for task in lookahead:
             if task.status in {
@@ -1901,6 +1919,21 @@ class CreativeRuntimeService:
             planning,
             CreativeRunTerminal.PROGRESSED,
             "lookahead_fallback_to_rolling_plan",
+        )
+
+    @staticmethod
+    def _lookahead_is_live(task: TaskRecord, current_commit: CommitId) -> bool:
+        """True when lookahead can still run, so post-draft repair must wait.
+
+        READY/PENDING work whose basis is no longer current can never be
+        claimed. Treating it as live leaves the run waiting forever.
+        """
+
+        if task.status is TaskStatus.RUNNING:
+            return True
+        return (
+            task.status in {TaskStatus.PENDING, TaskStatus.READY}
+            and task.basis_commit == current_commit
         )
 
     def _promoted_acceptance_task(
@@ -1953,7 +1986,7 @@ class CreativeRuntimeService:
             if terminal is not CreativeRunTerminal.BUDGET_REVIEW:
                 reason = "task_retry_budget_exhausted"
             terminal = CreativeRunTerminal.BUDGET_REVIEW
-        return CreativeRunResult(
+        result = CreativeRunResult(
             run_id=task.run_id,
             project_id=task.project_id,
             terminal=terminal,
@@ -1965,6 +1998,43 @@ class CreativeRuntimeService:
             next_legal_commands=self._legal_commands(task),
             reason_code=reason,
         )
+        if task.status is TaskStatus.BUDGET_REVIEW:
+            extended = self._auto_extend_budget(task)
+            if extended is not None:
+                return extended
+        return result
+
+    def _auto_extend_budget(self, task: TaskRecord) -> CreativeRunResult | None:
+        if (
+            task.status is not TaskStatus.BUDGET_REVIEW
+            or task.current_attempt_id is not None
+            or task.kind is not TaskKind.PLAN_CANDIDATE
+        ):
+            return None
+        policy = self._policy_resolver(task.policy_hash)
+        if policy.automation_mode is not AutomationMode.AUTO:
+            return None
+        if task.planner_memory_budget_extensions >= AUTO_PLANNER_MEMORY_TRANCHE_LIMIT:
+            return None
+        additional_attempts = 0 if task.failure_budget > 0 else 1
+        command_id = bounded_runtime_identity(
+            f"auto-extend-budget.{task.task_id.root}.{task.task_revision}",
+            f"auto-extend-budget.{task.run_id.root}.{task.task_revision}",
+            f"auto-extend.{task.task_id.root}",
+        )
+        try:
+            updated = self._commands.extend_budget(
+                task.task_id,
+                command_id=command_id,
+                actor_id="pinned-runtime-policy",
+                reason="auto-extend planner memory after budget review",
+                additional_attempts=additional_attempts,
+                additional_planner_memory_tranches=1,
+                observed_revision=task.task_revision,
+            )
+        except RuntimeCommandConflictError:
+            return None
+        return self._result(updated, CreativeRunTerminal.PROGRESSED, "budget_auto_extended")
 
     @staticmethod
     def _legal_commands(task: TaskRecord) -> tuple[str, ...]:

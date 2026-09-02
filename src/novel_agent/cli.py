@@ -329,13 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
             return 0
         if args.runtime_command == "bootstrap-prepare":
-            from novel_agent.domain.ids import ProjectId, RunId
-            from novel_agent.domain.stage2 import SourceClass
-            from novel_agent.runtime.production_novel_bootstrap import (
-                ProductionNovelBootstrap,
-                bind_bootstrap_model_agents,
-            )
-            from novel_agent.services.bootstrap import BootstrapIngestionService, RawBootstrapSource
+            from novel_agent.runtime.production_novel_bootstrap import ProductionNovelBootstrap
 
             brief_text = args.brief.read_text(encoding="utf-8")
             artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
@@ -344,41 +338,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             endpoints = resolve_registered_model_endpoints(args.endpoint_profile)
             if not endpoints:
                 return _resource_blocked(RuntimeError("bootstrap prepare requires an endpoint"))
-            ingested_source = BootstrapIngestionService(artifacts).ingest(
-                project_id,
-                StableId("bootstrap.prepare.source"),
-                (
-                    RawBootstrapSource(
-                        source_id=StableId("source.author-initial-brief"),
-                        source_class=SourceClass.AUTHOR_INITIAL_BRIEF,
-                        media_type="text/plain",
-                        data=brief_text.encode("utf-8"),
-                    ),
-                ),
-            )[1][0]
-            planner, curator = bind_bootstrap_model_agents(
-                artifacts=artifacts,
-                endpoints=endpoints,
-                project_id=project_id,
-                run_id=run_id,
-                source_ids=(ingested_source.source.source_id,),
-                source_payload=brief_text,
-                source_artifacts=(ingested_source.source.artifact_ref,),
-            )
             prepared = _run_async(
                 ProductionNovelBootstrap(
                     artifacts=artifacts,
                     session_factory=factory,
-                    planner=planner,
-                    curator=curator,
+                    endpoints=endpoints,
+                    run_id=run_id,
                 ).prepare(project_id=project_id, brief_text=brief_text)
             )
+            approval = prepared.document.approval_request
             _write_json_once(
                 args.prepared,
                 {
                     "artifact": prepared.artifact.model_dump(mode="json"),
                     "preview": prepared.document.preview,
-                    "approval_request": prepared.document.approval_request.model_dump(mode="json"),
+                    "approval_request": (
+                        None if approval is None else approval.model_dump(mode="json")
+                    ),
                     "validation_status": prepared.document.validation.status.value,
                 },
             )

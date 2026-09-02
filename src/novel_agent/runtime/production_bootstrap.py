@@ -1292,8 +1292,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             max_output_tokens=12_000,
             timeout_seconds=120.0,
             temperature=0.8,
-            enable_thinking=True,
-            thinking_token_budget=2_048,
+            enable_thinking=False,
         ),
         ProductionReactiveMemoryInputsFactory(commits, artifacts),
     )
@@ -1367,6 +1366,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             timeout_seconds=settlement_policy.budget.model_transport.timeout_seconds,
             request_namespace="guardian",
         ),
+        evidence_root=lambda: curator.revealed_text,
     )
     boundary = InformationBoundaryPort(
         artifact_reader=artifacts,

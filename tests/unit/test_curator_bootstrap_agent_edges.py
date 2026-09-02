@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from novel_agent.agents.curator_bootstrap import (
     CuratorBootstrapAgent,
     CuratorBootstrapInvocationError,
+    _curator_output_type,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import ArtifactId, ProjectId, StableId
@@ -84,3 +86,32 @@ def test_curator_bootstrap_rejects_author_citation_outside_task() -> None:
     agent = CuratorBootstrapAgent(cast(Any, Runner()), cast(Any, object()))
     with pytest.raises(CuratorBootstrapInvocationError, match="outside the task"):
         invoke(agent, (StableId("source.one"),), (artifact(),))
+
+
+def test_curator_bootstrap_draft_rejects_empty_items_with_coverage() -> None:
+    with pytest.raises(ValidationError, match="empty Curator bootstrap"):
+        CuratorBootstrapDraft(items=(), extraction_coverage=0.85)
+    assert CuratorBootstrapDraft(items=(), extraction_coverage=0).items == ()
+
+
+def test_curator_bootstrap_binds_omitted_author_source_ids() -> None:
+    draft_type = _curator_output_type(
+        (
+            StableId("source.author-initial-brief"),
+            StableId("source.future-plan.1"),
+        )
+    )
+    draft = draft_type.model_validate(
+        {
+            "items": [
+                {
+                    "item_id": "ent-001",
+                    "kind": "location",
+                    "payload": {"label": "North City", "description": "capital"},
+                    "provenance": "author_supplied",
+                }
+            ],
+            "extraction_coverage": 1.0,
+        }
+    )
+    assert draft.items[0].source_ids == (StableId("source.author-initial-brief"),)

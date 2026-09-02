@@ -100,6 +100,8 @@ def _profile() -> ProjectProfileRootDocument:
 
 def _canonical(
     tmp_path: Path,
+    *,
+    extra_goals: tuple[ChapterGoal, ...] = (),
 ) -> tuple[ArtifactRepository, CommitService, CommitId, TextRootDocument]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -115,7 +117,10 @@ def _canonical(
         summary="Enter the tower while protecting the injured arm.",
     )
     provisional = original_plan.model_copy(
-        update={"root_hash": ArtifactId("sha256:" + "0" * 64), "chapter_goals": (goal,)}
+        update={
+            "root_hash": ArtifactId("sha256:" + "0" * 64),
+            "chapter_goals": (goal, *extra_goals),
+        }
     )
     plan = provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
     text_ref = _put(artifacts, text, "application/vnd.novel-agent.text-root+json")
@@ -341,6 +346,100 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     assert reactive.world.source_commit == request.base_commit
     assert reactive.resolution_template.base_commit == request.base_commit
     assert reactive.resolution_template.snapshot_id == request.snapshot_id
+
+
+def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
+    tmp_path: Path,
+) -> None:
+    artifacts, commits, base, _text = _canonical(
+        tmp_path,
+        extra_goals=(
+            ChapterGoal(
+                goal_id=StableId("plan.chapter.21.candidate"),
+                chapter_index=21,
+                summary="Enter the tower while protecting the injured arm.",
+            ),
+            ChapterGoal(
+                goal_id=StableId("plan.chapter.21.second"),
+                chapter_index=21,
+                summary="Keep the injured arm out of the inner ward.",
+                obligation_ids=(StableId("obligation.arm"),),
+            ),
+        ),
+    )
+    snapshot = StableId("snapshot.chapter.20")
+    run_id = RunId("run.production-writer-multi-goal")
+    task = TaskRecord(
+        task_id=TaskId("task.production-writer-multi-goal"),
+        run_id=run_id,
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=base,
+        basis_snapshot=snapshot,
+        policy_hash=HASH.root,
+        permission_hash=HASH.root,
+        chapter_index=21,
+        target_chapters=25,
+    )
+
+    def stage2m(invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
+        _fixture_task, needs, _units, _fixture_base = writer_context_inputs()
+        block = invocation.text.chapters[-1].scenes[0].blocks[0]
+        need = needs[0].model_copy(
+            update={
+                "run_id": run_id,
+                "task_id": invocation.task.task_id,
+                "base_commit": invocation.base_commit,
+                "horizon_target": (21, 21),
+            }
+        )
+        slice_ = EvidenceSliceResolver().resolve_block(
+            block,
+            source_commit=invocation.base_commit,
+            snapshot_id=invocation.snapshot_id,
+            access_scope=need.access_scope,
+        )[0]
+        result = EvidenceFirstWriterContextAssembler().assemble(
+            task=invocation.task,
+            selections=(
+                NeedEvidenceSelection(
+                    need=need,
+                    selections=(
+                        SliceSelectionTrace(
+                            slice_id=slice_.slice_id,
+                            unit_id=StableId("unit.production-writer-multi-goal"),
+                            route_channel="r1_exact",
+                            fused_rank=1,
+                            selection_reason="production factory multi-goal evidence",
+                        ),
+                    ),
+                    slices=(slice_,),
+                ),
+            ),
+            text_root=invocation.text,
+            basis_commit_id=invocation.base_commit,
+            basis_snapshot_id=invocation.snapshot_id,
+        )
+        assert result.status is ContextAssemblyStatus.READY
+        return result
+
+    request = ProductionWritingRequestFactory(
+        commits=commits,
+        artifacts=artifacts,
+        recent_prose=RecentProseAssembler(artifacts, VERSION),
+        writer_context=stage2m,
+        policy=_writing_policy(),
+        schema_version=VERSION,
+    )(task)
+
+    assert request.writing_task.chapter_goal == (
+        "Enter the tower while protecting the injured arm.；"
+        "Keep the injured arm out of the inner ward."
+    )
+    assert request.writing_task.active_plan_obligations == (StableId("obligation.arm"),)
+    assert "Keep the injured arm out of the inner ward." in request.writing_task.required_beats
 
 
 def test_production_writing_factory_preserves_semantic_gaps_and_rejects_complete_rewrite(

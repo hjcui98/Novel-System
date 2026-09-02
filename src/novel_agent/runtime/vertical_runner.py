@@ -156,6 +156,7 @@ class VerticalCreativeRunner:
                     and task.projection_after == "draft"
                     and task.status is TaskStatus.SUCCEEDED
                 )
+                or task.status is TaskStatus.BUDGET_REVIEW
             )
             if recoverable and not task.superseded:
                 recovered = recover_boundary(task.task_id)

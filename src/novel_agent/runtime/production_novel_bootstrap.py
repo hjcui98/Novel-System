@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument, TextRootDocument
-from novel_agent.domain.changes import ValidationReport
+from novel_agent.domain.changes import ValidationFinding, ValidationReport, ValidationStatus
 from novel_agent.domain.creative_runtime import (
     AutomationMode,
     CreativeRunPolicy,
@@ -55,6 +56,7 @@ from novel_agent.domain.stage2 import (
     PlanProposal,
     ProjectProfileRootDocument,
     PromptContractRef,
+    ProposedItem,
     ReferenceAsset,
     ReferenceRootDocument,
     SkillContractRef,
@@ -119,7 +121,7 @@ class PreparedNovelBootstrapDocument(DomainModel):
     world_patch: WorldPatchCandidate
     classifications: tuple[SourceClassification, ...]
     validation: ValidationReport
-    approval_request: AuthorApprovalRequest
+    approval_request: AuthorApprovalRequest | None = None
     preview: dict[str, JsonValue] = Field(default_factory=dict)
 
 
@@ -140,6 +142,8 @@ class ProductionNovelBootstrap:
         session_factory: sessionmaker[Session],
         planner: PlannerBootstrap | None = None,
         curator: CuratorBootstrap | None = None,
+        endpoints: tuple[RegisteredModelEndpoint, ...] = (),
+        run_id: RunId | None = None,
         schema_version: SchemaVersion = VERSION,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -147,6 +151,8 @@ class ProductionNovelBootstrap:
         self._session_factory = session_factory
         self._planner = planner
         self._curator = curator
+        self._endpoints = endpoints
+        self._run_id = run_id
         self._schema_version = schema_version
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -156,8 +162,6 @@ class ProductionNovelBootstrap:
         project_id: ProjectId,
         brief_text: str,
     ) -> PreparedNovelBootstrap:
-        if self._planner is None or self._curator is None:
-            raise ValueError("bootstrap prepare requires Planner and Curator owners")
         if not brief_text.strip():
             raise ValueError("bootstrap prepare requires a non-empty author brief")
         ingestion = BootstrapIngestionService(self._artifacts)
@@ -168,18 +172,28 @@ class ProductionNovelBootstrap:
         bundle, ingested = ingestion.ingest(
             project_id,
             bundle_id,
-            (
-                RawBootstrapSource(
-                    source_id=StableId("source.author-initial-brief"),
-                    source_class=SourceClass.AUTHOR_INITIAL_BRIEF,
-                    media_type="text/plain",
-                    data=brief_text.encode("utf-8"),
-                ),
-            ),
+            _split_composite_brief(brief_text),
             self._schema_version,
         )
-        planner_result = await self._planner()
-        world_patch = await self._curator()
+        planner = self._planner
+        curator = self._curator
+        if planner is None or curator is None:
+            if not self._endpoints or self._run_id is None:
+                raise ValueError("bootstrap prepare requires Planner and Curator owners")
+            planner, curator = bind_bootstrap_model_agents(
+                artifacts=self._artifacts,
+                endpoints=self._endpoints,
+                project_id=project_id,
+                run_id=self._run_id,
+                source_ids=tuple(item.source.source_id for item in ingested),
+                source_payload=_joined_source_payload(ingested),
+                source_artifacts=tuple(item.source.artifact_ref for item in ingested),
+            )
+        planner_result = await planner()
+        world_patch = _merge_world_patch(await curator(), planner_result)
+        planner_result, world_patch = _route_bootstrap_citations(
+            planner_result, world_patch, ingested
+        )
         if planner_result.plan_proposal.project_id != project_id:
             raise ValueError("Planner bootstrap proposal belongs to another project")
         if world_patch.project_id != project_id:
@@ -192,7 +206,7 @@ class ProductionNovelBootstrap:
         plan = _plan_root(planner_result, self._schema_version)
         world = _world_root(world_patch, self._schema_version)
         reference = _reference_root(ingested, self._schema_version)
-        profile = _profile_root(planner_result, self._schema_version)
+        profile = _profile_root(planner_result, self._schema_version, brief_text)
         candidates = BootstrapRootBuilder(self._artifacts).build(
             project_id,
             bundle.bundle_id,
@@ -205,13 +219,22 @@ class ProductionNovelBootstrap:
             world_patch,
             tuple(item.classification for item in ingested),
         )
-        validation = BootstrapCrossRootValidator(self._clock).validate(candidates)
-        coordinator = GenesisCoordinator(
-            CommitService(self._session_factory),
-            SqlAuthorApprovalRepository(self._session_factory),
-            self._clock,
+        structural = BootstrapCrossRootValidator(self._clock).validate(candidates)
+        sufficiency = _production_genesis_sufficiency(candidates, brief_text)
+        findings = tuple((*structural.findings, *sufficiency))
+        validation = structural.model_copy(
+            update={
+                "findings": findings,
+                "status": (ValidationStatus.PASSED if not findings else ValidationStatus.FAILED),
+            }
         )
-        approval = coordinator.create_approval_request(candidates, validation)
+        approval = None
+        if validation.status is ValidationStatus.PASSED:
+            approval = GenesisCoordinator(
+                CommitService(self._session_factory),
+                SqlAuthorApprovalRepository(self._session_factory),
+                self._clock,
+            ).create_approval_request(candidates, validation)
         preview = {
             "project_id": project_id.root,
             "plan_nodes": [
@@ -247,7 +270,12 @@ class ProductionNovelBootstrap:
             "unresolved_plan": list(planner_result.plan_proposal.unresolved),
             "unresolved_world": list(world_patch.unresolved_claims),
             "validation_status": validation.status.value,
-            "approval_request_id": approval.approval_request_id.root,
+            "validation_findings": [
+                {"code": item.code, "message": item.message} for item in findings
+            ],
+            "approval_request_id": (
+                None if approval is None else approval.approval_request_id.root
+            ),
         }
         document = PreparedNovelBootstrapDocument(
             project_id=project_id,
@@ -308,6 +336,8 @@ class ProductionNovelBootstrap:
             world_patch=document.world_patch,
             classifications=document.classifications,
         )
+        if document.approval_request is None:
+            raise ValueError("Genesis commit requires a passed production sufficiency check")
         approvals = SqlAuthorApprovalRepository(self._session_factory)
         decision = AuthorApprovalDecision(
             decision_id=bounded_stable_id(
@@ -356,6 +386,7 @@ class ProductionNovelBootstrap:
             basis_commit=genesis.commit_id,
             basis_snapshot=snapshot_id_for_commit(genesis.commit_id),
             policy=policy,
+            input_artifact_refs=tuple(asset.artifact for asset in document.reference.assets),
             current_chapter=0,
             target_chapters=target_chapters,
         )
@@ -382,17 +413,61 @@ def load_prepared_bootstrap(
     )
 
 
+OPENING_CHAPTER_GOAL_LIMIT = 5
+DUMMY_WORLD_ENTITY_ID = StableId("entity.bootstrap.story-world")
+COMPOSITE_BRIEF_CHARS = 4_000
+_PLAN_SOURCE_CLASSES = frozenset(
+    {SourceClass.AUTHOR_INITIAL_BRIEF, SourceClass.AUTHOR_KNOWN_FUTURE_PLAN}
+)
+_WORLD_SOURCE_CLASSES = frozenset({SourceClass.AUTHOR_INITIAL_BRIEF, SourceClass.BASELINE_SETTING})
+_PROFILE_KEYS = (
+    "title",
+    "book_title",
+    "genre",
+    "genres",
+    "题材",
+    "chapter_length",
+    "target_chapter_characters",
+    "expected_chapter_characters",
+    "minimum_characters",
+    "target_characters",
+    "maximum_characters",
+    "target_chapters",
+    "pov",
+    "narrative_person",
+    "style",
+    "premise",
+    "one_sentence_summary",
+    "audience",
+)
+
+
+def _payload_text(item: ProposedItem, *keys: str) -> str:
+    for key in keys:
+        value = item.payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _plan_root(
     result: PlannerExecutionResult,
     schema_version: SchemaVersion,
 ) -> PlanRootDocument:
     nodes: list[PlanNode] = []
     goals: list[ChapterGoal] = []
-    for item in result.plan_proposal.items:
-        summary = str(item.payload.get("summary") or item.payload.get("text") or item.kind)
-        title = str(item.payload.get("title") or item.kind)
+    seen: set[StableId] = set()
+
+    def add_node(item: ProposedItem) -> None:
+        if item.item_id in seen:
+            return
+        seen.add(item.item_id)
+        summary = _payload_text(item, "description", "summary", "text", "direction") or item.kind
+        title = _payload_text(item, "title", "name") or item.kind
+        if title == item.kind and summary != item.kind:
+            title = summary[:48]
         chapter_index = item.payload.get("chapter_index")
-        if type(chapter_index) is int and chapter_index >= 1:
+        if type(chapter_index) is int and 1 <= chapter_index <= OPENING_CHAPTER_GOAL_LIMIT:
             goals.append(
                 ChapterGoal(
                     goal_id=item.item_id,
@@ -400,7 +475,7 @@ def _plan_root(
                     summary=summary or title,
                 )
             )
-            continue
+            return
         nodes.append(
             PlanNode(
                 plan_node_id=item.item_id,
@@ -409,20 +484,12 @@ def _plan_root(
                 summary=summary,
             )
         )
+
+    for item in result.plan_proposal.items:
+        add_node(item)
     if result.project_intent is not None:
         for item in result.project_intent.items:
-            if any(node.plan_node_id == item.item_id for node in nodes):
-                continue
-            nodes.append(
-                PlanNode(
-                    plan_node_id=item.item_id,
-                    node_type=item.kind,
-                    title=str(item.payload.get("title") or item.kind),
-                    summary=str(
-                        item.payload.get("summary") or item.payload.get("text") or item.kind
-                    ),
-                )
-            )
+            add_node(item)
     provisional = PlanRootDocument(
         root_hash=ZERO_HASH,
         schema_version=schema_version,
@@ -436,19 +503,23 @@ def _world_root(
     world_patch: WorldPatchCandidate,
     schema_version: SchemaVersion,
 ) -> WorldRootDocument:
-    setting_id = StableId("entity.bootstrap.story-world")
+    setting_id = DUMMY_WORLD_ENTITY_ID
     entities = [
         Entity(entity_id=setting_id, entity_type="setting", internal_label="故事世界"),
     ]
     states: list[StateRecord] = []
     for index, item in enumerate(world_patch.items, start=1):
-        label = str(item.payload.get("label") or item.payload.get("name") or "")
+        label = _payload_text(item, "label", "name", "title")
+        entity_type = _payload_text(item, "entity_type", "type") or item.kind
+        fact = item.payload.get("value")
+        if fact is None:
+            fact = _payload_text(item, "description", "fact", "summary") or item.payload
         if label:
             entity_id = StableId(f"entity.bootstrap.{index}")
             entities.append(
                 Entity(
                     entity_id=entity_id,
-                    entity_type=str(item.payload.get("entity_type") or item.kind),
+                    entity_type=entity_type,
                     internal_label=label,
                 )
             )
@@ -460,7 +531,7 @@ def _world_root(
                 state_id=StableId(f"state.bootstrap.{index}"),
                 subject_id=subject,
                 predicate=str(item.payload.get("predicate") or item.kind),
-                value=item.payload.get("value", item.payload.get("fact", item.payload)),
+                value=fact,
                 valid_time=StoryTime(worldline="main", start_ordinal=0),
                 truth_class=TruthClass.ACCEPTED_WORLD_FACT,
             )
@@ -504,16 +575,30 @@ def _reference_root(
 def _profile_root(
     result: PlannerExecutionResult,
     schema_version: SchemaVersion,
+    brief_text: str = "",
 ) -> ProjectProfileRootDocument:
-    style: dict[str, JsonValue] = {}
+    style: dict[str, JsonValue] = dict(_profile_from_brief(brief_text))
+
+    def absorb(item: ProposedItem) -> None:
+        for key, value in item.payload.items():
+            if key in _PROFILE_KEYS and key not in style and value not in (None, ""):
+                style[key] = value
+        title = _payload_text(item, "title", "book_title")
+        if title and "title" not in style:
+            style["title"] = title
+        genre = _payload_text(item, "genre", "genres", "题材")
+        if genre and "genre" not in style:
+            style["genre"] = genre
+        premise = _payload_text(item, "premise", "one_sentence_summary", "summary", "description")
+        if premise and "premise" not in style:
+            style["premise"] = premise
+
     if result.project_profile is not None:
         for item in result.project_profile.items:
-            if "pov" in item.payload:
-                style["pov"] = item.payload["pov"]
-            if "narrative_person" in item.payload:
-                style["narrative_person"] = item.payload["narrative_person"]
-            if "style" in item.payload:
-                style["style"] = item.payload["style"]
+            absorb(item)
+    if result.project_intent is not None:
+        for item in result.project_intent.items:
+            absorb(item)
     contract = ContractRef(
         contract_id=StableId("agent.production-bootstrap"),
         version=schema_version,
@@ -545,6 +630,345 @@ def _profile_root(
     )
 
 
+def _profile_from_brief(brief_text: str) -> dict[str, JsonValue]:
+    style: dict[str, JsonValue] = {}
+    title = re.search(r"书名[^：:\n]*[：:]\s*[《“\"]?([^》”\"\n]+)[》”\"]?", brief_text)  # noqa: RUF001
+    if title is not None:
+        style["title"] = title.group(1).strip()
+    genre = re.search(r"题材[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
+    if genre is not None:
+        style["genre"] = genre.group(1).strip()
+    chapters = re.search(r"预计章节数[^：:\n]*[：:]\s*(\d+)", brief_text)  # noqa: RUF001
+    if chapters is not None:
+        style["target_chapters"] = int(chapters.group(1))
+    band = re.search(r"每章\s*(\d+)\s*[-~～到至]+\s*(\d+)\s*字", brief_text)  # noqa: RUF001
+    if band is not None:
+        style["minimum_characters"] = int(band.group(1))
+        style["target_characters"] = int(band.group(1))
+        style["maximum_characters"] = int(band.group(2))
+    premise = re.search(r"一句话概括[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
+    if premise is not None:
+        style["premise"] = premise.group(1).strip()
+    return style
+
+
+def _joined_source_payload(ingested: tuple[IngestedBootstrapSource, ...]) -> str:
+    return "\n\n".join(
+        f"SOURCE={item.source.source_id.root}\nCLASS={item.source.source_class.value}\n{item.parsed}"
+        for item in ingested
+    )
+
+
+def _classify_heading(heading: str) -> SourceClass:
+    if any(token in heading for token in ("核心真相", "后期", "长篇", "节拍", "规划确定", "卷")):
+        return SourceClass.AUTHOR_KNOWN_FUTURE_PLAN
+    if any(token in heading for token in ("基本信息", "目标字数", "预计章节", "风格", "POV")):
+        return SourceClass.STYLE_GUIDE
+    if any(
+        token in heading
+        for token in (
+            "世界观",
+            "大陆",
+            "力量",
+            "职业",
+            "城邦",
+            "派系",
+            "人类现状",
+            "设施",
+            "能量",
+            "等级",
+            "人物",
+            "主角",
+        )
+    ):
+        return SourceClass.BASELINE_SETTING
+    return SourceClass.AUTHOR_INITIAL_BRIEF
+
+
+def _markdown_h2_sections(brief_text: str) -> tuple[tuple[str, str], ...]:
+    sections: list[tuple[str, str]] = []
+    heading = ""
+    body: list[str] = []
+    for line in brief_text.splitlines():
+        match = re.fullmatch(r"##\s+(.+)", line.strip())
+        if match is not None:
+            if heading:
+                sections.append((heading, "\n".join(body).strip()))
+            heading = match.group(1).strip()
+            body = []
+            continue
+        if heading:
+            body.append(line)
+    if heading:
+        sections.append((heading, "\n".join(body).strip()))
+    return tuple(sections)
+
+
+def _flush_h3(
+    remaining: list[str],
+    futures: list[tuple[str, str]],
+    heading: str,
+    chunk: list[str],
+    future: bool,
+) -> None:
+    if not heading:
+        return
+    text = "\n".join(chunk).strip()
+    if future:
+        if text:
+            futures.append((heading, text))
+        return
+    remaining.append(f"### {heading}")
+    if text:
+        remaining.append(text)
+
+
+def _peel_future_subsections(body: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    remaining: list[str] = []
+    futures: list[tuple[str, str]] = []
+    heading = ""
+    chunk: list[str] = []
+    future = False
+    for line in body.splitlines():
+        match = re.fullmatch(r"###\s+(.+)", line.strip())
+        if match is not None:
+            _flush_h3(remaining, futures, heading, chunk, future)
+            heading = match.group(1).strip()
+            chunk = []
+            future = _classify_heading(heading) is SourceClass.AUTHOR_KNOWN_FUTURE_PLAN
+            continue
+        if heading:
+            chunk.append(line)
+        else:
+            remaining.append(line)
+    _flush_h3(remaining, futures, heading, chunk, future)
+    return "\n".join(remaining).strip(), tuple(futures)
+
+
+def _split_composite_brief(brief_text: str) -> tuple[RawBootstrapSource, ...]:
+    sources = [
+        RawBootstrapSource(
+            source_id=StableId("source.author-initial-brief"),
+            source_class=SourceClass.AUTHOR_INITIAL_BRIEF,
+            media_type="text/plain",
+            data=brief_text.encode("utf-8"),
+        )
+    ]
+    if len(brief_text) < COMPOSITE_BRIEF_CHARS:
+        return tuple(sources)
+    counts = {
+        SourceClass.BASELINE_SETTING: 0,
+        SourceClass.AUTHOR_KNOWN_FUTURE_PLAN: 0,
+        SourceClass.STYLE_GUIDE: 0,
+    }
+
+    def emit(heading: str, body: str, prefix: str) -> None:
+        if not body:
+            return
+        classified = _classify_heading(heading)
+        if classified is SourceClass.AUTHOR_INITIAL_BRIEF:
+            return
+        counts[classified] += 1
+        if classified is SourceClass.BASELINE_SETTING:
+            source_id = StableId(f"source.baseline-setting.{counts[classified]}")
+        elif classified is SourceClass.AUTHOR_KNOWN_FUTURE_PLAN:
+            source_id = StableId(f"source.future-plan.{counts[classified]}")
+        else:
+            source_id = StableId(f"source.style-guide.{counts[classified]}")
+        sources.append(
+            RawBootstrapSource(
+                source_id=source_id,
+                source_class=classified,
+                media_type="text/plain",
+                data=f"{prefix} {heading}\n{body}".encode(),
+            )
+        )
+
+    for heading, body in _markdown_h2_sections(brief_text):
+        kept, futures = _peel_future_subsections(body)
+        emit(heading, kept, "##")
+        for sub_heading, sub_body in futures:
+            emit(sub_heading, sub_body, "###")
+    return tuple(sources)
+
+
+def _merge_world_patch(
+    world_patch: WorldPatchCandidate,
+    planner_result: PlannerExecutionResult,
+) -> WorldPatchCandidate:
+    extra = () if planner_result.world_design is None else planner_result.world_design.items
+    combined: list[ProposedItem] = []
+    seen: set[str] = set()
+    for item in (*world_patch.items, *extra):
+        key = (
+            _payload_text(item, "label", "name", "title", "description", "fact", "summary")
+            or item.item_id.root
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(item)
+    if tuple(combined) == world_patch.items:
+        return world_patch
+    origin = tuple(
+        dict.fromkeys(
+            (
+                *world_patch.origin_source_ids,
+                *(source_id for item in extra for source_id in item.source_ids),
+            )
+        )
+    )
+    coverage = world_patch.extraction_coverage
+    if combined and coverage == 0:
+        coverage = min(1.0, len(combined) / 16)
+    return world_patch.model_copy(
+        update={
+            "items": tuple(combined),
+            "origin_source_ids": origin,
+            "extraction_coverage": coverage,
+        }
+    )
+
+
+def _brief_source_id(ingested: tuple[IngestedBootstrapSource, ...]) -> StableId:
+    for item in ingested:
+        if item.source.source_class is SourceClass.AUTHOR_INITIAL_BRIEF:
+            return item.source.source_id
+    return ingested[0].source.source_id
+
+
+def _allowed_source_ids(
+    source_ids: tuple[StableId, ...],
+    allowed: frozenset[SourceClass],
+    classes: dict[StableId, SourceClass],
+    fallback: StableId,
+) -> tuple[StableId, ...]:
+    kept = tuple(source_id for source_id in source_ids if classes.get(source_id) in allowed)
+    return kept or (fallback,)
+
+
+def _route_items(
+    items: tuple[ProposedItem, ...],
+    allowed: frozenset[SourceClass],
+    classes: dict[StableId, SourceClass],
+    fallback: StableId,
+) -> tuple[ProposedItem, ...]:
+    return tuple(
+        item.model_copy(
+            update={"source_ids": _allowed_source_ids(item.source_ids, allowed, classes, fallback)}
+        )
+        for item in items
+    )
+
+
+def _route_bootstrap_citations(
+    planner_result: PlannerExecutionResult,
+    world_patch: WorldPatchCandidate,
+    ingested: tuple[IngestedBootstrapSource, ...],
+) -> tuple[PlannerExecutionResult, WorldPatchCandidate]:
+    """Keep split sources as Reference; cite only legal Plan/World origins."""
+
+    classes = {item.source.source_id: item.source.source_class for item in ingested}
+    fallback = _brief_source_id(ingested)
+    plan_proposal = planner_result.plan_proposal.model_copy(
+        update={
+            "items": _route_items(
+                planner_result.plan_proposal.items, _PLAN_SOURCE_CLASSES, classes, fallback
+            )
+        }
+    )
+    return (
+        planner_result.model_copy(update={"plan_proposal": plan_proposal}),
+        world_patch.model_copy(
+            update={
+                "items": _route_items(world_patch.items, _WORLD_SOURCE_CLASSES, classes, fallback),
+                "origin_source_ids": _allowed_source_ids(
+                    world_patch.origin_source_ids, _WORLD_SOURCE_CLASSES, classes, fallback
+                ),
+            }
+        ),
+    )
+
+
+def _production_genesis_sufficiency(
+    candidates: BootstrapRootCandidates,
+    brief_text: str,
+) -> tuple[ValidationFinding, ...]:
+    findings: list[ValidationFinding] = []
+    named = tuple(
+        entity for entity in candidates.world.entities if entity.entity_id != DUMMY_WORLD_ENTITY_ID
+    )
+    substantial = tuple(
+        node
+        for node in candidates.plan.nodes
+        if len(node.summary.strip()) >= 40
+        and node.summary.strip() not in {node.node_type, "planner_proposal"}
+    )
+    profile = candidates.profile.style_profile
+    has_title = any(key in profile for key in ("title", "book_title"))
+    has_genre = any(key in profile for key in ("genre", "genres", "题材"))
+    composite = len(brief_text) >= COMPOSITE_BRIEF_CHARS
+    if not candidates.world_patch.items:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_WORLD_EMPTY",
+                severity="error",
+                message="production Genesis has no structured world items",
+            )
+        )
+    if not candidates.plan.nodes and not candidates.plan.chapter_goals:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_PLAN_EMPTY",
+                severity="error",
+                message="production Genesis has no Plan nodes or opening chapter goals",
+            )
+        )
+    if len(candidates.plan.chapter_goals) > OPENING_CHAPTER_GOAL_LIMIT:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_CHAPTER_GOALS_UNBOUNDED",
+                severity="error",
+                message="production Genesis must not pre-generate the full chapter ladder",
+            )
+        )
+    if not composite:
+        return tuple(findings)
+    if len(named) < 8:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_WORLD_SPARSE",
+                severity="error",
+                message="composite setting produced too few named world entities",
+            )
+        )
+    if len(candidates.world.states) < 8:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_WORLD_STATES_SPARSE",
+                severity="error",
+                message="composite setting produced too few baseline world states",
+            )
+        )
+    if len(substantial) < 5:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_PLAN_SPARSE",
+                severity="error",
+                message="composite setting needs first-stage Plan descriptions, not empty labels",
+            )
+        )
+    if not has_title or not has_genre:
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_PROFILE_INCOMPLETE",
+                severity="error",
+                message="composite setting must record title and genre in ProjectProfile",
+            )
+        )
+    return tuple(findings)
+
+
 def bind_bootstrap_model_agents(
     *,
     artifacts: ArtifactRepository,
@@ -562,6 +986,7 @@ def bind_bootstrap_model_agents(
     gateway = ModelGateway(
         endpoints,
         forbid_external_calls=all(not endpoint.adapter.is_external for endpoint in endpoints),
+        structured_max_retries=1,
         budget_profile=BudgetResolutionProfile.STRICT,
     )
     planner_bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)

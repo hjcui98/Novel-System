@@ -49,7 +49,13 @@ from novel_agent.domain.planning import (
 from novel_agent.domain.planning import (
     PlanningLoopTerminal as Stage4PlanningLoopTerminal,
 )
-from novel_agent.domain.stage2 import AccessScope, AgentMode, ContractRef, PlanningTask
+from novel_agent.domain.stage2 import (
+    AccessScope,
+    AgentMode,
+    ContractRef,
+    PlanningTask,
+    ReferenceRootDocument,
+)
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
@@ -108,11 +114,18 @@ class ProductionStage4InvocationFactory:
             raise ValueError("production Stage 4 invocation requires a rolling horizon")
         if self._commits.current_commit(request.project_id) != request.basis_commit:
             raise ValueError("Stage 4 task basis is not the current project commit")
-        if not request.input_artifact_refs:
-            raise ValueError("Stage 4 CHAPTER_SET requires author-intent artifacts")
         manifest = self._commits.load_manifest(request.basis_commit)
         if manifest.project_id != request.project_id:
             raise ValueError("Stage 4 task and canonical manifest belong to different projects")
+        author_intent = request.input_artifact_refs
+        if not author_intent:
+            reference = ReferenceRootDocument.model_validate_json(
+                self._artifacts.read_verified(manifest.reference_root),
+                strict=True,
+            )
+            author_intent = tuple(asset.artifact for asset in reference.assets)
+        if not author_intent:
+            raise ValueError("Stage 4 CHAPTER_SET requires author-intent artifacts")
         text = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
         )
@@ -132,8 +145,7 @@ class ProductionStage4InvocationFactory:
         if request.horizon_start <= request.chapter_index:
             raise ValueError("Stage 4 horizon must begin after the committed chapter")
         source_ids = tuple(
-            StableId(f"source.author-intent.{ref.artifact_id.root[-24:]}")
-            for ref in request.input_artifact_refs
+            StableId(f"source.author-intent.{ref.artifact_id.root[-24:]}") for ref in author_intent
         )
         retrieval = self._policy.budgets.retrieval
         tranche_count = request.planner_memory_budget_extensions + 1
@@ -178,7 +190,7 @@ class ProductionStage4InvocationFactory:
             task_id=request.task_id,
             project_id=request.project_id,
             task=planning_task,
-            author_intent_artifacts=request.input_artifact_refs,
+            author_intent_artifacts=author_intent,
             accepted_plan_ref=manifest.plan_root,
             accepted_world_ref=manifest.world_root,
             accepted_text_ref=manifest.text_root,
@@ -291,8 +303,12 @@ class Stage4PlanningLeafAdapter:
             or detailed.snapshot_id != request.basis_snapshot
         ):
             raise ValueError("Stage 4 request factory violated the durable task basis")
-        if not set(detailed.author_intent_artifacts).issubset(request.input_artifact_refs):
+        if request.input_artifact_refs and not set(detailed.author_intent_artifacts).issubset(
+            request.input_artifact_refs
+        ):
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
+        if not detailed.author_intent_artifacts:
+            raise ValueError("Stage 4 CHAPTER_SET requires author-intent artifacts")
 
         result = await self._loop.run(
             request=detailed,

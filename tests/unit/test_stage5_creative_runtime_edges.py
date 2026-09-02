@@ -153,7 +153,13 @@ class _UncertainChapterSettlement:
     def resolve_commit(self, accepted: AcceptedCandidateBinding) -> None:
         return None
 
-    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult:
+    async def settle(
+        self,
+        accepted: AcceptedCandidateBinding,
+        *,
+        attempt_no: int = 1,
+    ) -> MemoryWriteWorkflowResult:
+        del attempt_no
         checkpoint = self._artifacts.put(b"uncertain", "application/json", SchemaVersion("1.0.0"))
         return MemoryWriteWorkflowResult(
             request_id=StableId("settlement.uncertain"),
@@ -1677,3 +1683,12 @@ def test_context_budget_exceeded_is_unsatisfiable_and_keeps_wait_receipt(
         ref.media_type == "application/vnd.novel-agent.model-scheduling-wait+json"
         for ref in task.terminal_artifact_refs
     )
+
+
+def test_chapter_settlement_retry_gets_a_new_workflow_request_id() -> None:
+    from novel_agent.adapters.runtime.chapter_settlement import AtomicChapterSettlementAdapter
+
+    first = StableId("chapter-settlement.acceptance.abc")
+    assert AtomicChapterSettlementAdapter.workflow_request_id(first, 1) == first
+    retry = AtomicChapterSettlementAdapter.workflow_request_id(first, 2)
+    assert retry.root == "chapter-settlement.acceptance.abc.retry.2"

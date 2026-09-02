@@ -605,6 +605,12 @@ class WorldPatchCandidate(DomainModel):
     extraction_coverage: float = Field(ge=0, le=1)
     receipt: AgentExecutionReceipt
 
+    @model_validator(mode="after")
+    def validate_coverage_matches_items(self) -> WorldPatchCandidate:
+        if not self.items and self.extraction_coverage > 0:
+            raise ValueError("empty Curator bootstrap cannot claim extraction coverage")
+        return self
+
 
 class CuratorBootstrapDraft(DomainModel):
     """Untrusted structured output produced by Memory Curator BOOTSTRAP."""
@@ -612,6 +618,12 @@ class CuratorBootstrapDraft(DomainModel):
     items: tuple[ProposedItem, ...] = ()
     unresolved_claims: tuple[str, ...] = ()
     extraction_coverage: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_coverage_matches_items(self) -> CuratorBootstrapDraft:
+        if not self.items and self.extraction_coverage > 0:
+            raise ValueError("empty Curator bootstrap cannot claim extraction coverage")
+        return self
 
 
 class ReferenceAsset(DomainModel):

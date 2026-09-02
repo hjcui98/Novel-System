@@ -148,17 +148,22 @@ class ProductionWritingRequestFactory:
         goals = tuple(
             goal for goal in plan.chapter_goals if goal.chapter_index == task.chapter_index
         )
-        if len(goals) != 1:
-            raise ValueError("accepted PlanRoot must contain exactly one target chapter goal")
-        goal = goals[0]
+        if not goals:
+            raise ValueError("accepted PlanRoot must contain a target chapter goal")
+        goal_ids = {goal.goal_id for goal in goals}
+        obligation_ids = tuple(
+            dict.fromkeys(item for goal in goals for item in goal.obligation_ids)
+        )
         relevant_nodes = tuple(
             node
             for node in plan.nodes
-            if node.plan_node_id == goal.goal_id
-            or bool(set(node.obligation_ids) & set(goal.obligation_ids))
+            if node.plan_node_id in goal_ids
+            or bool(set(node.obligation_ids) & set(obligation_ids))
         )
+        summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
+        chapter_goal = "；".join(summaries)
         required_beats = tuple(
-            dict.fromkeys((*(node.summary for node in relevant_nodes), goal.summary))
+            dict.fromkeys((*(node.summary for node in relevant_nodes), *summaries))
         )
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
@@ -171,10 +176,10 @@ class ProductionWritingRequestFactory:
             narrative_person=self._profile_string(
                 profile, "narrative_person", self._policy.narrative_person
             ),
-            chapter_goal=goal.summary,
+            chapter_goal=chapter_goal,
             scene_goals=required_beats,
             required_beats=required_beats,
-            active_plan_obligations=goal.obligation_ids,
+            active_plan_obligations=obligation_ids,
             mandatory_constraints=self._profile_strings(profile, "mandatory_constraints"),
             forbidden_reveals=self._profile_strings(profile, "forbidden_reveals"),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
@@ -186,7 +191,7 @@ class ProductionWritingRequestFactory:
             WRITING_TASK_MEDIA_TYPE,
             self._schema_version,
         )
-        planning_context = self._planning_context(task, plan, goal.summary)
+        planning_context = self._planning_context(task, plan, chapter_goal)
         memory_task = BenchmarkTaskContract(
             task_id=bounded_stable_id(
                 f"memory-task.{task.task_id.root}",
@@ -199,7 +204,7 @@ class ProductionWritingRequestFactory:
             information_profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
             task_template_version="production-writing-task.v1",
             output_contract_version="writer_context.v2",
-            task_intent=goal.summary,
+            task_intent=chapter_goal,
             planning_context_hash=planning_context.source_hash,
         )
         assembly = self._writer_context(

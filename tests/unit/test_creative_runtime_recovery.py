@@ -142,6 +142,56 @@ def test_recover_boundary_repairs_post_draft_projection() -> None:
     assert service.recover_boundary(projection.task_id) is expected
 
 
+def test_recover_boundary_auto_extends_planner_budget_review() -> None:
+    commands = Mock()
+    waiting = _task(status=TaskStatus.BUDGET_REVIEW, failure_budget=2)
+    ready = _task(status=TaskStatus.READY, failure_budget=2, planner_memory_budget_extensions=1)
+    commands.get_task.return_value = waiting
+    commands.extend_budget.return_value = ready
+    service = _service(commands=commands)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.AUTO,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        auto_accept_plan=True,
+        auto_accept_draft=True,
+    )
+    result = service.recover_boundary(waiting.task_id)
+    assert result is not None
+    assert result.reason_code == "budget_auto_extended"
+    assert result.terminal is CreativeRunTerminal.PROGRESSED
+    commands.extend_budget.assert_called_once()
+    kwargs = commands.extend_budget.call_args.kwargs
+    assert kwargs["additional_planner_memory_tranches"] == 1
+    assert kwargs["additional_attempts"] == 0
+
+
+def test_auto_extend_budget_skips_manual_and_exhausted_tranches() -> None:
+    waiting = _task(status=TaskStatus.BUDGET_REVIEW)
+    commands = Mock()
+    commands.get_task.return_value = waiting
+    service = _service(commands=commands)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+    )
+    assert service.recover_boundary(waiting.task_id) is None
+    commands.extend_budget.assert_not_called()
+
+    capped = _task(status=TaskStatus.BUDGET_REVIEW, planner_memory_budget_extensions=3)
+    commands.get_task.return_value = capped
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.AUTO,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        auto_accept_plan=True,
+        auto_accept_draft=True,
+    )
+    assert service.recover_boundary(capped.task_id) is None
+    commands.extend_budget.assert_not_called()
+
+
 def test_recover_chapter_settlement_missing_commit_id_fails_closed() -> None:
     commands = Mock()
     task = _task(
@@ -537,6 +587,123 @@ def test_repair_post_draft_projection_falls_back_to_rolling_plan() -> None:
     assert result.reason_code == "lookahead_fallback_to_rolling_plan"
     commands.supersede_task.assert_called()
     commands.create_task.assert_called()
+
+
+def test_repair_post_draft_projection_waits_for_live_ready_lookahead() -> None:
+    projection = _task(
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=1,
+        target_chapters=5,
+        projection_after="draft",
+    )
+    live_lookahead = _task(
+        task_id=TaskId("task.lookahead.live"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        purpose=TaskPurpose.LOOKAHEAD,
+        status=TaskStatus.READY,
+        protected_chapter_index=1,
+        basis_commit=COMMIT,
+        horizon_start=2,
+        horizon_end=4,
+        chapter_index=1,
+        target_chapters=5,
+    )
+    reader = Mock()
+    reader.list_run.return_value = (projection, live_lookahead)
+    commands = Mock()
+    service = _service(commands=commands, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = _lookahead_policy()
+    cast(Any, service)._revalidate_lookahead = Mock(return_value=None)
+    assert service._repair_post_draft_projection(projection) is None
+    commands.supersede_task.assert_not_called()
+    commands.create_task.assert_not_called()
+
+
+def test_repair_post_draft_projection_falls_back_when_ready_lookahead_is_stale() -> None:
+    from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
+
+    commands = Mock()
+    snapshots = Mock()
+    snapshots.get_for_commit.return_value = DerivedSnapshotLite(
+        snapshot_id=StableId("snapshot.exact"),
+        source_commit=COMMIT,
+        anchor_build_id=StableId("anchor.exact"),
+        anchor_index_version="anchor-v1",
+        grounded_index_version="grounded-v1",
+        embedding_profile="offline-v1",
+        fusion_profile="rrf-v1",
+        build_status=DerivedBuildStatus.EXACT,
+        published_at=NOW,
+    )
+    projection = _task(
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=3,
+        target_chapters=800,
+        projection_after="draft",
+        input_artifact_refs=(_ref("2"),),
+    )
+    stale_lookahead = _task(
+        task_id=TaskId("task.lookahead.stale-ready"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        purpose=TaskPurpose.LOOKAHEAD,
+        status=TaskStatus.READY,
+        protected_chapter_index=3,
+        basis_commit=CommitId("sha256:" + "b" * 64),
+        horizon_start=4,
+        horizon_end=8,
+        chapter_index=3,
+        target_chapters=800,
+    )
+    owner = _task(
+        task_id=TaskId("task.plan.owner"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        purpose=TaskPurpose.NORMAL,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=2,
+        input_artifact_refs=(_ref("2"),),
+    )
+    reader = Mock()
+    reader.list_run.return_value = (owner, projection, stale_lookahead)
+    service = _service(commands=commands, snapshots=snapshots, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = _lookahead_policy()
+    cast(Any, service)._revalidate_lookahead = Mock(return_value=None)
+    result = service._repair_post_draft_projection(projection)
+    assert result is not None
+    assert result.reason_code == "lookahead_fallback_to_rolling_plan"
+    commands.supersede_task.assert_called_once()
+    commands.create_task.assert_called_once()
+
+
+def test_repair_post_draft_projection_waits_for_running_lookahead() -> None:
+    projection = _task(
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=1,
+        target_chapters=5,
+        projection_after="draft",
+    )
+    running = _task(
+        task_id=TaskId("task.lookahead.running"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        purpose=TaskPurpose.LOOKAHEAD,
+        status=TaskStatus.RUNNING,
+        protected_chapter_index=1,
+        basis_commit=CommitId("sha256:" + "b" * 64),
+        horizon_start=2,
+        horizon_end=4,
+        chapter_index=1,
+        target_chapters=5,
+    )
+    reader = Mock()
+    reader.list_run.return_value = (projection, running)
+    commands = Mock()
+    service = _service(commands=commands, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = _lookahead_policy()
+    cast(Any, service)._revalidate_lookahead = Mock(return_value=None)
+    assert service._repair_post_draft_projection(projection) is None
+    commands.supersede_task.assert_not_called()
 
 
 def test_revalidate_lookahead_promotes_when_draft_has_no_plan_impact() -> None:

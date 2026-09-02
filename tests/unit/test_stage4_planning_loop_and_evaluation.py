@@ -106,6 +106,7 @@ from novel_agent.services.planner_context_runtime import (
 )
 from novel_agent.services.planning_context_loop import (
     PlanningContextLoopService,
+    _canonical_planner_memory_question,
     _planner_memory_question_chunk_size,
     _requested_planner_memory_question_ids,
 )
@@ -378,6 +379,56 @@ class _TurnPlanner(_ModePlanner):
         turn = PlanningTurnOutput(
             action=PlanningTurnAction.REQUEST_MEMORY,
             memory_questions=self._questions,
+        )
+        return turn, None, cast(ModelCallRecord, object())
+
+
+class _CosmeticRepeatTurnPlanner(_TurnPlanner):
+    """After SUPPORTED, repeats the same Memory questions with name marks."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+        cosmetic_questions: tuple[str, ...] = ("what is the causal relation with 【北塔】?",),
+    ) -> None:
+        super().__init__(artifacts, mode, questions=questions)
+        self._cosmetic_questions = cosmetic_questions
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        del kwargs
+        self.turn_calls += 1
+        questions = self._cosmetic_questions if self.turn_calls >= 3 else self._questions
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.REQUEST_MEMORY,
+            memory_questions=questions,
+        )
+        return turn, None, cast(ModelCallRecord, object())
+
+
+class _DivergentSupportedRepeatPlanner(_TurnPlanner):
+    """After SUPPORTED, asks a different Memory question instead of PLAN_READY."""
+
+    def __init__(
+        self,
+        artifacts: ArtifactRepository,
+        mode: AgentMode,
+        *,
+        questions: tuple[str, ...] = ("what is the causal relation with 北塔?",),
+        divergent_questions: tuple[str, ...] = ("who currently holds 北塔?",),
+    ) -> None:
+        super().__init__(artifacts, mode, questions=questions)
+        self._divergent_questions = divergent_questions
+
+    async def run_turn(self, **kwargs: object) -> tuple[object, object | None, object]:
+        del kwargs
+        self.turn_calls += 1
+        questions = self._divergent_questions if self.turn_calls >= 3 else self._questions
+        turn = PlanningTurnOutput(
+            action=PlanningTurnAction.REQUEST_MEMORY,
+            memory_questions=questions,
         )
         return turn, None, cast(ModelCallRecord, object())
 
@@ -3308,6 +3359,24 @@ def test_planner_memory_turn_resolves_or_fails_closed_when_slice_allows(
     }
 
 
+def test_canonical_planner_memory_question_strips_name_marks() -> None:
+    original = "what is the causal relation with 北塔?"
+    wrapped = "what is the causal relation with 【北塔】?"
+    leading = "【北塔】 held the pass"
+    assert _canonical_planner_memory_question(original) == _canonical_planner_memory_question(
+        wrapped
+    )
+    assert _canonical_planner_memory_question(leading) == _canonical_planner_memory_question(
+        "北塔 held the pass"
+    )
+    assert _canonical_planner_memory_question("What is 北塔?") == (
+        _canonical_planner_memory_question("what is 北塔?")
+    )
+    assert _canonical_planner_memory_question(original) != _canonical_planner_memory_question(
+        "who currently holds 北塔?"
+    )
+
+
 def test_repeated_supported_planner_memory_falls_back_to_plan_review(
     tmp_path: Path,
 ) -> None:
@@ -3345,6 +3414,84 @@ def test_repeated_supported_planner_memory_falls_back_to_plan_review(
     assert planner.turn_calls == 3
     assert planner.plan_calls == 1
     assert memory.calls == 2
+
+
+def test_supported_planner_memory_cosmetic_rephrase_falls_back_to_plan(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(
+        FilesystemObjectStore(tmp_path / "planner-memory-cosmetic-fallback")
+    )
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _CosmeticRepeatTurnPlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, memory = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert result.proposal is not None
+    assert planner.turn_calls == 3
+    assert planner.plan_calls == 1
+    assert memory.calls == 2
+
+
+def test_supported_planner_memory_divergent_request_is_no_progress(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(
+        FilesystemObjectStore(tmp_path / "planner-memory-divergent-no-progress")
+    )
+    source = _put(artifacts, "author source")
+    roots = tuple(_put(artifacts, f"root-{index}") for index in range(3))
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=(roots[0], roots[1], roots[2]),
+    )
+    planner = _DivergentSupportedRepeatPlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, _ = _post_genesis_service(
+        artifacts,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT] * 3),
+        planner=planner,
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.REVIEW_REQUIRED
+    assert result.proposal is None
+    assert result.diagnostic_codes == ("PLANNER_MEMORY_NO_PROGRESS",)
+    assert planner.turn_calls == 3
+    assert planner.plan_calls == 0
 
 
 def test_planner_memory_fanout_is_carried_across_retrieval_tranches(

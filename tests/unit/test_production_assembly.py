@@ -400,6 +400,24 @@ def test_settlement_output_override_is_campaign_local(tmp_path: Path) -> None:
     )
 
 
+def test_production_guardian_reads_revealed_settlement_text(tmp_path: Path) -> None:
+    assembly = build_production_assembly(_context(tmp_path))
+    curator = assembly.chapter_settlement._workflow._curator
+    guardian = assembly.chapter_settlement._workflow._guardian
+    reveal = assembly.chapter_settlement._reveal_text
+    sentinel = object()
+
+    assert curator.revealed_text is None
+    assert guardian._evidence_root is not None
+    assert guardian._evidence_root() is None
+    curator._revealed_text = sentinel  # type: ignore[assignment]
+    assert guardian._evidence_root() is sentinel
+    curator._revealed_text = None
+    reveal(sentinel)  # type: ignore[arg-type]
+    assert curator.revealed_text is sentinel
+    assert guardian._evidence_root() is sentinel
+
+
 def test_settlement_token_budget_override_is_campaign_local(tmp_path: Path) -> None:
     default = build_production_assembly(_context(tmp_path))
     campaign_root = tmp_path / "campaign-token-budget"

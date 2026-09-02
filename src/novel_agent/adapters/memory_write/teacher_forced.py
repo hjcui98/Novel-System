@@ -381,6 +381,10 @@ class TeacherForcedCuratorPort:
     def set_revealed_text(self, text: TextRootDocument) -> None:
         self._revealed_text = text
 
+    @property
+    def revealed_text(self) -> TextRootDocument | None:
+        return self._revealed_text
+
     async def propose(self, request: CuratorProposalRequest) -> CuratorProposalResult:
         basis = request.basis
         text = self._revealed_text or basis.canonical_text

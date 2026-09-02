@@ -41,6 +41,7 @@ class ProductionRunDescriptor:
     stop_after_chapter: int | None = None
     settlement_timeout_seconds: float | None = None
     settlement_output_tokens: int | None = None
+    settlement_token_budget: int | None = None
     max_major_rewrites: int | None = None
     max_local_repairs: int | None = None
 
@@ -108,6 +109,7 @@ class ProductionRunDescriptor:
             stop_after_chapter=_optional_int(payload.get("stop_after_chapter")),
             settlement_timeout_seconds=_optional_float(payload.get("settlement_timeout_seconds")),
             settlement_output_tokens=_optional_int(payload.get("settlement_output_tokens")),
+            settlement_token_budget=_optional_int(payload.get("settlement_token_budget")),
             max_major_rewrites=_optional_int(payload.get("max_major_rewrites")),
             max_local_repairs=_optional_int(payload.get("max_local_repairs")),
         )
@@ -120,6 +122,7 @@ class ProductionProjectDispatchResult:
     status: str
     report: Stage5VerticalRunReport | None = None
     error_type: str | None = None
+    error_message: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -127,6 +130,7 @@ class ProductionProjectDispatchResult:
             "run_id": self.run_id.root,
             "status": self.status,
             "error_type": self.error_type,
+            "error_message": self.error_message,
             "report": None if self.report is None else self.report.model_dump(mode="json"),
         }
 
@@ -298,6 +302,7 @@ class ProductionDispatchCoordinator:
             admission=self._admission,
             settlement_timeout_seconds=descriptor.settlement_timeout_seconds,
             settlement_output_tokens=descriptor.settlement_output_tokens,
+            settlement_token_budget=descriptor.settlement_token_budget,
             max_major_rewrites=descriptor.max_major_rewrites,
             max_local_repairs=descriptor.max_local_repairs,
             retrieval_backend_profile=self._retrieval_backend_profile,
@@ -363,6 +368,7 @@ class ProductionDispatchCoordinator:
                 descriptor.run_id,
                 "assembly_failed",
                 error_type=type(assembly_error).__name__,
+                error_message=str(assembly_error),
             )
         assembly = self._assemblies[key]
         async with semaphore:
@@ -386,6 +392,7 @@ class ProductionDispatchCoordinator:
                     descriptor.run_id,
                     "failed",
                     error_type=type(error).__name__,
+                    error_message=str(error),
                 )
             return ProductionProjectDispatchResult(
                 descriptor.project_id,

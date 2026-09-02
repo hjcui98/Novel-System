@@ -98,6 +98,23 @@ def _planner_memory_question_chunk_size(request: PlanningLoopRequest) -> int:
     return max(1, retrieval.max_tool_calls // max(1, per_need_call_budget))
 
 
+_PLANNER_MEMORY_QUESTION_MARKS = ("【", "】", "《", "》", "「", "」", "[", "]")
+
+
+def _canonical_planner_memory_question(question: str) -> str:
+    """Strip cosmetic name marks so a rephrase is not a new Memory problem.
+
+    After a SUPPORTED reprompt the Planner may wrap the same names in 【】.
+    Those marks must not mint a new question set, or the loop aborts with
+    ``PLANNER_MEMORY_NO_PROGRESS`` instead of the bounded PLAN_READY fallback.
+    """
+
+    stripped = question.casefold().strip()
+    for mark in _PLANNER_MEMORY_QUESTION_MARKS:
+        stripped = stripped.replace(mark, "")
+    return " ".join(stripped.split())
+
+
 def _planner_memory_question_id(inquiry_id: StableId, question: str) -> StableId:
     return StableId(
         "planner-memory."
@@ -1466,13 +1483,14 @@ class PlanningContextLoopService:
                             )
                             record_model_call(_call)
                             unsupported_question_texts = {
-                                question.casefold().strip()
+                                _canonical_planner_memory_question(question)
                                 for question, _facets in unsupported_memory_questions.values()
                             }
                             unsupported_memory_questions.clear()
                             if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
                                 repeated_question = any(
-                                    question.casefold().strip() in unsupported_question_texts
+                                    _canonical_planner_memory_question(question)
+                                    in unsupported_question_texts
                                     for question in retry_turn.memory_questions
                                 )
                                 if repeated_question:
@@ -1633,10 +1651,11 @@ class PlanningContextLoopService:
                         record_model_call(_call)
                         if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
                             supported_questions = {
-                                question.casefold().strip() for question in turn.memory_questions
+                                _canonical_planner_memory_question(question)
+                                for question in turn.memory_questions
                             }
                             repeated_questions = {
-                                question.casefold().strip()
+                                _canonical_planner_memory_question(question)
                                 for question in retry_turn.memory_questions
                             }
                             if repeated_questions != supported_questions:

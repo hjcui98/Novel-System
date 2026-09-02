@@ -1626,6 +1626,14 @@ class RuntimeCommandService:
                 raise RuntimeCommandConflictError("unblock requires a recorded block cause")
             if _digest(task.block_cause) != block_cause_fingerprint:
                 raise RuntimeCommandConflictError("block cause fingerprint is stale")
+            writer_generation_after = (
+                0
+                if (
+                    task.kind in {TaskKind.PLAN_COMMIT, TaskKind.DRAFT_COMMIT}
+                    and task.writer_generation > 0
+                )
+                else None
+            )
             updated = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
@@ -1633,6 +1641,11 @@ class RuntimeCommandService:
                         TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
                     ),
                     "block_cause": None,
+                    "writer_generation": (
+                        task.writer_generation
+                        if writer_generation_after is None
+                        else writer_generation_after
+                    ),
                 }
             )
             self._update_task(session, updated, now)
@@ -1646,6 +1659,7 @@ class RuntimeCommandService:
                     action="unblock",
                     actor_id=actor_id,
                     reason="block prerequisite changed with immutable evidence",
+                    writer_generation_after=writer_generation_after,
                 ).model_dump(mode="json"),
                 command_id,
                 artifact_refs=changed_evidence_refs,
@@ -1730,7 +1744,7 @@ class RuntimeCommandService:
     def claim_writer_lane(self, fence: AttemptFence) -> AttemptFence:
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
-            task, attempt = self._require_fence(session, fence)
+            task, attempt = self._require_fence(session, fence, require_writer_lane=False)
             if task.kind not in {
                 TaskKind.PLAN_COMMIT,
                 TaskKind.DRAFT_COMMIT,
@@ -2126,7 +2140,11 @@ class RuntimeCommandService:
         return settled_task
 
     def _require_fence(
-        self, session: Session, fence: AttemptFence
+        self,
+        session: Session,
+        fence: AttemptFence,
+        *,
+        require_writer_lane: bool = True,
     ) -> tuple[TaskRecord, TaskAttempt]:
         task = self._load_task(session, fence.task_id, lock=True)
         if task.project_id != fence.project_id or task.current_attempt_id != fence.attempt_id:
@@ -2142,7 +2160,8 @@ class RuntimeCommandService:
         ):
             raise StaleAttemptFenceError("attempt fence does not match current owner")
         if (
-            task.kind in {TaskKind.PLAN_COMMIT, TaskKind.DRAFT_COMMIT}
+            require_writer_lane
+            and task.kind in {TaskKind.PLAN_COMMIT, TaskKind.DRAFT_COMMIT}
             and task.writer_generation > 0
         ):
             writer = session.get(ProjectWriterClaimRow, task.project_id.root)

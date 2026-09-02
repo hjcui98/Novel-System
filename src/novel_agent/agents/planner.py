@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+from pydantic import ConfigDict, field_validator
 
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec
 from novel_agent.agents.runner import PreparedAgentRun, StructuredAgentRunner
@@ -22,6 +25,7 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentSpec,
     AgentType,
+    BootstrapStrategy,
     ContractRef,
     PlannerExecutionResult,
     PlannerProposalDraft,
@@ -281,6 +285,38 @@ class PlannerInvocationError(ValueError):
     pass
 
 
+class _DevelopCandidatesPlannerProposalDraft(PlannerProposalDraft):
+    """Expose the trusted bootstrap strategy as an exact required provider schema field."""
+
+    model_config = ConfigDict(json_schema_extra={"required": ["mode", "strategy", "coverage"]})
+    strategy: Literal[BootstrapStrategy.DEVELOP_CANDIDATES] = BootstrapStrategy.DEVELOP_CANDIDATES
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def bind_null_strategy(cls, value: object) -> object:
+        return BootstrapStrategy.DEVELOP_CANDIDATES if value is None else value
+
+
+class _NormalizeOnlyPlannerProposalDraft(PlannerProposalDraft):
+    """Expose the alternate trusted bootstrap strategy as an exact required schema field."""
+
+    model_config = ConfigDict(json_schema_extra={"required": ["mode", "strategy", "coverage"]})
+    strategy: Literal[BootstrapStrategy.NORMALIZE_ONLY] = BootstrapStrategy.NORMALIZE_ONLY
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def bind_null_strategy(cls, value: object) -> object:
+        return BootstrapStrategy.NORMALIZE_ONLY if value is None else value
+
+
+def _proposal_output_type(task: PlanningTask) -> type[PlannerProposalDraft]:
+    if task.strategy is BootstrapStrategy.DEVELOP_CANDIDATES:
+        return _DevelopCandidatesPlannerProposalDraft
+    if task.strategy is BootstrapStrategy.NORMALIZE_ONLY:
+        return _NormalizeOnlyPlannerProposalDraft
+    return PlannerProposalDraft
+
+
 class PlannerAgent:
     def __init__(
         self,
@@ -320,7 +356,7 @@ class PlannerAgent:
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
         )
-        execution = await self._runner.execute(prepared, PlannerProposalDraft)
+        execution = await self._runner.execute(prepared, _proposal_output_type(task))
         result = self._materialize_plan(
             version=version,
             task=task,

@@ -81,12 +81,28 @@ class AtomicChapterSettlementAdapter:
             f"chapter-settlement.{accepted.expected_project_commit.root}",
         )
 
+    @staticmethod
+    def workflow_request_id(settlement_identity: StableId, attempt_no: int) -> StableId:
+        """Keep retry attempts off an uncertain first-attempt model-call identity."""
+
+        if attempt_no <= 1:
+            return settlement_identity
+        return bounded_stable_id(
+            f"{settlement_identity.root}.retry.{attempt_no}",
+            f"chapter-settlement.retry.{attempt_no}",
+        )
+
     def resolve_commit(self, accepted: AcceptedCandidateBinding) -> CommitResult | None:
         return self._commits.result_for_idempotency(
             accepted.project_id, self.effect_identity(accepted)
         )
 
-    async def settle(self, accepted: AcceptedCandidateBinding) -> MemoryWriteWorkflowResult:
+    async def settle(
+        self,
+        accepted: AcceptedCandidateBinding,
+        *,
+        attempt_no: int = 1,
+    ) -> MemoryWriteWorkflowResult:
         if self._commits.current_commit(accepted.project_id) != accepted.expected_project_commit:
             raise ValueError("Chapter Settlement basis is no longer current")
         manifest = self._commits.load_manifest(accepted.expected_project_commit)
@@ -146,8 +162,9 @@ class AtomicChapterSettlementAdapter:
             builder_policy_ref=self._policy.boundary_policy_ref,
         )
         self._reveal_text(updated_text)
+        request_id = self.workflow_request_id(self.effect_identity(accepted), attempt_no)
         request = MemoryWriteWorkflowRequest(
-            request_id=self.effect_identity(accepted),
+            request_id=request_id,
             run_id=accepted.run_id,
             task_id=accepted.task_id,
             project_id=accepted.project_id,
@@ -174,7 +191,7 @@ class AtomicChapterSettlementAdapter:
             tool_policy_ref=self._policy.tool_policy_ref,
             repair_policy_ref=self._policy.repair_policy_ref,
             budget=self._policy.budget,
-            idempotency_key=self.effect_identity(accepted),
+            idempotency_key=request_id,
         )
         return await self._workflow.execute(request)
 
