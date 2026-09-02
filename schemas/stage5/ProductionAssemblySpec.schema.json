@@ -45,6 +45,14 @@
   "additionalProperties": false,
   "description": "Repo-owned declaration. Runtime observations must not be written back.",
   "properties": {
+    "editor_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Editor Skill Ids",
+      "type": "array"
+    },
     "expected_chapter_settlement": {
       "minLength": 1,
       "title": "Expected Chapter Settlement",
@@ -102,6 +110,22 @@
     "model_policy": {
       "$ref": "#/$defs/ProductionModelPolicy"
     },
+    "plan_reviewer_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Plan Reviewer Skill Ids",
+      "type": "array"
+    },
+    "planner_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Planner Skill Ids",
+      "type": "array"
+    },
     "reranker_required": {
       "default": false,
       "title": "Reranker Required",
@@ -112,6 +136,14 @@
     },
     "spec_version": {
       "$ref": "#/$defs/SchemaVersion"
+    },
+    "writer_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Writer Skill Ids",
+      "type": "array"
     }
   },
   "required": [

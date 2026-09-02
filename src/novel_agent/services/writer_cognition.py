@@ -224,10 +224,8 @@ class WriterCognitionService:
         skill_payload = []
         for skill_id in request.allowed_skills:
             contract = catalog[skill_id]
-            text, resolved = self._skills.resolve(skill_id, contract.version)
-            if resolved != contract:
-                raise WriterCognitionError(f"Writer Skill hash mismatch: {skill_id.root}")
-            skill_payload.append(f'<SKILL id="{skill_id.root}">\n{text}\n</SKILL>')
+            card = self._skills.describe(skill_id, contract.version)
+            skill_payload.append(f'<SKILL_CARD id="{skill_id.root}">\n{card}\n</SKILL_CARD>')
         prompt = self._read_prompt("writer_work_plan_v1.md")
         task_payload = canonical_json_bytes(
             {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ValidationError
@@ -38,6 +39,62 @@ REWRITE_DIRECTIVE_MEDIA_TYPE: Final[str] = (
 )
 _EDITOR_CONTRACT_RETRY_SUFFIX = ".contract-retry1"
 _EDITOR_CONTRACT_RETRY_FIELD = "host_contract_retry"
+_ADMITTED_EDITOR_LENSES: Final[tuple[StableId, ...]] = (
+    StableId("skill.editor.chapter-length"),
+    StableId("skill.editor.plan-adherence-hook-payoff"),
+    StableId("skill.editor.pacing-repetition"),
+)
+_PLAN_REVIEWER_LENSES: Final[tuple[StableId, ...]] = (
+    StableId("skill.plan-review.temporal-obligation"),
+    StableId("skill.plan-review.parent-scope"),
+)
+
+
+_EDITOR_LENS_FILES: Final[dict[str, str]] = {
+    "skill.editor.chapter-length": "editor_chapter_length_v1.md",
+    "skill.editor.plan-adherence-hook-payoff": "editor_plan_adherence_hook_payoff_v1.md",
+    "skill.editor.pacing-repetition": "editor_pacing_repetition_v1.md",
+}
+
+
+def _selected_editor_lenses(
+    review_input: EditorialReviewInput,
+    *,
+    prior_report: EditorialReport | None = None,
+    draft_length: int | None = None,
+) -> tuple[StableId, ...]:
+    selected: list[StableId] = []
+    policy = review_input.writing_task.length_policy
+    if draft_length is not None:
+        span = max(1, policy.maximum_characters - policy.minimum_characters)
+        near = max(1, span // 10)
+        if (
+            draft_length < policy.minimum_characters
+            or draft_length > policy.maximum_characters
+            or draft_length <= policy.minimum_characters + near
+            or draft_length >= policy.maximum_characters - near
+        ):
+            selected.append(_ADMITTED_EDITOR_LENSES[0])
+    if (
+        review_input.writing_task.active_plan_obligations
+        or review_input.writing_task.forbidden_reveals
+    ):
+        selected.append(_ADMITTED_EDITOR_LENSES[1])
+    if prior_report is not None or len(review_input.writing_task.required_beats) > 2:
+        selected.append(_ADMITTED_EDITOR_LENSES[2])
+    return tuple(dict.fromkeys(selected))[:3]
+
+
+def _editor_lens_instructions(selected: tuple[StableId, ...]) -> str:
+    root = Path(__file__).parents[1] / "skills"
+    parts: list[str] = []
+    for skill_id in selected:
+        filename = _EDITOR_LENS_FILES[skill_id.root]
+        text = (root / filename).read_text(encoding="utf-8")
+        parts.append(f'<ADMITTED_LENS id="{skill_id.root}">\n{text}\n</ADMITTED_LENS>')
+    return "\n\n".join(parts)
+
+
 _EDITOR_CONTRACT_RETRY_INSTRUCTION = (
     "The previous Editor response was rejected by the host contract. Return one complete "
     "replacement JSON object. For LOCAL_REPAIR, include non-empty repair_instructions and "
@@ -115,7 +172,12 @@ class EditorialService:
 
         text = self._read_draft_text(review_input)
         blocks = _draft_blocks(review_input.draft.draft_id, text)
-        payload = _review_payload(review_input, text, blocks)
+        payload = _review_payload(
+            review_input,
+            text,
+            blocks,
+            admitted_lenses=_selected_editor_lenses(review_input, draft_length=len(text)),
+        )
         current_request = request
         current_payload: Mapping[str, object] = payload
         for attempt in range(2):
@@ -197,6 +259,11 @@ class EditorialService:
             blocks,
             draft_id=repaired.draft_id,
             prior_repair_history=history,
+            admitted_lenses=_selected_editor_lenses(
+                review_input,
+                prior_report=repair_report,
+                draft_length=len(text),
+            ),
         )
         try:
             run = await self._editor.review(
@@ -420,7 +487,9 @@ def _review_payload(
     *,
     draft_id: ArtifactId | None = None,
     prior_repair_history: tuple[EditorialRepairHistoryEntry, ...] | None = None,
+    admitted_lenses: tuple[StableId, ...] | None = None,
 ) -> Mapping[str, object]:
+    lenses = admitted_lenses or ()
     return {
         "draft_id": (draft_id or review_input.draft.draft_id).root,
         "writing_task": review_input.writing_task.model_dump(mode="json"),
@@ -434,6 +503,8 @@ def _review_payload(
             {"block_id": block.block_id.root, "text": block.text} for block in blocks
         ),
         "draft_text": text,
+        "admitted_lenses": [item.root for item in lenses],
+        "lens_instructions": _editor_lens_instructions(lenses),
     }
 
 

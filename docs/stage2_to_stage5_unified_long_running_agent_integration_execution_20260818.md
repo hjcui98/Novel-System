@@ -2,9 +2,9 @@
 
 > Lifecycle: `ACTIVE`
 >
-> Updated: 2026-08-20 +08:00
+> Updated: 2026-09-02 +08:00
 >
-> Revision: `v7 / code-level execution packets and ordered handoff sequence`
+> Revision: `v8 / hierarchy and future-lock patch on ee8849a production baseline`
 >
 > Previous revision: `v6 / benchmark canary seam: shared replay, single assembly, frozen variables`
 >
@@ -37,6 +37,11 @@ path，透传状态并标注语义状态，补齐对应回归测试和真实模�
 `codex/unified-agent-runtime-integration` 已在独立工作树中 ff 到该 HEAD。根工作树未被修改。
 但 U2/U3/U4-L0 及 V0.5 接线全部仍是该集成工作树的未提交变更，任何正式 Gate
 都还没有 PASS。
+
+在 `ee8849a` 生产基线上，另有一条不改 V0.5 语义的 hierarchy/Skill 补丁：Gate 0 → Patch A
+future-lock → Patch B PlanLevel → Patch C 有限 Progressive Skill。规范已写入 Stage 4/5 设计；
+审查底稿是 `docs/Novel-System_分层规划与渐进Skill_收敛版补丁执行设计_v2_ee8849a.md`。
+8 个 pytest 准入场景是该补丁的 Gate，真实 0–25/0–50 长跑不插入 Patch 之间。
 
 下一阶段的真实任务是依次关闭四类缺口：
 

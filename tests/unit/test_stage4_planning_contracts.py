@@ -215,6 +215,11 @@ def test_planner_contract_bundle_is_the_single_sealed_seven_mode_registration() 
         assert "commit" in planner.tool_policy.denied_tools
         assert "plan_root.write" in reviewer.tool_policy.denied_tools
         assert reviewer.tool_policy.allowed_tools == ("proposal.validate_plan",)
+        assert {item.contract_id.root for item in reviewer.skills} == {
+            "skill.plan-review",
+            "skill.plan-review.temporal-obligation",
+            "skill.plan-review.parent-scope",
+        }
         assert planner.content_hash != HASH
         assert reviewer.content_hash != HASH
 

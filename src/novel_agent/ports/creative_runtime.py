@@ -21,6 +21,10 @@ class CandidateMaterializationError(ValueError):
     """An accepted leaf candidate cannot be mapped to the five canonical roots."""
 
 
+class DraftLengthContractError(CandidateMaterializationError):
+    """An accepted Draft is outside the trusted WritingTask length contract."""
+
+
 class PlanningLeafPort(Protocol):
     async def run(self, request: PlanningLoopRequest) -> PlanningLoopResult: ...
 
@@ -70,6 +74,7 @@ __all__ = [
     "CandidateMaterializationError",
     "CandidateMaterializer",
     "ChapterSettlementPort",
+    "DraftLengthContractError",
     "EffectStatusResolver",
     "MemoryMaintenancePort",
     "PlanningLeafPort",

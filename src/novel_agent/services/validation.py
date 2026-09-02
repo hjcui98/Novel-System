@@ -179,6 +179,7 @@ class Stage1Validator:
         chapter_indexes = {
             chapter.chapter_id: chapter.chapter_index for chapter in evidence_root.chapters
         }
+        current_chapter = max(chapter_indexes.values(), default=0)
         rules = {rule.predicate: rule for rule in self._transition_policy.rules}
         for operation in bundle.observed_changes.operations:
             payload = operation.payload
@@ -202,6 +203,21 @@ class Stage1Validator:
                         )
                     )
             if operation.operation is not ChangeOperationType.REPLACE:
+                if kind == "obligation":
+                    created = new_obligations.get(operation.target_id)
+                    if (
+                        created is not None
+                        and created.status.value == "resolved"
+                        and created.forbids_resolution(current_chapter)
+                    ):
+                        findings.append(
+                            self._finding(
+                                "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
+                                "error",
+                                "future-locked obligation cannot be resolved before "
+                                "not_before_chapter",
+                            )
+                        )
                 self._check_narrative_order(
                     operation.target_id,
                     kind,
@@ -261,6 +277,21 @@ class Stage1Validator:
                             "ILLEGAL_OBLIGATION_TRANSITION",
                             "error",
                             "plan obligation lifecycle transition is not allowed",
+                        )
+                    )
+                locked = old_obligation or new_obligation
+                if (
+                    new_obligation is not None
+                    and new_obligation.status.value == "resolved"
+                    and locked is not None
+                    and locked.forbids_resolution(current_chapter)
+                ):
+                    findings.append(
+                        self._finding(
+                            "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
+                            "error",
+                            "future-locked obligation cannot be resolved before "
+                            "not_before_chapter",
                         )
                     )
             self._check_narrative_order(

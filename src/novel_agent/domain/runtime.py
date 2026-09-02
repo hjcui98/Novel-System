@@ -16,6 +16,7 @@ from novel_agent.domain.model_calls import (
     ModelRole,
     RetrievalInferenceCallRecord,
 )
+from novel_agent.domain.world import PlanLevel
 
 STAGE5_EVENT_SCHEMA_VERSION = SchemaVersion("1.0.0")
 
@@ -504,6 +505,8 @@ class TaskRecord(DomainModel):
     target_chapters: int = Field(default=1, ge=1)
     horizon_start: int | None = Field(default=None, ge=1)
     horizon_end: int | None = Field(default=None, ge=1)
+    plan_level: PlanLevel | None = None
+    planning_generation: int = Field(default=0, ge=0)
     protected_chapter_index: int | None = Field(default=None, ge=1)
     affects_future_plan: bool | None = None
     projection_after: str | None = Field(default=None, pattern=r"^(plan|draft)$")

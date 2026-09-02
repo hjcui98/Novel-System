@@ -46,7 +46,10 @@ from novel_agent.domain.runtime import (
     TaskStatus,
 )
 from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
-from novel_agent.ports.creative_runtime import CandidateMaterializationError
+from novel_agent.ports.creative_runtime import (
+    CandidateMaterializationError,
+    DraftLengthContractError,
+)
 from novel_agent.services.creative_runtime import CreativeRuntimeService
 
 HASH = "sha256:" + "1" * 64
@@ -498,6 +501,200 @@ def _lookahead_policy() -> CreativeRunPolicy:
         enable_planner_lookahead=True,
         runtime_parallelism=2,
     )
+
+
+def _exact_snapshot() -> object:
+    from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
+
+    return DerivedSnapshotLite(
+        snapshot_id=StableId("snapshot.exact"),
+        source_commit=COMMIT,
+        anchor_build_id=StableId("anchor.exact"),
+        anchor_index_version="anchor-v1",
+        grounded_index_version="grounded-v1",
+        embedding_profile="offline-v1",
+        fusion_profile="rrf-v1",
+        build_status=DerivedBuildStatus.EXACT,
+        published_at=NOW,
+    )
+
+
+def test_repair_replaces_blocked_plan_when_lookahead_disabled() -> None:
+    commands = Mock()
+    snapshots = Mock()
+    snapshots.get_for_commit.return_value = _exact_snapshot()
+    projection = _task(
+        task_id=TaskId("task.projection.draft"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=5,
+        target_chapters=20,
+        projection_after="draft",
+        horizon_start=1,
+        horizon_end=5,
+    )
+    blocked = _task(
+        task_id=TaskId("run.recovery.plan.6-10"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        status=TaskStatus.BLOCKED,
+        dependency_task_ids=(projection.task_id,),
+        chapter_index=5,
+        target_chapters=20,
+        horizon_start=6,
+        horizon_end=10,
+        input_artifact_refs=(_ref("2"),),
+    )
+    reader = Mock()
+    reader.list_run.return_value = (projection, blocked)
+    service = _service(commands=commands, snapshots=snapshots, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+    )
+    result = service._repair_post_draft_projection(projection)
+    assert result is not None
+    assert result.reason_code == "blocked_plan_replaced"
+    commands.supersede_task.assert_called_once()
+    created = commands.create_task.call_args.args[0]
+    assert created.task_id != blocked.task_id
+    assert created.task_id.root == "plan.chapter-set.6-10.g1"
+    assert created.planning_generation == 1
+    assert created.plan_level is not None
+    assert created.horizon_start == 6
+    assert created.horizon_end == 10
+    assert created.kind is TaskKind.PLAN_CANDIDATE
+    assert created.status is TaskStatus.READY
+
+
+def test_repair_blocked_plan_waits_for_inexact_snapshot() -> None:
+    from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
+
+    commands = Mock()
+    snapshots = Mock()
+    snapshots.get_for_commit.return_value = DerivedSnapshotLite(
+        snapshot_id=StableId("snapshot.stale"),
+        source_commit=COMMIT,
+        anchor_build_id=StableId("anchor.stale"),
+        anchor_index_version="anchor-v1",
+        grounded_index_version="grounded-v1",
+        embedding_profile="offline-v1",
+        fusion_profile="rrf-v1",
+        build_status=DerivedBuildStatus.PARTIAL,
+        published_at=NOW,
+    )
+    projection = _task(
+        task_id=TaskId("task.projection.draft"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=5,
+        target_chapters=20,
+        projection_after="draft",
+    )
+    blocked = _task(
+        task_id=TaskId("run.recovery.plan.blocked"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        status=TaskStatus.BLOCKED,
+        dependency_task_ids=(projection.task_id,),
+        chapter_index=5,
+        target_chapters=20,
+        horizon_start=6,
+        horizon_end=10,
+    )
+    reader = Mock()
+    reader.list_run.return_value = (projection, blocked)
+    service = _service(commands=commands, snapshots=snapshots, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+    )
+    assert service._repair_post_draft_projection(projection) is None
+    commands.supersede_task.assert_not_called()
+
+
+def test_repair_blocked_plan_waits_for_exact_snapshot() -> None:
+    commands = Mock()
+    snapshots = Mock()
+    snapshots.get_for_commit.return_value = None
+    projection = _task(
+        task_id=TaskId("task.projection.draft"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=5,
+        target_chapters=20,
+        projection_after="draft",
+    )
+    blocked = _task(
+        task_id=TaskId("run.recovery.plan.blocked"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        status=TaskStatus.BLOCKED,
+        dependency_task_ids=(projection.task_id,),
+        chapter_index=5,
+        target_chapters=20,
+        horizon_start=6,
+        horizon_end=10,
+    )
+    reader = Mock()
+    reader.list_run.return_value = (projection, blocked)
+    service = _service(commands=commands, snapshots=snapshots, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+    )
+    assert service._repair_post_draft_projection(projection) is None
+    commands.supersede_task.assert_not_called()
+    commands.create_task.assert_not_called()
+
+
+def test_repair_blocked_plan_without_horizon_uses_rolling_window() -> None:
+    commands = Mock()
+    snapshots = Mock()
+    snapshots.get_for_commit.return_value = _exact_snapshot()
+    projection = _task(
+        task_id=TaskId("task.projection.draft"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=5,
+        target_chapters=20,
+        projection_after="draft",
+    )
+    owner = _task(
+        task_id=TaskId("task.plan.owner"),
+        kind=TaskKind.PLAN_CANDIDATE,
+        purpose=TaskPurpose.NORMAL,
+        status=TaskStatus.SUCCEEDED,
+        chapter_index=0,
+        input_artifact_refs=(_ref("2"),),
+    )
+    blocked = _task(
+        task_id=TaskId("run.recovery.plan.blocked"),
+        kind=TaskKind.PLAN_ACCEPTANCE,
+        status=TaskStatus.BLOCKED,
+        dependency_task_ids=(projection.task_id,),
+        chapter_index=5,
+        target_chapters=20,
+        task_revision=2,
+        planning_generation=2,
+    )
+    reader = Mock()
+    reader.list_run.return_value = (owner, projection, blocked)
+    service = _service(commands=commands, snapshots=snapshots, task_reader=reader)
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        planning_horizon=5,
+    )
+    result = service._repair_post_draft_projection(projection)
+    assert result is not None
+    created = commands.create_task.call_args.args[0]
+    assert created.horizon_start == 6
+    assert created.horizon_end == 10
+    assert created.input_artifact_refs == (_ref("2"),)
+    assert created.task_id.root == "plan.chapter-set.6-10.g3"
+    assert created.planning_generation == 3
 
 
 def test_repair_post_draft_projection_skips_when_lookahead_disabled() -> None:
@@ -1047,6 +1244,25 @@ def test_advance_chapter_settlement_bounds_max_length_effect_identity() -> None:
         f"chapter-settlement.{accepted.candidate.candidate_hash}.attempt.1"
     )
     assert len(requested.effect_identity.root) <= 128
+
+
+def test_advance_draft_commit_length_contract_error_blocks() -> None:
+    attempt, fence = _fence_pair()
+    commands = Mock()
+    commands.heartbeat_interval_seconds = 60.0
+    commands.claim.return_value = (attempt, fence)
+    commands.claim_writer_lane.return_value = fence
+    commands.settle_attempt.return_value = _task(
+        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.BLOCKED
+    )
+    materializer = Mock()
+    materializer.materialize.side_effect = DraftLengthContractError("too short")
+    service = _service(commands=commands, draft_materializer=materializer)
+    commands.get_task.return_value = _task(kind=TaskKind.DRAFT_COMMIT)
+    cast(Any, service)._accepted_binding = Mock(return_value=Mock())
+    result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
+    assert result.reason_code == "draft_length_contract_rejected"
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
 
 
 def test_advance_plan_commit_materializer_error_blocks() -> None:

@@ -663,6 +663,13 @@ capacity cannot be proved available.
 
 ## 7. Current permitted transition
 
+On the `ee8849a` production baseline, a bounded hierarchy/Skill patch is also authorized:
+Gate 0 (cadence, BLOCKED replacement, Canon length) → Patch A (future-locked obligation
+fail-close) → Patch B (STORY/ARC_VOLUME PlanLevel) → Patch C (limited progressive Skill).
+Normative content lives in the Stage 4/5 designs; the source review input is
+`docs/Novel-System_分层规划与渐进Skill_收敛版补丁执行设计_v2_ee8849a.md`. It must not change
+V0.5 four-condition semantics or migrate old 1–23 runs in place.
+
 The only current execution order is U1→U8, with the mandatory U3.5 feasibility checkpoint, in
 `docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`:
 

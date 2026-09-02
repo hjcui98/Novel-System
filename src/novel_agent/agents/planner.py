@@ -56,6 +56,32 @@ PLANNER_MODES = (
     AgentMode.REPLAN,
 )
 DEFAULT_PLANNER_CONTRACT_VERSION = SchemaVersion("1.0.0")
+_PLANNER_CORE_SKILL_IDS = (StableId("skill.planning-inquiry"),)
+_PLANNER_OPTIONAL_SKILL_IDS = (
+    StableId("skill.alternative-comparison"),
+    StableId("skill.obligation-scheduling"),
+    StableId("skill.character-arc-hook-payoff"),
+)
+PLANNER_SKILLS_BY_MODE: dict[AgentMode, tuple[StableId, ...]] = {
+    mode: (
+        *_PLANNER_CORE_SKILL_IDS,
+        StableId(f"skill.planner.{mode.value}"),
+        *_PLANNER_OPTIONAL_SKILL_IDS,
+    )
+    for mode in PLANNER_MODES
+}
+
+
+def planner_skill_ids_for_mode(mode: AgentMode) -> tuple[StableId, ...]:
+    return PLANNER_SKILLS_BY_MODE[mode]
+
+
+def constrain_planner_selected_skills(
+    mode: AgentMode, selected: tuple[StableId, ...]
+) -> tuple[StableId, ...]:
+    allowed = set(planner_skill_ids_for_mode(mode))
+    return tuple(item for item in selected if item in allowed)
+
 
 INQUIRY_OUTPUT_CONSTRAINTS = (
     "OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. Do not quote or restate "
@@ -131,6 +157,16 @@ def build_planner_contract_bundle(
     reviewer_prompt_path = prompt_root / "plan_reviewer_v1.md"
     inquiry_skill_path = skill_root / "planning_inquiry_v1.md"
     reviewer_skill_path = skill_root / "plan_review_v1.md"
+    reviewer_lens_paths = (
+        (
+            "skill.plan-review.temporal-obligation",
+            skill_root / "plan_review_temporal_obligation_v1.md",
+        ),
+        (
+            "skill.plan-review.parent-scope",
+            skill_root / "plan_review_parent_scope_v1.md",
+        ),
+    )
     shared_planner_skill_paths = (
         ("skill.alternative-comparison", skill_root / "alternative_comparison_v1.md"),
         ("skill.obligation-scheduling", skill_root / "obligation_scheduling_v1.md"),
@@ -169,6 +205,7 @@ def build_planner_contract_bundle(
     reviewer_prompt = prompt_ref("prompt.plan-reviewer", reviewer_prompt_path)
     inquiry_skill = skill_ref("skill.planning-inquiry", inquiry_skill_path)
     reviewer_skill = skill_ref("skill.plan-review", reviewer_skill_path)
+    reviewer_lenses = tuple(skill_ref(identity, path) for identity, path in reviewer_lens_paths)
     shared_planner_skills = tuple(
         skill_ref(identity, path) for identity, path in shared_planner_skill_paths
     )
@@ -264,7 +301,7 @@ def build_planner_contract_bundle(
                     output_schema=review_output,
                     system_prompt=system,
                     task_prompt=reviewer_prompt,
-                    skills=(reviewer_skill,),
+                    skills=(reviewer_skill, *reviewer_lenses),
                     tool_policy=reviewer_policy,
                 )
             )
@@ -424,7 +461,9 @@ class PlannerAgent:
                     memory_questions=draft.memory_questions,
                     assumptions=draft.assumptions,
                     unresolved=draft.unresolved,
-                    selected_skill_ids=draft.selected_skill_ids,
+                    selected_skill_ids=constrain_planner_selected_skills(
+                        task.mode, draft.selected_skill_ids
+                    ),
                     used_context_item_ids=draft.used_context_item_ids,
                 ),
                 None,
@@ -449,7 +488,9 @@ class PlannerAgent:
                 plan_proposal=result.plan_proposal,
                 assumptions=draft.assumptions,
                 unresolved=draft.unresolved,
-                selected_skill_ids=draft.selected_skill_ids,
+                selected_skill_ids=constrain_planner_selected_skills(
+                    task.mode, draft.selected_skill_ids
+                ),
                 used_context_item_ids=draft.used_context_item_ids,
             ),
             result,

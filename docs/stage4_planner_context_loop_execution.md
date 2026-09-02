@@ -22,8 +22,9 @@
 > 当前实现证据：`codex/stage4-planner-context-loop`；`2d76c3c` 已形成 Planner Context Loop
 > candidate，`88e1027` 已接共享 Context Runtime。全量质量、真实规划评价和独立 Gate 尚待完成。
 
-> Stage 5 production handoff：`ProductionStage4InvocationFactory` 已把 Stage 5 durable task 的 author-intent
-> refs、current roots、exact snapshot 和 rolling horizon 投影成正式 `CHAPTER_SET` request；CLI/纵向 runner
+> Stage 5 production handoff：`ProductionStage4InvocationFactory` 按 `PlanLevel` 投影 STORY /
+> ARC_VOLUME / CHAPTER_SET；CHAPTER_SET 仍要求 rolling horizon 与每章 ChapterGoal，STORY/ARC_VOLUME
+> 的范围写在 PlanNode 上。CHAPTER_SET 默认不再灌入完整 raw brief。CLI/纵向 runner
 > 只经显式 production assembly 调用 `Stage4PlanningLeafAdapter`。20→25 focused evidence 已确认请求覆盖
 > 21～25；真实 Planner 语义运行仍待 endpoint 空闲。
 

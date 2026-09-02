@@ -46,6 +46,11 @@ EDITOR_DENIED_TOOLS = (
     "canonical.commit",
     "root.update",
 )
+_EDITOR_LENS_ASSETS: tuple[tuple[str, str], ...] = (
+    ("skill.editor.chapter-length", "editor_chapter_length_v1.md"),
+    ("skill.editor.plan-adherence-hook-payoff", "editor_plan_adherence_hook_payoff_v1.md"),
+    ("skill.editor.pacing-repetition", "editor_pacing_repetition_v1.md"),
+)
 _MODE_ASSETS: dict[AgentMode, tuple[str, str, str, str]] = {
     AgentMode.REVIEW: (
         "prompt.editor-review",
@@ -186,6 +191,20 @@ def build_editor_contract_bundle(
                     skills=(skill_ref,),
                     tool_policy=policy,
                 )
+            )
+        )
+    for lens_id, lens_filename in _EDITOR_LENS_ASSETS:
+        lens_path = skill_directory / lens_filename
+        lens_digest = content_hash(lens_path.read_bytes())
+        skill_templates.append(
+            SkillTemplate(
+                StableId(lens_id),
+                EDITOR_CONTRACT_VERSION,
+                lens_path,
+                lens_digest,
+                summary=lens_id.removeprefix("skill.editor."),
+                tags=("editor", "lens"),
+                applicable_modes=(AgentMode.REVIEW.value,),
             )
         )
     return EditorContractBundle(

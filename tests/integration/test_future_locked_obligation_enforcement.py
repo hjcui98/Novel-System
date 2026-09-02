@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+from pydantic import ValidationError
+
+from novel_agent.adapters.runtime.materializers import PlanCandidateMaterializer
+from novel_agent.adapters.runtime.stage3_writer import ProductionWritingRequestFactory
+from novel_agent.domain.artifacts import ArtifactRef, RootKind, RootManifest
+from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument, TextRootDocument
+from novel_agent.domain.changes import (
+    CandidateChangeBundle,
+    ChangeOperation,
+    ChangeOperationType,
+    ObservedChangeSet,
+    ValidationStatus,
+    WorldRecordKind,
+)
+from novel_agent.domain.creative_runtime import CandidateBinding, CandidateKind
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+)
+from novel_agent.domain.memory import (
+    ObligationKind,
+    ObligationStatus,
+    PlanObligation,
+    WorldRootDocument,
+)
+from novel_agent.domain.planning import PlannerContextSection
+from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
+from novel_agent.domain.stage2 import AgentMode, PlanProposal, ProposalProvenance, ProposedItem
+from novel_agent.domain.world import Entity, PlanNode
+from novel_agent.ports.creative_runtime import CandidateMaterializationError
+from novel_agent.services.content_addressing import world_root_content_id
+from novel_agent.services.planner_context_assembler import PlannerContextAssembler
+from novel_agent.services.validation import Stage1Validator
+from tests.factories import make_manifest
+from tests.unit.test_stage4_planning_contracts import _inquiry, _put, _repo, _request
+
+HASH = ArtifactId("sha256:" + "1" * 64)
+COMMIT = CommitId("sha256:" + "a" * 64)
+VERSION = SchemaVersion("1.0.0")
+YINMING = StableId("obligation.yinming")
+
+
+def _yinming(*, status: ObligationStatus = ObligationStatus.OPEN) -> PlanObligation:
+    return PlanObligation(
+        obligation_id=YINMING,
+        kind=ObligationKind.PROMISE,
+        description="银铭最终获得",
+        status=status,
+        not_before_chapter=85,
+        target_chapter_start=90,
+        target_chapter_end=100,
+    )
+
+
+def _world(obligation: PlanObligation) -> WorldRootDocument:
+    entity = Entity(
+        entity_id=StableId("entity.lin"),
+        entity_type="character",
+        internal_label="林澈",
+    )
+    world = WorldRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        source_commit=COMMIT,
+        entities=(entity,),
+        obligations=(obligation,),
+    )
+    return world.model_copy(update={"root_hash": world_root_content_id(world)})
+
+
+def _text(*, last_chapter: int = 24) -> TextRootDocument:
+    from novel_agent.domain.benchmark import ChapterDocument, SceneDocument
+    from novel_agent.domain.text import TextBlock
+
+    chapters = tuple(
+        ChapterDocument(
+            chapter_id=StableId(f"chapter.{index}"),
+            chapter_index=index,
+            title=f"Chapter {index}",
+            scenes=(
+                SceneDocument(
+                    scene_id=StableId(f"scene.{index}"),
+                    scene_index=0,
+                    blocks=(
+                        TextBlock(
+                            block_id=StableId(f"block.{index}"),
+                            chapter_id=StableId(f"chapter.{index}"),
+                            scene_id=StableId(f"scene.{index}"),
+                            narrative_index=0,
+                            text="visible text",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        for index in range(1, last_chapter + 1)
+    )
+    return TextRootDocument(root_hash=HASH, schema_version=VERSION, chapters=chapters)
+
+
+def _plan() -> PlanRootDocument:
+    parent = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="Opening volume.",
+    )
+    current = PlanNode(
+        plan_node_id=StableId("plan.24-28"),
+        node_type="chapter_set",
+        title="Chapters 24-28",
+        summary="Local investigation.",
+        parent_id=parent.plan_node_id,
+        obligation_ids=(YINMING,),
+    )
+    far = PlanNode(
+        plan_node_id=StableId("plan.volume8"),
+        node_type="arc_volume",
+        title="Volume 8 银铭终局",
+        summary="银铭最终获得与终局真相。",
+    )
+    return PlanRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        nodes=(parent, current, far),
+        chapter_goals=(
+            ChapterGoal(
+                goal_id=StableId("goal.24"),
+                chapter_index=24,
+                summary="Investigate the wreck.",
+                obligation_ids=(YINMING,),
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "layer",
+    [
+        "brief_isolation",
+        "writer_constraints",
+        "writer_outline",
+        "plan_materializer",
+        "plan_reviewer_host",
+        "curator_validator",
+    ],
+)
+def test_yinming_cannot_payoff_at_chapter_24(layer: str, tmp_path: Path) -> None:
+    obligation = _yinming()
+    world = _world(obligation)
+    if layer == "brief_isolation":
+        repo = _repo(tmp_path)
+        brief = _put(
+            repo,
+            "完整作者 brief: 第90-100章银铭最终获得, 卷终真相与内府终局.",
+        )
+        plan_ref = _put(repo, _plan().model_dump_json())
+        world_ref = _put(repo, world.model_dump_json())
+        text_ref = _put(repo, _text().model_dump_json())
+        request = _request(
+            AgentMode.CHAPTER_SET,
+            brief,
+            accepted=(plan_ref, world_ref, text_ref),
+        )
+        inquiry = _inquiry(AgentMode.CHAPTER_SET, brief)
+        inquiry_ref = _put(repo, inquiry.model_dump_json())
+        from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
+
+        memory = Stage1ContextPackage(
+            context_id=StableId("context.yinming"),
+            base_commit=request.task.base_commit,
+            snapshot_id=request.snapshot_id or StableId("snapshot.stage4"),
+            task_contract="stage4",
+            budget_report=ContextBudgetReport(
+                token_budget=8_000,
+                mandatory_tokens=0,
+                optional_tokens=0,
+                full_chapter_read_count=0,
+            ),
+        )
+        memory_ref = _put(repo, memory.model_dump_json())
+        package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+            request=request,
+            inquiry=inquiry,
+            inquiry_ref=inquiry_ref,
+            stage1_context=memory,
+            stage1_context_ref=memory_ref,
+        )
+        rendered = package.rendered_context
+        assert "完整作者 brief" not in rendered
+        assert "卷终真相" not in rendered
+        assert any(item.section is PlannerContextSection.ACCEPTED_PLAN for item in package.items)
+        assert "SETUP/PROGRESS" in rendered
+        return
+
+    if layer == "writer_constraints":
+        constraints, forbids = ProductionWritingRequestFactory._future_lock_constraints(world, 24)
+        assert any("不得 RESOLVE/PAYOFF" in item and "85" in item for item in constraints)
+        assert any("不得在本章完成银铭最终获得" in item for item in forbids)
+        return
+
+    if layer == "writer_outline":
+        from novel_agent.domain.runtime import TaskId
+
+        context = ProductionWritingRequestFactory._planning_context(
+            TaskRecord(
+                task_id=TaskId("task.writer.24"),
+                run_id=RunId("run.yinming"),
+                project_id=ProjectId("project.test"),
+                kind=TaskKind.DRAFT_CANDIDATE,
+                task_revision=0,
+                status=TaskStatus.READY,
+                basis_commit=COMMIT,
+                policy_hash="sha256:" + "1" * 64,
+                permission_hash="sha256:" + "1" * 64,
+                chapter_index=24,
+                target_chapters=28,
+                horizon_start=24,
+                horizon_end=28,
+            ),
+            _plan(),
+            "Investigate the wreck.",
+        )
+        titles = {node.title for node in context.visible_outline_nodes}
+        assert "Volume 8 银铭终局" not in titles
+        assert "Chapters 24-28" in titles
+        assert "Volume 1" in titles
+        return
+
+    if layer == "plan_reviewer_host":
+        from novel_agent.agents.plan_reviewer import apply_host_plan_review_constraints
+        from novel_agent.domain.planning import PlanReviewDraft, ReviewDecision, ReviewTargetKind
+
+        draft = PlanReviewDraft(
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            decision=ReviewDecision.ACCEPT,
+        )
+        proposal = {
+            "items": [
+                {
+                    "item_id": "goal.24",
+                    "kind": "payoff",
+                    "payload": {
+                        "chapter_index": 24,
+                        "summary": "银铭到手",
+                        "status": "resolved",
+                        "obligation_kind": "promise",
+                        "not_before_chapter": 85,
+                    },
+                }
+            ]
+        }
+        gated = apply_host_plan_review_constraints(
+            draft,
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            target_payload=json.dumps(proposal),
+        )
+        assert gated.decision is ReviewDecision.REVISE
+        assert any(
+            issue.kind.value == "early_resolution_of_future_locked_obligation"
+            for issue in gated.issues
+        )
+        return
+
+    if layer == "plan_materializer":
+        materializer = PlanCandidateMaterializer(Mock(), Mock(), schema_version=VERSION)
+        item = ProposedItem(
+            item_id=StableId("goal.24"),
+            kind="payoff",
+            payload={
+                "chapter_index": 24,
+                "summary": "银铭到手",
+                "status": "resolved",
+                "obligation_ids": [YINMING.root],
+                "obligation_kind": "promise",
+                "not_before_chapter": 85,
+            },
+            provenance=ProposalProvenance.PLANNER_PROPOSED,
+        )
+        proposal = PlanProposal.model_construct(
+            proposal_id=StableId("proposal.yinming.payoff"),
+            project_id=ProjectId("project.test"),
+            mode=AgentMode.CHAPTER_SET,
+            base_commit=COMMIT,
+            items=(item,),
+            coverage=1.0,
+            receipt=object(),
+        )
+        materializer._read = Mock(  # type: ignore[method-assign]
+            side_effect=[world, _text(last_chapter=23)]
+        )
+        with pytest.raises(
+            CandidateMaterializationError,
+            match="future-locked obligation cannot be resolved",
+        ):
+            materializer._validate_temporal_obligation_use(
+                current=_plan(),
+                incoming_nodes=(),
+                incoming_goals=(
+                    ChapterGoal(
+                        goal_id=StableId("goal.24"),
+                        chapter_index=24,
+                        summary="银铭到手",
+                        obligation_ids=(YINMING,),
+                    ),
+                ),
+                proposal=proposal,
+                base=make_manifest(),
+                candidate=CandidateBinding(
+                    candidate_id=StableId("candidate.yinming"),
+                    kind=CandidateKind.PLAN,
+                    artifact_ref=ArtifactRef(
+                        artifact_id=HASH,
+                        media_type="application/json",
+                        byte_length=1,
+                        schema_version=VERSION,
+                    ),
+                    candidate_hash=HASH.root,
+                    basis_commit=COMMIT,
+                    horizon_start=24,
+                    horizon_end=28,
+                ),
+            )
+        return
+
+    world = _world(_yinming())
+    resolved = _yinming(status=ObligationStatus.RESOLVED)
+    proposed = world.model_copy(
+        update={
+            "obligations": (resolved,),
+        }
+    )
+    proposed = proposed.model_copy(update={"root_hash": world_root_content_id(proposed)})
+    evidence = _text(last_chapter=24)
+    operation = ChangeOperation(
+        operation_id=StableId("op.resolve.yinming"),
+        operation=ChangeOperationType.REPLACE,
+        root_kind=RootKind.WORLD,
+        target_id=YINMING,
+        payload={
+            "record_type": WorldRecordKind.OBLIGATION.value,
+            "record": resolved.model_dump(mode="json"),
+        },
+        evidence_refs=(),
+    )
+    bundle = CandidateChangeBundle(
+        bundle_id=StableId("bundle.yinming"),
+        project_id=ProjectId("project.test"),
+        run_id=RunId("run.yinming"),
+        base_commit=COMMIT,
+        observed_changes=ObservedChangeSet(
+            change_set_id=StableId("changes.yinming"),
+            base_commit=COMMIT,
+            source_artifact=ArtifactRef(
+                artifact_id=HASH,
+                media_type="application/json",
+                byte_length=1,
+                schema_version=VERSION,
+            ),
+            operations=(operation,),
+        ),
+        proposed_roots=RootManifest.model_validate(make_manifest().model_dump(mode="python")),
+        produced_artifacts=(),
+    )
+    report = Stage1Validator().validate(bundle, world, proposed, evidence)
+    assert report.status is ValidationStatus.FAILED
+    assert any(
+        finding.code == "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE" for finding in report.findings
+    )
+
+
+def test_long_range_promise_without_not_before_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="target chapter window must be complete"):
+        PlanObligation(
+            obligation_id=StableId("obligation.broken-window"),
+            kind=ObligationKind.PROMISE,
+            description="A long-range promise",
+            status=ObligationStatus.OPEN,
+            target_chapter_start=90,
+        )
+    materializer = PlanCandidateMaterializer(Mock(), Mock(), schema_version=VERSION)
+    item = ProposedItem(
+        item_id=StableId("item.promise"),
+        kind="promise",
+        payload={"summary": "长期伏笔", "obligation_kind": "promise"},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+    with pytest.raises(
+        CandidateMaterializationError,
+        match="requires not_before_chapter",
+    ):
+        materializer._reject_item_without_required_window(item)
+    item_ok = ProposedItem(
+        item_id=StableId("item.foreshadowing"),
+        kind="foreshadowing",
+        payload={
+            "summary": "长期伏笔",
+            "obligation_kind": "foreshadowing",
+            "not_before_chapter": 85,
+        },
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+    materializer._reject_item_without_required_window(item_ok)
+    from novel_agent.agents.plan_reviewer import apply_host_plan_review_constraints
+    from novel_agent.domain.planning import PlanReviewDraft, ReviewDecision, ReviewTargetKind
+
+    missing = apply_host_plan_review_constraints(
+        PlanReviewDraft(
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            decision=ReviewDecision.ACCEPT,
+        ),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=json.dumps(
+            {
+                "items": [
+                    {
+                        "item_id": "item.promise",
+                        "kind": "promise",
+                        "payload": {"summary": "长期伏笔", "obligation_kind": "promise"},
+                    }
+                ]
+            }
+        ),
+    )
+    assert missing.decision is ReviewDecision.HUMAN_REQUIRED
+    assert any(
+        issue.kind.value == "long_range_payoff_without_time_window" for issue in missing.issues
+    )

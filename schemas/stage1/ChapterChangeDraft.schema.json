@@ -228,6 +228,19 @@
           "title": "Kind",
           "type": "string"
         },
+        "not_before_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Before Chapter"
+        },
         "owner_ids": {
           "default": [],
           "items": {
@@ -246,6 +259,32 @@
           ],
           "title": "Status",
           "type": "string"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
         }
       },
       "required": [

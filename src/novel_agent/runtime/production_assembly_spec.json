@@ -17,5 +17,24 @@
   },
   "expected_prompt_ids": ["prompt.system-policy"],
   "expected_skill_ids": ["skill.scene-composition"],
+  "writer_skill_ids": ["skill.scene-composition"],
+  "planner_skill_ids": [
+    "skill.planning-inquiry",
+    "skill.planner.chapter_set",
+    "skill.alternative-comparison",
+    "skill.obligation-scheduling",
+    "skill.character-arc-hook-payoff"
+  ],
+  "editor_skill_ids": [
+    "skill.editor-review",
+    "skill.editor.chapter-length",
+    "skill.editor.plan-adherence-hook-payoff",
+    "skill.editor.pacing-repetition"
+  ],
+  "plan_reviewer_skill_ids": [
+    "skill.plan-review",
+    "skill.plan-review.temporal-obligation",
+    "skill.plan-review.parent-scope"
+  ],
   "reranker_required": false
 }

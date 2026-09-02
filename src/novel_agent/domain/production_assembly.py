@@ -33,7 +33,17 @@ class ProductionAssemblySpec(DomainModel):
     model_policy: ProductionModelPolicy
     expected_prompt_ids: tuple[StableId, ...]
     expected_skill_ids: tuple[StableId, ...]
+    writer_skill_ids: tuple[StableId, ...] = ()
+    planner_skill_ids: tuple[StableId, ...] = ()
+    editor_skill_ids: tuple[StableId, ...] = ()
+    plan_reviewer_skill_ids: tuple[StableId, ...] = ()
     reranker_required: bool = False
+
+    def skills_for_writer(self) -> tuple[StableId, ...]:
+        return self.writer_skill_ids or self.expected_skill_ids
+
+    def skills_for_planner(self) -> tuple[StableId, ...]:
+        return self.planner_skill_ids or self.expected_skill_ids
 
 
 class ResolvedEndpointRevision(DomainModel):

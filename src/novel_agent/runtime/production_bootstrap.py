@@ -365,6 +365,14 @@ def load_production_assembly_spec(path: Path | None = None) -> ProductionAssembl
     payload = json.loads((path or SPEC_PATH).read_text(encoding="utf-8"))
     payload["expected_prompt_ids"] = tuple(payload["expected_prompt_ids"])
     payload["expected_skill_ids"] = tuple(payload["expected_skill_ids"])
+    for key in (
+        "writer_skill_ids",
+        "planner_skill_ids",
+        "editor_skill_ids",
+        "plan_reviewer_skill_ids",
+    ):
+        if key in payload:
+            payload[key] = tuple(payload[key])
     return ProductionAssemblySpec.model_validate(payload)
 
 
@@ -425,7 +433,7 @@ def _default_writing_policy(spec: ProductionAssemblySpec) -> WritingRequestPolic
             target_characters=5_000,
             maximum_characters=8_000,
         ),
-        allowed_skills=spec.expected_skill_ids,
+        allowed_skills=spec.skills_for_writer(),
         budgets=WritingLoopBudgets(
             max_reactive_memory_rounds=2,
             max_memory_questions=6,
@@ -453,7 +461,7 @@ def _default_stage4_policy(spec: ProductionAssemblySpec) -> Stage4InvocationPoli
         ),
         configuration_fingerprint=fingerprint,
         model_fingerprint=fingerprint,
-        allowed_skill_ids=spec.expected_skill_ids,
+        allowed_skill_ids=spec.skills_for_planner(),
         model_max_output_tokens=spec.model_policy.default_output_limit,
     )
 

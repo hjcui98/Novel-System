@@ -58,6 +58,14 @@ class NarrativeOrder(DomainModel):
     block_index: int | None = Field(default=None, ge=0)
 
 
+class PlanLevel(StrEnum):
+    STORY = "story"
+    ARC_VOLUME = "arc_volume"
+    CHAPTER_SET = "chapter_set"
+    CHAPTER = "chapter"
+    SCENE = "scene"
+
+
 class PlanNode(DomainModel):
     plan_node_id: StableId
     node_type: str = Field(min_length=1)
@@ -65,6 +73,23 @@ class PlanNode(DomainModel):
     summary: str
     parent_id: StableId | None = None
     obligation_ids: tuple[StableId, ...] = ()
+    plan_level: PlanLevel | None = None
+    chapter_start: int | None = Field(default=None, ge=1)
+    chapter_end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> PlanNode:
+        if (self.chapter_start is None) != (self.chapter_end is None):
+            raise ValueError("plan node chapter range must be complete")
+        if (
+            self.chapter_start is not None
+            and self.chapter_end is not None
+            and self.chapter_end < self.chapter_start
+        ):
+            raise ValueError("plan node chapter range is reversed")
+        if self.plan_level is PlanLevel.CHAPTER and self.chapter_start != self.chapter_end:
+            raise ValueError("CHAPTER nodes require chapter_start == chapter_end")
+        return self
 
 
 class Entity(DomainModel):

@@ -109,7 +109,34 @@ class CuratorObligationRecord(DomainModel):
     description: CuratorShortText
     status: Literal["open", "progressed", "resolved", "abandoned"]
     owner_ids: tuple[StableId, ...] = Field(default=(), max_length=6)
+    not_before_chapter: int | None = Field(default=None, ge=1)
+    target_chapter_start: int | None = Field(default=None, ge=1)
+    target_chapter_end: int | None = Field(default=None, ge=1)
     due_chapter: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> CuratorObligationRecord:
+        if (self.target_chapter_start is None) != (self.target_chapter_end is None):
+            raise ValueError("target chapter window must be complete")
+        if (
+            self.target_chapter_start is not None
+            and self.target_chapter_end is not None
+            and self.target_chapter_end < self.target_chapter_start
+        ):
+            raise ValueError("target chapter window is reversed")
+        if (
+            self.not_before_chapter is not None
+            and self.target_chapter_start is not None
+            and self.target_chapter_start < self.not_before_chapter
+        ):
+            raise ValueError("target window starts before not-before boundary")
+        if (
+            self.due_chapter is not None
+            and self.target_chapter_end is not None
+            and self.due_chapter < self.target_chapter_end
+        ):
+            raise ValueError("due chapter precedes target window end")
+        return self
 
 
 CuratorTypedRecord = (

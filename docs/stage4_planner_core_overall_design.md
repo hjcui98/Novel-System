@@ -119,6 +119,29 @@ Planner 使用 Profile-pinned bootstrap/story/arc/chapter-set/chapter/scene/repl
 内部 `REQUEST_MEMORY`、`PLAN_REVIEW_SETTLED` 和 `CONTEXT_PRESSURE` 直接写 RunEvent，不走外部 Hook。
 Planner/Reviewer 不直接使用底层 Retrieval、Memory write、Commit 或 PlanRoot mutation Tool。
 
+## 7.1 Production hierarchy and future-locked obligations (2026-09-02)
+
+Production Planner is no longer CHAPTER_SET-only. `PlanLevel` is the structural authority
+(`STORY / ARC_VOLUME / CHAPTER_SET / CHAPTER / SCENE`). `AgentMode` maps 1:1 except `REPLAN` and
+`PROJECT_BOOTSTRAP`, which are actions/bootstrap, not levels. `PlanNode.node_type` remains a
+literary label and never overrides `PlanLevel`.
+
+One post-Genesis `PLAN_CANDIDATE` produces exactly one `PlanLevel`. STORY / ARC_VOLUME do not use
+TaskRecord rolling `horizon_start/end`; their chapter range lives on `PlanNode.chapter_start/end`.
+CHAPTER_SET keeps rolling horizon and the per-chapter ChapterGoal coverage gate.
+
+CHAPTER_SET context no longer consumes the full raw author brief by default. Parent nodes, current
+horizon goals, active obligations and future-locked obligation summaries remain visible.
+`PROMISE` / `FORESHADOWING` without `not_before_chapter` are rejected at trusted Plan validation.
+Resolving an obligation before `not_before_chapter` is fail-closed in Plan review/materializer and
+Curator write validation.
+
+Lookahead stays frozen (`enable_planner_lookahead=False`) for this hierarchy migration. Event-triggered
+multi-level replan and typed `PlanningImpact` remain later admission.
+
+Review input folded from
+`docs/Novel-System_分层规划与渐进Skill_收敛版补丁执行设计_v2_ee8849a.md`.
+
 ## 8. 终态与验收
 
 终态：`PLAN_CANDIDATE_READY / REVIEW_REQUIRED / SUSPENDED / BLOCKED`。

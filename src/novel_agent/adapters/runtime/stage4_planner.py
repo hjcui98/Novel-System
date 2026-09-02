@@ -54,8 +54,8 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     ContractRef,
     PlanningTask,
-    ReferenceRootDocument,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
@@ -107,25 +107,48 @@ class ProductionStage4InvocationFactory:
         self._policy = policy
         self._model_request_namespace = model_request_namespace
 
+    @staticmethod
+    def _mode(request: PlanningLoopRequest) -> AgentMode:
+        if request.purpose.value == "replan":
+            return AgentMode.REPLAN
+        if request.plan_level is PlanLevel.STORY:
+            return AgentMode.STORY
+        if request.plan_level is PlanLevel.ARC_VOLUME:
+            return AgentMode.ARC_VOLUME
+        if request.plan_level is PlanLevel.CHAPTER:
+            return AgentMode.CHAPTER
+        if request.plan_level is PlanLevel.SCENE:
+            return AgentMode.SCENE
+        return AgentMode.CHAPTER_SET
+
+    def _allowed_skill_ids(self, mode: AgentMode) -> tuple[StableId, ...]:
+        from novel_agent.agents.planner import planner_skill_ids_for_mode
+
+        mode_ids = planner_skill_ids_for_mode(mode)
+        policy_ids = self._policy.allowed_skill_ids
+        if not policy_ids:
+            return mode_ids
+        allowed = tuple(item for item in mode_ids if item in set(policy_ids))
+        return allowed or mode_ids
+
     def __call__(self, request: PlanningLoopRequest) -> Stage4PlanningInvocation:
         if request.basis_snapshot is None:
             raise ValueError("production Stage 4 invocation requires an exact snapshot")
-        if request.horizon_start is None or request.horizon_end is None:
+        mode = self._mode(request)
+        if mode is AgentMode.CHAPTER_SET and (
+            request.horizon_start is None or request.horizon_end is None
+        ):
             raise ValueError("production Stage 4 invocation requires a rolling horizon")
+        if mode in {AgentMode.STORY, AgentMode.ARC_VOLUME} and (
+            request.horizon_start is not None or request.horizon_end is not None
+        ):
+            raise ValueError("STORY/ARC_VOLUME production tasks cannot use rolling horizon")
         if self._commits.current_commit(request.project_id) != request.basis_commit:
             raise ValueError("Stage 4 task basis is not the current project commit")
         manifest = self._commits.load_manifest(request.basis_commit)
         if manifest.project_id != request.project_id:
             raise ValueError("Stage 4 task and canonical manifest belong to different projects")
         author_intent = request.input_artifact_refs
-        if not author_intent:
-            reference = ReferenceRootDocument.model_validate_json(
-                self._artifacts.read_verified(manifest.reference_root),
-                strict=True,
-            )
-            author_intent = tuple(asset.artifact for asset in reference.assets)
-        if not author_intent:
-            raise ValueError("Stage 4 CHAPTER_SET requires author-intent artifacts")
         text = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
         )
@@ -142,7 +165,11 @@ class ProductionStage4InvocationFactory:
                 f"Stage 4 task starts at chapter {request.chapter_index}, "
                 f"but TextRoot ends at {latest}"
             )
-        if request.horizon_start <= request.chapter_index:
+        if (
+            mode is AgentMode.CHAPTER_SET
+            and request.horizon_start is not None
+            and request.horizon_start <= request.chapter_index
+        ):
             raise ValueError("Stage 4 horizon must begin after the committed chapter")
         source_ids = tuple(
             StableId(f"source.author-intent.{ref.artifact_id.root[-24:]}") for ref in author_intent
@@ -172,11 +199,13 @@ class ProductionStage4InvocationFactory:
                 f"planning-task.{request.basis_commit.root}",
             ),
             project_id=request.project_id,
-            mode=AgentMode.CHAPTER_SET,
+            mode=mode,
             base_commit=request.basis_commit,
             source_ids=source_ids,
             creative_scope=(
-                f"chapters:{request.horizon_start}-{request.horizon_end}",
+                f"chapters:{request.horizon_start}-{request.horizon_end}"
+                if request.horizon_start is not None and request.horizon_end is not None
+                else f"level:{mode.value}",
                 f"purpose:{request.purpose.value}",
             ),
         )
@@ -199,7 +228,7 @@ class ProductionStage4InvocationFactory:
             explicit_author_overrides=self._policy.explicit_author_overrides,
             horizon_start=request.horizon_start,
             horizon_end=request.horizon_end,
-            allowed_skill_ids=self._policy.allowed_skill_ids,
+            allowed_skill_ids=self._allowed_skill_ids(mode),
             budgets=effective_budgets,
             configuration_fingerprint=self._policy.configuration_fingerprint,
             model_fingerprint=self._policy.model_fingerprint,

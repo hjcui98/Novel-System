@@ -31,7 +31,7 @@ from novel_agent.domain.creative_runtime import (
     commit_task_from_acceptance,
 )
 from novel_agent.domain.generation import WritingLoopRequest
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.memory import FreshnessMode, FreshnessRequest, FreshnessStatus
 from novel_agent.domain.memory_write import (
     MemoryRepairFinding,
@@ -49,12 +49,14 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.domain.writer_context import MemoryContextBudgetExhaustedError
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializationError,
     CandidateMaterializer,
     ChapterSettlementPort,
+    DraftLengthContractError,
     MemoryMaintenancePort,
     PlanningLeafPort,
     RuntimeTaskReader,
@@ -359,6 +361,7 @@ class CreativeRuntimeService:
                 chapter_index=task.chapter_index,
                 horizon_start=task.horizon_start,
                 horizon_end=task.horizon_end,
+                plan_level=task.plan_level,
                 protected_chapter_index=task.protected_chapter_index,
             )
             try:
@@ -816,6 +819,18 @@ class CreativeRuntimeService:
             )
             try:
                 bundle, report = materializer.materialize(accepted)
+            except DraftLengthContractError:
+                settled = self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.FAILED,
+                    terminal_status=TaskStatus.BLOCKED,
+                    failure_class=FailureClass.VALIDATION_REJECTED,
+                )
+                return self._result(
+                    settled,
+                    CreativeRunTerminal.REVIEW_REQUIRED,
+                    "draft_length_contract_rejected",
+                )
             except CandidateMaterializationError:
                 settled = self._commands.settle_attempt(
                     fence,
@@ -1626,14 +1641,16 @@ class CreativeRuntimeService:
             previous.target_chapters,
             previous.chapter_index + policy.planning_horizon,
         )
+        plan_level = previous.plan_level or PlanLevel.CHAPTER_SET
         return TaskRecord(
-            task_id=TaskId(
-                bounded_runtime_identity(
-                    f"{previous.run_id.root}.plan.{horizon_start}-{horizon_end}",
-                    f"plan.{previous.project_id.root}.{previous.basis_commit.root}."
-                    f"{horizon_start}-{horizon_end}",
-                    f"plan.{previous.basis_commit.root}.{horizon_start}-{horizon_end}",
-                ).root
+            task_id=self._plan_task_id(
+                previous.run_id,
+                previous.project_id,
+                previous.basis_commit,
+                plan_level=plan_level,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                generation=0,
             ),
             run_id=previous.run_id,
             project_id=previous.project_id,
@@ -1653,6 +1670,8 @@ class CreativeRuntimeService:
             target_chapters=previous.target_chapters,
             horizon_start=horizon_start,
             horizon_end=horizon_end,
+            plan_level=plan_level,
+            planning_generation=0,
         )
 
     def _planning_inputs(self, previous: TaskRecord) -> tuple[ArtifactRef, ...]:
@@ -1854,15 +1873,12 @@ class CreativeRuntimeService:
 
     def _repair_post_draft_projection(self, projection: TaskRecord) -> CreativeRunResult | None:
         policy = self._policy_resolver(projection.policy_hash)
-        if (
-            not policy.enable_planner_lookahead
-            or self._task_reader is None
-            or projection.chapter_index >= projection.target_chapters
-        ):
+        if self._task_reader is None or projection.chapter_index >= projection.target_chapters:
             return None
-        revalidated = self._revalidate_lookahead(projection)
-        if revalidated is not None:
-            return revalidated
+        if policy.enable_planner_lookahead:
+            revalidated = self._revalidate_lookahead(projection)
+            if revalidated is not None:
+                return revalidated
         tasks = self._task_reader.list_run(projection.run_id)
         existing = next(
             (
@@ -1876,12 +1892,15 @@ class CreativeRuntimeService:
                 not in {
                     TaskStatus.FAILED,
                     TaskStatus.CANCELLED,
-                    TaskStatus.BLOCKED,
                 }
             ),
             None,
         )
+        if existing is not None and existing.status is TaskStatus.BLOCKED:
+            return self._replace_blocked_plan(existing, projection)
         if existing is not None:
+            return None
+        if not policy.enable_planner_lookahead:
             return None
         lookahead = tuple(
             task
@@ -1919,6 +1938,98 @@ class CreativeRuntimeService:
             planning,
             CreativeRunTerminal.PROGRESSED,
             "lookahead_fallback_to_rolling_plan",
+        )
+
+    def _replace_blocked_plan(
+        self, blocked: TaskRecord, projection: TaskRecord
+    ) -> CreativeRunResult | None:
+        snapshot = self._snapshots.get_for_commit(projection.basis_commit)
+        if snapshot is None or snapshot.build_status.value != "exact":
+            return None
+        self._commands.supersede_task(
+            blocked.task_id,
+            reason="blocked plan is durable work and must be replaced with a new identity",
+        )
+        replacement = self._replacement_plan_task(blocked, projection, snapshot.snapshot_id)
+        self._commands.create_task(replacement)
+        return self._result(
+            replacement,
+            CreativeRunTerminal.PROGRESSED,
+            "blocked_plan_replaced",
+        )
+
+    def _replacement_plan_task(
+        self,
+        blocked: TaskRecord,
+        projection: TaskRecord,
+        snapshot_id: StableId,
+    ) -> TaskRecord:
+        horizon_start = blocked.horizon_start
+        horizon_end = blocked.horizon_end
+        if horizon_start is None or horizon_end is None:
+            policy = self._policy_resolver(projection.policy_hash)
+            horizon_start = projection.chapter_index + 1
+            horizon_end = min(
+                projection.target_chapters,
+                projection.chapter_index + policy.planning_horizon,
+            )
+        inputs = blocked.input_artifact_refs or self._planning_inputs(projection)
+        plan_level = blocked.plan_level or projection.plan_level or PlanLevel.CHAPTER_SET
+        generation = blocked.planning_generation + 1
+        return TaskRecord(
+            task_id=self._plan_task_id(
+                projection.run_id,
+                projection.project_id,
+                projection.basis_commit,
+                plan_level=plan_level,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                generation=generation,
+            ),
+            run_id=projection.run_id,
+            project_id=projection.project_id,
+            kind=TaskKind.PLAN_CANDIDATE,
+            purpose=TaskPurpose.NORMAL,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=projection.basis_commit,
+            basis_snapshot=snapshot_id,
+            policy_hash=projection.policy_hash,
+            permission_hash=projection.permission_hash,
+            input_artifact_refs=inputs,
+            dependency_task_ids=(projection.task_id,),
+            failure_budget=projection.retry_tranche_size,
+            retry_tranche_size=projection.retry_tranche_size,
+            chapter_index=projection.chapter_index,
+            target_chapters=projection.target_chapters,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            plan_level=plan_level,
+            planning_generation=generation,
+        )
+
+    @staticmethod
+    def _plan_task_id(
+        run_id: RunId,
+        project_id: ProjectId,
+        basis_commit: CommitId,
+        *,
+        plan_level: PlanLevel,
+        horizon_start: int | None,
+        horizon_end: int | None,
+        generation: int,
+    ) -> TaskId:
+        level = plan_level.value.replace("_", "-")
+        if horizon_start is not None and horizon_end is not None:
+            primary = f"plan.{level}.{horizon_start}-{horizon_end}.g{generation}"
+        else:
+            primary = f"plan.{level}.g{generation}"
+        return TaskId(
+            bounded_runtime_identity(
+                primary,
+                f"{run_id.root}.{primary}",
+                f"plan.{project_id.root}.{basis_commit.root}.{generation}",
+            ).root
         )
 
     @staticmethod

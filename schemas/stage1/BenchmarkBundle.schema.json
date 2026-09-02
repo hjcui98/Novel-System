@@ -1047,9 +1047,46 @@
       "title": "PlanEvidenceRef",
       "type": "object"
     },
+    "PlanLevel": {
+      "enum": [
+        "story",
+        "arc_volume",
+        "chapter_set",
+        "chapter",
+        "scene"
+      ],
+      "title": "PlanLevel",
+      "type": "string"
+    },
     "PlanNode": {
       "additionalProperties": false,
       "properties": {
+        "chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter End"
+        },
+        "chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Start"
+        },
         "node_type": {
           "minLength": 1,
           "title": "Node Type",
@@ -1067,6 +1104,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plan_level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanLevel"
             },
             {
               "type": "null"
@@ -1128,6 +1176,19 @@
         "kind": {
           "$ref": "#/$defs/ObligationKind"
         },
+        "not_before_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Before Chapter"
+        },
         "obligation_id": {
           "$ref": "#/$defs/StableId"
         },
@@ -1141,6 +1202,32 @@
         },
         "status": {
           "$ref": "#/$defs/ObligationStatus"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
         }
       },
       "required": [

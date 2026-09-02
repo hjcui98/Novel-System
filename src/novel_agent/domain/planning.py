@@ -225,6 +225,11 @@ class ReviewIssueKind(StrEnum):
     ALTERNATIVE_COMPARISON = "alternative_comparison"
     MEMORY_GAP = "memory_gap"
     PROVENANCE = "provenance"
+    LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW = "long_range_payoff_without_time_window"
+    EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION = (
+        "early_resolution_of_future_locked_obligation"
+    )
+    TARGET_WINDOW_OUTSIDE_PARENT_SCOPE = "target_window_outside_parent_scope"
 
 
 class PlanReviewIssue(DomainModel):

@@ -40,6 +40,17 @@
       "title": "CommitId",
       "type": "string"
     },
+    "PlanLevel": {
+      "enum": [
+        "story",
+        "arc_volume",
+        "chapter_set",
+        "chapter",
+        "scene"
+      ],
+      "title": "PlanLevel",
+      "type": "string"
+    },
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "ProjectId",
@@ -150,6 +161,17 @@
       },
       "title": "Input Artifact Refs",
       "type": "array"
+    },
+    "plan_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "planner_memory_budget_extensions": {
       "default": 0,

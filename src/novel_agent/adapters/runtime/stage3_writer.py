@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
     AuthorPlanningContext,
+    ChapterGoal,
     PlanRootDocument,
     TextRootDocument,
     VisibleOutlineNode,
@@ -161,10 +162,11 @@ class ProductionWritingRequestFactory:
             or bool(set(node.obligation_ids) & set(obligation_ids))
         )
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
-        chapter_goal = "；".join(summaries)
+        chapter_goal = "；".join(summaries)  # noqa: RUF001
         required_beats = tuple(
             dict.fromkeys((*(node.summary for node in relevant_nodes), *summaries))
         )
+        lock_constraints, lock_forbids = self._future_lock_constraints(world, task.chapter_index)
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
                 f"writing-contract.{task.task_id.root}",
@@ -180,8 +182,14 @@ class ProductionWritingRequestFactory:
             scene_goals=required_beats,
             required_beats=required_beats,
             active_plan_obligations=obligation_ids,
-            mandatory_constraints=self._profile_strings(profile, "mandatory_constraints"),
-            forbidden_reveals=self._profile_strings(profile, "forbidden_reveals"),
+            mandatory_constraints=(
+                *self._profile_strings(profile, "mandatory_constraints"),
+                *lock_constraints,
+            ),
+            forbidden_reveals=(
+                *self._profile_strings(profile, "forbidden_reveals"),
+                *lock_forbids,
+            ),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
             style_requirements=self._profile_strings(profile, "style_requirements"),
             length_policy=self._policy.length_policy,
@@ -191,7 +199,7 @@ class ProductionWritingRequestFactory:
             WRITING_TASK_MEDIA_TYPE,
             self._schema_version,
         )
-        planning_context = self._planning_context(task, plan, chapter_goal)
+        planning_context = self._planning_context(task, plan, chapter_goal, goals)
         memory_task = BenchmarkTaskContract(
             task_id=bounded_stable_id(
                 f"memory-task.{task.task_id.root}",
@@ -314,11 +322,47 @@ class ProductionWritingRequestFactory:
         )
 
     @staticmethod
+    def _future_lock_constraints(
+        world: WorldRootDocument, chapter_index: int
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        constraints: list[str] = []
+        forbids: list[str] = []
+        for obligation in world.obligations:
+            if not obligation.is_future_locked(chapter_index):
+                continue
+            boundary = obligation.not_before_chapter
+            constraints.append(
+                f"{obligation.description}当前只能 SETUP/PROGRESS, 不得 RESOLVE/PAYOFF; "
+                f"最早第{boundary}章。"
+            )
+            forbids.append(
+                f"不得在本章完成{obligation.description}最终获得或宣布该长期目标已解决."
+            )
+        return tuple(constraints), tuple(forbids)
+
+    @staticmethod
     def _planning_context(
         task: TaskRecord,
         plan: PlanRootDocument,
         task_intent: str,
+        current_goals: tuple[ChapterGoal, ...] | None = None,
     ) -> AuthorPlanningContext:
+        scoped_goals = current_goals or tuple(
+            goal for goal in plan.chapter_goals if goal.chapter_index == task.chapter_index
+        )
+        goal_ids = {goal.goal_id for goal in scoped_goals}
+        obligation_ids = {item for goal in scoped_goals for item in goal.obligation_ids}
+        by_id = {node.plan_node_id: node for node in plan.nodes}
+        selected: dict[StableId, object] = {}
+        for node in plan.nodes:
+            related = node.plan_node_id in goal_ids or bool(
+                set(node.obligation_ids) & obligation_ids
+            )
+            if not related:
+                continue
+            selected[node.plan_node_id] = node
+            if node.parent_id is not None and node.parent_id in by_id:
+                selected[node.parent_id] = by_id[node.parent_id]
         nodes = tuple(
             VisibleOutlineNode(
                 node_id=node.plan_node_id,
@@ -326,11 +370,12 @@ class ProductionWritingRequestFactory:
                 summary=node.summary,
             )
             for node in plan.nodes
+            if node.plan_node_id in selected
         )
         goals = tuple(
             goal
             for goal in plan.chapter_goals
-            if task.chapter_index <= goal.chapter_index <= task.target_chapters
+            if task.chapter_index <= goal.chapter_index <= (task.horizon_end or task.chapter_index)
         )
         source_hash = content_id(
             {

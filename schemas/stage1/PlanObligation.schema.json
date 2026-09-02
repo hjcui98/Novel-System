@@ -192,6 +192,19 @@
     "kind": {
       "$ref": "#/$defs/ObligationKind"
     },
+    "not_before_chapter": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Not Before Chapter"
+    },
     "obligation_id": {
       "$ref": "#/$defs/StableId"
     },
@@ -205,6 +218,32 @@
     },
     "status": {
       "$ref": "#/$defs/ObligationStatus"
+    },
+    "target_chapter_end": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Chapter End"
+    },
+    "target_chapter_start": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Chapter Start"
     }
   },
   "required": [

@@ -76,6 +76,22 @@ integration candidate 中闭合。后续只补真实模型 Gate，再按实际�
 再建一套工作流存储，而是给真实 Planner/Writer 候选链补上 Task/Attempt、固定拓扑、命令语义、恢复
 选择和长期运维。
 
+### 2.1.1 Hierarchy migration admission (2026-09-02)
+
+Non-lookahead production cadence is: consume the full CHAPTER_SET horizon, then plan the next
+window (`plan 1–5 → draft 1…5 → plan 6–10`). `enable_planner_lookahead=False` is required for this
+migration. A `BLOCKED` plan is durable work: replacement must explicit-supersede and mint a new
+task identity, never recreate the same id. Final accepted Drafts outside the trusted
+`WritingTaskContract.length_policy` cannot mutate TextRoot
+(`reason=draft_length_contract_rejected`).
+
+Replan invalidates future descendants while keeping committed-prefix CHAPTER/SCENE nodes.
+Genesis bootstrap PlanRoot is a seed; the first accepted STORY replaces unscoped bootstrap nodes
+instead of keeping two story truths. Hierarchy schema is for fresh runs; old 1–23 production runs
+are not migrated in place.
+
+V0.5 four-condition semantics are unchanged.
+
 ### 2.2 Stage 3 的实际可用边界
 
 独立分支 `codex/stage3-writer-context-loop` 的 `bab4451` 已实现 Writer/Editor/Observer、

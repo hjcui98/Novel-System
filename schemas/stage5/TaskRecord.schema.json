@@ -40,6 +40,17 @@
       "title": "CommitId",
       "type": "string"
     },
+    "PlanLevel": {
+      "enum": [
+        "story",
+        "arc_volume",
+        "chapter_set",
+        "chapter",
+        "scene"
+      ],
+      "title": "PlanLevel",
+      "type": "string"
+    },
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "ProjectId",
@@ -242,10 +253,27 @@
       "title": "Permission Hash",
       "type": "string"
     },
+    "plan_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "planner_memory_budget_extensions": {
       "default": 0,
       "minimum": 0,
       "title": "Planner Memory Budget Extensions",
+      "type": "integer"
+    },
+    "planning_generation": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Planning Generation",
       "type": "integer"
     },
     "policy_hash": {

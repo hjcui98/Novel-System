@@ -19,6 +19,7 @@ from novel_agent.domain.ids import (
     bounded_stable_id,
 )
 from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
+from novel_agent.domain.world import PlanLevel
 
 Hash = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 
@@ -164,6 +165,7 @@ class PlanningLoopRequest(DomainModel):
     chapter_index: int = Field(default=0, ge=0)
     horizon_start: int | None = Field(default=None, ge=1)
     horizon_end: int | None = Field(default=None, ge=1)
+    plan_level: PlanLevel | None = None
     protected_chapter_index: int | None = Field(default=None, ge=1)
 
 

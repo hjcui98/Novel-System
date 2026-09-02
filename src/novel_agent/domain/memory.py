@@ -36,14 +36,76 @@ class ObligationStatus(StrEnum):
     ABANDONED = "abandoned"
 
 
+class TemporalObligationError(ValueError):
+    """A future-locked obligation was used outside its trusted time window."""
+
+
 class PlanObligation(DomainModel):
     obligation_id: StableId
     kind: ObligationKind
     description: str = Field(min_length=1)
     status: ObligationStatus
     owner_ids: tuple[StableId, ...] = ()
+    not_before_chapter: int | None = Field(default=None, ge=1)
+    target_chapter_start: int | None = Field(default=None, ge=1)
+    target_chapter_end: int | None = Field(default=None, ge=1)
     due_chapter: int | None = Field(default=None, ge=1)
     evidence_refs: tuple[EvidenceRef, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> PlanObligation:
+        if (self.target_chapter_start is None) != (self.target_chapter_end is None):
+            raise ValueError("target chapter window must be complete")
+        if (
+            self.target_chapter_start is not None
+            and self.target_chapter_end is not None
+            and self.target_chapter_end < self.target_chapter_start
+        ):
+            raise ValueError("target chapter window is reversed")
+        if (
+            self.not_before_chapter is not None
+            and self.target_chapter_start is not None
+            and self.target_chapter_start < self.not_before_chapter
+        ):
+            raise ValueError("target window starts before not-before boundary")
+        if (
+            self.due_chapter is not None
+            and self.target_chapter_end is not None
+            and self.due_chapter < self.target_chapter_end
+        ):
+            raise ValueError("due chapter precedes target window end")
+        return self
+
+    def is_future_locked(self, current_chapter: int) -> bool:
+        return (
+            self.not_before_chapter is not None and current_chapter < self.not_before_chapter
+        )
+
+    def forbids_resolution(self, current_chapter: int) -> bool:
+        return self.is_future_locked(current_chapter)
+
+
+def long_range_kind_requires_not_before(kind: ObligationKind) -> bool:
+    return kind in {ObligationKind.PROMISE, ObligationKind.FORESHADOWING}
+
+
+def require_not_before_for_kind(
+    kind: ObligationKind, not_before_chapter: int | None
+) -> None:
+    if long_range_kind_requires_not_before(kind) and not_before_chapter is None:
+        raise TemporalObligationError(
+            "long-range PROMISE/FORESHADOWING requires not_before_chapter"
+        )
+
+
+def forbid_early_resolution(obligation: PlanObligation, current_chapter: int) -> None:
+    if (
+        obligation.status is ObligationStatus.RESOLVED
+        and obligation.forbids_resolution(current_chapter)
+    ):
+        raise TemporalObligationError(
+            "future-locked obligation cannot be resolved before not_before_chapter"
+        )
 
 
 class WorldRootDocument(DomainModel):

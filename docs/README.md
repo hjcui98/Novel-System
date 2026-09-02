@@ -85,6 +85,7 @@ canonical project `Stage` numbering.
 | `docs/novelmem_v0.5_plan_write_extension_design.md` | `ACTIVE_CANARY_EXECUTION` | V0.5 Track B wiring → C-ROLL → D-SHORT canary; defines Track B two-layer product, Track C/D contracts, four-condition attribution, Oracle/Gap protocol and U4-L0 variable isolation |
 | `docs/novelmem_ztj_v0.5_benchmark_development_plan.md` | `ACTIVE_DEVELOPMENT_PLAN` | Concrete build plan for the ZTJ V0.5 benchmark: WP0 → WP-BASIS → WP1 → WP3 → WP2 → WP4 → WP7, with production basis, Track C run/score, unified four-condition Writer input contract, and acceptance red lines |
 | `docs/stage2_to_stage5_real_novel_vertical_pilot_execution.md` | `ACTIVE_SUBPROTOCOL` | U5 real-novel C20→25 Pilot request, assembly, report and product acceptance procedure |
+| `docs/Novel-System_分层规划与渐进Skill_收敛版补丁执行设计_v2_ee8849a.md` | `HISTORICAL_REVIEW_INPUT` | Folded into Stage 4/5 designs: Gate 0 cadence/BLOCKED/length, Patch A future-lock, Patch B PlanLevel hierarchy, Patch C limited progressive Skill |
 
 ## 5. Accepted decisions, baselines, and gate evidence
 

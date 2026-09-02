@@ -8,7 +8,12 @@ from collections.abc import Iterable
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
-from novel_agent.domain.memory import GraphPathReceipt, RetrievalUnit, Stage1ContextPackage
+from novel_agent.domain.memory import (
+    GraphPathReceipt,
+    RetrievalUnit,
+    Stage1ContextPackage,
+    WorldRootDocument,
+)
 from novel_agent.domain.planning import (
     PlannerContextBudgetReport,
     PlannerContextItem,
@@ -18,7 +23,7 @@ from novel_agent.domain.planning import (
     PlanningInquiry,
     PlanningLoopRequest,
 )
-from novel_agent.domain.stage2 import ProjectProfileRootDocument
+from novel_agent.domain.stage2 import AgentMode, ProjectProfileRootDocument
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
@@ -67,14 +72,28 @@ class PlannerContextAssembler:
         optional: list[PlannerContextItem] = []
         graph_refs: dict[ArtifactId, ArtifactRef] = {}
         expansion_refs: list[ArtifactRef] = []
-        for index, artifact in enumerate(request.author_intent_artifacts):
+        if request.task.mode not in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}:
+            for index, artifact in enumerate(request.author_intent_artifacts):
+                mandatory.append(
+                    self._artifact_item(
+                        StableId(f"planner-context.author.{index}"),
+                        PlannerContextSection.AUTHOR_INTENT,
+                        artifact,
+                        protected=True,
+                        mandatory=True,
+                    )
+                )
+        for index, override in enumerate(request.explicit_author_overrides):
+            if not override.strip():
+                continue
             mandatory.append(
-                self._artifact_item(
-                    StableId(f"planner-context.author.{index}"),
-                    PlannerContextSection.AUTHOR_INTENT,
-                    artifact,
+                PlannerContextItem(
+                    context_item_id=StableId(f"planner-context.override.{index}"),
+                    section=PlannerContextSection.AUTHOR_INTENT,
+                    text=override,
                     protected=True,
                     mandatory=True,
+                    token_count=self._tokens(override),
                 )
             )
         if request.project_profile_ref is not None:
@@ -294,6 +313,12 @@ class PlannerContextAssembler:
                 frontier = tuple(additions)
             nodes = tuple(node for node in plan.nodes if node.plan_node_id in selected_ids)
 
+        current_chapter = (
+            max(0, (request.horizon_start or 1) - 1)
+            if request.horizon_start is not None
+            else 0
+        )
+        lock_summaries = self._future_lock_summaries(request, current_chapter)
         text = canonical_json_bytes(
             {
                 "source_plan_root": artifact.artifact_id.root,
@@ -301,6 +326,7 @@ class PlannerContextAssembler:
                 "horizon_end": request.horizon_end,
                 "chapter_goals": [goal.model_dump(mode="json") for goal in goals],
                 "relevant_plan_nodes": [node.model_dump(mode="json") for node in nodes],
+                "future_locked_obligations": lock_summaries,
             }
         ).decode("utf-8")
         return PlannerContextItem(
@@ -312,6 +338,31 @@ class PlannerContextAssembler:
             token_count=self._tokens(text),
             source_artifact_refs=(artifact,),
         )
+
+    def _future_lock_summaries(
+        self, request: PlanningLoopRequest, current_chapter: int
+    ) -> list[dict[str, object]]:
+        if request.accepted_world_ref is None:
+            return []
+        try:
+            world = WorldRootDocument.model_validate_json(
+                self._artifacts.read_verified(request.accepted_world_ref)
+            )
+        except ValueError:
+            return []
+        summaries: list[dict[str, object]] = []
+        for obligation in world.obligations:
+            if not obligation.is_future_locked(current_chapter):
+                continue
+            summaries.append(
+                {
+                    "obligation_id": obligation.obligation_id.root,
+                    "description": obligation.description,
+                    "not_before_chapter": obligation.not_before_chapter,
+                    "constraint": "SETUP/PROGRESS only; RESOLVE/PAYOFF forbidden",
+                }
+            )
+        return summaries
 
     def _project_profile_item(self, artifact: ArtifactRef) -> PlannerContextItem:
         raw = self._artifacts.read_verified(artifact)

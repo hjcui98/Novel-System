@@ -21,6 +21,9 @@ class SkillTemplate:
     version: SchemaVersion
     path: Path
     expected_hash: ArtifactId
+    summary: str = ""
+    tags: tuple[str, ...] = ()
+    applicable_modes: tuple[str, ...] = ()
 
 
 class SkillRegistry:
@@ -47,3 +50,15 @@ class SkillRegistry:
             version=version,
             content_hash=actual_hash,
         )
+
+    def describe(self, skill_id: StableId, version: SchemaVersion) -> str:
+        try:
+            skill = self._skills[(skill_id, version)]
+        except KeyError as error:
+            raise SkillRegistryError("skill version is not explicitly registered") from error
+        lines = [f"ID: {skill.skill_id.root}"]
+        if skill.summary:
+            lines.append(f"summary: {skill.summary}")
+        if skill.tags:
+            lines.append("tags: " + ", ".join(skill.tags))
+        return "\n".join(lines)

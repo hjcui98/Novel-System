@@ -115,7 +115,10 @@
         "pacing",
         "alternative_comparison",
         "memory_gap",
-        "provenance"
+        "provenance",
+        "long_range_payoff_without_time_window",
+        "early_resolution_of_future_locked_obligation",
+        "target_window_outside_parent_scope"
       ],
       "title": "ReviewIssueKind",
       "type": "string"
