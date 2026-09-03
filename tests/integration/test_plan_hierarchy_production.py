@@ -26,6 +26,7 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.ports.creative_runtime import CandidateMaterializationError
+from novel_agent.services.creative_runtime import CreativeRuntimeService
 
 HASH = ArtifactId("sha256:" + "1" * 64)
 COMMIT = CommitId("sha256:" + "a" * 64)
@@ -94,6 +95,45 @@ def test_single_level_plan_commit_respects_parent_scope() -> None:
         chapter_end=100,
     )
     PlanCandidateMaterializer._validate_parent_scope((story, volume))
+    orphan = PlanNode(
+        plan_node_id=StableId("plan.volume.orphan"),
+        node_type="arc_volume",
+        title="Orphan volume",
+        summary="Missing story parent.",
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+    )
+    with pytest.raises(CandidateMaterializationError, match="STORY parent"):
+        PlanCandidateMaterializer._validate_parent_scope((orphan,))
+    missing_parent = volume.model_copy(update={"parent_id": StableId("plan.story.missing")})
+    with pytest.raises(CandidateMaterializationError, match="does not exist"):
+        PlanCandidateMaterializer._validate_parent_scope((missing_parent,))
+    untyped_parent = PlanNode(
+        plan_node_id=StableId("plan.seed"),
+        node_type="seed",
+        title="Seed",
+        summary="Not a story node.",
+    )
+    volume_on_seed = volume.model_copy(update={"parent_id": untyped_parent.plan_node_id})
+    with pytest.raises(CandidateMaterializationError, match="must be a STORY"):
+        PlanCandidateMaterializer._validate_parent_scope((untyped_parent, volume_on_seed))
+    unbounded = volume.model_copy(update={"chapter_start": None, "chapter_end": None})
+    with pytest.raises(CandidateMaterializationError, match="bounded chapter range"):
+        PlanCandidateMaterializer._validate_parent_scope((story, unbounded))
+    PlanCandidateMaterializer._validate_parent_scope(
+        (story, volume),
+        trusted_level=PlanLevel.CHAPTER_SET,
+        horizon_start=1,
+        horizon_end=5,
+    )
+    with pytest.raises(CandidateMaterializationError, match="fall inside"):
+        PlanCandidateMaterializer._validate_parent_scope(
+            (story, volume),
+            trusted_level=PlanLevel.CHAPTER_SET,
+            horizon_start=101,
+            horizon_end=105,
+        )
     overflow = PlanNode(
         plan_node_id=StableId("plan.set.overflow"),
         node_type="chapter_set",
@@ -223,3 +263,27 @@ def test_replan_invalidates_future_descendants_and_keeps_committed_prefix() -> N
     assert parent.plan_node_id in invalidated
     assert future.plan_node_id in invalidated
     assert committed.plan_node_id not in invalidated
+
+
+def test_volume_boundary_retriggers_arc_volume_instead_of_next_chapter_set() -> None:
+    volume = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="Current volume.",
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+    )
+    assert (
+        CreativeRuntimeService._next_plan_level_after_horizon((volume,), 6) is PlanLevel.CHAPTER_SET
+    )
+    assert (
+        CreativeRuntimeService._next_plan_level_after_horizon((volume,), 100)
+        is PlanLevel.CHAPTER_SET
+    )
+    assert (
+        CreativeRuntimeService._next_plan_level_after_horizon((volume,), 101)
+        is PlanLevel.ARC_VOLUME
+    )
+    assert CreativeRuntimeService._next_plan_level_after_horizon((), 101) is PlanLevel.CHAPTER_SET

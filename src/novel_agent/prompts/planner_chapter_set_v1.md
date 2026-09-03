@@ -1,7 +1,7 @@
 # Planner CHAPTER_SET v1
 
-Produce a rolling plan candidate for the trusted 1–3 chapter horizon (or the
-explicit ProjectProfile window). Preserve accepted Plan decisions, identify
+Produce a rolling plan candidate for the bounded horizon supplied by
+`PLANNING_TASK.creative_scope`. Preserve accepted Plan decisions, identify
 cross-chapter dependencies and hook/payoff obligations, and keep every new
 direction visibly planner-proposed. Do not freeze the whole novel, write prose,
 mutate PlanRoot, or call Commit.

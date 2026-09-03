@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.changes import CommitRequest, CommitStatus, ValidationStatus
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
@@ -49,7 +50,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
-from novel_agent.domain.world import PlanLevel
+from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.domain.writer_context import MemoryContextBudgetExhaustedError
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
@@ -984,7 +985,7 @@ class CreativeRuntimeService:
                         settled, CreativeRunTerminal.PROGRESSED, "lookahead_pending"
                     )
                 if task.horizon_end is not None and task.chapter_index >= task.horizon_end:
-                    planning = self._rolling_plan_task(
+                    planning = self._next_planning_after_horizon(
                         task,
                         snapshot.snapshot_id,
                         policy=policy,
@@ -995,11 +996,12 @@ class CreativeRuntimeService:
                         terminal_status=TaskStatus.SUCCEEDED,
                         successor_tasks=(planning,),
                     )
-                    return self._result(
-                        planning,
-                        CreativeRunTerminal.PROGRESSED,
-                        "planning_horizon_advanced",
+                    reason = (
+                        "hierarchical_plan_ready"
+                        if planning.plan_level is PlanLevel.ARC_VOLUME
+                        else "planning_horizon_advanced"
                     )
+                    return self._result(planning, CreativeRunTerminal.PROGRESSED, reason)
                 draft = self._draft_task(task, snapshot.snapshot_id, task.chapter_index + 1)
                 self._commands.settle_attempt(
                     fence,
@@ -1627,6 +1629,7 @@ class CreativeRuntimeService:
                 plan_level=PlanLevel.ARC_VOLUME,
                 horizon_start=None,
                 horizon_end=None,
+                generation=self._next_planning_generation(task, PlanLevel.ARC_VOLUME),
             )
         if task.plan_level is PlanLevel.ARC_VOLUME:
             horizon_start = task.chapter_index + 1
@@ -1717,6 +1720,64 @@ class CreativeRuntimeService:
             horizon_start=previous.horizon_start,
             horizon_end=previous.horizon_end,
         )
+
+    def _next_planning_after_horizon(
+        self,
+        previous: TaskRecord,
+        snapshot_id: StableId,
+        *,
+        policy: CreativeRunPolicy,
+    ) -> TaskRecord:
+        next_chapter = previous.chapter_index + 1
+        volumes = self._volume_nodes_for_commit(previous.basis_commit)
+        if self._next_plan_level_after_horizon(volumes, next_chapter) is PlanLevel.ARC_VOLUME:
+            return self._plan_candidate_successor(
+                previous,
+                snapshot_id,
+                plan_level=PlanLevel.ARC_VOLUME,
+                horizon_start=None,
+                horizon_end=None,
+                generation=self._next_planning_generation(previous, PlanLevel.ARC_VOLUME),
+            )
+        return self._rolling_plan_task(previous, snapshot_id, policy=policy)
+
+    @staticmethod
+    def _next_plan_level_after_horizon(
+        volumes: tuple[PlanNode, ...],
+        next_chapter: int,
+    ) -> PlanLevel:
+        covering = tuple(
+            node
+            for node in volumes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= next_chapter <= node.chapter_end
+        )
+        if volumes and not covering:
+            return PlanLevel.ARC_VOLUME
+        return PlanLevel.CHAPTER_SET
+
+    def _volume_nodes_for_commit(self, commit_id: CommitId) -> tuple[PlanNode, ...]:
+        try:
+            manifest = self._commits.load_manifest(commit_id)
+            plan = PlanRootDocument.model_validate_json(
+                self._artifacts.read_verified(manifest.plan_root)
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
+            return ()
+        return tuple(node for node in plan.nodes if node.plan_level is PlanLevel.ARC_VOLUME)
+
+    def _next_planning_generation(self, previous: TaskRecord, plan_level: PlanLevel) -> int:
+        if self._task_reader is None:
+            return 0
+        generations = [
+            task.planning_generation
+            for task in self._task_reader.list_run(previous.run_id)
+            if task.kind is TaskKind.PLAN_CANDIDATE
+            and task.plan_level is plan_level
+            and not task.superseded
+        ]
+        return max(generations) + 1 if generations else 0
 
     def _rolling_plan_task(
         self,
@@ -2017,7 +2078,7 @@ class CreativeRuntimeService:
         snapshot = self._snapshots.get_for_commit(projection.basis_commit)
         if snapshot is None or snapshot.build_status.value != "exact":
             return None
-        planning = self._rolling_plan_task(
+        planning = self._next_planning_after_horizon(
             projection,
             snapshot.snapshot_id,
             policy=policy,

@@ -262,7 +262,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 continue
             keep_goals.append(item)
         goals = tuple(keep_goals) + incoming_goals
-        self._validate_parent_scope(nodes)
+        self._validate_parent_scope(
+            nodes,
+            trusted_level=trusted_level,
+            horizon_start=candidate.horizon_start,
+            horizon_end=candidate.horizon_end,
+        )
         provisional = current.model_copy(
             update={
                 "root_hash": "sha256:" + "0" * 64,
@@ -516,26 +521,72 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         return {item for item in roots | descendants if not committed(item)}
 
     @staticmethod
-    def _validate_parent_scope(nodes: tuple[PlanNode, ...]) -> None:
+    def _validate_parent_scope(
+        nodes: tuple[PlanNode, ...],
+        *,
+        trusted_level: PlanLevel | None = None,
+        horizon_start: int | None = None,
+        horizon_end: int | None = None,
+    ) -> None:
         by_id = {node.plan_node_id: node for node in nodes}
         for node in nodes:
+            if node.plan_level is PlanLevel.ARC_VOLUME:
+                if node.parent_id is None:
+                    raise CandidateMaterializationError("ARC_VOLUME nodes require a STORY parent")
+                parent = by_id.get(node.parent_id)
+                if parent is None:
+                    raise CandidateMaterializationError("ARC_VOLUME parent does not exist")
+                if parent.plan_level is not PlanLevel.STORY:
+                    raise CandidateMaterializationError("ARC_VOLUME parent must be a STORY node")
+                if node.chapter_start is None or node.chapter_end is None:
+                    raise CandidateMaterializationError(
+                        "ARC_VOLUME nodes require a bounded chapter range"
+                    )
+                if (
+                    parent.chapter_start is not None
+                    and parent.chapter_end is not None
+                    and (
+                        node.chapter_start < parent.chapter_start
+                        or node.chapter_end > parent.chapter_end
+                    )
+                ):
+                    raise CandidateMaterializationError("child plan scope exceeds parent scope")
+                continue
             if node.parent_id is None:
                 continue
             parent = by_id.get(node.parent_id)
             if parent is None:
-                continue
-            if node.plan_level in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET} and (
-                node.chapter_start is None or node.chapter_end is None
+                raise CandidateMaterializationError("plan node parent does not exist")
+            if (
+                node.plan_level is PlanLevel.CHAPTER_SET
+                and parent.plan_level is not PlanLevel.ARC_VOLUME
             ):
-                raise CandidateMaterializationError(
-                    "ARC_VOLUME/CHAPTER_SET nodes require a bounded chapter range"
-                )
+                raise CandidateMaterializationError("CHAPTER_SET parent must be an ARC_VOLUME node")
             if parent.chapter_start is None or parent.chapter_end is None:
                 continue
             if node.chapter_start is None or node.chapter_end is None:
                 continue
             if node.chapter_start < parent.chapter_start or node.chapter_end > parent.chapter_end:
                 raise CandidateMaterializationError("child plan scope exceeds parent scope")
+        if (
+            trusted_level is PlanLevel.CHAPTER_SET
+            and horizon_start is not None
+            and horizon_end is not None
+        ):
+            volumes = tuple(node for node in nodes if node.plan_level is PlanLevel.ARC_VOLUME)
+            covering = False
+            for volume in volumes:
+                start = volume.chapter_start
+                end = volume.chapter_end
+                if start is None or end is None:
+                    continue
+                if start <= horizon_start and horizon_end <= end:
+                    covering = True
+                    break
+            if volumes and not covering:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET horizon must fall inside an accepted ARC_VOLUME"
+                )
 
     def _validate_temporal_obligation_use(
         self,
@@ -550,35 +601,65 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         world = self._read(base.world_root, WorldRootDocument)
         text = self._read(base.text_root, TextRootDocument)
         current_chapter = text.chapters[-1].chapter_index if text.chapters else 0
-        horizon_end = getattr(candidate, "horizon_end", None)
-        scope_chapter = horizon_end if isinstance(horizon_end, int) else current_chapter
         by_id = {item.obligation_id: item for item in world.obligations}
         try:
             for item in proposal.items:
                 self._reject_item_without_required_window(item)
                 if not self._item_resolves_obligation(item):
                     continue
+                resolution_chapter = self._resolution_chapter(
+                    item,
+                    incoming_goals,
+                    candidate,
+                    current_chapter,
+                )
                 for obligation_id in self._ids(
                     item.payload.get("obligation_ids"), "obligation_ids"
                 ):
                     obligation = by_id.get(obligation_id)
                     if obligation is None:
                         continue
-                    if obligation.forbids_resolution(scope_chapter):
+                    if obligation.forbids_resolution(resolution_chapter):
                         raise TemporalObligationError(
                             "future-locked obligation cannot be resolved in this planning scope"
                         )
             for obligation in world.obligations:
-                if obligation.forbids_resolution(scope_chapter) and any(
-                    obligation.obligation_id in goal.obligation_ids
-                    and self._goal_resolves(goal, proposal)
-                    for goal in incoming_goals
-                ):
-                    raise TemporalObligationError(
-                        "future-locked obligation cannot be resolved in this planning scope"
-                    )
+                for goal in incoming_goals:
+                    if obligation.obligation_id not in goal.obligation_ids:
+                        continue
+                    if not self._goal_resolves(goal, proposal):
+                        continue
+                    if obligation.forbids_resolution(goal.chapter_index):
+                        raise TemporalObligationError(
+                            "future-locked obligation cannot be resolved in this planning scope"
+                        )
         except TemporalObligationError as error:
             raise CandidateMaterializationError(str(error)) from error
+
+    @classmethod
+    def _resolution_chapter(
+        cls,
+        item: ProposedItem,
+        incoming_goals: tuple[ChapterGoal, ...],
+        candidate: object,
+        current_chapter: int,
+    ) -> int:
+        try:
+            payload_chapter = cls._chapter_number(item.payload)
+        except CandidateMaterializationError:
+            payload_chapter = None
+        if payload_chapter is not None:
+            return payload_chapter
+        for goal in incoming_goals:
+            if goal.goal_id == item.item_id:
+                return goal.chapter_index
+        horizon_start = getattr(candidate, "horizon_start", None)
+        if isinstance(horizon_start, int) and not isinstance(horizon_start, bool):
+            return horizon_start
+        horizon_end = getattr(candidate, "horizon_end", None)
+        if isinstance(horizon_end, int) and not isinstance(horizon_end, bool):
+            return horizon_end
+        return current_chapter
 
     @classmethod
     def _reject_item_without_required_window(cls, item: ProposedItem) -> None:

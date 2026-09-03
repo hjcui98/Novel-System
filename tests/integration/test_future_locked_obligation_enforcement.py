@@ -248,6 +248,167 @@ def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Pa
     assert "第700章 payoff" not in rendered
 
 
+def _payoff_item(chapter: int) -> ProposedItem:
+    return ProposedItem(
+        item_id=StableId(f"goal.{chapter}"),
+        kind="payoff",
+        payload={
+            "chapter_index": chapter,
+            "summary": "银铭到手",
+            "status": "resolved",
+            "obligation_ids": [YINMING.root],
+            "obligation_kind": "promise",
+            "not_before_chapter": 85,
+        },
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+
+
+def _validate_payoff_at_chapter(chapter: int) -> None:
+    materializer = PlanCandidateMaterializer(Mock(), Mock(), schema_version=VERSION)
+    item = _payoff_item(chapter)
+    proposal = PlanProposal.model_construct(
+        proposal_id=StableId(f"proposal.yinming.{chapter}"),
+        project_id=ProjectId("project.test"),
+        mode=AgentMode.CHAPTER_SET,
+        base_commit=COMMIT,
+        items=(item,),
+        coverage=1.0,
+        receipt=object(),
+    )
+    materializer._read = Mock(  # type: ignore[method-assign]
+        side_effect=[_world(_yinming()), _text(last_chapter=80)]
+    )
+    materializer._validate_temporal_obligation_use(
+        current=_plan(),
+        incoming_nodes=(),
+        incoming_goals=(
+            ChapterGoal(
+                goal_id=item.item_id,
+                chapter_index=chapter,
+                summary="银铭到手",
+                obligation_ids=(YINMING,),
+            ),
+        ),
+        proposal=proposal,
+        base=make_manifest(),
+        candidate=CandidateBinding(
+            candidate_id=StableId(f"candidate.yinming.{chapter}"),
+            kind=CandidateKind.PLAN,
+            artifact_ref=ArtifactRef(
+                artifact_id=HASH,
+                media_type="application/json",
+                byte_length=1,
+                schema_version=VERSION,
+            ),
+            candidate_hash=HASH.root,
+            basis_commit=COMMIT,
+            horizon_start=81,
+            horizon_end=85,
+        ),
+    )
+
+
+@pytest.mark.parametrize("chapter", [81, 84])
+def test_not_before_rejects_resolve_before_boundary_inside_horizon(chapter: int) -> None:
+    with pytest.raises(
+        CandidateMaterializationError,
+        match="future-locked obligation cannot be resolved",
+    ):
+        _validate_payoff_at_chapter(chapter)
+
+
+def test_not_before_allows_resolve_on_boundary_chapter() -> None:
+    _validate_payoff_at_chapter(85)
+
+
+def test_future_lock_carries_through_hierarchy_without_raw_brief(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    brief_text = "完整作者 brief UNIQUE-LOCK: 第85章以后才能得到银铭, 第100章是第一卷终局."
+    brief = _put(repo, brief_text)
+    story = PlanNode(
+        plan_node_id=StableId("plan.story.core"),
+        node_type="story",
+        title="Core conflict",
+        summary="Silver-inscription payoff is forbidden before chapter 85.",
+        plan_level=PlanLevel.STORY,
+        obligation_ids=(YINMING,),
+    )
+    volume = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="第一卷终局约在第100章。",
+        parent_id=story.plan_node_id,
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+        obligation_ids=(YINMING,),
+    )
+    plan = PlanRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        nodes=(story, volume),
+        chapter_goals=(),
+    )
+    world = _world(_yinming())
+    plan_ref = _put(repo, plan.model_dump_json())
+    world_ref = _put(repo, world.model_dump_json())
+    text_ref = _put(repo, _text(last_chapter=24).model_dump_json())
+    accepted = (plan_ref, world_ref, text_ref)
+    story_request = _request(AgentMode.STORY, brief, accepted=accepted).model_copy(
+        update={"horizon_start": None, "horizon_end": None}
+    )
+    from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
+
+    memory = Stage1ContextPackage(
+        context_id=StableId("context.carry-forward"),
+        base_commit=story_request.task.base_commit,
+        snapshot_id=story_request.snapshot_id or StableId("snapshot.stage4"),
+        task_contract="stage4",
+        budget_report=ContextBudgetReport(
+            token_budget=8_000,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    memory_ref = _put(repo, memory.model_dump_json())
+    story_inquiry = _inquiry(AgentMode.STORY, brief).model_copy(
+        update={"horizon_start": None, "horizon_end": None}
+    )
+    story_inquiry_ref = _put(repo, story_inquiry.model_dump_json())
+    story_package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+        request=story_request,
+        inquiry=story_inquiry,
+        inquiry_ref=story_inquiry_ref,
+        stage1_context=memory,
+        stage1_context_ref=memory_ref,
+    )
+    assert brief_text in story_package.rendered_context
+    assert "银铭" in story_package.rendered_context
+
+    set_request = _request(AgentMode.CHAPTER_SET, brief, accepted=accepted).model_copy(
+        update={"horizon_start": 24, "horizon_end": 28}
+    )
+    set_inquiry = _inquiry(AgentMode.CHAPTER_SET, brief)
+    set_inquiry_ref = _put(repo, set_inquiry.model_dump_json())
+    set_package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+        request=set_request,
+        inquiry=set_inquiry,
+        inquiry_ref=set_inquiry_ref,
+        stage1_context=memory,
+        stage1_context_ref=memory_ref,
+    )
+    rendered = set_package.rendered_context
+    assert "UNIQUE-LOCK" not in rendered
+    assert brief_text not in rendered
+    assert "银铭" in rendered
+    assert "85" in rendered
+    assert "SETUP/PROGRESS" in rendered
+    assert "第一卷终局约在第100章" in rendered
+
+
 @pytest.mark.parametrize(
     "layer",
     [
