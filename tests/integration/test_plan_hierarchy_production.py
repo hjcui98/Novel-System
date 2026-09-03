@@ -106,16 +106,25 @@ def test_single_level_plan_commit_respects_parent_scope() -> None:
     )
     with pytest.raises(CandidateMaterializationError, match="exceeds parent scope"):
         PlanCandidateMaterializer._validate_parent_scope((story, volume, overflow))
-    mixed = PlanCandidateMaterializer._node(
-        ProposedItem(
-            item_id=StableId("plan.volume-from-story"),
-            kind="arc_volume",
-            payload={"summary": "should not appear in a STORY candidate", "title": "Vol"},
-            provenance=ProposalProvenance.PLANNER_PROPOSED,
-        ),
-        plan_level=PlanLevel.STORY,
+    mixed_item = ProposedItem(
+        item_id=StableId("plan.volume-from-story"),
+        kind="arc_volume",
+        payload={"summary": "should not appear in a STORY candidate", "title": "Vol"},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
     )
-    assert mixed.plan_level is PlanLevel.STORY
+    with pytest.raises(CandidateMaterializationError, match="one PlanLevel"):
+        PlanCandidateMaterializer._assert_single_plan_level((mixed_item,), PlanLevel.STORY)
+    chapter_item = ProposedItem(
+        item_id=StableId("plan.chapter-goal"),
+        kind="chapter",
+        payload={
+            "summary": "Local chapter goal.",
+            "title": "Chapter 21",
+            "chapter_index": 21,
+        },
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+    PlanCandidateMaterializer._assert_single_plan_level((chapter_item,), PlanLevel.CHAPTER_SET)
     assert PlanCandidateMaterializer._trusted_plan_level(AgentMode.STORY) is PlanLevel.STORY
     bootstrap = PlanNode(
         plan_node_id=StableId("plan.bootstrap"),

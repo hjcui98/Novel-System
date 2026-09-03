@@ -24,6 +24,7 @@ from novel_agent.domain.planning import (
     PlanningLoopRequest,
 )
 from novel_agent.domain.stage2 import AgentMode, ProjectProfileRootDocument
+from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
@@ -294,10 +295,29 @@ class PlannerContextAssembler:
                 obligation_id for goal in goals for obligation_id in goal.obligation_ids
             }
             by_id = {node.plan_node_id: node for node in plan.nodes}
+            horizon_start = request.horizon_start
+            horizon_end = request.horizon_end
+
+            def overlaps(node: PlanNode) -> bool:
+                if node.chapter_start is None or node.chapter_end is None:
+                    return False
+                return not (node.chapter_end < horizon_start or node.chapter_start > horizon_end)
+
             selected_ids = {
                 node.plan_node_id
                 for node in plan.nodes
-                if node.parent_id is None or bool(set(node.obligation_ids) & obligation_ids)
+                if bool(set(node.obligation_ids) & obligation_ids)
+                or (
+                    overlaps(node)
+                    and node.plan_level
+                    in {
+                        PlanLevel.ARC_VOLUME,
+                        PlanLevel.CHAPTER_SET,
+                        PlanLevel.CHAPTER,
+                        PlanLevel.SCENE,
+                        None,
+                    }
+                )
             }
             frontier = tuple(selected_ids)
             while frontier:
@@ -314,9 +334,7 @@ class PlannerContextAssembler:
             nodes = tuple(node for node in plan.nodes if node.plan_node_id in selected_ids)
 
         current_chapter = (
-            max(0, (request.horizon_start or 1) - 1)
-            if request.horizon_start is not None
-            else 0
+            max(0, (request.horizon_start or 1) - 1) if request.horizon_start is not None else 0
         )
         lock_summaries = self._future_lock_summaries(request, current_chapter)
         text = canonical_json_bytes(

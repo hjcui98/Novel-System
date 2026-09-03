@@ -61,6 +61,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializer,
@@ -332,7 +333,36 @@ def test_creative_run_starts_after_existing_canon_and_plans_to_absolute_target(
 
     assert task.chapter_index == 20
     assert task.target_chapters == 25
+    assert task.plan_level is None
     assert (task.horizon_start, task.horizon_end) == (21, 25)
+
+
+def test_story_run_starts_without_rolling_horizon(
+    creative_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _factory, _commits, _artifacts, commands, base = creative_kernel
+    request = CreativeRunRequest(
+        run_id=RunId("run.story-start"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        policy=_policy(),
+        current_chapter=0,
+        target_chapters=25,
+        plan_level=PlanLevel.STORY,
+    )
+
+    task = commands.create_run_and_initial_task(request)
+
+    assert task.kind is TaskKind.PLAN_CANDIDATE
+    assert task.plan_level is PlanLevel.STORY
+    assert task.horizon_start is None
+    assert task.horizon_end is None
 
 
 def _build_runtime(

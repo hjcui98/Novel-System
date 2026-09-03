@@ -352,6 +352,7 @@ class ProductionDispatchCoordinator:
             continuation_artifact_refs=first.terminal_artifact_refs,
             current_chapter=first.chapter_index,
             target_chapters=first.target_chapters,
+            plan_level=first.plan_level,
         )
 
     async def _run_project(

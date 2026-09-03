@@ -74,6 +74,11 @@ PLAN_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.plan-root+json"
 TEXT_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.text-root+json"
 WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
 RECONCILIATION_MEDIA_TYPE = "application/vnd.novel-agent.reconciliation+json"
+_KIND_PLAN_LEVEL = {
+    "story": PlanLevel.STORY,
+    "arc_volume": PlanLevel.ARC_VOLUME,
+    "chapter_set": PlanLevel.CHAPTER_SET,
+}
 ModelT = TypeVar("ModelT", bound=DomainModel)
 
 
@@ -194,19 +199,10 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             review,
             current_chapter=current_chapter,
         )
+        self._assert_single_plan_level(proposal.items, trusted_level)
         incoming_nodes = tuple(
             self._node(item, plan_level=trusted_level) for item in proposal.items
         )
-        if trusted_level is not None:
-            mixed = tuple(
-                node.plan_node_id.root
-                for node in incoming_nodes
-                if node.plan_level not in {None, trusted_level}
-            )
-            if mixed:
-                raise CandidateMaterializationError(
-                    "a post-Genesis Plan candidate may only produce one PlanLevel"
-                )
         incoming_goals = tuple(
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
         )
@@ -449,6 +445,37 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             AgentMode.SCENE: PlanLevel.SCENE,
         }
         return mapping.get(mode)
+
+    @classmethod
+    def _declared_plan_level(cls, item: ProposedItem) -> PlanLevel | None:
+        raw = item.payload.get("plan_level")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return PlanLevel(raw)
+            except ValueError as error:
+                raise CandidateMaterializationError(
+                    "Plan item plan_level is not a valid PlanLevel"
+                ) from error
+        return _KIND_PLAN_LEVEL.get(item.kind)
+
+    @classmethod
+    def _assert_single_plan_level(
+        cls,
+        items: tuple[ProposedItem, ...],
+        trusted_level: PlanLevel | None,
+    ) -> None:
+        if trusted_level is None:
+            return
+        mixed = tuple(
+            item.item_id.root
+            for item in items
+            if (declared := cls._declared_plan_level(item)) is not None
+            and declared is not trusted_level
+        )
+        if mixed:
+            raise CandidateMaterializationError(
+                "a post-Genesis Plan candidate may only produce one PlanLevel"
+            )
 
     @staticmethod
     def _effective_invalidated_ids(

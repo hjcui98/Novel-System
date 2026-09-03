@@ -11,16 +11,16 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
         },
         "schema_version": {
           "$ref": "#/$defs/SchemaVersion"
@@ -52,29 +52,28 @@
     "CreativeRunPolicy": {
       "additionalProperties": false,
       "properties": {
-        "auto_accept_draft": {
-          "default": false,
-          "title": "Auto Accept Draft",
-          "type": "boolean"
+        "automation_mode": {
+          "$ref": "#/$defs/AutomationMode"
+        },
+        "policy_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "permission_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Permission Hash",
+          "type": "string"
         },
         "auto_accept_plan": {
           "default": false,
           "title": "Auto Accept Plan",
           "type": "boolean"
         },
-        "automation_mode": {
-          "$ref": "#/$defs/AutomationMode"
-        },
-        "enable_planner_lookahead": {
+        "auto_accept_draft": {
           "default": false,
-          "title": "Enable Planner Lookahead",
+          "title": "Auto Accept Draft",
           "type": "boolean"
-        },
-        "lookahead_horizon": {
-          "default": 3,
-          "minimum": 1,
-          "title": "Lookahead Horizon",
-          "type": "integer"
         },
         "max_task_attempts": {
           "default": 3,
@@ -88,21 +87,11 @@
           "title": "Max Tasks Per Advance",
           "type": "integer"
         },
-        "permission_hash": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Permission Hash",
-          "type": "string"
-        },
         "planning_horizon": {
           "default": 5,
           "minimum": 1,
           "title": "Planning Horizon",
           "type": "integer"
-        },
-        "policy_hash": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Policy Hash",
-          "type": "string"
         },
         "runtime_parallelism": {
           "default": 1,
@@ -111,6 +100,17 @@
             2
           ],
           "title": "Runtime Parallelism",
+          "type": "integer"
+        },
+        "enable_planner_lookahead": {
+          "default": false,
+          "title": "Enable Planner Lookahead",
+          "type": "boolean"
+        },
+        "lookahead_horizon": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Lookahead Horizon",
           "type": "integer"
         }
       },
@@ -121,6 +121,17 @@
       ],
       "title": "CreativeRunPolicy",
       "type": "object"
+    },
+    "PlanLevel": {
+      "enum": [
+        "story",
+        "arc_volume",
+        "chapter_set",
+        "chapter",
+        "scene"
+      ],
+      "title": "PlanLevel",
+      "type": "string"
     },
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -145,6 +156,12 @@
   },
   "additionalProperties": false,
   "properties": {
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
     "basis_commit": {
       "$ref": "#/$defs/CommitId"
     },
@@ -158,6 +175,17 @@
         }
       ],
       "default": null
+    },
+    "policy": {
+      "$ref": "#/$defs/CreativeRunPolicy"
+    },
+    "input_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Input Artifact Refs",
+      "type": "array"
     },
     "continuation_artifact_refs": {
       "default": [],
@@ -174,29 +202,23 @@
       "title": "Current Chapter",
       "type": "integer"
     },
-    "input_artifact_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Input Artifact Refs",
-      "type": "array"
-    },
-    "policy": {
-      "$ref": "#/$defs/CreativeRunPolicy"
-    },
-    "project_id": {
-      "$ref": "#/$defs/ProjectId"
-    },
-    "run_id": {
-      "$ref": "#/$defs/RunId"
-    },
     "target_chapters": {
       "default": 1,
       "maximum": 10000,
       "minimum": 1,
       "title": "Target Chapters",
       "type": "integer"
+    },
+    "plan_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

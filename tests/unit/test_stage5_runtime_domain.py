@@ -49,6 +49,7 @@ from novel_agent.domain.stage5_manifest import (
     Stage5DevelopmentManifest,
     Stage5FeatureAdmission,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.runtime.creative_assembly import validate_runtime_assembly
 
 HASH = "sha256:" + "1" * 64
@@ -179,6 +180,16 @@ def test_fixed_topology_cannot_skip_acceptance_or_freshness() -> None:
     projection = _task(status=TaskStatus.SUCCEEDED, kind=TaskKind.PROJECTION_FRESHNESS)
     assert (
         next_task_kind(projection, after_projection=CandidateKind.PLAN) is TaskKind.DRAFT_CANDIDATE
+    )
+    story_projection = projection.model_copy(update={"plan_level": PlanLevel.STORY})
+    assert (
+        next_task_kind(story_projection, after_projection=CandidateKind.PLAN)
+        is TaskKind.PLAN_CANDIDATE
+    )
+    volume_projection = projection.model_copy(update={"plan_level": PlanLevel.ARC_VOLUME})
+    assert (
+        next_task_kind(volume_projection, after_projection=CandidateKind.PLAN)
+        is TaskKind.PLAN_CANDIDATE
     )
     assert (
         next_task_kind(projection, after_projection=CandidateKind.DRAFT) is TaskKind.DRAFT_CANDIDATE

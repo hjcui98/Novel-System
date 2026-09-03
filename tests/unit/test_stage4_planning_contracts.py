@@ -129,7 +129,7 @@ def _receipt(mode: AgentMode, agent_type: AgentType) -> AgentExecutionReceipt:
     )
 
 
-def _inquiry(mode: AgentMode, source: ArtifactRef) -> PlanningInquiry:
+def _inquiry(mode: AgentMode, source: ArtifactRef | None) -> PlanningInquiry:
     goal = GoalProposal(
         goal_id=StableId("goal.stage4.primary"),
         summary="林澈在滚动窗口中处理伤势与北塔义务",
@@ -156,7 +156,7 @@ def _inquiry(mode: AgentMode, source: ArtifactRef) -> PlanningInquiry:
         planning_scope=("rolling",),
         horizon_start=None if mode is AgentMode.PROJECT_BOOTSTRAP else 21,
         horizon_end=None if mode is AgentMode.PROJECT_BOOTSTRAP else 23,
-        author_intent_refs=(source,),
+        author_intent_refs=() if source is None else (source,),
         goal_proposals=(goal,),
         questions=(question,),
         expected_output_shape="bounded PlanProposal",

@@ -29,6 +29,7 @@ from novel_agent.domain.stage2 import (
     WorldDesignProposal,
     WorldPatchCandidate,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.runtime.production_novel_bootstrap import (
     COMPOSITE_BRIEF_CHARS,
     ProductionNovelBootstrap,
@@ -190,6 +191,7 @@ def test_bootstrap_prepare_then_commit_emits_auto_dispatch_descriptor(tmp_path: 
     assert policy.auto_accept_plan is True
     assert policy.auto_accept_draft is True
     assert request.target_chapters == 10
+    assert request.plan_level is PlanLevel.STORY
     assert descriptor.stop_after_chapter == 10
     engine.dispose()
 

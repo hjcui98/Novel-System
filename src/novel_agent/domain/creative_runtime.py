@@ -103,6 +103,7 @@ class CreativeRunRequest(DomainModel):
     continuation_artifact_refs: tuple[ArtifactRef, ...] = ()
     current_chapter: int = Field(default=0, ge=0, le=9999)
     target_chapters: int = Field(default=1, ge=1, le=10000)
+    plan_level: PlanLevel | None = None
 
     @model_validator(mode="after")
     def validate_chapter_range(self) -> CreativeRunRequest:
@@ -352,6 +353,8 @@ def next_task_kind(task: TaskRecord, *, after_projection: CandidateKind | None =
         raise ValueError("only a succeeded task may unlock a successor")
     if task.kind is TaskKind.PROJECTION_FRESHNESS:
         if after_projection is CandidateKind.PLAN:
+            if task.plan_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME}:
+                return TaskKind.PLAN_CANDIDATE
             return TaskKind.DRAFT_CANDIDATE
         if after_projection is CandidateKind.DRAFT:
             return TaskKind.DRAFT_CANDIDATE
@@ -416,6 +419,8 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
         purpose=previous.purpose,
         horizon_start=previous.horizon_start,
         horizon_end=previous.horizon_end,
+        plan_level=previous.plan_level,
+        planning_generation=previous.planning_generation,
         protected_chapter_index=previous.protected_chapter_index,
         affects_future_plan=receipt.candidate.affects_future_plan,
     )

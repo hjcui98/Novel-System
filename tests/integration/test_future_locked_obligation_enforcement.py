@@ -37,7 +37,7 @@ from novel_agent.domain.memory import (
 from novel_agent.domain.planning import PlannerContextSection
 from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
 from novel_agent.domain.stage2 import AgentMode, PlanProposal, ProposalProvenance, ProposedItem
-from novel_agent.domain.world import Entity, PlanNode
+from novel_agent.domain.world import Entity, PlanLevel, PlanNode
 from novel_agent.ports.creative_runtime import CandidateMaterializationError
 from novel_agent.services.content_addressing import world_root_content_id
 from novel_agent.services.planner_context_assembler import PlannerContextAssembler
@@ -143,6 +143,109 @@ def _plan() -> PlanRootDocument:
             ),
         ),
     )
+
+
+def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    brief = _put(repo, "完整作者 brief: 卷六真相与第700章 payoff.")
+    story = PlanNode(
+        plan_node_id=StableId("plan.story.core"),
+        node_type="story",
+        title="Core conflict",
+        summary="全书核心冲突",
+        plan_level=PlanLevel.STORY,
+    )
+    volume6 = PlanNode(
+        plan_node_id=StableId("plan.story.volume6"),
+        node_type="story",
+        title="Volume 6 truth",
+        summary="卷六真相",
+        plan_level=PlanLevel.STORY,
+        chapter_start=501,
+        chapter_end=600,
+    )
+    ending = PlanNode(
+        plan_node_id=StableId("plan.story.ending"),
+        node_type="story",
+        title="Ending payoff",
+        summary="第700章 payoff",
+        plan_level=PlanLevel.STORY,
+        chapter_start=700,
+        chapter_end=800,
+    )
+    volume1 = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="First volume local arc.",
+        parent_id=story.plan_node_id,
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+    )
+    current = PlanNode(
+        plan_node_id=StableId("plan.set.24-28"),
+        node_type="chapter_set",
+        title="Chapters 24-28",
+        summary="Local investigation.",
+        parent_id=volume1.plan_node_id,
+        plan_level=PlanLevel.CHAPTER_SET,
+        chapter_start=24,
+        chapter_end=28,
+        obligation_ids=(YINMING,),
+    )
+    plan = PlanRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        nodes=(story, volume6, ending, volume1, current),
+        chapter_goals=(
+            ChapterGoal(
+                goal_id=StableId("goal.24"),
+                chapter_index=24,
+                summary="Investigate the wreck.",
+                obligation_ids=(YINMING,),
+            ),
+        ),
+    )
+    world = _world(_yinming())
+    plan_ref = _put(repo, plan.model_dump_json())
+    world_ref = _put(repo, world.model_dump_json())
+    text_ref = _put(repo, _text().model_dump_json())
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        brief,
+        accepted=(plan_ref, world_ref, text_ref),
+    ).model_copy(update={"horizon_start": 24, "horizon_end": 28})
+    inquiry = _inquiry(AgentMode.CHAPTER_SET, brief)
+    inquiry_ref = _put(repo, inquiry.model_dump_json())
+    from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
+
+    memory = Stage1ContextPackage(
+        context_id=StableId("context.hierarchy"),
+        base_commit=request.task.base_commit,
+        snapshot_id=request.snapshot_id or StableId("snapshot.stage4"),
+        task_contract="stage4",
+        budget_report=ContextBudgetReport(
+            token_budget=8_000,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    memory_ref = _put(repo, memory.model_dump_json())
+    package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+        request=request,
+        inquiry=inquiry,
+        inquiry_ref=inquiry_ref,
+        stage1_context=memory,
+        stage1_context_ref=memory_ref,
+    )
+    rendered = package.rendered_context
+    assert "全书核心冲突" in rendered
+    assert "First volume local arc." in rendered
+    assert "Local investigation." in rendered
+    assert "卷六真相" not in rendered
+    assert "第700章 payoff" not in rendered
 
 
 @pytest.mark.parametrize(

@@ -931,24 +931,29 @@ class CreativeRuntimeService:
                     settled, CreativeRunTerminal.WAITING_RETRY, "freshness_not_ready"
                 )
             if task.projection_after == "plan":
-                next_chapter = task.chapter_index + 1
-                draft = self._draft_task(task, snapshot.snapshot_id, next_chapter)
                 policy = self._policy_resolver(task.policy_hash)
-                if policy.enable_planner_lookahead and next_chapter < task.target_chapters:
+                successor = self._successor_after_plan_projection(
+                    task, snapshot.snapshot_id, policy
+                )
+                if (
+                    successor.kind is TaskKind.DRAFT_CANDIDATE
+                    and policy.enable_planner_lookahead
+                    and successor.chapter_index < task.target_chapters
+                ):
                     lookahead = self._lookahead_task(
                         task,
                         snapshot.snapshot_id,
-                        protected_chapter=next_chapter,
+                        protected_chapter=successor.chapter_index,
                         policy=policy,
                     )
                     self._commands.settle_attempt(
                         fence,
                         outcome=AttemptOutcome.SUCCEEDED,
                         terminal_status=TaskStatus.SUCCEEDED,
-                        successor_tasks=(draft, lookahead),
+                        successor_tasks=(successor, lookahead),
                     )
                     return self._result(
-                        draft,
+                        successor,
                         CreativeRunTerminal.PROGRESSED,
                         "freshness_ready_with_lookahead",
                     )
@@ -956,9 +961,14 @@ class CreativeRuntimeService:
                     fence,
                     outcome=AttemptOutcome.SUCCEEDED,
                     terminal_status=TaskStatus.SUCCEEDED,
-                    successor_tasks=(draft,),
+                    successor_tasks=(successor,),
                 )
-                return self._result(draft, CreativeRunTerminal.PROGRESSED, "freshness_ready")
+                reason = (
+                    "freshness_ready"
+                    if successor.kind is TaskKind.DRAFT_CANDIDATE
+                    else "hierarchical_plan_ready"
+                )
+                return self._result(successor, CreativeRunTerminal.PROGRESSED, reason)
             if task.chapter_index < task.target_chapters:
                 policy = self._policy_resolver(task.policy_hash)
                 if policy.enable_planner_lookahead:
@@ -1559,6 +1569,8 @@ class CreativeRuntimeService:
             purpose=previous.purpose,
             horizon_start=previous.horizon_start,
             horizon_end=previous.horizon_end,
+            plan_level=previous.plan_level,
+            planning_generation=previous.planning_generation,
             protected_chapter_index=previous.protected_chapter_index,
             affects_future_plan=candidate.affects_future_plan,
         )
@@ -1595,9 +1607,86 @@ class CreativeRuntimeService:
             purpose=previous.purpose,
             horizon_start=previous.horizon_start,
             horizon_end=previous.horizon_end,
+            plan_level=previous.plan_level,
+            planning_generation=previous.planning_generation,
             protected_chapter_index=previous.protected_chapter_index,
             affects_future_plan=previous.affects_future_plan,
             projection_after=("plan" if previous.kind is TaskKind.PLAN_COMMIT else "draft"),
+        )
+
+    def _successor_after_plan_projection(
+        self,
+        task: TaskRecord,
+        snapshot_id: StableId,
+        policy: CreativeRunPolicy,
+    ) -> TaskRecord:
+        if task.plan_level is PlanLevel.STORY:
+            return self._plan_candidate_successor(
+                task,
+                snapshot_id,
+                plan_level=PlanLevel.ARC_VOLUME,
+                horizon_start=None,
+                horizon_end=None,
+            )
+        if task.plan_level is PlanLevel.ARC_VOLUME:
+            horizon_start = task.chapter_index + 1
+            horizon_end = min(
+                task.target_chapters,
+                task.chapter_index + policy.planning_horizon,
+            )
+            return self._plan_candidate_successor(
+                task,
+                snapshot_id,
+                plan_level=PlanLevel.CHAPTER_SET,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+            )
+        return self._draft_task(task, snapshot_id, task.chapter_index + 1)
+
+    def _plan_candidate_successor(
+        self,
+        previous: TaskRecord,
+        snapshot_id: StableId,
+        *,
+        plan_level: PlanLevel,
+        horizon_start: int | None,
+        horizon_end: int | None,
+        generation: int = 0,
+    ) -> TaskRecord:
+        inputs = previous.input_artifact_refs
+        if self._task_reader is not None:
+            with suppress(RuntimeError):
+                inputs = self._planning_inputs(previous)
+        return TaskRecord(
+            task_id=self._plan_task_id(
+                previous.run_id,
+                previous.project_id,
+                previous.basis_commit,
+                plan_level=plan_level,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                generation=generation,
+            ),
+            run_id=previous.run_id,
+            project_id=previous.project_id,
+            kind=TaskKind.PLAN_CANDIDATE,
+            purpose=TaskPurpose.NORMAL,
+            task_revision=0,
+            status=TaskStatus.READY,
+            basis_commit=previous.basis_commit,
+            basis_snapshot=snapshot_id,
+            policy_hash=previous.policy_hash,
+            permission_hash=previous.permission_hash,
+            input_artifact_refs=inputs,
+            dependency_task_ids=(previous.task_id,),
+            failure_budget=previous.retry_tranche_size,
+            retry_tranche_size=previous.retry_tranche_size,
+            chapter_index=previous.chapter_index,
+            target_chapters=previous.target_chapters,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            plan_level=plan_level,
+            planning_generation=generation,
         )
 
     @staticmethod

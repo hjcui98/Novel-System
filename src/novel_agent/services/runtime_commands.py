@@ -62,6 +62,7 @@ from novel_agent.domain.runtime import (
     failure_policy,
     normalize_failure_class,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.event_log import RunEventLogRepository
@@ -143,6 +144,15 @@ class RuntimeCommandService:
         return max(1.0, self._attempt_lease.total_seconds() / 3.0)
 
     def create_run_and_initial_task(self, request: CreativeRunRequest) -> TaskRecord:
+        if request.plan_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME}:
+            horizon_start: int | None = None
+            horizon_end: int | None = None
+        else:
+            horizon_start = request.current_chapter + 1
+            horizon_end = min(
+                request.target_chapters,
+                request.current_chapter + request.policy.planning_horizon,
+            )
         task = TaskRecord(
             task_id=TaskId(
                 _bounded_runtime_identity(
@@ -165,11 +175,9 @@ class RuntimeCommandService:
             retry_tranche_size=request.policy.max_task_attempts,
             chapter_index=request.current_chapter,
             target_chapters=request.target_chapters,
-            horizon_start=request.current_chapter + 1,
-            horizon_end=min(
-                request.target_chapters,
-                request.current_chapter + request.policy.planning_horizon,
-            ),
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            plan_level=request.plan_level,
         )
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():

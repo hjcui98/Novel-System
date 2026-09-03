@@ -296,12 +296,14 @@ class _ModePlanner(_BootstrapPlanner):
         self.turn_calls = 0
         self.plan_requests: list[dict[str, object]] = []
         self.inquiry_source_payloads: list[str] = []
+        self.inquiry_source_artifacts: list[tuple[ArtifactRef, ...]] = []
 
     async def propose_inquiry(self, **kwargs: object) -> tuple[object, ...]:
         self.inquiry_calls += 1
         self.inquiry_source_payloads.append(cast(str, kwargs["source_payload"]))
         source_artifacts = cast(tuple[ArtifactRef, ...], kwargs["source_artifacts"])
-        inquiry = _inquiry(self._mode, source_artifacts[0])
+        self.inquiry_source_artifacts.append(source_artifacts)
+        inquiry = _inquiry(self._mode, source_artifacts[0] if source_artifacts else None)
         parent = cast(StableId | None, kwargs.get("parent_inquiry_id"))
         if parent is not None:
             inquiry = inquiry.model_copy(
@@ -821,7 +823,9 @@ class _NoProgressPlanner(_ModePlanner):
         if parent is None:
             return result
         source_artifacts = cast(tuple[ArtifactRef, ...], kwargs["source_artifacts"])
-        inquiry = _inquiry(self._mode, source_artifacts[0]).model_copy(
+        inquiry = _inquiry(
+            self._mode, source_artifacts[0] if source_artifacts else None
+        ).model_copy(
             update={
                 "inquiry_id": StableId(f"planning-inquiry.no-progress.{self.inquiry_calls}"),
                 "parent_inquiry_id": parent,
@@ -1934,6 +1938,47 @@ def test_post_genesis_inquiry_receives_exact_world_entity_labels(tmp_path: Path)
     payload = planner.inquiry_source_payloads[0]
     assert "WORLD_ENTITY_LABELS=" in payload
     assert world.entities[0].internal_label in payload
+
+
+def test_chapter_set_inquiry_does_not_receive_raw_author_brief(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    brief_text = "完整作者 brief: 第90-100章银铭最终获得, 卷终真相与内府终局."
+    source = _put(artifacts, brief_text)
+    accepted = (
+        _put(artifacts, "accepted-0"),
+        _put(artifacts, "accepted-1"),
+        _put(artifacts, "accepted-2"),
+    )
+    captured: list[tuple[ArtifactRef, ...]] = []
+
+    class _RecordingReviewer(_ScriptedReviewer):
+        async def review(self, **kwargs: object) -> tuple[object, ...]:
+            trusted = kwargs["trusted_source_artifacts"]
+            assert isinstance(trusted, tuple)
+            captured.append(trusted)
+            return await super().review(**kwargs)
+
+    service, planner, _memory = _post_genesis_service(
+        artifacts,
+        reviewer=_RecordingReviewer(artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]),
+    )
+
+    asyncio.run(
+        service.run(
+            request=_request(AgentMode.CHAPTER_SET, source, accepted=accepted),
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert planner.inquiry_source_artifacts == [()]
+    assert brief_text not in planner.inquiry_source_payloads[0]
+    assert "银铭最终获得" not in planner.inquiry_source_payloads[0]
+    assert all(source not in trusted for trusted in captured)
 
 
 def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:

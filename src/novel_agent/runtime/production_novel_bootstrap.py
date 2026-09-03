@@ -66,7 +66,7 @@ from novel_agent.domain.stage2 import (
     ToolPolicy,
     WorldPatchCandidate,
 )
-from novel_agent.domain.world import Entity, PlanNode, StateRecord, StoryTime, TruthClass
+from novel_agent.domain.world import Entity, PlanLevel, PlanNode, StateRecord, StoryTime, TruthClass
 from novel_agent.prompts.registry import PromptRegistry, PromptTemplate, content_hash
 from novel_agent.runtime.production_dispatch_coordinator import ProductionRunDescriptor
 from novel_agent.services.artifacts import ArtifactRepository
@@ -389,6 +389,7 @@ class ProductionNovelBootstrap:
             input_artifact_refs=tuple(asset.artifact for asset in document.reference.assets),
             current_chapter=0,
             target_chapters=target_chapters,
+            plan_level=PlanLevel.STORY,
         )
         descriptor = ProductionRunDescriptor(
             project_id=document.project_id,

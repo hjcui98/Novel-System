@@ -148,7 +148,11 @@ class ProductionStage4InvocationFactory:
         manifest = self._commits.load_manifest(request.basis_commit)
         if manifest.project_id != request.project_id:
             raise ValueError("Stage 4 task and canonical manifest belong to different projects")
-        author_intent = request.input_artifact_refs
+        author_intent = (
+            ()
+            if mode in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}
+            else request.input_artifact_refs
+        )
         text = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
         )
@@ -336,8 +340,8 @@ class Stage4PlanningLeafAdapter:
             request.input_artifact_refs
         ):
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
-        if not detailed.author_intent_artifacts:
-            raise ValueError("Stage 4 CHAPTER_SET requires author-intent artifacts")
+        if detailed.task.mode is AgentMode.STORY and not detailed.author_intent_artifacts:
+            raise ValueError("Stage 4 STORY requires author-intent artifacts")
 
         result = await self._loop.run(
             request=detailed,

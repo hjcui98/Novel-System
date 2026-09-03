@@ -604,7 +604,8 @@ class PlanningContextLoopService:
         resume_checkpoint_ref: ArtifactRef | None = None,
         event_refs: list[ArtifactRef],
     ) -> PlanningLoopResult:
-        source_payload = self._source_payload(request.author_intent_artifacts)
+        visible_author_artifacts = self._visible_author_intent_artifacts(request)
+        source_payload = self._source_payload(visible_author_artifacts)
         if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
             if world is not None or text_root is not None:
                 return self._terminal(
@@ -735,7 +736,7 @@ class PlanningContextLoopService:
                 version=self._schema_version,
                 task=request.task,
                 source_payload=source_payload,
-                source_artifacts=request.author_intent_artifacts,
+                source_artifacts=visible_author_artifacts,
                 request=model_request("inquiry", request.task.mode, 1),
                 horizon_start=request.horizon_start,
                 horizon_end=request.horizon_end,
@@ -748,7 +749,7 @@ class PlanningContextLoopService:
                 target_kind=ReviewTargetKind.INQUIRY,
                 target_payload=inquiry.model_dump_json(),
                 target_artifact=inquiry_ref,
-                trusted_source_artifacts=request.author_intent_artifacts,
+                trusted_source_artifacts=visible_author_artifacts,
                 request=model_request("inquiry_review", request.task.mode, 1),
                 base_commit=request.task.base_commit,
             )
@@ -797,7 +798,7 @@ class PlanningContextLoopService:
                     f"REVIEW={inquiry_review.model_dump_json()}\n"
                     f"PARENT_INQUIRY={parent_inquiry.model_dump_json()}"
                 ),
-                source_artifacts=request.author_intent_artifacts,
+                source_artifacts=visible_author_artifacts,
                 request=model_request("inquiry_revision", request.task.mode, inquiry_generation),
                 horizon_start=request.horizon_start,
                 horizon_end=request.horizon_end,
@@ -821,7 +822,7 @@ class PlanningContextLoopService:
                 target_kind=ReviewTargetKind.INQUIRY,
                 target_payload=inquiry.model_dump_json(),
                 target_artifact=inquiry_ref,
-                trusted_source_artifacts=request.author_intent_artifacts,
+                trusted_source_artifacts=visible_author_artifacts,
                 request=model_request("inquiry_rereview", request.task.mode, inquiry_generation),
                 base_commit=request.task.base_commit,
             )
@@ -1106,7 +1107,7 @@ class PlanningContextLoopService:
                 target_payload=proposal.model_dump_json(),
                 target_artifact=proposal_ref,
                 trusted_source_artifacts=(
-                    *request.author_intent_artifacts,
+                    *visible_author_artifacts,
                     planner_context_ref,
                     projection.view_ref,
                 ),
@@ -1203,7 +1204,7 @@ class PlanningContextLoopService:
                         target_payload=planner_inquiry.model_dump_json(),
                         target_artifact=planner_inquiry_ref,
                         trusted_source_artifacts=(
-                            *request.author_intent_artifacts,
+                            *visible_author_artifacts,
                             planner_context_ref,
                             projection.view_ref,
                         ),
@@ -1262,7 +1263,7 @@ class PlanningContextLoopService:
                                     projection.rendered_context,
                                     tuple(rejected_memory_questions.values()),
                                 ),
-                                source_artifacts=request.author_intent_artifacts,
+                                source_artifacts=visible_author_artifacts,
                                 trusted_context_artifacts=(
                                     planner_context_ref,
                                     projection.view_ref,
@@ -1465,7 +1466,7 @@ class PlanningContextLoopService:
                                     projection.rendered_context,
                                     tuple(unsupported_memory_questions.values()),
                                 ),
-                                source_artifacts=request.author_intent_artifacts,
+                                source_artifacts=visible_author_artifacts,
                                 trusted_context_artifacts=(
                                     planner_context_ref,
                                     projection.view_ref,
@@ -1507,7 +1508,7 @@ class PlanningContextLoopService:
                                             "the supported Memory entries and explicit unresolved "
                                             "markers; do not issue another REQUEST_MEMORY action."
                                         ),
-                                        source_artifacts=request.author_intent_artifacts,
+                                        source_artifacts=visible_author_artifacts,
                                         trusted_context_artifacts=(
                                             planner_context_ref,
                                             projection.view_ref,
@@ -1552,7 +1553,7 @@ class PlanningContextLoopService:
                         version=self._schema_version,
                         task=request.task,
                         source_payload=planner_source_payload,
-                        source_artifacts=request.author_intent_artifacts,
+                        source_artifacts=visible_author_artifacts,
                         trusted_context_artifacts=(planner_context_ref, projection.view_ref),
                         reviewed_inquiry_ref=inquiry_ref,
                         memory_need_ids=planner_context.need_ids,
@@ -1578,7 +1579,7 @@ class PlanningContextLoopService:
                     version=self._schema_version,
                     task=request.task,
                     source_payload=planner_source_payload,
-                    source_artifacts=request.author_intent_artifacts,
+                    source_artifacts=visible_author_artifacts,
                     trusted_context_artifacts=(
                         planner_context_ref,
                         projection.view_ref,
@@ -1632,7 +1633,7 @@ class PlanningContextLoopService:
                                 projection.rendered_context,
                                 tuple(turn.memory_questions),
                             ),
-                            source_artifacts=request.author_intent_artifacts,
+                            source_artifacts=visible_author_artifacts,
                             trusted_context_artifacts=(
                                 planner_context_ref,
                                 projection.view_ref,
@@ -1681,7 +1682,7 @@ class PlanningContextLoopService:
                                     "supported. Author PLAN_READY now; do not emit another "
                                     "REQUEST_MEMORY action."
                                 ),
-                                source_artifacts=request.author_intent_artifacts,
+                                source_artifacts=visible_author_artifacts,
                                 trusted_context_artifacts=(
                                     planner_context_ref,
                                     projection.view_ref,
@@ -1718,7 +1719,7 @@ class PlanningContextLoopService:
                 target_payload=proposal.model_dump_json(),
                 target_artifact=proposal_ref,
                 trusted_source_artifacts=(
-                    *request.author_intent_artifacts,
+                    *visible_author_artifacts,
                     planner_context_ref,
                     projection.view_ref,
                 ),
@@ -2075,7 +2076,7 @@ class PlanningContextLoopService:
                     f"REVIEW={plan_review.model_dump_json()}\n"
                     f"PARENT_PROPOSAL={parent_proposal.model_dump_json()}"
                 ),
-                source_artifacts=request.author_intent_artifacts,
+                source_artifacts=visible_author_artifacts,
                 trusted_context_artifacts=(
                     planner_context_ref,
                     projection.view_ref,
@@ -2117,7 +2118,7 @@ class PlanningContextLoopService:
                 target_payload=proposal.model_dump_json(),
                 target_artifact=proposal_ref,
                 trusted_source_artifacts=(
-                    *request.author_intent_artifacts,
+                    *visible_author_artifacts,
                     planner_context_ref,
                     projection.view_ref,
                 ),
@@ -2224,6 +2225,14 @@ class PlanningContextLoopService:
             "application/vnd.novel-agent.plan-proposal+json",
             self._schema_version,
         )
+
+    @staticmethod
+    def _visible_author_intent_artifacts(
+        request: PlanningLoopRequest,
+    ) -> tuple[ArtifactRef, ...]:
+        if request.task.mode in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}:
+            return ()
+        return request.author_intent_artifacts
 
     def _source_payload(self, artifacts: tuple[ArtifactRef, ...]) -> str:
         parts: list[str] = []

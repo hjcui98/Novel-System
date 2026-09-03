@@ -47,6 +47,7 @@ from novel_agent.domain.stage2 import (
     RetrievalBudget,
     SkillContractRef,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.domain.writer_context import ContextAssemblyStatus, WriterContextPackageV2
 from novel_agent.domain.writing_loop import WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
 from novel_agent.runtime.production_components import (
@@ -630,7 +631,7 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
     assert invocation.request.task.mode is AgentMode.CHAPTER_SET
     assert invocation.request.horizon_start == 21
     assert invocation.request.horizon_end == 25
-    assert invocation.request.author_intent_artifacts == (author_ref,)
+    assert invocation.request.author_intent_artifacts == ()
     assert invocation.world is not None
     assert invocation.text_root is not None
     assert invocation.resume_checkpoint_ref == checkpoint_ref
@@ -665,3 +666,36 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
     assert retry_id_a.request_id != retry_id_b.request_id
     assert retry_id_a.attempt_id == retry_request_a.attempt_id
     assert retry_id_b.attempt_id == retry_request_b.attempt_id
+
+
+def test_production_stage4_factory_story_keeps_author_brief(tmp_path: Path) -> None:
+    artifacts, commits, base, _text = _canonical(tmp_path)
+    author_ref = artifacts.put(b"full author brief", "text/plain", VERSION)
+    request = PlanningLoopRequest(
+        run_id=RunId("run.production-story"),
+        task_id=TaskId("task.production-story"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        basis_snapshot=StableId("snapshot.chapter.20"),
+        input_artifact_refs=(author_ref,),
+        chapter_index=20,
+        plan_level=PlanLevel.STORY,
+    )
+    policy = Stage4InvocationPolicy(
+        budgets=PlanningBudgets(
+            retrieval=RetrievalBudget(max_full_chapter_reads=1),
+            context=ContextBudget(token_budget=8_000),
+        ),
+        configuration_fingerprint=HASH,
+        model_fingerprint=HASH,
+    )
+    invocation = ProductionStage4InvocationFactory(
+        commits=commits,
+        artifacts=artifacts,
+        policy=policy,
+    )(request)
+
+    assert invocation.request.task.mode is AgentMode.STORY
+    assert invocation.request.horizon_start is None
+    assert invocation.request.horizon_end is None
+    assert invocation.request.author_intent_artifacts == (author_ref,)
