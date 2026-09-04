@@ -814,7 +814,15 @@ class ModelGateway:
         try:
             return await asyncio.shield(completed)
         except asyncio.CancelledError:
-            completed.cancel()
+            if completed.done() and not completed.cancelled() and not completed.exception():
+                try:
+                    lease = completed.result()
+                    if not lease.released:
+                        lease.release()
+                except BaseException:
+                    pass
+            else:
+                completed.cancel()
             controller.abandon_request(scheduling_info.request_id)
             raise
 

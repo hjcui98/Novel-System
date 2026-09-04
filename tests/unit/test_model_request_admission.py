@@ -399,3 +399,21 @@ def test_admission_wait_then_acquires_capacity() -> None:
     snapshot = controller.snapshot()
     assert snapshot["inflight_requests"] == 0
     assert snapshot["acquired_requests"] == snapshot["released_requests"]
+
+
+def test_abandon_request_releases_active_reservation_and_subsequent_release_is_safe() -> None:
+    controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+    lease = controller.acquire(1)
+    assert controller.inflight_requests == 1
+
+    assert controller.abandon_request(lease.info.request_id) is True
+    assert controller.inflight_requests == 0
+    assert controller.snapshot()["released_requests"] == 1
+
+    # Calling lease.release() subsequently should be a clean no-op
+    lease.release()
+    assert lease.released is True
+
+    # Calling lease.release() a second time should raise RuntimeError
+    with pytest.raises(RuntimeError, match="released twice"):
+        lease.release()

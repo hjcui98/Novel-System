@@ -186,6 +186,7 @@ class ModelRequestAdmissionController:
         self._condition = threading.Condition(threading.Lock())
         self._queue: list[_QueueEntry] = []
         self._active: dict[str, ModelRequestSchedulingInfo] = {}
+        self._abandoned_reservations: set[str] = set()
         self._sequence = 0
         self._legacy_sequence = 0
         self._inflight_kv_tokens = 0
@@ -308,15 +309,19 @@ class ModelRequestAdmissionController:
                     self._condition.notify_all()
 
     def abandon_request(self, request_id: str) -> bool:
-        """Drop a waiting request so cancel/shutdown cannot occupy the queue."""
+        """Drop a waiting or active request so cancel/shutdown cannot occupy capacity."""
 
         with self._condition:
             remaining = [item for item in self._queue if item.info.request_id != request_id]
-            abandoned = len(remaining) != len(self._queue)
-            if abandoned:
+            if len(remaining) != len(self._queue):
                 self._queue = remaining
                 self._condition.notify_all()
-            return abandoned
+                return True
+            if request_id in self._active:
+                self._abandoned_reservations.add(request_id)
+                self._release_reservation_locked(request_id)
+                return True
+            return False
 
     def release(self, estimated_tokens: int) -> None:
         """Compatibility release for older corridor callers."""
@@ -336,17 +341,23 @@ class ModelRequestAdmissionController:
             raise RuntimeError("model request release has no matching active reservation")
         self._release_reservation(reservation_id)
 
+    def _release_reservation_locked(self, reservation_id: str) -> None:
+        info = self._active.pop(reservation_id, None)
+        if info is None:
+            if reservation_id in self._abandoned_reservations:
+                self._abandoned_reservations.discard(reservation_id)
+                return
+            raise RuntimeError("model request lease is not active")
+        self._inflight_kv_tokens -= info.reserved_sequence_tokens
+        if self._inflight_kv_tokens < 0:
+            raise RuntimeError("model request KV counter underflow")
+        self._released_requests += 1
+        self._released_kv_tokens += info.reserved_sequence_tokens
+        self._condition.notify_all()
+
     def _release_reservation(self, reservation_id: str) -> None:
         with self._condition:
-            info = self._active.pop(reservation_id, None)
-            if info is None:
-                raise RuntimeError("model request lease is not active")
-            self._inflight_kv_tokens -= info.reserved_sequence_tokens
-            if self._inflight_kv_tokens < 0:
-                raise RuntimeError("model request KV counter underflow")
-            self._released_requests += 1
-            self._released_kv_tokens += info.reserved_sequence_tokens
-            self._condition.notify_all()
+            self._release_reservation_locked(reservation_id)
 
     def _coerce_descriptor(
         self,

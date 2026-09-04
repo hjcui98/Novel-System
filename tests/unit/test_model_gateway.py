@@ -379,6 +379,35 @@ def test_cancelled_gateway_drops_late_admission_error() -> None:
     asyncio.run(exercise())
 
 
+def test_cancelled_gateway_releases_admitted_lease_cleanly() -> None:
+    async def exercise() -> None:
+        controller = ModelRequestAdmissionController(endpoint_request_limit=1)
+
+        class SlowEndpoint(FakeModelEndpoint):
+            async def generate(self, request: ModelRequest) -> ProviderModelResult:
+                await asyncio.sleep(1.0)
+                return await super().generate(request)
+
+        gateway = ModelGateway(
+            (endpoint(ModelRole.BATCH_TEST, SlowEndpoint("slow")),),
+            admission_controller=controller,
+        )
+        task = asyncio.create_task(gateway.generate_text(request()))
+        # Give it time to acquire the lease and enter generate_text
+        await asyncio.sleep(0.05)
+        assert controller.inflight_requests == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # After cancellation, the lease must be cleanly released
+        assert controller.inflight_requests == 0
+        snapshot = controller.snapshot()
+        assert snapshot["acquired_requests"] == snapshot["released_requests"]
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("retry_count", [-1, 3])
 def test_invalid_structured_retry_configuration_is_rejected(retry_count: int) -> None:
     with pytest.raises(ValueError, match="structured retries"):
