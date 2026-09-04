@@ -131,8 +131,10 @@ PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "and must copy at least one exact internal label or alias from WORLD_ENTITY_LABELS in "
     "SOURCE_DATA; never use translated or generic descriptors when an exact label is available. "
     "Keep the request bounded to at most three unique memory_questions. "
-    "For a relation question, use exact labels for every named subject and object. Do not emit "
-    "markdown, reasoning, or commentary outside JSON."
+    "For a relation question, use exact labels for every named subject and object. "
+    "If action is PLAN_READY, place source_ids directly on each ProposedItem alongside item_id "
+    "and kind, never nested inside payload. "
+    "Do not emit markdown, reasoning, or commentary outside JSON."
 )
 
 _MODE_ASSETS = {

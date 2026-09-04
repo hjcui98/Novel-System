@@ -420,6 +420,30 @@ class ProposedItem(DomainModel):
     provenance: ProposalProvenance
     source_ids: tuple[StableId, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def lift_source_ids(cls, data: object) -> object:
+        if isinstance(data, dict):
+            coerced = dict(data)
+            raw_sources = coerced.get("source_ids")
+            if isinstance(raw_sources, list):
+                coerced["source_ids"] = tuple(raw_sources)
+            payload = coerced.get("payload")
+            if (
+                not coerced.get("source_ids")
+                and isinstance(payload, dict)
+                and "source_ids" in payload
+            ):
+                payload_copy = dict(payload)
+                nested_sources = payload_copy.pop("source_ids")
+                if isinstance(nested_sources, (list, tuple)):
+                    coerced["source_ids"] = tuple(nested_sources)
+                elif isinstance(nested_sources, str):
+                    coerced["source_ids"] = (nested_sources,)
+                coerced["payload"] = payload_copy
+            return coerced
+        return data
+
     @model_validator(mode="after")
     def validate_origin(self) -> ProposedItem:
         if self.provenance is ProposalProvenance.AUTHOR_SUPPLIED and not self.source_ids:

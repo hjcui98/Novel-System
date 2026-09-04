@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -562,3 +563,24 @@ def test_planner_result_rejects_receipt_and_mode_contradictions(tmp_path: Path) 
                 "receipt": replan_receipt,
             }
         )
+
+
+def test_proposed_item_lifts_nested_source_ids_from_payload() -> None:
+    raw = {
+        "item_id": "plan.story.premise",
+        "kind": "premise",
+        "payload": {
+            "summary": "hero premise",
+            "source_ids": ["source.author-intent.123", "source.author-intent.456"],
+        },
+        "provenance": "author_supplied",
+    }
+    item = ProposedItem.model_validate_json(json.dumps(raw))
+    assert item.source_ids == (
+        StableId("source.author-intent.123"),
+        StableId("source.author-intent.456"),
+    )
+    assert "source_ids" not in item.payload
+    assert item.payload == {"summary": "hero premise"}
+
+
