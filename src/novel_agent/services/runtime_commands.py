@@ -2243,6 +2243,34 @@ class RuntimeCommandService:
             if existing is not None:
                 restored = TaskRecord.model_validate_json(json.dumps(existing.task_json))
                 if restored != successor:
+                    if (
+                        restored.task_revision == 0
+                        and restored.current_attempt_id is None
+                        and restored.status
+                        in {
+                            TaskStatus.READY,
+                            TaskStatus.PENDING,
+                            TaskStatus.WAITING_INPUT,
+                        }
+                        and restored.kind is TaskKind.DRAFT_CANDIDATE
+                        and successor.kind is TaskKind.DRAFT_CANDIDATE
+                        and restored.run_id == successor.run_id
+                        and restored.project_id == successor.project_id
+                        and restored.chapter_index == successor.chapter_index
+                    ):
+                        self._update_task(session, successor, now)
+                        self._append(
+                            session,
+                            successor.run_id,
+                            successor.task_id,
+                            RunEventType.RUNTIME_TASK_CREATED,
+                            TaskCreatedPayload(task=successor).model_dump(mode="json"),
+                            _bounded_runtime_identity(
+                                f"{successor.task_id.root}.created.{successor.basis_commit.root[-12:]}",
+                                f"{successor.run_id.root}.created.{successor.basis_commit.root[-12:]}",
+                            ),
+                        )
+                        continue
                     raise RuntimeCommandConflictError("successor task identity collision")
                 continue
             self._append(

@@ -321,3 +321,121 @@ def test_projection_settlement_creates_all_ready_successors_atomically(
     assert commands.get_task(draft.task_id) == draft
     assert commands.get_task(lookahead.task_id) == lookahead
     _assert_replay(events, query, projection.run_id)
+
+
+def test_projection_settlement_updates_unclaimed_draft_candidate_with_newer_basis(
+    kernel: tuple[
+        RuntimeCommandService,
+        CommitService,
+        RunEventLogRepository,
+        RuntimeTaskQueryRepository,
+        CommitId,
+    ],
+) -> None:
+    commands, commits, events, query, base = kernel
+    new_request = make_commit_request(base, idempotency_key="commit.new-plan")
+    new_commit_id = manifest_commit_id(new_request.bundle.proposed_roots)
+    commits.commit(new_request)
+
+    initial_draft = _task(
+        task_id="run.rebase.draft.4",
+        run_id="run.rebase",
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        basis=base,
+    ).model_copy(update={"chapter_index": 4})
+    commands.create_task(initial_draft)
+
+    plan_projection = commands.create_task(
+        _task(
+            task_id="task.rebase-projection",
+            run_id="run.rebase",
+            kind=TaskKind.PROJECTION_FRESHNESS,
+            status=TaskStatus.READY,
+            basis=new_commit_id,
+        ).model_copy(update={"projection_after": "plan"})
+    )
+    _, fence = commands.claim(plan_projection.task_id, worker_id="projection-worker")
+    commands.mark_started(fence)
+
+    updated_draft = _task(
+        task_id="run.rebase.draft.4",
+        run_id="run.rebase",
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        basis=new_commit_id,
+        dependency=plan_projection.task_id,
+    ).model_copy(update={"chapter_index": 4, "horizon_start": 4, "horizon_end": 8})
+
+    settled = commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        successor_tasks=(updated_draft,),
+    )
+
+    assert settled.status is TaskStatus.SUCCEEDED
+    stored = commands.get_task(initial_draft.task_id)
+    assert stored.basis_commit == new_commit_id
+    assert stored.dependency_task_ids == (plan_projection.task_id,)
+    assert stored.horizon_start == 4
+    assert stored.horizon_end == 8
+    _assert_replay(events, query, plan_projection.run_id)
+
+
+def test_projection_settlement_rejects_updating_claimed_draft_candidate(
+    kernel: tuple[
+        RuntimeCommandService,
+        CommitService,
+        RunEventLogRepository,
+        RuntimeTaskQueryRepository,
+        CommitId,
+    ],
+) -> None:
+    commands, commits, _events, _query, base = kernel
+
+    initial_draft = _task(
+        task_id="run.claimed.draft.4",
+        run_id="run.claimed",
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        basis=base,
+    ).model_copy(update={"chapter_index": 4})
+    commands.create_task(initial_draft)
+
+    # Claim draft candidate so it is no longer unclaimed initial task
+    _, draft_fence = commands.claim(initial_draft.task_id, worker_id="draft-worker")
+    commands.mark_started(draft_fence)
+
+    new_request = make_commit_request(base, idempotency_key="commit.new-plan-2")
+    new_commit_id = manifest_commit_id(new_request.bundle.proposed_roots)
+    commits.commit(new_request)
+
+    plan_projection = commands.create_task(
+        _task(
+            task_id="task.claimed-rebase-projection",
+            run_id="run.claimed",
+            kind=TaskKind.PROJECTION_FRESHNESS,
+            status=TaskStatus.READY,
+            basis=new_commit_id,
+        ).model_copy(update={"projection_after": "plan"})
+    )
+    _, fence = commands.claim(plan_projection.task_id, worker_id="projection-worker")
+    commands.mark_started(fence)
+
+    updated_draft = _task(
+        task_id="run.claimed.draft.4",
+        run_id="run.claimed",
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        basis=new_commit_id,
+        dependency=plan_projection.task_id,
+    ).model_copy(update={"chapter_index": 4})
+
+    with pytest.raises(RuntimeCommandConflictError, match="successor task identity collision"):
+        commands.settle_attempt(
+            fence,
+            outcome=AttemptOutcome.SUCCEEDED,
+            terminal_status=TaskStatus.SUCCEEDED,
+            successor_tasks=(updated_draft,),
+        )

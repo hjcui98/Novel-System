@@ -18,6 +18,7 @@ from novel_agent.domain.runtime import (
     TaskAttemptStartedPayload,
     TaskClaimedPayload,
     TaskCreatedPayload,
+    TaskKind,
     TaskRecord,
     TaskStatus,
     WriterClaimedPayload,
@@ -47,6 +48,16 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
         if event.event_type is RunEventType.RUNTIME_TASK_CREATED:
             created_payload = TaskCreatedPayload.model_validate(event.payload, strict=False)
             if created_payload.task.task_id.root in tasks:
+                existing_task = tasks[created_payload.task.task_id.root]
+                if (
+                    existing_task.task_revision == 0
+                    and existing_task.current_attempt_id is None
+                    and existing_task.kind is TaskKind.DRAFT_CANDIDATE
+                    and created_payload.task.kind is TaskKind.DRAFT_CANDIDATE
+                    and existing_task.chapter_index == created_payload.task.chapter_index
+                ):
+                    tasks[created_payload.task.task_id.root] = created_payload.task
+                    continue
                 raise ValueError("runtime replay encountered duplicate task creation")
             tasks[created_payload.task.task_id.root] = created_payload.task
             continue
