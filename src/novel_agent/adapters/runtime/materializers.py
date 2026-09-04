@@ -77,6 +77,8 @@ RECONCILIATION_MEDIA_TYPE = "application/vnd.novel-agent.reconciliation+json"
 _KIND_PLAN_LEVEL = {
     "story": PlanLevel.STORY,
     "arc_volume": PlanLevel.ARC_VOLUME,
+    "volume": PlanLevel.ARC_VOLUME,
+    "volume_scope": PlanLevel.ARC_VOLUME,
     "chapter_set": PlanLevel.CHAPTER_SET,
 }
 ModelT = TypeVar("ModelT", bound=DomainModel)
@@ -200,8 +202,44 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             current_chapter=current_chapter,
         )
         self._assert_single_plan_level(proposal.items, trusted_level)
+        story_parent = next(
+            (node.plan_node_id for node in current.nodes if node.plan_level is PlanLevel.STORY),
+            None,
+        )
+        volume_parent = next(
+            (
+                node.plan_node_id
+                for node in current.nodes
+                if node.plan_level is PlanLevel.ARC_VOLUME
+                and (
+                    candidate.horizon_start is None
+                    or (
+                        node.chapter_start is not None
+                        and node.chapter_end is not None
+                        and node.chapter_start <= candidate.horizon_start
+                        and (
+                            candidate.horizon_end is None
+                            or candidate.horizon_end <= node.chapter_end
+                        )
+                    )
+                )
+            ),
+            None,
+        )
+        default_parent = volume_parent if trusted_level is PlanLevel.CHAPTER_SET else story_parent
+        valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
+            item.item_id.root for item in proposal.items
+        }
         incoming_nodes = tuple(
-            self._node(item, plan_level=trusted_level) for item in proposal.items
+            self._node(
+                item,
+                plan_level=trusted_level,
+                default_parent_id=default_parent,
+                valid_parent_ids=valid_parent_ids,
+                candidate_start=candidate.horizon_start,
+                candidate_end=candidate.horizon_end,
+            )
+            for item in proposal.items
         )
         incoming_goals = tuple(
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
@@ -373,7 +411,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
 
     @staticmethod
     def _payload_text(payload: Mapping[str, object], *keys: str) -> str | None:
-        for key in keys:
+        for key in (*keys, "description", "primary_conflict", "scope_boundaries"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value
@@ -392,7 +430,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         return raw
 
     @classmethod
-    def _node(cls, item: ProposedItem, *, plan_level: PlanLevel | None = None) -> PlanNode:
+    def _node(
+        cls,
+        item: ProposedItem,
+        *,
+        plan_level: PlanLevel | None = None,
+        default_parent_id: StableId | None = None,
+        valid_parent_ids: set[str] | None = None,
+        candidate_start: int | None = None,
+        candidate_end: int | None = None,
+    ) -> PlanNode:
         summary = cls._payload_text(item.payload, "summary", "goal")
         if "title" in item.payload:
             title = item.payload.get("title")
@@ -407,12 +454,60 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             raise CandidateMaterializationError("Plan item parent_id must be a string")
         raw_start = item.payload.get("chapter_start")
         raw_end = item.payload.get("chapter_end")
+        if (raw_start is None or raw_end is None) and "chapter_range" in item.payload:
+            range_val = item.payload.get("chapter_range")
+            if isinstance(range_val, str) and "-" in range_val:
+                parts = range_val.split("-", 1)
+                try:
+                    if raw_start is None:
+                        raw_start = int(parts[0].strip())
+                    if raw_end is None:
+                        raw_end = int(parts[1].strip())
+                except ValueError:
+                    pass
+        if (
+            raw_start is None
+            and candidate_start is not None
+            and (
+                plan_level is PlanLevel.CHAPTER_SET
+                or cls._declared_plan_level(item) is PlanLevel.CHAPTER_SET
+            )
+        ):
+            raw_start = candidate_start
+            raw_end = candidate_end
         chapter_start = (
             raw_start if isinstance(raw_start, int) and not isinstance(raw_start, bool) else None
         )
         chapter_end = (
             raw_end if isinstance(raw_end, int) and not isinstance(raw_end, bool) else None
         )
+        if parent is None:
+            deps = item.payload.get("dependencies")
+            if (
+                isinstance(deps, (list, tuple))
+                and deps
+                and isinstance(deps[0], str)
+                and (valid_parent_ids is None or deps[0] in valid_parent_ids)
+            ):
+                parent = deps[0]
+            elif default_parent_id is not None and (
+                plan_level in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET}
+                or cls._declared_plan_level(item) in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET}
+            ):
+                parent = default_parent_id.root
+        if parent is not None and valid_parent_ids is not None and parent not in valid_parent_ids:
+            parent = default_parent_id.root if default_parent_id is not None else None
+
+        item_level = plan_level
+        if plan_level is PlanLevel.ARC_VOLUME:
+            is_volume = (
+                item.kind in {"arc_volume", "volume", "volume_scope"}
+                or chapter_start is not None
+                or cls._declared_plan_level(item) is PlanLevel.ARC_VOLUME
+            )
+            if not is_volume:
+                item_level = None
+
         return PlanNode(
             plan_node_id=item.item_id,
             node_type=item.kind,
@@ -420,7 +515,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             summary=summary,
             parent_id=None if parent is None else StableId(parent),
             obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
-            plan_level=plan_level,
+            plan_level=item_level,
             chapter_start=chapter_start,
             chapter_end=chapter_end,
         )
