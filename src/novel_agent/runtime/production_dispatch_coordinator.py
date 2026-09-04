@@ -402,13 +402,25 @@ class ProductionDispatchCoordinator:
                 report=report,
             )
 
-    def _assert_admission_released(self) -> dict[str, object]:
+    async def _assert_admission_released(self) -> dict[str, object]:
         snapshot = self._admission.snapshot()
+        for _ in range(50):
+            inflight = cast(int, snapshot["inflight_requests"])
+            acquired = cast(int, snapshot["acquired_requests"])
+            released = cast(int, snapshot["released_requests"])
+            if inflight == 0 and acquired == released:
+                return snapshot
+            await asyncio.sleep(0.02)
+            snapshot = self._admission.snapshot()
         inflight = cast(int, snapshot["inflight_requests"])
         acquired = cast(int, snapshot["acquired_requests"])
         released = cast(int, snapshot["released_requests"])
         if inflight != 0 or acquired != released:
-            raise RuntimeError("production dispatch returned with model leases still active")
+            raise RuntimeError(
+                f"production dispatch returned with model leases still active: "
+                f"inflight={inflight}, acquired={acquired}, released={released}, "
+                f"reservations={snapshot.get('inflight_reservations')}"
+            )
         return snapshot
 
     def _scheduled_summary(self) -> tuple[int, datetime | None]:
@@ -515,11 +527,9 @@ class ProductionDispatchCoordinator:
                 )
             )
         except BaseException:
-            await asyncio.sleep(0)
-            self._assert_admission_released()
+            await self._assert_admission_released()
             raise
-        await asyncio.sleep(0)
-        snapshot = self._assert_admission_released()
+        snapshot = await self._assert_admission_released()
         return self._build_result(projects, snapshot)
 
     async def run_watch(
