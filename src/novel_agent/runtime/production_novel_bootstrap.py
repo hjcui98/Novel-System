@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import Field, JsonValue
 from sqlalchemy.orm import Session, sessionmaker
@@ -206,7 +206,13 @@ class ProductionNovelBootstrap:
         plan = _plan_root(planner_result, self._schema_version)
         world = _world_root(world_patch, self._schema_version)
         reference = _reference_root(ingested, self._schema_version)
-        profile = _profile_root(planner_result, self._schema_version, brief_text)
+        profile = _profile_root(
+            planner_result,
+            self._schema_version,
+            brief_text,
+            model_profiles=tuple(ep.endpoint_name for ep in self._endpoints)
+            or ("qwen38-27b-fp8@8005",),
+        )
         candidates = BootstrapRootBuilder(self._artifacts).build(
             project_id,
             bundle.bundle_id,
@@ -235,7 +241,7 @@ class ProductionNovelBootstrap:
                 SqlAuthorApprovalRepository(self._session_factory),
                 self._clock,
             ).create_approval_request(candidates, validation)
-        preview = {
+        preview: dict[str, JsonValue] = {
             "project_id": project_id.root,
             "plan_nodes": [
                 {"id": node.plan_node_id.root, "title": node.title, "summary": node.summary}
@@ -291,7 +297,7 @@ class ProductionNovelBootstrap:
             classifications=candidates.classifications,
             validation=validation,
             approval_request=approval,
-            preview=cast(dict[str, JsonValue], preview),
+            preview=preview,
         )
         artifact = self._artifacts.put(
             canonical_json_bytes(document.model_dump(mode="json")),
@@ -577,6 +583,8 @@ def _profile_root(
     result: PlannerExecutionResult,
     schema_version: SchemaVersion,
     brief_text: str = "",
+    *,
+    model_profiles: tuple[str, ...] = ("qwen38-27b-fp8@8005",),
 ) -> ProjectProfileRootDocument:
     style: dict[str, JsonValue] = dict(_profile_from_brief(brief_text))
 
@@ -624,7 +632,7 @@ def _profile_root(
         prompt_contracts=(prompt,),
         skill_contracts=(skill,),
         tool_policies=(contract,),
-        model_profiles=("qwen38-27b-fp8@8005",),
+        model_profiles=model_profiles,
     )
     return provisional.model_copy(
         update={"root_hash": project_profile_root_content_id(provisional)}

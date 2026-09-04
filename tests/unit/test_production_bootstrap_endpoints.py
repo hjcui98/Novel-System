@@ -1,6 +1,7 @@
 from novel_agent.adapters.model.openai_chat import OpenAICompatibleChatEndpoint
 from novel_agent.runtime.production_bootstrap import (
     DETERMINISTIC_FAKE_ENDPOINT_PROFILE,
+    QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE,
     QWEN38_27B_FP8_8005_ENDPOINT_PROFILE,
     resolve_registered_model_endpoints,
 )
@@ -22,11 +23,33 @@ def test_real_qwen38_8005_profile_is_explicit_and_contract_bounded() -> None:
     assert registration.revision == "qwen38-27b-fp8"
     assert adapter.base_url == "http://127.0.0.1:8005/v1"
     assert adapter.model == "qwen38-27b-fp8"
-    assert adapter.max_output_tokens == 8_000
+    assert adapter.max_output_tokens == 12_000
     assert adapter.max_retries == 0
     assert adapter.is_external is False
     assert registration.sequence_limit == 131_072
-    assert registration.output_limit == 8_000
+    assert registration.output_limit == 12_000
+    assert registration.safety_allowance_tokens == 1_000
+    assert registration.estimated_reasoning_reserve == 2_048
+    assert registration.default_thinking is False
+
+
+def test_real_qwen36_8003_profile_is_explicit_and_contract_bounded() -> None:
+    endpoints = resolve_registered_model_endpoints(QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE)
+
+    assert len(endpoints) == 1
+    registration = endpoints[0]
+    adapter = registration.adapter
+    assert isinstance(adapter, OpenAICompatibleChatEndpoint)
+    assert registration.endpoint_name == "qwen36-27b-nvfp4@8003"
+    assert registration.model_name == "qwen36-27b-nvfp4"
+    assert registration.revision == "qwen36-27b-nvfp4"
+    assert adapter.base_url == "http://127.0.0.1:8003/v1"
+    assert adapter.model == "qwen36-27b-nvfp4"
+    assert adapter.max_output_tokens == 12_000
+    assert adapter.max_retries == 0
+    assert adapter.is_external is False
+    assert registration.sequence_limit == 131_072
+    assert registration.output_limit == 12_000
     assert registration.safety_allowance_tokens == 1_000
     assert registration.estimated_reasoning_reserve == 2_048
     assert registration.default_thinking is False
