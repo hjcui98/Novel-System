@@ -183,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--watch", action="store_true")
     _add_runtime_options(dispatch)
-    for action in ("pause", "resume", "cancel", "retry"):
+    for action in ("pause", "resume", "cancel", "retry", "supersede"):
         control = runtime_commands.add_parser(action)
         control.add_argument("--project-id", required=True)
         control.add_argument("--run-id", required=True)
@@ -688,6 +688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 actor_id=args.actor_id,
                 reason=args.reason,
                 observed_revision=args.observed_revision,
+            )
+        elif args.runtime_command == "supersede":
+            task = commands.supersede_task(
+                task_id,
+                reason=args.reason,
             )
         else:
             task = commands.control(

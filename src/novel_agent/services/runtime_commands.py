@@ -244,6 +244,7 @@ class RuntimeCommandService:
                 TaskStatus.WAITING_RETRY,
                 TaskStatus.BUDGET_REVIEW,
                 TaskStatus.BLOCKED,
+                TaskStatus.CANCELLED,
             }:
                 raise RuntimeCommandConflictError("only inactive work may be superseded")
             updated = task.model_copy(
