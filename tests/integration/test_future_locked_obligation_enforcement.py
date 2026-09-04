@@ -409,6 +409,103 @@ def test_future_lock_carries_through_hierarchy_without_raw_brief(tmp_path: Path)
     assert "第一卷终局约在第100章" in rendered
 
 
+def test_arc_volume_projection_excludes_historical_chapter_sets(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    brief = _put(repo, "完整作者 brief UNIQUE-VOLUME")
+    story = PlanNode(
+        plan_node_id=StableId("plan.story.core"),
+        node_type="story",
+        title="Core conflict",
+        summary="全书核心冲突",
+        plan_level=PlanLevel.STORY,
+        obligation_ids=(YINMING,),
+    )
+    volume1 = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="First volume local arc.",
+        parent_id=story.plan_node_id,
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+    )
+    chapter_sets = tuple(
+        PlanNode(
+            plan_node_id=StableId(f"plan.set.{start}-{start + 4}"),
+            node_type="chapter_set",
+            title=f"Chapters {start}-{start + 4}",
+            summary=f"Historical window {start}.",
+            parent_id=volume1.plan_node_id,
+            plan_level=PlanLevel.CHAPTER_SET,
+            chapter_start=start,
+            chapter_end=start + 4,
+        )
+        for start in (1, 21, 96)
+    )
+    goals = tuple(
+        ChapterGoal(
+            goal_id=StableId(f"goal.{index}"),
+            chapter_index=index,
+            summary=f"Historical goal {index}.",
+        )
+        for index in range(1, 101)
+    )
+    plan = PlanRootDocument(
+        root_hash=HASH,
+        schema_version=VERSION,
+        nodes=(story, volume1, *chapter_sets),
+        chapter_goals=goals,
+    )
+    world = _world(_yinming())
+    plan_ref = _put(repo, plan.model_dump_json())
+    world_ref = _put(repo, world.model_dump_json())
+    text_ref = _put(repo, _text(last_chapter=100).model_dump_json())
+    request = _request(
+        AgentMode.ARC_VOLUME,
+        brief,
+        accepted=(plan_ref, world_ref, text_ref),
+    ).model_copy(update={"horizon_start": None, "horizon_end": None})
+    from novel_agent.domain.memory import ContextBudgetReport, Stage1ContextPackage
+
+    memory = Stage1ContextPackage(
+        context_id=StableId("context.volume-projection"),
+        base_commit=request.task.base_commit or COMMIT,
+        snapshot_id=request.snapshot_id or StableId("snapshot.stage4"),
+        task_contract="stage4",
+        budget_report=ContextBudgetReport(
+            token_budget=8_000,
+            mandatory_tokens=0,
+            optional_tokens=0,
+            full_chapter_read_count=0,
+        ),
+    )
+    memory_ref = _put(repo, memory.model_dump_json())
+    inquiry = _inquiry(AgentMode.ARC_VOLUME, brief).model_copy(
+        update={"horizon_start": None, "horizon_end": None}
+    )
+    inquiry_ref = _put(repo, inquiry.model_dump_json())
+    package, _ = PlannerContextAssembler(repo, schema_version=VERSION).assemble(
+        request=request,
+        inquiry=inquiry,
+        inquiry_ref=inquiry_ref,
+        stage1_context=memory,
+        stage1_context_ref=memory_ref,
+    )
+    rendered = package.rendered_context
+    assert "UNIQUE-VOLUME" not in rendered
+    assert "全书核心冲突" in rendered
+    assert "First volume local arc." in rendered
+    assert "Historical window 1." not in rendered
+    assert "Historical window 96." not in rendered
+    assert "Historical goal 1." not in rendered
+    assert "Historical goal 100." not in rendered
+    assert "previous_volume_summaries" in rendered
+    assert "unresolved_obligations" in rendered
+    assert "银铭最终获得" in rendered
+    assert "committed_chapter" in rendered
+
+
 @pytest.mark.parametrize(
     "layer",
     [

@@ -1729,8 +1729,11 @@ class CreativeRuntimeService:
         policy: CreativeRunPolicy,
     ) -> TaskRecord:
         next_chapter = previous.chapter_index + 1
-        volumes = self._volume_nodes_for_commit(previous.basis_commit)
-        if self._next_plan_level_after_horizon(volumes, next_chapter) is PlanLevel.ARC_VOLUME:
+        volumes, story_present = self._plan_shape_for_commit(previous.basis_commit)
+        if (
+            self._next_plan_level_after_horizon(volumes, next_chapter, story_present=story_present)
+            is PlanLevel.ARC_VOLUME
+        ):
             return self._plan_candidate_successor(
                 previous,
                 snapshot_id,
@@ -1745,6 +1748,8 @@ class CreativeRuntimeService:
     def _next_plan_level_after_horizon(
         volumes: tuple[PlanNode, ...],
         next_chapter: int,
+        *,
+        story_present: bool = False,
     ) -> PlanLevel:
         covering = tuple(
             node
@@ -1753,19 +1758,23 @@ class CreativeRuntimeService:
             and node.chapter_end is not None
             and node.chapter_start <= next_chapter <= node.chapter_end
         )
-        if volumes and not covering:
+        if covering:
+            return PlanLevel.CHAPTER_SET
+        if volumes or story_present:
             return PlanLevel.ARC_VOLUME
         return PlanLevel.CHAPTER_SET
 
-    def _volume_nodes_for_commit(self, commit_id: CommitId) -> tuple[PlanNode, ...]:
+    def _plan_shape_for_commit(self, commit_id: CommitId) -> tuple[tuple[PlanNode, ...], bool]:
         try:
             manifest = self._commits.load_manifest(commit_id)
             plan = PlanRootDocument.model_validate_json(
                 self._artifacts.read_verified(manifest.plan_root)
             )
         except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
-            return ()
-        return tuple(node for node in plan.nodes if node.plan_level is PlanLevel.ARC_VOLUME)
+            return (), False
+        volumes = tuple(node for node in plan.nodes if node.plan_level is PlanLevel.ARC_VOLUME)
+        story_present = any(node.plan_level is PlanLevel.STORY for node in plan.nodes)
+        return volumes, story_present
 
     def _next_planning_generation(self, previous: TaskRecord, plan_level: PlanLevel) -> int:
         if self._task_reader is None:

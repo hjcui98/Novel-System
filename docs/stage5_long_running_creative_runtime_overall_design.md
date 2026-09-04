@@ -78,11 +78,16 @@ integration candidate 中闭合。后续只补真实模型 Gate，再按实际�
 
 ### 2.1.1 Hierarchy migration admission (2026-09-02)
 
-Non-lookahead production cadence is: consume the full CHAPTER_SET horizon, then plan the next
-window (`plan 1–5 → draft 1…5 → plan 6–10`). `enable_planner_lookahead=False` is required for this
-migration. A `BLOCKED` plan is durable work: replacement must explicit-supersede and mint a new
-task identity, never recreate the same id. Final accepted Drafts outside the trusted
-`WritingTaskContract.length_policy` cannot mutate TextRoot
+Non-lookahead production cadence follows the canonical hierarchy:
+`STORY` once at fresh startup
+`→ ARC_VOLUME` for active uncovered volume
+`→ CHAPTER_SET` windows while next chapter remains covered (`plan 1–5 → draft 1…5 → plan 6–10`)
+`→ when next chapter exits every accepted ARC_VOLUME: schedule ARC_VOLUME before next CHAPTER_SET`.
+In fresh hierarchy runs, missing an accepted covering ARC_VOLUME is fail-close (`ARC_VOLUME` required
+or materialization rejection) rather than silent fallback to `CHAPTER_SET`.
+`enable_planner_lookahead=False` is required for this migration. A `BLOCKED` plan is durable work:
+replacement must explicit-supersede and mint a new task identity, never recreate the same id.
+Final accepted Drafts outside the trusted `WritingTaskContract.length_policy` cannot mutate TextRoot
 (`reason=draft_length_contract_rejected`).
 
 Replan invalidates future descendants while keeping committed-prefix CHAPTER/SCENE nodes.

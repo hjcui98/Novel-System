@@ -37,10 +37,12 @@ candidate；本轮只用确定性、离线和轻量集成测试证明组合机�
 不得抢占、重启或改变其配置，真实 API 检查直接记为 deferred。C 每个触发包仍只有真实 caller 和
 验收数据出现后才能授权。
 
-Hierarchy migration on `ee8849a` is non-lookahead only: full-horizon cadence, BLOCKED plan
-replacement with a new identity, Canon length gate, future-locked obligation fail-close, then
-STORY/ARC_VOLUME PlanLevel. Lookahead, typed impact, and event-triggered multi-level replan stay
-deferred.
+Hierarchy migration on `ee8849a` is non-lookahead only: full-horizon cadence
+(`STORY once at fresh startup → ARC_VOLUME for active uncovered volume → CHAPTER_SET windows while next chapter remains covered → when next chapter exits every accepted ARC_VOLUME: schedule ARC_VOLUME before next CHAPTER_SET`),
+fail-close `ARC_VOLUME` enforcement on fresh hierarchy runs, BLOCKED plan replacement with a new
+identity, Canon length gate, future-locked obligation fail-close, mode-specific Plan projection
+for `ARC_VOLUME`, then STORY/ARC_VOLUME PlanLevel. Lookahead, typed impact, and event-triggered
+multi-level replan stay deferred.
 
 ## 2. 当前基线与分支规则
 

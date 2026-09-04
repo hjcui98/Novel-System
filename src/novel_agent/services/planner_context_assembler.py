@@ -6,10 +6,11 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.benchmark import PlanRootDocument
+from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument, TextRootDocument
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
     GraphPathReceipt,
+    ObligationStatus,
     RetrievalUnit,
     Stage1ContextPackage,
     WorldRootDocument,
@@ -281,6 +282,35 @@ class PlannerContextAssembler:
                 mandatory=True,
             )
 
+        if request.task.mode is AgentMode.ARC_VOLUME:
+            current_chapter = self._committed_chapter(request)
+            nodes, goals, volume_summaries, unresolved = self._arc_volume_plan_projection(
+                request, plan, current_chapter
+            )
+            lock_summaries = self._future_lock_summaries(request, current_chapter)
+            text = canonical_json_bytes(
+                {
+                    "source_plan_root": artifact.artifact_id.root,
+                    "horizon_start": request.horizon_start,
+                    "horizon_end": request.horizon_end,
+                    "committed_chapter": current_chapter,
+                    "chapter_goals": [goal.model_dump(mode="json") for goal in goals],
+                    "relevant_plan_nodes": [node.model_dump(mode="json") for node in nodes],
+                    "previous_volume_summaries": volume_summaries,
+                    "unresolved_obligations": unresolved,
+                    "future_locked_obligations": lock_summaries,
+                }
+            ).decode("utf-8")
+            return PlannerContextItem(
+                context_item_id=StableId("planner-context.accepted-plan"),
+                section=PlannerContextSection.ACCEPTED_PLAN,
+                text=text,
+                protected=True,
+                mandatory=True,
+                token_count=self._tokens(text),
+                source_artifact_refs=(artifact,),
+            )
+
         if request.horizon_start is None or request.horizon_end is None:
             goals = plan.chapter_goals
             nodes = plan.nodes
@@ -356,6 +386,76 @@ class PlannerContextAssembler:
             token_count=self._tokens(text),
             source_artifact_refs=(artifact,),
         )
+
+    def _committed_chapter(self, request: PlanningLoopRequest) -> int:
+        if request.horizon_start is not None:
+            return max(0, request.horizon_start - 1)
+        if request.accepted_text_ref is None:
+            return 0
+        try:
+            text = TextRootDocument.model_validate_json(
+                self._artifacts.read_verified(request.accepted_text_ref)
+            )
+        except ValueError:
+            return 0
+        return text.chapters[-1].chapter_index if text.chapters else 0
+
+    def _arc_volume_plan_projection(
+        self,
+        request: PlanningLoopRequest,
+        plan: PlanRootDocument,
+        current_chapter: int,
+    ) -> tuple[
+        tuple[PlanNode, ...],
+        tuple[ChapterGoal, ...],
+        list[dict[str, object]],
+        list[dict[str, object]],
+    ]:
+        nodes = tuple(
+            node
+            for node in plan.nodes
+            if node.plan_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME}
+        )
+        volume_summaries: list[dict[str, object]] = [
+            {
+                "plan_node_id": node.plan_node_id.root,
+                "title": node.title,
+                "summary": node.summary,
+                "chapter_start": node.chapter_start,
+                "chapter_end": node.chapter_end,
+            }
+            for node in nodes
+            if node.plan_level is PlanLevel.ARC_VOLUME
+            and node.chapter_end is not None
+            and node.chapter_end <= current_chapter
+        ]
+        empty_goals: tuple[ChapterGoal, ...] = ()
+        return nodes, empty_goals, volume_summaries, self._unresolved_obligation_summaries(request)
+
+    def _unresolved_obligation_summaries(
+        self, request: PlanningLoopRequest
+    ) -> list[dict[str, object]]:
+        if request.accepted_world_ref is None:
+            return []
+        try:
+            world = WorldRootDocument.model_validate_json(
+                self._artifacts.read_verified(request.accepted_world_ref)
+            )
+        except ValueError:
+            return []
+        summaries: list[dict[str, object]] = []
+        for obligation in world.obligations:
+            if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
+                continue
+            summaries.append(
+                {
+                    "obligation_id": obligation.obligation_id.root,
+                    "description": obligation.description,
+                    "status": obligation.status.value,
+                    "not_before_chapter": obligation.not_before_chapter,
+                }
+            )
+        return summaries
 
     def _future_lock_summaries(
         self, request: PlanningLoopRequest, current_chapter: int

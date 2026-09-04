@@ -134,6 +134,19 @@ def test_single_level_plan_commit_respects_parent_scope() -> None:
             horizon_start=101,
             horizon_end=105,
         )
+    with pytest.raises(CandidateMaterializationError, match="fall inside"):
+        PlanCandidateMaterializer._validate_parent_scope(
+            (story,),
+            trusted_level=PlanLevel.CHAPTER_SET,
+            horizon_start=1,
+            horizon_end=5,
+        )
+    PlanCandidateMaterializer._validate_parent_scope(
+        (),
+        trusted_level=PlanLevel.CHAPTER_SET,
+        horizon_start=1,
+        horizon_end=5,
+    )
     overflow = PlanNode(
         plan_node_id=StableId("plan.set.overflow"),
         node_type="chapter_set",
@@ -287,3 +300,7 @@ def test_volume_boundary_retriggers_arc_volume_instead_of_next_chapter_set() -> 
         is PlanLevel.ARC_VOLUME
     )
     assert CreativeRuntimeService._next_plan_level_after_horizon((), 101) is PlanLevel.CHAPTER_SET
+    assert (
+        CreativeRuntimeService._next_plan_level_after_horizon((), 101, story_present=True)
+        is PlanLevel.ARC_VOLUME
+    )

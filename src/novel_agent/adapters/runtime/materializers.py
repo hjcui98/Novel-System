@@ -583,7 +583,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 if start <= horizon_start and horizon_end <= end:
                     covering = True
                     break
-            if volumes and not covering:
+            hierarchy_enabled = any(node.plan_level is PlanLevel.STORY for node in nodes)
+            if (volumes or hierarchy_enabled) and not covering:
                 raise CandidateMaterializationError(
                     "CHAPTER_SET horizon must fall inside an accepted ARC_VOLUME"
                 )
