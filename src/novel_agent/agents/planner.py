@@ -104,6 +104,27 @@ INQUIRY_OUTPUT_CONSTRAINTS = (
     "horizon_start and horizon_end, copying the HORIZON values exactly; never omit them."
 )
 
+INQUIRY_FULL_SCOPE_OUTPUT_CONSTRAINTS = (
+    "OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. Do not quote or restate "
+    "SOURCE_DATA; do not emit markdown, reasoning, or commentary outside JSON. Use at most "
+    "three goal_proposals, three assumptions, and three questions, and keep every free-text "
+    "field under 240 characters. PROVENANCE_CONSTRAINT=For every goal_proposals, assumptions, "
+    'and questions item, set provenance exactly to {"provenance":"planner_proposed", '
+    '"reference_ids":[],"artifact_refs":[]}; never put source IDs in those arrays and '
+    "never use author_supplied, accepted_plan_derived, canon_derived, or reviewer_derived. "
+    "GROUNDING_CONSTRAINT=For fact or relation questions, use exact labels from "
+    "WORLD_ENTITY_LABELS in entity_labels or relation_subject/relation_object; never invent "
+    "translated labels that are not listed. "
+    "LINEAGE_CONSTRAINT=For every assumptions and questions item, goal_id must exactly match "
+    "one of the goal_proposals goal_id values; never use the item's own question_id as goal_id. "
+    "RELATION_CONSTRAINT=For every assumptions and questions item, either omit "
+    "relation_subject, relation_predicate, and relation_object entirely, or provide all three; "
+    "never provide only one or two relation fields. PLANNING_SCOPE_CONSTRAINT=planning_scope "
+    "must contain at least one string. "
+    "HORIZON_CONSTRAINT=For full-scope planning (STORY, ARC_VOLUME), set horizon_start and "
+    "horizon_end to null."
+)
+
 PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "TURN_OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. If action is "
     "REQUEST_MEMORY, every memory_questions item must be a concrete fact or relation question "
@@ -616,6 +637,11 @@ class PlannerAgent:
             {artifact.artifact_id for artifact in source_artifacts}
         ) != len(source_artifacts):
             raise PlannerInvocationError("PlanningTask sources require unique artifact bindings")
+        constraints = (
+            INQUIRY_OUTPUT_CONSTRAINTS
+            if horizon_start is not None and horizon_end is not None
+            else INQUIRY_FULL_SCOPE_OUTPUT_CONSTRAINTS
+        )
         prepared = self._runner.prepare(
             AgentType.PLANNER,
             task.mode,
@@ -626,7 +652,7 @@ class PlannerAgent:
                 f"PLANNING_TASK={task.model_dump_json()}\n"
                 f"HORIZON={horizon_start}:{horizon_end}\n"
                 f"AUTHOR_OVERRIDES={explicit_overrides}\n"
-                f"{INQUIRY_OUTPUT_CONSTRAINTS}\n"
+                f"{constraints}\n"
                 f"SOURCE_DATA={source_payload}"
             ),
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
@@ -637,8 +663,17 @@ class PlannerAgent:
         draft = execution.output
         if draft.mode is not task.mode:
             raise PlannerInvocationError("Planning inquiry mode differs from trusted task")
-        if (draft.horizon_start, draft.horizon_end) != (horizon_start, horizon_end):
-            raise PlannerInvocationError("Planning inquiry horizon differs from trusted request")
+        if horizon_start is None and horizon_end is None:
+            resolved_horizon_start = None
+            resolved_horizon_end = None
+            draft = draft.model_copy(update={"horizon_start": None, "horizon_end": None})
+        else:
+            if (draft.horizon_start, draft.horizon_end) != (horizon_start, horizon_end):
+                raise PlannerInvocationError(
+                    "Planning inquiry horizon differs from trusted request"
+                )
+            resolved_horizon_start = draft.horizon_start
+            resolved_horizon_end = draft.horizon_end
         allowed_sources = set(task.source_ids)
         references = (
             *(item.provenance for item in draft.goal_proposals),
@@ -671,8 +706,8 @@ class PlannerAgent:
             project_id=task.project_id,
             mode=task.mode,
             planning_scope=draft.planning_scope,
-            horizon_start=draft.horizon_start,
-            horizon_end=draft.horizon_end,
+            horizon_start=resolved_horizon_start,
+            horizon_end=resolved_horizon_end,
             author_intent_refs=source_artifacts,
             explicit_overrides=explicit_overrides,
             goal_proposals=draft.goal_proposals,

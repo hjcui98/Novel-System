@@ -1802,6 +1802,36 @@ def test_planner_inquiry_agent_enforces_trusted_mode_horizon_and_sources(tmp_pat
     assert revised.parent_inquiry_id == inquiry.inquiry_id
 
 
+def test_stage4_planner_agent_inquiry_flow_full_scope(tmp_path: Path) -> None:
+    mode = AgentMode.STORY
+    source = _agent_artifact()
+    good = _inquiry_draft(mode, source).model_copy(
+        update={"horizon_start": 1, "horizon_end": 800, "planning_scope": ("level:story",)}
+    )
+    agent, endpoint, repository = _planner_harness(tmp_path, mode, cast(Any, good))
+    inquiry, inquiry_ref, _receipt, _ = asyncio.run(
+        agent.propose_inquiry(
+            version=VERSION,
+            task=_agent_task(mode),
+            source_payload="story brief",
+            source_artifacts=(source,),
+            request=_agent_request(mode),
+            horizon_start=None,
+            horizon_end=None,
+        )
+    )
+    assert inquiry.horizon_start is None
+    assert inquiry.horizon_end is None
+    assert inquiry.planning_scope == ("level:story",)
+    assert repository.read_verified(inquiry_ref)
+    assert "PLANNING_PHASE=inquiry" in endpoint.requests[0].prompt
+    assert "HORIZON=None:None" in endpoint.requests[0].prompt
+    assert (
+        "HORIZON_CONSTRAINT=For full-scope planning (STORY, ARC_VOLUME)"
+        in endpoint.requests[0].prompt
+    )
+
+
 class _ReviewRunner:
     def __init__(self, draft: PlanReviewDraft, receipt: object) -> None:
         self.draft = draft
