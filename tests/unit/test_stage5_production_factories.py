@@ -436,7 +436,7 @@ def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
     )(task)
 
     assert request.writing_task.chapter_goal == (
-        "Enter the tower while protecting the injured arm.；"
+        "Enter the tower while protecting the injured arm.；"  # noqa: RUF001
         "Keep the injured arm out of the inner ward."
     )
     assert request.writing_task.active_plan_obligations == (StableId("obligation.arm"),)

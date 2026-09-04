@@ -497,3 +497,29 @@ def test_manifest_versions_features_and_formal_evaluator(tmp_path: Path) -> None
                 manifest_fingerprint=ArtifactId("sha256:" + "f" * 64),
             )
         )
+
+
+def test_ready_batch_filters_out_tasks_with_stale_basis(
+    operations_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _, _, commands, base = operations_kernel
+    task = commands.create_run_and_initial_task(_request("run.stale.basis", base))
+    query = RuntimeTaskQueryRepository(factory)
+    assert query.next_ready() == task.task_id
+    assert len(query.ready_batch(limit=10)) == 1
+
+    # Simulate an advanced commit on the project while the task remains on base
+    with factory() as session, session.begin():
+        row = session.get(RuntimeTaskProjectionRow, task.task_id.root)
+        assert row is not None
+        row.basis_commit = "sha256:" + "9" * 64
+
+    # Stale basis task should be excluded from ready_batch
+    assert query.next_ready() is None
+    assert query.ready_batch(limit=10) == ()

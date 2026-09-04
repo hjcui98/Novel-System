@@ -2034,6 +2034,9 @@ class CreativeRuntimeService:
         policy = self._policy_resolver(projection.policy_hash)
         if self._task_reader is None or projection.chapter_index >= projection.target_chapters:
             return None
+        current_commit = self._commits.current_commit(projection.project_id)
+        if projection.basis_commit != current_commit:
+            return None
         if policy.enable_planner_lookahead:
             revalidated = self._revalidate_lookahead(projection)
             if revalidated is not None:
@@ -2068,7 +2071,6 @@ class CreativeRuntimeService:
             and task.protected_chapter_index == projection.chapter_index
             and not task.superseded
         )
-        current_commit = self._commits.current_commit(projection.project_id)
         if any(self._lookahead_is_live(task, current_commit) for task in lookahead):
             return None
         for task in lookahead:
@@ -2092,6 +2094,8 @@ class CreativeRuntimeService:
             snapshot.snapshot_id,
             policy=policy,
         )
+        if any(task.task_id == planning.task_id for task in tasks):
+            return None
         self._commands.create_task(planning)
         return self._result(
             planning,

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from novel_agent.adapters.postgres.models import RuntimeTaskProjectionRow
+from novel_agent.adapters.postgres.models import ProjectRow, RuntimeTaskProjectionRow
 from novel_agent.domain.ids import ProjectId, RunId, TaskId
 from novel_agent.domain.runtime import TaskRecord, TaskStatus
 
@@ -41,12 +41,17 @@ class RuntimeTaskQueryRepository:
             raise ValueError("ready batch limit must be positive")
         now = datetime.now(UTC)
         with self._session_factory() as session:
-            statement = select(RuntimeTaskProjectionRow).where(
-                RuntimeTaskProjectionRow.status == TaskStatus.READY.value,
-                (
-                    RuntimeTaskProjectionRow.scheduled_for.is_(None)
-                    | (RuntimeTaskProjectionRow.scheduled_for <= now)
-                ),
+            statement = (
+                select(RuntimeTaskProjectionRow)
+                .join(ProjectRow, ProjectRow.project_id == RuntimeTaskProjectionRow.project_id)
+                .where(
+                    RuntimeTaskProjectionRow.status == TaskStatus.READY.value,
+                    RuntimeTaskProjectionRow.basis_commit == ProjectRow.current_commit_id,
+                    (
+                        RuntimeTaskProjectionRow.scheduled_for.is_(None)
+                        | (RuntimeTaskProjectionRow.scheduled_for <= now)
+                    ),
+                )
             )
             if project_id is not None:
                 statement = statement.where(RuntimeTaskProjectionRow.project_id == project_id.root)

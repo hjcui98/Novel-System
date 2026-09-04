@@ -714,6 +714,24 @@ def test_repair_post_draft_projection_skips_when_lookahead_disabled() -> None:
     assert service._repair_post_draft_projection(projection) is None
 
 
+def test_repair_post_draft_projection_skips_when_basis_stale() -> None:
+    service = _service()
+    commits = Mock()
+    commits.current_commit.return_value = CommitId("sha256:" + "b" * 64)
+    cast(Any, service)._commits = commits
+    cast(Any, service)._policy_resolver.return_value = _lookahead_policy()
+    cast(Any, service)._task_reader = Mock()
+    projection = _task(
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=COMMIT,
+        chapter_index=1,
+        target_chapters=5,
+        projection_after="draft",
+    )
+    assert service._repair_post_draft_projection(projection) is None
+
+
 def test_repair_post_draft_projection_returns_revalidated_result() -> None:
     service = _service()
     cast(Any, service)._policy_resolver.return_value = _lookahead_policy()

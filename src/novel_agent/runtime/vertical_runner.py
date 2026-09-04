@@ -144,7 +144,16 @@ class VerticalCreativeRunner:
         if not callable(recover):  # Narrow deterministic runner fixtures.
             return None
         recover_boundary = cast(Callable[[TaskId], CreativeRunResult | None], recover)
+        seen_draft_projection = False
         for task in reversed(tasks):
+            if (
+                task.kind is TaskKind.PROJECTION_FRESHNESS
+                and task.projection_after == "draft"
+                and task.status is TaskStatus.SUCCEEDED
+            ):
+                if seen_draft_projection:
+                    continue
+                seen_draft_projection = True
             recoverable = (
                 (
                     task.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.DRAFT_ACCEPTANCE}
