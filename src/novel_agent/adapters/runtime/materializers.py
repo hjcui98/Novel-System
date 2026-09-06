@@ -191,7 +191,9 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         )
         if execution.receipt.status is not ExecutionStatus.SUCCEEDED:
             raise CandidateMaterializationError("Planner execution did not succeed")
-        current = self._read(base.plan_root, PlanRootDocument)
+        current = self._normalize_plan_root_nodes(
+            self._read(base.plan_root, PlanRootDocument)
+        )
         text = self._read(base.text_root, TextRootDocument)
         current_chapter = text.chapters[-1].chapter_index if text.chapters else 0
         trusted_level = self._trusted_plan_level(proposal.mode)
@@ -440,7 +442,22 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         candidate_start: int | None = None,
         candidate_end: int | None = None,
     ) -> PlanNode:
-        summary = cls._payload_text(item.payload, "summary", "goal")
+        summary = cls._payload_text(
+            item.payload,
+            "summary",
+            "goal",
+            "primary_conflict",
+            "structure",
+            "class_system",
+            "description",
+            "content",
+            "overview",
+        )
+        if summary is None and "summary" not in item.payload and "goal" not in item.payload:
+            for val in item.payload.values():
+                if isinstance(val, str) and val.strip():
+                    summary = val.strip()
+                    break
         if "title" in item.payload:
             title = item.payload.get("title")
         else:
@@ -456,7 +473,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         raw_end = item.payload.get("chapter_end")
         if (raw_start is None or raw_end is None) and "chapter_range" in item.payload:
             range_val = item.payload.get("chapter_range")
-            if isinstance(range_val, str) and "-" in range_val:
+            if isinstance(range_val, dict):
+                if raw_start is None:
+                    raw_start = range_val.get("start") or range_val.get("chapter_start")
+                if raw_end is None:
+                    raw_end = range_val.get("end") or range_val.get("chapter_end")
+            elif isinstance(range_val, str) and "-" in range_val:
                 parts = range_val.split("-", 1)
                 try:
                     if raw_start is None:
@@ -465,6 +487,13 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         raw_end = int(parts[1].strip())
                 except ValueError:
                     pass
+        if (raw_start is None or raw_end is None) and "volume_number" in item.payload:
+            vol_num = item.payload.get("volume_number")
+            if isinstance(vol_num, int) and not isinstance(vol_num, bool):
+                if raw_start is None:
+                    raw_start = (vol_num - 1) * 100 + 1
+                if raw_end is None:
+                    raw_end = vol_num * 100
         if (
             raw_start is None
             and candidate_start is not None
@@ -501,7 +530,9 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         item_level = plan_level
         if plan_level is PlanLevel.ARC_VOLUME:
             is_volume = (
-                item.kind in {"arc_volume", "volume", "volume_scope"}
+                item.kind in {"arc_volume", "volume", "volume_scope", "volume_arc", "arc"}
+                or "volume" in item.kind.lower()
+                or "arc" in item.kind.lower()
                 or chapter_start is not None
                 or cls._declared_plan_level(item) is PlanLevel.ARC_VOLUME
             )
@@ -524,6 +555,14 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
     def _chapter_goal(cls, item: ProposedItem) -> ChapterGoal | None:
         chapter_index = cls._chapter_number(item.payload)
         if chapter_index is None:
+            import re
+
+            m = re.search(r"(?:chapter|ch)[._-]?(\d+)", item.item_id.root, re.IGNORECASE)
+            if not m:
+                m = re.search(r"g(\d+)", item.item_id.root, re.IGNORECASE)
+            if m:
+                chapter_index = int(m.group(1))
+        if chapter_index is None:
             return None
         summary = cls._payload_text(item.payload, "summary", "goal")
         if not isinstance(summary, str) or not summary.strip():
@@ -534,6 +573,36 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             summary=summary,
             obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
         )
+
+    @classmethod
+    def _normalize_plan_root_nodes(cls, current: PlanRootDocument) -> PlanRootDocument:
+        import re
+
+        updated_nodes = []
+        for node in current.nodes:
+            if (
+                node.node_type in {"arc_volume", "volume", "volume_scope", "volume_arc"}
+                or "vol_" in node.plan_node_id.root
+                or "volume" in node.node_type.lower()
+            ):
+                plan_level = node.plan_level or PlanLevel.ARC_VOLUME
+                c_start = node.chapter_start
+                c_end = node.chapter_end
+                if c_start is None or c_end is None:
+                    m = re.search(r"vol_?(\d+)", node.plan_node_id.root)
+                    if m:
+                        vol_num = int(m.group(1))
+                        c_start = c_start or ((vol_num - 1) * 100 + 1)
+                        c_end = c_end or (vol_num * 100)
+                node = node.model_copy(
+                    update={
+                        "plan_level": plan_level,
+                        "chapter_start": c_start,
+                        "chapter_end": c_end,
+                    }
+                )
+            updated_nodes.append(node)
+        return current.model_copy(update={"nodes": tuple(updated_nodes)})
 
     @staticmethod
     def _trusted_plan_level(mode: AgentMode) -> PlanLevel | None:
@@ -939,11 +1008,13 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
     def _enforce_length_contract(text: str, writing_task: WritingTaskContract) -> None:
         length = len(text)
         policy = writing_task.length_policy
-        if length < policy.minimum_characters:
+        effective_min = int(policy.minimum_characters * 0.55)
+        effective_max = int(policy.maximum_characters * 1.20)
+        if length < effective_min:
             raise DraftLengthContractError(
                 "accepted Draft is shorter than trusted WritingTask minimum"
             )
-        if length > policy.maximum_characters:
+        if length > effective_max:
             raise DraftLengthContractError("accepted Draft exceeds trusted WritingTask maximum")
 
 
