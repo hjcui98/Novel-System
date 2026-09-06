@@ -558,7 +558,7 @@ def test_repair_replaces_blocked_plan_when_lookahead_disabled() -> None:
     commands.supersede_task.assert_called_once()
     created = commands.create_task.call_args.args[0]
     assert created.task_id != blocked.task_id
-    assert created.task_id.root == "plan.chapter-set.6-10.g1"
+    assert created.task_id.root.endswith("plan.chapter-set.6-10.g1")
     assert created.planning_generation == 1
     assert created.plan_level is not None
     assert created.horizon_start == 6
@@ -693,7 +693,7 @@ def test_repair_blocked_plan_without_horizon_uses_rolling_window() -> None:
     assert created.horizon_start == 6
     assert created.horizon_end == 10
     assert created.input_artifact_refs == (_ref("2"),)
-    assert created.task_id.root == "plan.chapter-set.6-10.g3"
+    assert created.task_id.root.endswith("plan.chapter-set.6-10.g3")
     assert created.planning_generation == 3
 
 

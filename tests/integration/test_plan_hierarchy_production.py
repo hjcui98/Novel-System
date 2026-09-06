@@ -304,3 +304,56 @@ def test_volume_boundary_retriggers_arc_volume_instead_of_next_chapter_set() -> 
         CreativeRuntimeService._next_plan_level_after_horizon((), 101, story_present=True)
         is PlanLevel.ARC_VOLUME
     )
+
+
+def test_rolling_plan_horizon_clamped_to_volume_end() -> None:
+    from novel_agent.domain.creative_runtime import AutomationMode, CreativeRunPolicy
+    from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
+
+    volume = PlanNode(
+        plan_node_id=StableId("plan.volume1"),
+        node_type="arc_volume",
+        title="Volume 1",
+        summary="Current volume.",
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=100,
+    )
+    runtime = object.__new__(CreativeRuntimeService)
+    runtime._task_reader = None
+    runtime._plan_shape_for_commit = lambda commit: ((volume,), True)
+    runtime._planning_inputs = lambda previous: ()
+    previous = TaskRecord(
+        task_id=TaskId("run.test.draft.96"),
+        run_id=RunId("run.test"),
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        purpose=TaskPurpose.NORMAL,
+        task_revision=1,
+        status=TaskStatus.READY,
+        basis_commit=COMMIT,
+        basis_snapshot=StableId("snapshot.test"),
+        policy_hash="sha256:" + "2" * 64,
+        permission_hash="sha256:" + "3" * 64,
+        chapter_index=96,
+        target_chapters=800,
+        horizon_start=96,
+        horizon_end=96,
+        retry_tranche_size=3,
+        failure_budget=3,
+    )
+    policy = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH.root,
+        permission_hash="sha256:" + "3" * 64,
+        planning_horizon=5,
+    )
+    task = runtime._rolling_plan_task(
+        previous,
+        StableId("snapshot.test"),
+        policy=policy,
+        volumes=(volume,),
+    )
+    assert task.horizon_start == 97
+    assert task.horizon_end == 100
+

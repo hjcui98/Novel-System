@@ -1742,7 +1742,7 @@ class CreativeRuntimeService:
                 horizon_end=None,
                 generation=self._next_planning_generation(previous, PlanLevel.ARC_VOLUME),
             )
-        return self._rolling_plan_task(previous, snapshot_id, policy=policy)
+        return self._rolling_plan_task(previous, snapshot_id, policy=policy, volumes=volumes)
 
     @staticmethod
     def _next_plan_level_after_horizon(
@@ -1794,12 +1794,24 @@ class CreativeRuntimeService:
         snapshot_id: StableId,
         *,
         policy: CreativeRunPolicy,
+        volumes: tuple[PlanNode, ...] = (),
     ) -> TaskRecord:
         horizon_start = previous.chapter_index + 1
         horizon_end = min(
             previous.target_chapters,
             previous.chapter_index + policy.planning_horizon,
         )
+        if not volumes:
+            volumes, _ = self._plan_shape_for_commit(previous.basis_commit)
+        covering = tuple(
+            node
+            for node in volumes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= horizon_start <= node.chapter_end
+        )
+        if covering and covering[0].chapter_end is not None:
+            horizon_end = min(horizon_end, covering[0].chapter_end)
         plan_level = previous.plan_level or PlanLevel.CHAPTER_SET
         return TaskRecord(
             task_id=self._plan_task_id(
@@ -1860,6 +1872,16 @@ class CreativeRuntimeService:
         inputs = self._planning_inputs(previous)
         horizon_start = protected_chapter + 1
         horizon_end = min(previous.target_chapters, horizon_start + policy.lookahead_horizon - 1)
+        volumes, _ = self._plan_shape_for_commit(previous.basis_commit)
+        covering = tuple(
+            node
+            for node in volumes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= horizon_start <= node.chapter_end
+        )
+        if covering and covering[0].chapter_end is not None:
+            horizon_end = min(horizon_end, covering[0].chapter_end)
         return TaskRecord(
             task_id=TaskId(
                 bounded_runtime_identity(
@@ -2042,27 +2064,41 @@ class CreativeRuntimeService:
             if revalidated is not None:
                 return revalidated
         tasks = self._task_reader.list_run(projection.run_id)
+
+        def _is_active_plan(task: TaskRecord) -> bool:
+            if task.superseded or task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
+                return False
+            if task.status is TaskStatus.SUCCEEDED:
+                if task.kind is TaskKind.PLAN_COMMIT:
+                    return True
+                downstream = [t for t in tasks if task.task_id in t.dependency_task_ids]
+                if downstream and all(not _is_active_plan(t) for t in downstream):
+                    return False
+            return True
         existing = next(
             (
                 task
                 for task in reversed(tasks)
-                if projection.task_id in task.dependency_task_ids
-                and task.kind in {TaskKind.PLAN_CANDIDATE, TaskKind.PLAN_ACCEPTANCE}
-                and task.purpose is not TaskPurpose.LOOKAHEAD
-                and not task.superseded
-                and task.status
-                not in {
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
+                if (
+                    projection.task_id in task.dependency_task_ids
+                    or (
+                        task.chapter_index == projection.chapter_index
+                        and task.horizon_start == projection.chapter_index + 1
+                    )
+                )
+                and task.kind in {
+                    TaskKind.PLAN_CANDIDATE,
+                    TaskKind.PLAN_ACCEPTANCE,
+                    TaskKind.PLAN_COMMIT,
                 }
+                and task.purpose is not TaskPurpose.LOOKAHEAD
+                and _is_active_plan(task)
             ),
             None,
         )
         if existing is not None and existing.status is TaskStatus.BLOCKED:
             return self._replace_blocked_plan(existing, projection)
         if existing is not None:
-            return None
-        if not policy.enable_planner_lookahead:
             return None
         lookahead = tuple(
             task
@@ -2109,6 +2145,19 @@ class CreativeRuntimeService:
         snapshot = self._snapshots.get_for_commit(projection.basis_commit)
         if snapshot is None or snapshot.build_status.value != "exact":
             return None
+        tasks = self._task_reader.list_run(projection.run_id)
+        for t in tasks:
+            if (
+                t.horizon_start == blocked.horizon_start
+                and t.planning_generation == blocked.planning_generation
+                and not t.superseded
+                and t.task_id != blocked.task_id
+            ):
+                with suppress(Exception):
+                    self._commands.supersede_task(
+                        t.task_id,
+                        reason="superseded by replacement planning generation",
+                    )
         self._commands.supersede_task(
             blocked.task_id,
             reason="blocked plan is durable work and must be replaced with a new identity",
@@ -2136,7 +2185,21 @@ class CreativeRuntimeService:
                 projection.target_chapters,
                 projection.chapter_index + policy.planning_horizon,
             )
-        inputs = blocked.input_artifact_refs or self._planning_inputs(projection)
+        volumes, _ = self._plan_shape_for_commit(projection.basis_commit)
+        covering = tuple(
+            node
+            for node in volumes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= (horizon_start or 0) <= node.chapter_end
+        )
+        if covering and covering[0].chapter_end is not None and horizon_end is not None:
+            horizon_end = min(horizon_end, covering[0].chapter_end)
+        inputs = (
+            self._planning_inputs(projection)
+            if blocked.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.PLAN_COMMIT}
+            else (blocked.input_artifact_refs or self._planning_inputs(projection))
+        )
         plan_level = blocked.plan_level or projection.plan_level or PlanLevel.CHAPTER_SET
         generation = blocked.planning_generation + 1
         return TaskRecord(
@@ -2184,13 +2247,13 @@ class CreativeRuntimeService:
     ) -> TaskId:
         level = plan_level.value.replace("_", "-")
         if horizon_start is not None and horizon_end is not None:
-            primary = f"plan.{level}.{horizon_start}-{horizon_end}.g{generation}"
+            suffix = f"plan.{level}.{horizon_start}-{horizon_end}.g{generation}"
         else:
-            primary = f"plan.{level}.g{generation}"
+            suffix = f"plan.{level}.g{generation}"
         return TaskId(
             bounded_runtime_identity(
-                primary,
-                f"{run_id.root}.{primary}",
+                f"{run_id.root}.{suffix}",
+                suffix,
                 f"plan.{project_id.root}.{basis_commit.root}.{generation}",
             ).root
         )
@@ -2270,7 +2333,7 @@ class CreativeRuntimeService:
             current_commit=self._commits.current_commit(task.project_id),
             artifact_refs=task.terminal_artifact_refs,
             next_legal_commands=self._legal_commands(task),
-            reason_code=reason,
+            reason_code=(reason[:128] if reason else "unknown"),
         )
         if task.status is TaskStatus.BUDGET_REVIEW:
             extended = self._auto_extend_budget(task)
