@@ -1174,7 +1174,11 @@ class LocalMemoryWriteWorkflow:
                 "remaining_total_model_calls": (
                     request.budget.max_total_model_calls - data.usage.total_model_calls
                 ),
-                "remaining_tokens": request.budget.token_budget - data.usage.tokens_used,
+                "remaining_tokens": max(
+                    request.budget.token_budget_ceiling - data.usage.tokens_used,
+                    0,
+                ),
+                "token_budget_tiers": request.budget.token_budget_ladder,
             }
             data.proposal_budget_reservation_ref = self._artifacts.put(
                 canonical_json_bytes(reservation_payload),
@@ -1640,6 +1644,7 @@ class LocalMemoryWriteWorkflow:
                             directive=data.directive,
                             source_artifacts=request.source_artifacts,
                             source_visibility_receipts=request.source_visibility_receipts,
+                            memory_write_tokens_used=data.usage.tokens_used,
                         )
                     )
                 )
@@ -1702,6 +1707,7 @@ class LocalMemoryWriteWorkflow:
                         candidate=data.candidate,
                         validation=data.validation,
                         risk=data.risk,
+                        memory_write_tokens_used=data.usage.tokens_used,
                     )
                 )
             )
@@ -1880,7 +1886,7 @@ class LocalMemoryWriteWorkflow:
             usage.curator_proposal_attempts >= budget.max_curator_proposal_attempts
             or usage.curator_proposal_rejections >= budget.max_curator_proposal_rejections
             or usage.total_model_calls >= budget.max_total_model_calls
-            or usage.tokens_used >= budget.token_budget
+            or usage.tokens_used >= budget.token_budget_ceiling
             or usage.elapsed_ms >= budget.wall_clock_budget_ms
         )
 
@@ -3324,7 +3330,7 @@ class LocalMemoryWriteWorkflow:
         return not (
             value >= limit
             or data.usage.elapsed_ms >= budget.wall_clock_budget_ms
-            or data.usage.tokens_used >= budget.token_budget
+            or data.usage.tokens_used >= budget.token_budget_ceiling
         )
 
     def _settle_model(self, data: _WorkflowData, tokens: int, attempts: int) -> None:
@@ -3810,7 +3816,7 @@ def _remaining(budget: Any, usage: MemoryWriteBudgetUsage) -> Any:
         guardian_reviews=max(budget.max_guardian_reviews - usage.guardian_reviews, 0),
         context_refreshes=max(budget.max_context_refreshes - usage.context_refreshes, 0),
         total_model_calls=max(budget.max_total_model_calls - usage.total_model_calls, 0),
-        token_budget=max(budget.token_budget - usage.tokens_used, 0),
+        token_budget=max(budget.token_budget_ceiling - usage.tokens_used, 0),
         wall_clock_budget_ms=max(budget.wall_clock_budget_ms - usage.elapsed_ms, 0),
     )
 

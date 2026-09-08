@@ -38,6 +38,7 @@ from novel_agent.runtime.creative_assembly import (
     load_production_runtime_assembly,
 )
 from novel_agent.runtime.production_bootstrap import (
+    DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS,
     load_production_assembly_spec,
     preflight_production_environment,
 )
@@ -435,6 +436,23 @@ def test_settlement_token_budget_override_is_campaign_local(tmp_path: Path) -> N
         campaign.attestation.configuration_fingerprint
         != default.attestation.configuration_fingerprint
     )
+
+
+def test_settlement_budget_uses_bounded_elastic_ladder(tmp_path: Path) -> None:
+    default = build_production_assembly(_context(tmp_path))
+    campaign_root = tmp_path / "campaign-elastic-token-budget"
+    campaign_root.mkdir()
+    campaign = build_production_assembly(_context(campaign_root, settlement_token_budget=60_000))
+
+    assert default.chapter_settlement._policy.budget.token_budget_ladder == (
+        DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS
+    )
+    assert campaign.chapter_settlement._policy.budget.token_budget_ladder == (
+        60_000,
+        120_000,
+        192_000,
+    )
+    assert campaign.chapter_settlement._policy.budget.token_budget_ceiling == 192_000
 
 
 def test_settlement_max_total_model_calls_override_is_campaign_local(tmp_path: Path) -> None:

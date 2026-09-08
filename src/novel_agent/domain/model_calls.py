@@ -118,6 +118,18 @@ class EffectiveBudgetResult(DomainModel):
     safety_allowance_tokens: int = Field(ge=0)
     reserved_sequence_tokens: int = Field(ge=1)
     available_input_tokens: int = Field(ge=0)
+    # Optional caller-owned cumulative budget metadata.  It is populated only
+    # by elastic preflight and omitted from legacy payloads.
+    caller_token_budget: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
+    caller_budget_tier: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_budget_identity(self) -> EffectiveBudgetResult:
@@ -131,6 +143,8 @@ class EffectiveBudgetResult(DomainModel):
         )
         if self.available_input_tokens != available:
             raise ValueError("available input tokens contradict the sequence identity")
+        if (self.caller_token_budget is None) != (self.caller_budget_tier is None):
+            raise ValueError("caller cumulative budget metadata must be supplied as a pair")
         return self
 
 

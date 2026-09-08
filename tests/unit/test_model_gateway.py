@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.domain.ids import RunId, StableId, TaskId
+from novel_agent.domain.memory_write import MemoryWriteBudget
 from novel_agent.domain.model_calls import (
     BudgetSource,
     EffectiveBudgetResult,
@@ -189,6 +190,80 @@ def test_long_curator_like_request_requires_explicit_campaign_tranche() -> None:
     assert resolved.total_output_budget == 8_000
     assert fake.requests == []
     assert gateway.call_ledger.load(model_request.request_id) is None
+
+
+def test_elastic_cumulative_preflight_selects_first_fitting_tier_and_audits_it() -> None:
+    fake = FakeModelEndpoint("elastic fit")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    model_request = request().model_copy(
+        update={
+            "prompt": "x" * (18_000 * 3),
+            "max_output_tokens": 8_000,
+        }
+    )
+
+    resolved, tier = gateway.preflight_elastic_cumulative_token_budget(
+        model_request,
+        token_budgets=(24_000, 48_000, 96_000),
+    )
+
+    assert tier == 1
+    assert resolved.caller_budget_tier == 1
+    assert resolved.caller_token_budget == 48_000
+    assert fake.requests == []
+    assert gateway.call_ledger.load(model_request.request_id) is None
+
+    bound = model_request.model_copy(
+        update={
+            "max_output_tokens": resolved.total_output_budget,
+            "budget_source": resolved.budget_source,
+        }
+    )
+    assert asyncio.run(gateway.generate_text(bound)).text == "elastic fit"
+    entry = gateway.call_ledger.load(model_request.request_id)
+    assert entry is not None
+    assert entry.effective_budget.caller_budget_tier == 1
+    assert entry.effective_budget.caller_token_budget == 48_000
+
+
+def test_elastic_cumulative_preflight_reports_the_last_tier_without_sending() -> None:
+    fake = FakeModelEndpoint("must not run")
+    gateway = ModelGateway((endpoint(ModelRole.BATCH_TEST, fake),))
+    model_request = request().model_copy(
+        update={
+            "prompt": "x" * (18_000 * 3),
+            "max_output_tokens": 8_000,
+        }
+    )
+
+    with pytest.raises(ModelCallCumulativeBudgetExceeded) as raised:
+        gateway.preflight_elastic_cumulative_token_budget(
+            model_request,
+            token_budgets=(24_000, 25_000),
+        )
+
+    assert raised.value.token_budget == 25_000
+    assert fake.requests == []
+    assert gateway.call_ledger.load(model_request.request_id) is None
+
+
+def test_memory_write_budget_ladder_is_bounded_and_legacy_shape_stays_stable() -> None:
+    legacy = MemoryWriteBudget()
+    assert legacy.token_budget_ladder == (24_000,)
+    assert legacy.token_budget_ceiling == 24_000
+    assert "token_budget_tiers" not in legacy.model_dump(mode="json")
+
+    configured = MemoryWriteBudget(
+        token_budget=24_000,
+        token_budget_tiers=(24_000, 48_000, 96_000),
+    )
+    assert configured.token_budget_ladder == (24_000, 48_000, 96_000)
+    assert configured.token_budget_ceiling == 96_000
+
+    with pytest.raises(ValueError, match="must start at token_budget"):
+        MemoryWriteBudget(token_budget=24_000, token_budget_tiers=(48_000, 96_000))
+    with pytest.raises(ValueError, match="strictly increasing"):
+        MemoryWriteBudget(token_budget=24_000, token_budget_tiers=(24_000, 24_000))
 
 
 @pytest.mark.model_required

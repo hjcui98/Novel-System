@@ -271,12 +271,47 @@ class MemoryWriteBudget(DomainModel):
     max_context_refreshes: int = Field(default=1, ge=0)
     max_total_model_calls: int = Field(default=4, ge=0)
     token_budget: int = Field(default=24_000, ge=0)
+    # ``None`` preserves the serialized shape and identity of legacy requests.
+    # Production policies opt into a bounded ladder explicitly, so a request
+    # can admit a large assembled prompt without silently changing an already
+    # frozen workflow.
+    token_budget_tiers: tuple[int, ...] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     wall_clock_budget_ms: int = Field(default=180_000, ge=1)
     same_content_hash_limit: int = Field(default=2, ge=1)
     same_finding_signature_limit: int = Field(default=2, ge=1)
     on_budget_exhausted: Literal["quarantine", "stop"] = "quarantine"
     on_guardian_reject: Literal["quarantine", "stop"] = "quarantine"
     model_transport: MemoryTransportBudget = Field(default_factory=MemoryTransportBudget)
+
+    @model_validator(mode="after")
+    def validate_token_budget_tiers(self) -> MemoryWriteBudget:
+        tiers = self.token_budget_tiers
+        if tiers is None:
+            return self
+        if not tiers:
+            raise ValueError("token budget tiers must not be empty")
+        if tiers[0] != self.token_budget:
+            raise ValueError("token budget tiers must start at token_budget")
+        if any(value < 0 for value in tiers):
+            raise ValueError("token budget tiers must be non-negative")
+        if any(left >= right for left, right in zip(tiers, tiers[1:])):
+            raise ValueError("token budget tiers must be strictly increasing")
+        return self
+
+    @property
+    def token_budget_ladder(self) -> tuple[int, ...]:
+        """Return the immutable caller-authorized cumulative budget ladder."""
+
+        return self.token_budget_tiers or (self.token_budget,)
+
+    @property
+    def token_budget_ceiling(self) -> int:
+        """Return the last legal cumulative budget for workflow reservations."""
+
+        return self.token_budget_ladder[-1]
 
 
 class MemoryWriteBudgetUsage(DomainModel):

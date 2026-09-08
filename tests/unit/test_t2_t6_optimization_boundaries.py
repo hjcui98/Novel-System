@@ -919,7 +919,7 @@ def test_zero_history_need_is_typed_no_focus_and_does_not_expand() -> None:
 
     assert result.status is NeedGenerationStatus.NO_FOCUS
     assert result.needs == ()
-    assert len(MEMORY_CONTEXT_BUDGET_TIERS) == 1
+    assert len(MEMORY_CONTEXT_BUDGET_TIERS) == 3
 
 
 def test_two_declared_history_needs_are_bounded_to_two() -> None:
@@ -945,7 +945,8 @@ def test_two_declared_history_needs_are_bounded_to_two() -> None:
         "setup_evidence",
     }
     assert all(need.requirement.value == "mandatory" for need in result.needs)
-    assert MEMORY_CONTEXT_BUDGET_TIERS[0][3] == 12
+    assert tuple(item[1] for item in MEMORY_CONTEXT_BUDGET_TIERS) == (24_000, 48_000, 72_000)
+    assert tuple(item[3] for item in MEMORY_CONTEXT_BUDGET_TIERS) == (12, 24, 36)
 
 
 def test_profile_and_writer_skill_policy_are_project_configured() -> None:

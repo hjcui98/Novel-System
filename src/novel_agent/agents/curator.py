@@ -58,6 +58,7 @@ class CuratorReplayAgent:
         proposal_feedback: str | None = None,
         repair_query: str | None = None,
         cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
         cumulative_tokens_used: int = 0,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
@@ -72,6 +73,7 @@ class CuratorReplayAgent:
                 proposal_feedback=proposal_feedback,
                 repair_query=repair_query,
                 cumulative_token_budget=cumulative_token_budget,
+                cumulative_token_budgets=cumulative_token_budgets,
                 cumulative_tokens_used=cumulative_tokens_used,
                 source_evidence_requirement=source_evidence_requirement,
             )
@@ -84,6 +86,10 @@ class CuratorReplayAgent:
             request=request,
             proposal_feedback=proposal_feedback,
             repair_query=repair_query,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
+            source_evidence_requirement=source_evidence_requirement,
         )
 
     async def _run_v1(
@@ -100,6 +106,7 @@ class CuratorReplayAgent:
         cumulative_token_budget: int | None = None,
         cumulative_tokens_used: int = 0,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
         task_payload = (
             f"chapter_index={chapter_index}\n"
@@ -137,6 +144,9 @@ class CuratorReplayAgent:
             current_world,
             prepared.request,
             contract_prompt=prepared.rendered_prompt,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
         )
         output_bytes = canonical_json_bytes(changes.model_dump(mode="json"))
         output_artifact = ArtifactRef(
@@ -176,6 +186,7 @@ class CuratorReplayAgent:
         cumulative_token_budget: int | None,
         cumulative_tokens_used: int,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None,
+        cumulative_token_budgets: tuple[int, ...] | None,
     ) -> tuple[CuratorReplayResult, ModelCallRecord]:
         task_payload = (
             f"chapter_index={chapter_index}\n"
@@ -221,6 +232,7 @@ class CuratorReplayAgent:
             contract_prompt=prepared.rendered_prompt,
             repair_feedback=proposal_feedback,
             cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
             cumulative_tokens_used=cumulative_tokens_used,
             source_evidence_requirement=source_evidence_requirement,
         )

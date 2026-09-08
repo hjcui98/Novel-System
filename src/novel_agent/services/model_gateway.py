@@ -345,6 +345,50 @@ class ModelGateway:
             )
         return budget
 
+    def preflight_elastic_cumulative_token_budget(
+        self,
+        request: ModelRequest,
+        *,
+        token_budgets: tuple[int, ...],
+        tokens_used: int = 0,
+    ) -> tuple[EffectiveBudgetResult, int]:
+        """Choose the first legal cumulative budget tier before provider admission.
+
+        The method performs no provider call and creates no ledger row.  A
+        failed tier is only a local admission result; the next explicitly
+        authorized tier is tried against the same fully rendered request.  If
+        every tier fails, the final typed exception preserves the largest
+        attempted limit for diagnostics.
+        """
+
+        if not token_budgets:
+            raise ValueError("elastic cumulative budget requires at least one tier")
+        if any(value < 0 for value in token_budgets):
+            raise ValueError("elastic cumulative budget tiers must be non-negative")
+        if any(left >= right for left, right in zip(token_budgets, token_budgets[1:])):
+            raise ValueError("elastic cumulative budget tiers must be strictly increasing")
+        last_error: ModelCallCumulativeBudgetExceeded | None = None
+        for tier, token_budget in enumerate(token_budgets):
+            try:
+                budget = self.preflight_cumulative_token_budget(
+                    request,
+                    token_budget=token_budget,
+                    tokens_used=tokens_used,
+                )
+            except ModelCallCumulativeBudgetExceeded as error:
+                last_error = error
+                continue
+            selected = budget.model_copy(
+                update={
+                    "caller_token_budget": token_budget,
+                    "caller_budget_tier": tier,
+                }
+            )
+            self.budget_results[request.request_id.root] = selected
+            return selected, tier
+        assert last_error is not None
+        raise last_error
+
     async def generate_text(self, request: ModelRequest) -> ModelTextResult:
         self._validate_purpose(request)
         endpoint = self._endpoints.get(request.model_role)

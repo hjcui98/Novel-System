@@ -276,6 +276,40 @@ class ModelCurator:
     def gateway(self) -> ModelGateway:
         return self._gateway
 
+    def _bind_cumulative_budget(
+        self,
+        request: ModelRequest,
+        *,
+        cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
+    ) -> ModelRequest:
+        """Preflight and bind the first fitting caller-owned budget tier."""
+
+        if cumulative_token_budgets is not None:
+            budget, _tier = self._gateway.preflight_elastic_cumulative_token_budget(
+                request,
+                token_budgets=cumulative_token_budgets,
+                tokens_used=cumulative_tokens_used,
+            )
+        elif cumulative_token_budget is not None:
+            budget = self._gateway.preflight_cumulative_token_budget(
+                request,
+                token_budget=cumulative_token_budget,
+                tokens_used=cumulative_tokens_used,
+            )
+        else:
+            return request
+        # Make the provider call reuse the exact preflight result.  This keeps
+        # the selected tier in the effective-budget ledger record instead of
+        # resolving a second, unaudited budget at send time.
+        return request.model_copy(
+            update={
+                "max_output_tokens": budget.total_output_budget,
+                "budget_source": budget.budget_source,
+            }
+        )
+
     async def extract(
         self,
         text_root: TextRootDocument,
@@ -302,6 +336,9 @@ class ModelCurator:
         request: ModelRequest,
         *,
         contract_prompt: str | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
     ) -> tuple[ObservedChangeSet, ModelCallRecord, ChapterChangeDraft]:
         chapter = Stage1Curator._chapter(text_root, chapter_index)
         contract = f"{contract_prompt}\n\n" if contract_prompt else ""
@@ -328,6 +365,12 @@ class ModelCurator:
                     "</CURATOR_INPUT>"
                 )
             }
+        )
+        safe_request = self._bind_cumulative_budget(
+            safe_request,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         draft, call = await self._gateway.generate_structured(safe_request, ChapterChangeDraft)
@@ -478,6 +521,7 @@ class ModelCurator:
         contract_prompt: str | None = None,
         repair_feedback: str | None = None,
         cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
         cumulative_tokens_used: int = 0,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[ObservedChangeSet, ModelCallRecord, ChapterChangeDraftV2]:
@@ -638,13 +682,13 @@ class ModelCurator:
                 ),
             }
         )
+        safe_request = self._bind_cumulative_budget(
+            safe_request,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
+        )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
-        if cumulative_token_budget is not None:
-            self._gateway.preflight_cumulative_token_budget(
-                safe_request,
-                token_budget=cumulative_token_budget,
-                tokens_used=cumulative_tokens_used,
-            )
         # Strict json_schema framing: the endpoint's guided grammar binds the
         # output fields so the model cannot emit legacy fields (evidence_refs,
         # evidence_candidate_ids) or malformed record payloads, and the draft
@@ -689,6 +733,14 @@ class ModelCurator:
                         "</COMPACT_OUTPUT_RETRY>"
                     ),
                 }
+            )
+            compact_request = self._bind_cumulative_budget(
+                compact_request.model_copy(
+                    update={"budget_source": None},
+                ),
+                cumulative_token_budget=cumulative_token_budget,
+                cumulative_token_budgets=cumulative_token_budgets,
+                cumulative_tokens_used=cumulative_tokens_used,
             )
             try:
                 evidence_draft, call = await self._gateway.generate_structured(
@@ -1050,6 +1102,9 @@ class ModelCurator:
         request: ModelRequest,
         repair_feedback: str | None = None,
         repair_query: str | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[tuple[WorldGraphCandidateBatch, ...], tuple[ModelCallRecord, ...]]:
         """Run stable graph source units concurrently and continuation pages serially."""
@@ -1084,6 +1139,9 @@ class ModelCurator:
                         emitted_keys=tuple(emitted_keys),
                         repair_feedback=repair_feedback,
                         repair_query=repair_query,
+                        cumulative_token_budget=cumulative_token_budget,
+                        cumulative_token_budgets=cumulative_token_budgets,
+                        cumulative_tokens_used=cumulative_tokens_used,
                         source_evidence_requirement=source_evidence_requirement,
                     )
                     calls.append(call)
@@ -1142,6 +1200,9 @@ class ModelCurator:
         emitted_keys: tuple[str, ...],
         repair_feedback: str | None = None,
         repair_query: str | None = None,
+        cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
     ) -> tuple[WorldGraphCandidateBatch, ModelCallRecord, tuple[str, ...], bool]:
         """Propose one bounded, evidence-bound graph-repair page.
@@ -1268,6 +1329,12 @@ class ModelCurator:
                 ),
             }
         )
+        safe_request = self._bind_cumulative_budget(
+            safe_request,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
+        )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         try:
             draft, call = await self._gateway.generate_structured(
@@ -1310,6 +1377,12 @@ class ModelCurator:
                         "</STRUCTURED_OUTPUT_RETRY>"
                     ),
                 }
+            )
+            retry_request = self._bind_cumulative_budget(
+                retry_request.model_copy(update={"budget_source": None}),
+                cumulative_token_budget=cumulative_token_budget,
+                cumulative_token_budgets=cumulative_token_budgets,
+                cumulative_tokens_used=cumulative_tokens_used,
             )
             draft, call = await self._gateway.generate_structured(
                 retry_request,
@@ -2560,6 +2633,9 @@ class ModelCurator:
         *,
         contract_prompt: str | None = None,
         repair_operation_indexes: tuple[int, ...] = (),
+        cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
     ) -> tuple[ObservedChangeSet, ModelCallRecord, tuple[EvidenceRepairDraft, ...]]:
         """Evidence-only repair: model picks replacement candidate IDs, never rewrites record."""
 
@@ -2612,6 +2688,12 @@ class ModelCurator:
                     "</EVIDENCE_REPAIR_INPUT>"
                 )
             }
+        )
+        safe_request = self._bind_cumulative_budget(
+            safe_request,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
         # Round-23 repair: the Curator emits a JSON ARRAY of repair drafts.

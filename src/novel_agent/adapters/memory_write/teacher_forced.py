@@ -8,6 +8,7 @@ validator, Guardian, CommitService, and projection APIs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -492,6 +493,7 @@ class TeacherForcedCuratorPort:
                 repair_query=request.request.repair_query,
                 source_evidence_requirement=request.request.source_evidence_requirement,
                 cumulative_token_budget=request.request.budget.token_budget,
+                cumulative_token_budgets=request.request.budget.token_budget_ladder,
                 cumulative_tokens_used=request.memory_write_tokens_used,
             )
         except ModelCallCumulativeBudgetExceeded as error:
@@ -664,6 +666,42 @@ class TeacherForcedCuratorPort:
         )
 
     @staticmethod
+    def _graph_budget_kwargs(
+        graph_curator: object | None,
+        *,
+        cumulative_token_budget: int | None,
+        cumulative_token_budgets: tuple[int, ...] | None,
+        cumulative_tokens_used: int,
+    ) -> dict[str, object]:
+        """Pass elastic budget kwargs only to graph ports that advertise them.
+
+        A few isolated compatibility fixtures implement the older graph port
+        signature.  Keeping the capability check at this adapter boundary
+        lets those fixtures retain their contract while production's real
+        ``ModelCurator`` receives the same preflight policy as replay.
+        """
+
+        if graph_curator is None:
+            return {}
+        try:
+            parameters = inspect.signature(
+                graph_curator.extract_graph_candidates
+            ).parameters.values()
+        except (AttributeError, TypeError, ValueError):
+            return {}
+        if not any(
+            parameter.name in {"cumulative_token_budget", "cumulative_token_budgets"}
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        ):
+            return {}
+        return {
+            "cumulative_token_budget": cumulative_token_budget,
+            "cumulative_token_budgets": cumulative_token_budgets,
+            "cumulative_tokens_used": cumulative_tokens_used,
+        }
+
+    @staticmethod
     def _source_chapter_request(request: ModelRequest, chapter_index: int) -> ModelRequest:
         """Give each historical source chapter its own deterministic call scope."""
 
@@ -717,6 +755,7 @@ class TeacherForcedCuratorPort:
         repair_query: str | None = None,
         source_evidence_requirement: SourceBoundEvidenceRequirement | None = None,
         cumulative_token_budget: int | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
         cumulative_tokens_used: int = 0,
     ) -> _CuratorProposalExecution:
         source_bound_kwargs: _SourceBoundKwargs = (
@@ -728,6 +767,13 @@ class TeacherForcedCuratorPort:
             self._script(request, AgentMode.REPLAY)
             if graph_request is not None:
                 self._script(graph_request, AgentMode.REPLAY)
+
+        graph_budget_kwargs = self._graph_budget_kwargs(
+            self._graph_curator,
+            cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
+            cumulative_tokens_used=cumulative_tokens_used,
+        )
 
         if graph_only:
             if self._graph_curator is None or graph_request is None:
@@ -758,6 +804,7 @@ class TeacherForcedCuratorPort:
                         current_world,
                         source_request,
                         repair_feedback=proposal_feedback,
+                        **graph_budget_kwargs,
                         **source_bound_kwargs,
                     )
                 else:
@@ -772,6 +819,7 @@ class TeacherForcedCuratorPort:
                         source_request,
                         repair_feedback=proposal_feedback,
                         repair_query=repair_query,
+                        **graph_budget_kwargs,
                         **source_bound_kwargs,
                     )
                 batches.extend(source_batches)
@@ -827,6 +875,7 @@ class TeacherForcedCuratorPort:
             repair_query=repair_query,
             **source_bound_kwargs,
             cumulative_token_budget=cumulative_token_budget,
+            cumulative_token_budgets=cumulative_token_budgets,
             cumulative_tokens_used=cumulative_tokens_used,
         )
         if self._graph_curator is None or graph_request is None:
@@ -862,6 +911,7 @@ class TeacherForcedCuratorPort:
                         repair_query=repair_query,
                         **source_bound_kwargs,
                         cumulative_token_budget=cumulative_token_budget,
+                        cumulative_token_budgets=cumulative_token_budgets,
                         cumulative_tokens_used=used_tokens,
                     )
                 results.append(source_result)
@@ -881,6 +931,7 @@ class TeacherForcedCuratorPort:
                 current_world,
                 graph_request,
                 repair_feedback=proposal_feedback,
+                **graph_budget_kwargs,
                 **source_bound_kwargs,
             )
         else:
@@ -892,6 +943,7 @@ class TeacherForcedCuratorPort:
                 graph_request,
                 repair_feedback=proposal_feedback,
                 repair_query=repair_query,
+                **graph_budget_kwargs,
                 **source_bound_kwargs,
             )
         graph_task = asyncio.create_task(graph_call)
@@ -1515,6 +1567,8 @@ class LegacyGuardianPortAdapter:
             validation=_validation_report(request.validation, changes),
             risk=request.risk,
             request=model_request,
+            cumulative_token_budgets=request.request.budget.token_budget_ladder,
+            cumulative_tokens_used=request.memory_write_tokens_used,
             evidence_root=self._evidence_root()
             if self._evidence_root is not None
             else request.basis.canonical_text,

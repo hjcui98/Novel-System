@@ -11,16 +11,16 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
         },
         "schema_version": {
           "$ref": "#/$defs/SchemaVersion"
@@ -49,16 +49,6 @@
       "additionalProperties": false,
       "description": "One resolved output budget shared by API payload, admission, and ledger.",
       "properties": {
-        "available_input_tokens": {
-          "minimum": 0,
-          "title": "Available Input Tokens",
-          "type": "integer"
-        },
-        "body_output_budget": {
-          "minimum": 1,
-          "title": "Body Output Budget",
-          "type": "integer"
-        },
         "budget_source": {
           "$ref": "#/$defs/BudgetSource"
         },
@@ -72,14 +62,9 @@
           "title": "Estimated Input Tokens",
           "type": "integer"
         },
-        "reserved_sequence_tokens": {
+        "body_output_budget": {
           "minimum": 1,
-          "title": "Reserved Sequence Tokens",
-          "type": "integer"
-        },
-        "safety_allowance_tokens": {
-          "minimum": 0,
-          "title": "Safety Allowance Tokens",
+          "title": "Body Output Budget",
           "type": "integer"
         },
         "thinking_budget": {
@@ -91,6 +76,47 @@
           "minimum": 1,
           "title": "Total Output Budget",
           "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "caller_token_budget": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller Token Budget"
+        },
+        "caller_budget_tier": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller Budget Tier"
         }
       },
       "required": [
@@ -132,42 +158,25 @@
     "ModelCallRecord": {
       "additionalProperties": false,
       "properties": {
-        "completed_at": {
-          "format": "date-time",
-          "title": "Completed At",
-          "type": "string"
-        },
-        "endpoint": {
-          "minLength": 1,
-          "title": "Endpoint",
-          "type": "string"
-        },
-        "latency_ms": {
-          "minimum": 0,
-          "title": "Latency Ms",
-          "type": "integer"
-        },
-        "model": {
-          "minLength": 1,
-          "title": "Model",
-          "type": "string"
-        },
-        "model_role": {
-          "$ref": "#/$defs/ModelRole"
-        },
-        "model_version": {
-          "minLength": 1,
-          "title": "Model Version",
-          "type": "string"
-        },
-        "purpose": {
-          "$ref": "#/$defs/ModelCallPurpose"
-        },
         "request_id": {
           "$ref": "#/$defs/StableId"
         },
         "run_id": {
           "$ref": "#/$defs/RunId"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
         },
         "span_id": {
           "anyOf": [
@@ -182,21 +191,38 @@
           "default": null,
           "title": "Span Id"
         },
+        "endpoint": {
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "minLength": 1,
+          "title": "Model Version",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
         "started_at": {
           "format": "date-time",
           "title": "Started At",
           "type": "string"
         },
-        "task_id": {
-          "$ref": "#/$defs/TaskId"
-        },
-        "trace_id": {
-          "minLength": 1,
-          "title": "Trace Id",
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
           "type": "string"
-        },
-        "usage": {
-          "$ref": "#/$defs/ModelUsage"
         }
       },
       "required": [
@@ -237,23 +263,6 @@
     "ModelUsage": {
       "additionalProperties": false,
       "properties": {
-        "cost_availability": {
-          "$ref": "#/$defs/ModelCostAvailability",
-          "default": "unknown"
-        },
-        "cost_usd": {
-          "anyOf": [
-            {
-              "minimum": 0.0,
-              "type": "number"
-            },
-            {
-              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-              "type": "string"
-            }
-          ],
-          "title": "Cost Usd"
-        },
         "input_tokens": {
           "minimum": 0,
           "title": "Input Tokens",
@@ -269,6 +278,23 @@
           "minimum": 0,
           "title": "Reasoning Tokens",
           "type": "integer"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "cost_availability": {
+          "$ref": "#/$defs/ModelCostAvailability",
+          "default": "unknown"
         }
       },
       "required": [
@@ -302,6 +328,15 @@
   },
   "additionalProperties": false,
   "properties": {
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
     "attempt_id": {
       "anyOf": [
         {
@@ -313,32 +348,18 @@
       ],
       "default": null
     },
-    "call_record": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ModelCallRecord"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "completed_at": {
-      "anyOf": [
-        {
-          "format": "date-time",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Completed At"
+    "request_hash": {
+      "$ref": "#/$defs/ArtifactId"
     },
     "effective_budget": {
       "$ref": "#/$defs/EffectiveBudgetResult"
+    },
+    "reasoning_included_in_completion_tokens": {
+      "title": "Reasoning Included In Completion Tokens",
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/ModelCallLedgerStatus"
     },
     "logical_phase": {
       "default": "unknown",
@@ -372,17 +393,6 @@
       "default": null,
       "title": "Provider Sent At"
     },
-    "raw_artifact_ref": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ArtifactRef"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
     "raw_response_hash": {
       "anyOf": [
         {
@@ -394,29 +404,40 @@
       ],
       "default": null
     },
-    "reasoning_included_in_completion_tokens": {
-      "title": "Reasoning Included In Completion Tokens",
-      "type": "boolean"
+    "raw_artifact_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
-    "request_hash": {
-      "$ref": "#/$defs/ArtifactId"
+    "call_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCallRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
-    "request_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "requested_at": {
-      "format": "date-time",
-      "title": "Requested At",
-      "type": "string"
-    },
-    "run_id": {
-      "$ref": "#/$defs/RunId"
-    },
-    "status": {
-      "$ref": "#/$defs/ModelCallLedgerStatus"
-    },
-    "task_id": {
-      "$ref": "#/$defs/TaskId"
+    "validation_error": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Error"
     },
     "transport_error_type": {
       "anyOf": [
@@ -432,10 +453,15 @@
       "default": null,
       "title": "Transport Error Type"
     },
-    "validation_error": {
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "completed_at": {
       "anyOf": [
         {
-          "maxLength": 4096,
+          "format": "date-time",
           "type": "string"
         },
         {
@@ -443,7 +469,7 @@
         }
       ],
       "default": null,
-      "title": "Validation Error"
+      "title": "Completed At"
     }
   },
   "required": [

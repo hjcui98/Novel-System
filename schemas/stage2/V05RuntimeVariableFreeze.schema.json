@@ -22,16 +22,6 @@
       "additionalProperties": false,
       "description": "One resolved output budget shared by API payload, admission, and ledger.",
       "properties": {
-        "available_input_tokens": {
-          "minimum": 0,
-          "title": "Available Input Tokens",
-          "type": "integer"
-        },
-        "body_output_budget": {
-          "minimum": 1,
-          "title": "Body Output Budget",
-          "type": "integer"
-        },
         "budget_source": {
           "$ref": "#/$defs/BudgetSource"
         },
@@ -45,14 +35,9 @@
           "title": "Estimated Input Tokens",
           "type": "integer"
         },
-        "reserved_sequence_tokens": {
+        "body_output_budget": {
           "minimum": 1,
-          "title": "Reserved Sequence Tokens",
-          "type": "integer"
-        },
-        "safety_allowance_tokens": {
-          "minimum": 0,
-          "title": "Safety Allowance Tokens",
+          "title": "Body Output Budget",
           "type": "integer"
         },
         "thinking_budget": {
@@ -64,6 +49,47 @@
           "minimum": 1,
           "title": "Total Output Budget",
           "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "available_input_tokens": {
+          "minimum": 0,
+          "title": "Available Input Tokens",
+          "type": "integer"
+        },
+        "caller_token_budget": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller Token Budget"
+        },
+        "caller_budget_tier": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller Budget Tier"
         }
       },
       "required": [
@@ -84,21 +110,31 @@
   "additionalProperties": false,
   "description": "U4-L0 variables held constant while a readout campaign runs.",
   "properties": {
-    "body_output_tokens": {
-      "minimum": 1,
-      "title": "Body Output Tokens",
-      "type": "integer"
+    "budget_source": {
+      "$ref": "#/$defs/BudgetSource"
     },
     "budget_profile": {
       "$ref": "#/$defs/BudgetResolutionProfile",
       "default": "canary"
     },
-    "budget_source": {
-      "$ref": "#/$defs/BudgetSource"
-    },
     "context_limit": {
       "minimum": 1,
       "title": "Context Limit",
+      "type": "integer"
+    },
+    "body_output_tokens": {
+      "minimum": 1,
+      "title": "Body Output Tokens",
+      "type": "integer"
+    },
+    "reasoning_reserve_tokens": {
+      "minimum": 0,
+      "title": "Reasoning Reserve Tokens",
+      "type": "integer"
+    },
+    "safety_allowance_tokens": {
+      "minimum": 0,
+      "title": "Safety Allowance Tokens",
       "type": "integer"
     },
     "controller_level": {
@@ -108,6 +144,18 @@
       ],
       "title": "Controller Level",
       "type": "string"
+    },
+    "planner_level": {
+      "enum": [
+        "P0",
+        "P0+P1"
+      ],
+      "title": "Planner Level",
+      "type": "string"
+    },
+    "thinking_enabled": {
+      "title": "Thinking Enabled",
+      "type": "boolean"
     },
     "effective_budget": {
       "anyOf": [
@@ -119,26 +167,6 @@
         }
       ],
       "default": null
-    },
-    "planner_level": {
-      "enum": [
-        "P0",
-        "P0+P1"
-      ],
-      "title": "Planner Level",
-      "type": "string"
-    },
-    "provider_reasoning_included_in_completion_tokens": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Provider Reasoning Included In Completion Tokens"
     },
     "provider_total_output_tokens": {
       "anyOf": [
@@ -153,19 +181,17 @@
       "default": null,
       "title": "Provider Total Output Tokens"
     },
-    "reasoning_reserve_tokens": {
-      "minimum": 0,
-      "title": "Reasoning Reserve Tokens",
-      "type": "integer"
-    },
-    "safety_allowance_tokens": {
-      "minimum": 0,
-      "title": "Safety Allowance Tokens",
-      "type": "integer"
-    },
-    "thinking_enabled": {
-      "title": "Thinking Enabled",
-      "type": "boolean"
+    "provider_reasoning_included_in_completion_tokens": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Reasoning Included In Completion Tokens"
     }
   },
   "required": [

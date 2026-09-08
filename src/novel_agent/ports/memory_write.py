@@ -130,6 +130,7 @@ class CuratorRepairRequest(DomainModel):
     directive: RepairDirective
     source_artifacts: tuple[ArtifactRef, ...]
     source_visibility_receipts: tuple[SourceVisibilityReceipt, ...]
+    memory_write_tokens_used: int = Field(default=0, ge=0)
 
 
 class CuratorRepairResult(DomainModel):
@@ -148,6 +149,7 @@ class GuardianReviewRequest(DomainModel):
     candidate: CandidateRevision
     validation: ValidationDecision
     risk: PatchRiskAssessment
+    memory_write_tokens_used: int = Field(default=0, ge=0)
 
 
 class GuardianReviewResult(DomainModel):

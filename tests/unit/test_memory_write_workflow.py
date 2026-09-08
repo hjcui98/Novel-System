@@ -11,6 +11,8 @@ from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory_write import (
     CandidateProducerKind,
     CanonicalWriteBasis,
+    MemoryWriteBudget,
+    MemoryWriteBudgetUsage,
     MemoryWriteState,
     MemoryWriteWorkflowPhase,
     MemoryWriteWorkflowResult,
@@ -31,6 +33,7 @@ from novel_agent.services.memory_write_workflow import (
     LocalMemoryWriteWorkflow,
     MemoryWriteWorkflowError,
     _WorkflowData,
+    _remaining,
 )
 from tests.contract.test_memory_write_workflow_contract import (
     BASE,
@@ -80,6 +83,18 @@ def test_long_request_event_identity_retains_run_scope() -> None:
     assert first.root == "event.run.u8b.event-one.task_started.1"
     assert second.root == "event.run.u8b.event-two.task_started.1"
     assert first != second
+
+
+def test_budget_remaining_uses_the_last_authorized_elastic_tier() -> None:
+    budget = MemoryWriteBudget(
+        token_budget=24_000,
+        token_budget_tiers=(24_000, 48_000, 96_000),
+    )
+    usage = MemoryWriteBudgetUsage(tokens_used=30_000)
+
+    remaining = _remaining(budget, usage)
+
+    assert remaining.token_budget == 66_000
 
 
 def test_event_identity_fails_closed_when_all_scopes_are_max_length() -> None:

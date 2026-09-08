@@ -58,6 +58,19 @@ class CuratorRepairAgent:
         self._runner = runner
         self._evidence_contract = evidence_contract
 
+    @staticmethod
+    def _cumulative_budget_kwargs(request: CuratorRepairRequest) -> dict[str, object]:
+        """Keep legacy lightweight repair fixtures free of workflow-only fields."""
+
+        workflow_request = getattr(request, "request", None)
+        budget = getattr(workflow_request, "budget", None)
+        if budget is None:
+            return {}
+        return {
+            "cumulative_token_budgets": budget.token_budget_ladder,
+            "cumulative_tokens_used": getattr(request, "memory_write_tokens_used", 0),
+        }
+
     @property
     def evidence_contract(self) -> CuratorEvidenceContract:
         return self._evidence_contract
@@ -152,6 +165,7 @@ class CuratorRepairAgent:
                 prepared.request,
                 contract_prompt=prepared.rendered_prompt,
                 repair_operation_indexes=repair_indexes,
+                **self._cumulative_budget_kwargs(request),
             )
         except ModelCurationContractError as error:
             raise CuratorRepairContractError(
@@ -238,6 +252,7 @@ class CuratorRepairAgent:
                 current_world,
                 prepared.request,
                 contract_prompt=prepared.rendered_prompt,
+                **self._cumulative_budget_kwargs(request),
             )
         except ValidationError as error:
             raise CuratorRepairContractError(

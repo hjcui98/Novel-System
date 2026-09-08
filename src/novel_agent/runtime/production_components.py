@@ -259,6 +259,8 @@ class ProductionReactiveMemoryInputsFactory:
 
 MEMORY_CONTEXT_BUDGET_TIERS: tuple[tuple[MemoryContextBudgetTier, int, int, int], ...] = (
     (MemoryContextBudgetTier.BASE, 24_000, 24_000, 12),
+    (MemoryContextBudgetTier.EXPAND_1, 48_000, 36_000, 24),
+    (MemoryContextBudgetTier.EXPAND_2, 72_000, 48_000, 36),
 )
 BUDGET_EXPANSION_RECEIPT_MEDIA_TYPE = (
     "application/vnd.novel-agent.memory-context-budget-expansion+json"

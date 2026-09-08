@@ -88,6 +88,27 @@ class StructuredAgentRunner:
             budget,
         )
 
+    def bind_cumulative_budget(
+        self,
+        request: ModelRequest,
+        *,
+        token_budgets: tuple[int, ...],
+        tokens_used: int = 0,
+    ) -> ModelRequest:
+        """Preflight and bind a caller-owned elastic cumulative budget."""
+
+        budget, _tier = self._gateway.preflight_elastic_cumulative_token_budget(
+            request,
+            token_budgets=token_budgets,
+            tokens_used=tokens_used,
+        )
+        return request.model_copy(
+            update={
+                "max_output_tokens": budget.total_output_budget,
+                "budget_source": budget.budget_source,
+            }
+        )
+
     async def run(
         self,
         agent_type: AgentType,

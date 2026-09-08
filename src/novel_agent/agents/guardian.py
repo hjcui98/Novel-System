@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.changes import ObservedChangeSet, ValidationReport, ValidationStatus
@@ -40,6 +42,8 @@ class GuardianRiskReviewAgent:
         risk: PatchRiskAssessment,
         request: ModelRequest,
         evidence_root: TextRootDocument | None = None,
+        cumulative_token_budgets: tuple[int, ...] | None = None,
+        cumulative_tokens_used: int = 0,
     ) -> tuple[GuardianDecision, ModelCallRecord]:
         if validation.status is ValidationStatus.FAILED:
             raise GuardianInvocationError("deterministic validation failure blocks Guardian call")
@@ -87,6 +91,15 @@ class GuardianRiskReviewAgent:
             input_artifacts=input_artifacts,
             base_commit=changes.base_commit,
         )
+        if cumulative_token_budgets is not None:
+            prepared = replace(
+                prepared,
+                request=self._runner.bind_cumulative_budget(
+                    prepared.request,
+                    token_budgets=cumulative_token_budgets,
+                    tokens_used=cumulative_tokens_used,
+                ),
+            )
         execution = await self._runner.execute(prepared, GuardianDecisionDraft)
         draft = execution.output
         decision_artifact = self._artifacts.put(

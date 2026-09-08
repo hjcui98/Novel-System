@@ -679,6 +679,32 @@ def _default_stage4_policy(
     )
 
 
+DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS: tuple[int, ...] = (
+    24_000,
+    48_000,
+    96_000,
+    192_000,
+)
+
+
+def _settlement_token_budget_ladder(base: int) -> tuple[int, ...]:
+    """Build a bounded doubling ladder for one production settlement policy."""
+
+    if base < 0:
+        raise ValueError("settlement token budget must not be negative")
+    if base == DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS[0]:
+        return DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS
+    if base == 0:
+        return (0,)
+    ceiling = DEFAULT_SETTLEMENT_TOKEN_BUDGET_TIERS[-1]
+    values = [base]
+    for candidate in (base * 2, base * 4, ceiling):
+        candidate = min(candidate, ceiling)
+        if candidate > values[-1]:
+            values.append(candidate)
+    return tuple(values)
+
+
 def _default_settlement_policy(
     spec: ProductionAssemblySpec,
     *,
@@ -718,6 +744,10 @@ def _default_settlement_policy(
             raise ValueError("settlement token budget must not be negative")
         budget = budget.model_copy(update={"token_budget": token_budget})
         fingerprint_payload["token_budget"] = token_budget
+    budget = budget.model_copy(
+        update={"token_budget_tiers": _settlement_token_budget_ladder(budget.token_budget)}
+    )
+    fingerprint_payload["token_budget_tiers"] = budget.token_budget_ladder
     if max_total_model_calls is not None:
         if max_total_model_calls < 1:
             raise ValueError("settlement max total model calls must be positive")
