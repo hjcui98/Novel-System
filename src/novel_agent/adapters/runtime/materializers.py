@@ -563,29 +563,37 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             parent = required_parent_id.root
         raw_start = item.payload.get("chapter_start")
         raw_end = item.payload.get("chapter_end")
-        if (raw_start is None or raw_end is None) and "chapter_range" in item.payload:
-            range_val = item.payload.get("chapter_range")
-            if isinstance(range_val, dict):
-                if raw_start is None:
-                    raw_start = range_val.get("start") or range_val.get("chapter_start")
-                if raw_end is None:
-                    raw_end = range_val.get("end") or range_val.get("chapter_end")
-            elif isinstance(range_val, str) and "-" in range_val:
-                parts = range_val.split("-", 1)
-                try:
-                    if raw_start is None:
-                        raw_start = int(parts[0].strip())
-                    if raw_end is None:
-                        raw_end = int(parts[1].strip())
-                except ValueError:
-                    pass
-        if (raw_start is None or raw_end is None) and "volume_number" in item.payload:
-            vol_num = item.payload.get("volume_number")
-            if isinstance(vol_num, int) and not isinstance(vol_num, bool):
-                if raw_start is None:
-                    raw_start = (vol_num - 1) * 100 + 1
-                if raw_end is None:
-                    raw_end = vol_num * 100
+        if raw_start is None or raw_end is None:
+            for range_key in ("chapter_range", "chapter_window", "target_window", "range"):
+                if range_key in item.payload:
+                    range_val = item.payload.get(range_key)
+                    if isinstance(range_val, dict):
+                        if raw_start is None:
+                            raw_start = range_val.get("start") or range_val.get("chapter_start")
+                        if raw_end is None:
+                            raw_end = range_val.get("end") or range_val.get("chapter_end")
+                    elif isinstance(range_val, str) and "-" in range_val:
+                        parts = range_val.split("-", 1)
+                        try:
+                            if raw_start is None:
+                                raw_start = int(parts[0].strip())
+                            if raw_end is None:
+                                raw_end = int(parts[1].strip())
+                        except ValueError:
+                            pass
+                    if raw_start is not None and raw_end is not None:
+                        break
+        if raw_start is None or raw_end is None:
+            for vol_key in ("volume_number", "volume_index", "volume_no", "volume"):
+                if vol_key in item.payload:
+                    vol_num = item.payload.get(vol_key)
+                    if isinstance(vol_num, int) and not isinstance(vol_num, bool):
+                        if raw_start is None:
+                            raw_start = (vol_num - 1) * 100 + 1
+                        if raw_end is None:
+                            raw_end = vol_num * 100
+                    if raw_start is not None and raw_end is not None:
+                        break
         if (
             raw_start is None
             and candidate_start is not None
