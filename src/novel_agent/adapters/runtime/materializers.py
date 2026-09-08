@@ -1067,16 +1067,20 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 if not isinstance(raw_actions, (list, tuple)):
                     raise CandidateMaterializationError("obligation_actions must be a list")
                 for action in raw_actions:
-                    raw_reference = (
-                        action.get("obligation_id") or action.get("id")
-                        if isinstance(action, dict)
-                        else action
-                    )
-                    if not isinstance(raw_reference, str) or not raw_reference.strip():
-                        raise CandidateMaterializationError(
-                            "obligation action requires a string obligation_id"
-                        )
-                    referenced_ids.append(StableId(raw_reference))
+                    if isinstance(action, dict):
+                        raw_reference = action.get("obligation_id") or action.get("id")
+                        if not isinstance(raw_reference, str) or not raw_reference.strip():
+                            raise CandidateMaterializationError(
+                                "obligation action requires a string obligation_id"
+                            )
+                        referenced_ids.append(StableId(raw_reference.strip()))
+                    elif isinstance(action, str):
+                        try:
+                            candidate_id = StableId(action.strip())
+                            if any(o.obligation_id == candidate_id for o in world.obligations):
+                                referenced_ids.append(candidate_id)
+                        except ValueError:
+                            pass
             if referenced_ids:
                 bindings[item.item_id] = list(dict.fromkeys(referenced_ids))
 
@@ -1262,16 +1266,20 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             if not isinstance(actions, (list, tuple)):
                 continue
             for action in actions:
-                raw_id = (
-                    action.get("obligation_id") or action.get("id")
-                    if isinstance(action, dict)
-                    else action
-                )
-                if not isinstance(raw_id, str) or not raw_id.strip():
-                    raise CandidateMaterializationError(
-                        "obligation action requires a string obligation_id"
-                    )
-                referenced.add(StableId(raw_id))
+                if isinstance(action, dict):
+                    raw_id = action.get("obligation_id") or action.get("id")
+                    if not isinstance(raw_id, str) or not raw_id.strip():
+                        raise CandidateMaterializationError(
+                            "obligation action requires a string obligation_id"
+                        )
+                    referenced.add(StableId(raw_id.strip()))
+                elif isinstance(action, str):
+                    try:
+                        candidate_id = StableId(action.strip())
+                        if candidate_id in known:
+                            referenced.add(candidate_id)
+                    except ValueError:
+                        pass
         unknown = sorted(item.root for item in referenced if item not in known)
         if unknown:
             raise CandidateMaterializationError(
@@ -1403,13 +1411,18 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             return ()
         ids: list[StableId] = []
         for action in actions:
-            raw_id = (
-                (action.get("obligation_id") or action.get("id"))
-                if isinstance(action, dict)
-                else action
-            )
-            if isinstance(raw_id, str) and raw_id.strip():
-                ids.append(StableId(raw_id))
+            if isinstance(action, dict):
+                raw_id = action.get("obligation_id") or action.get("id")
+                if isinstance(raw_id, str) and raw_id.strip():
+                    try:
+                        ids.append(StableId(raw_id.strip()))
+                    except ValueError:
+                        pass
+            elif isinstance(action, str):
+                try:
+                    ids.append(StableId(action.strip()))
+                except ValueError:
+                    pass
         return tuple(dict.fromkeys(ids))
 
     @classmethod
