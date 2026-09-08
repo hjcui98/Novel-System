@@ -429,9 +429,13 @@ class PlanReviewerAgent:
                     source_text.append(raw.decode("utf-8"))
             except (UnicodeDecodeError, ValueError) as error:
                 raise PlanReviewerInvocationError("Reviewer context artifact is invalid") from error
-        if rendered:
-            return "\n\n".join(rendered)
-        return "\n\n".join(source_text)
+        return "\n\n".join(
+            dict.fromkeys(
+                part
+                for part in (*rendered, *source_text)
+                if part.strip()
+            )
+        )
 
 
 def _expected_volume_count_from_context(context: str) -> int | None:

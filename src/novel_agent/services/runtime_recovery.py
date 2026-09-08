@@ -76,8 +76,8 @@ class RuntimeRecoveryService:
     ) -> RunCheckpoint:
         task = self._commands.get_task(task_id)
         if (
-            current_configuration_fingerprint is not None
-            and task.policy_hash != current_configuration_fingerprint.root
+            current_configuration_fingerprint is None
+            or task.policy_hash != current_configuration_fingerprint.root
         ):
             raise RuntimeCommandConflictError("RUN_CONFIGURATION_CHANGED")
         checkpoint = self._checkpoints.latest_resumable(task.run_id)

@@ -1311,7 +1311,10 @@ class PlanningContextLoopService:
                                 version=self._schema_version,
                                 task=request.task,
                                 source_payload=_rejected_memory_reprompt_payload(
-                                    projection.rendered_context,
+                                    self._planner_source_payload(
+                                        projection.rendered_context,
+                                        visible_author_artifacts,
+                                    ),
                                     tuple(rejected_memory_questions.values()),
                                 ),
                                 source_artifacts=visible_author_artifacts,
@@ -1519,7 +1522,10 @@ class PlanningContextLoopService:
                                 version=self._schema_version,
                                 task=request.task,
                                 source_payload=_unsupported_memory_reprompt_payload(
-                                    projection.rendered_context,
+                                    self._planner_source_payload(
+                                        projection.rendered_context,
+                                        visible_author_artifacts,
+                                    ),
                                     tuple(unsupported_memory_questions.values()),
                                 ),
                                 source_artifacts=visible_author_artifacts,
@@ -1561,7 +1567,10 @@ class PlanningContextLoopService:
                                         task=request.task,
                                         source_payload=(
                                             _unsupported_memory_reprompt_payload(
-                                                projection.rendered_context,
+                                                self._planner_source_payload(
+                                                    projection.rendered_context,
+                                                    visible_author_artifacts,
+                                                ),
                                                 unsupported_details_for_fallback,
                                             )
                                             + "\nPLANNER_MEMORY_FALLBACK=The same unsupported "
@@ -1603,7 +1612,10 @@ class PlanningContextLoopService:
                             break
                     # Slice yield is a resume boundary, not a post-memory abort of plan_turn.
                 if run_turn is None:
-                    planner_source_payload = projection.rendered_context
+                    planner_source_payload = self._planner_source_payload(
+                        projection.rendered_context,
+                        visible_author_artifacts,
+                    )
                     if rejected_memory_questions:
                         planner_source_payload = _rejected_memory_reprompt_payload(
                             planner_source_payload,
@@ -1634,7 +1646,10 @@ class PlanningContextLoopService:
                         ),
                     )
                     break
-                planner_source_payload = projection.rendered_context
+                planner_source_payload = self._planner_source_payload(
+                    projection.rendered_context,
+                    visible_author_artifacts,
+                )
                 if rejected_memory_questions:
                     planner_source_payload = _rejected_memory_reprompt_payload(
                         planner_source_payload,
@@ -1707,7 +1722,10 @@ class PlanningContextLoopService:
                             version=self._schema_version,
                             task=request.task,
                             source_payload=_supported_memory_reprompt_payload(
-                                projection.rendered_context,
+                                self._planner_source_payload(
+                                    projection.rendered_context,
+                                    visible_author_artifacts,
+                                ),
                                 tuple(turn.memory_questions),
                             ),
                             source_artifacts=visible_author_artifacts,
@@ -1757,7 +1775,10 @@ class PlanningContextLoopService:
                                 task=request.task,
                                 source_payload=(
                                     _supported_memory_reprompt_payload(
-                                        projection.rendered_context,
+                                        self._planner_source_payload(
+                                            projection.rendered_context,
+                                            visible_author_artifacts,
+                                        ),
                                         tuple(turn.memory_questions),
                                     )
                                     + "\nPLANNER_MEMORY_FALLBACK=The requested facts are already "
@@ -2159,7 +2180,11 @@ class PlanningContextLoopService:
                 version=self._schema_version,
                 task=request.task,
                 source_payload=(
-                    f"{projection.rendered_context}\nREVIEW_REVISION={instruction}\n"
+                    self._planner_source_payload(
+                        projection.rendered_context,
+                        visible_author_artifacts,
+                    )
+                    + f"\nREVIEW_REVISION={instruction}\n"
                     f"REVIEW={plan_review.model_dump_json()}\n"
                     f"PARENT_PROPOSAL={parent_proposal.model_dump_json()}"
                 ),
@@ -2321,13 +2346,40 @@ class PlanningContextLoopService:
         return request.author_intent_artifacts
 
     def _source_payload(self, artifacts: tuple[ArtifactRef, ...]) -> str:
+        return "\n\n".join(self._source_parts(artifacts))
+
+    def _planner_source_payload(
+        self,
+        rendered_context: str,
+        author_artifacts: tuple[ArtifactRef, ...],
+    ) -> str:
+        """Keep the complete author authority in every Planner model prompt.
+
+        The Context Runtime projection is a compact view and source artifacts are
+        otherwise only recorded as lineage.  Planner calls therefore append the
+        verified author text when the projection does not already contain every
+        complete source artifact.
+        """
+
+        author_parts = self._source_parts(author_artifacts)
+        if not author_parts or all(part in rendered_context for part in author_parts):
+            return rendered_context
+        authority = "\n\n".join(author_parts)
+        return (
+            f"{rendered_context}\n\n"
+            "<AUTHOR_AUTHORITY_TEXT>\n"
+            f"{authority}\n"
+            "</AUTHOR_AUTHORITY_TEXT>"
+        )
+
+    def _source_parts(self, artifacts: tuple[ArtifactRef, ...]) -> tuple[str, ...]:
         parts: list[str] = []
         for artifact in artifacts:
             try:
                 parts.append(self._artifacts.read_verified(artifact).decode("utf-8"))
             except UnicodeDecodeError as error:
                 raise ValueError("Planner author source is not UTF-8") from error
-        return "\n\n".join(parts)
+        return tuple(parts)
 
     @staticmethod
     def _world_entity_label_payload(world: WorldRootDocument) -> str:

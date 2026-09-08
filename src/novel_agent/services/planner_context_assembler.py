@@ -74,17 +74,16 @@ class PlannerContextAssembler:
         optional: list[PlannerContextItem] = []
         graph_refs: dict[ArtifactId, ArtifactRef] = {}
         expansion_refs: list[ArtifactRef] = []
-        if request.task.mode not in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}:
-            for index, artifact in enumerate(request.author_intent_artifacts):
-                mandatory.append(
-                    self._artifact_item(
-                        StableId(f"planner-context.author.{index}"),
-                        PlannerContextSection.AUTHOR_INTENT,
-                        artifact,
-                        protected=True,
-                        mandatory=True,
-                    )
+        for index, artifact in enumerate(request.author_intent_artifacts):
+            mandatory.append(
+                self._artifact_item(
+                    StableId(f"planner-context.author.{index}"),
+                    PlannerContextSection.AUTHOR_INTENT,
+                    artifact,
+                    protected=True,
+                    mandatory=True,
                 )
+            )
         for index, override in enumerate(request.explicit_author_overrides):
             if not override.strip():
                 continue

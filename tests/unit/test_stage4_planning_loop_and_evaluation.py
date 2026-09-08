@@ -1907,6 +1907,62 @@ def test_independent_reviewer_persists_receipt_and_rejects_target_substitution(
         )
 
 
+def test_reviewer_keeps_authority_text_alongside_context_package(tmp_path: Path) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "reviewer-authority"))
+    author_text = "COMPLETE-AUTHOR-AUTHORITY"
+    source = _put(artifacts, author_text)
+    inquiry_ref = _put(artifacts, "reviewed inquiry", "application/json")
+    package = PlannerContextPackage(
+        package_id=StableId("planner-context.reviewer-authority"),
+        contract_version="planner_context.v1",
+        project_id=PROJECT,
+        mode=AgentMode.STORY,
+        planning_scope=("story",),
+        base_commit=BASE,
+        snapshot_id=StableId("snapshot.reviewer-authority"),
+        profile_ref=source,
+        reviewed_inquiry_ref=inquiry_ref,
+        stage1_context_ref=inquiry_ref,
+        items=(),
+        budget_report=PlannerContextBudgetReport(
+            token_budget=300,
+            mandatory_tokens=0,
+            selected_tokens=0,
+        ),
+        rendered_context="COMPACT-PROJECTION",
+    )
+    package_ref = artifacts.put(
+        package.model_dump_json().encode(),
+        "application/vnd.novel-agent.planner-context-package+json",
+        VERSION,
+    )
+    target = _put(artifacts, "candidate")
+    draft = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+    )
+    runner = _ReviewRunner(draft, _receipt(AgentMode.STORY, AgentType.PLAN_REVIEWER))
+    asyncio.run(
+        PlanReviewerAgent(cast(StructuredAgentRunner, runner), artifacts).review(
+            version=VERSION,
+            mode=AgentMode.STORY,
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            target_payload="candidate payload",
+            target_artifact=target,
+            trusted_source_artifacts=(package_ref, source),
+            request=cast(ModelRequest, object()),
+            base_commit=BASE,
+        )
+    )
+    assert runner.prepared is not None
+    prepared_args, _prepared_kwargs = cast(
+        tuple[tuple[object, ...], dict[str, object]], runner.prepared
+    )
+    prompt = cast(str, prepared_args[4])
+    assert "COMPACT-PROJECTION" in prompt
+    assert author_text in prompt
+
+
 def test_bootstrap_full_loop_never_calls_memory_and_returns_reviewed_candidate(
     tmp_path: Path,
 ) -> None:
@@ -1970,7 +2026,7 @@ def test_post_genesis_inquiry_receives_exact_world_entity_labels(tmp_path: Path)
     assert world.entities[0].internal_label in payload
 
 
-def test_chapter_set_inquiry_does_not_receive_raw_author_brief(tmp_path: Path) -> None:
+def test_chapter_set_inquiry_receives_raw_author_brief(tmp_path: Path) -> None:
     bundle = make_synthetic_bundle()
     world = bundle.world_roots[0]
     text_root = bundle.text_roots[0]
@@ -1985,7 +2041,7 @@ def test_chapter_set_inquiry_does_not_receive_raw_author_brief(tmp_path: Path) -
     captured: list[tuple[ArtifactRef, ...]] = []
 
     class _RecordingReviewer(_ScriptedReviewer):
-        async def review(self, **kwargs: object) -> tuple[object, ...]:
+        async def review(self, **kwargs: object) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
             trusted = kwargs["trusted_source_artifacts"]
             assert isinstance(trusted, tuple)
             captured.append(trusted)
@@ -2005,10 +2061,60 @@ def test_chapter_set_inquiry_does_not_receive_raw_author_brief(tmp_path: Path) -
         )
     )
 
-    assert planner.inquiry_source_artifacts == [()]
-    assert brief_text not in planner.inquiry_source_payloads[0]
-    assert "银铭最终获得" not in planner.inquiry_source_payloads[0]
-    assert all(source not in trusted for trusted in captured)
+    assert planner.inquiry_source_artifacts == [(source,)]
+    assert brief_text in planner.inquiry_source_payloads[0]
+    assert "银铭最终获得" in planner.inquiry_source_payloads[0]
+    assert all(source in trusted for trusted in captured)
+
+
+def test_chapter_set_planner_prompt_contains_complete_author_authority(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "planner-authority"))
+    brief_text = "COMPLETE-CHAPTER-SET-AUTHORITY"
+    source = _put(artifacts, brief_text)
+    accepted = tuple(_put(artifacts, f"accepted-{index}") for index in range(3))
+    real_assembler = PlannerContextAssembler(artifacts, schema_version=VERSION)
+
+    class _CompactAssembler:
+        def assemble(self, **kwargs: object) -> tuple[PlannerContextPackage, ArtifactRef]:
+            package, _package_ref = real_assembler.assemble(**cast(Any, kwargs))
+            compact = package.model_copy(update={"rendered_context": "PROJECTION_ONLY"})
+            compact_ref = artifacts.put(
+                compact.model_dump_json().encode(),
+                "application/vnd.novel-agent.planner-context-package+json",
+                VERSION,
+            )
+            return compact, compact_ref
+
+    planner = _ModePlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _, _memory = _post_genesis_service(
+        artifacts,
+        planner=planner,
+        assembler=cast(object, _CompactAssembler()),
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]),
+    )
+    asyncio.run(
+        service.run(
+            request=_request(
+                AgentMode.CHAPTER_SET,
+                source,
+                accepted=(accepted[0], accepted[1], accepted[2]),
+            ),
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert planner.plan_requests
+    plan_source_payload = cast(str, planner.plan_requests[0]["source_payload"])
+    assert "PROJECTION_ONLY" in plan_source_payload
+    assert brief_text in plan_source_payload
+    assert "<AUTHOR_AUTHORITY_TEXT>" in plan_source_payload
 
 
 def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:

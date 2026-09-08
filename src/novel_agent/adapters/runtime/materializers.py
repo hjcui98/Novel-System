@@ -271,6 +271,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         item,
                         plan_level=PlanLevel.CHAPTER,
                         default_parent_id=wrapper.plan_node_id,
+                        required_parent_id=wrapper.plan_node_id,
                         valid_parent_ids=valid_parent_ids,
                         candidate_start=candidate.horizon_start,
                         candidate_end=candidate.horizon_end,
@@ -522,6 +523,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         *,
         plan_level: PlanLevel | None = None,
         default_parent_id: StableId | None = None,
+        required_parent_id: StableId | None = None,
         valid_parent_ids: set[str] | None = None,
         candidate_start: int | None = None,
         candidate_end: int | None = None,
@@ -553,6 +555,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             raise CandidateMaterializationError("Plan item title must be a non-empty string")
         if parent is not None and not isinstance(parent, str):
             raise CandidateMaterializationError("Plan item parent_id must be a string")
+        if required_parent_id is not None:
+            if parent is not None and parent != required_parent_id.root:
+                raise CandidateMaterializationError(
+                    "CHAPTER items in a CHAPTER_SET must use the current CHAPTER_SET wrapper"
+                )
+            parent = required_parent_id.root
         raw_start = item.payload.get("chapter_start")
         raw_end = item.payload.get("chapter_end")
         if (raw_start is None or raw_end is None) and "chapter_range" in item.payload:
@@ -928,6 +936,18 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 ):
                     raise CandidateMaterializationError("child plan scope exceeds parent scope")
                 continue
+            if trusted_level is PlanLevel.CHAPTER_SET and node.plan_level is PlanLevel.CHAPTER:
+                if node.parent_id is None:
+                    raise CandidateMaterializationError(
+                        "CHAPTER nodes in a CHAPTER_SET require a CHAPTER_SET parent"
+                    )
+                chapter_parent = by_id.get(node.parent_id)
+                if chapter_parent is None:
+                    raise CandidateMaterializationError("CHAPTER parent does not exist")
+                if chapter_parent.plan_level is not PlanLevel.CHAPTER_SET:
+                    raise CandidateMaterializationError(
+                        "CHAPTER parent must be a CHAPTER_SET node"
+                    )
             if node.parent_id is None:
                 continue
             parent = by_id.get(node.parent_id)

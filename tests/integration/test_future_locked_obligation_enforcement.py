@@ -147,7 +147,8 @@ def _plan() -> PlanRootDocument:
 
 def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    brief = _put(repo, "完整作者 brief: 卷六真相与第700章 payoff.")
+    brief_text = "完整作者 brief: 当前卷的作者权威约束与远期终局。"
+    brief = _put(repo, brief_text)
     story = PlanNode(
         plan_node_id=StableId("plan.story.core"),
         node_type="story",
@@ -244,6 +245,7 @@ def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Pa
     assert "全书核心冲突" in rendered
     assert "First volume local arc." in rendered
     assert "Local investigation." in rendered
+    assert brief_text in rendered
     assert "卷六真相" not in rendered
     assert "第700章 payoff" not in rendered
 
@@ -322,7 +324,7 @@ def test_not_before_allows_resolve_on_boundary_chapter() -> None:
     _validate_payoff_at_chapter(85)
 
 
-def test_future_lock_carries_through_hierarchy_without_raw_brief(tmp_path: Path) -> None:
+def test_future_lock_carries_through_hierarchy_with_authority_brief(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     brief_text = "完整作者 brief UNIQUE-LOCK: 第85章以后才能得到银铭, 第100章是第一卷终局."
     brief = _put(repo, brief_text)
@@ -401,8 +403,8 @@ def test_future_lock_carries_through_hierarchy_without_raw_brief(tmp_path: Path)
         stage1_context_ref=memory_ref,
     )
     rendered = set_package.rendered_context
-    assert "UNIQUE-LOCK" not in rendered
-    assert brief_text not in rendered
+    assert "UNIQUE-LOCK" in rendered
+    assert brief_text in rendered
     assert "银铭" in rendered
     assert "85" in rendered
     assert "SETUP/PROGRESS" in rendered
@@ -411,7 +413,8 @@ def test_future_lock_carries_through_hierarchy_without_raw_brief(tmp_path: Path)
 
 def test_arc_volume_projection_excludes_historical_chapter_sets(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    brief = _put(repo, "完整作者 brief UNIQUE-VOLUME")
+    brief_text = "完整作者 brief: 当前卷作者权威约束。"
+    brief = _put(repo, brief_text)
     story = PlanNode(
         plan_node_id=StableId("plan.story.core"),
         node_type="story",
@@ -493,7 +496,7 @@ def test_arc_volume_projection_excludes_historical_chapter_sets(tmp_path: Path) 
         stage1_context_ref=memory_ref,
     )
     rendered = package.rendered_context
-    assert "UNIQUE-VOLUME" not in rendered
+    assert brief_text in rendered
     assert "全书核心冲突" in rendered
     assert "First volume local arc." in rendered
     assert "Historical window 1." not in rendered
@@ -509,7 +512,7 @@ def test_arc_volume_projection_excludes_historical_chapter_sets(tmp_path: Path) 
 @pytest.mark.parametrize(
     "layer",
     [
-        "brief_isolation",
+        "brief_authority",
         "writer_constraints",
         "writer_outline",
         "plan_materializer",
@@ -520,11 +523,12 @@ def test_arc_volume_projection_excludes_historical_chapter_sets(tmp_path: Path) 
 def test_yinming_cannot_payoff_at_chapter_24(layer: str, tmp_path: Path) -> None:
     obligation = _yinming()
     world = _world(obligation)
-    if layer == "brief_isolation":
+    if layer == "brief_authority":
         repo = _repo(tmp_path)
+        brief_text = "完整作者 brief: 第90-100章银铭最终获得, 卷终真相与内府终局."
         brief = _put(
             repo,
-            "完整作者 brief: 第90-100章银铭最终获得, 卷终真相与内府终局.",
+            brief_text,
         )
         plan_ref = _put(repo, _plan().model_dump_json())
         world_ref = _put(repo, world.model_dump_json())
@@ -559,8 +563,8 @@ def test_yinming_cannot_payoff_at_chapter_24(layer: str, tmp_path: Path) -> None
             stage1_context_ref=memory_ref,
         )
         rendered = package.rendered_context
-        assert "完整作者 brief" not in rendered
-        assert "卷终真相" not in rendered
+        assert brief_text in rendered
+        assert "卷终真相" in rendered
         assert any(item.section is PlannerContextSection.ACCEPTED_PLAN for item in package.items)
         assert "SETUP/PROGRESS" in rendered
         return

@@ -745,6 +745,31 @@ def test_chapter_set_public_materialization_creates_wrapper_and_five_children(
     assert len(chapters) == 5
     assert all(node.parent_id == wrappers[0].plan_node_id for node in chapters)
     assert {goal.chapter_index for goal in plan.chapter_goals} == set(range(6, 11))
+    for label, parent_id in (
+        ("volume", "plan.volume.1"),
+        ("proposal", "plan.chapter.7"),
+    ):
+        wrong_parent_items = tuple(
+            item.model_copy(
+                update={
+                    "item_id": StableId(f"plan.chapter.wrong.{label}.{index}"),
+                    "payload": {**item.payload, "parent_id": parent_id},
+                }
+            )
+            if index == 6
+            else item.model_copy(
+                update={"item_id": StableId(f"plan.chapter.wrong.{label}.{index}")}
+            )
+            for index, item in enumerate(items, start=6)
+        )
+        with pytest.raises(CandidateMaterializationError, match="current CHAPTER_SET wrapper"):
+            wrong_materializer, wrong_accepted, *_ = _plan_candidate_fixture(
+                tmp_path / f"wrong-parent-{label}",
+                mode=AgentMode.CHAPTER_SET,
+                items=wrong_parent_items,
+                horizon=(6, 10),
+            )
+            wrong_materializer.materialize(wrong_accepted)
     invalid_items = tuple(
         item.model_copy(
             update={

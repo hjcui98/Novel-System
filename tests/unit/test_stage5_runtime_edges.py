@@ -507,8 +507,13 @@ def test_recovery_selects_safe_checkpoint_fails_closed_on_all_guard_branches(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    with pytest.raises(RuntimeCommandConflictError, match="no settled resumable"):
+    with pytest.raises(RuntimeCommandConflictError, match="RUN_CONFIGURATION_CHANGED"):
         empty_recovery.select_safe_checkpoint(empty_task.task_id)
+    with pytest.raises(RuntimeCommandConflictError, match="no settled resumable"):
+        empty_recovery.select_safe_checkpoint(
+            empty_task.task_id,
+            current_configuration_fingerprint=ArtifactId(empty_task.policy_hash),
+        )
 
 
 def test_recovery_rejects_drifted_task_identity_and_stale_basis(
@@ -544,7 +549,10 @@ def test_recovery_rejects_drifted_task_identity_and_stale_basis(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    assert recovery.select_safe_checkpoint(task.task_id) == safe
+    assert recovery.select_safe_checkpoint(
+        task.task_id,
+        current_configuration_fingerprint=ArtifactId(task.policy_hash),
+    ) == safe
 
     # Basis is no longer current after a commit advances the project.
     basis_moved = commands.create_run_and_initial_task(
@@ -564,7 +572,10 @@ def test_recovery_rejects_drifted_task_identity_and_stale_basis(
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
     with pytest.raises(RuntimeCommandConflictError, match="no settled resumable"):
-        moved_recovery.select_safe_checkpoint(basis_moved.task_id)
+        moved_recovery.select_safe_checkpoint(
+            basis_moved.task_id,
+            current_configuration_fingerprint=ArtifactId(basis_moved.policy_hash),
+        )
 
 
 def test_recovery_resume_rejects_stale_checkpoint_and_old_attempt(
@@ -601,7 +612,12 @@ def test_recovery_resume_rejects_stale_checkpoint_and_old_attempt(
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
     with pytest.raises(RuntimeCommandConflictError, match="old attempt"):
-        recovery.resume(task.task_id, worker_id="worker.fresh", actor_id="operator")
+        recovery.resume(
+            task.task_id,
+            worker_id="worker.fresh",
+            actor_id="operator",
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
     commands.operator_reconcile_attempt(
         task.task_id,
         command_id=StableId("operator.reconcile.resume"),
@@ -609,7 +625,10 @@ def test_recovery_resume_rejects_stale_checkpoint_and_old_attempt(
         reason="worker dead",
     )
     checkpoint, attempt, resumed_fence = recovery.resume(
-        task.task_id, worker_id="worker.fresh", actor_id="operator"
+        task.task_id,
+        worker_id="worker.fresh",
+        actor_id="operator",
+        current_configuration_fingerprint=ArtifactId(task.policy_hash),
     )
     assert checkpoint == safe and attempt.attempt_no == 2
     assert resumed_fence.attempt_id == attempt.attempt_id
@@ -660,12 +679,18 @@ def test_recovery_resume_uses_paused_and_retry_and_ready_paths(
 
     paused_task, paused_recovery = _make_run("run.recovery-paused", paused=True)
     _, paused_attempt, _ = paused_recovery.resume(
-        paused_task.task_id, worker_id="worker.paused", actor_id="operator"
+        paused_task.task_id,
+        worker_id="worker.paused",
+        actor_id="operator",
+        current_configuration_fingerprint=ArtifactId(paused_task.policy_hash),
     )
     assert paused_attempt.attempt_no == 2
     retry_task, retry_recovery = _make_run("run.recovery-retry", paused=False)
     _, retry_attempt, _ = retry_recovery.resume(
-        retry_task.task_id, worker_id="worker.retry", actor_id="operator"
+        retry_task.task_id,
+        worker_id="worker.retry",
+        actor_id="operator",
+        current_configuration_fingerprint=ArtifactId(retry_task.policy_hash),
     )
     assert retry_attempt.attempt_no == 2
     # READY path: reconcile to WAITING_RETRY, then explicit control retry.
@@ -679,7 +704,10 @@ def test_recovery_resume_uses_paused_and_retry_and_ready_paths(
     )
     assert commands.get_task(ready_task.task_id).status is TaskStatus.READY
     _, ready_attempt, _ = ready_recovery.resume(
-        ready_task.task_id, worker_id="worker.ready", actor_id="operator"
+        ready_task.task_id,
+        worker_id="worker.ready",
+        actor_id="operator",
+        current_configuration_fingerprint=ArtifactId(ready_task.policy_hash),
     )
     assert ready_attempt.attempt_no == 2
 
@@ -722,13 +750,19 @@ def test_recovery_rejects_missing_task_in_rebuild_and_drifted_identity(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    assert recovery.select_safe_checkpoint(task.task_id) == safe
+    assert recovery.select_safe_checkpoint(
+        task.task_id,
+        current_configuration_fingerprint=ArtifactId(task.policy_hash),
+    ) == safe
     # Advance the project commit behind the task basis, triggering the
     # "basis is no longer current" guard.
     advance = make_commit_request(base, project_id=task.project_id, root_offset=9)
     assert commits.commit(advance).status is CommitStatus.ACCEPTED
     with pytest.raises(RuntimeCommandConflictError, match="basis is no longer current"):
-        recovery.select_safe_checkpoint(task.task_id)
+        recovery.select_safe_checkpoint(
+            task.task_id,
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
 
 
 def test_recovery_resume_rejects_ineligible_task_status(
@@ -771,7 +805,12 @@ def test_recovery_resume_rejects_ineligible_task_status(
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
     with pytest.raises(RuntimeCommandConflictError, match="not eligible"):
-        recovery.resume(task.task_id, worker_id="worker.fresh", actor_id="operator")
+        recovery.resume(
+            task.task_id,
+            worker_id="worker.fresh",
+            actor_id="operator",
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
 
 
 def test_projection_replays_pause_and_cancel_control_actions(
