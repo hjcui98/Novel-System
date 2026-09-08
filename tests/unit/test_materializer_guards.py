@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -15,10 +16,12 @@ from novel_agent.adapters.runtime.materializers import (
 )
 from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.creative_runtime import (
+    RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE,
     AcceptedCandidateBinding,
     ActorKind,
     CandidateBinding,
     CandidateKind,
+    RuntimeContinuationEvidence,
 )
 from novel_agent.domain.ids import (
     ArtifactId,
@@ -28,6 +31,7 @@ from novel_agent.domain.ids import (
     SchemaVersion,
     StableId,
     TaskId,
+    bounded_stable_id,
 )
 from novel_agent.domain.runtime import TaskPurpose
 from novel_agent.domain.stage2 import (
@@ -36,6 +40,7 @@ from novel_agent.domain.stage2 import (
     ProposalProvenance,
     ProposedItem,
 )
+from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import CandidateMaterializationError
 from novel_agent.services.artifacts import ArtifactIntegrityError
 from tests.factories import make_manifest
@@ -228,3 +233,94 @@ def test_draft_materialize_requires_exactly_one_writing_loop_result() -> None:
                 ),
             )
         )
+
+
+def test_draft_materializer_accepts_only_provenance_bound_cross_run_candidate() -> None:
+    artifacts = Mock()
+    commits = Mock()
+    source_run = RunId("run.materialize.source")
+    destination_run = RunId("run.materialize.destination")
+    source_writer = TaskId("task.materialize.source-writer")
+    text_ref = _ref("a", media_type="application/vnd.novel-agent.draft-text+plain")
+    result_ref = _ref("b", media_type=WRITING_LOOP_RESULT_MEDIA_TYPE)
+    observation_ref = _ref("c")
+    reconciliation_ref = _ref("d", media_type="application/vnd.novel-agent.reconciliation+json")
+    proof_ref = _ref("e", media_type=RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE)
+    source_binding_ref = _ref(
+        "f", media_type="application/vnd.novel-agent.stage5-candidate-binding+json"
+    )
+    final_id = text_ref.artifact_id
+    candidate_id = StableId("draft-candidate." + final_id.root.removeprefix("sha256:")[:48])
+    source_candidate = CandidateBinding(
+        candidate_id=candidate_id,
+        kind=CandidateKind.DRAFT,
+        artifact_ref=text_ref,
+        candidate_hash=text_ref.artifact_id.root,
+        basis_commit=COMMIT,
+        lineage_artifact_refs=(result_ref, reconciliation_ref, observation_ref),
+        affects_future_plan=False,
+    )
+    candidate = source_candidate.model_copy(
+        update={"lineage_artifact_refs": (*source_candidate.lineage_artifact_refs, proof_ref)}
+    )
+    expected_acceptance = bounded_stable_id(
+        f"{source_writer.root}.accept",
+        f"accept.{candidate.candidate_hash}",
+        f"accept.{source_run.root}",
+    )
+    evidence = RuntimeContinuationEvidence(
+        source_run_id=source_run,
+        source_acceptance_task_id=TaskId(expected_acceptance.root),
+        source_candidate_binding_ref=source_binding_ref,
+        source_candidate_id=candidate_id,
+        source_candidate_hash=candidate.candidate_hash,
+        source_writing_result_ref=result_ref,
+        source_writing_task_id=source_writer,
+        basis_commit=COMMIT,
+        destination_run_id=destination_run,
+        destination_acceptance_task_id=TaskId("task.materialize.destination-accept"),
+        new_configuration_fingerprint=HASH,
+        settlement_token_budget_tiers=(24_000, 48_000),
+        reason="explicit test continuation",
+    )
+    accepted = AcceptedCandidateBinding(
+        acceptance_id=StableId("acceptance.materialize.continuation"),
+        command_id=StableId("command.materialize.continuation"),
+        project_id=PROJECT,
+        run_id=destination_run,
+        task_id=evidence.destination_acceptance_task_id,
+        candidate=candidate,
+        actor_kind=ActorKind.AUTHOR,
+        actor_id="author",
+        accepted_at=NOW,
+        expected_project_commit=COMMIT,
+    )
+    result = SimpleNamespace(
+        status=WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY,
+        run_id=source_run,
+        task_id=source_writer,
+        final_text_artifact=text_ref,
+        final_candidate_id=final_id,
+        initial_draft=object(),
+        observation=object(),
+        observation_artifact=observation_ref,
+        reconciliation=object(),
+    )
+    materializer = DraftCandidateMaterializer(
+        artifacts,
+        commits,
+        schema_version=VERSION,
+        trusted_configuration_fingerprint=ArtifactId(HASH),
+    )
+    materializer._read = Mock(side_effect=[evidence, source_candidate])  # type: ignore[method-assign]
+
+    materializer._validate_evidence_chain(accepted, candidate, result_ref, result)
+
+    materializer._read = Mock(  # type: ignore[method-assign]
+        side_effect=[
+            evidence.model_copy(update={"destination_run_id": RunId("run.tampered")}),
+            source_candidate,
+        ]
+    )
+    with pytest.raises(CandidateMaterializationError, match="does not match candidate"):
+        materializer._validate_evidence_chain(accepted, candidate, result_ref, result)

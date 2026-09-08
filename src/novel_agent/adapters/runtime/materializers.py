@@ -27,10 +27,16 @@ from novel_agent.domain.changes import (
     ValidationReport,
     ValidationStatus,
 )
-from novel_agent.domain.creative_runtime import AcceptedCandidateBinding, CandidateKind
+from novel_agent.domain.creative_runtime import (
+    RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE,
+    AcceptedCandidateBinding,
+    CandidateBinding,
+    CandidateKind,
+    RuntimeContinuationEvidence,
+)
 from novel_agent.domain.editorial import ReconciliationResult
 from novel_agent.domain.generation import WritingTaskContract
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
+from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
     ObligationKind,
     ObligationStatus,
@@ -1443,9 +1449,11 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         *,
         schema_version: SchemaVersion,
         timeline: SequentialTextRootService | None = None,
+        trusted_configuration_fingerprint: ArtifactId | None = None,
     ) -> None:
         super().__init__(artifacts, commits, schema_version=schema_version)
         self._timeline = timeline or SequentialTextRootService()
+        self._trusted_configuration_fingerprint = trusted_configuration_fingerprint
 
     def materialize(
         self, accepted: AcceptedCandidateBinding
@@ -1468,30 +1476,7 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
             label="WritingLoopResult",
         )
         result = self._read(result_ref, WritingLoopResult)
-        if (
-            result.status is not WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
-            or result.run_id != accepted.run_id
-            or result.final_text_artifact != candidate.artifact_ref
-            or result.final_candidate_id is None
-            or result.initial_draft is None
-            or result.observation is None
-            or result.observation_artifact is None
-            or result.reconciliation is None
-        ):
-            raise CandidateMaterializationError("Draft candidate evidence chain is incomplete")
-        expected_candidate_id = StableId(
-            "draft-candidate." + result.final_candidate_id.root.removeprefix("sha256:")[:48]
-        )
-        expected_acceptance_task = bounded_stable_id(
-            f"{result.task_id.root}.accept",
-            f"accept.{candidate.candidate_hash}",
-            f"accept.{result.run_id.root}",
-        )
-        if (
-            accepted.task_id.root != expected_acceptance_task.root
-            or candidate.candidate_id != expected_candidate_id
-        ):
-            raise CandidateMaterializationError("Draft candidate task lineage is invalid")
+        self._validate_evidence_chain(accepted, candidate, result_ref, result)
         basis = result.initial_draft.basis
         if (
             basis.project_id != accepted.project_id
@@ -1607,6 +1592,86 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
             ),
         )
         return bundle, self._report(accepted, bundle, "stage5-draft-materializer-v1")
+
+    def _validate_evidence_chain(
+        self,
+        accepted: AcceptedCandidateBinding,
+        candidate: CandidateBinding,
+        result_ref: ArtifactRef,
+        result: WritingLoopResult,
+    ) -> None:
+        if (
+            result.status is not WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+            or result.final_text_artifact != candidate.artifact_ref
+            or result.final_candidate_id is None
+            or result.initial_draft is None
+            or result.observation is None
+            or result.observation_artifact is None
+            or result.reconciliation is None
+        ):
+            raise CandidateMaterializationError("Draft candidate evidence chain is incomplete")
+        expected_candidate_id = StableId(
+            "draft-candidate." + result.final_candidate_id.root.removeprefix("sha256:")[:48]
+        )
+        expected_acceptance_task = bounded_stable_id(
+            f"{result.task_id.root}.accept",
+            f"accept.{candidate.candidate_hash}",
+            f"accept.{result.run_id.root}",
+        )
+        if candidate.candidate_id != expected_candidate_id:
+            raise CandidateMaterializationError("Draft candidate task lineage is invalid")
+        if (
+            result.run_id == accepted.run_id
+            and accepted.task_id.root == expected_acceptance_task.root
+        ):
+            return
+
+        continuation_refs = tuple(
+            ref
+            for ref in candidate.lineage_artifact_refs
+            if ref.media_type == RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE
+        )
+        if len(continuation_refs) != 1:
+            raise CandidateMaterializationError(
+                "cross-run Draft candidate requires exactly one continuation evidence"
+            )
+        continuation_ref = continuation_refs[0]
+        evidence = self._read(continuation_ref, RuntimeContinuationEvidence)
+        if (
+            evidence.source_run_id != result.run_id
+            or evidence.source_acceptance_task_id.root != expected_acceptance_task.root
+            or evidence.source_candidate_id != candidate.candidate_id
+            or evidence.source_candidate_hash != candidate.candidate_hash
+            or evidence.source_writing_result_ref != result_ref
+            or evidence.source_writing_task_id != result.task_id
+            or evidence.basis_commit != accepted.expected_project_commit
+            or evidence.destination_run_id != accepted.run_id
+            or evidence.destination_acceptance_task_id != accepted.task_id
+            or (
+                self._trusted_configuration_fingerprint is not None
+                and evidence.new_configuration_fingerprint
+                != self._trusted_configuration_fingerprint.root
+            )
+            or evidence.source_candidate_binding_ref.media_type
+            != "application/vnd.novel-agent.stage5-candidate-binding+json"
+        ):
+            raise CandidateMaterializationError(
+                "Draft continuation evidence does not match candidate"
+            )
+        source_candidate = self._read(evidence.source_candidate_binding_ref, CandidateBinding)
+        candidate_without_continuation = candidate.model_copy(
+            update={
+                "lineage_artifact_refs": tuple(
+                    ref
+                    for ref in candidate.lineage_artifact_refs
+                    if ref.artifact_id != continuation_ref.artifact_id
+                )
+            }
+        )
+        if source_candidate != candidate_without_continuation:
+            raise CandidateMaterializationError(
+                "Draft continuation source candidate does not match"
+            )
 
     @staticmethod
     def _enforce_length_contract(text: str, writing_task: WritingTaskContract) -> None:

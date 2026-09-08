@@ -60,6 +60,9 @@ class VerticalCreativeRunner:
             )
 
         tasks = self._tasks.list_run(request.run_id)
+        bind_request = getattr(self._runtime, "bind_run_request", None)
+        if callable(bind_request):
+            bind_request(request)
         results: list[CreativeRunResult] = []
         if not tasks:
             results.append(self._runtime.start(request))

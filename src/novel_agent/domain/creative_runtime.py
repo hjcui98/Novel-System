@@ -152,6 +152,41 @@ class CandidateBinding(DomainModel):
         return self
 
 
+RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.runtime-continuation-evidence+json"
+)
+
+
+class RuntimeContinuationEvidence(DomainModel):
+    """Explicit provenance needed to rebind an accepted candidate to a new run."""
+
+    recovery_kind: Literal["elastic_settlement_continuation"] = "elastic_settlement_continuation"
+    source_run_id: RunId
+    source_acceptance_task_id: TaskId
+    source_candidate_binding_ref: ArtifactRef
+    source_candidate_id: StableId
+    source_candidate_hash: Hash
+    source_writing_result_ref: ArtifactRef
+    source_writing_task_id: TaskId
+    basis_commit: CommitId
+    destination_run_id: RunId
+    destination_acceptance_task_id: TaskId
+    new_configuration_fingerprint: Hash
+    settlement_token_budget_tiers: tuple[int, ...] = Field(min_length=2, max_length=8)
+    reason: str = Field(min_length=1, max_length=512)
+
+    @model_validator(mode="after")
+    def validate_budget_tiers(self) -> RuntimeContinuationEvidence:
+        if any(tier <= 0 for tier in self.settlement_token_budget_tiers):
+            raise ValueError("continuation settlement budget tiers must be positive")
+        if (
+            tuple(sorted(set(self.settlement_token_budget_tiers)))
+            != self.settlement_token_budget_tiers
+        ):
+            raise ValueError("continuation settlement budget tiers must be strictly ascending")
+        return self
+
+
 class PlanningLoopRequest(DomainModel):
     run_id: RunId
     task_id: TaskId
@@ -427,6 +462,7 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
 
 
 __all__ = [
+    "RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE",
     "AcceptanceCommand",
     "AcceptanceDecision",
     "AcceptanceReceipt",
@@ -446,6 +482,7 @@ __all__ = [
     "PlanningLoopRequest",
     "PlanningLoopResult",
     "PlanningTerminalStatus",
+    "RuntimeContinuationEvidence",
     "commit_task_from_acceptance",
     "next_task_kind",
     "validate_successor",

@@ -135,6 +135,24 @@ class CreativeRuntimeService:
         self._task_reader = task_reader
         self._chapter_settlement = chapter_settlement
         self._memory_maintenance = memory_maintenance
+        self._request_planning_inputs: dict[RunId, tuple[ArtifactRef, ...]] = {}
+
+    def bind_run_request(self, request: CreativeRunRequest) -> None:
+        """Bind the signed run request as a fallback Planner input owner.
+
+        A production continuation may intentionally begin at a post-bootstrap
+        acceptance task instead of recreating the original Planner task.  The
+        request's immutable input artifacts are still the authoritative Planner
+        inputs for that run, but they must be explicitly bound to the runtime
+        instance before rolling planning can use them.
+        """
+
+        if not request.input_artifact_refs:
+            return
+        existing = self._request_planning_inputs.get(request.run_id)
+        if existing is not None and existing != request.input_artifact_refs:
+            raise RuntimeError("run request Planner inputs changed after binding")
+        self._request_planning_inputs[request.run_id] = request.input_artifact_refs
 
     @property
     def writing_request_factory(self) -> Callable[[TaskRecord], WritingLoopRequest]:
@@ -722,6 +740,27 @@ class CreativeRuntimeService:
                         error,
                         artifact_refs=task.terminal_artifact_refs,
                     )
+                except DraftLengthContractError:
+                    self._commands.record_effect_terminal(
+                        fence,
+                        requested_effect.model_copy(
+                            update={
+                                "status": EffectStatus.COMPENSATED,
+                                "completed_at": datetime.now(UTC),
+                            }
+                        ),
+                    )
+                    settled = self._commands.settle_attempt(
+                        fence,
+                        outcome=AttemptOutcome.SUSPENDED,
+                        terminal_status=TaskStatus.WAITING_RETRY,
+                        failure_class=FailureClass.LEAF_SCHEMA_REJECTED,
+                    )
+                    return self._result(
+                        settled,
+                        CreativeRunTerminal.WAITING_RETRY,
+                        "chapter_settlement_length_rejected",
+                    )
                 except (CandidateMaterializationError, ValueError):
                     self._commands.record_effect_terminal(
                         fence,
@@ -823,14 +862,14 @@ class CreativeRuntimeService:
             except DraftLengthContractError:
                 settled = self._commands.settle_attempt(
                     fence,
-                    outcome=AttemptOutcome.FAILED,
-                    terminal_status=TaskStatus.BLOCKED,
-                    failure_class=FailureClass.VALIDATION_REJECTED,
+                    outcome=AttemptOutcome.SUSPENDED,
+                    terminal_status=TaskStatus.WAITING_RETRY,
+                    failure_class=FailureClass.LEAF_SCHEMA_REJECTED,
                 )
                 return self._result(
                     settled,
-                    CreativeRunTerminal.REVIEW_REQUIRED,
-                    "draft_length_contract_rejected",
+                    CreativeRunTerminal.WAITING_RETRY,
+                    "draft_length_contract_retry",
                 )
             except CandidateMaterializationError:
                 settled = self._commands.settle_attempt(
@@ -1858,6 +1897,9 @@ class CreativeRuntimeService:
             default=None,
         )
         if initial is None:
+            request_inputs = self._request_planning_inputs.get(previous.run_id)
+            if request_inputs:
+                return request_inputs
             raise RuntimeError("run has no normal Planner input owner")
         return initial.input_artifact_refs
 

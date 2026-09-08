@@ -1684,7 +1684,10 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     )
     plan_materializer = PlanCandidateMaterializer(artifacts, commits, schema_version=schema_version)
     draft_materializer = DraftCandidateMaterializer(
-        artifacts, commits, schema_version=schema_version
+        artifacts,
+        commits,
+        schema_version=schema_version,
+        trusted_configuration_fingerprint=current_configuration_fingerprint,
     )
     curator_model = ModelCurator(
         model_gateway,

@@ -21,6 +21,7 @@ from novel_agent.domain.creative_runtime import (
     CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
+    CreativeRunRequest,
     CreativeRunTerminal,
     PlanningLoopResult,
     PlanningTerminalStatus,
@@ -37,8 +38,10 @@ from novel_agent.domain.ids import (
 from novel_agent.domain.memory_write import MemoryWriteWorkflowPhase, MemoryWriteWorkflowStatus
 from novel_agent.domain.runtime import (
     AttemptFence,
+    AttemptOutcome,
     EffectReceipt,
     EffectStatus,
+    FailureClass,
     TaskAttempt,
     TaskKind,
     TaskPurpose,
@@ -1057,6 +1060,47 @@ def test_planning_inputs_require_reader_and_normal_owner() -> None:
         service._planning_inputs(_task())
 
 
+def test_bound_run_request_supplies_continuation_planner_inputs() -> None:
+    reader = Mock()
+    reader.list_run.return_value = ()
+    service = _service(task_reader=reader)
+    request = CreativeRunRequest(
+        run_id=RunId("run.recovery"),
+        project_id=ProjectId("project.recovery"),
+        basis_commit=COMMIT,
+        policy=CreativeRunPolicy(
+            automation_mode=AutomationMode.MANUAL,
+            policy_hash=HASH,
+            permission_hash=HASH,
+        ),
+        input_artifact_refs=(_ref("b"),),
+        current_chapter=0,
+        target_chapters=2,
+    )
+    service.bind_run_request(request)
+    assert service._planning_inputs(_task()) == request.input_artifact_refs
+
+
+def test_bound_run_request_cannot_change_planner_inputs() -> None:
+    service = _service(task_reader=Mock())
+    request = CreativeRunRequest(
+        run_id=RunId("run.recovery"),
+        project_id=ProjectId("project.recovery"),
+        basis_commit=COMMIT,
+        policy=CreativeRunPolicy(
+            automation_mode=AutomationMode.MANUAL,
+            policy_hash=HASH,
+            permission_hash=HASH,
+        ),
+        input_artifact_refs=(_ref("b"),),
+        current_chapter=0,
+        target_chapters=2,
+    )
+    service.bind_run_request(request)
+    with pytest.raises(RuntimeError, match="inputs changed"):
+        service.bind_run_request(request.model_copy(update={"input_artifact_refs": (_ref("c"),)}))
+
+
 def test_advance_planner_no_progress_and_yield_and_waiting_input() -> None:
     attempt, fence = _fence_pair(attempt_no=2)
     commands = Mock()
@@ -1264,14 +1308,14 @@ def test_advance_chapter_settlement_bounds_max_length_effect_identity() -> None:
     assert len(requested.effect_identity.root) <= 128
 
 
-def test_advance_draft_commit_length_contract_error_blocks() -> None:
+def test_advance_draft_commit_length_contract_error_waits_for_retry() -> None:
     attempt, fence = _fence_pair()
     commands = Mock()
     commands.heartbeat_interval_seconds = 60.0
     commands.claim.return_value = (attempt, fence)
     commands.claim_writer_lane.return_value = fence
     commands.settle_attempt.return_value = _task(
-        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.BLOCKED
+        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.WAITING_RETRY
     )
     materializer = Mock()
     materializer.materialize.side_effect = DraftLengthContractError("too short")
@@ -1279,8 +1323,39 @@ def test_advance_draft_commit_length_contract_error_blocks() -> None:
     commands.get_task.return_value = _task(kind=TaskKind.DRAFT_COMMIT)
     cast(Any, service)._accepted_binding = Mock(return_value=Mock())
     result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
-    assert result.reason_code == "draft_length_contract_rejected"
-    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
+    assert result.reason_code == "draft_length_contract_retry"
+    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    settle_kwargs = commands.settle_attempt.call_args.kwargs
+    assert settle_kwargs["outcome"] is AttemptOutcome.SUSPENDED
+    assert settle_kwargs["terminal_status"] is TaskStatus.WAITING_RETRY
+    assert settle_kwargs["failure_class"] is FailureClass.LEAF_SCHEMA_REJECTED
+
+
+def test_advance_chapter_settlement_length_contract_error_waits_for_retry() -> None:
+    attempt, fence = _fence_pair()
+    commands = Mock()
+    commands.heartbeat_interval_seconds = 60.0
+    commands.claim.return_value = (attempt, fence)
+    commands.claim_writer_lane.return_value = fence
+    commands.settle_attempt.return_value = _task(
+        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.WAITING_RETRY
+    )
+    settlement = Mock()
+    settlement.effect_identity.return_value = StableId("settlement.length")
+    settlement.settle = AsyncMock(side_effect=DraftLengthContractError("too short"))
+    service = _service(commands=commands, chapter_settlement=settlement)
+    commands.get_task.return_value = _task(kind=TaskKind.DRAFT_COMMIT)
+    cast(Any, service)._accepted_binding = Mock(return_value=Mock())
+
+    result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
+
+    assert result.reason_code == "chapter_settlement_length_rejected"
+    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    commands.record_effect_terminal.assert_called_once()
+    settle_kwargs = commands.settle_attempt.call_args.kwargs
+    assert settle_kwargs["outcome"] is AttemptOutcome.SUSPENDED
+    assert settle_kwargs["terminal_status"] is TaskStatus.WAITING_RETRY
+    assert settle_kwargs["failure_class"] is FailureClass.LEAF_SCHEMA_REJECTED
 
 
 def test_advance_plan_commit_materializer_error_blocks() -> None:
