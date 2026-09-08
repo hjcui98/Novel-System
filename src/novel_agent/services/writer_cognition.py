@@ -372,9 +372,7 @@ class WriterCognitionService:
                 "production WriterWorkPlan selected an unsupported Skill for its mode"
             )
         if request.mode is AgentMode.DRAFT and len(selected_optional) > 1:
-            raise WriterCognitionError(
-                "WriterWorkPlan may select at most one optional Writer Skill"
-            )
+            selected_optional = (selected_optional[0],)
         normalized_skill_ids = tuple(
             dict.fromkeys((*base_skill_ids, required_mode_skill, *selected_optional))
             if required_mode_skill is not None
@@ -384,7 +382,18 @@ class WriterCognitionService:
             raise WriterCognitionError(
                 "production Writer allowlist is missing a required base Skill"
             )
-        work_plan = work_plan.model_copy(update={"selected_skill_ids": normalized_skill_ids})
+        normalized_roots = {item.root for item in normalized_skill_ids}
+        filtered_checkpoints = {
+            k: v
+            for k, v in work_plan.expected_skill_checkpoints.items()
+            if k in normalized_roots
+        }
+        work_plan = work_plan.model_copy(
+            update={
+                "selected_skill_ids": normalized_skill_ids,
+                "expected_skill_checkpoints": filtered_checkpoints,
+            }
+        )
         work_plan_ref = self._artifacts.put(
             canonical_json_bytes(work_plan.model_dump(mode="json")),
             WRITER_WORK_PLAN_MEDIA_TYPE,
