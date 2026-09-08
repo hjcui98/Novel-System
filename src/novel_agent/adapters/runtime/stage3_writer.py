@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from novel_agent.domain.artifacts import ArtifactRef
@@ -33,6 +33,7 @@ from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.domain.runtime import TaskRecord
 from novel_agent.domain.stage2 import FutureIsolationAttestation, ProjectProfileRootDocument
+from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
@@ -70,6 +71,7 @@ class Stage2MWriterContextInvocation:
     world: WorldRootDocument
     base_commit: CommitId
     snapshot_id: StableId
+    writing_task: WritingTaskContract | None = None
     project_id: ProjectId | None = None
     advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
 
@@ -155,18 +157,76 @@ class ProductionWritingRequestFactory:
         obligation_ids = tuple(
             dict.fromkeys(item for goal in goals for item in goal.obligation_ids)
         )
+        world_obligation_ids = {item.obligation_id for item in world.obligations}
+        unknown_obligations = set(obligation_ids) - world_obligation_ids
+        if unknown_obligations:
+            raise ValueError(
+                "WritingTask references unknown obligations: "
+                + ", ".join(sorted(item.root for item in unknown_obligations))
+            )
         relevant_nodes = tuple(
             node
             for node in plan.nodes
-            if node.plan_node_id in goal_ids
-            or bool(set(node.obligation_ids) & set(obligation_ids))
+            if node.plan_node_id in goal_ids or bool(set(node.obligation_ids) & set(obligation_ids))
         )
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
-        chapter_goal = "；".join(summaries)  # noqa: RUF001
+        chapter_goal = "；".join(summaries)
+        payload_beats = tuple(
+            beat
+            for goal in goals
+            for beat in self._payload_strings(goal.payload, "beats", "required_beats")
+        )
+        state_changes = tuple(
+            change for goal in goals for change in self._payload_state_changes(goal.payload)
+        )
         required_beats = tuple(
-            dict.fromkeys((*(node.summary for node in relevant_nodes), *summaries))
+            dict.fromkeys(
+                (
+                    *payload_beats,
+                    *state_changes,
+                    *(node.summary for node in relevant_nodes),
+                    *summaries,
+                )
+            )
+        )
+        participating_entity_ids = tuple(
+            dict.fromkeys(
+                entity_id
+                for goal in goals
+                for entity_id in self._payload_ids(
+                    goal.payload, "participating_entity_ids", "entity_ids", "participant_ids"
+                )
+            )
+        )
+        unknown_entities = set(participating_entity_ids) - {
+            entity.entity_id for entity in world.entities
+        }
+        if unknown_entities:
+            raise ValueError(
+                "WritingTask references unknown entities: "
+                + ", ".join(sorted(item.root for item in unknown_entities))
+            )
+        entity_labels = {entity.entity_id: entity.internal_label for entity in world.entities}
+        current_state_constraints = tuple(
+            f"Canon current state [{state.subject_id.root}] "
+            f"{entity_labels.get(state.subject_id, state.subject_id.root)} "
+            f"{state.predicate}={state.value}"
+            for state in world.states
+            if state.subject_id in set(participating_entity_ids)
+        )
+        obligation_actions = tuple(
+            dict.fromkeys(
+                action
+                for goal in goals
+                for action in self._payload_obligation_actions(goal.payload, world_obligation_ids)
+            )
         )
         lock_constraints, lock_forbids = self._future_lock_constraints(world, task.chapter_index)
+        profile_lock_constraints, profile_lock_forbids = self._profile_lock_constraints(
+            profile, task.chapter_index
+        )
+        language = self._profile_string(profile, "language", "")
+        language_constraint = (f"正文语言：{language}",) if language else ()
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
                 f"writing-contract.{task.task_id.root}",
@@ -183,16 +243,25 @@ class ProductionWritingRequestFactory:
             required_beats=required_beats,
             active_plan_obligations=obligation_ids,
             mandatory_constraints=(
+                *language_constraint,
+                *current_state_constraints,
                 *self._profile_strings(profile, "mandatory_constraints"),
                 *lock_constraints,
+                *profile_lock_constraints,
             ),
             forbidden_reveals=(
                 *self._profile_strings(profile, "forbidden_reveals"),
                 *lock_forbids,
+                *profile_lock_forbids,
             ),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
-            style_requirements=self._profile_strings(profile, "style_requirements"),
-            length_policy=self._policy.length_policy,
+            style_requirements=(
+                *self._profile_style_constraints(profile),
+                *self._profile_strings(profile, "style_requirements"),
+            ),
+            participating_entity_ids=participating_entity_ids,
+            obligation_actions=obligation_actions,
+            length_policy=self._length_policy(profile),
         )
         writing_task_artifact = self._artifacts.put(
             canonical_json_bytes(writing_task.model_dump(mode="json")),
@@ -225,6 +294,7 @@ class ProductionWritingRequestFactory:
                 world=world,
                 base_commit=task.basis_commit,
                 snapshot_id=task.basis_snapshot,
+                writing_task=writing_task,
                 project_id=task.project_id,
                 advisory_artifact_refs=tuple(
                     ref
@@ -234,13 +304,14 @@ class ProductionWritingRequestFactory:
             )
         )
         package = assembly.package
-        if (
-            assembly.status is ContextAssemblyStatus.READY
-            and isinstance(package, WriterContextPackageV2)
-            and package.semantic_status == "COMPLETE"
-            and (package.unclosed_mandatory_need_facets or package.usable_with_gaps)
+        if assembly.status is not ContextAssemblyStatus.READY:
+            raise ValueError("Writer context assembly is not ready for writing")
+        if isinstance(package, WriterContextPackageV2) and (
+            package.semantic_status != "COMPLETE"
+            or package.unclosed_mandatory_need_facets
+            or package.usable_with_gaps
         ):
-            raise ValueError("READY assembly cannot rewrite semantic incompleteness as COMPLETE")
+            raise ValueError("Writer context has unresolved historical needs")
         if (
             package.task_contract != memory_task
             or package.basis_commit_id != task.basis_commit
@@ -335,10 +406,52 @@ class ProductionWritingRequestFactory:
                 f"{obligation.description}当前只能 SETUP/PROGRESS, 不得 RESOLVE/PAYOFF; "
                 f"最早第{boundary}章。"
             )
-            forbids.append(
-                f"不得在本章完成{obligation.description}最终获得或宣布该长期目标已解决."
-            )
+            forbids.append(f"不得在本章完成{obligation.description}最终获得或宣布该长期目标已解决.")
         return tuple(constraints), tuple(forbids)
+
+    @staticmethod
+    def _profile_lock_constraints(
+        profile: ProjectProfileRootDocument, chapter_index: int
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        constraints: list[str] = []
+        forbids: list[str] = []
+        planning = profile.capability_profile.get("planning_constraints", {})
+        sources: dict[str, object] = dict(profile.capability_profile)
+        if isinstance(planning, dict):
+            sources.update(planning)
+        for key in ("timeline_locks", "reveal_windows", "progression_locks"):
+            raw = sources.get(key)
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if isinstance(item, dict):
+                    text = next(
+                        (
+                            value.strip()
+                            for field in ("description", "reveal", "lock", "value", "summary")
+                            for value in (item.get(field),)
+                            if isinstance(value, str) and value.strip()
+                        ),
+                        str(item),
+                    )
+                    boundary = next(
+                        (
+                            value
+                            for field in ("not_before_chapter", "chapter_start", "start")
+                            for value in (item.get(field),)
+                            if type(value) is int and value >= 1
+                        ),
+                        None,
+                    )
+                elif isinstance(item, str) and item.strip():
+                    text = item.strip()
+                    boundary = None
+                else:
+                    continue
+                constraints.append(f"Profile {key}: {text}")
+                if isinstance(boundary, int) and chapter_index < boundary:
+                    forbids.append(f"Profile {key} is locked until chapter {boundary}: {text}")
+        return tuple(dict.fromkeys(constraints)), tuple(dict.fromkeys(forbids))
 
     @staticmethod
     def _planning_context(
@@ -347,22 +460,50 @@ class ProductionWritingRequestFactory:
         task_intent: str,
         current_goals: tuple[ChapterGoal, ...] | None = None,
     ) -> AuthorPlanningContext:
-        scoped_goals = current_goals or tuple(
-            goal for goal in plan.chapter_goals if goal.chapter_index == task.chapter_index
-        )
-        goal_ids = {goal.goal_id for goal in scoped_goals}
-        obligation_ids = {item for goal in scoped_goals for item in goal.obligation_ids}
+        del current_goals
+        target_end = min(task.horizon_end or task.chapter_index + 2, task.chapter_index + 2)
+        scoped_goal_ids = {
+            goal.goal_id
+            for goal in plan.chapter_goals
+            if task.chapter_index <= goal.chapter_index <= target_end
+        }
+        scoped_obligation_ids = {
+            obligation_id
+            for goal in plan.chapter_goals
+            if goal.goal_id in scoped_goal_ids
+            for obligation_id in goal.obligation_ids
+        }
         by_id = {node.plan_node_id: node for node in plan.nodes}
+
+        def covers(node: object, chapter_start: int, chapter_end: int) -> bool:
+            start = getattr(node, "chapter_start", None)
+            end = getattr(node, "chapter_end", None)
+            payload = getattr(node, "payload", {})
+            if isinstance(payload, dict):
+                chapter_index = payload.get("chapter_index")
+                if type(chapter_index) is int and chapter_start <= chapter_index <= chapter_end:
+                    return True
+            return (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and start <= chapter_end
+                and chapter_start <= end
+            )
+
         selected: dict[StableId, object] = {}
         for node in plan.nodes:
-            related = node.plan_node_id in goal_ids or bool(
-                set(node.obligation_ids) & obligation_ids
+            related = (
+                node.plan_node_id in scoped_goal_ids
+                or bool(set(node.obligation_ids) & scoped_obligation_ids)
+                or covers(node, task.chapter_index, target_end)
+                or node.plan_level is PlanLevel.STORY
             )
             if not related:
                 continue
-            selected[node.plan_node_id] = node
-            if node.parent_id is not None and node.parent_id in by_id:
-                selected[node.parent_id] = by_id[node.parent_id]
+            current: PlanNode | None = node
+            while current is not None:
+                selected[current.plan_node_id] = current
+                current = by_id.get(current.parent_id) if current.parent_id is not None else None
         nodes = tuple(
             VisibleOutlineNode(
                 node_id=node.plan_node_id,
@@ -375,7 +516,7 @@ class ProductionWritingRequestFactory:
         goals = tuple(
             goal
             for goal in plan.chapter_goals
-            if task.chapter_index <= goal.chapter_index <= (task.horizon_end or task.chapter_index)
+            if task.chapter_index <= goal.chapter_index <= target_end
         )
         source_hash = content_id(
             {
@@ -388,7 +529,10 @@ class ProductionWritingRequestFactory:
         return AuthorPlanningContext(
             profile=BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED,
             task_intent=task_intent,
-            target_range=(task.chapter_index, task.chapter_index),
+            target_range=(
+                task.chapter_index,
+                max((goal.chapter_index for goal in goals), default=task.chapter_index),
+            ),
             visible_outline_nodes=nodes,
             chapter_goals=goals,
             source_hash=source_hash,
@@ -415,6 +559,139 @@ class ProductionWritingRequestFactory:
             return ()
         strings = tuple(item.strip() for item in value if isinstance(item, str))
         return tuple(dict.fromkeys(strings))
+
+    @staticmethod
+    def _profile_style_constraints(
+        profile: ProjectProfileRootDocument,
+    ) -> tuple[str, ...]:
+        constraints: list[str] = []
+        for key in (
+            "genre",
+            "style",
+            "genre_required_markers",
+            "genre_warning_domains",
+            "paragraph_policy",
+            "template_watchlist",
+        ):
+            value = profile.style_profile.get(key)
+            if value not in (None, "", (), []):
+                constraints.append(f"Profile {key}: {value}")
+        prose_preferences = profile.style_profile.get("prose_preferences")
+        if isinstance(prose_preferences, dict):
+            constraints.append(f"Profile prose_preferences: {prose_preferences}")
+        elif isinstance(prose_preferences, list):
+            constraints.extend(
+                f"Profile prose_preferences: {item[:280]}"
+                for item in prose_preferences[:3]
+                if isinstance(item, str) and item.strip()
+            )
+        examples = profile.style_profile.get("style_examples")
+        if isinstance(examples, list):
+            constraints.extend(
+                f"Profile style_example: {item[:280]}"
+                for item in examples[:3]
+                if isinstance(item, str) and item.strip()
+            )
+        guides = profile.style_profile.get("style_guide_sources")
+        if isinstance(guides, list):
+            for guide in guides:
+                if not isinstance(guide, dict):
+                    continue
+                source_id = guide.get("source_id", "unknown")
+                text = guide.get("text")
+                if isinstance(text, str) and text.strip():
+                    constraints.append(f"Style Guide {source_id}: {text}")
+        return tuple(dict.fromkeys(constraints))
+
+    def _length_policy(self, profile: ProjectProfileRootDocument) -> WritingLengthPolicy:
+        minimum = self._profile_int(
+            profile, "minimum_characters", self._policy.length_policy.minimum_characters
+        )
+        maximum = self._profile_int(
+            profile, "maximum_characters", self._policy.length_policy.maximum_characters
+        )
+        target_default = (minimum + maximum) // 2
+        target = self._profile_int(profile, "target_characters", target_default)
+        if maximum < minimum:
+            minimum, maximum = (
+                self._policy.length_policy.minimum_characters,
+                self._policy.length_policy.maximum_characters,
+            )
+        target = max(minimum, min(maximum, target))
+        return WritingLengthPolicy(
+            minimum_characters=minimum,
+            target_characters=target,
+            maximum_characters=maximum,
+        )
+
+    @staticmethod
+    def _profile_int(profile: ProjectProfileRootDocument, key: str, default: int) -> int:
+        value = profile.style_profile.get(key, default)
+        return value if type(value) is int and value > 0 else default
+
+    @staticmethod
+    def _payload_strings(payload: Mapping[str, object], *keys: str) -> tuple[str, ...]:
+        values: list[str] = []
+        for key in keys:
+            raw = payload.get(key)
+            if isinstance(raw, list):
+                values.extend(
+                    item.strip() for item in raw if isinstance(item, str) and item.strip()
+                )
+        return tuple(dict.fromkeys(values))
+
+    @staticmethod
+    def _payload_state_changes(payload: Mapping[str, object]) -> tuple[str, ...]:
+        raw = payload.get("state_changes")
+        if not isinstance(raw, list):
+            return ()
+        values: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                values.append(item.strip())
+            elif isinstance(item, dict):
+                for key in ("description", "change", "state", "value"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        values.append(value.strip())
+                        break
+        return tuple(dict.fromkeys(values))
+
+    @staticmethod
+    def _payload_ids(payload: Mapping[str, object], *keys: str) -> tuple[StableId, ...]:
+        values: list[StableId] = []
+        for key in keys:
+            raw = payload.get(key)
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, str):
+                        values.append(StableId(item))
+        return tuple(dict.fromkeys(values))
+
+    @staticmethod
+    def _payload_obligation_actions(
+        payload: Mapping[str, object], known_ids: set[StableId]
+    ) -> tuple[str, ...]:
+        raw = payload.get("obligation_actions")
+        if not isinstance(raw, list):
+            return ()
+        values: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                values.append(item.strip())
+                continue
+            if not isinstance(item, dict):
+                continue
+            raw_id = item.get("obligation_id") or item.get("id")
+            if not isinstance(raw_id, str):
+                raise ValueError("obligation action requires obligation_id")
+            obligation_id = StableId(raw_id)
+            if obligation_id not in known_ids:
+                raise ValueError(f"obligation action references unknown {raw_id}")
+            action = str(item.get("action") or item.get("operation") or "SETUP").strip()
+            detail = str(item.get("description") or "").strip()
+            values.append(f"{raw_id}:{action}" + (f":{detail}" if detail else ""))
+        return tuple(dict.fromkeys(values))
 
 
 class Stage3WritingLeafAdapter:

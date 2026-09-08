@@ -16,7 +16,14 @@ from novel_agent.adapters.runtime.isolated import (
     StrictFakePlanningLeaf,
 )
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.creative_runtime import CandidateKind, CreativeRunRequest
+from novel_agent.domain.creative_runtime import (
+    AcceptanceCommand,
+    AcceptanceDecision,
+    ActorKind,
+    CandidateBinding,
+    CandidateKind,
+    CreativeRunRequest,
+)
 from novel_agent.domain.generation import WritingLoopRequest
 from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
@@ -232,11 +239,37 @@ def test_bootstrap_commit_schedules_story_volume_chapter_set_before_writer(
     assert start.current_task_id is not None
     current = start.current_task_id
     draft: TaskRecord | None = None
-    for step in range(12):
+    for step in range(24):
         task = commands.get_task(current)
         if task.kind is TaskKind.DRAFT_CANDIDATE:
             draft = task
             break
+        if task.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.DRAFT_ACCEPTANCE}:
+            assert task.candidate_binding_ref is not None
+            candidate = CandidateBinding.model_validate_json(
+                artifacts.read_verified(task.candidate_binding_ref)
+            )
+            accepted = runtime.submit_acceptance(
+                AcceptanceCommand(
+                    command_id=StableId(f"accept.{task.task_id.root}"),
+                    project_id=task.project_id,
+                    run_id=task.run_id,
+                    task_id=task.task_id,
+                    candidate=candidate,
+                    acceptance_policy_hash=policy.policy_hash,
+                    actor_kind=ActorKind.AUTHOR,
+                    actor_id="author.1",
+                    decision=AcceptanceDecision.ACCEPT,
+                    reason="explicitly accepted candidate",
+                    expected_project_commit=task.basis_commit,
+                    idempotency_identity=StableId(f"accept.identity.{task.task_id.root}"),
+                    issued_at=NOW,
+                ),
+                policy=policy,
+            )
+            assert accepted.current_task_id is not None
+            current = accepted.current_task_id
+            continue
         result = asyncio.run(runtime.advance(current, worker_id=f"worker.{step}"))
         assert result.current_task_id is not None
         current = result.current_task_id

@@ -400,6 +400,8 @@ class PlannerAgent:
         evidence_refs: tuple[EvidenceRef, ...] = (),
         graph_path_receipt_refs: tuple[ArtifactRef, ...] = (),
         parent_proposal_id: StableId | None = None,
+        allowed_skill_ids: tuple[StableId, ...] | None = None,
+        profile_only_source_ids: tuple[StableId, ...] = (),
     ) -> tuple[PlannerExecutionResult, ModelCallRecord]:
         if len(source_artifacts) != len(task.source_ids) or len(
             {artifact.artifact_id for artifact in source_artifacts}
@@ -415,6 +417,7 @@ class PlannerAgent:
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
+            allowed_skill_ids=allowed_skill_ids,
         )
         execution = await self._runner.execute(prepared, _proposal_output_type(task))
         result = self._materialize_plan(
@@ -428,6 +431,7 @@ class PlannerAgent:
             evidence_refs=evidence_refs,
             graph_path_receipt_refs=graph_path_receipt_refs,
             parent_proposal_id=parent_proposal_id,
+            profile_only_source_ids=profile_only_source_ids,
         )
         return result, execution.model_call
 
@@ -445,6 +449,8 @@ class PlannerAgent:
         evidence_refs: tuple[EvidenceRef, ...] = (),
         graph_path_receipt_refs: tuple[ArtifactRef, ...] = (),
         parent_proposal_id: StableId | None = None,
+        allowed_skill_ids: tuple[StableId, ...] | None = None,
+        profile_only_source_ids: tuple[StableId, ...] = (),
     ) -> tuple[PlanningTurnOutput, PlannerExecutionResult | None, ModelCallRecord]:
         """Run one autonomous Planner turn without granting direct retrieval access."""
 
@@ -463,6 +469,7 @@ class PlannerAgent:
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
+            allowed_skill_ids=allowed_skill_ids,
         )
         execution = await self._runner.execute(prepared, PlanningTurnDraft)
         draft = execution.output
@@ -504,6 +511,7 @@ class PlannerAgent:
             evidence_refs=evidence_refs,
             graph_path_receipt_refs=graph_path_receipt_refs,
             parent_proposal_id=parent_proposal_id,
+            profile_only_source_ids=profile_only_source_ids,
         )
         return (
             PlanningTurnOutput(
@@ -533,6 +541,7 @@ class PlannerAgent:
         evidence_refs: tuple[EvidenceRef, ...],
         graph_path_receipt_refs: tuple[ArtifactRef, ...],
         parent_proposal_id: StableId | None,
+        profile_only_source_ids: tuple[StableId, ...] = (),
     ) -> PlannerExecutionResult:
         if draft.mode is not task.mode or draft.strategy is not task.strategy:
             raise PlannerInvocationError("Planner draft mode/strategy differs from trusted task")
@@ -549,6 +558,14 @@ class PlannerAgent:
             for item in authored_items
         ):
             raise PlannerInvocationError("Planner draft cites a source outside PlanningTask")
+        profile_only = set(profile_only_source_ids)
+        if profile_only and any(
+            set(item.source_ids) & profile_only
+            for item in (*draft.project_intent_items, *draft.plan_items, *draft.world_design_items)
+        ):
+            raise PlannerInvocationError(
+                "Style Guide sources may only support ProjectProfile items"
+            )
         output_artifact = self._artifacts.put(
             canonical_json_bytes(draft.model_dump(mode="json")),
             "application/vnd.novel-agent.planner-proposal-draft+json",
@@ -634,6 +651,7 @@ class PlannerAgent:
         explicit_overrides: tuple[str, ...] = (),
         parent_inquiry_id: StableId | None = None,
         generation: int | None = None,
+        allowed_skill_ids: tuple[StableId, ...] | None = None,
     ) -> tuple[PlanningInquiry, ArtifactRef, AgentExecutionReceipt, ModelCallRecord]:
         if len(source_artifacts) != len(task.source_ids) or len(
             {artifact.artifact_id for artifact in source_artifacts}
@@ -660,6 +678,7 @@ class PlannerAgent:
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=source_artifacts,
             base_commit=task.base_commit,
+            allowed_skill_ids=allowed_skill_ids,
         )
         execution = await self._runner.execute(prepared, PlanningInquiryDraft)
         draft = execution.output

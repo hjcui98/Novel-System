@@ -258,9 +258,7 @@ class ProductionReactiveMemoryInputsFactory:
 
 
 MEMORY_CONTEXT_BUDGET_TIERS: tuple[tuple[MemoryContextBudgetTier, int, int, int], ...] = (
-    (MemoryContextBudgetTier.BASE, 24_000, 24_000, 16),
-    (MemoryContextBudgetTier.EXPAND_1, 32_000, 32_000, 20),
-    (MemoryContextBudgetTier.EXPAND_2, 40_000, 40_000, 24),
+    (MemoryContextBudgetTier.BASE, 24_000, 24_000, 12),
 )
 BUDGET_EXPANSION_RECEIPT_MEDIA_TYPE = (
     "application/vnd.novel-agent.memory-context-budget-expansion+json"
@@ -288,16 +286,49 @@ class ProductionStage2MWriterContext:
     def __call__(self, invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
         if invocation.project_id is None:
             raise ValueError("production Stage 2M Writer Context requires a project id")
-        generated = self._generator.generate_with_lineage(
-            invocation.task,
-            invocation.world,
-            invocation.plan,
-            invocation.planning_context,
-            history_text=invocation.text,
-            snapshot_id=invocation.snapshot_id,
-        ).needs
+        # The production generator exposes the strict WritingTask contract.  Keep
+        # a narrow legacy fallback for isolated test doubles that only implement
+        # the pre-contract lineage method; it does not affect the real graph.
+        generate_for_writing_task = getattr(self._generator, "generate_for_writing_task", None)
+        if callable(generate_for_writing_task):
+            if invocation.writing_task is None:
+                raise ValueError("production Stage 2M Writer Context requires WritingTask")
+            generated_result = generate_for_writing_task(
+                invocation.task,
+                invocation.writing_task,
+                invocation.world,
+                invocation.plan,
+                invocation.planning_context,
+            )
+        else:
+            generated_result = self._generator.generate_with_lineage(
+                invocation.task,
+                invocation.world,
+                invocation.plan,
+                invocation.planning_context,
+                history_text=invocation.text,
+                snapshot_id=invocation.snapshot_id,
+            )
+        generated = generated_result.needs
         if not generated:
-            raise ValueError("production Stage 2M Writer Context produced no Memory Needs")
+            tier, context_tokens, ledger_tokens, _call_budget = MEMORY_CONTEXT_BUDGET_TIERS[0]
+            zero_need_assembly = self._assembler.assemble(
+                task=invocation.task,
+                selections=(),
+                text_root=invocation.text,
+                basis_commit_id=invocation.base_commit,
+                basis_snapshot_id=invocation.snapshot_id,
+                writer_token_budget=context_tokens,
+                evidence_ledger_token_budget=ledger_tokens,
+                advisory_items=tuple(
+                    (ref, self._advisory_text(ref)) for ref in invocation.advisory_artifact_refs
+                ),
+            )
+            if zero_need_assembly.status is not ContextAssemblyStatus.READY:
+                raise ValueError("zero-Need Writer Context assembly is not ready")
+            return zero_need_assembly
+        if len(generated) > 3:
+            raise ValueError("production Stage 2M Writer Context permits at most three Needs")
         needs = tuple(
             need.model_copy(
                 update={
@@ -352,7 +383,7 @@ class ProductionStage2MWriterContext:
                     access_scope=AccessScope.WRITER_SAFE,
                     allow_future_plan=False,
                     retrieval_budget=RetrievalBudget(
-                        max_rounds=3,
+                        max_rounds=1,
                         max_tool_calls=call_budget,
                         max_query_rewrites_per_need=0,
                         token_budget=context_tokens,
@@ -413,20 +444,17 @@ class ProductionStage2MWriterContext:
             if expansion is None:
                 break
             if index == len(MEMORY_CONTEXT_BUDGET_TIERS) - 1:
-                packing = expansion == "assembler_dropped_mandatory_evidence"
-                if packing or assembly.status is not ContextAssemblyStatus.READY:
-                    receipt_ref = self._freeze_budget_receipt(
-                        invocation=invocation,
-                        needs=needs,
-                        records=tuple(records),
-                        terminal_reason=expansion,
-                        budget_review=True,
-                    )
-                    raise MemoryContextBudgetExhaustedError(
-                        "Writer Context remained budget-exhausted after expand_2",
-                        receipt=receipt_ref,
-                    )
-                break
+                receipt_ref = self._freeze_budget_receipt(
+                    invocation=invocation,
+                    needs=needs,
+                    records=tuple(records),
+                    terminal_reason=expansion,
+                    budget_review=True,
+                )
+                raise MemoryContextBudgetExhaustedError(
+                    "Writer Context was not complete within the single production retrieval call",
+                    receipt=receipt_ref,
+                )
         assert assembly is not None
         assert gateway_result is not None
         receipt_ref = self._freeze_budget_receipt(

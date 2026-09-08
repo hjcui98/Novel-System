@@ -1,5 +1,6 @@
 {
   "$defs": {
+    "JsonValue": {},
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -22,6 +23,21 @@
         "$ref": "#/$defs/StableId"
       },
       "title": "Obligation Ids",
+      "type": "array"
+    },
+    "payload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Payload",
+      "type": "object"
+    },
+    "source_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Source Ids",
       "type": "array"
     },
     "summary": {

@@ -2075,6 +2075,7 @@ class CreativeRuntimeService:
                 if downstream and all(not _is_active_plan(t) for t in downstream):
                     return False
             return True
+
         existing = next(
             (
                 task
@@ -2086,7 +2087,8 @@ class CreativeRuntimeService:
                         and task.horizon_start == projection.chapter_index + 1
                     )
                 )
-                and task.kind in {
+                and task.kind
+                in {
                     TaskKind.PLAN_CANDIDATE,
                     TaskKind.PLAN_ACCEPTANCE,
                     TaskKind.PLAN_COMMIT,
@@ -2142,6 +2144,8 @@ class CreativeRuntimeService:
     def _replace_blocked_plan(
         self, blocked: TaskRecord, projection: TaskRecord
     ) -> CreativeRunResult | None:
+        if self._task_reader is None:
+            return None
         snapshot = self._snapshots.get_for_commit(projection.basis_commit)
         if snapshot is None or snapshot.build_status.value != "exact":
             return None

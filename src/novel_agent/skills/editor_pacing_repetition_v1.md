@@ -1,8 +1,7 @@
-# Editor lens: pacing and repetition
+# Editor 视镜：叙事节奏与重复（pacing and repetition）
 
-Check whether this chapter stalls, repeats a prior beat, or crowds too many turns into one scene.
+检查本章是否存在剧情拖沓停滞、重复先前的节拍、或在单一场景中塞入过多转折的问题。
 
-- Repeated wording, repeated emotional beats, or a scene that restates the previous chapter without
-  a new turn is a pacing defect.
-- Multiple required beats jammed into one short passage is also a pacing defect.
-- Prefer LOCAL_REPAIR for repeated sentences; use MAJOR_REWRITE when the scene structure itself loops.
+- 重复的字句、重复的情感节拍、或未产生新转折而直接复述上一章的场景，属于节奏缺陷。
+- 在极短段落中强行挤入多个必需节拍，同样属于节奏缺陷。
+- 对于语句重复，优先使用 LOCAL_REPAIR；当场景结构本身陷入循环时，使用 MAJOR_REWRITE。

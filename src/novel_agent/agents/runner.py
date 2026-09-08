@@ -100,6 +100,7 @@ class StructuredAgentRunner:
         source_hashes: tuple[ArtifactId, ...] = (),
         input_artifacts: tuple[ArtifactRef, ...] = (),
         base_commit: CommitId | None = None,
+        allowed_skill_ids: tuple[StableId, ...] | None = None,
     ) -> AgentRunResult[OutputT]:
         prepared = self.prepare(
             agent_type,
@@ -110,6 +111,7 @@ class StructuredAgentRunner:
             source_hashes=source_hashes,
             input_artifacts=input_artifacts,
             base_commit=base_commit,
+            allowed_skill_ids=allowed_skill_ids,
         )
         return await self.execute(prepared, output_type)
 
@@ -144,12 +146,28 @@ class StructuredAgentRunner:
         source_hashes: tuple[ArtifactId, ...] = (),
         input_artifacts: tuple[ArtifactRef, ...] = (),
         base_commit: CommitId | None = None,
+        allowed_skill_ids: tuple[StableId, ...] | None = None,
     ) -> PreparedAgentRun:
         """Resolve immutable contracts and prepare an audited request without calling a model."""
         spec = self._agents.resolve(agent_type, mode, version)
+        if allowed_skill_ids is not None:
+            requested = tuple(allowed_skill_ids)
+            if len(requested) != len(set(requested)):
+                raise AgentExecutionError("allowed Skill ids must be unique")
+            declared = {skill.contract_id for skill in spec.skills}
+            missing = tuple(item.root for item in requested if item not in declared)
+            if missing:
+                raise AgentExecutionError(
+                    "allowed Skill ids are not declared by the AgentSpec: " + ", ".join(missing)
+                )
+            allowed = set(requested)
+        else:
+            allowed = None
         skill_texts: list[str] = []
         skill_refs: list[SkillContractRef] = []
         for expected_skill in spec.skills:
+            if allowed is not None and expected_skill.contract_id not in allowed:
+                continue
             text, actual = self._skills.resolve(expected_skill.contract_id, expected_skill.version)
             if actual.content_hash != expected_skill.content_hash:
                 raise AgentExecutionError(

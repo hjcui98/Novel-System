@@ -33,8 +33,10 @@ class EvidenceSupportGate:
     an explicit negation appears near the primary predicate token (a hard
     signal), and PARTIAL when no or only a partial lexical hit is found. PARTIAL
     outcomes must be resolved by a narrow semantic verifier or fail closed.
-    The gate never returns UNRELATED because lexical heuristics cannot rule out
-    a Chinese/English language mismatch.
+    Event and obligation records are deliberately type-aware: their English
+    discriminator/description is not required to appear literally in Chinese
+    evidence. The gate never returns UNRELATED because lexical heuristics
+    cannot rule out a language mismatch.
     """
 
     def evaluate_operation(
@@ -123,6 +125,11 @@ class EvidenceSupportGate:
                             EvidenceSupportDisposition.CONTRADICTS,
                             "CANDIDATE_TEXT_CONTRADICTS",
                         )
+        if not hits and isinstance(record, (CuratorEventRecord, CuratorObligationRecord)):
+            return (
+                EvidenceSupportDisposition.PARTIAL,
+                "TYPE_AWARE_EVENT_OR_OBLIGATION_NEEDS_SEMANTIC_VERIFIER",
+            )
         if not hits:
             # Noun-subject predicate may appear; single-token values like
             # read_49_books_100_times never match Chinese text. Flag for the

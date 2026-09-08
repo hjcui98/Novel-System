@@ -1116,7 +1116,14 @@ class ModelCurator:
                     previous_request_id = page_request.request_id
                 return tuple(batches), tuple(calls)
 
-        outputs = await asyncio.gather(*(run_unit(unit) for unit in units))
+        unit_tasks = [asyncio.create_task(run_unit(unit)) for unit in units]
+        try:
+            outputs = await asyncio.gather(*unit_tasks)
+        except BaseException:
+            for unit_task in unit_tasks:
+                unit_task.cancel()
+            await asyncio.gather(*unit_tasks, return_exceptions=True)
+            raise
         return (
             tuple(batch for batches, _ in outputs for batch in batches),
             tuple(call for _, calls in outputs for call in calls),
@@ -2375,8 +2382,8 @@ class ModelCurator:
                 items.append(
                     {
                         "operation_index": operation_index,
-                        "candidate_ids": tuple(item.root for item in candidate_ids),
-                        "record": operation.record.model_dump(mode="json"),
+                        "record_kind": operation.record_kind.value,
+                        "proposed_record": operation.record.model_dump(mode="json"),
                         **(
                             {"relation_surface_hints": dict(operation_hints[operation_index])}
                             if operation_hints is not None and operation_index in operation_hints
@@ -2385,9 +2392,12 @@ class ModelCurator:
                         "evidence": tuple(
                             {
                                 "candidate_id": candidate_id.root,
+                                "source": candidate.block_id.root,
+                                "span": {"start": candidate.start, "end": candidate.end},
                                 "text": catalog[candidate_id].text,
                             }
                             for candidate_id in candidate_ids
+                            for candidate in (catalog[candidate_id],)
                         ),
                     }
                 )
@@ -2405,24 +2415,35 @@ class ModelCurator:
                     "repetition_penalty": 1.10,
                     "prompt": (
                         "Verify whether each typed World record is directly supported by its "
-                        "complete evidence set. Evaluate all excerpts for one operation "
-                        "collectively; do not require every individual excerpt to support the "
-                        "whole composite record. Interpret English predicate/value labels and "
-                        "Chinese evidence semantically; lexical language mismatch is not a "
-                        "failure. For relation operations, relation_surface_hints gives the "
-                        "subject, predicate, and object surfaces emitted for the same record; "
-                        "use those hints to evaluate whether the excerpts directly support "
-                        "that relation, but treat them as metadata rather than evidence. "
+                        "complete evidence set. The input is intentionally minimal: record_kind, "
+                        "the proposed_record JSON, and source text with source block/span. "
+                        "Evaluate all excerpts for one operation collectively; do not require "
+                        "every individual excerpt to support the whole composite record. "
+                        "Interpret English labels and Chinese evidence semantically; a missing "
+                        "literal English label is never, by itself, unrelated evidence. "
+                        "For event records, decide whether the described event actually occurs "
+                        "in the cited passage, including its participants, time, effects, and "
+                        "truth class where supplied. For obligation records, decide whether the "
+                        "passage forms a durable promise, objective, or unresolved conflict, "
+                        "and preserve its status and timing. Do not require the Chinese passage "
+                        "to repeat the record's English kind or description verbatim. "
+                        "For relation operations, relation_surface_hints gives the subject, "
+                        "predicate, and object surfaces emitted for the same record; use those "
+                        "hints to evaluate whether the excerpts directly support that relation, "
+                        "but treat them as metadata rather than evidence. "
                         "Require exact units and quantities; traditional Chinese 时辰 equals two "
                         "hours, so 半个时辰 is one hour and never half_hour. Preserve epistemic "
                         "scope: 相信/认为/估计/believes/estimates supports only a record that "
                         "explicitly encodes belief, self-assessment, or estimate, not an objective "
                         "fact. A summary sentence does not support unstated method details. "
-                        "Reject transient reading progress, elapsed reading time, and one-scene "
-                        "actions as unrelated even when textually true; accepted records must be "
-                        "durable World state. Return exactly one decision for every operation. "
-                        "Do not return or choose candidate IDs; the system has already frozen each "
-                        "operation's evidence set and binds the decision by operation_index. "
+                        "Reject transient reading progress, elapsed reading time, and ordinary "
+                        "temporary emotion as durable records; accepted records must be durable "
+                        "World state. Use unrelated only when semantic reading shows that the "
+                        "source cannot support the proposed record, not because of a language "
+                        "mismatch. Return exactly one decision for every operation. "
+                        "Do not invent or substitute evidence identifiers; the system has already "
+                        "frozen each operation's evidence set and binds the decision by "
+                        "operation_index. "
                         "Use supports only for "
                         "direct support, contradicts for explicit conflict, unrelated for no "
                         "material support, and partial only when the excerpt is genuinely "

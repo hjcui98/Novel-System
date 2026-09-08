@@ -417,6 +417,39 @@
           "title": "Assembler Version",
           "type": "string"
         },
+        "budget_expansion_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frozen_evidence_selections_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gateway_context_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "generator_version": {
           "default": "",
           "title": "Generator Version",
@@ -1750,6 +1783,23 @@
           "minLength": 1,
           "title": "Narrative Person",
           "type": "string"
+        },
+        "obligation_actions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Obligation Actions",
+          "type": "array"
+        },
+        "participating_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Participating Entity Ids",
+          "type": "array"
         },
         "pov": {
           "minLength": 1,

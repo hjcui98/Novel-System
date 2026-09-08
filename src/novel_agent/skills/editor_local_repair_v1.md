@@ -1,11 +1,7 @@
 # editor-local-repair
 
-1. Read the frozen local scope before changing any text.
-2. Preserve all text outside the allowed spans byte-for-byte.
-3. Use the service-provided Python-character ranges and scoped text as authoritative; do not
-   recalculate them from the prose or reject them based on a self-observation.
-4. Treat each allowed span as a replacement boundary, not a fixed-length quota: construct the
-   result as the frozen prefix, a replacement that may be longer or shorter, and the frozen
-   suffix. Apply one bounded repair and return the complete candidate Draft with an actual text
-   change in `repaired_text`.
-5. If the requested result requires a structural rewrite, do not silently broaden the scope.
+1. 在修改任何文本前，首先仔细审读冻结的局部修复范围。
+2. 逐字节保留允许区间（allowed spans）之外的所有文本。
+3. 将系统服务提供的 Python 字符范围和范围文本视为权威依据；不得自行根据正文重新计算，也不得根据自我观察予以拒绝。
+4. 将每个允许区间视为替换边界，而非固定长度配额：使用冻结前缀、可长可短的替换文本以及冻结后缀来构建结果。执行一次有界的局部修复，并在 `repaired_text` 中返回包含实际文本修改的完整候选初稿。修复文本必须遵守受信 `WritingTaskContract` 与 `ProjectProfile` language。
+5. 若所要求的修改需要全局结构性重写，切勿暗中自行扩大修复范围。

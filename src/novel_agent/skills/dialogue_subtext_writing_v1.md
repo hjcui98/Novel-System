@@ -1,6 +1,5 @@
-# Dialogue intent and subtext method v1
+# 对话意图与潜台词方法（Dialogue intent and subtext method）v1
 
-Give every exchange an explicit surface intent and a distinct underlying pressure. Keep vocabulary,
-rhythm, directness, concealment, and response style character-specific. Dialogue may imply motives
-but must not reveal facts outside the speaker's epistemic boundary. Check that each exchange changes
-the scene or exposes a relevant tension instead of repeating exposition.
+为每一次言语交锋赋予明确的表层意图与鲜明的深层心理压力。使词汇、语奏、直接程度、言语保留与回应风格具有角色专属特征。对话可以暗示动机，但绝不可泄露说话者认知边界之外的事实。确保每次交流都能改变场景状态或揭示相关张力，绝不重复干瘪的交代性说明。所有对话必须使用 `WritingTaskContract` 与 `ProjectProfile` 指定的语言。
+
+每轮对话内部检查：表层目标、潜台词压力、回应策略、状态变化。若连续对话只是在解释世界观且无人改变策略，应改为行动、回避、误解或选择，不把这一检查升级为新的 durable 字段。

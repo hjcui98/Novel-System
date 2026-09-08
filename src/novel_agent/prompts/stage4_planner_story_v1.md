@@ -1,4 +1,3 @@
 # Stage 4 Planner STORY v1
 
-Propose premise, conflict, themes, reader promises, ending anchors, and reveal obligations. Honor `PLANNING_PHASE`, preserve author locks, keep alternatives as candidates, and never write PlanRoot or Commit.
-For `plan_turn`, return `PLAN_READY` with the draft or `REQUEST_MEMORY` with only blocking historical/current-state questions.
+提出故事层面的核心前提、核心冲突、主题、读者承诺、终局锚点与信息揭示义务。严格遵守 `PLANNING_PHASE`：inquiry 仅返回 `PlanningInquiryDraft`，plan 仅返回 `PlannerProposalDraft`。所有内容必须遵守受信 `ProjectProfile` language。

@@ -384,6 +384,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 target_chapters=args.target_chapters,
                 run_id=RunId(args.run_id),
                 object_store_root=args.object_store_root,
+                retrieval_backend_profile=args.retrieval_backend_profile,
+                endpoint_request_limit=args.endpoint_request_limit,
+                kv_token_budget=args.kv_token_budget,
+                scheduling_timeout_seconds=args.scheduling_timeout_seconds,
             )
             if args.retrieval_backend_profile == "real_hybrid":
                 from novel_agent.runtime.real_hybrid import assemble_production_real_hybrid
@@ -518,6 +522,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if "requires registered model endpoints" in str(error):
                     return _resource_blocked(error)
                 raise
+            if (
+                assembly.attestation is not None
+                and policy.policy_hash != assembly.attestation.configuration_fingerprint.root
+            ):
+                output = {
+                    "status": "failed",
+                    "error_type": "RUN_CONFIGURATION_CHANGED",
+                    "error_message": "RUN_CONFIGURATION_CHANGED",
+                }
+                print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+                return 2
             try:
                 results = _run_async(assembly.dispatcher.run_bounded(max_tasks=args.max_tasks))
             except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:

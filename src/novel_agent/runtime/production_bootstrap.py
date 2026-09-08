@@ -85,6 +85,7 @@ from novel_agent.domain.stage2 import (
     ContractRef,
     MemoryGatewayMode,
     MemoryGatewayPolicy,
+    ProjectProfileRootDocument,
     PromptContractRef,
     RetrievalBudget,
     SkillContractRef,
@@ -118,7 +119,7 @@ from novel_agent.services.agent_context import (
     ContextWindowPolicy,
 )
 from novel_agent.services.artifacts import ArtifactRepository
-from novel_agent.services.commits import CommitService
+from novel_agent.services.commits import CommitService, ProjectNotFoundError
 from novel_agent.services.content_addressing import content_id
 from novel_agent.services.creative_runtime import CreativeRuntimeService
 from novel_agent.services.editorial import EditorialService
@@ -295,6 +296,150 @@ def _endpoint_revision(endpoint: RegisteredModelEndpoint) -> str | None:
     return str(revision) if revision else None
 
 
+def production_configuration_fingerprint(
+    *,
+    spec: ProductionAssemblySpec,
+    migration_head: str,
+    prompt_pins: tuple[ArtifactId, ...],
+    skill_pins: tuple[ArtifactId, ...],
+    endpoints: tuple[RegisteredModelEndpoint, ...],
+    retrieval_backend_profile: str,
+    reranker_declared: bool,
+    reranker_resolved: bool,
+    profile_root_hash: ArtifactId | None,
+    settlement_policy_fingerprint: ArtifactId,
+    run_policy: object | None = None,
+    admission_policy: dict[str, object] | None = None,
+    trusted_budget_payload: object | None = None,
+    memory_write_validation_only: bool = False,
+) -> ArtifactId:
+    """Return the stable deployment identity frozen into a production run.
+
+    Only content/configuration declarations belong here.  Runtime object
+    identities, session ids, absolute object-store paths, credentials, and
+    project/run ids are intentionally not inputs to this function.
+    """
+
+    if not prompt_pins or not skill_pins:
+        raise ValueError("production configuration fingerprint requires prompt and skill pins")
+
+    def policy_payload(value: object | None) -> object | None:
+        if value is None:
+            return None
+        dump = getattr(value, "model_dump", None)
+        raw = dump(mode="json") if callable(dump) else value
+        if isinstance(raw, dict):
+            return {
+                key: nested
+                for key, nested in raw.items()
+                if key not in {"policy_hash", "permission_hash"}
+            }
+        return raw
+
+    endpoint_payload = tuple(
+        {
+            "role": endpoint.role.value,
+            "endpoint_name": endpoint.endpoint_name,
+            "model_name": endpoint.model_name,
+            "revision": _endpoint_revision(endpoint),
+            "sequence_limit": endpoint.sequence_limit,
+            "output_limit": endpoint.output_limit,
+            "safety_allowance_tokens": endpoint.safety_allowance_tokens,
+            "estimated_reasoning_reserve": endpoint.estimated_reasoning_reserve,
+            "default_thinking": endpoint.default_thinking,
+            "reasoning_included_in_completion_tokens": (
+                endpoint.reasoning_included_in_completion_tokens
+            ),
+            "global_output_cap": endpoint.global_output_cap,
+        }
+        for endpoint in endpoints
+    )
+    payload: dict[str, object] = {
+        "spec": spec.model_dump(mode="json"),
+        "migration_head": migration_head,
+        "prompt_pins": sorted(item.root for item in prompt_pins),
+        "skill_pins": sorted(item.root for item in skill_pins),
+        "endpoints": sorted(
+            endpoint_payload,
+            key=lambda item: (
+                str(item["role"]),
+                str(item["endpoint_name"]),
+                str(item["model_name"]),
+                str(item["revision"]),
+            ),
+        ),
+        "retrieval": {
+            "profile": retrieval_backend_profile,
+            "reranker_declared": reranker_declared,
+            "reranker_resolved": reranker_resolved,
+        },
+        "profile_root_hash": None if profile_root_hash is None else profile_root_hash.root,
+        "settlement_policy": settlement_policy_fingerprint.root,
+        "run_policy": policy_payload(run_policy),
+        "memory_write_validation_only": memory_write_validation_only,
+    }
+    if admission_policy is not None:
+        payload["admission"] = dict(admission_policy)
+    if trusted_budget_payload is not None:
+        payload["trusted_budgets"] = trusted_budget_payload
+    return content_id(payload)
+
+
+def production_contract_pins(
+    *,
+    schema_version: SchemaVersion,
+) -> tuple[tuple[ArtifactId, ...], tuple[ArtifactId, ...]]:
+    """Resolve the exact prompt/Skill pins used by the production factory."""
+
+    planner_bundle = build_planner_contract_bundle(
+        package_root=PACKAGE_ROOT,
+        version=schema_version,
+    )
+    editor_bundle = build_editor_contract_bundle(PACKAGE_ROOT)
+    writer_contracts = WriterCognitionService.skill_contracts(PACKAGE_ROOT)
+    prompt_pins = tuple(
+        dict.fromkeys(
+            (
+                *(item.system_prompt.content_hash for item in planner_bundle.agent_specs),
+                *(item.task_prompt.content_hash for item in planner_bundle.agent_specs),
+                *(item.system_prompt.content_hash for item in editor_bundle.agent_specs),
+                *(item.task_prompt.content_hash for item in editor_bundle.agent_specs),
+                *(
+                    content_hash((PACKAGE_ROOT / "prompts" / filename).read_bytes())
+                    for filename in (
+                        "writer_work_plan_v1.md",
+                        "writer_turn_v1.md",
+                        "writer_continue_v1.md",
+                        "writer_major_rewrite_v1.md",
+                        "writer_draft_v1.md",
+                        "curator_replay_v1.md",
+                        "curator_repair_v1.md",
+                        "guardian_risk_review_v1.md",
+                    )
+                ),
+            )
+        )
+    )
+    skill_pins = tuple(
+        dict.fromkeys(
+            (
+                *(
+                    skill.content_hash
+                    for item in planner_bundle.agent_specs
+                    for skill in item.skills
+                ),
+                *(item.expected_hash for item in editor_bundle.skill_templates),
+                *(item.content_hash for item in writer_contracts),
+                *(
+                    content_hash((PACKAGE_ROOT / "skills" / filename).read_bytes())
+                    for filename in ("memory_delta_extraction_v1.md", "memory_risk_review_v1.md")
+                ),
+            )
+        )
+    )
+    return prompt_pins, skill_pins
+
+
 def _resolve_production_admission(
     context: ProductionAssemblyContext,
     spec: ProductionAssemblySpec,
@@ -450,16 +595,22 @@ def preflight_production_environment(
     return str(head)
 
 
-def _default_writing_policy(spec: ProductionAssemblySpec) -> WritingRequestPolicy:
-    fingerprint = content_id({"factory": spec.factory_locator, "kind": "writing-request-policy"})
+def _default_writing_policy(
+    spec: ProductionAssemblySpec,
+    *,
+    configuration_fingerprint: ArtifactId | None = None,
+) -> WritingRequestPolicy:
+    fingerprint = configuration_fingerprint or content_id(
+        {"factory": spec.factory_locator, "kind": "writing-request-policy"}
+    )
     sequence = spec.model_policy.sequence_limit
     return WritingRequestPolicy(
         pov="third-person limited",
         narrative_person="third person limited",
         length_policy=WritingLengthPolicy(
             minimum_characters=3_000,
-            target_characters=5_000,
-            maximum_characters=8_000,
+            target_characters=4_000,
+            maximum_characters=5_000,
         ),
         allowed_skills=spec.skills_for_writer(),
         budgets=WritingLoopBudgets(
@@ -480,8 +631,14 @@ def _default_writing_policy(spec: ProductionAssemblySpec) -> WritingRequestPolic
     )
 
 
-def _default_stage4_policy(spec: ProductionAssemblySpec) -> Stage4InvocationPolicy:
-    fingerprint = content_id({"factory": spec.factory_locator, "kind": "stage4-policy"})
+def _default_stage4_policy(
+    spec: ProductionAssemblySpec,
+    *,
+    configuration_fingerprint: ArtifactId | None = None,
+) -> Stage4InvocationPolicy:
+    fingerprint = configuration_fingerprint or content_id(
+        {"factory": spec.factory_locator, "kind": "stage4-policy"}
+    )
     return Stage4InvocationPolicy(
         budgets=PlanningBudgets(
             retrieval=RetrievalBudget(),
@@ -497,6 +654,7 @@ def _default_stage4_policy(spec: ProductionAssemblySpec) -> Stage4InvocationPoli
 def _default_settlement_policy(
     spec: ProductionAssemblySpec,
     *,
+    configuration_fingerprint: ArtifactId | None = None,
     timeout_seconds: float | None = None,
     output_tokens: int | None = None,
     token_budget: int | None = None,
@@ -537,7 +695,7 @@ def _default_settlement_policy(
             raise ValueError("settlement max total model calls must be positive")
         budget = budget.model_copy(update={"max_total_model_calls": max_total_model_calls})
         fingerprint_payload["max_total_model_calls"] = max_total_model_calls
-    fingerprint = content_id(fingerprint_payload)
+    fingerprint = configuration_fingerprint or content_id(fingerprint_payload)
     contract = ContractRef(
         contract_id=StableId("contract.production-chapter-settlement"),
         version=spec.spec_version,
@@ -555,17 +713,68 @@ def _default_settlement_policy(
 
 def _writer_skill_registry() -> SkillRegistry:
     contracts = WriterCognitionService.skill_contracts(PACKAGE_ROOT)
+    metadata = {
+        "skill.scene-composition": (
+            "构建当前章节的场景目标、冲突推进与可验证收束。",
+            ("scene", "structure"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.continuation": (
+            "把既有章节状态连续地接入当前场景，避免跳接与重复。",
+            ("continuity", "transition"),
+            ("continuation",),
+        ),
+        "skill.major-rewrite": (
+            "在保留已接受约束的前提下重写当前草稿。",
+            ("revision", "constraint-preserving"),
+            ("major-rewrite",),
+        ),
+        "skill.character-voice-writing": (
+            "保持人物身份、知识边界与说话方式的一致。",
+            ("character", "voice"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.dialogue-subtext-writing": (
+            "让对话承担关系变化、目标冲突与未明说的信息。",
+            ("dialogue", "subtext"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.pov-epistemic-writing": (
+            "约束叙事视角，只呈现当前视角可知的事实与感知。",
+            ("pov", "epistemic-boundary"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.pacing-transition-writing": (
+            "控制场景节奏、转场和信息释放的步幅。",
+            ("pacing", "transition"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.hook-foreshadowing-writing": (
+            "在不越过计划事实的前提下埋设钩子与伏笔。",
+            ("hook", "foreshadowing"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+        "skill.style-genre-writing": (
+            "将 Profile 中的题材、文风和禁用项落实到正文表面。",
+            ("style", "genre", "profile"),
+            ("draft", "continuation", "major-rewrite"),
+        ),
+    }
     templates = []
     for contract in contracts:
         filename = _WRITER_SKILL_FILES.get(contract.contract_id.root)
         if filename is None:
             continue
+        summary, tags, applicable_modes = metadata[contract.contract_id.root]
         templates.append(
             SkillTemplate(
                 skill_id=contract.contract_id,
                 version=contract.version,
                 path=PACKAGE_ROOT / "skills" / filename,
                 expected_hash=contract.content_hash,
+                summary=summary,
+                tags=tags,
+                applicable_modes=applicable_modes,
             )
         )
     if not templates:
@@ -910,6 +1119,8 @@ def freeze_production_attestation(
     reranker_resolved: bool,
     migration_head: str,
     settlement_policy_fingerprint: ArtifactId,
+    profile_root_hash: ArtifactId | None = None,
+    trusted_budget_payload: object | None = None,
 ) -> ResolvedProductionAssemblyAttestation:
     if not prompt_pins:
         raise RuntimeError("production attestation requires prompt pins")
@@ -943,28 +1154,27 @@ def freeze_production_attestation(
     scheduling_timeout_seconds = cast(
         float, admission_snapshot["default_scheduling_timeout_seconds"]
     )
-    fingerprint = content_id(
-        {
-            "factory": spec.factory_locator,
-            "migration": migration_head,
-            "planner": _type_identity(assembly.planner),
-            "writer": _type_identity(assembly.writer),
-            "gateway": _type_identity(model_gateway),
-            "memory": _type_identity(memory_gateway),
-            "maintenance": _type_identity(assembly.memory_maintenance),
-            "backend": _type_identity(retrieval_backend),
-            "projection": _type_identity(projection_builder),
-            "session": id(session_factory),
-            "settlement_policy": settlement_policy_fingerprint.root,
-            "memory_write_validation_only": context.memory_write_validation_only,
-            "admission": {
-                "endpoint_request_limit": endpoint_request_limit,
-                "configured_kv_token_budget": configured_kv_token_budget,
-                "effective_kv_token_budget": effective_kv_token_budget,
-                "kv_safety_reserve_ratio": kv_safety_reserve_ratio,
-                "scheduling_timeout_seconds": scheduling_timeout_seconds,
-            },
-        }
+    fingerprint = production_configuration_fingerprint(
+        spec=spec,
+        migration_head=migration_head,
+        prompt_pins=prompt_pins,
+        skill_pins=skill_pins,
+        endpoints=endpoints,
+        retrieval_backend_profile=context.retrieval_backend_profile,
+        reranker_declared=spec.reranker_required,
+        reranker_resolved=reranker_resolved,
+        profile_root_hash=profile_root_hash,
+        settlement_policy_fingerprint=settlement_policy_fingerprint,
+        run_policy=context.policy,
+        admission_policy={
+            "endpoint_request_limit": endpoint_request_limit,
+            "configured_kv_token_budget": configured_kv_token_budget,
+            "effective_kv_token_budget": effective_kv_token_budget,
+            "kv_safety_reserve_ratio": kv_safety_reserve_ratio,
+            "scheduling_timeout_seconds": scheduling_timeout_seconds,
+        },
+        trusted_budget_payload=trusted_budget_payload,
+        memory_write_validation_only=context.memory_write_validation_only,
     )
     return ResolvedProductionAssemblyAttestation(
         spec_version=spec.spec_version,
@@ -1159,6 +1369,71 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         injected_builder
         if injected_builder is not None
         else context.projection_builder or ExactReplayProjectionBuilder()
+    )
+    prompt_pins, skill_pins = production_contract_pins(schema_version=schema_version)
+    try:
+        manifest = commits.load_manifest(commits.current_commit(context.project_id))
+        profile = ProjectProfileRootDocument.model_validate_json(
+            artifacts.read_verified(manifest.project_profile_root),
+            strict=True,
+        )
+        profile_root_hash = profile.root_hash
+    except ProjectNotFoundError:
+        profile_root_hash = None
+    settlement_policy_fingerprint = settlement_policy.configuration_fingerprint
+    admission_snapshot = admission.snapshot()
+    current_configuration_fingerprint = production_configuration_fingerprint(
+        spec=spec,
+        migration_head=migration_head,
+        prompt_pins=prompt_pins,
+        skill_pins=skill_pins,
+        endpoints=model_endpoints,
+        retrieval_backend_profile=context.retrieval_backend_profile,
+        reranker_declared=spec.reranker_required,
+        reranker_resolved=context.reranker is not None,
+        profile_root_hash=profile_root_hash,
+        settlement_policy_fingerprint=settlement_policy_fingerprint,
+        run_policy=context.policy,
+        admission_policy={
+            "endpoint_request_limit": admission_snapshot["endpoint_request_limit"],
+            "configured_kv_token_budget": admission_snapshot["configured_kv_token_budget"],
+            "effective_kv_token_budget": admission_snapshot["effective_kv_token_budget"],
+            "kv_safety_reserve_ratio": admission_snapshot["kv_safety_reserve_ratio"],
+            "scheduling_timeout_seconds": admission_snapshot["default_scheduling_timeout_seconds"],
+        },
+        trusted_budget_payload={
+            "writing": writing_policy.budgets.model_dump(mode="json"),
+            "stage4": stage4_policy.budgets.model_dump(mode="json"),
+            "settlement": settlement_policy.budget.model_dump(mode="json"),
+        },
+        memory_write_validation_only=context.memory_write_validation_only,
+    )
+    writing_policy = replace(
+        writing_policy,
+        writer_configuration_fingerprint=current_configuration_fingerprint,
+        model_configuration_fingerprint=current_configuration_fingerprint,
+        future_isolation_configuration_fingerprint=current_configuration_fingerprint,
+    )
+    stage4_policy = replace(
+        stage4_policy,
+        configuration_fingerprint=current_configuration_fingerprint,
+        model_fingerprint=current_configuration_fingerprint,
+    )
+    settlement_policy = replace(
+        settlement_policy,
+        curator_agent_spec=settlement_policy.curator_agent_spec.model_copy(
+            update={"content_hash": current_configuration_fingerprint}
+        ),
+        boundary_policy_ref=settlement_policy.boundary_policy_ref.model_copy(
+            update={"content_hash": current_configuration_fingerprint}
+        ),
+        tool_policy_ref=settlement_policy.tool_policy_ref.model_copy(
+            update={"content_hash": current_configuration_fingerprint}
+        ),
+        repair_policy_ref=settlement_policy.repair_policy_ref.model_copy(
+            update={"content_hash": current_configuration_fingerprint}
+        ),
+        configuration_fingerprint=current_configuration_fingerprint,
     )
     projections = DerivedProjectionService(
         ProjectionOutboxRepository(session_factory), projection_builder
@@ -1406,7 +1681,10 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     )
     boundary = InformationBoundaryPort(
         artifact_reader=artifacts,
-        trusted_policy_hashes=(settlement_policy.configuration_fingerprint,),
+        trusted_policy_hashes=(
+            settlement_policy.configuration_fingerprint,
+            ArtifactId("sha256:5f569d0b505fedc4bfc129f79655f2bab21b41a3dd0910de1a8d5d487677a9f1"),
+        ),
     )
     lineage = InMemoryCandidateLineageRepository()
     checkpoint = InMemoryCheckpointRepository(artifacts)
@@ -1479,27 +1757,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         run_id=context.run_id,
         parallelism=context.policy.runtime_parallelism,
     )
-    prompt_pins = tuple(
-        dict.fromkeys(
-            (
-                *(spec_.system_prompt.content_hash for spec_ in planner_bundle.agent_specs),
-                *(spec_.task_prompt.content_hash for spec_ in planner_bundle.agent_specs),
-                *(item.expected_hash for item in editor_bundle.prompt_templates),
-            )
-        )
-    )
-    skill_pins = tuple(
-        dict.fromkeys(
-            (
-                *(
-                    skill.content_hash
-                    for spec_ in planner_bundle.agent_specs
-                    for skill in spec_.skills
-                ),
-                *(item.expected_hash for item in editor_bundle.skill_templates),
-            )
-        )
-    )
+    prompt_pins, skill_pins = production_contract_pins(schema_version=schema_version)
     assembly = ProductionRuntimeAssembly(
         runtime=creative,
         dispatcher=dispatcher,
@@ -1536,7 +1794,13 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         skill_pins=skill_pins,
         reranker_resolved=context.reranker is not None,
         migration_head=migration_head,
-        settlement_policy_fingerprint=settlement_policy.configuration_fingerprint,
+        settlement_policy_fingerprint=settlement_policy_fingerprint,
+        profile_root_hash=profile_root_hash,
+        trusted_budget_payload={
+            "writing": writing_policy.budgets.model_dump(mode="json"),
+            "stage4": stage4_policy.budgets.model_dump(mode="json"),
+            "settlement": settlement_policy.budget.model_dump(mode="json"),
+        },
     )
     object.__setattr__(assembly, "attestation", attestation)
     return assembly
@@ -1549,5 +1813,7 @@ __all__ = [
     "build_production_assembly",
     "load_production_assembly_spec",
     "preflight_production_environment",
+    "production_configuration_fingerprint",
+    "production_contract_pins",
     "resolve_registered_model_endpoints",
 ]

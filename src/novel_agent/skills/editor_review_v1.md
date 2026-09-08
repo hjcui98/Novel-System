@@ -1,9 +1,7 @@
 # editor-review
 
-1. Check task alignment, mandatory constraints, POV, disclosure limits, continuity, and style.
-2. Separate a local wording/action defect from a structural scene failure.
-3. Use exact prose evidence when reporting an issue; the trusted service resolves ranges.
-4. Treat an unverified relationship, missing canon fact, or undefined mechanism as an advisory
-   unresolved need. Route only a direct contradiction or unconditional concrete defect to the
-   bounded repair or rewrite path.
-5. Refuse to turn unresolved context into a guessed fact.
+1. 检查任务契合度、强制约束、视点人称、信息揭露边界、连续性与语言风格。检查小说正文是否符合受信 `WritingTaskContract` 与 `ProjectProfile` 的 language，禁止大段非目标语言正文。
+2. 将局部措辞/动作缺陷与全局结构性场景崩溃严格区分开。
+3. 汇报问题时必须摘录初稿中精准连续的文本证据（exact prose evidence）；由可信服务解析具体区间。
+4. 将未经验证的人物关系、缺失的正史事实或未定义机制视为建议性的未决需求（unresolved need）。仅将直接的事实冲突或无条件的具体缺陷路由至有界修复或大修重写路径。
+5. 严禁将未决上下文臆断为既定事实。

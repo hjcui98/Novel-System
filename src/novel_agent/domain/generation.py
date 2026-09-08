@@ -205,6 +205,8 @@ class WritingTaskContract(DomainModel):
     forbidden_reveals: tuple[_NonEmptyText, ...] = ()
     preserve_requirements: tuple[_NonEmptyText, ...] = ()
     style_requirements: tuple[_NonEmptyText, ...] = ()
+    participating_entity_ids: tuple[StableId, ...] = ()
+    obligation_actions: tuple[_NonEmptyText, ...] = ()
     length_policy: WritingLengthPolicy
     blocking_gaps: tuple[_NonEmptyText, ...] = ()
 
@@ -214,6 +216,8 @@ class WritingTaskContract(DomainModel):
             raise ValueError("Writer target scene ids must be unique")
         if len(self.active_plan_obligations) != len(set(self.active_plan_obligations)):
             raise ValueError("Writer active plan obligation ids must be unique")
+        if len(self.participating_entity_ids) != len(set(self.participating_entity_ids)):
+            raise ValueError("Writer participating entity ids must be unique")
         return self
 
 

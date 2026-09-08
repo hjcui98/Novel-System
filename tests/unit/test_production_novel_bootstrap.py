@@ -188,8 +188,8 @@ def test_bootstrap_prepare_then_commit_emits_auto_dispatch_descriptor(tmp_path: 
         object_store_root=tmp_path / "objects",
     )
     assert policy.automation_mode is AutomationMode.AUTO
-    assert policy.auto_accept_plan is True
-    assert policy.auto_accept_draft is True
+    assert policy.auto_accept_plan is False
+    assert policy.auto_accept_draft is False
     assert request.target_chapters == 10
     assert request.plan_level is PlanLevel.STORY
     assert descriptor.stop_after_chapter == 10

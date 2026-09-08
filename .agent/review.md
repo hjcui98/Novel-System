@@ -1,394 +1,288 @@
 # Codex acceptance review
 
-## Stage 2M semantic repair implementation acceptance (2026-08-14)
-
-- Outcome: `PASS / IMPLEMENTATION_REPAIR_ACCEPTED / PRODUCT_GATE_HOLD`
-- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
-- Scope: sections 28.25-28.31 and all review-driven repairs through Stage 1 schema synchronization
-
-### Decision
-
-The implementation repair is accepted. The Need-admission, facet-loop retrieval, exact-L0 packing
-and structured State/Relation/Event/Obligation support path now has one fail-closed semantic owner:
-predicate support is bound per required facet, grounded and identity-only units cannot fabricate
-closure, package assembly preserves unsupported facets as typed gaps, and mechanical delivery is
-reported separately from mandatory semantic completion.
-
-The final Stage 2M product gate remains `HOLD`, not because another implementation repair is known,
-but because the active acceptance document requires the fixed-commit, single-identity clean-Genesis
-C1-C95 P001-P005 run. That run must demonstrate every mandatory facet closed by dereferenceable
-exact L0 evidence with no unresolved, insufficient or transport outcome before product `PASS`.
-
-### Accepted Evidence
-
-- Multi-facet predicate bindings are explicit in `NeedCompletionSpec.predicates_by_facet`; the
-  Need-level predicate set is only their retrieval union.
-- Planner and template generation populate facet bindings from matching State, Relation, Event and
-  Obligation record kinds, with focused multi-facet and cross-kind regressions.
-- The shared evaluator, retrieval traces and assembler consume the same facet support ids; empty
-  support no longer expands to every facet.
-- `mandatory_facet_closure` is required and fail-closed in runtime models and formal package
-  schemas; driver case and aggregate semantic status are covered through production helpers.
-- Stage 1, Stage 2 and Stage 3 checked-in schemas now contain the facet contract. The new Stage 1
-  contract test compares all four defining/embedding schemas directly with current model-generated
-  schemas and pins the embedded field.
-- The submitted final quality evidence is `2290 passed` with three documented pre-existing Stage 5
-  integration failures. It was not rerun during this review.
-
-### Remaining Gate
-
-Freeze one implementation commit and run the already-defined clean-Genesis C1-C95 P001-P005
-campaign. Preserve mechanical and semantic status separately, stop on any mandatory facet gap,
-and use that single-identity artifact set for the final product acceptance decision. The older C20
-output remains useful honest diagnostic evidence but cannot substitute for this gate.
-
-## Stage 2M facet-binding contract follow-up (2026-08-14)
-
-- Outcome: `REPAIR / STAGE1_SCHEMA_EXPORT_MISSING`
-- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
-- Scope: section 28.30 facet-level binding and exported contracts
-
-The facet-level implementation is accepted. `NeedCompletionSpec.predicates_by_facet` is consumed
-per facet, the Need-level predicate set is only the retrieval union, and the new multi-facet plus
-Relation/Event/Obligation generator tests cover the previously open main-path error.
-
-### Finding
-
-1. **P1 - the Stage 1 public schemas still reject the new Need contract.**
-   `NeedCompletionSpec` is a Stage 1 boundary, but none of the four Stage 1 schemas that define or
-   embed it contains `predicates_by_facet`: `NeedCompletionSpec`, `Stage1MemoryNeed`,
-   `HorizonNeedSet` and `Stage1ContextPackage`. Those schemas use `additionalProperties=false`, so
-   a Need produced by the repaired code is invalid at the Stage 1 JSON boundary even though the
-   Stage 2 and Stage 3 embedded copies were refreshed. This is a reachable contract failure, not a
-   documentation-only mismatch.
-
-### Accepted Evidence
-
-- A predicate now closes only the facet whose explicit binding contains it; same-kind predicates
-  no longer cross-close a multi-facet Need.
-- Planner/template generation derives separate State, Relation, Event and Obligation bindings and
-  retains their union only for R1 candidate retrieval.
-- The assembler, manifest and aggregate-status repairs from the previous reviews remain accepted.
-- The reported quality run is implementation evidence and was not rerun during this review.
-- The existing C20 output remains an honest historical `mechanical PASS / semantic INCOMPLETE`
-  checkpoint; final product PASS still requires the planned clean-Genesis P001-P005 run.
-
-### Required Repair Direction
-
-Use the existing `scripts/export_stage1_schemas.py` owner to regenerate all Stage 1 schemas that
-define or embed `NeedCompletionSpec`, and extend the Stage 1 contract check to assert the new field
-is present with the same shape as the Stage 2/3 copies. No implementation, model, retrieval or
-benchmark change is required.
-
-## Stage 2M predicate-binding second follow-up (2026-08-14)
-
-- Outcome: `REPAIR / NEED_LEVEL_PREDICATE_OR_SET_IS_NOT_FACET_BINDING`
-- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
-- Scope: section 28.29, refreshed focused tests and refreshed C20 artifacts
-
-The assembler fallback, manifest fail-closed contract and aggregate-helper repairs are accepted.
-The remaining blocker is one main-path semantic error: predicate membership is recorded per Need,
-but closure is claimed per facet.
-
-### Finding
-
-1. **P1 - a multi-facet Need still lets any declared predicate close every same-kind facet.**
-   `_matching_facets` checks `unit.predicate in need.predicates` once and then returns every facet
-   whose broad unit kind matches. `_build_planner_need` populates that Need-level OR-set with every
-   state predicate of every grounded entity, independent of the semantic question and suggested
-   facet. Consequently a fresh version of the real P001 knowledge/capability Need can again let a
-   location predicate close both `knowledge_boundary` and `capability_status`; the blanket moved
-   from evaluator kind membership into Need generation. The new regression does not expose this:
-   it uses a unit predicate absent from the Need OR-set, rather than putting two valid predicates
-   in one multi-facet Need and asserting that each closes only its bound facet.
-
-   The same generation rule causes the opposite failure for non-state facets. Planner Needs with
-   `relation_state`, `causal_history`, `setup`, `commitment` or `unresolved_status` receive only
-   state predicates, so matching Relation/Event/Obligation anchors cannot close them even when the
-   exact record exists. This would keep P003 and the stated Event/Obligation/Relation path broken
-   in the clean-Genesis run.
-
-### Accepted Evidence
-
-- Grounded slices and `FACT_ANCHOR` no longer act as semantic witnesses.
-- The assembler now preserves an empty `supported_facet_ids` set instead of expanding it to every
-  Need facet.
-- Obligation and plan-provenance branches are reachable and have direct unit coverage under the
-  current projection metadata contract.
-- `mandatory_facet_closure` is required and limited to `COMPLETE | INCOMPLETE` in both runtime
-  models and the exported schema.
-- The driver uses tested production aggregate helpers. The refreshed C20 artifacts consistently
-  report 14 gaps, mechanical `PASS` and semantic `INCOMPLETE`.
-- The submitted quality result is recorded as implementation evidence and was not rerun here.
-
-### Required Repair Direction
-
-Bind predicates at the facet boundary, not as one Need-wide OR-set. The minimum-sufficient owner is
-the existing `NeedFacet`/`NeedCompletionSpec` contract: retain, for each required facet id, the
-exact predicates that can serve it, and make `_matching_facets` consult that binding. Populate
-state, relation, event and obligation predicates from the matching record kinds and grounded
-entities; do not copy every entity state predicate into every Planner Need. Add one real regression
-with a multi-facet Need containing both a knowledge predicate and a capability predicate, proving
-that each anchor closes only its own facet, plus Relation/Event/Obligation Planner-Need cases.
-No new service, model call or scoring layer is required.
-
-## Stage 2M semantic repair follow-up review (2026-08-14)
-
-- Outcome: `REPAIR / PREDICATE_BINDING_STILL_OPEN`
-- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
-- Scope: section 28.28 repair, focused tests and the refreshed C20 formal artifacts
-
-The reporting repair and frozen read-boundary repair are accepted. The current artifact now
-correctly says `mechanical PASS / semantic INCOMPLETE`. Product acceptance remains open because
-the facet evaluator still closes semantic facets by broad unit kind rather than the predicate the
-Need asked for.
-
-### Findings
-
-1. **P1 - the same false-closure bug remains for structured anchors.**
-   `_facets_for_unit` now rejects grounded slices, but it never compares
-   `Stage1MemoryNeed.predicates` with `RetrievalUnit.predicate`. Every state anchor for the same
-   entity therefore closes every state-shaped facet, and `FACT_ANCHOR` is allowed to close nearly
-   every non-plan semantic facet. This is not hypothetical: the refreshed P001 case closes both
-   `knowledge_boundary` and `capability_status` with the identical set of state anchors, including
-   location, enrollment, recommendation possession and unrelated belief records. The test named
-   `test_same_entity_different_predicate_does_not_close_facet` does not set either predicate; it
-   only proves that a state unit kind does not close a relation facet. It therefore does not cover
-   the requested same-kind/different-predicate regression.
-
-2. **P1 - obligation anchors are prevented from closing obligation facets.**
-   `_STRUCTURED_KINDS_BY_FACET` assigns `PLAN_ANCHOR` to `COMMITMENT` and
-   `UNRESOLVED_STATUS`, correctly noting that durable obligations project to that kind. The later
-   `PLAN_ANCHOR` special case bypasses the table and returns only `PLAN_NODE` facets. R1 does
-   project `WorldRecordKind.OBLIGATION` as `PLAN_ANCHOR`, so the accepted mapping is currently
-   unreachable on the real product path. This is a direct false negative for the stated
-   Obligation write/retrieve goal.
-
-3. **P1 - the manifest contract still defaults missing semantic evidence to COMPLETE.**
-   `EvidenceFirstPackageManifest.mandatory_facet_closure` is an unrestricted string with default
-   `COMPLETE`, and the exported schema does not require it. The formal driver supplies the field,
-   so the refreshed C20 artifact is correct, but any omitted value validates as product-complete.
-   The new contract should be required and limited to `COMPLETE | INCOMPLETE`; absence must not
-   silently select the success state. The assembly result should likewise not carry a success
-   default when its owner always computes the value.
-
-4. **P2 - the aggregate regression test does not exercise production code.**
-   `test_aggregate_semantic_status_requires_all_complete` constructs two local lists and tests a
-   local `all(...)` expression. It would continue passing if the driver's aggregate implementation
-   were removed or inverted. Extract the existing expression to one small production helper and
-   call that helper from both the driver and the test.
-
-### Accepted Evidence
-
-- Grounded block/span units no longer close semantic facets, and the two direct negative tests pin
-  that behavior.
-- The package manifest, case record and output index now retain mandatory closure. The reviewed C20
-  output consistently reports `READY`, aggregate mechanical `PASS` and semantic `INCOMPLETE`, with
-  the four unsupported receipts still visible.
-- `_parse_frozen_comparison` and `_load_checkpoint_index` have meaningful focused coverage for
-  canonical acceptance, drift rejection, Need/context commit mismatch, missing Planner reference
-  and strict Planner reading.
-- The submitted `2274 passed / 3 pre-existing Stage 5 failures` result is recorded as OpenCode
-  evidence; it was not rerun during this review and is not the reason the verdict remains open.
-
-### Required Repair Direction
-
-Keep the shared evaluator and existing models. Bind structured support using the already-present
-Need and unit predicate fields: a same-kind anchor with an absent or mismatched predicate must not
-close the facet. Remove `FACT_ANCHOR` as a universal semantic witness. Distinguish observed durable
-obligations from plan provenance using existing retrieval-unit metadata so obligation anchors close
-`COMMITMENT`/`UNRESOLVED_STATUS` while plan nodes close `PLAN_NODE`. Add the actual same-kind,
-different-predicate and obligation regressions. Finally make manifest closure required/fail-closed
-and test the driver's aggregate helper itself. No new service, model call or framework is needed.
-
-## Stage 2M semantic repair review (2026-08-14)
-
-- Outcome: `REPAIR / PRODUCT_COMPLETION_NOT_ACCEPTED`
-- Review mode: read-only; no tests, benchmark, model endpoint or replay was rerun
-- Scope: current dirty-worktree implementation, frozen C20 artifacts and
-  `.agent/implementation.md` sections 28.25-28.27
-
-This decision governs the current semantic-repair completion claim. The frozen-driver read fix is
-accepted as a valid local repair, but the evidence does not establish the product completion gate
-defined by `.agent/plan.md` and the active semantic-repair execution document.
-
-### Findings
-
-1. **P1 - exact evidence is still being confused with semantic facet support.**
-   `FacetSupportEvaluator._facets_for_unit` treats any `GROUNDED_BLOCK` or `GROUNDED_SPAN` with an
-   evidence reference and overlapping entity as support for every non-plan facet on the Need. A
-   slice can therefore close `setup`, `causal_history`, `relation_state` or `unresolved_status`
-   without supporting that predicate. This is the main-path version of the original false-closure
-   problem, and it makes the template smoke's `mandatory_facet_closure=COMPLETE` insufficient as
-   semantic evidence. The repair must remove blanket closure and bind grounded slices only to the
-   facet semantics actually established by retrieval/rerank output. Add negative regression cases
-   where an exact slice about the same entity but a different predicate does not close the facet.
-
-2. **P1 - the frozen driver computes mandatory closure and then drops it from the formal result.**
-   `EvidenceFirstAssemblyResult.mandatory_facet_closure` is not written to the package manifest,
-   case record or output index. Driver readiness and aggregate status consider assembly,
-   mechanical failures and leakage only, so the real C20 run is reported as `READY` / aggregate
-   mechanical `PASS` even though four mandatory facet receipts are `unsupported`. Mechanical PASS
-   is legitimate and should remain separate; campaign/product status must be `INCOMPLETE` whenever
-   any mandatory facet is unsupported, unresolved, insufficient or transport-failed. Persist the
-   closure in all three artifacts and cover the aggregate behavior with a focused regression test.
-
-3. **P1 - the claimed end-to-end goal is not demonstrated by the submitted real evidence.**
-   The reviewed formal artifact contains one P001/C20 case, one package gap and four unsupported
-   mandatory facets. The real C1-C20 world has zero Event records, so Event write/retrieval is not
-   proven on real data. The required fixed-identity clean-Genesis C1-C95 P001-P005 run has not
-   occurred. Under the active completion predicate, that run is acceptance evidence, not a
-   post-completion administrative step. Sections 28.25-28.27 may claim the driver mechanism works
-   and faithfully reproduces the frozen C20 state; they must not mark the Stage 2M semantic product
-   goal complete.
-
-4. **P2 - the driver bug fix has no focused regression test.**
-   The real run demonstrates successful canonical input, but there is no automated coverage for
-   checkpoint-index loading, accepted canonical JSON, rejected canonical drift or commit mismatch.
-   Add one focused test around this read boundary; no broader framework is needed.
-
-### Accepted Evidence
-
-- The `strict=False` parse followed by canonical byte equality is a sound minimal workaround for
-  this Pydantic model family's JSON/tuple validation behavior and preserves fail-closed drift
-  detection.
-- The checkpoint-index route faithfully reproduced the frozen C20 deterministic receipts, made no
-  forbidden Planner/Claim/verifier/evaluator model calls and introduced no future leakage.
-- The four unsupported receipts are useful evidence: they correctly expose missing C20 support
-  instead of fabricating it. They are a reason to keep the product gate open, not a driver defect.
-- The three reported Stage 5 deterministic-suite failures are outside this Stage 2M change and are
-  not the reason for this verdict.
-
-### Required Repair Direction
-
-Keep the current architecture and owners. Repair the two false-success paths: make facet support
-predicate-specific, then propagate mandatory closure into the driver artifacts and campaign
-status. After focused regression coverage, preserve the current C20 result as an honest
-`mechanical PASS / semantic INCOMPLETE` checkpoint. Only a later fixed-commit, single-identity
-clean-Genesis P001-P005 run with every mandatory facet closed by dereferenceable exact L0 evidence
-can change this review to `PASS`.
-
-## Final Memory workflow integration acceptance (2026-08-12)
-
-- Outcome: `PASS / STAGE2M_FINAL_ENGINEERING_ACCEPTANCE`
-- Accepted behavior: graph extraction is now part of the default chapter-reveal Memory Write path,
-  not only the isolated Round 3 backfill runner.
-- One chapter launches ordinary Curator and graph candidate extraction concurrently through the
-  shared endpoint admission controller, then merges once into the existing normalize/validate/
-  atomic-commit/projection chain. Canonical chapter commits remain strictly ordered.
-- Lineage includes both model profiles, graph candidate batches, graph admission receipt and the
-  merged `ObservedChangeSet`; no alternate graph store or write path was introduced.
-- Verification: formal scripted lifecycle completed 96 commits and five checkpoint freezes;
-  `make quality` passed with strict MyPy on 304 files, 1847 passed/9 deselected and 100% statement/
-  branch coverage. Full pre-commit passed after the final documentation update.
-- Benchmark boundary: the earlier P005 repair and five-point joint package remain accepted evidence,
-  but they are not a full C1-C95 rebuild through this newly wired default path. A clean real-model
-  Genesis-to-C95 replay is the next product benchmark and must not be reported as already complete.
-
-This section supersedes any reading of the architecture-repair acceptance below that implied the
-isolated backfill runner was already connected to ordinary chapter writes.
-
-## Stage 2M architecture repair final acceptance (2026-08-12)
-
-- Outcome: `PASS / STAGE2M_ARCHITECTURE_REPAIR_ACCEPTED / UNIFIED_REAL_GATE_PASS`
-- Scope: Round 1/2 Evidence-First integration plus Round 3 World/KG/R1/L1/L2 repair and the §24
-  same-basis real cross-round gate
-- Exclusion: the legacy claim-first semantic M4/WP8 campaign remains historical `HOLD` diagnostic
-  evidence; ADR-0008's external model/human scoring remains post-freeze and outside Agent READY
-
-### Decision
-
-The architecture repair is accepted. Round 1/2 and Round 3 now share one Writer-facing
-Evidence-First contract and one immutable repair basis; no parallel runner, graph truth store,
-mutation contract or new graph dependency was introduced.
-
-Final Round 3 evidence is
-`/tmp/ns-stage2m-round3-world-repair-20260812-v5`. Repair commit
-`sha256:b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` and snapshot
-`snapshot.b3488cd83bcae744afa4131ff6ca6d676afee841dac189bc241f56f260b5582b` are bound to P005's
-exact checkpoint PlanRoot. The source C95 commit, source WorldRoot/TextRoot/PlanRoot, source head,
-frozen DB and source indexes remained unchanged.
-
-The real repair closed candidate accounting (28 candidates; 7 accepted operations, 21 rejected,
-0 deduped) and exercised generic evidence-backed missing-entity admission: the new canonical
-`entity.graph.ab64f02a66047f1e521ee8d7` is absent from the frozen source, present in the repair World,
-and consumed by an accepted `enrolled_in` relation. The accepted projection has 2 relation rows,
-2 graph edges, 169 R1 records, 165 entity associations, 265 anchor documents and 96 grounded
-documents. Its persisted attestation is exact across all 8 channels with zero failed/degraded units.
-The graph-path receipt resolves to an existing R1 relation row and is `l0_verified` against the exact
-TextRoot slice.
-
-Final joint evidence is
-`/tmp/ns-stage2m-evidence-first-joint-20260812-v4/output_index.json`: aggregate mechanical status
-`PASS`; P001-P005 all `READY`; zero gap, dereference, scope, cutoff and leakage failures; unchanged
-roots; all default Claim Support/Planner model/whole verifier/semantic evaluator calls zero. P005 is
-explicitly `joint_repair=true` and binds the v5 repair commit, snapshot, project, physical indexes,
-exact P005 PlanRoot and original C95 source checkpoint commit.
-
-### Verification
-
-- `make quality`: PASS — strict MyPy on 304 source files; 1843 passed, 9 deselected; 24,246
-  statements / 6,942 branches at 100% coverage.
-- `.conda-env/bin/pre-commit run --all-files`: PASS after final code and documentation changes.
-- Exact acceptance assertions: five READY cases, zero forbidden default semantic calls, closed repair
-  accounting, real missing-entity CREATE, relation-row/graph-edge equality, persisted derived
-  snapshot, L0-verified path-to-row, same P005 basis and unchanged source roots all PASS.
-- At acceptance time no commit, merge or push had been performed. After explicit human authorization,
-  Codex formed one focused local Stage 2M commit from the accepted scope; it remains unmerged and
-  unpushed. The pre-existing dirty worktree and unrelated Stage 3+ files were not included.
-
----
-
-## Historical evaluator/provenance acceptance (2026-08-11)
-
-- Outcome: `PASS`
-- Reviewed: `2026-08-11 +08:00`
-- Scope: Stage 2M evaluator/provenance repair §29 and five v3 offline rescores
-- Review mode: read-only; Codex did not rerun tests, models, World replay or benchmark execution
-
-## Decision
-
-`.agent/plan.md` 原 §R 的 evaluator/provenance/scoring 任务验收通过。五份 v3 产物证明：
-
-- cross-root matcher 在 credit 前分别以 concrete compiled/canonical TextRoot 调用严格
-  `validate_evidence_ref()`；forged block/object/quote/span 均有 fail-closed regression；
-- ancestry 首项与 checkpoint commit/ArtifactRef/logical root 三重绑定，实际 chain length 为
-  22/42/62/82/97；
-- evaluator manifest v2 的 proof ref 非 null，五份 manifest/proof/derived semantic receipt 均在
-  现有 CAS 中存在，hash、byte length、media type 与 metadata 一致并可 verified read；
-- READY 与 typed-failure 使用同一 `GoldEligibility`，25 条 Plan Gold 从 observed Claim/Evidence
-  分母排除；five-segment Plan Goal Coverage、fallback 和 leakage 均已进入报告；
-- observed matcher 分母正确变为 P001 4/8、P002 8/9、P003 2/9、P004 8/10、P005 11/11，
-  plan/future leakage 均为 0。
-
-OpenCode 报告的质量门为 1714 passed、9 deselected、100% statement/branch coverage，strict
-MyPy/Ruff 与 full pre-commit 通过；Codex只接受现有证据，没有重跑。
-
-本结论只接受 evaluator/provenance repair，不宣告 M4、Gate 0-3 或 Stage 2M 通过。可读 v3 目录尚
-没有单独的 consolidated report-index 文件，production proof 当前也只在 APC 分支构造；这两项不
-推翻本次 APC frozen repair 的机制证据，但必须作为下一质量任务的运行前收尾，不能带入正式
-APC/TIO 矩阵。
-
-## Accepted identity and evidence
-
-- v3 root: `/tmp/ns-stage2m-frozen-checkpoint-evaluator-rescore-20260811-v3/`
-- P001 manifest/proof: `sha256:844cac19...d3a0fb` / `sha256:2fb75f86...b2d219`
-- P002 manifest/proof: `sha256:8a50002a...33ba2d` / `sha256:ed83439b...2b1e54`
-- P003 manifest/proof: `sha256:af3f8ec2...0d0110` / `sha256:31c78c48...a7ea0`
-- P004 manifest/proof: `sha256:21c5e425...95562` / `sha256:be44dc3c...6f267f`
-- P005 manifest/proof: `sha256:4a4d7858...66c39` / `sha256:3a87fad6...fbd0e`
-
-## Next permitted task
-
-真实质量首损现已可解释，下一次 `/implement` 执行刷新后的 `.agent/plan.md`：
-
-1. 在既有 `NeedDraftGrounder`/Need generator 中做 deterministic entity-mention closure；
-2. 先离线证明 Planner/fallback 文本中已明确出现的唯一实体全部进入 canonical `entity_ids`；
-3. 再复用 C20/C40/C60/C80/C95 冻结 Commit/World/index 重跑 APC 五检查点的
-   Need→Retrieval→Claim→Evaluator，不重建 ch0-95；
-4. 只有新证据证明 full Need 与 accepted evidence 均已到位而 Claim 仍是首损时，才在现有 Claim
-   Support owner 内做最小 evidence/facet binding repair；
-5. 本轮不得按 Gold/章节/角色组合写规则，不得恢复 Plan evidence、修改 Gold/阈值/预算或建设新
-   Planner、Graph、检索器、evaluator。
-
-该任务完成后返回 Codex；正式 clean APC/TIO 矩阵仍需 Codex接受并形成 clean executable identity。
+## T2/T3/T4/T5/T6 最小优化实施验收（2026-09-07）
+
+- 结论：`REPAIR / NOT_ACCEPTED`
+- 审查对象：`feat/hierarchy-progressive-skill-patch`，HEAD `b759675307c` 之上的工作树改动
+- 审查范围：71 个已修改文件、1 个未跟踪测试文件，约 `+1879/-612`
+- 约束：本轮仅审查与验证；未修改生产代码
+- 权威计划：`yujin-jiuxu/Novel_System_T2_T3_T4_T5_T6_Optimization_Execution_Plan_optimized.md`
+
+## 按优化方案逐项核对（静态代码映射）
+
+本节是本轮验收的主结论；状态含义为：`已实现`、`部分实现`、`未实现/实现偏差`、`待运行证据`。
+
+| 方案条目 | 状态 | 代码核对结论 |
+|---|---|---|
+| 保持现有五 Root，不新增质量/路由/Obligation模块 | 已实现 | 未增加 Canonical Root、Python模块或Editor Skill文件，改动仍在既有 owner 内。 |
+| SourceClass筛选story authority | 已实现 | 初始run只携带 `AUTHOR_INITIAL_BRIEF`、`AUTHOR_KNOWN_FUTURE_PLAN`；baseline/style/external未被提升为story authority。 |
+| 完整authority进入Story、Arc、ChapterSet Planner | 已实现 | Stage4不再按mode清空；PlanningContextLoop直接透传；PlannerContextAssembler按protected+mandatory读取完整artifact。 |
+| 同一authority/context进入独立Reviewer | 已实现 | Proposal Reviewer读取同一次 `PlannerContextPackage.rendered_context`；Inquiry Reviewer读取authority正文。 |
+| authority缺失时调用前fail-close | 部分实现 | 正常路径能以 `task.source_ids` 检查；但source_ids由当前refs派生，缺少独立“初始run本应有authority”的持久断言。 |
+| STYLE_GUIDE→Profile、BASELINE_SETTING→World | 部分实现 | baseline进入World；独立Style Guide没有通用Profile路由，只可能被少数brief正则偶然提取。 |
+| Profile语言/题材/长度/段落/时间锁及source_ids | 部分实现 | 映射键和长度中值已加；rich style guide与逐项constraint source绑定没有可靠生成。 |
+| PlanNode/ChapterGoal保留source_ids+完整payload | 已实现 | 两个domain字段和Genesis/Materializer映射均存在。 |
+| Genesis节点经Story接纳后保留 | 基本实现 | 不再按“无层级根节点”整批删除；仍需方案要求的Story接纳public回归证明。 |
+| Story→Volume→ChapterSet→Chapter完整层级 | 部分实现 | 父级/range校验已加；但ChapterSet proposal的每个chapter item会被物化成 `plan_level=CHAPTER_SET` 节点，并未形成清晰的单一ChapterSet→Chapter层。 |
+| 8/8卷、时间锁、≤3 history needs Reviewer gate | 实现偏差 | 时间锁已加；卷数gate未限定Arc mode，会把ChapterSet判成0/8；history needs>3在Need Generator抛错，而不是Reviewer返回REVISE。 |
+| Story/Arc/ChapterSet Planner Skill正文 | 已实现 | 三个Skill文件已按方案扩写并清除项目剧情。 |
+| Planner mode Skill生产装配 | 实现偏差 | `AgentSpec`/Runner实际会加载Story/Arc专属Skill；但production allowlist缺少对应ID且没有约束Runner，配置与真实模型输入不一致；alternative仍每次常驻。 |
+| Story/Arc声明long-range Obligation，ChapterSet只引用 | 未实现 | declaration helper未接收trusted level，ChapterSet仍可创建durable World obligation。 |
+| Plan+World同bundle原子物化 | 已实现 | Materializer可在同一CandidateChangeBundle同时提出PlanRoot/WorldRoot。 |
+| Obligation稳定ID=item+ordinal+kind | 未实现 | direct声明复用item ID；nested ID缺少kind。 |
+| unknown obligation与early payoff fail-close | 部分实现 | 独立reference helper及not-before检查存在；temporal helper仍对unknown执行continue，且正文结算未核对计划是否允许payoff。 |
+| 正文证据驱动OPEN→RESOLVED | 部分实现 | 既有Curator/validation支持evidence和not-before；缺少与本章obligation action联结的完整闭环及方案指定回归。 |
+| Event/Obligation类型感知semantic verifier | 基本实现 | verifier输入已收窄为kind+record+source/span并避免语言字面误拒；Ch1/Ch48真实中文正负fixture未实现。 |
+| Writer获得完整祖先链、当前/后续1—2章目标 | 已实现 | Stage3与Writer loop均递归parent并投影当前至后续2章及最近goal摘要。 |
+| WritingTask映射beats/state/entities/actions/Profile/length | 已实现 | 复用现有合同并增加entities/actions，长度从Profile取3000/4000/5000。 |
+| production Need只来自0—3个history_needs | 已实现偏差 | 不再实体fan-out且硬上限3；超过3直接抛ValueError，未按方案先由Reviewer要求缩减。 |
+| zero-Need直通；非零单Gateway、backend≤12 | 已实现 | 单一BASE tier；zero路径不调用Gateway，非零request为max_rounds=1/max_tool_calls=12。 |
+| 非零Need semantic judge；UNASSESSED/gap→REVIEW_REQUIRED | 基本实现 | 有BATCH endpoint时接现有judge；无judge/非COMPLETE在Writer dispatch前失败并由现有runtime收口，仍缺public路径证据。 |
+| trace schema不改、compaction不强触发 | 已实现 | 保留现有full trace和compactor阈值。 |
+| Writer DRAFT固定scene/style+最多1个optional | 已实现 | production allowlist及DRAFT归一化存在。 |
+| 保留CONTINUE/MAJOR_REWRITE的模式Skill | 实现回归 | DRAFT的2+1归一化被应用到所有mode，两个已有模式专属Skill无法加载。 |
+| Writer Skills改成可执行检查步骤 | 已实现 | scene/POV/voice/dialogue/hook/style文件均已具体化。 |
+| Writer surface：marker/copy/乱码/非目标语言 | 已实现 | `_writer_draft_surface_error()` 已覆盖。 |
+| Draft Materializer最终Canon surface gate | 部分实现 | 严格长度与中文标题已恢复；内部/未来/evaluator泄漏及大段复制未在最终Materializer重验。 |
+| base Editor每次检查计划/连续性/重复/题材风格 | 已实现 | base prompt、payload checklist与最近goal/prose上下文已接入。 |
+| planner_replan_required→现有REVIEW_REQUIRED | 已实现 | initial/local/major re-review路径均停止，不再把Plan问题继续交给Writer大改。 |
+| Canary关闭plan/draft auto-accept | 已实现 | 两个布尔值均为false。 |
+| 稳定配置指纹覆盖prompt/skill/model/retrieval/Profile | 部分实现 | attestation收集了这些内容，但含进程对象ID，且未成为run/policy的持久冻结身份。 |
+| resume配置漂移→RUN_CONFIGURATION_CHANGED | 未实现 | 没有该terminal/code或等价resume比较。 |
+| 14项高价值public/E2E测试 | 未实现 | 文件中有14个测试名，但多数只测私有helper/常量/源码字符串；Ch1/Ch48、真实Gateway计数、Story接纳保真、Canon surface和5章E2E均未覆盖。 |
+| Phase A两章smoke、Phase B五章Canary与指标记录 | 待运行证据 | 当前没有符合方案的新namespace clean-Genesis两章/五章工件，不能声称阶段完成。 |
+
+因此，按文档本身而非按“改过多少文件”判断：T4核心检索收敛、Writer上下文、base Editor和人工
+replan路径接近完成；T2的Skill装配/层级gate、T3的Obligation闭环、T6最终Canon surface、Phase 0
+配置冻结以及全部阶段验收仍未完成。整体状态只能是 `部分实现，尚未达到Phase A开跑Gate`。
+
+## 决策摘要
+
+本轮不能验收。实现已经覆盖了若干正确方向：三级规划的 author authority 传递不再主动清空；
+`PlanNode`/`ChapterGoal` 增加了 `source_ids` 与 payload 保真字段；Writer request 开始组装目标、
+状态、实体、动作和约束；Stage2M 收敛为单档预算并加入 zero-Need 分支；plan/draft auto-accept
+默认关闭；共享 Prompt/Skill 的项目专用词静态检查通过。
+
+但当前仍有两个主流程阻断错误，以及配置冻结、Profile、Obligation、Writer repair mode、Canon
+表面校验和公共 schema 等多处未闭环。新增的 14 个测试虽然全部通过，却多数只调用私有 helper
+或做源码字符串断言，没有穿过真实生产边界；现有一章 fake production smoke 已在 Plan Commit
+阻断，因此不满足计划规定的 Phase A 两章 smoke，更没有 Phase B 五章 Canary 证据。
+
+## 阻断发现
+
+### P0-1：Planner Skill 生产 allowlist 与实际 Runner 加载路径脱节
+
+`production_assembly_spec.json` 的 `planner_skill_ids` 只登记了
+`skill.planner.chapter_set`，没有 `skill.planner.story` 和 `skill.planner.arc_volume`。与此同时，
+`ProductionStage4InvocationFactory._allowed_skill_ids()` 只检查“交集是否完全为空”；因为 core/optional
+skills 仍在交集中，Story 和 Arc/Volume 不会 fail-close。
+
+进一步追踪真实调用链后确认：`build_planner_contract_bundle()` 已把各 mode Skill 写入
+`AgentSpec.skills`，而 `StructuredAgentRunner.prepare()` 会直接加载全部 `spec.skills`。Stage4 产生的
+`PlanningLoopRequest.allowed_skill_ids` 没有传给 Runner。因此 Story/Arc Skill 当前实际上会加载；真正的
+问题是 production allowlist 没有约束真实模型输入，部署策略与执行事实相互矛盾，且
+`alternative-comparison` 随所有调用常驻。
+
+最小修复：在既有 assembly spec 中补齐所有生产规划 mode 的专属 skill ID，让 Stage4 factory明确要求
+`skill.planner.{mode}` 必须存在，并把受信 allowlist 传到 Runner，只渲染本轮允许的 Skill；不能以 core
+skill 的非空交集代替模式契约。增加真实 invocation/receipt 断言，检查 Story/Arc/ChapterSet 的实际
+Skill 内容，并验证 alternative 只在备选比较或修订时加载，而不是只测配置集合。
+
+位置：
+
+- `src/novel_agent/runtime/production_assembly_spec.json:29-35`
+- `src/novel_agent/adapters/runtime/stage4_planner.py:124-136`
+- `src/novel_agent/agents/planner.py:65-76`
+
+### P0-2：8 卷覆盖 Host gate 未限定规划层级，会把 ChapterSet 判为 0/8 卷
+
+`apply_host_plan_review_constraints()` 只要拿到 `expected_volume_count`，就对任何 `PlanProposal`
+统计 arc-volume item。`PlanReviewerAgent.review()` 又在所有 mode 上无条件从 context 传入该值。
+因此一个完全合法的 ChapterSet（只含 ChapterGoal）在 Profile 期望 8 卷时会得到：
+`expected 8 arc volumes but received 0`，被永久退回 `REVISE`。
+
+这是执行计划中“Arc 层检查 8/8 卷”的层级作用域错误，不应下沉到 ChapterSet/Chapter/Scene。
+
+最小修复：把受信 mode/plan level 传入 host constraints，仅在生成完整 Arc/Volume 集合的提案上
+执行卷数覆盖校验；新增同一 Profile 下 Arc 3/8→REVISE、Arc 8/8→ACCEPT、ChapterSet 不触发
+volume gate 的三个 public-review 路径测试。
+
+位置：
+
+- `src/novel_agent/agents/plan_reviewer.py:168-176`
+- `src/novel_agent/agents/plan_reviewer.py:277-282`
+
+## 高优先级发现
+
+### P1-1：配置指纹只生成了易变的内存 attestation，没有成为可恢复 run 的冻结契约
+
+`freeze_production_attestation()` 的确把 assembly spec、Prompt/Skill pin、模型 revision、检索策略和
+Profile hash 放进了一个 fingerprint；但该值只挂在当前进程的 `assembly.attestation` 上，没有进入
+`CreativeRunPolicy.policy_hash`、Writer/Stage4 policy fingerprint，也没有在 resume 时持久化比较。
+Genesis 后创建 run 的 policy hash 仍只包含 automation flags、project ID 和 run ID。
+
+此外 attestation fingerprint 包含 `id(session_factory)`，同一配置跨进程也会改变，不能作为稳定恢复
+身份。仓库中没有 `RUN_CONFIGURATION_CHANGED` 终止码或等价实现（全文检索无匹配）。结果是 Prompt、
+Skill、模型、检索策略或 Profile 热变更仍可能在同一 run 中无痕继续。
+
+最小修复：复用现有 run policy/config identity 持久边界，把稳定内容 fingerprint（去掉进程对象 ID）
+冻结到 run；Writer、Stage4 和 settlement 从同一冻结值派生；resume 时重算并在不一致时返回既定
+`RUN_CONFIGURATION_CHANGED`。增加跨新 session factory 的“同配置相同、任一 pin 改变即拒绝恢复”测试。
+
+位置：
+
+- `src/novel_agent/runtime/production_bootstrap.py:453-494`
+- `src/novel_agent/runtime/production_bootstrap.py:998-1037`
+- `src/novel_agent/runtime/production_bootstrap.py:1625-1644`
+- `src/novel_agent/runtime/production_novel_bootstrap.py:376-396`
+
+### P1-2：独立 STYLE_GUIDE 没有可靠进入 ProjectProfile
+
+Planner authority 正确排除了 STYLE_GUIDE，但 bootstrap 没有建立计划要求的
+`STYLE_GUIDE -> ProjectProfile` 路由。Profile 当前只吸收 Planner 的 `project_profile/project_intent`
+以及 `_profile_from_brief()` 的少量硬编码正则字段；Planner 又只看到 initial brief/future plan。
+因此独立 Style Guide 中的叙述距离、句法、禁用模板、节奏和语气规则除非碰巧符合几个正则键，
+否则只留在 ReferenceRoot，Writer 得不到它们。
+
+最小修复：不新增根或服务；在现有 Genesis/Profile builder 中，按 SourceClass 将已审批 STYLE_GUIDE
+内容规范化进现有 `style_profile`/`style_requirements`，保留 source ID。增加独立 style-guide sentinel
+从 ingestion 到 Profile 再到 Writer request 的 E2E 回归。
+
+位置：
+
+- `src/novel_agent/runtime/production_novel_bootstrap.py:183-223`
+- `src/novel_agent/runtime/production_novel_bootstrap.py:438-441`
+- `src/novel_agent/runtime/production_novel_bootstrap.py:674-737`
+- `src/novel_agent/runtime/production_novel_bootstrap.py:771-798`
+
+### P1-3：Obligation 声明没有按 trusted level 限制，ChapterSet 仍可创建 durable World obligation
+
+Materializer 已能在同一个 change bundle 中同时提出 PlanRoot 与 WorldRoot，这是正确方向；但
+`_bind_obligation_declarations(world, proposal)` 没有接收或检查 `trusted_level`，对所有 proposal mode
+统一解析 direct/nested declarations。ChapterSet 因而仍可创建 long-range World obligation，违反
+“仅 Story/Arc 声明，ChapterSet 只引用并写 action”的约束。
+
+默认 ID 也没有遵循 `plan_item_id + ordinal + kind`：direct declaration 直接复用 item ID；nested ID
+只使用 item ID + ordinal，没有 kind。`_validate_temporal_obligation_use()` 对 unknown ID 仍保留
+`continue`；虽然当前另一 helper 能抓到部分 node/goal/action 引用，但这个信任边界本身仍不是计划要求
+的 fail-close，未来新增 payload 形态容易绕过。
+
+新增所谓“atomic”测试只直接调用私有 `_bind_obligation_declarations()`，没有提交 CandidateChangeBundle，
+也没有覆盖 Story/Arc vs ChapterSet、Plan+World 任一侧失败回滚、正文证据驱动 OPEN→RESOLVED。
+
+最小修复：把现有 `trusted_level` 传给同一 helper；仅 Story/Arc 接受 declaration aliases；统一使用
+item+ordinal+kind 生成 ID；unknown 在唯一验证 owner 中 fail-close。补一条从 accepted Plan candidate
+到原子 commit 的回归，以及一条 chapter settlement evidence 使 OPEN→RESOLVED 的回归。
+
+位置：
+
+- `src/novel_agent/adapters/runtime/materializers.py:204-267`
+- `src/novel_agent/adapters/runtime/materializers.py:794-894`
+- `src/novel_agent/adapters/runtime/materializers.py:998-1039`
+- `tests/unit/test_t2_t6_optimization_boundaries.py:324-359`
+
+### P1-4：DRAFT 的 2+1 skill 归一化被误用到 CONTINUE/MAJOR_REWRITE
+
+生产 writer allowlist 移除了已有的 `skill.continuation` 和 `skill.major-rewrite`。更关键的是，
+`WriterCognitionService` 虽只对 DRAFT 做特殊合法性检查，却在所有 mode 上都把最终 skills 重写成
+scene/style + 最多一个 optional。结果 CONTINUE 和 MAJOR_REWRITE 模式即使注册了专属 prompt/skill，
+也无法加载其专属 skill；模型若选择它还会先因 allowlist 拒绝。
+
+执行计划的“scene/style + 0/1 optional”只约束 DRAFT，不应破坏既有 continuation/major rewrite。
+
+最小修复：只在 DRAFT 分支执行 2+1 归一化；恢复非 DRAFT 模式的 mode skill allowlist 与原选择逻辑；
+分别新增 DRAFT、CONTINUE、MAJOR_REWRITE 的真实 work-plan 测试。
+
+位置：
+
+- `src/novel_agent/runtime/production_assembly_spec.json:20-28`
+- `src/novel_agent/services/writer_cognition.py:303-334`
+- `src/novel_agent/agents/writer.py:64-83`
+
+### P1-5：最终 Canon 边界没有执行计划要求的 Draft surface checks
+
+`DraftCandidateMaterializer` 在写入 TextRoot 前只检查非空和长度；正文中的 `Chapter N`、内部 marker、
+未来信息和大段复制没有在最终 trust boundary 重验。新增测试仅用 `inspect.getsource()` 断言生成的标题
+是“第N章”，完全没有向 materializer 注入这些非法正文，也没有验证 Canon 拒绝。
+
+上游 Writer/Editor 检查不能替代最终 materializer 的防御，尤其是恢复、旧候选和人工接纳路径仍可能
+把非法文本送到这里。
+
+最小修复：复用现有 surface/copy validators，在 materialize 前执行确定性校验；不要新增并行校验器。
+测试至少覆盖过短、过长、英文 `Chapter N`、内部 marker、大段 recent-prose copy 五种 accepted
+candidate，并断言 TextRoot 未变化。
+
+位置：
+
+- `src/novel_agent/adapters/runtime/materializers.py:1215-1247`
+- `tests/unit/test_t2_t6_optimization_boundaries.py:484-493`
+
+### P1-6：现有公共 contract 与回归套件未同步，质量门不可通过
+
+此次给 `ChapterGoal`/`PlanNode` 和 `MemoryWriteBudget` 改了公共模型，但只更新了部分 Stage3 schema。
+当前 domain、Stage1、Stage2 schema contract 均失败。新增测试文件自身也有 Ruff/MyPy 问题，并大量
+依赖私有 helper、`SimpleNamespace` 和源码字符串断言，无法证明生产路径。
+
+最小修复：通过现有 schema export owner 更新所有受影响的 domain/Stage1/Stage2/Stage3 schema；
+更新那些因有意契约变更而过时的测试预期，但不能删除仍揭示真实回归的断言；把 14 项测试改为计划
+表格中的 public boundary/E2E 语义。
+
+## 非必要范围扩张
+
+### P2-1：把 Stage2M 的 12 次 retrieval backend 上限误扩成全局 Curator settlement 预算
+
+`MemoryWriteBudget` 默认从 4 个 model calls 改成 12，同时增加 Curator retries 和 wall-clock；这不是
+Stage2M 单 gateway 的 backend-call 上限，而是章节结算的另一预算。它会扩大成本和失败等待时间，
+也直接破坏“campaign override 不改变 production default”的既有测试与 Stage2 schema。
+
+最小修复：恢复 MemoryWriteBudget 既有默认值；12 只放在现有 Stage2M retrieval budget/gateway owner。
+
+位置：`src/novel_agent/domain/memory_write.py:264-279`
+
+### P2-2：OpenAI adapter 给所有未显式设置的请求注入 repetition_penalty=1.05
+
+这会改变 Planner、Reviewer、Curator 等全部调用的默认采样行为，不属于本执行计划，也破坏
+`test_payload_omits_repetition_penalty_by_default`。若 Writer retry 需要 penalty，应继续由具体 request
+设置，不能在通用 transport 层全局改写。
+
+位置：`src/novel_agent/adapters/model/openai_chat.py:289-292`
+
+## 验证证据
+
+### 通过
+
+- `git diff --check`：通过。
+- 新增边界测试：`14 passed`。
+  - 命令：`pytest --no-cov -q tests/unit/test_t2_t6_optimization_boundaries.py`
+- 实现中可以确认的正向能力：author authority 不再在 Arc/ChapterSet 显式清空；Plan/Goal payload 与
+  source IDs 字段存在；Plan+World bundle 写入路径存在；zero-Need generator 和单一 budget tier 存在；
+  auto-accept 默认关闭；项目专用词静态扫描通过。
+
+### 未通过
+
+- 聚焦现有测试：`9 failed, 121 passed`。
+  - 其中两项是有意改变 authority 可见性后的旧预期，需要更新；其余包含 Writer context fixture/契约
+    不兼容、全局 settlement 默认漂移、domain/Stage1/Stage2 schema 不同步。
+- 一章 deterministic fake production smoke：两项失败；运行在 Plan Commit 进入
+  `candidate_materialization_rejected / REVIEW_REQUIRED`，0 章完成、没有产生 Draft task。
+- 变更 Python + 新测试 Ruff：54 个错误；Ruff format：7 个文件需格式化；strict MyPy：21 个错误。
+- 确定性非 model suite：`86 failed, 2969 passed, 1 skipped, 36 deselected`，覆盖率 90.50%，未达到仓库
+  100% 门槛。该原始失败数包含工作树缺失私有 benchmark 数据造成的既有/环境失败，不能全部归因于
+  本轮；但 schema、transport 默认、production one-chapter、Writer/Stage4 相关失败可直接归因或必须
+  在本轮同步。
+- `make quality` 无法直接执行：该 worktree 没有本地 `.conda-env`；以上验证使用主工作区已存在的锁定
+  环境显式运行。这不是主要产品缺陷，但提交前仍需在可复现环境中取得完整绿色证据。
+- 没有计划要求的 clean Genesis `Story -> Arc -> ChapterSet -> 2章` Phase A smoke，也没有 Phase B
+  5章 Canary、包大小/调用次数记录、人工正文审读、Ch1/Ch48 真实中文 evidence fixture。
+
+## 修复顺序与重新验收门槛
+
+1. 先修 P0-1/P0-2，使三级规划能加载正确 Skill 且 coverage gate 只作用于 Arc。
+2. 修复稳定 run fingerprint/resume mismatch、Style Guide→Profile 和 mode-specific Writer skill。
+3. 收紧 Obligation declaration 层级与最终 Draft materializer surface checks。
+4. 撤销两项非必要全局行为改动，同步全部 schema 和现有回归测试，清零 Ruff/MyPy/contract failures。
+5. 先通过 public-boundary 14 项测试和完整 deterministic quality gate，再执行 clean Genesis 两章 smoke。
+6. 两章证据通过后才跑五章 Canary；记录 authority/model-input、8/8 卷、Need 数、gateway/backend calls、
+   semantic status、Context Package 大小、Editor 拒绝注入缺陷和人工质量审读。
+
+只有上述证据全部可复现且无 P0/P1 未解决项，才可给出 `PASS`，也才适合扩到 20/100 章生产测试。

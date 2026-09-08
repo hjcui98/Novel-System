@@ -16,11 +16,27 @@
     "reasoning_billing_mode": "unknown_not_applicable"
   },
   "expected_prompt_ids": ["prompt.system-policy"],
-  "expected_skill_ids": ["skill.scene-composition"],
-  "writer_skill_ids": ["skill.scene-composition"],
+  "expected_skill_ids": ["skill.scene-composition", "skill.style-genre-writing"],
+  "writer_skill_ids": [
+    "skill.scene-composition",
+    "skill.continuation",
+    "skill.major-rewrite",
+    "skill.style-genre-writing",
+    "skill.character-voice-writing",
+    "skill.dialogue-subtext-writing",
+    "skill.pov-epistemic-writing",
+    "skill.pacing-transition-writing",
+    "skill.hook-foreshadowing-writing"
+  ],
   "planner_skill_ids": [
     "skill.planning-inquiry",
+    "skill.planner.project_bootstrap",
+    "skill.planner.story",
+    "skill.planner.arc_volume",
     "skill.planner.chapter_set",
+    "skill.planner.chapter",
+    "skill.planner.scene",
+    "skill.planner.replan",
     "skill.alternative-comparison",
     "skill.obligation-scheduling",
     "skill.character-arc-hook-payoff"

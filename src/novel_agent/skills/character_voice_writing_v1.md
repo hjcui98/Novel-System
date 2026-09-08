@@ -1,6 +1,5 @@
-# Character state and voice method v1
+# 角色状态与声线方法（Character state and voice method）v1
 
-Track each participating character's current physical, emotional, relational, and knowledge state.
-Before drafting dialogue or action, identify what the character wants now, what they know, what they
-cannot know, and which established voice markers must remain stable. Verify every state transition
-against the accepted plan and visible memory. Treat missing facts as unresolved rather than invented.
+追踪每位出场角色的当前生理、心理、人际关系与知识认知状态。在起草对话或动作前，明确该角色当前想要什么、已知晓什么、绝不可知晓什么，以及哪些已确立的声线口吻特征必须保持稳定。对照已接纳的计划与可见记忆核验每一次状态跃迁。将缺失的事实作为未决问题处理，绝不凭空编造。所有角色台词与心理描写必须使用 `WritingTaskContract` 与 `ProjectProfile` 指定的语言。
+
+为每位参与角色建立内部四格：当前欲望、当前压力、可说信息、回避信息。至少通过措辞、句长或回避方式之一形成区分，禁止只靠口头禅区分声音。自检角色状态绑定、声线区分和情绪移动，不把这份检查表当作额外的 Host 字段门槛。

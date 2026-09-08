@@ -73,6 +73,8 @@ class PlanNode(DomainModel):
     summary: str
     parent_id: StableId | None = None
     obligation_ids: tuple[StableId, ...] = ()
+    source_ids: tuple[StableId, ...] = ()
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
     plan_level: PlanLevel | None = None
     chapter_start: int | None = Field(default=None, ge=1)
     chapter_end: int | None = Field(default=None, ge=1)

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.benchmark import TextRootDocument
+from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import (
     CandidateChangeBundle,
     ValidationFinding,
@@ -266,6 +266,21 @@ class Stage2ValidationV2Adapter:
             validation_text,
             canonical_commit=canonical.commit_id,
         )
+        obligation_findings = _planned_obligation_resolution_findings(
+            bundle=bundle,
+            canonical_world=canonical.canonical_world,
+            proposed_world=proposed,
+            canonical_plan=canonical.canonical_plan,
+            proposed_text=validation_text,
+        )
+        if obligation_findings:
+            report = report.model_copy(
+                update={
+                    "status": ValidationStatus.FAILED,
+                    "findings": (*report.findings, *obligation_findings),
+                    "validation_profile": f"{report.validation_profile}+obligation-resolution-v1",
+                }
+            )
         if source_bound_finding is not None:
             report = report.model_copy(
                 update={
@@ -468,6 +483,168 @@ class Stage2ValidationV2Adapter:
             deterministic_profile="stage2w-basis-v2",
             validated_at=datetime.now(UTC),
         )
+
+
+def _planned_obligation_resolution_findings(
+    *,
+    bundle: CandidateChangeBundle,
+    canonical_world: object,
+    proposed_world: object,
+    canonical_plan: PlanRootDocument | None,
+    proposed_text: TextRootDocument,
+) -> tuple[ValidationFinding, ...]:
+    """Prove that an OPEN/PROGRESSED -> RESOLVED change is narratively grounded."""
+
+    if canonical_world is None or proposed_world is None:
+        return ()
+    old_obligations = {
+        item.obligation_id: item for item in getattr(canonical_world, "obligations", ())
+    }
+    new_obligations = {
+        item.obligation_id: item for item in getattr(proposed_world, "obligations", ())
+    }
+    current_chapter = max(
+        (chapter.chapter_index for chapter in proposed_text.chapters),
+        default=0,
+    )
+    current_chapter_doc = next(
+        (chapter for chapter in proposed_text.chapters if chapter.chapter_index == current_chapter),
+        None,
+    )
+    findings: list[ValidationFinding] = []
+    for operation in bundle.observed_changes.operations:
+        if operation.root_kind.value != "world" and str(operation.root_kind) != "world":
+            continue
+        old = old_obligations.get(operation.target_id)
+        new = new_obligations.get(operation.target_id)
+        if old is None or new is None:
+            continue
+        old_status = getattr(old.status, "value", old.status)
+        new_status = getattr(new.status, "value", new.status)
+        if old_status not in {"open", "progressed"} or new_status != "resolved":
+            continue
+
+        refs = tuple(operation.evidence_refs)
+        not_before = new.not_before_chapter or old.not_before_chapter
+        if not_before is not None and current_chapter < not_before:
+            findings.append(
+                ValidationFinding(
+                    code="OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
+                    severity="error",
+                    message=(
+                        f"obligation {operation.target_id.root} resolves in chapter "
+                        f"{current_chapter}, before not_before_chapter {not_before}"
+                    ),
+                    evidence_refs=refs,
+                )
+            )
+
+        if not _plan_declares_resolution(
+            canonical_plan,
+            obligation_id=operation.target_id,
+            chapter_index=current_chapter,
+        ):
+            findings.append(
+                ValidationFinding(
+                    code="OBLIGATION_RESOLUTION_NOT_PLANNED",
+                    severity="error",
+                    message=(
+                        f"accepted plan has no payoff/resolve action for "
+                        f"obligation {operation.target_id.root} in chapter {current_chapter}"
+                    ),
+                    evidence_refs=refs,
+                )
+            )
+
+        if not any(
+            _evidence_is_in_current_proposed_chapter(
+                evidence,
+                proposed_text=proposed_text,
+                current_chapter_doc=current_chapter_doc,
+            )
+            for evidence in refs
+        ):
+            findings.append(
+                ValidationFinding(
+                    code="OBLIGATION_RESOLUTION_EVIDENCE_NOT_IN_CURRENT_CHAPTER",
+                    severity="error",
+                    message=(
+                        f"resolution evidence for {operation.target_id.root} must bind to "
+                        f"the current proposed chapter {current_chapter}"
+                    ),
+                    evidence_refs=refs,
+                )
+            )
+    return tuple(findings)
+
+
+def _plan_declares_resolution(
+    plan: PlanRootDocument | None,
+    *,
+    obligation_id: StableId,
+    chapter_index: int,
+) -> bool:
+    if plan is None:
+        return False
+    records: list[object] = [
+        *(
+            goal
+            for goal in plan.chapter_goals
+            if goal.chapter_index == chapter_index and obligation_id in goal.obligation_ids
+        ),
+        *(
+            node
+            for node in plan.nodes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= chapter_index <= node.chapter_end
+        ),
+    ]
+    for record in records:
+        payload = getattr(record, "payload", {})
+        if not isinstance(payload, dict):
+            continue
+        actions = payload.get("obligation_actions")
+        if not isinstance(actions, (list, tuple)):
+            continue
+        for action in actions:
+            action_id: str | None = None
+            action_name: str | None = None
+            if isinstance(action, dict):
+                raw_id = action.get("obligation_id") or action.get("id")
+                if isinstance(raw_id, str):
+                    action_id = raw_id
+                raw_action = action.get("action") or action.get("operation") or action.get("kind")
+                if isinstance(raw_action, str):
+                    action_name = raw_action
+            elif isinstance(action, str):
+                action_id, _, action_name = action.partition(":")
+            if (
+                action_id == obligation_id.root
+                and action_name is not None
+                and action_name.strip().lower() in {"payoff", "resolve", "resolved"}
+            ):
+                return True
+    return False
+
+
+def _evidence_is_in_current_proposed_chapter(
+    evidence: EvidenceRef,
+    *,
+    proposed_text: TextRootDocument,
+    current_chapter_doc: object,
+) -> bool:
+    if current_chapter_doc is None:
+        return False
+    if evidence.root_hash != proposed_text.root_hash:
+        return False
+    if evidence.chapter_id != getattr(current_chapter_doc, "chapter_id", None):
+        return False
+    try:
+        validate_evidence_ref(evidence, proposed_text)
+    except BenchmarkImportError:
+        return False
+    return True
 
 
 def _validation_report_id(

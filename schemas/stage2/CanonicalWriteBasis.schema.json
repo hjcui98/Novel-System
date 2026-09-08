@@ -63,6 +63,21 @@
           "title": "Obligation Ids",
           "type": "array"
         },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
         "summary": {
           "minLength": 1,
           "title": "Summary",
@@ -338,9 +353,46 @@
       "title": "ObligationStatus",
       "type": "string"
     },
+    "PlanLevel": {
+      "enum": [
+        "story",
+        "arc_volume",
+        "chapter_set",
+        "chapter",
+        "scene"
+      ],
+      "title": "PlanLevel",
+      "type": "string"
+    },
     "PlanNode": {
       "additionalProperties": false,
       "properties": {
+        "chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter End"
+        },
+        "chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chapter Start"
+        },
         "node_type": {
           "minLength": 1,
           "title": "Node Type",
@@ -365,8 +417,34 @@
           ],
           "default": null
         },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "plan_level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "plan_node_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
         },
         "summary": {
           "title": "Summary",
@@ -419,6 +497,19 @@
         "kind": {
           "$ref": "#/$defs/ObligationKind"
         },
+        "not_before_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Before Chapter"
+        },
         "obligation_id": {
           "$ref": "#/$defs/StableId"
         },
@@ -432,6 +523,32 @@
         },
         "status": {
           "$ref": "#/$defs/ObligationStatus"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
         }
       },
       "required": [

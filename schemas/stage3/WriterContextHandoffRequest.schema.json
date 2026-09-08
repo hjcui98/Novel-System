@@ -1724,6 +1724,23 @@
           "title": "Narrative Person",
           "type": "string"
         },
+        "obligation_actions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Obligation Actions",
+          "type": "array"
+        },
+        "participating_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Participating Entity Ids",
+          "type": "array"
+        },
         "pov": {
           "minLength": 1,
           "title": "Pov",

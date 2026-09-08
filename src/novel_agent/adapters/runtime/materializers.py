@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from novel_agent.domain.artifacts import (
     ArtifactRef,
@@ -11,6 +11,7 @@ from novel_agent.domain.artifacts import (
     RootKind,
     RootManifest,
     TextRootRef,
+    WorldRootRef,
 )
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import (
@@ -32,6 +33,8 @@ from novel_agent.domain.generation import WritingTaskContract
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
     ObligationKind,
+    ObligationStatus,
+    PlanObligation,
     TemporalObligationError,
     WorldRootDocument,
     require_not_before_for_kind,
@@ -62,15 +65,19 @@ from novel_agent.services.artifacts import ArtifactIntegrityError, ArtifactRepos
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import (
     canonical_json_bytes,
+    content_id,
     plan_root_content_id,
+    world_root_content_id,
 )
 from novel_agent.services.text_timeline import SequentialTextRootService
+from novel_agent.services.writer_cognition import draft_surface_error
 
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
 PLANNING_EVENT_MEDIA_TYPE = "application/vnd.novel-agent.planning-loop-event+json"
 PLANNER_EXECUTION_MEDIA_TYPE = "application/vnd.novel-agent.planner-execution-result+json"
 PLAN_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.plan-root+json"
+WORLD_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.world-root+json"
 TEXT_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.text-root+json"
 WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
 RECONCILIATION_MEDIA_TYPE = "application/vnd.novel-agent.reconciliation+json"
@@ -191,9 +198,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         )
         if execution.receipt.status is not ExecutionStatus.SUCCEEDED:
             raise CandidateMaterializationError("Planner execution did not succeed")
-        current = self._normalize_plan_root_nodes(
-            self._read(base.plan_root, PlanRootDocument)
-        )
+        current = self._normalize_plan_root_nodes(self._read(base.plan_root, PlanRootDocument))
         text = self._read(base.text_root, TextRootDocument)
         current_chapter = text.chapters[-1].chapter_index if text.chapters else 0
         trusted_level = self._trusted_plan_level(proposal.mode)
@@ -203,7 +208,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             review,
             current_chapter=current_chapter,
         )
-        self._assert_single_plan_level(proposal.items, trusted_level)
+        self._assert_single_plan_level(proposal.items, trusted_level, mode=proposal.mode)
         story_parent = next(
             (node.plan_node_id for node in current.nodes if node.plan_level is PlanLevel.STORY),
             None,
@@ -228,24 +233,103 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             ),
             None,
         )
-        default_parent = volume_parent if trusted_level is PlanLevel.CHAPTER_SET else story_parent
-        valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
-            item.item_id.root for item in proposal.items
-        }
-        incoming_nodes = tuple(
-            self._node(
-                item,
-                plan_level=trusted_level,
-                default_parent_id=default_parent,
-                valid_parent_ids=valid_parent_ids,
-                candidate_start=candidate.horizon_start,
-                candidate_end=candidate.horizon_end,
+        if trusted_level is PlanLevel.CHAPTER_SET:
+            if candidate.horizon_start is None or candidate.horizon_end is None:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET candidate requires a complete horizon"
+                )
+            if volume_parent is None:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET candidate requires a covering ARC_VOLUME parent"
+                )
+            chapter_numbers = tuple(
+                sorted(
+                    chapter_number
+                    for item in proposal.items
+                    if (chapter_number := self._chapter_number(item.payload)) is not None
+                )
             )
-            for item in proposal.items
-        )
+            expected_chapters = tuple(range(candidate.horizon_start, candidate.horizon_end + 1))
+            if chapter_numbers != expected_chapters:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET candidate must contain one chapter item for every horizon chapter"
+                )
+            wrapper = self._chapter_set_wrapper(
+                proposal.items,
+                parent_id=volume_parent,
+                horizon_start=candidate.horizon_start,
+                horizon_end=candidate.horizon_end,
+            )
+            valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
+                wrapper.plan_node_id.root,
+                *(item.item_id.root for item in proposal.items),
+            }
+            incoming_nodes = (
+                wrapper,
+                *tuple(
+                    self._node(
+                        item,
+                        plan_level=PlanLevel.CHAPTER,
+                        default_parent_id=wrapper.plan_node_id,
+                        valid_parent_ids=valid_parent_ids,
+                        candidate_start=candidate.horizon_start,
+                        candidate_end=candidate.horizon_end,
+                    )
+                    for item in proposal.items
+                ),
+            )
+        else:
+            valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
+                item.item_id.root for item in proposal.items
+            }
+            incoming_nodes = tuple(
+                self._node(
+                    item,
+                    plan_level=trusted_level,
+                    default_parent_id=story_parent,
+                    valid_parent_ids=valid_parent_ids,
+                    candidate_start=candidate.horizon_start,
+                    candidate_end=candidate.horizon_end,
+                )
+                for item in proposal.items
+            )
+        if (
+            trusted_level is PlanLevel.CHAPTER_SET
+            and candidate.horizon_start is not None
+            and candidate.horizon_end is not None
+        ):
+            invalidated.update(
+                self._chapter_set_replacement_ids(
+                    current,
+                    horizon_start=candidate.horizon_start,
+                    horizon_end=candidate.horizon_end,
+                    current_chapter=current_chapter,
+                )
+            )
         incoming_goals = tuple(
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
         )
+        world = self._read(base.world_root, WorldRootDocument)
+        world, world_ref, obligation_bindings = self._bind_obligation_declarations(
+            world,
+            proposal,
+            trusted_level=trusted_level,
+        )
+        incoming_nodes = tuple(
+            cast(
+                PlanNode,
+                self._attach_obligations(node, obligation_bindings.get(node.plan_node_id, ())),
+            )
+            for node in incoming_nodes
+        )
+        incoming_goals = tuple(
+            cast(
+                ChapterGoal,
+                self._attach_obligations(goal, obligation_bindings.get(goal.goal_id, ())),
+            )
+            for goal in incoming_goals
+        )
+        self._validate_obligation_references(world, incoming_nodes, incoming_goals, proposal)
         if trusted_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME} and (
             candidate.horizon_start is not None or candidate.horizon_end is not None
         ):
@@ -271,6 +355,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             proposal=proposal,
             base=base,
             candidate=candidate,
+            world=world,
         )
         incoming_node_ids = {item.plan_node_id for item in incoming_nodes}
         incoming_goal_ids = {item.goal_id for item in incoming_goals}
@@ -280,11 +365,6 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 for item in current.nodes
                 if item.plan_node_id not in invalidated
                 and item.plan_node_id not in incoming_node_ids
-                and not (
-                    trusted_level is PlanLevel.STORY
-                    and item.plan_level is None
-                    and item.parent_id is None
-                )
             )
             + incoming_nodes
         )
@@ -322,12 +402,21 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             updated.schema_version,
         )
         root_ref = PlanRootRef(**root_artifact.model_dump(mode="python"), root_kind=RootKind.PLAN)
+        produced_artifacts: list[ArtifactRef] = [
+            root_ref,
+            candidate.artifact_ref,
+            review_ref,
+            execution_ref,
+        ]
         proposed_roots = base.model_copy(
             update={
                 "plan_root": root_ref,
                 "parent_commit_ids": (accepted.expected_project_commit,),
             }
         )
+        if world_ref is not None:
+            proposed_roots = proposed_roots.model_copy(update={"world_root": world_ref})
+            produced_artifacts.append(world_ref)
         bundle = CandidateChangeBundle(
             bundle_id=self._stable_id("bundle", accepted.acceptance_id.root),
             project_id=accepted.project_id,
@@ -339,12 +428,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 source_artifact=candidate.artifact_ref,
             ),
             proposed_roots=proposed_roots,
-            produced_artifacts=(
-                root_ref,
-                candidate.artifact_ref,
-                review_ref,
-                execution_ref,
-            ),
+            produced_artifacts=tuple(produced_artifacts),
         )
         return bundle, self._report(accepted, bundle, "stage5-plan-materializer-v1")
 
@@ -462,7 +546,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             title = item.payload.get("title")
         else:
             title = summary or item.item_id.root
-        parent = item.payload.get("parent_id")
+        parent = item.payload.get("parent_id") or item.payload.get("parent_plan_node_id")
         if not isinstance(summary, str) or not summary.strip():
             raise CandidateMaterializationError("Plan item requires a non-empty summary")
         if not isinstance(title, str) or not title.strip():
@@ -504,6 +588,14 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         ):
             raw_start = candidate_start
             raw_end = candidate_end
+        if (
+            raw_start is None
+            and isinstance(item.payload.get("chapter_index"), int)
+            and not isinstance(item.payload.get("chapter_index"), bool)
+            and plan_level is PlanLevel.CHAPTER
+        ):
+            raw_start = item.payload["chapter_index"]
+            raw_end = item.payload["chapter_index"]
         chapter_start = (
             raw_start if isinstance(raw_start, int) and not isinstance(raw_start, bool) else None
         )
@@ -520,8 +612,9 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             ):
                 parent = deps[0]
             elif default_parent_id is not None and (
-                plan_level in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET}
-                or cls._declared_plan_level(item) in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET}
+                plan_level in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET, PlanLevel.CHAPTER}
+                or cls._declared_plan_level(item)
+                in {PlanLevel.ARC_VOLUME, PlanLevel.CHAPTER_SET, PlanLevel.CHAPTER}
             ):
                 parent = default_parent_id.root
         if parent is not None and valid_parent_ids is not None and parent not in valid_parent_ids:
@@ -546,9 +639,51 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             summary=summary,
             parent_id=None if parent is None else StableId(parent),
             obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
+            source_ids=item.source_ids,
+            payload=dict(item.payload),
             plan_level=item_level,
             chapter_start=chapter_start,
             chapter_end=chapter_end,
+        )
+
+    @classmethod
+    def _chapter_set_wrapper(
+        cls,
+        items: tuple[ProposedItem, ...],
+        *,
+        parent_id: StableId,
+        horizon_start: int,
+        horizon_end: int,
+    ) -> PlanNode:
+        source_ids = tuple(
+            dict.fromkeys(source_id for item in items for source_id in item.source_ids)
+        )
+        wrapper_id = bounded_stable_id(
+            f"chapter-set.{parent_id.root}.{horizon_start}.{horizon_end}",
+            "chapter-set."
+            + content_id(
+                {
+                    "parent": parent_id.root,
+                    "start": horizon_start,
+                    "end": horizon_end,
+                }
+            ).root.removeprefix("sha256:")[:48],
+        )
+        return PlanNode(
+            plan_node_id=wrapper_id,
+            node_type="chapter_set",
+            title=f"ChapterSet {horizon_start}-{horizon_end}",
+            summary=f"Structural chapter window {horizon_start}-{horizon_end}",
+            parent_id=parent_id,
+            source_ids=source_ids,
+            payload={
+                "horizon_start": horizon_start,
+                "horizon_end": horizon_end,
+                "structural_wrapper": True,
+            },
+            plan_level=PlanLevel.CHAPTER_SET,
+            chapter_start=horizon_start,
+            chapter_end=horizon_end,
         )
 
     @classmethod
@@ -572,6 +707,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             chapter_index=chapter_index,
             summary=summary,
             obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
+            source_ids=item.source_ids,
+            payload=dict(item.payload),
         )
 
     @classmethod
@@ -632,8 +769,21 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         cls,
         items: tuple[ProposedItem, ...],
         trusted_level: PlanLevel | None,
+        *,
+        mode: AgentMode | None = None,
     ) -> None:
         if trusted_level is None:
+            return
+        if trusted_level is PlanLevel.CHAPTER_SET:
+            mixed = tuple(
+                item.item_id.root
+                for item in items
+                if (declared := cls._declared_plan_level(item)) not in {None, PlanLevel.CHAPTER}
+            )
+            if mixed:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET proposals must contain chapter items, not another wrapper"
+                )
             return
         mixed = tuple(
             item.item_id.root
@@ -685,6 +835,63 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         return {item for item in roots | descendants if not committed(item)}
 
     @staticmethod
+    def _chapter_set_replacement_ids(
+        current: PlanRootDocument,
+        *,
+        horizon_start: int,
+        horizon_end: int,
+        current_chapter: int,
+    ) -> set[StableId]:
+        """Remove only uncommitted structures for the horizon being replaced."""
+
+        by_id = {node.plan_node_id: node for node in current.nodes}
+        children: dict[StableId, list[StableId]] = {}
+        for node in current.nodes:
+            if node.parent_id is not None:
+                children.setdefault(node.parent_id, []).append(node.plan_node_id)
+
+        roots = {
+            node.plan_node_id
+            for node in current.nodes
+            if node.plan_level is PlanLevel.CHAPTER_SET
+            and node.chapter_start == horizon_start
+            and node.chapter_end == horizon_end
+            and node.chapter_end > current_chapter
+        }
+        volume_ids = {
+            node.plan_node_id for node in current.nodes if node.plan_level is PlanLevel.ARC_VOLUME
+        }
+        roots.update(
+            node.plan_node_id
+            for node in current.nodes
+            if node.plan_level is PlanLevel.CHAPTER
+            and node.chapter_start is not None
+            and node.chapter_end is not None
+            and horizon_start <= node.chapter_start
+            and node.chapter_end <= horizon_end
+            and node.parent_id in volume_ids
+            and node.chapter_end > current_chapter
+        )
+
+        def committed(node: PlanNode) -> bool:
+            return (
+                node.plan_level in {PlanLevel.CHAPTER, PlanLevel.SCENE, None}
+                and node.chapter_end is not None
+                and node.chapter_end <= current_chapter
+            )
+
+        invalidated: set[StableId] = set()
+        stack = list(roots)
+        while stack:
+            node_id = stack.pop()
+            node = by_id[node_id]
+            if committed(node) or node_id in invalidated:
+                continue
+            invalidated.add(node_id)
+            stack.extend(children.get(node_id, ()))
+        return invalidated
+
+    @staticmethod
     def _validate_parent_scope(
         nodes: tuple[PlanNode, ...],
         *,
@@ -693,9 +900,14 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         horizon_end: int | None = None,
     ) -> None:
         by_id = {node.plan_node_id: node for node in nodes}
+        legacy_direct_chapter = trusted_level is PlanLevel.CHAPTER and not any(
+            node.plan_level is PlanLevel.STORY for node in nodes
+        )
         for node in nodes:
             if node.plan_level is PlanLevel.ARC_VOLUME:
                 if node.parent_id is None:
+                    if legacy_direct_chapter:
+                        continue
                     raise CandidateMaterializationError("ARC_VOLUME nodes require a STORY parent")
                 parent = by_id.get(node.parent_id)
                 if parent is None:
@@ -752,6 +964,291 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 raise CandidateMaterializationError(
                     "CHAPTER_SET horizon must fall inside an accepted ARC_VOLUME"
                 )
+            wrappers = tuple(
+                node
+                for node in nodes
+                if node.plan_level is PlanLevel.CHAPTER_SET
+                and node.chapter_start == horizon_start
+                and node.chapter_end == horizon_end
+            )
+            if wrappers and len(wrappers) != 1:
+                raise CandidateMaterializationError(
+                    "CHAPTER_SET scope requires exactly one structural wrapper"
+                )
+
+    @staticmethod
+    def _attach_obligations(
+        value: PlanNode | ChapterGoal,
+        obligation_ids: tuple[StableId, ...],
+    ) -> PlanNode | ChapterGoal:
+        if not obligation_ids:
+            return value
+        return value.model_copy(
+            update={
+                "obligation_ids": tuple(dict.fromkeys((*value.obligation_ids, *obligation_ids)))
+            }
+        )
+
+    def _bind_obligation_declarations(
+        self,
+        world: WorldRootDocument,
+        proposal: PlanProposal,
+        *,
+        trusted_level: PlanLevel | None = None,
+    ) -> tuple[WorldRootDocument, WorldRootRef | None, dict[StableId, tuple[StableId, ...]]]:
+        """Normalize legal declarations into OPEN World obligations.
+
+        Plan identity is host-owned.  A model-provided obligation id is only
+        accepted when it matches the bounded id derived from the plan item,
+        declaration ordinal, and obligation kind.
+        """
+
+        if trusted_level is None:
+            mode = getattr(proposal, "mode", None)
+            trusted_level = self._trusted_plan_level(mode) if isinstance(mode, AgentMode) else None
+        declaration_forbidden = {
+            PlanLevel.CHAPTER_SET,
+            PlanLevel.CHAPTER,
+            PlanLevel.SCENE,
+        }
+        existing = {item.obligation_id: item for item in world.obligations}
+        declarations: list[PlanObligation] = []
+        bindings: dict[StableId, list[StableId]] = {}
+        obligation_kinds = {kind.value for kind in ObligationKind}
+        declaration_keys = {
+            "obligation",
+            "obligations",
+            "obligation_declarations",
+            "key_obligations",
+            "obligation_declaration",
+        }
+        for item in proposal.items:
+            payload = item.payload
+            raw_declarations: list[Mapping[str, object]] = []
+            referenced_ids: list[StableId] = []
+            raw_references = payload.get("obligation_ids")
+            if raw_references is not None:
+                if not isinstance(raw_references, (list, tuple)):
+                    raise CandidateMaterializationError("obligation_ids must be a string list")
+                for raw_reference in raw_references:
+                    if not isinstance(raw_reference, str):
+                        raise CandidateMaterializationError("obligation_ids must contain strings")
+                    referenced_ids.append(StableId(raw_reference))
+            raw_actions = payload.get("obligation_actions")
+            if raw_actions is not None:
+                if not isinstance(raw_actions, (list, tuple)):
+                    raise CandidateMaterializationError("obligation_actions must be a list")
+                for action in raw_actions:
+                    raw_reference = (
+                        action.get("obligation_id") or action.get("id")
+                        if isinstance(action, dict)
+                        else action
+                    )
+                    if not isinstance(raw_reference, str) or not raw_reference.strip():
+                        raise CandidateMaterializationError(
+                            "obligation action requires a string obligation_id"
+                        )
+                    referenced_ids.append(StableId(raw_reference))
+            if referenced_ids:
+                bindings[item.item_id] = list(dict.fromkeys(referenced_ids))
+
+            direct_kind = payload.get("obligation_kind") or payload.get("obligation_type")
+            item_kind = item.kind.lower()
+            has_direct_declaration = direct_kind is not None or item_kind in obligation_kinds | {
+                "obligation"
+            }
+            has_nested_declaration = any(key in payload for key in declaration_keys)
+            if trusted_level in declaration_forbidden and (
+                has_direct_declaration or has_nested_declaration
+            ):
+                raise CandidateMaterializationError(
+                    f"{trusted_level.value} plans may reference obligation_ids/actions but "
+                    "may not declare new obligations"
+                )
+
+            if has_direct_declaration:
+                direct_payload = dict(payload)
+                if direct_kind is None and item_kind in obligation_kinds:
+                    direct_payload.setdefault("kind", item_kind)
+                raw_declarations.append(direct_payload)
+            nested = payload.get("obligation")
+            if isinstance(nested, dict):
+                raw_declarations.append(nested)
+            elif nested is not None:
+                raise CandidateMaterializationError("obligation declaration must be an object")
+            for key in (
+                "obligations",
+                "obligation_declarations",
+                "key_obligations",
+                "obligation_declaration",
+            ):
+                values = payload.get(key)
+                if isinstance(values, dict):
+                    values = [values]
+                if values is None:
+                    continue
+                if not isinstance(values, (list, tuple)) or not all(
+                    isinstance(value, dict) for value in values
+                ):
+                    raise CandidateMaterializationError(
+                        f"{key} must contain obligation declaration objects"
+                    )
+                raw_declarations.extend(cast(list[Mapping[str, object]], values))
+
+            for ordinal, raw in enumerate(raw_declarations):
+                kind_raw = (
+                    raw.get("obligation_kind") or raw.get("kind") or raw.get("obligation_type")
+                )
+                try:
+                    kind = ObligationKind(str(kind_raw))
+                except ValueError as error:
+                    raise CandidateMaterializationError(
+                        "obligation declaration has an unknown kind"
+                    ) from error
+                description = self._payload_text(raw, "description", "summary", "goal", "text")
+                if not description:
+                    raise CandidateMaterializationError(
+                        "obligation declaration requires a description"
+                    )
+                expected_id = bounded_stable_id(
+                    f"obligation.{item.item_id.root}.{ordinal}.{kind.value}",
+                    "obligation."
+                    + content_id(
+                        {
+                            "plan_item_id": item.item_id.root,
+                            "ordinal": ordinal,
+                            "kind": kind.value,
+                        }
+                    ).root.removeprefix("sha256:")[:48],
+                )
+                raw_id = raw.get("obligation_id") or raw.get("id")
+                if raw_id is not None:
+                    if not isinstance(raw_id, str):
+                        raise CandidateMaterializationError(
+                            "obligation declaration id must be a string"
+                        )
+                    try:
+                        supplied_id = StableId(raw_id)
+                    except ValueError as error:
+                        raise CandidateMaterializationError(
+                            "obligation declaration id is invalid"
+                        ) from error
+                    if supplied_id != expected_id:
+                        raise CandidateMaterializationError(
+                            "obligation declaration id does not match host-derived identity"
+                        )
+                status_raw = str(raw.get("status") or "open").lower()
+                if status_raw in {
+                    ObligationStatus.RESOLVED.value,
+                    ObligationStatus.ABANDONED.value,
+                }:
+                    raise CandidateMaterializationError(
+                        "Plan actions cannot directly resolve or abandon a World obligation"
+                    )
+                not_before = self._optional_positive_int(raw.get("not_before_chapter"))
+                try:
+                    require_not_before_for_kind(kind, not_before)
+                    declaration = PlanObligation(
+                        obligation_id=expected_id,
+                        kind=kind,
+                        description=description,
+                        status=ObligationStatus.OPEN,
+                        owner_ids=self._ids(raw.get("owner_ids"), "obligation owner_ids"),
+                        not_before_chapter=not_before,
+                        target_chapter_start=self._optional_positive_int(
+                            raw.get("target_chapter_start")
+                        ),
+                        target_chapter_end=self._optional_positive_int(
+                            raw.get("target_chapter_end")
+                        ),
+                        due_chapter=self._optional_positive_int(raw.get("due_chapter")),
+                    )
+                except (TemporalObligationError, ValueError) as error:
+                    raise CandidateMaterializationError(str(error)) from error
+                bindings.setdefault(item.item_id, []).append(expected_id)
+                bindings[item.item_id] = list(dict.fromkeys(bindings[item.item_id]))
+                prior = existing.get(expected_id)
+                if prior is not None:
+                    if prior != declaration:
+                        raise CandidateMaterializationError(
+                            f"obligation declaration conflicts with existing {expected_id.root}"
+                        )
+                    continue
+                if any(
+                    existing_item.obligation_id == expected_id for existing_item in declarations
+                ):
+                    continue
+                declarations.append(declaration)
+        if not declarations:
+            return (
+                world,
+                None,
+                {
+                    item_id: tuple(dict.fromkeys(obligation_ids))
+                    for item_id, obligation_ids in bindings.items()
+                },
+            )
+        updated = world.model_copy(
+            update={
+                "root_hash": "sha256:" + "0" * 64,
+                "obligations": (*world.obligations, *declarations),
+            }
+        )
+        updated = updated.model_copy(update={"root_hash": world_root_content_id(updated)})
+        artifact = self._artifacts.put(
+            canonical_json_bytes(updated.model_dump(mode="json")),
+            WORLD_ROOT_MEDIA_TYPE,
+            updated.schema_version,
+        )
+        return (
+            updated,
+            WorldRootRef(**artifact.model_dump(mode="python"), root_kind=RootKind.WORLD),
+            {
+                item_id: tuple(dict.fromkeys(obligation_ids))
+                for item_id, obligation_ids in bindings.items()
+            },
+        )
+
+    @staticmethod
+    def _optional_positive_int(value: object) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value < 1:
+            raise ValueError("obligation timing fields must be positive integers")
+        return value
+
+    @staticmethod
+    def _validate_obligation_references(
+        world: WorldRootDocument,
+        incoming_nodes: tuple[PlanNode, ...],
+        incoming_goals: tuple[ChapterGoal, ...],
+        proposal: PlanProposal,
+    ) -> None:
+        known = {item.obligation_id for item in world.obligations}
+        referenced = {
+            *(obligation_id for node in incoming_nodes for obligation_id in node.obligation_ids),
+            *(obligation_id for goal in incoming_goals for obligation_id in goal.obligation_ids),
+        }
+        for item in proposal.items:
+            actions = item.payload.get("obligation_actions")
+            if not isinstance(actions, (list, tuple)):
+                continue
+            for action in actions:
+                raw_id = (
+                    action.get("obligation_id") or action.get("id")
+                    if isinstance(action, dict)
+                    else action
+                )
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    raise CandidateMaterializationError(
+                        "obligation action requires a string obligation_id"
+                    )
+                referenced.add(StableId(raw_id))
+        unknown = sorted(item.root for item in referenced if item not in known)
+        if unknown:
+            raise CandidateMaterializationError(
+                "Plan references unknown obligation ids: " + ", ".join(unknown)
+            )
 
     def _validate_temporal_obligation_use(
         self,
@@ -762,8 +1259,10 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         proposal: PlanProposal,
         base: RootManifest,
         candidate: object,
+        world: WorldRootDocument | None = None,
     ) -> None:
-        world = self._read(base.world_root, WorldRootDocument)
+        if world is None:
+            world = self._read(base.world_root, WorldRootDocument)
         text = self._read(base.text_root, TextRootDocument)
         current_chapter = text.chapters[-1].chapter_index if text.chapters else 0
         by_id = {item.obligation_id: item for item in world.obligations}
@@ -783,7 +1282,19 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 ):
                     obligation = by_id.get(obligation_id)
                     if obligation is None:
-                        continue
+                        raise CandidateMaterializationError(
+                            f"Plan references unknown obligation id: {obligation_id.root}"
+                        )
+                    if obligation.forbids_resolution(resolution_chapter):
+                        raise TemporalObligationError(
+                            "future-locked obligation cannot be resolved in this planning scope"
+                        )
+                for obligation_id in self._obligation_action_ids(item.payload):
+                    obligation = by_id.get(obligation_id)
+                    if obligation is None:
+                        raise CandidateMaterializationError(
+                            f"Plan references unknown obligation id: {obligation_id.root}"
+                        )
                     if obligation.forbids_resolution(resolution_chapter):
                         raise TemporalObligationError(
                             "future-locked obligation cannot be resolved in this planning scope"
@@ -846,7 +1357,32 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         markers = {"resolved", "payoff", "resolve"}
         status = str(payload.get("status") or payload.get("obligation_status") or "").lower()
         operation = str(payload.get("operation") or "").lower()
-        return status in markers or operation in markers or item.kind.lower() in markers
+        if status in markers or operation in markers or item.kind.lower() in markers:
+            return True
+        actions = payload.get("obligation_actions")
+        if isinstance(actions, (list, tuple)):
+            return any(
+                isinstance(action, dict)
+                and str(action.get("action") or action.get("operation") or "").lower() in markers
+                for action in actions
+            )
+        return False
+
+    @staticmethod
+    def _obligation_action_ids(payload: Mapping[str, object]) -> tuple[StableId, ...]:
+        actions = payload.get("obligation_actions")
+        if not isinstance(actions, (list, tuple)):
+            return ()
+        ids: list[StableId] = []
+        for action in actions:
+            raw_id = (
+                (action.get("obligation_id") or action.get("id"))
+                if isinstance(action, dict)
+                else action
+            )
+            if isinstance(raw_id, str) and raw_id.strip():
+                ids.append(StableId(raw_id))
+        return tuple(dict.fromkeys(ids))
 
     @classmethod
     def _goal_resolves(cls, goal: ChapterGoal, proposal: PlanProposal) -> bool:
@@ -945,6 +1481,33 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
             raise CandidateMaterializationError("accepted Draft text is blank")
         self._enforce_length_contract(text, writing_task)
         chapter_index = writing_task.target_chapter
+        language = next(
+            (
+                constraint.split("：", 1)[1].strip()
+                for constraint in writing_task.mandatory_constraints
+                if constraint.startswith("正文语言：") and constraint.split("：", 1)[1].strip()
+            ),
+            None,
+        )
+        recent_prose: list[tuple[str, bool]] = []
+        for prior in sorted(
+            (chapter for chapter in current.chapters if chapter.chapter_index < chapter_index),
+            key=lambda chapter: chapter.chapter_index,
+            reverse=True,
+        )[:4]:
+            prose = "\n".join(block.text for scene in prior.scenes for block in scene.blocks)
+            if not prose:
+                continue
+            compact = prior.chapter_index != chapter_index - 1
+            recent_prose.append((prose if not compact else prose[-1_500:], compact))
+        surface_error = draft_surface_error(
+            text,
+            target_language=language,
+            forbidden_reveals=writing_task.forbidden_reveals,
+            recent_prose=tuple(recent_prose),
+        )
+        if surface_error is not None:
+            raise CandidateMaterializationError(surface_error)
         chapter_id = self._stable_id(f"chapter.{chapter_index}", accepted.acceptance_id.root)
         scene_id = writing_task.target_scenes[0]
         block_id = self._stable_id(
@@ -953,7 +1516,7 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         chapter = ChapterDocument(
             chapter_id=chapter_id,
             chapter_index=chapter_index,
-            title=f"Chapter {chapter_index}",
+            title=f"第{chapter_index}章",
             scenes=(
                 SceneDocument(
                     scene_id=scene_id,
@@ -1008,8 +1571,8 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
     def _enforce_length_contract(text: str, writing_task: WritingTaskContract) -> None:
         length = len(text)
         policy = writing_task.length_policy
-        effective_min = int(policy.minimum_characters * 0.55)
-        effective_max = int(policy.maximum_characters * 1.20)
+        effective_min = policy.minimum_characters
+        effective_max = policy.maximum_characters
         if length < effective_min:
             raise DraftLengthContractError(
                 "accepted Draft is shorter than trusted WritingTask minimum"

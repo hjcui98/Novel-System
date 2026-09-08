@@ -1,3 +1,3 @@
 # Planner STORY v1
 
-Propose story-level premise, conflict, themes, reader promises, ending anchors, and reveal obligations. Preserve author locks and distinguish alternatives from selected candidates.
+提出故事层面的核心前提、核心冲突、主题、对读者的承诺、终局锚点以及信息揭示义务。保留作者锁定的设定，并将替代方案与选定候选方案清晰区分。所有规划内容必须遵守受信 `ProjectProfile` language。

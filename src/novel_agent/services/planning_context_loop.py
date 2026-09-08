@@ -605,6 +605,17 @@ class PlanningContextLoopService:
         event_refs: list[ArtifactRef],
     ) -> PlanningLoopResult:
         visible_author_artifacts = self._visible_author_intent_artifacts(request)
+        if (
+            request.task.mode in {AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET}
+            and request.task.source_ids
+            and not visible_author_artifacts
+        ):
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.REVIEW_REQUIRED,
+                event_refs,
+                diagnostics=("AUTHOR_AUTHORITY_NOT_VISIBLE",),
+            )
         source_payload = self._source_payload(visible_author_artifacts)
         if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
             if world is not None or text_root is not None:
@@ -661,6 +672,40 @@ class PlanningContextLoopService:
         unsupported_memory_reprompted = False
         rejected_memory_questions: dict[str, tuple[str, str]] = {}
         unsupported_memory_questions: dict[str, tuple[str, tuple[str, ...]]] = {}
+
+        def planner_skill_allowlist(
+            *, include_alternative: bool = False
+        ) -> tuple[StableId, ...] | None:
+            """Return the deployment allowlist for the current Planner turn.
+
+            An empty value is retained for non-production fixture callers.  A
+            populated production policy is a real loading boundary: the mode
+            Skill and planning-inquiry Skill must both be present, while the
+            alternative-comparison Skill is only enabled for REPLAN or an
+            actual revision turn.
+            """
+
+            if not request.allowed_skill_ids:
+                return None
+            from novel_agent.agents.planner import planner_skill_ids_for_mode
+
+            policy_ids = set(request.allowed_skill_ids)
+            mode_ids = planner_skill_ids_for_mode(request.task.mode)
+            required = {
+                StableId("skill.planning-inquiry"),
+                StableId(f"skill.planner.{request.task.mode.value}"),
+            }
+            if not required.issubset(policy_ids):
+                missing = sorted(item.root for item in required - policy_ids)
+                raise ValueError(
+                    "production Planner Skill policy is incomplete: " + ", ".join(missing)
+                )
+            alternative = StableId("skill.alternative-comparison")
+            return tuple(
+                item
+                for item in mode_ids
+                if item in policy_ids and (include_alternative or item != alternative)
+            )
 
         def record_model_call(call: object) -> None:
             nonlocal model_calls_used
@@ -741,6 +786,9 @@ class PlanningContextLoopService:
                 horizon_start=request.horizon_start,
                 horizon_end=request.horizon_end,
                 explicit_overrides=request.explicit_author_overrides,
+                allowed_skill_ids=planner_skill_allowlist(
+                    include_alternative=request.task.mode is AgentMode.REPLAN
+                ),
             )
             record_model_call(_call)
             inquiry_review, inquiry_review_ref, _call = await self._reviewer.review(
@@ -805,6 +853,9 @@ class PlanningContextLoopService:
                 explicit_overrides=request.explicit_author_overrides,
                 parent_inquiry_id=parent_inquiry.inquiry_id,
                 generation=inquiry_generation,
+                allowed_skill_ids=planner_skill_allowlist(
+                    include_alternative=request.task.mode is AgentMode.REPLAN
+                ),
             )
             record_model_call(_call)
             if self._same_inquiry_content(parent_inquiry, inquiry):
@@ -1278,6 +1329,11 @@ class PlanningContextLoopService:
                                     request.task.mode,
                                     planner_memory_rounds + 2,
                                 ),
+                                allowed_skill_ids=planner_skill_allowlist(
+                                    include_alternative=(
+                                        request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                                    )
+                                ),
                             )
                             record_model_call(_call)
                             if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
@@ -1481,6 +1537,11 @@ class PlanningContextLoopService:
                                     request.task.mode,
                                     planner_memory_rounds + 2,
                                 ),
+                                allowed_skill_ids=planner_skill_allowlist(
+                                    include_alternative=(
+                                        request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                                    )
+                                ),
                             )
                             record_model_call(_call)
                             unsupported_question_texts = {
@@ -1523,6 +1584,12 @@ class PlanningContextLoopService:
                                             request.task.mode,
                                             planner_memory_rounds + 3,
                                         ),
+                                        allowed_skill_ids=planner_skill_allowlist(
+                                            include_alternative=(
+                                                request.task.mode is AgentMode.REPLAN
+                                                or plan_revisions > 0
+                                            )
+                                        ),
                                     )
                                     record_model_call(_call)
                                     result = _retain_unsupported_memory_gaps(
@@ -1560,6 +1627,11 @@ class PlanningContextLoopService:
                         evidence_refs=planner_context.evidence_refs,
                         graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
                         request=model_request("plan", request.task.mode, 1),
+                        allowed_skill_ids=planner_skill_allowlist(
+                            include_alternative=(
+                                request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                            )
+                        ),
                     )
                     break
                 planner_source_payload = projection.rendered_context
@@ -1591,6 +1663,11 @@ class PlanningContextLoopService:
                     graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
                     request=model_request(
                         "plan_turn", request.task.mode, planner_memory_rounds + 1
+                    ),
+                    allowed_skill_ids=planner_skill_allowlist(
+                        include_alternative=(
+                            request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                        )
                     ),
                 )
                 record_model_call(_call)
@@ -1648,6 +1725,11 @@ class PlanningContextLoopService:
                                 request.task.mode,
                                 planner_memory_rounds + 2,
                             ),
+                            allowed_skill_ids=planner_skill_allowlist(
+                                include_alternative=(
+                                    request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                                )
+                            ),
                         )
                         record_model_call(_call)
                         if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
@@ -1696,6 +1778,11 @@ class PlanningContextLoopService:
                                     "plan_after_supported_memory_no_progress",
                                     request.task.mode,
                                     planner_memory_rounds + 3,
+                                ),
+                                allowed_skill_ids=planner_skill_allowlist(
+                                    include_alternative=(
+                                        request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                                    )
                                 ),
                             )
                             record_model_call(_call)
@@ -2089,6 +2176,7 @@ class PlanningContextLoopService:
                 graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
                 parent_proposal_id=parent_proposal.proposal_id,
                 request=model_request("plan_revision", request.task.mode, attempt),
+                allowed_skill_ids=planner_skill_allowlist(include_alternative=True),
             )
             record_model_call(_call)
             proposal = revised.plan_proposal
@@ -2230,8 +2318,6 @@ class PlanningContextLoopService:
     def _visible_author_intent_artifacts(
         request: PlanningLoopRequest,
     ) -> tuple[ArtifactRef, ...]:
-        if request.task.mode in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}:
-            return ()
         return request.author_intent_artifacts
 
     def _source_payload(self, artifacts: tuple[ArtifactRef, ...]) -> str:

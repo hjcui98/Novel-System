@@ -6,14 +6,15 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import Field
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.benchmark import AuthorPlanningContext, PlanRootDocument, TextRootDocument
-from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
+from novel_agent.domain.generation import WritingTaskContract
+from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId, bounded_stable_id
 from novel_agent.domain.memory import (
     CandidatePool,
     ExpectedClaimScope,
@@ -229,6 +230,174 @@ class TaskPlanConditionedNeedGenerator:
             snapshot_id=snapshot_id,
             run_id=run_id,
         ).needs
+
+    def generate_for_writing_task(
+        self,
+        task: BenchmarkTaskContract,
+        writing_task: WritingTaskContract,
+        world: WorldRootDocument,
+        plan: PlanRootDocument | None,
+        planning_context: AuthorPlanningContext | None,
+    ) -> NeedGenerationResult:
+        """Project only the accepted chapter payload's declared history Needs.
+
+        Production writing deliberately does not use the general focus extractor:
+        the chapter contract is the sole authority for historical retrieval, so
+        unrelated entities, events, and open obligations cannot fan out the Need
+        set.
+        """
+
+        del planning_context
+        if writing_task.target_chapter != task.target_chapter_start:
+            raise ValueError("WritingTask and memory task target different chapters")
+        allowed_kinds = {
+            "causal_history",
+            "knowledge_origin",
+            "relationship_origin",
+            "setup_evidence",
+            "object_origin",
+        }
+        goals = tuple(
+            goal
+            for goal in (plan.chapter_goals if plan is not None else ())
+            if goal.chapter_index == writing_task.target_chapter
+        )
+        declared: list[tuple[StableId, Mapping[str, Any]]] = []
+        for goal in goals:
+            raw_needs = goal.payload.get("history_needs")
+            if raw_needs is None:
+                continue
+            if not isinstance(raw_needs, list) or not all(
+                isinstance(item, dict) for item in raw_needs
+            ):
+                raise ValueError("history_needs must be a list of objects")
+            for item in raw_needs:
+                declared.append((goal.goal_id, cast(Mapping[str, Any], item)))
+        if len(declared) > 3:
+            raise ValueError(
+                "accepted ChapterGoal violated reviewed history_needs contract: "
+                "production writing permits at most three history Needs"
+            )
+
+        focuses: list[TaskFocus] = []
+        needs: list[Stage1MemoryNeed] = []
+        section_by_kind = {
+            "causal_history": WriterContextSection.CAUSAL_HISTORY,
+            "knowledge_origin": WriterContextSection.KNOWLEDGE_AND_DISCLOSURE,
+            "relationship_origin": WriterContextSection.RELATIONSHIP_AND_EMOTION,
+            "setup_evidence": WriterContextSection.LONG_RANGE_CALLBACKS,
+            "object_origin": WriterContextSection.CAUSAL_HISTORY,
+        }
+        intent_by_kind = {
+            "causal_history": Stage1QueryIntent.SEMANTIC_HISTORY,
+            "knowledge_origin": Stage1QueryIntent.SEMANTIC_HISTORY,
+            "relationship_origin": Stage1QueryIntent.SEMANTIC_HISTORY,
+            "setup_evidence": Stage1QueryIntent.RELATED_EVENT,
+            "object_origin": Stage1QueryIntent.RELATED_EVENT,
+        }
+        facet_by_kind = {
+            "causal_history": NeedFacetKind.CAUSAL_HISTORY,
+            "knowledge_origin": NeedFacetKind.KNOWLEDGE_BOUNDARY,
+            "relationship_origin": NeedFacetKind.RELATION_STATE,
+            "setup_evidence": NeedFacetKind.SETUP,
+            "object_origin": NeedFacetKind.CAUSAL_HISTORY,
+        }
+        entity_ids = {entity.entity_id for entity in world.entities}
+        resolved_run_id = RunId(f"run.stage2m.{task.task_id.root}"[:128])
+        resolved_task_id = TaskId(task.task_id.root)
+        for index, (goal_id, raw) in enumerate(declared):
+            kind = raw.get("kind") or raw.get("need_type")
+            if not isinstance(kind, str) or kind not in allowed_kinds:
+                raise ValueError(f"history Need kind is not allowed: {kind!r}")
+            query = raw.get("query") or raw.get("question") or raw.get("description")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("history Need requires a non-empty query")
+            query = query.strip()
+            raw_entities = raw.get("entity_ids", [])
+            if not isinstance(raw_entities, list) or not all(
+                isinstance(item, str) for item in raw_entities
+            ):
+                raise ValueError("history Need entity_ids must be a string list")
+            selected_entities = tuple(dict.fromkeys(StableId(item) for item in raw_entities))
+            if not set(selected_entities).issubset(entity_ids):
+                raise ValueError("history Need references an unknown entity")
+            need_id = bounded_stable_id(
+                f"need.production.history.{goal_id.root}", f"need.production.history.{index}"
+            )
+            focus = TaskFocus(
+                focus_id=bounded_stable_id(
+                    f"focus.production.history.{goal_id.root}", f"focus.production.history.{index}"
+                ),
+                focus_type=TaskFocusType.PLAN_INTENT,
+                canonical_id=goal_id,
+                source=TaskFocusSource.PLAN_INTENT,
+                reason="explicit history Need declared by the accepted ChapterGoal payload",
+            )
+            focuses.append(focus)
+            facet_kind = facet_by_kind[kind]
+            predicates = (
+                tuple(
+                    item.strip()
+                    for item in raw.get("predicates", [])
+                    if isinstance(item, str) and item.strip()
+                )
+                if isinstance(raw.get("predicates", []), list)
+                else ()
+            )
+            facets, completion_spec = self._completion_contract(
+                need_id=need_id,
+                need_type=kind,
+                section=section_by_kind[kind],
+                task=task,
+                focus=focus,
+                allow_plan=False,
+                mandatory=True,
+                facet_kinds_override=(facet_kind,),
+                predicates_by_facet={facet_kind: tuple(dict.fromkeys(predicates))},
+            )
+            needs.append(
+                Stage1MemoryNeed(
+                    need_id=need_id,
+                    run_id=resolved_run_id,
+                    task_id=resolved_task_id,
+                    base_commit=world.source_commit,
+                    horizon_target=(task.target_chapter_start, task.target_chapter_end),
+                    need_type=kind,
+                    query_intent=intent_by_kind[kind],
+                    query_text=query,
+                    entity_ids=selected_entities,
+                    predicates=tuple(dict.fromkeys(predicates)),
+                    access_scope="writer_safe",
+                    allow_plan=False,
+                    planner_may_read_plan=True,
+                    retrieval_may_return_plan=False,
+                    claim_may_cite_plan=False,
+                    legacy_allow_plan=False,
+                    why_needed=str(raw.get("why_needed") or query),
+                    risk_level=NeedRisk.HIGH,
+                    requirement=RequirementLevel.MANDATORY,
+                    preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
+                    allowed_candidate_pools=(CandidatePool.ANCHOR, CandidatePool.GROUNDED),
+                    expected_evidence_types=("structured_record", "text_span"),
+                    stop_condition="served by cutoff-safe exact evidence or an explicit typed gap",
+                    purpose=query,
+                    expected_section=section_by_kind[kind],
+                    focus_ids=(focus.focus_id,),
+                    priority=90,
+                    query_hints=(query,),
+                    completion_criteria="every declared history facet is served or typed as a gap",
+                    need_facets=facets,
+                    completion_spec=completion_spec,
+                )
+            )
+        return NeedGenerationResult(
+            task_id=task.task_id,
+            focus_set=FocusSet(task_id=task.task_id, focuses=tuple(focuses)),
+            needs=tuple(needs),
+            status=NeedGenerationStatus.READY if needs else NeedGenerationStatus.NO_FOCUS,
+            need_completion_spec_version=self.completion_spec_version,
+            generator_version=f"{self.version}.production_contract",
+        )
 
     def generate_with_lineage(
         self,

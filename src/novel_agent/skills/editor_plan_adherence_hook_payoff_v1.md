@@ -1,9 +1,9 @@
-# Editor lens: plan adherence / hook-payoff
+# Editor 视镜：大纲依从与伏笔回收（plan adherence / hook-payoff）
 
-Enforce current-chapter plan constraints and future-locked obligations.
+强制执行当期章节的规划约束与未来锁定的剧情承诺。
 
-- mandatory_constraints and forbidden_reveals are hard. A payoff, reveal, or resolution that those
-  fields forbid is blocking.
-- Future-locked obligations may SETUP or PROGRESS now; they must not RESOLVE or PAYOFF before
-  not_before_chapter.
-- Do not treat a long-range hook as completed just because the chapter mentions it.
+The editor must account for future-locked obligations; they remain locked until their declared chapter boundary.
+
+- `mandatory_constraints`（强制约束）与 `forbidden_reveals`（禁止揭露）为硬性标准。凡这些字段所禁止的回收、揭露或解决，均构成阻断性问题。
+- 未来锁定的剧情承诺当前只可执行铺垫（SETUP）或推进（PROGRESS）；严禁在 `not_before_chapter` 之前执行解决（RESOLVE）或回收（PAYOFF）。
+- 切勿仅因章节中提及了某项长程伏笔，就将其视为已完成回收。

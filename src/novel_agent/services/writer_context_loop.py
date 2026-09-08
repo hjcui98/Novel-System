@@ -47,6 +47,7 @@ from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.runtime import RunEventType
 from novel_agent.domain.stage2 import AgentMode, ProjectProfileRootDocument
+from novel_agent.domain.world import PlanNode
 from novel_agent.domain.writer_context import EvidenceLedgerV2, WriterContextPackageV2
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
@@ -620,6 +621,24 @@ class WriterContextLoopService:
             final_id = initial_draft.draft_id
             final_text = initial_draft.text_artifact
             final_hints = active_turn.output.declared_memory_hints
+        if report.planner_replan_required:
+            return self._result(
+                request,
+                WritingLoopTerminalStatus.REVIEW_REQUIRED,
+                (
+                    "Editor reports that the accepted Plan cannot be repaired by Writer; "
+                    "manual replan required"
+                ),
+                view=view,
+                work_plan=work_plan,
+                initial_draft=initial_draft,
+                reports=tuple(reports),
+                final_candidate_id=initial_draft.draft_id,
+                final_text_artifact=initial_draft.text_artifact,
+                deltas=tuple(deltas),
+                compactions=tuple(compactions),
+                artifacts=tuple(artifacts),
+            )
         if report.verdict is EditorialVerdict.LOCAL_REPAIR:
             if request.budgets.max_local_repairs < 1:
                 return self._result(
@@ -723,6 +742,25 @@ class WriterContextLoopService:
                         artifacts=tuple(artifacts),
                     )
                 break
+            if verification.planner_replan_required:
+                return self._result(
+                    request,
+                    WritingLoopTerminalStatus.REVIEW_REQUIRED,
+                    (
+                        "Editor reports that the accepted Plan cannot be repaired by Writer; "
+                        "manual replan required"
+                    ),
+                    view=view,
+                    work_plan=work_plan,
+                    initial_draft=initial_draft,
+                    repaired_draft=repaired_draft,
+                    reports=tuple(reports),
+                    final_candidate_id=repaired_draft.draft_id,
+                    final_text_artifact=repaired_draft.text_artifact,
+                    deltas=tuple(deltas),
+                    compactions=tuple(compactions),
+                    artifacts=tuple(artifacts),
+                )
             if verification.verdict is not EditorialVerdict.PASS:
                 return self._result(
                     request,
@@ -896,6 +934,25 @@ class WriterContextLoopService:
                     final_text = rewritten_draft.text_artifact
                     final_hints = rewrite_turn.output.declared_memory_hints
                     break
+                if major_verification.planner_replan_required:
+                    return self._result(
+                        request,
+                        WritingLoopTerminalStatus.REVIEW_REQUIRED,
+                        (
+                            "Editor reports that the accepted Plan cannot be repaired by Writer; "
+                            "manual replan required"
+                        ),
+                        view=view,
+                        work_plan=work_plan,
+                        initial_draft=initial_draft,
+                        rewritten_draft=rewritten_draft,
+                        reports=tuple(reports),
+                        final_candidate_id=rewritten_draft.draft_id,
+                        final_text_artifact=rewritten_draft.text_artifact,
+                        deltas=tuple(deltas),
+                        compactions=tuple(compactions),
+                        artifacts=tuple(artifacts),
+                    )
                 if (
                     major_verification.verdict is not EditorialVerdict.MAJOR_REWRITE
                     or rewrite_attempt >= request.budgets.max_major_rewrites
@@ -1315,22 +1372,55 @@ class WriterContextLoopService:
         except ValueError:
             return raw.decode("utf-8")
         target = request.writing_task.target_chapter
+        target_end = target + 2
+        recent_goals = tuple(
+            goal
+            for goal in plan.chapter_goals
+            if max(1, target - 4) <= goal.chapter_index <= target_end
+        )
         goals = tuple(
-            goal for goal in plan.chapter_goals if target - 1 <= goal.chapter_index <= target + 2
+            goal for goal in plan.chapter_goals if target <= goal.chapter_index <= target_end
         )
         selected_goal_ids = {goal.goal_id for goal in goals}
         active_obligations = set(request.writing_task.active_plan_obligations)
-        nodes = tuple(
-            node
-            for node in plan.nodes
-            if node.plan_node_id in selected_goal_ids
-            or bool(set(node.obligation_ids) & active_obligations)
-        )
+        by_id = {node.plan_node_id: node for node in plan.nodes}
+
+        def covers(node: object, chapter_start: int, chapter_end: int) -> bool:
+            start = getattr(node, "chapter_start", None)
+            end = getattr(node, "chapter_end", None)
+            payload = getattr(node, "payload", {})
+            if isinstance(payload, dict):
+                chapter_index = payload.get("chapter_index")
+                if type(chapter_index) is int and chapter_start <= chapter_index <= chapter_end:
+                    return True
+            return (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and start <= chapter_end
+                and chapter_start <= end
+            )
+
+        selected: set[StableId] = set()
+        for node in plan.nodes:
+            if not (
+                node.plan_node_id in selected_goal_ids
+                or bool(set(node.obligation_ids) & active_obligations)
+                or covers(node, target, target_end)
+                or (node.plan_level is not None and node.plan_level.value == "story")
+            ):
+                continue
+            current: PlanNode | None = node
+            while current is not None:
+                selected.add(current.plan_node_id)
+                current = by_id.get(current.parent_id) if current.parent_id is not None else None
+        nodes = tuple(node for node in plan.nodes if node.plan_node_id in selected)
         return canonical_json_bytes(
             {
                 "revision": request.accepted_plan.revision,
                 "target_chapter": target,
                 "chapter_goals": [goal.model_dump(mode="json") for goal in goals],
+                "recent_chapter_goals": [goal.model_dump(mode="json") for goal in recent_goals],
+                "plan_ancestor_chain": [node.model_dump(mode="json") for node in nodes],
                 "relevant_plan_nodes": [node.model_dump(mode="json") for node in nodes],
             }
         ).decode("utf-8")

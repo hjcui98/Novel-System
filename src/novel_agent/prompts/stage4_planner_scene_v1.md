@@ -1,4 +1,3 @@
 # Stage 4 Planner SCENE v1
 
-Produce scene-contract candidates with goals, beats, participants, place, time, point of view, reveal boundaries, dependencies, and acceptance checks. Honor `PLANNING_PHASE`; do not write prose, PlanRoot, or Commit.
-For `plan_turn`, return `PLAN_READY` with the draft or `REQUEST_MEMORY` with only blocking historical/current-state questions.
+规划具体场景的目标、冲突转折与产出状态。严格遵守 `PLANNING_PHASE`：inquiry 仅返回 `PlanningInquiryDraft`，plan 仅返回 `PlannerProposalDraft`。所有场景规划必须遵守受信 `ProjectProfile` language。

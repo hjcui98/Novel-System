@@ -57,7 +57,16 @@ def _curator_output_type(source_ids: tuple[StableId, ...]) -> type[CuratorBootst
 
     class BoundCuratorBootstrapDraft(CuratorBootstrapDraft):
         @classmethod
-        def model_validate_json(
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            schema = super().model_json_schema(*args, **kwargs)
+            required = list(schema.get("required", []))
+            if "items" not in required:
+                required.append("items")
+            schema["required"] = required
+            return schema
+
+        @classmethod
+        def model_validate_json(  # type: ignore[override]
             cls, json_data: str | bytes | bytearray, **kwargs: Any
         ) -> CuratorBootstrapDraft:
             if isinstance(json_data, (bytes, bytearray)):
@@ -66,7 +75,9 @@ def _curator_output_type(source_ids: tuple[StableId, ...]) -> type[CuratorBootst
             return CuratorBootstrapDraft.model_validate_json(json.dumps(payload), **kwargs)
 
         @classmethod
-        def model_validate(cls, obj: Any, **kwargs: Any) -> CuratorBootstrapDraft:
+        def model_validate(  # type: ignore[override]
+            cls, obj: Any, **kwargs: Any
+        ) -> CuratorBootstrapDraft:
             if isinstance(obj, dict):
                 payload = _bind_omitted_author_sources(obj, default_sources)
                 return CuratorBootstrapDraft.model_validate_json(json.dumps(payload), **kwargs)

@@ -1,6 +1,11 @@
-# Style and genre constraints method v1
+# 风格与题材约束方法（Style and genre constraints method）v1
 
-Apply the pinned Project Profile's genre, tone, diction, imagery, paragraph rhythm, and prohibited
-patterns after factual and epistemic constraints are satisfied. Preserve author-specific constraints
-without imitating unnamed external text. Style must not override continuity, plan obligations, or
-information boundaries.
+在满足事实与认知约束的前提下，严格应用项目设定画像（Project Profile）中的语言、题材类型、情感基调、文笔措辞、意象营造、段落节奏以及禁止模式。保持作者特定的风格约束，不得刻意模仿未命名的外部文本。风格表达绝不能凌驾于叙事连续性、计划承诺或信息边界之上。
+
+## 可执行检查
+
+1. 核心冲突机制是否仍属于 Profile 规定的目标题材。
+2. 专有名词、力量体系和意象是否来自 Profile 或当前 World；正文已经用动作证明的内容不要重复解释。
+3. 避免连续使用同一连接结构、身体反应和总结句；把模板化密度异常报告给 Editor，而不是把单个词当绝对黑名单。
+4. 段落长度应随动作、对话和思考自然变化；是否允许整章长段服从 Profile 的 paragraph policy。
+5. 内部自检题材契约、模板密度、解释性语言和段落节奏；不输出“去 AI 化”之类的元评价。

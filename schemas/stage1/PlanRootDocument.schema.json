@@ -24,6 +24,21 @@
           "title": "Obligation Ids",
           "type": "array"
         },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
         "summary": {
           "minLength": 1,
           "title": "Summary",
@@ -38,6 +53,7 @@
       "title": "ChapterGoal",
       "type": "object"
     },
+    "JsonValue": {},
     "PlanLevel": {
       "enum": [
         "story",
@@ -102,6 +118,13 @@
           ],
           "default": null
         },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
         "plan_level": {
           "anyOf": [
             {
@@ -115,6 +138,14 @@
         },
         "plan_node_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
         },
         "summary": {
           "title": "Summary",

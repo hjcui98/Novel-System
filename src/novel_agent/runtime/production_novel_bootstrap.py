@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field, JsonValue
 from sqlalchemy.orm import Session, sessionmaker
@@ -180,6 +180,13 @@ class ProductionNovelBootstrap:
         if planner is None or curator is None:
             if not self._endpoints or self._run_id is None:
                 raise ValueError("bootstrap prepare requires Planner and Curator owners")
+            authority_sources = tuple(
+                item for item in ingested if item.source.source_class in _PLAN_SOURCE_CLASSES
+            )
+            profile_sources = tuple(
+                item for item in ingested if item.source.source_class in _PROFILE_SOURCE_CLASSES
+            )
+            planner_sources = _unique_ingested_sources((*authority_sources, *profile_sources))
             planner, curator = bind_bootstrap_model_agents(
                 artifacts=self._artifacts,
                 endpoints=self._endpoints,
@@ -188,6 +195,18 @@ class ProductionNovelBootstrap:
                 source_ids=tuple(item.source.source_id for item in ingested),
                 source_payload=_joined_source_payload(ingested),
                 source_artifacts=tuple(item.source.artifact_ref for item in ingested),
+                planner_source_ids=tuple(item.source.source_id for item in planner_sources),
+                planner_source_payload=_planner_bootstrap_source_payload(
+                    authority_sources, profile_sources
+                ),
+                planner_source_artifacts=tuple(
+                    item.source.artifact_ref for item in planner_sources
+                ),
+                planner_profile_source_ids=tuple(
+                    item.source.source_id
+                    for item in profile_sources
+                    if item.source.source_class is SourceClass.STYLE_GUIDE
+                ),
             )
         planner_result = await planner()
         world_patch = _merge_world_patch(await curator(), planner_result)
@@ -210,6 +229,15 @@ class ProductionNovelBootstrap:
             planner_result,
             self._schema_version,
             brief_text,
+            profile_source_texts=tuple(
+                (
+                    item.source.source_id,
+                    item.source.source_class,
+                    self._artifacts.read_verified(item.source.artifact_ref).decode("utf-8"),
+                )
+                for item in ingested
+                if item.source.source_class in _PROFILE_SOURCE_CLASSES
+            ),
             model_profiles=tuple(ep.endpoint_name for ep in self._endpoints)
             or ("qwen38-27b-fp8@8005",),
         )
@@ -319,9 +347,21 @@ class ProductionNovelBootstrap:
         target_chapters: int,
         run_id: RunId,
         object_store_root: Path,
+        retrieval_backend_profile: str = "memory",
+        endpoint_request_limit: int = 1,
+        kv_token_budget: int | None = None,
+        scheduling_timeout_seconds: float = 120.0,
     ) -> tuple[CreativeRunPolicy, CreativeRunRequest, ProductionRunDescriptor]:
         if target_chapters < 1:
             raise ValueError("target_chapters must be positive")
+        if retrieval_backend_profile not in {"memory", "real_hybrid"}:
+            raise ValueError("retrieval_backend_profile must be memory or real_hybrid")
+        if endpoint_request_limit not in {1, 2}:
+            raise ValueError("endpoint_request_limit must be 1 or 2")
+        if kv_token_budget is not None and kv_token_budget < 1:
+            raise ValueError("kv_token_budget must be positive")
+        if scheduling_timeout_seconds <= 0:
+            raise ValueError("scheduling_timeout_seconds must be positive")
         document = (
             prepared
             if isinstance(prepared, PreparedNovelBootstrapDocument)
@@ -365,21 +405,96 @@ class ProductionNovelBootstrap:
             approvals,
             self._clock,
         ).commit(candidates, document.validation, document.approval_request.approval_request_id)
-        policy_hash = content_id(
-            {
-                "automation_mode": AutomationMode.AUTO.value,
-                "auto_accept_plan": True,
-                "auto_accept_draft": True,
-                "project_id": document.project_id.root,
-                "run_id": run_id.root,
-            }
+        from novel_agent.adapters.model.production_fake import ProductionChapterEndpoint
+        from novel_agent.runtime.production_bootstrap import (
+            _default_settlement_policy,
+            _default_stage4_policy,
+            _default_writing_policy,
+            load_production_assembly_spec,
+            production_configuration_fingerprint,
+            production_contract_pins,
+        )
+        from novel_agent.services.model_gateway import RegisteredModelEndpoint
+
+        spec = load_production_assembly_spec()
+        prompt_pins, skill_pins = production_contract_pins(schema_version=self._schema_version)
+        endpoint_names = (
+            tuple(endpoint.endpoint_name for endpoint in self._endpoints)
+            or document.profile.model_profiles
+        )
+        endpoints = self._endpoints or tuple(
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name=endpoint_name,
+                model_name=(
+                    "production-fake-v1"
+                    if endpoint_name == "deterministic-fake-production"
+                    else endpoint_name.split("@", 1)[0]
+                ),
+                revision=(
+                    "production-fake-v1"
+                    if endpoint_name == "deterministic-fake-production"
+                    else endpoint_name.split("@", 1)[0]
+                ),
+                adapter=ProductionChapterEndpoint(),
+                sequence_limit=spec.model_policy.sequence_limit,
+                output_limit=12_000,
+                safety_allowance_tokens=(
+                    256 if endpoint_name == "deterministic-fake-production" else 1_000
+                ),
+                estimated_reasoning_reserve=2_048,
+                global_output_cap=131_072,
+            )
+            for endpoint_name in endpoint_names
+        )
+        settlement = _default_settlement_policy(spec)
+        writing = _default_writing_policy(spec)
+        stage4 = _default_stage4_policy(spec)
+        policy_seed = CreativeRunPolicy(
+            automation_mode=AutomationMode.AUTO,
+            policy_hash=ZERO_HASH.root,
+            permission_hash=ZERO_HASH.root,
+            auto_accept_plan=False,
+            auto_accept_draft=False,
+            max_task_attempts=3,
+            max_tasks_per_advance=1,
+            planning_horizon=5,
+            runtime_parallelism=1,
+            enable_planner_lookahead=False,
+        )
+        policy_hash = production_configuration_fingerprint(
+            spec=spec,
+            migration_head=spec.expected_migration_head,
+            prompt_pins=prompt_pins,
+            skill_pins=skill_pins,
+            endpoints=endpoints,
+            retrieval_backend_profile=retrieval_backend_profile,
+            reranker_declared=spec.reranker_required,
+            reranker_resolved=retrieval_backend_profile == "real_hybrid",
+            profile_root_hash=document.profile.root_hash,
+            settlement_policy_fingerprint=settlement.configuration_fingerprint,
+            run_policy=policy_seed,
+            admission_policy={
+                "endpoint_request_limit": endpoint_request_limit,
+                "configured_kv_token_budget": kv_token_budget,
+                "effective_kv_token_budget": (
+                    None if kv_token_budget is None else int(kv_token_budget * 0.80)
+                ),
+                "kv_safety_reserve_ratio": 0.20,
+                "scheduling_timeout_seconds": scheduling_timeout_seconds,
+            },
+            trusted_budget_payload={
+                "writing": writing.budgets.model_dump(mode="json"),
+                "stage4": stage4.budgets.model_dump(mode="json"),
+                "settlement": settlement.budget.model_dump(mode="json"),
+            },
         ).root
         policy = CreativeRunPolicy(
             automation_mode=AutomationMode.AUTO,
             policy_hash=policy_hash,
             permission_hash=policy_hash,
-            auto_accept_plan=True,
-            auto_accept_draft=True,
+            auto_accept_plan=False,
+            auto_accept_draft=False,
             max_task_attempts=3,
             max_tasks_per_advance=1,
             planning_horizon=5,
@@ -392,7 +507,11 @@ class ProductionNovelBootstrap:
             basis_commit=genesis.commit_id,
             basis_snapshot=snapshot_id_for_commit(genesis.commit_id),
             policy=policy,
-            input_artifact_refs=tuple(asset.artifact for asset in document.reference.assets),
+            input_artifact_refs=tuple(
+                asset.artifact
+                for asset in document.reference.assets
+                if asset.source_class in _PLAN_SOURCE_CLASSES
+            ),
             current_chapter=0,
             target_chapters=target_chapters,
             plan_level=PlanLevel.STORY,
@@ -426,8 +545,10 @@ COMPOSITE_BRIEF_CHARS = 4_000
 _PLAN_SOURCE_CLASSES = frozenset(
     {SourceClass.AUTHOR_INITIAL_BRIEF, SourceClass.AUTHOR_KNOWN_FUTURE_PLAN}
 )
+_PROFILE_SOURCE_CLASSES = frozenset({SourceClass.AUTHOR_INITIAL_BRIEF, SourceClass.STYLE_GUIDE})
 _WORLD_SOURCE_CLASSES = frozenset({SourceClass.AUTHOR_INITIAL_BRIEF, SourceClass.BASELINE_SETTING})
 _PROFILE_KEYS = (
+    "language",
     "title",
     "book_title",
     "genre",
@@ -443,9 +564,25 @@ _PROFILE_KEYS = (
     "pov",
     "narrative_person",
     "style",
+    "genre_required_markers",
+    "genre_warning_domains",
+    "paragraph_policy",
+    "prose_preferences",
+    "template_watchlist",
+    "style_examples",
     "premise",
     "one_sentence_summary",
     "audience",
+)
+_CAPABILITY_KEYS = (
+    "target_chapters",
+    "expected_volume_count",
+    "volume_count",
+    "volume_windows",
+    "timeline_locks",
+    "reveal_windows",
+    "progression_locks",
+    "planning_constraints",
 )
 
 
@@ -464,6 +601,58 @@ def _plan_root(
     nodes: list[PlanNode] = []
     goals: list[ChapterGoal] = []
     seen: set[StableId] = set()
+    all_items = (
+        *result.plan_proposal.items,
+        *(result.project_intent.items if result.project_intent else ()),
+    )
+    known_ids = {item.item_id for item in all_items}
+
+    def stable_ids(item: ProposedItem, key: str) -> tuple[StableId, ...]:
+        raw = item.payload.get(key)
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        values: list[StableId] = []
+        for value in raw:
+            if isinstance(value, str):
+                values.append(StableId(value))
+        return tuple(dict.fromkeys(values))
+
+    def plan_level(item: ProposedItem) -> PlanLevel | None:
+        raw = item.payload.get("plan_level") or item.payload.get("level") or item.kind
+        if not isinstance(raw, str):
+            return None
+        normalized = raw.strip().lower().replace("-", "_")
+        aliases = {
+            "story": PlanLevel.STORY,
+            "arc": PlanLevel.ARC_VOLUME,
+            "arc_volume": PlanLevel.ARC_VOLUME,
+            "volume": PlanLevel.ARC_VOLUME,
+            "volume_scope": PlanLevel.ARC_VOLUME,
+            "chapter_set": PlanLevel.CHAPTER_SET,
+            "chapterset": PlanLevel.CHAPTER_SET,
+            "chapter": PlanLevel.CHAPTER,
+            "scene": PlanLevel.SCENE,
+        }
+        return aliases.get(normalized)
+
+    def optional_int(item: ProposedItem, key: str) -> int | None:
+        value = item.payload.get(key)
+        if type(value) is int and value >= 1:
+            return value
+        for range_key in ("chapter_range", "chapter_window", "target_window"):
+            raw_range = item.payload.get(range_key)
+            if isinstance(raw_range, dict):
+                candidate = raw_range.get("start" if key == "chapter_start" else "end")
+                if type(candidate) is int and candidate >= 1:
+                    return candidate
+            elif isinstance(raw_range, str):
+                match = re.fullmatch(r"\s*(\d+)\s*[-~～至到]\s*(\d+)\s*", raw_range)
+                if match is not None:
+                    candidate = match.group(1 if key == "chapter_start" else 2)
+                    return int(candidate)
+        return None
 
     def add_node(item: ProposedItem) -> None:
         if item.item_id in seen:
@@ -474,29 +663,45 @@ def _plan_root(
         if title == item.kind and summary != item.kind:
             title = summary[:48]
         chapter_index = item.payload.get("chapter_index")
+        obligation_ids = stable_ids(item, "obligation_ids")
+        source_ids = tuple(dict.fromkeys(item.source_ids))
+        payload = dict(item.payload)
         if type(chapter_index) is int and 1 <= chapter_index <= OPENING_CHAPTER_GOAL_LIMIT:
             goals.append(
                 ChapterGoal(
                     goal_id=item.item_id,
                     chapter_index=chapter_index,
                     summary=summary or title,
+                    obligation_ids=obligation_ids,
+                    source_ids=source_ids,
+                    payload=payload,
                 )
             )
             return
+        parent_raw = item.payload.get("parent_id") or item.payload.get("parent_plan_node_id")
+        parent_id = (
+            StableId(parent_raw)
+            if isinstance(parent_raw, str) and parent_raw in {item_id.root for item_id in known_ids}
+            else None
+        )
         nodes.append(
             PlanNode(
                 plan_node_id=item.item_id,
                 node_type=item.kind,
                 title=title,
                 summary=summary,
+                parent_id=parent_id,
+                obligation_ids=obligation_ids,
+                source_ids=source_ids,
+                payload=payload,
+                plan_level=plan_level(item),
+                chapter_start=optional_int(item, "chapter_start"),
+                chapter_end=optional_int(item, "chapter_end"),
             )
         )
 
-    for item in result.plan_proposal.items:
+    for item in all_items:
         add_node(item)
-    if result.project_intent is not None:
-        for item in result.project_intent.items:
-            add_node(item)
     provisional = PlanRootDocument(
         root_hash=ZERO_HASH,
         schema_version=schema_version,
@@ -584,14 +789,59 @@ def _profile_root(
     schema_version: SchemaVersion,
     brief_text: str = "",
     *,
+    profile_source_texts: tuple[tuple[StableId, SourceClass, str], ...] = (),
     model_profiles: tuple[str, ...] = ("qwen38-27b-fp8@8005",),
 ) -> ProjectProfileRootDocument:
     style: dict[str, JsonValue] = dict(_profile_from_brief(brief_text))
+    capability: dict[str, JsonValue] = {}
+    profile_source_ids = [
+        source_id.root for source_id, _source_class, _text in profile_source_texts
+    ]
+    if profile_source_ids:
+        style["constraint_source_ids"] = list(dict.fromkeys(profile_source_ids))
+    style_guides = [
+        {"source_id": source_id.root, "text": text}
+        for source_id, source_class, text in profile_source_texts
+        if source_class is SourceClass.STYLE_GUIDE and text.strip()
+    ]
+    if style_guides:
+        style["style_guide_sources"] = cast(JsonValue, style_guides)
+
+    def merge_mapping(target: dict[str, JsonValue], value: object) -> None:
+        if not isinstance(value, dict):
+            return
+        for key, nested in value.items():
+            if isinstance(key, str) and nested not in (None, ""):
+                target[key] = nested
 
     def absorb(item: ProposedItem) -> None:
+        payload = item.payload
+        merge_mapping(style, payload.get("style_profile"))
+        merge_mapping(capability, payload.get("capability_profile"))
+        source_ids = [source_id.root for source_id in item.source_ids]
+        if source_ids:
+            style_sources = style.setdefault("constraint_source_ids", [])
+            if isinstance(style_sources, list):
+                style_sources.extend(
+                    source_id for source_id in source_ids if source_id not in style_sources
+                )
+            capability_sources = capability.setdefault("constraint_source_ids", [])
+            if isinstance(capability_sources, list):
+                capability_sources.extend(
+                    source_id for source_id in source_ids if source_id not in capability_sources
+                )
         for key, value in item.payload.items():
             if key in _PROFILE_KEYS and key not in style and value not in (None, ""):
                 style[key] = value
+            if key in _CAPABILITY_KEYS and value not in (None, ""):
+                if key == "planning_constraints" and isinstance(value, dict):
+                    existing = capability.get(key)
+                    if isinstance(existing, dict):
+                        capability[key] = {**existing, **value}
+                    else:
+                        capability[key] = value
+                elif key not in capability:
+                    capability[key] = value
         title = _payload_text(item, "title", "book_title")
         if title and "title" not in style:
             style["title"] = title
@@ -608,6 +858,12 @@ def _profile_root(
     if result.project_intent is not None:
         for item in result.project_intent.items:
             absorb(item)
+    style.setdefault("language", "zh-CN")
+    for key in ("target_chapters", "expected_volume_count", "volume_count"):
+        if key in style and key not in capability:
+            capability[key] = style[key]
+    if capability:
+        capability.setdefault("planning_constraints", {})
     contract = ContractRef(
         contract_id=StableId("agent.production-bootstrap"),
         version=schema_version,
@@ -628,6 +884,7 @@ def _profile_root(
         root_hash=ZERO_HASH,
         schema_version=schema_version,
         style_profile=style,
+        capability_profile=capability,
         agent_specs=(contract,),
         prompt_contracts=(prompt,),
         skill_contracts=(skill,),
@@ -641,21 +898,29 @@ def _profile_root(
 
 def _profile_from_brief(brief_text: str) -> dict[str, JsonValue]:
     style: dict[str, JsonValue] = {}
-    title = re.search(r"书名[^：:\n]*[：:]\s*[《“\"]?([^》”\"\n]+)[》”\"]?", brief_text)  # noqa: RUF001
+    title = re.search(r"书名[^：:\n]*[：:]\s*[《“\"]?([^》”\"\n]+)[》”\"]?", brief_text)
     if title is not None:
         style["title"] = title.group(1).strip()
-    genre = re.search(r"题材[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
+    genre = re.search(r"题材[^：:\n]*[：:]\s*(.+)", brief_text)
     if genre is not None:
         style["genre"] = genre.group(1).strip()
-    chapters = re.search(r"预计章节数[^：:\n]*[：:]\s*(\d+)", brief_text)  # noqa: RUF001
+    chapters = re.search(r"预计章节数[^：:\n]*[：:]\s*(\d+)", brief_text)
     if chapters is not None:
         style["target_chapters"] = int(chapters.group(1))
-    band = re.search(r"每章\s*(\d+)\s*[-~～到至]+\s*(\d+)\s*字", brief_text)  # noqa: RUF001
+    volumes = re.search(r"(?:预计|共|全书)?\s*(\d+)\s*卷", brief_text)
+    if volumes is not None:
+        style["expected_volume_count"] = int(volumes.group(1))
+    band = re.search(r"每章\s*(\d+)\s*[-~～到至]+\s*(\d+)\s*字", brief_text)
     if band is not None:
         style["minimum_characters"] = int(band.group(1))
-        style["target_characters"] = int(band.group(1))
-        style["maximum_characters"] = int(band.group(2))
-    premise = re.search(r"一句话概括[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
+        minimum = int(band.group(1))
+        maximum = int(band.group(2))
+        style["target_characters"] = (minimum + maximum) // 2
+        style["maximum_characters"] = maximum
+    style.setdefault("minimum_characters", 3_000)
+    style.setdefault("target_characters", 4_000)
+    style.setdefault("maximum_characters", 5_000)
+    premise = re.search(r"一句话概括[^：:\n]*[：:]\s*(.+)", brief_text)
     if premise is not None:
         style["premise"] = premise.group(1).strip()
     return style
@@ -665,6 +930,33 @@ def _joined_source_payload(ingested: tuple[IngestedBootstrapSource, ...]) -> str
     return "\n\n".join(
         f"SOURCE={item.source.source_id.root}\nCLASS={item.source.source_class.value}\n{item.parsed}"
         for item in ingested
+    )
+
+
+def _unique_ingested_sources(
+    ingested: tuple[IngestedBootstrapSource, ...],
+) -> tuple[IngestedBootstrapSource, ...]:
+    seen: set[StableId] = set()
+    result: list[IngestedBootstrapSource] = []
+    for item in ingested:
+        if item.source.source_id in seen:
+            continue
+        seen.add(item.source.source_id)
+        result.append(item)
+    return tuple(result)
+
+
+def _planner_bootstrap_source_payload(
+    authority_sources: tuple[IngestedBootstrapSource, ...],
+    profile_sources: tuple[IngestedBootstrapSource, ...],
+) -> str:
+    return (
+        '<STORY_AUTHORITY_DATA instruction_authority="story-facts-only">\n'
+        + (_joined_source_payload(authority_sources) or "(none)")
+        + "\n</STORY_AUTHORITY_DATA>\n"
+        + '<PROFILE_SOURCE_DATA instruction_authority="style-only">\n'
+        + (_joined_source_payload(profile_sources) or "(none)")
+        + "\n</PROFILE_SOURCE_DATA>"
     )
 
 
@@ -879,6 +1171,18 @@ def _route_bootstrap_citations(
 
     classes = {item.source.source_id: item.source.source_class for item in ingested}
     fallback = _brief_source_id(ingested)
+    project_intent = None
+    if planner_result.project_intent is not None:
+        project_intent = planner_result.project_intent.model_copy(
+            update={
+                "items": _route_items(
+                    planner_result.project_intent.items,
+                    _PLAN_SOURCE_CLASSES,
+                    classes,
+                    fallback,
+                )
+            }
+        )
     plan_proposal = planner_result.plan_proposal.model_copy(
         update={
             "items": _route_items(
@@ -887,7 +1191,9 @@ def _route_bootstrap_citations(
         }
     )
     return (
-        planner_result.model_copy(update={"plan_proposal": plan_proposal}),
+        planner_result.model_copy(
+            update={"project_intent": project_intent, "plan_proposal": plan_proposal}
+        ),
         world_patch.model_copy(
             update={
                 "items": _route_items(world_patch.items, _WORLD_SOURCE_CLASSES, classes, fallback),
@@ -917,6 +1223,55 @@ def _production_genesis_sufficiency(
     has_title = any(key in profile for key in ("title", "book_title"))
     has_genre = any(key in profile for key in ("genre", "genres", "题材"))
     composite = len(brief_text) >= COMPOSITE_BRIEF_CHARS
+    style_guide_source_ids = {
+        item.source_id
+        for item in candidates.classifications
+        if item.source_class is SourceClass.STYLE_GUIDE
+    }
+    raw_profile_source_ids = profile.get("constraint_source_ids", [])
+    if not isinstance(raw_profile_source_ids, list):
+        raw_profile_source_ids = []
+    pinned_profile_source_ids = {
+        StableId(value) for value in raw_profile_source_ids if isinstance(value, str)
+    }
+    style_guide_payload = profile.get("style_guide_sources", [])
+    if not isinstance(style_guide_payload, list):
+        style_guide_payload = []
+    retained_style_guide_ids = {
+        StableId(source_id)
+        for item in style_guide_payload
+        if isinstance(item, dict)
+        for source_id in (item.get("source_id"),)
+        if isinstance(source_id, str)
+    }
+    incomplete_style_guide = False
+    for item in style_guide_payload:
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_id")
+        text = item.get("text")
+        if (
+            isinstance(source_id, str)
+            and StableId(source_id) in style_guide_source_ids
+            and (not isinstance(text, str) or not text.strip())
+        ):
+            incomplete_style_guide = True
+            break
+    if style_guide_source_ids and (
+        not style_guide_source_ids.issubset(pinned_profile_source_ids)
+        or not style_guide_source_ids.issubset(retained_style_guide_ids)
+        or incomplete_style_guide
+    ):
+        findings.append(
+            ValidationFinding(
+                code="BOOTSTRAP_PROFILE_STYLE_GUIDE_LOSS",
+                severity="error",
+                message=(
+                    "STYLE_GUIDE sources must remain pinned by source id and full original text "
+                    "inside ProjectProfile.style_profile"
+                ),
+            )
+        )
     if not candidates.world_patch.items:
         findings.append(
             ValidationFinding(
@@ -987,6 +1342,10 @@ def bind_bootstrap_model_agents(
     source_ids: tuple[StableId, ...],
     source_payload: str,
     source_artifacts: tuple[ArtifactRef, ...],
+    planner_source_ids: tuple[StableId, ...] | None = None,
+    planner_source_payload: str | None = None,
+    planner_source_artifacts: tuple[ArtifactRef, ...] | None = None,
+    planner_profile_source_ids: tuple[StableId, ...] = (),
 ) -> tuple[PlannerBootstrap, CuratorBootstrap]:
     """Wire the existing Planner PROJECT_BOOTSTRAP and Curator BOOTSTRAP owners."""
 
@@ -1013,16 +1372,23 @@ def bind_bootstrap_model_agents(
         planning_task_id=StableId("task.bootstrap.planner"),
         project_id=project_id,
         mode=AgentMode.PROJECT_BOOTSTRAP,
-        source_ids=source_ids,
+        source_ids=planner_source_ids if planner_source_ids is not None else source_ids,
         strategy=BootstrapStrategy.DEVELOP_CANDIDATES,
+    )
+    effective_planner_payload = (
+        source_payload if planner_source_payload is None else planner_source_payload
+    )
+    effective_planner_artifacts = (
+        source_artifacts if planner_source_artifacts is None else planner_source_artifacts
     )
 
     async def planner() -> PlannerExecutionResult:
         result, _record = await planner_agent.run(
             version=VERSION,
             task=task,
-            source_payload=source_payload,
-            source_artifacts=source_artifacts,
+            source_payload=effective_planner_payload,
+            source_artifacts=effective_planner_artifacts,
+            profile_only_source_ids=planner_profile_source_ids,
             request=_bootstrap_model_request(
                 run_id,
                 TaskId("task.bootstrap.planner"),
@@ -1062,8 +1428,8 @@ def _bootstrap_model_request(run_id: RunId, task_id: TaskId, phase: str) -> Mode
         trace_id=f"trace.{run_id.root}.{phase}",
         prompt="",
         agent_mode=phase,
-        max_output_tokens=8_000,
-        timeout_seconds=120.0,
+        max_output_tokens=12_000,
+        timeout_seconds=300.0,
         enable_thinking=False,
     )
 

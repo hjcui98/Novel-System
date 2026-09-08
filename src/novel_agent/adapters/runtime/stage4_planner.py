@@ -125,11 +125,22 @@ class ProductionStage4InvocationFactory:
         from novel_agent.agents.planner import planner_skill_ids_for_mode
 
         mode_ids = planner_skill_ids_for_mode(mode)
-        policy_ids = self._policy.allowed_skill_ids
+        policy_ids = set(self._policy.allowed_skill_ids)
         if not policy_ids:
+            # Legacy fixture policies omit the deployment allowlist.  The
+            # real production policy is populated from production_assembly_spec
+            # and therefore takes the strict branch below.
             return mode_ids
-        allowed = tuple(item for item in mode_ids if item in set(policy_ids))
-        return allowed or mode_ids
+        allowed = tuple(item for item in mode_ids if item in policy_ids)
+        required = {
+            StableId("skill.planning-inquiry"),
+            StableId(f"skill.planner.{mode.value}"),
+        }
+        if not required.issubset(allowed):
+            raise ValueError(
+                f"Stage 4 policy allowlist is missing required skills for planner mode {mode.value}"
+            )
+        return allowed
 
     def __call__(self, request: PlanningLoopRequest) -> Stage4PlanningInvocation:
         if request.basis_snapshot is None:
@@ -148,11 +159,7 @@ class ProductionStage4InvocationFactory:
         manifest = self._commits.load_manifest(request.basis_commit)
         if manifest.project_id != request.project_id:
             raise ValueError("Stage 4 task and canonical manifest belong to different projects")
-        author_intent = (
-            ()
-            if mode in {AgentMode.CHAPTER_SET, AgentMode.ARC_VOLUME}
-            else request.input_artifact_refs
-        )
+        author_intent = request.input_artifact_refs
         text = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
         )
@@ -340,8 +347,14 @@ class Stage4PlanningLeafAdapter:
             request.input_artifact_refs
         ):
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
-        if detailed.task.mode is AgentMode.STORY and not detailed.author_intent_artifacts:
-            raise ValueError("Stage 4 STORY requires author-intent artifacts")
+        if (
+            detailed.task.mode in {AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET}
+            and request.input_artifact_refs
+            and not detailed.author_intent_artifacts
+        ):
+            raise ValueError(
+                f"Stage 4 {detailed.task.mode.value} requires visible author-intent artifacts"
+            )
 
         result = await self._loop.run(
             request=detailed,

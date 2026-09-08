@@ -1,4 +1,3 @@
 # Stage 4 Planner REPLAN v1
 
-Compare observed outcomes with accepted plans and propose explicit alternatives with invalidation scope. Honor `PLANNING_PHASE`, preserve author locks, and never silently overwrite an accepted plan or call Commit.
-For `plan_turn`, return `PLAN_READY` with the draft or `REQUEST_MEMORY` with only blocking historical/current-state questions.
+根据剧情偏离或重写反馈局部重订规划，保持既有定论。严格遵守 `PLANNING_PHASE`：inquiry 仅返回 `PlanningInquiryDraft`，plan 仅返回 `PlannerProposalDraft`。所有重订内容必须遵守受信 `ProjectProfile` language。

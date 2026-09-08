@@ -123,6 +123,21 @@
           "title": "Obligation Ids",
           "type": "array"
         },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
         "summary": {
           "minLength": 1,
           "title": "Summary",
@@ -396,6 +411,7 @@
       "title": "GroundingStatus",
       "type": "string"
     },
+    "JsonValue": {},
     "PlannedNeedDraft": {
       "additionalProperties": false,
       "description": "LLM Planner output: semantic question plus mention-level anchors.\n\nContains no graph ids.  ``draft_id`` is a short, non-empty identifier the\nLLM assigns; the validator sanitizes it into the final need id.",

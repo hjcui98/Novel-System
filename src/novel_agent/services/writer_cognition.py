@@ -39,13 +39,22 @@ WRITER_TURN_MEDIA_TYPE = "application/vnd.novel-agent.writer-turn+json"
 
 _INTERNAL_DRAFT_MARKERS = (
     "evidence.curator.",
-    "契约非交易",
+    "<TRUSTED_",
+    "<EVALUATOR",
+    "SOURCE_DATA=",
+    "PLANNER_",
+    "evidence.",
+    "ledger.",
+    "<FUTURE_",
+    "FUTURE_TEXT=",
+    "<GOLD_",
+    "EVALUATOR_",
 )
-_KNOWN_NARRATIVE_MARKER_REPLACEMENTS = {
-    "契约非交易": "这份婚约不是可以拿来交换的筹码",
-}
-_INTERNAL_CHAPTER_LABEL = re.compile(r"(?<![A-Za-z0-9_])ch\d+(?![A-Za-z0-9_])", re.IGNORECASE)
-_META_RELATION_MARKER = re.compile(r"婚约线.{0,20}冲突载体")
+_INTERNAL_CHAPTER_LABEL = re.compile(
+    r"(?<![A-Za-z0-9_])(?:ch\d+|chapter\s+\d+)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_NON_TARGET_LANGUAGE_RE = re.compile(r"(?:\b[A-Za-z]{4,}\b(?:[\s,.;:!?\-]+|$)){5,}", re.IGNORECASE)
 _RECENT_PROSE_MIN_LENGTH = 384
 _RECENT_PROSE_MIN_MATCH_CHARS = 128
 _RECENT_PROSE_SIMILARITY_THRESHOLD = 0.85
@@ -57,7 +66,7 @@ _COMPACT_RECENT_PROSE_MIN_OVERLAP_RATIO = 0.10
 _SURFACE_RETRY_REPETITION_PENALTY = 1.10
 
 
-def _repeats_recent_prose(
+def repeats_recent_prose(
     prose: str,
     draft_text: str,
     *,
@@ -93,6 +102,11 @@ def _repeats_recent_prose(
     return overall_near_copy or long_contiguous_copy
 
 
+# Kept as a private compatibility alias for callers that used the earlier
+# implementation detail; new production gates use the named pure function.
+_repeats_recent_prose = repeats_recent_prose
+
+
 _SKILL_FILES: dict[str, str] = {
     "skill.scene-composition": "scene_composition_v1.md",
     "skill.continuation": "continuation_v1.md",
@@ -110,17 +124,47 @@ class WriterCognitionError(ValueError):
     """Writer cognition violated a trusted plan, Skill, or Context boundary."""
 
 
-def _writer_draft_surface_error(draft_text: str, view: AgentContextView) -> str | None:
-    """Reject only demonstrated model surface failures before editorial review."""
+def draft_surface_error(
+    draft_text: str,
+    *,
+    target_language: str | None = None,
+    forbidden_reveals: tuple[str, ...] = (),
+    recent_prose: tuple[tuple[str, bool], ...] = (),
+) -> str | None:
+    """Pure final-surface gate shared by Writer cognition and Draft materialization."""
 
     for marker in _INTERNAL_DRAFT_MARKERS:
         if marker in draft_text:
             return f"Writer draft contains internal planning marker: {marker}"
     if _INTERNAL_CHAPTER_LABEL.search(draft_text) is not None:
         return "Writer draft contains an internal chapter label"
-    if _META_RELATION_MARKER.search(draft_text) is not None:
-        return "Writer draft contains a planning relation marker"
+    if "�" in draft_text or "\ufffd" in draft_text:
+        return "Writer draft contains malformed replacement characters"
+    for reveal in forbidden_reveals:
+        if reveal and reveal in draft_text:
+            return "Writer draft reveals a forbidden future detail"
+    if (
+        target_language
+        and not target_language.lower().startswith(("en", "english"))
+        and (_NON_TARGET_LANGUAGE_RE.search(draft_text) is not None)
+    ):
+        return "Writer draft contains an obvious non-target-language passage"
+    for prose, compact_trail in recent_prose:
+        if repeats_recent_prose(prose, draft_text, compact_trail=compact_trail):
+            return "Writer draft repeats visible recent prose"
+    return None
 
+
+def _writer_draft_surface_error(
+    draft_text: str,
+    view: AgentContextView,
+    *,
+    target_language: str | None = None,
+    forbidden_reveals: tuple[str, ...] = (),
+) -> str | None:
+    """Reject only demonstrated model surface failures before editorial review."""
+
+    recent_prose: list[tuple[str, bool]] = []
     for item in (
         *view.protected_items,
         *view.active_memory_items,
@@ -130,23 +174,15 @@ def _writer_draft_surface_error(draft_text: str, view: AgentContextView) -> str 
     ):
         if item.kind is not ContextItemKind.RECENT_PROSE:
             continue
-        _header, separator, prose = item.content.partition("\n")
-        compact_trail = _header.startswith("[近期章尾:")
-        if (
-            separator
-            and (_header.startswith("[上一章完整正文:") or _header.startswith("[近期章尾:"))
-            and _repeats_recent_prose(prose, draft_text, compact_trail=compact_trail)
-        ):
-            return "Writer draft repeats visible recent prose"
-    return None
-
-
-def _rewrite_known_narrative_markers(draft_text: str) -> str:
-    """Turn one demonstrated planning alias into natural narrative wording."""
-
-    for marker, replacement in _KNOWN_NARRATIVE_MARKER_REPLACEMENTS.items():
-        draft_text = draft_text.replace(marker, replacement)
-    return draft_text
+        header, separator, prose = item.content.partition("\n")
+        if separator and (header.startswith("[上一章完整正文:") or header.startswith("[近期章尾:")):
+            recent_prose.append((prose, header.startswith("[近期章尾:")))
+    return draft_surface_error(
+        draft_text,
+        target_language=target_language,
+        forbidden_reveals=forbidden_reveals,
+        recent_prose=tuple(recent_prose),
+    )
 
 
 def _same_artifact(left: ArtifactRef | None, right: ArtifactRef | None) -> bool:
@@ -221,9 +257,31 @@ class WriterCognitionService:
         if set(catalog) != allowed:
             missing = sorted(item.root for item in allowed - set(catalog))
             raise WriterCognitionError(f"unregistered Writer Skill allowlist: {missing}")
+        # The mode-specific Skill is a host-side capability boundary.  Check it
+        # before preparing or dispatching the model request so an incomplete
+        # production allowlist cannot reach the model and only fail after a
+        # WorkPlan has been returned.
+        base_skill_ids = [StableId("skill.scene-composition")]
+        required_mode_skill = {
+            AgentMode.CONTINUE: StableId("skill.continuation"),
+            AgentMode.MAJOR_REWRITE: StableId("skill.major-rewrite"),
+        }.get(request.mode)
+        if base_skill_ids[0] not in allowed:
+            raise WriterCognitionError(
+                "production Writer allowlist is missing a required base Skill: "
+                f"{base_skill_ids[0].root}"
+            )
+        if required_mode_skill is not None and required_mode_skill not in allowed:
+            raise WriterCognitionError(
+                "production Writer allowlist is missing required mode Skill: "
+                f"{required_mode_skill.root}"
+            )
         skill_payload = []
         for skill_id in request.allowed_skills:
             contract = catalog[skill_id]
+            _skill_text, actual = self._skills.resolve(skill_id, contract.version)
+            if actual != contract:
+                raise WriterCognitionError(f"Writer Skill hash mismatch: {skill_id.root}")
             card = self._skills.describe(skill_id, contract.version)
             skill_payload.append(f'<SKILL_CARD id="{skill_id.root}">\n{card}\n</SKILL_CARD>')
         prompt = self._read_prompt("writer_work_plan_v1.md")
@@ -264,7 +322,7 @@ class WriterCognitionService:
                     + "\n</OPAQUE_LINEAGE_BINDING>\n</TRUSTED_INPUT>"
                 ),
                 "agent_id": StableId("agent.writer.work-plan"),
-                "agent_mode": AgentMode.DRAFT.value,
+                "agent_mode": request.mode.value,
                 "skill_contract_hashes": tuple(item.content_hash for item in catalog.values()),
                 "max_output_tokens": (
                     request.budgets.reserved_output_tokens
@@ -289,6 +347,44 @@ class WriterCognitionService:
         selected = set(work_plan.selected_skill_ids)
         if not selected.issubset(allowed):
             raise WriterCognitionError("WriterWorkPlan selected a Skill outside the allowlist")
+        if StableId("skill.style-genre-writing") in allowed:
+            base_skill_ids.append(StableId("skill.style-genre-writing"))
+        optional_skill_ids = {
+            StableId(item)
+            for item in (
+                "skill.character-voice-writing",
+                "skill.dialogue-subtext-writing",
+                "skill.pov-epistemic-writing",
+                "skill.pacing-transition-writing",
+                "skill.hook-foreshadowing-writing",
+            )
+        }
+        selected_optional = tuple(
+            item for item in work_plan.selected_skill_ids if item in optional_skill_ids
+        )
+        permitted_skill_ids = {
+            *base_skill_ids,
+            *optional_skill_ids,
+            *(() if required_mode_skill is None else (required_mode_skill,)),
+        }
+        if any(item not in permitted_skill_ids for item in work_plan.selected_skill_ids):
+            raise WriterCognitionError(
+                "production WriterWorkPlan selected an unsupported Skill for its mode"
+            )
+        if request.mode is AgentMode.DRAFT and len(selected_optional) > 1:
+            raise WriterCognitionError(
+                "WriterWorkPlan may select at most one optional Writer Skill"
+            )
+        normalized_skill_ids = tuple(
+            dict.fromkeys((*base_skill_ids, required_mode_skill, *selected_optional))
+            if required_mode_skill is not None
+            else tuple(dict.fromkeys((*base_skill_ids, *selected_optional)))
+        )
+        if not set(normalized_skill_ids).issubset(allowed):
+            raise WriterCognitionError(
+                "production Writer allowlist is missing a required base Skill"
+            )
+        work_plan = work_plan.model_copy(update={"selected_skill_ids": normalized_skill_ids})
         work_plan_ref = self._artifacts.put(
             canonical_json_bytes(work_plan.model_dump(mode="json")),
             WRITER_WORK_PLAN_MEDIA_TYPE,
@@ -347,6 +443,27 @@ class WriterCognitionService:
         if major_rewrite_attempt < 1:
             raise WriterCognitionError("major rewrite attempt must be positive")
         self._validate_view(request, view)
+        required_mode_skill = {
+            AgentMode.CONTINUE: StableId("skill.continuation"),
+            AgentMode.MAJOR_REWRITE: StableId("skill.major-rewrite"),
+        }.get(request.mode)
+        base_skill = StableId("skill.scene-composition")
+        if base_skill not in request.allowed_skills:
+            raise WriterCognitionError(
+                f"production Writer allowlist is missing a required base Skill: {base_skill.root}"
+            )
+        if required_mode_skill is not None and required_mode_skill not in request.allowed_skills:
+            raise WriterCognitionError(
+                "production Writer allowlist is missing required mode Skill: "
+                f"{required_mode_skill.root}"
+            )
+        selected_ids = set(plan.work_plan.selected_skill_ids)
+        if base_skill not in selected_ids:
+            raise WriterCognitionError("WriterWorkPlan is missing the required scene Skill")
+        if required_mode_skill is not None and required_mode_skill not in selected_ids:
+            raise WriterCognitionError(
+                f"WriterWorkPlan is missing the required mode Skill: {required_mode_skill.root}"
+            )
         selected_texts: list[str] = []
         contracts = {item.contract_id: item for item in self.skill_contracts()}
         for skill_id in plan.work_plan.selected_skill_ids:
@@ -371,7 +488,10 @@ class WriterCognitionService:
             directive_prompt = (
                 "\n\n<TRUSTED_EDITOR_REWRITE_DIRECTIVE>\n"
                 + directives[0]
-                + "\n</TRUSTED_EDITOR_REWRITE_DIRECTIVE>"
+                + "\n</TRUSTED_EDITOR_REWRITE_DIRECTIVE>\n\n"
+                + "【重要约束：当前处于 MAJOR_REWRITE 模式】\n"
+                + '你的 action 字段必须且只能为 "DRAFT_READY"，严禁使用 "REQUEST_MEMORY"！\n'
+                + "请直接在 draft_text 字段中输出按照审校指令完整大修重写后的章节小说正文。"
             )
             if major_rewrite_attempt > 1:
                 directive_prompt += (
@@ -388,6 +508,15 @@ class WriterCognitionService:
         else:
             mode_prompt = self._read_prompt("writer_turn_v1.md")
             directive_prompt = ""
+        language = next(
+            (
+                constraint.split("：", 1)[1].strip()
+                for constraint in request.writing_task.mandatory_constraints
+                if constraint.startswith("正文语言：") and constraint.split("：", 1)[1].strip()
+            ),
+            None,
+        )
+        language_label = language or "the language specified by WritingTask"
         prompt = (
             mode_prompt
             + directive_prompt
@@ -399,7 +528,9 @@ class WriterCognitionService:
                 f"{request.writing_task.length_policy.minimum_characters} and "
                 f"{request.writing_task.length_policy.maximum_characters} characters "
                 f"inclusive; aim for {request.writing_task.length_policy.target_characters} "
-                "characters and stop before the maximum.\n"
+                "characters and stop before the maximum. "
+                f"Draft narrative must use {language_label}; do not replace the "
+                "target-language narrative with a long passage in another language.\n"
             )
             + request.writing_task.length_policy.model_dump_json()
             + "\n</TRUSTED_WRITING_LENGTH_POLICY>"
@@ -428,31 +559,39 @@ class WriterCognitionService:
         output, call = await self._gateway.generate_structured(prepared, WriterTurnOutput)
         if output.action is WriterTurnAction.DRAFT_READY and output.draft_text is not None:
             draft_text = output.draft_text
-            rewritten_text = _rewrite_known_narrative_markers(draft_text)
-            if rewritten_text != draft_text:
-                output = output.model_copy(update={"draft_text": rewritten_text})
-                draft_text = rewritten_text
-            surface_error = _writer_draft_surface_error(draft_text, view)
-            if surface_error == "Writer draft repeats visible recent prose":
+            surface_error = _writer_draft_surface_error(
+                draft_text,
+                view,
+                target_language=language,
+                forbidden_reveals=request.writing_task.forbidden_reveals,
+            )
+            retries = 0
+            while surface_error == "Writer draft repeats visible recent prose" and retries < 2:
+                retries += 1
                 retry_digest = hashlib.sha256(
-                    f"{prepared.request_id.root}:surface-retry".encode()
+                    f"{prepared.request_id.root}:surface-retry-{retries}".encode()
                 ).hexdigest()[:48]
                 retry_request = prepared.model_copy(
                     update={
                         "request_id": StableId(
                             f"request.stage3.writer-surface-retry.{retry_digest}"
                         ),
-                        "trace_id": f"{prepared.trace_id}:surface-retry",
+                        "trace_id": f"{prepared.trace_id}:surface-retry-{retries}",
                         "repetition_penalty": _SURFACE_RETRY_REPETITION_PENALTY,
+                        "temperature": 0.8,
                         "prompt": (
                             prepared.prompt + "\n\n<WRITER_SURFACE_RETRY>\n"
-                            "The previous draft was rejected because it copied the visible "
-                            "recent prose. Discard that candidate. Write a distinct "
+                            "【严重警告：正文严禁复读上一章或前文内容】：\n"
+                            "上一版正文草案被系统驳回，原因：开头或段落直接复读抄录了上一章/近期章节的原文！\n"
+                            "必须彻底丢弃该草案。请换一种全新动作、对话或环境感知切入当前章节，严禁复制前文任何完整段落或长句！\n"
+                            "The previous draft was rejected because it copied "
+                            "visible recent prose. "
+                            "Discard that candidate. Write a completely distinct "
                             "target-chapter narrative that starts from the prior final state, "
                             "advances the accepted plan, and does not reproduce any complete "
-                            "paragraph or any contiguous phrase longer than 64 characters "
-                            "from visible recent prose. Change the opening action and scene "
-                            "progression rather than paraphrasing the prior chapter.\n"
+                            "paragraph or contiguous phrase from visible recent prose. Change "
+                            "the opening action and scene progression rather than paraphrasing "
+                            "the prior chapter.\n"
                             "</WRITER_SURFACE_RETRY>"
                         ),
                     }
@@ -463,11 +602,12 @@ class WriterCognitionService:
                 )
                 if output.action is WriterTurnAction.DRAFT_READY and output.draft_text is not None:
                     draft_text = output.draft_text
-                    rewritten_text = _rewrite_known_narrative_markers(draft_text)
-                    if rewritten_text != draft_text:
-                        output = output.model_copy(update={"draft_text": rewritten_text})
-                        draft_text = rewritten_text
-                    surface_error = _writer_draft_surface_error(draft_text, view)
+                    surface_error = _writer_draft_surface_error(
+                        draft_text,
+                        view,
+                        target_language=language,
+                        forbidden_reveals=request.writing_task.forbidden_reveals,
+                    )
             if surface_error is not None:
                 raise WriterCognitionError(surface_error)
         if len(output.memory_requests) > request.budgets.max_memory_questions:

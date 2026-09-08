@@ -193,15 +193,18 @@ class EvidenceFirstWriterContextAssembler:
             raise ValueError("evidence-first writer context arm must be A, B, or C")
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
-        if not selections:
-            raise ValueError("evidence-first assembly requires at least one Need selection")
+        # A canonical projection with no declared history Need is a valid
+        # zero-retrieval production case.  It must still produce the same
+        # immutable v2 package, but it never needs a Memory Gateway call.
+        diagnostics = ["HISTORICAL_RETRIEVAL_NOT_REQUIRED"] if not selections else []
         if any(not ref.media_type or not text.strip() for ref, text in advisory_items):
             raise ValueError("advisory items require a source artifact and non-empty text")
         blocks, chapter_indexes = text_root_indexes(text_root)
         need_ids = tuple(selection.need.need_id for selection in selections)
         if len(need_ids) != len(set(need_ids)):
             raise ValueError("evidence-first selections must be unique by Need")
-        diagnostics: list[str] = []
+        # ``diagnostics`` is initialized above so the zero-Need path shares the
+        # normal package/ledger construction and lineage validation.
         mechanical_failure_counts: dict[str, int] = {
             "dereference": 0,
             "scope": 0,
@@ -887,7 +890,9 @@ class EvidenceFirstWriterContextAssembler:
             "COMPLETE" if not structural_mandatory_gap_items else "INCOMPLETE"
         )
         semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"]
-        if planner_fallback_used:
+        if not selections:
+            semantic_status = "COMPLETE"
+        elif planner_fallback_used:
             # A Planner fallback means the target-goal Need set was not fully
             # validated, even when retrieval/semantic judging can serve every
             # facet of the fallback Needs.  Keep mechanical delivery READY,

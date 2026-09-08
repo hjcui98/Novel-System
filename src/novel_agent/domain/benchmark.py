@@ -132,6 +132,8 @@ class ChapterGoal(DomainModel):
     chapter_index: int = Field(ge=1)
     summary: str = Field(min_length=1)
     obligation_ids: tuple[StableId, ...] = ()
+    source_ids: tuple[StableId, ...] = ()
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class VisibleOutlineNode(DomainModel):

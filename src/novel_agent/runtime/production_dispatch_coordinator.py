@@ -27,6 +27,15 @@ from novel_agent.services.model_gateway import RegisteredModelEndpoint
 from novel_agent.services.model_request_admission import ModelRequestAdmissionController
 
 
+class RunConfigurationChangedError(RuntimeError):
+    """The durable run was created under a different production configuration."""
+
+    code = "RUN_CONFIGURATION_CHANGED"
+
+    def __init__(self, message: str = "RUN_CONFIGURATION_CHANGED") -> None:
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class ProductionRunDescriptor:
     """Durable identity and bounds for one project/run dispatch lane."""
@@ -42,6 +51,7 @@ class ProductionRunDescriptor:
     settlement_timeout_seconds: float | None = None
     settlement_output_tokens: int | None = None
     settlement_token_budget: int | None = None
+    settlement_max_total_model_calls: int | None = None
     max_major_rewrites: int | None = None
     max_local_repairs: int | None = None
 
@@ -110,6 +120,9 @@ class ProductionRunDescriptor:
             settlement_timeout_seconds=_optional_float(payload.get("settlement_timeout_seconds")),
             settlement_output_tokens=_optional_int(payload.get("settlement_output_tokens")),
             settlement_token_budget=_optional_int(payload.get("settlement_token_budget")),
+            settlement_max_total_model_calls=_optional_int(
+                payload.get("settlement_max_total_model_calls")
+            ),
             max_major_rewrites=_optional_int(payload.get("max_major_rewrites")),
             max_local_repairs=_optional_int(payload.get("max_local_repairs")),
         )
@@ -303,6 +316,7 @@ class ProductionDispatchCoordinator:
             settlement_timeout_seconds=descriptor.settlement_timeout_seconds,
             settlement_output_tokens=descriptor.settlement_output_tokens,
             settlement_token_budget=descriptor.settlement_token_budget,
+            settlement_max_total_model_calls=descriptor.settlement_max_total_model_calls,
             max_major_rewrites=descriptor.max_major_rewrites,
             max_local_repairs=descriptor.max_local_repairs,
             retrieval_backend_profile=self._retrieval_backend_profile,
@@ -318,6 +332,12 @@ class ProductionDispatchCoordinator:
                 continue
             try:
                 assembly = self._assembly_loader(self._assembly_factory, self._context(descriptor))
+                attestation = getattr(assembly, "attestation", None)
+                if (
+                    attestation is not None
+                    and descriptor.policy.policy_hash != attestation.configuration_fingerprint.root
+                ):
+                    raise RunConfigurationChangedError()
                 self._assemblies[key] = assembly
             except Exception as error:
                 self._assembly_errors[key] = error
@@ -328,6 +348,14 @@ class ProductionDispatchCoordinator:
         assembly: ProductionRuntimeAssembly,
     ) -> CreativeRunRequest:
         if descriptor.request is not None:
+            tasks = assembly.task_reader.list_run(descriptor.run_id)
+            matching = tuple(
+                task
+                for task in tasks
+                if task.project_id == descriptor.project_id and not task.superseded
+            )
+            if any(task.policy_hash != descriptor.policy.policy_hash for task in matching):
+                raise RunConfigurationChangedError()
             return descriptor.request
         tasks = assembly.task_reader.list_run(descriptor.run_id)
         if not tasks:
@@ -340,7 +368,7 @@ class ProductionDispatchCoordinator:
         if not matching:
             raise RuntimeError("production run has no matching project tasks")
         if any(task.policy_hash != descriptor.policy.policy_hash for task in matching):
-            raise RuntimeError("production run policy does not match durable task policy")
+            raise RunConfigurationChangedError()
         first = min(matching, key=lambda task: (task.chapter_index, task.task_id.root))
         return CreativeRunRequest(
             run_id=descriptor.run_id,
@@ -364,6 +392,14 @@ class ProductionDispatchCoordinator:
         key = (descriptor.project_id, descriptor.run_id)
         assembly_error = self._assembly_errors.get(key)
         if assembly_error is not None:
+            if isinstance(assembly_error, RunConfigurationChangedError):
+                return ProductionProjectDispatchResult(
+                    descriptor.project_id,
+                    descriptor.run_id,
+                    "failed",
+                    error_type=assembly_error.code,
+                    error_message=assembly_error.code,
+                )
             return ProductionProjectDispatchResult(
                 descriptor.project_id,
                 descriptor.run_id,
@@ -388,6 +424,14 @@ class ProductionDispatchCoordinator:
                     task_budget=budget,
                 )
             except Exception as error:
+                if isinstance(error, RunConfigurationChangedError):
+                    return ProductionProjectDispatchResult(
+                        descriptor.project_id,
+                        descriptor.run_id,
+                        "failed",
+                        error_type=error.code,
+                        error_message=error.code,
+                    )
                 return ProductionProjectDispatchResult(
                     descriptor.project_id,
                     descriptor.run_id,
@@ -520,13 +564,16 @@ class ProductionDispatchCoordinator:
         self._ensure_assemblies()
         semaphore = asyncio.Semaphore(self._project_parallelism)
         budget = _GlobalDispatchTaskBudget(self._max_total_tasks)
+        project_tasks = [
+            asyncio.create_task(self._run_project(descriptor, semaphore, budget))
+            for descriptor in self._runs
+        ]
         try:
-            projects = tuple(
-                await asyncio.gather(
-                    *(self._run_project(descriptor, semaphore, budget) for descriptor in self._runs)
-                )
-            )
+            projects = tuple(await asyncio.gather(*project_tasks))
         except BaseException:
+            for task in project_tasks:
+                task.cancel()
+            await asyncio.gather(*project_tasks, return_exceptions=True)
             await self._assert_admission_released()
             raise
         snapshot = await self._assert_admission_released()
@@ -616,5 +663,6 @@ __all__ = [
     "ProductionDispatchResult",
     "ProductionProjectDispatchResult",
     "ProductionRunDescriptor",
+    "RunConfigurationChangedError",
     "load_production_run_descriptors",
 ]

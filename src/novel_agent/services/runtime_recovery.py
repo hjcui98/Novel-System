@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import RuntimeEffectProjectionRow
-from novel_agent.domain.ids import RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId
 from novel_agent.domain.runtime import (
     AttemptFence,
     EffectReceipt,
@@ -68,8 +68,18 @@ class RuntimeRecoveryService:
         self._commits = commits
         self._resolver = resolver
 
-    def select_safe_checkpoint(self, task_id: TaskId) -> RunCheckpoint:
+    def select_safe_checkpoint(
+        self,
+        task_id: TaskId,
+        *,
+        current_configuration_fingerprint: ArtifactId | None = None,
+    ) -> RunCheckpoint:
         task = self._commands.get_task(task_id)
+        if (
+            current_configuration_fingerprint is not None
+            and task.policy_hash != current_configuration_fingerprint.root
+        ):
+            raise RuntimeCommandConflictError("RUN_CONFIGURATION_CHANGED")
         checkpoint = self._checkpoints.latest_resumable(task.run_id)
         if checkpoint is None or checkpoint.resumability_status is not ResumabilityStatus.RESUMABLE:
             raise RuntimeCommandConflictError("run has no settled resumable checkpoint")
@@ -148,8 +158,12 @@ class RuntimeRecoveryService:
         *,
         worker_id: str,
         actor_id: str,
+        current_configuration_fingerprint: ArtifactId | None = None,
     ) -> tuple[RunCheckpoint, TaskAttempt, AttemptFence]:
-        checkpoint = self.select_safe_checkpoint(task_id)
+        checkpoint = self.select_safe_checkpoint(
+            task_id,
+            current_configuration_fingerprint=current_configuration_fingerprint,
+        )
         self.reconcile_uncertain_effects(task_id)
         task = self._commands.get_task(task_id)
         if task.current_attempt_id is not None:
