@@ -182,6 +182,9 @@ QWEN38_27B_FP8_MODEL = "qwen38-27b-fp8"
 QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE = "qwen36_27b_nvfp4_8003"
 QWEN36_27B_NVFP4_8003_BASE_URL = "http://127.0.0.1:8003/v1"
 QWEN36_27B_NVFP4_MODEL = "qwen36-27b-nvfp4"
+QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE = "qwen38_27b_nvfp4_8006"
+QWEN38_27B_NVFP4_8006_BASE_URL = "http://127.0.0.1:8006/v1"
+QWEN38_27B_NVFP4_MODEL = "qwen38-27b-nvfp4"
 
 
 def resolve_registered_model_endpoints(
@@ -253,6 +256,31 @@ def resolve_registered_model_endpoints(
                 endpoint_name="qwen36-27b-nvfp4@8003",
                 model_name=QWEN36_27B_NVFP4_MODEL,
                 revision=QWEN36_27B_NVFP4_MODEL,
+                adapter=adapter,
+                sequence_limit=131_072,
+                output_limit=12_000,
+                safety_allowance_tokens=1_000,
+                estimated_reasoning_reserve=2_048,
+                default_thinking=False,
+                reasoning_included_in_completion_tokens=False,
+                global_output_cap=131_072,
+            ),
+        )
+    if profile in {QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE, "qwen38-27b-nvfp4@8006"}:
+        adapter = OpenAICompatibleChatEndpoint(
+            base_url=QWEN38_27B_NVFP4_8006_BASE_URL,
+            model=QWEN38_27B_NVFP4_MODEL,
+            max_output_tokens=12_000,
+            temperature=0.0,
+            local_only=True,
+            max_retries=0,
+        )
+        return (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="qwen38-27b-nvfp4@8006",
+                model_name=QWEN38_27B_NVFP4_MODEL,
+                revision=QWEN38_27B_NVFP4_MODEL,
                 adapter=adapter,
                 sequence_limit=131_072,
                 output_limit=12_000,
@@ -1810,6 +1838,7 @@ __all__ = [
     "DETERMINISTIC_FAKE_ENDPOINT_PROFILE",
     "QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE",
     "QWEN38_27B_FP8_8005_ENDPOINT_PROFILE",
+    "QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE",
     "build_production_assembly",
     "load_production_assembly_spec",
     "preflight_production_environment",
