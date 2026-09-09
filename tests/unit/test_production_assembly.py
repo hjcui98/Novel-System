@@ -263,6 +263,7 @@ def test_factory_starts_and_freezes_attestation_without_model_calls(tmp_path: Pa
     assert assembly.attestation.reranker_declared is False
     assert assembly.memory_maintenance is not None
     assert assembly.runtime.memory_maintenance is assembly.memory_maintenance
+    assert assembly.runtime._projection._project_id == context.project_id
     assert (
         assembly.attestation.memory_maintenance
         == "novel_agent.adapters.runtime.memory_maintenance.MemoryMaintenanceAdapter"

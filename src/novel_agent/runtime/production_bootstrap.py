@@ -1494,7 +1494,9 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         configuration_fingerprint=current_configuration_fingerprint,
     )
     projections = DerivedProjectionService(
-        ProjectionOutboxRepository(session_factory), projection_builder
+        ProjectionOutboxRepository(session_factory),
+        projection_builder,
+        project_id=context.project_id,
     )
     comparison_fingerprint = content_id(
         {
