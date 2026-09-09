@@ -147,6 +147,8 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                     if task.current_attempt_id is None
                     else TaskStatus.RECOVERY_PENDING
                 )
+            elif control_payload.action == "supersede":
+                status = TaskStatus.CANCELLED
             elif control_payload.action in {"retry", "unblock"}:
                 status = TaskStatus.READY if task.failure_budget > 0 else TaskStatus.BUDGET_REVIEW
             elif control_payload.action == "extend_budget":
@@ -163,7 +165,14 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
                     "paused": paused,
                     "cancel_requested": cancel_requested,
                     "block_cause": (
-                        None if control_payload.action == "unblock" else task.block_cause
+                        control_payload.reason
+                        if control_payload.action == "supersede"
+                        else None
+                        if control_payload.action == "unblock"
+                        else task.block_cause
+                    ),
+                    "superseded": (
+                        True if control_payload.action == "supersede" else task.superseded
                     ),
                     "failure_budget": (
                         task.failure_budget + control_payload.additional_attempts

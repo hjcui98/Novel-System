@@ -383,6 +383,97 @@ def test_projection_settlement_updates_unclaimed_draft_candidate_with_newer_basi
     _assert_replay(events, query, plan_projection.run_id)
 
 
+def test_projection_settlement_rebases_completed_draft_with_new_identity(
+    kernel: tuple[
+        RuntimeCommandService,
+        CommitService,
+        RunEventLogRepository,
+        RuntimeTaskQueryRepository,
+        CommitId,
+    ],
+) -> None:
+    commands, commits, events, query, base = kernel
+    old_draft = _task(
+        task_id="run.rebase-completed.draft.2",
+        run_id="run.rebase-completed",
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        basis=base,
+    ).model_copy(update={"chapter_index": 2})
+    commands.create_task(old_draft)
+    _, old_fence = commands.claim(old_draft.task_id, worker_id="draft-worker")
+    commands.mark_started(old_fence)
+    old_acceptance = _task(
+        task_id="run.rebase-completed.draft.2.accept",
+        run_id=old_draft.run_id.root,
+        kind=TaskKind.DRAFT_ACCEPTANCE,
+        status=TaskStatus.WAITING_INPUT,
+        basis=base,
+        dependency=old_draft.task_id,
+    ).model_copy(update={"chapter_index": 2})
+    commands.settle_attempt(
+        old_fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        successor_tasks=(old_acceptance,),
+    )
+
+    new_request = make_commit_request(base, idempotency_key="commit.rebase-completed")
+    new_commit_id = manifest_commit_id(new_request.bundle.proposed_roots)
+    commits.commit(new_request)
+    plan_projection = commands.create_task(
+        _task(
+            task_id="task.rebase-completed-projection",
+            run_id=old_draft.run_id.root,
+            kind=TaskKind.PROJECTION_FRESHNESS,
+            status=TaskStatus.READY,
+            basis=new_commit_id,
+        ).model_copy(update={"projection_after": "plan"})
+    )
+    _, projection_fence = commands.claim(
+        plan_projection.task_id,
+        worker_id="projection-worker",
+    )
+    commands.mark_started(projection_fence)
+    rebased_draft = old_draft.model_copy(
+        update={
+            "basis_commit": new_commit_id,
+            "basis_snapshot": StableId("snapshot.rebase-completed"),
+            "dependency_task_ids": (plan_projection.task_id,),
+            "status": TaskStatus.READY,
+            "task_revision": 0,
+            "current_attempt_id": None,
+        }
+    )
+
+    settled = commands.settle_attempt(
+        projection_fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        successor_tasks=(rebased_draft,),
+    )
+
+    assert settled.status is TaskStatus.SUCCEEDED
+    preserved = commands.get_task(old_draft.task_id)
+    assert preserved.status is TaskStatus.SUCCEEDED
+    assert preserved.basis_commit == base
+    stale_acceptance = commands.get_task(old_acceptance.task_id)
+    assert stale_acceptance.status is TaskStatus.CANCELLED
+    assert stale_acceptance.superseded is True
+    new_candidates = tuple(
+        task
+        for task in query.list_run(plan_projection.run_id)
+        if task.kind is TaskKind.DRAFT_CANDIDATE and task.basis_commit == new_commit_id
+    )
+    assert len(new_candidates) == 1
+    assert new_candidates[0].task_id != old_draft.task_id
+    assert new_candidates[0].task_id.root.startswith(
+        "run.rebase-completed.draft.2.basis."
+    )
+    assert new_candidates[0].dependency_task_ids == (plan_projection.task_id,)
+    _assert_replay(events, query, plan_projection.run_id)
+
+
 def test_projection_settlement_rejects_updating_claimed_draft_candidate(
     kernel: tuple[
         RuntimeCommandService,

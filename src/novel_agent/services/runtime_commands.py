@@ -2258,6 +2258,12 @@ class RuntimeCommandService:
                         and restored.project_id == successor.project_id
                         and restored.chapter_index == successor.chapter_index
                     ):
+                        self._supersede_inactive_successor_descendants(
+                            session,
+                            restored,
+                            now,
+                            reason="successor basis changed before draft candidate was claimed",
+                        )
                         self._update_task(session, successor, now)
                         self._append(
                             session,
@@ -2271,8 +2277,36 @@ class RuntimeCommandService:
                             ),
                         )
                         continue
-                    raise RuntimeCommandConflictError("successor task identity collision")
-                continue
+                    if self._can_rebase_draft_successor(restored, successor):
+                        self._supersede_inactive_successor_descendants(
+                            session,
+                            restored,
+                            now,
+                            reason="superseded stale draft lineage after successor basis changed",
+                        )
+                        successor = self._basis_scoped_successor(successor)
+                        if successor.task_id.root in seen_ids:
+                            raise RuntimeCommandConflictError(
+                                "successor task identity is duplicated"
+                            )
+                        seen_ids.add(successor.task_id.root)
+                        rebased_existing = session.get(
+                            RuntimeTaskProjectionRow, successor.task_id.root
+                        )
+                        if rebased_existing is not None:
+                            rebased_restored = TaskRecord.model_validate_json(
+                                json.dumps(rebased_existing.task_json)
+                            )
+                            if rebased_restored != successor:
+                                raise RuntimeCommandConflictError(
+                                    "successor task identity collision"
+                                )
+                            continue
+                        existing = None
+                    else:
+                        raise RuntimeCommandConflictError("successor task identity collision")
+                if existing is not None:
+                    continue
             self._append(
                 session,
                 successor.run_id,
@@ -2282,6 +2316,120 @@ class RuntimeCommandService:
                 _task_created_identity(successor.task_id),
             )
             self._insert_task(session, successor, now)
+
+    @staticmethod
+    def _can_rebase_draft_successor(
+        restored: TaskRecord,
+        successor: TaskRecord,
+    ) -> bool:
+        return (
+            restored.kind is TaskKind.DRAFT_CANDIDATE
+            and successor.kind is TaskKind.DRAFT_CANDIDATE
+            and restored.run_id == successor.run_id
+            and restored.project_id == successor.project_id
+            and restored.chapter_index == successor.chapter_index
+            and restored.basis_commit != successor.basis_commit
+            and restored.current_attempt_id is None
+            and restored.status not in {TaskStatus.RUNNING, TaskStatus.RECOVERY_PENDING}
+        )
+
+    @staticmethod
+    def _basis_scoped_successor(successor: TaskRecord) -> TaskRecord:
+        basis_suffix = successor.basis_commit.root.removeprefix("sha256:")[:16]
+        task_id = TaskId(
+            _bounded_runtime_identity(
+                f"{successor.task_id.root}.basis.{basis_suffix}",
+                (
+                    f"{successor.run_id.root}.{successor.kind.value}."
+                    f"{successor.chapter_index}.basis.{basis_suffix}"
+                ),
+                f"successor.basis.{basis_suffix}",
+            ).root
+        )
+        return successor.model_copy(update={"task_id": task_id})
+
+    def _supersede_inactive_successor_descendants(
+        self,
+        session: Session,
+        root: TaskRecord,
+        now: datetime,
+        *,
+        reason: str,
+    ) -> None:
+        """Retire stale acceptance/commit descendants without deleting history."""
+
+        rows = session.scalars(
+            select(RuntimeTaskProjectionRow)
+            .where(
+                RuntimeTaskProjectionRow.project_id == root.project_id.root,
+                RuntimeTaskProjectionRow.run_id == root.run_id.root,
+            )
+            .with_for_update()
+        ).all()
+        tasks = {
+            row.task_id: TaskRecord.model_validate_json(json.dumps(row.task_json))
+            for row in rows
+        }
+        frontier = {root.task_id.root}
+        visited = set(frontier)
+        supersedable = {
+            TaskStatus.PENDING,
+            TaskStatus.READY,
+            TaskStatus.WAITING_INPUT,
+            TaskStatus.WAITING_RETRY,
+            TaskStatus.BUDGET_REVIEW,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+        }
+        while frontier:
+            next_frontier: set[str] = set()
+            for candidate in tasks.values():
+                candidate_id = candidate.task_id.root
+                if candidate_id in visited or not any(
+                    dependency.root in frontier for dependency in candidate.dependency_task_ids
+                ):
+                    continue
+                visited.add(candidate_id)
+                if candidate.basis_commit != root.basis_commit:
+                    continue
+                if candidate.current_attempt_id is not None or candidate.status in {
+                    TaskStatus.RUNNING,
+                    TaskStatus.RECOVERY_PENDING,
+                }:
+                    raise RuntimeCommandConflictError(
+                        "stale successor lineage is still active"
+                    )
+                if not candidate.superseded and candidate.status in supersedable:
+                    updated = candidate.model_copy(
+                        update={
+                            "task_revision": candidate.task_revision + 1,
+                            "status": TaskStatus.CANCELLED,
+                            "superseded": True,
+                            "block_cause": reason,
+                        }
+                    )
+                    self._update_task(session, updated, now)
+                    identity_digest = hashlib.sha256(
+                        f"{candidate.project_id.root}:{candidate.run_id.root}:"
+                        f"{candidate.task_id.root}".encode()
+                    ).hexdigest()[:32]
+                    identity = StableId(f"supersede-stale-successor.{identity_digest}")
+                    self._append(
+                        session,
+                        candidate.run_id,
+                        candidate.task_id,
+                        RunEventType.RUNTIME_CONTROL_RECORDED,
+                        ControlIntentPayload(
+                            command_id=identity,
+                            action="supersede",
+                            actor_id="creative-runtime",
+                            reason=reason,
+                        ).model_dump(mode="json"),
+                        identity,
+                    )
+                    tasks[candidate_id] = updated
+                next_frontier.add(candidate_id)
+            frontier = next_frontier
 
     @staticmethod
     def _require_observed_revision(task: TaskRecord, observed_revision: int | None) -> None:
