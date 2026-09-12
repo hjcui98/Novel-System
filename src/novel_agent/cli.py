@@ -146,6 +146,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="novel-agent")
     subparsers = parser.add_subparsers(dest="top_command", required=True)
     subparsers.add_parser("doctor", help="print non-secret bootstrap diagnostics")
+    preflight = subparsers.add_parser(
+        "preflight-endpoint",
+        help="verify one registered endpoint profile against the live service",
+    )
+    preflight.add_argument(
+        "--endpoint-profile",
+        required=True,
+        help="registered profile to verify; identity drift fails the preflight",
+    )
+    preflight.add_argument(
+        "--live-generation",
+        action="store_true",
+        help="also run one bounded schema-constrained generation through the adapter",
+    )
+    preflight.add_argument("--timeout-seconds", type=float, default=120.0)
     runtime = subparsers.add_parser("runtime", help="operate the Stage 5 durable runtime")
     runtime.add_argument("--database-url", required=True)
     runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
@@ -290,6 +305,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
+    if args.top_command == "preflight-endpoint":
+        from novel_agent.runtime.endpoint_preflight import run_endpoint_preflight
+
+        result = run_endpoint_preflight(
+            args.endpoint_profile,
+            live_generation=bool(args.live_generation),
+            generation_timeout_seconds=float(args.timeout_seconds),
+        )
+        print(json.dumps(result.as_payload(), ensure_ascii=False, sort_keys=True))
+        return 0 if result.ok else 2
     if args.top_command == "runtime":
         from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
         from novel_agent.adapters.postgres.database import build_engine, build_session_factory

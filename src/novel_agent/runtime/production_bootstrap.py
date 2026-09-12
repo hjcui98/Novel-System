@@ -185,6 +185,47 @@ QWEN36_27B_NVFP4_MODEL = "qwen36-27b-nvfp4"
 QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE = "qwen38_27b_nvfp4_8006"
 QWEN38_27B_NVFP4_8006_BASE_URL = "http://127.0.0.1:8006/v1"
 QWEN38_27B_NVFP4_MODEL = "qwen38-27b-nvfp4"
+# The 8003 service is currently served by the Qwen 3.8 NVFP4 checkpoint while the
+# legacy 8003 profile still declares a Qwen 3.6 identity.  Keep both explicit so no
+# caller can silently inherit the wrong model identity.
+QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE = "qwen38_27b_nvfp4_8003"
+QWEN38_27B_NVFP4_8003_BASE_URL = "http://127.0.0.1:8003/v1"
+
+
+def _qwen_nvfp4_endpoint(
+    *,
+    base_url: str,
+    model: str,
+    endpoint_name: str,
+    sequence_limit: int,
+    output_limit: int,
+    safety_allowance_tokens: int,
+    estimated_reasoning_reserve: int,
+) -> RegisteredModelEndpoint:
+    """Register one NVFP4-class Qwen endpoint with the shared production bounds."""
+
+    adapter = OpenAICompatibleChatEndpoint(
+        base_url=base_url,
+        model=model,
+        max_output_tokens=output_limit,
+        temperature=0.0,
+        local_only=True,
+        max_retries=0,
+    )
+    return RegisteredModelEndpoint(
+        role=ModelRole.IMPLEMENTATION,
+        endpoint_name=endpoint_name,
+        model_name=model,
+        revision=model,
+        adapter=adapter,
+        sequence_limit=sequence_limit,
+        output_limit=output_limit,
+        safety_allowance_tokens=safety_allowance_tokens,
+        estimated_reasoning_reserve=estimated_reasoning_reserve,
+        default_thinking=False,
+        reasoning_included_in_completion_tokens=False,
+        global_output_cap=sequence_limit,
+    )
 
 
 def resolve_registered_model_endpoints(
@@ -242,53 +283,39 @@ def resolve_registered_model_endpoints(
             ),
         )
     if profile in {QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE, "qwen36-27b-nvfp4@8003"}:
-        adapter = OpenAICompatibleChatEndpoint(
-            base_url=QWEN36_27B_NVFP4_8003_BASE_URL,
-            model=QWEN36_27B_NVFP4_MODEL,
-            max_output_tokens=12_000,
-            temperature=0.0,
-            local_only=True,
-            max_retries=0,
-        )
         return (
-            RegisteredModelEndpoint(
-                role=ModelRole.IMPLEMENTATION,
+            _qwen_nvfp4_endpoint(
+                base_url=QWEN36_27B_NVFP4_8003_BASE_URL,
+                model=QWEN36_27B_NVFP4_MODEL,
                 endpoint_name="qwen36-27b-nvfp4@8003",
-                model_name=QWEN36_27B_NVFP4_MODEL,
-                revision=QWEN36_27B_NVFP4_MODEL,
-                adapter=adapter,
                 sequence_limit=131_072,
                 output_limit=12_000,
                 safety_allowance_tokens=1_000,
                 estimated_reasoning_reserve=2_048,
-                default_thinking=False,
-                reasoning_included_in_completion_tokens=False,
-                global_output_cap=131_072,
+            ),
+        )
+    if profile in {QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE, "qwen38-27b-nvfp4@8003"}:
+        return (
+            _qwen_nvfp4_endpoint(
+                base_url=QWEN38_27B_NVFP4_8003_BASE_URL,
+                model=QWEN38_27B_NVFP4_MODEL,
+                endpoint_name="qwen38-27b-nvfp4@8003",
+                sequence_limit=131_072,
+                output_limit=12_000,
+                safety_allowance_tokens=1_000,
+                estimated_reasoning_reserve=2_048,
             ),
         )
     if profile in {QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE, "qwen38-27b-nvfp4@8006"}:
-        adapter = OpenAICompatibleChatEndpoint(
-            base_url=QWEN38_27B_NVFP4_8006_BASE_URL,
-            model=QWEN38_27B_NVFP4_MODEL,
-            max_output_tokens=12_000,
-            temperature=0.0,
-            local_only=True,
-            max_retries=0,
-        )
         return (
-            RegisteredModelEndpoint(
-                role=ModelRole.IMPLEMENTATION,
+            _qwen_nvfp4_endpoint(
+                base_url=QWEN38_27B_NVFP4_8006_BASE_URL,
+                model=QWEN38_27B_NVFP4_MODEL,
                 endpoint_name="qwen38-27b-nvfp4@8006",
-                model_name=QWEN38_27B_NVFP4_MODEL,
-                revision=QWEN38_27B_NVFP4_MODEL,
-                adapter=adapter,
                 sequence_limit=131_072,
                 output_limit=12_000,
                 safety_allowance_tokens=1_000,
                 estimated_reasoning_reserve=2_048,
-                default_thinking=False,
-                reasoning_included_in_completion_tokens=False,
-                global_output_cap=131_072,
             ),
         )
     raise RuntimeError(f"unknown production endpoint profile: {profile}")
@@ -1873,6 +1900,7 @@ __all__ = [
     "DETERMINISTIC_FAKE_ENDPOINT_PROFILE",
     "QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE",
     "QWEN38_27B_FP8_8005_ENDPOINT_PROFILE",
+    "QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE",
     "QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE",
     "build_production_assembly",
     "load_production_assembly_spec",

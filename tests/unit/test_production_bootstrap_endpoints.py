@@ -3,6 +3,7 @@ from novel_agent.runtime.production_bootstrap import (
     DETERMINISTIC_FAKE_ENDPOINT_PROFILE,
     QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE,
     QWEN38_27B_FP8_8005_ENDPOINT_PROFILE,
+    QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE,
     QWEN38_27B_NVFP4_8006_ENDPOINT_PROFILE,
     resolve_registered_model_endpoints,
 )
@@ -76,6 +77,42 @@ def test_real_qwen38_8006_profile_is_explicit_and_contract_bounded() -> None:
     assert registration.safety_allowance_tokens == 1_000
     assert registration.estimated_reasoning_reserve == 2_048
     assert registration.default_thinking is False
+
+
+def test_real_qwen38_8003_profile_declares_the_served_model_identity() -> None:
+    """8003 serves the Qwen 3.8 NVFP4 checkpoint, so its 3.8 profile is explicit."""
+
+    endpoints = resolve_registered_model_endpoints(QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE)
+
+    assert len(endpoints) == 1
+    registration = endpoints[0]
+    adapter = registration.adapter
+    assert isinstance(adapter, OpenAICompatibleChatEndpoint)
+    assert registration.endpoint_name == "qwen38-27b-nvfp4@8003"
+    assert registration.model_name == "qwen38-27b-nvfp4"
+    assert registration.revision == "qwen38-27b-nvfp4"
+    assert adapter.base_url == "http://127.0.0.1:8003/v1"
+    assert adapter.model == "qwen38-27b-nvfp4"
+    assert adapter.max_output_tokens == 12_000
+    assert adapter.max_retries == 0
+    assert adapter.is_external is False
+    assert registration.sequence_limit == 131_072
+    assert registration.output_limit == 12_000
+    assert registration.safety_allowance_tokens == 1_000
+    assert registration.estimated_reasoning_reserve == 2_048
+    assert registration.default_thinking is False
+
+
+def test_qwen36_8003_profile_remains_distinct_from_the_38_profile() -> None:
+    """The legacy 3.6 identity must not be silently retargeted to the 3.8 model."""
+
+    legacy = resolve_registered_model_endpoints(QWEN36_27B_NVFP4_8003_ENDPOINT_PROFILE)[0]
+    current = resolve_registered_model_endpoints(QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE)[0]
+
+    assert legacy.model_name == "qwen36-27b-nvfp4"
+    assert current.model_name == "qwen38-27b-nvfp4"
+    assert legacy.adapter.base_url == current.adapter.base_url
+    assert legacy.endpoint_name != current.endpoint_name
 
 
 def test_fake_profile_stays_explicitly_available() -> None:
