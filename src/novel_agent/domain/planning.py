@@ -7,7 +7,7 @@ Planner or Reviewer permission to mutate canonical roots or commit state.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 
 from pydantic import Field, JsonValue, model_validator
@@ -273,6 +273,59 @@ def missing_volume_structure_keys(payload: Mapping[str, object]) -> tuple[str, .
         if value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, tuple, dict)) and not value):
             missing.append(key)
     return tuple(missing)
+
+
+# Volume slots that carry stage semantics: when a plan expresses one of these as a
+# structured entry, the entry must declare the stage range it applies to and the
+# obligation it serves.  A free-text slot is volume-scoped by definition and cannot
+# produce a false stage grid, so it stays acceptable.
+VOLUME_STAGE_SLOT_KEYS: tuple[str, ...] = (
+    "entry_conditions",
+    "exit_conditions",
+    "reveal_window",
+)
+_VOLUME_INVARIANT_SLOT_KEYS: tuple[str, ...] = ("capability_ceiling", "equipment_ceiling")
+
+
+def volume_stage_grid_defects(payload: Mapping[str, object]) -> tuple[str, ...]:
+    """Return stage entries that declare no usable stage range or obligation.
+
+    Ten non-empty fields are not a stage grid.  A structured stage entry has to say
+    *when* it applies (inside the volume's own range) and *which* responsibility it
+    serves, otherwise the entry cannot be checked at its boundary.
+    """
+
+    defects: list[str] = []
+    chapter_start = payload.get("chapter_start")
+    chapter_end = payload.get("chapter_end")
+    for key in (*VOLUME_STAGE_SLOT_KEYS, *_VOLUME_INVARIANT_SLOT_KEYS):
+        value = payload.get(key)
+        entries: Sequence[object]
+        if isinstance(value, Mapping):
+            entries = (value,)
+        elif isinstance(value, (list, tuple)):
+            entries = value
+        else:
+            continue
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                continue
+            label = f"{key}[{index}]"
+            start = entry.get("chapter_start")
+            end = entry.get("chapter_end")
+            if not isinstance(start, int) or not isinstance(end, int) or end < start:
+                defects.append(f"{label} declares no usable chapter_start/chapter_end")
+                continue
+            if isinstance(chapter_start, int) and start < chapter_start:
+                defects.append(f"{label} starts before its volume scope")
+            if isinstance(chapter_end, int) and end > chapter_end:
+                defects.append(f"{label} ends after its volume scope")
+            referenced = entry.get("obligation_ids")
+            if not isinstance(referenced, (list, tuple)) or not any(
+                isinstance(item, str) and item.strip() for item in referenced
+            ):
+                defects.append(f"{label} declares no obligation id it serves")
+    return tuple(defects)
 
 
 class PlanReviewIssue(DomainModel):

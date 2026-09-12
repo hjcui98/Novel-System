@@ -24,6 +24,7 @@ from novel_agent.domain.planning import (
     ReviewIssueKind,
     ReviewTargetKind,
     missing_volume_structure_keys,
+    volume_stage_grid_defects,
 )
 from novel_agent.domain.planning_coverage import (
     compile_planning_coverage_report,
@@ -202,6 +203,15 @@ def _host_issues_for_items(
                             ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
                             "VOLUME_STRUCTURE_INCOMPLETE: missing required volume slots: "
                             + ", ".join(missing_slots),
+                            item_id,
+                            blocking=True,
+                        )
+                    )
+                for defect in volume_stage_grid_defects(item_payload):
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
+                            f"VOLUME_STAGE_UNUSABLE: {defect}",
                             item_id,
                             blocking=True,
                         )
