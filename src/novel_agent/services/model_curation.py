@@ -37,10 +37,11 @@ from novel_agent.domain.changes import (
     EvidenceSupportDecision,
     EvidenceSupportDisposition,
     ObservedChangeSet,
+    OrdinaryCurationPageReceipt,
     WorldRecordKind,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
-from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory import PlanObligation, WorldRootDocument
 from novel_agent.domain.memory_write import (
     CuratorRecordKindCounts,
     CuratorRecordKindCoverageReceipt,
@@ -75,6 +76,10 @@ from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.evidence_support import EvidenceSupportGate
 from novel_agent.services.model_call_ledger import bounded_model_request_id
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.ordinary_curation import (
+    OrdinaryCurationIncomplete,
+    extract_source_batches,
+)
 
 
 class ModelCurationContractError(ValueError):
@@ -130,8 +135,6 @@ _GRAPH_SOURCE_UNIT_TOKENS = 1_500
 _GRAPH_MAX_PAGES_PER_UNIT = 16
 _GRAPH_MAX_CONCURRENT_UNITS = 8
 _GRAPH_SCHEMA_RETRY_SUFFIX = ".schema-retry1"
-_COMPACT_OUTPUT_RETRY_SUFFIX = ".compact"
-_COMPACT_OUTPUT_RETRY_MAX_TOKENS = 8_192
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +273,9 @@ class ModelCurator:
         self.last_prompt_fingerprint: ArtifactId | None = None
         self.last_operation_filter_receipts: tuple[ProposalOperationFilterReceipt, ...] = ()
         self.last_record_kind_coverage: CuratorRecordKindCoverageReceipt | None = None
+        # Whole-chapter bounded curation evidence: every page's model call and receipt.
+        self.last_ordinary_calls: tuple[ModelCallRecord, ...] = ()
+        self.last_ordinary_pages: tuple[OrdinaryCurationPageReceipt, ...] = ()
         self._pending_record_kind_proposed: dict[WorldRecordKind, int] = {}
 
     @property
@@ -518,6 +524,7 @@ class ModelCurator:
         current_world: WorldRootDocument,
         request: ModelRequest,
         *,
+        planned_obligations: tuple[PlanObligation, ...] = (),
         contract_prompt: str | None = None,
         repair_feedback: str | None = None,
         cumulative_token_budget: int | None = None,
@@ -568,118 +575,126 @@ class ModelCurator:
             f"candidates={len(candidates)} chapter_bytes={len(chapter.model_dump_json())}",
             flush=True,
         )
+        # The prompt is split into a static prefix, one replaceable input envelope and
+        # a static suffix.  Bounded whole-chapter curation rewrites only the envelope
+        # per source batch/page, so the output contract is never lost mid-continuation.
+        prompt_prefix = (
+            contract
+            + _source_bound_prompt(source_evidence_requirement)
+            + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
+            "only. "
+            "The operations key is required. An empty operations array is valid only "
+            "for a complete no-durable-delta result: coverage must equal 1, "
+            "declared_vs_observed_diff must be empty, and the draft must include "
+            "no_durable_delta_reason plus supporting no_op_evidence_quotes. "
+            "Unresolved items may still carry short advisory context gaps; retain them "
+            "for downstream consumers and do not treat their presence alone as a "
+            "durable delta. For an empty delta, keep no_durable_delta_reason under 80 "
+            "characters and "
+            "emit this compact shape before any explanation: operations=[], coverage=1, "
+            "unresolved=[advisory gaps], declared_vs_observed_diff=[], a short reason, "
+            "and "
+            "no_op_evidence_quotes containing one to four fragments copied verbatim from "
+            "this chapter's catalog. Never emit an empty no_op_evidence_quotes. "
+            "Evidence references are semantic quotes, never ids; no start/end offsets. "
+            "Preserve assertion/rumor/dream truth classes and do not infer future events. "
+            "Relations are owned by the separate graph profile; do not emit relation "
+            "records in this ordinary Curator draft. "
+            "Emit only durable world-state deltas: exclude one-scene encounters, "
+            "atmosphere, immediate perceptions, temporary emotions, plans, estimates, "
+            "and unresolved possibilities. Every predicate and value must describe "
+            "exactly what its cited evidence states; do not convert general rules, "
+            "hypotheticals, maxima, or other characters' achievements into a fact about "
+            "the subject. A new clue, secret, open conflict, or explicit hypothesis "
+            "that changes what later writing must carry is durable even when its "
+            "mechanism or relationship is uncertain: encode the smallest supported "
+            "event, state, or obligation with the source truth class and keep the "
+            "uncertain details in unresolved. Do not choose an empty operations array "
+            "merely because related details are uncertain.\n"
+        )
+        input_envelope = (
+            '<CURATOR_INPUT trusted="false">\n'
+            f"BASE_COMMIT={base_commit.root}\n"
+            "WORLD="
+            f"{canonical_json_bytes(self._world_model_view(current_world)).decode()}\n"
+            f"CHAPTER={chapter.model_dump_json()}\n"
+            "EVIDENCE_CANDIDATES="
+            f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
+            "</CURATOR_INPUT>\n"
+        )
+        prompt_suffix = (
+            '<CURATOR_OUTPUT_CONTRACT trusted="true">\n'
+            "Return at most four durable operations. Exclude transient encounters, "
+            "temporary feelings, estimates, plans, and unresolved possibilities. "
+            "Prefer one or two precise operations over filling the maximum. "
+            "Use only facts directly stated by each cited evidence candidate. "
+            "A composite method or process MUST cite the detail-bearing sentences "
+            "for every encoded step, usually with two to four evidence quotes; a "
+            "summary sentence such as 'this is the method' is not sufficient by "
+            "itself. Preserve source units exactly unless an explicit conversion is "
+            "certain: for example, half_shichen is not half_hour. Preserve epistemic "
+            "qualifiers: evidence saying believes, estimates, claims, or may must be "
+            "encoded as a belief/estimate/claim, never as an objective state. "
+            "For every state record, emit valid_time as a complete object in this "
+            'exact shape: {"worldline":"main","start_ordinal":CHAPTER_INDEX,'
+            '"end_ordinal":null,"label":null}. Replace CHAPTER_INDEX with the current '
+            "integer chapter index; never emit a string or whitespace-only value. "
+            "For record_kind=state, use predicate, "
+            "subject_id, value, valid_time, and truth_class; never swap these two "
+            "record shapes. "
+            "Entity records must use entity_type, internal_label, aliases, and "
+            "identity_invariants. Evidence is evidence_quotes (verbatim fragments), "
+            "never ids or evidence_refs. "
+            "Enumeration literals are lowercase and exact: the operation field "
+            "must be one of create / replace / retire and record_kind must be "
+            "one of entity / event / state / obligation; never emit relation, "
+            "uppercase or translated variants. "
+            "If this chapter introduces a named person absent from WORLD and a "
+            "durable operation records a fact about that person, emit one "
+            "evidence-supported CREATE entity operation first. Use the exact "
+            "entity ID that later operations reference, copy the source name "
+            "into internal_label, and keep aliases and identity_invariants to "
+            "facts explicitly stated by the cited candidates. Never reference a "
+            "new entity from a state, event, or obligation before its "
+            "CREATE operation. "
+            "Before emitting a composite value, verify that every semantic component "
+            "(including each underscore-separated component) has explicit support in "
+            "at least one selected evidence candidate. "
+            "The ONLY evidence field is evidence_quotes; evidence_refs and "
+            "evidence_candidate_ids do not exist in this schema. "
+            "Every operation MUST carry a non-empty evidence_quotes array with "
+            "one to four fragments. Each quote MUST be copied verbatim from a text "
+            "value in the EVIDENCE_CANDIDATES catalog (at least 8 characters), even "
+            "when the subject entity already exists in WORLD: the quoted sentences "
+            "must support the new state, relation, or event being encoded. Never "
+            "invent, paraphrase, or reuse a quote from another chapter. "
+            "Every evidence_quote must be a subject-bearing full sentence that "
+            "names the record's subject entity (its WORLD internal_label or an "
+            "unambiguous alias or pronoun in the same sentence) together with the "
+            "predicate and value, so the quote alone identifies who the fact is "
+            "about. Quote the full catalog sentence that contains the subject's "
+            "name; a bare value fragment such as a lone number or short phrase "
+            "cannot support the record. The quote requirement governs how "
+            "operations are evidenced, not whether they are proposed: propose "
+            "every durable delta the chapter establishes and back it with "
+            "subject-bearing full-sentence quotes. "
+            "When operations is non-empty, no_durable_delta_reason MUST be null and "
+            "no_op_evidence_quotes MUST be an empty array. Those two no-op "
+            "proof fields may be populated only when operations is empty. If both "
+            "an operation and a no-op idea seem applicable, keep the operation and "
+            "emit the no-op fields as null/empty; the operation is authoritative. "
+            "A state target id is immutable: each state id in WORLD is bound "
+            "to exactly one subject and predicate. Never reuse an existing "
+            "state id for a different subject or predicate; emit a new "
+            "non-colliding state id (for example "
+            "'state.<subject>.<predicate>') for a new fact, or omit the "
+            "operation when the existing fact is already recorded.\n"
+            "</CURATOR_OUTPUT_CONTRACT>" + repair_contract
+        )
         safe_request = request.model_copy(
             update={
                 "repetition_penalty": 1.10,
-                "prompt": (
-                    contract
-                    + _source_bound_prompt(source_evidence_requirement)
-                    + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
-                    "only. "
-                    "The operations key is required. An empty operations array is valid only "
-                    "for a complete no-durable-delta result: coverage must equal 1, "
-                    "declared_vs_observed_diff must be empty, and the draft must include "
-                    "no_durable_delta_reason plus supporting no_op_evidence_quotes. "
-                    "Unresolved items may still carry short advisory context gaps; retain them "
-                    "for downstream consumers and do not treat their presence alone as a "
-                    "durable delta. For an empty delta, keep no_durable_delta_reason under 80 "
-                    "characters and "
-                    "emit this compact shape before any explanation: operations=[], coverage=1, "
-                    "unresolved=[advisory gaps], declared_vs_observed_diff=[], a short reason, "
-                    "and "
-                    "no_op_evidence_quotes containing one to four fragments copied verbatim from "
-                    "this chapter's catalog. Never emit an empty no_op_evidence_quotes. "
-                    "Evidence references are semantic quotes, never ids; no start/end offsets. "
-                    "Preserve assertion/rumor/dream truth classes and do not infer future events. "
-                    "Relations are owned by the separate graph profile; do not emit relation "
-                    "records in this ordinary Curator draft. "
-                    "Emit only durable world-state deltas: exclude one-scene encounters, "
-                    "atmosphere, immediate perceptions, temporary emotions, plans, estimates, "
-                    "and unresolved possibilities. Every predicate and value must describe "
-                    "exactly what its cited evidence states; do not convert general rules, "
-                    "hypotheticals, maxima, or other characters' achievements into a fact about "
-                    "the subject. A new clue, secret, open conflict, or explicit hypothesis "
-                    "that changes what later writing must carry is durable even when its "
-                    "mechanism or relationship is uncertain: encode the smallest supported "
-                    "event, state, or obligation with the source truth class and keep the "
-                    "uncertain details in unresolved. Do not choose an empty operations array "
-                    "merely because related details are uncertain.\n"
-                    '<CURATOR_INPUT trusted="false">\n'
-                    f"BASE_COMMIT={base_commit.root}\n"
-                    "WORLD="
-                    f"{canonical_json_bytes(self._world_model_view(current_world)).decode()}\n"
-                    f"CHAPTER={chapter.model_dump_json()}\n"
-                    "EVIDENCE_CANDIDATES="
-                    f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
-                    "</CURATOR_INPUT>\n"
-                    '<CURATOR_OUTPUT_CONTRACT trusted="true">\n'
-                    "Return at most four durable operations. Exclude transient encounters, "
-                    "temporary feelings, estimates, plans, and unresolved possibilities. "
-                    "Prefer one or two precise operations over filling the maximum. "
-                    "Use only facts directly stated by each cited evidence candidate. "
-                    "A composite method or process MUST cite the detail-bearing sentences "
-                    "for every encoded step, usually with two to four evidence quotes; a "
-                    "summary sentence such as 'this is the method' is not sufficient by "
-                    "itself. Preserve source units exactly unless an explicit conversion is "
-                    "certain: for example, half_shichen is not half_hour. Preserve epistemic "
-                    "qualifiers: evidence saying believes, estimates, claims, or may must be "
-                    "encoded as a belief/estimate/claim, never as an objective state. "
-                    "For every state record, emit valid_time as a complete object in this "
-                    'exact shape: {"worldline":"main","start_ordinal":CHAPTER_INDEX,'
-                    '"end_ordinal":null,"label":null}. Replace CHAPTER_INDEX with the current '
-                    "integer chapter index; never emit a string or whitespace-only value. "
-                    "For record_kind=state, use predicate, "
-                    "subject_id, value, valid_time, and truth_class; never swap these two "
-                    "record shapes. "
-                    "Entity records must use entity_type, internal_label, aliases, and "
-                    "identity_invariants. Evidence is evidence_quotes (verbatim fragments), "
-                    "never ids or evidence_refs. "
-                    "Enumeration literals are lowercase and exact: the operation field "
-                    "must be one of create / replace / retire and record_kind must be "
-                    "one of entity / event / state / obligation; never emit relation, "
-                    "uppercase or translated variants. "
-                    "If this chapter introduces a named person absent from WORLD and a "
-                    "durable operation records a fact about that person, emit one "
-                    "evidence-supported CREATE entity operation first. Use the exact "
-                    "entity ID that later operations reference, copy the source name "
-                    "into internal_label, and keep aliases and identity_invariants to "
-                    "facts explicitly stated by the cited candidates. Never reference a "
-                    "new entity from a state, event, or obligation before its "
-                    "CREATE operation. "
-                    "Before emitting a composite value, verify that every semantic component "
-                    "(including each underscore-separated component) has explicit support in "
-                    "at least one selected evidence candidate. "
-                    "The ONLY evidence field is evidence_quotes; evidence_refs and "
-                    "evidence_candidate_ids do not exist in this schema. "
-                    "Every operation MUST carry a non-empty evidence_quotes array with "
-                    "one to four fragments. Each quote MUST be copied verbatim from a text "
-                    "value in the EVIDENCE_CANDIDATES catalog (at least 8 characters), even "
-                    "when the subject entity already exists in WORLD: the quoted sentences "
-                    "must support the new state, relation, or event being encoded. Never "
-                    "invent, paraphrase, or reuse a quote from another chapter. "
-                    "Every evidence_quote must be a subject-bearing full sentence that "
-                    "names the record's subject entity (its WORLD internal_label or an "
-                    "unambiguous alias or pronoun in the same sentence) together with the "
-                    "predicate and value, so the quote alone identifies who the fact is "
-                    "about. Quote the full catalog sentence that contains the subject's "
-                    "name; a bare value fragment such as a lone number or short phrase "
-                    "cannot support the record. The quote requirement governs how "
-                    "operations are evidenced, not whether they are proposed: propose "
-                    "every durable delta the chapter establishes and back it with "
-                    "subject-bearing full-sentence quotes. "
-                    "When operations is non-empty, no_durable_delta_reason MUST be null and "
-                    "no_op_evidence_quotes MUST be an empty array. Those two no-op "
-                    "proof fields may be populated only when operations is empty. If both "
-                    "an operation and a no-op idea seem applicable, keep the operation and "
-                    "emit the no-op fields as null/empty; the operation is authoritative. "
-                    "A state target id is immutable: each state id in WORLD is bound "
-                    "to exactly one subject and predicate. Never reuse an existing "
-                    "state id for a different subject or predicate; emit a new "
-                    "non-colliding state id (for example "
-                    "'state.<subject>.<predicate>') for a new fact, or omit the "
-                    "operation when the existing fact is already recorded.\n"
-                    "</CURATOR_OUTPUT_CONTRACT>" + repair_contract
-                ),
+                "prompt": prompt_prefix + input_envelope + prompt_suffix,
             }
         )
         safe_request = self._bind_cumulative_budget(
@@ -689,67 +704,32 @@ class ModelCurator:
             cumulative_tokens_used=cumulative_tokens_used,
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
-        # Strict json_schema framing: the endpoint's guided grammar binds the
-        # output fields so the model cannot emit legacy fields (evidence_refs,
-        # evidence_candidate_ids) or malformed record payloads, and the draft
-        # validates on the first call (no blind structured retries that can
-        # exceed the 900s transport ceiling).  Measured on this endpoint:
-        # strict grammar completes a curator-scale draft in well under the
-        # ceiling, and thinking is not grammar-constrained.  Host-side pydantic
-        # validation plus contract-feedback retries remain the fail-closed
-        # backstop exactly as in the semantic-support corridor.
+        # Bounded whole-chapter curation: one Curator response may carry at most four
+        # operations, so the chapter is sliced into source batches and each batch is
+        # continued until it is exhausted.  ``extract_source_batches`` owns the
+        # per-page preflight, the output-length compaction retry and the no-progress
+        # and incomplete-coverage refusals; the host aggregates every page before the
+        # chapter is validated against the complete World.
         try:
-            evidence_draft, call = await self._gateway.generate_structured(
+            evidence_draft, ordinary_calls, ordinary_pages = await extract_source_batches(
+                self._gateway,
                 safe_request,
-                CuratorV2EvidenceDraft,
-            )
-        except OpenAIChatOutputLengthError:
-            # A truncated JSON object cannot be admitted or safely repaired from
-            # its prefix. Give the same chapter one bounded, independently
-            # identifiable request whose only change is an explicit compact
-            # output contract. This keeps durable deltas and unresolved context
-            # in the normal downstream pipeline without replaying the identical
-            # length-constrained request.
-            suffix = _COMPACT_OUTPUT_RETRY_SUFFIX
-            compact_request = safe_request.model_copy(
-                update={
-                    "request_id": _bounded_child_model_request_id(safe_request, suffix),
-                    "trace_id": f"{safe_request.trace_id}.compact"[:256],
-                    "max_output_tokens": min(
-                        safe_request.max_output_tokens or _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
-                        _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
-                    ),
-                    "prompt": (
-                        safe_request.prompt + '\n\n<COMPACT_OUTPUT_RETRY trusted="true">\n'
-                        "The previous response reached the output limit before completing "
-                        "JSON. Return one complete replacement JSON object only; never "
-                        "return a prefix, explanation, markdown, or a copy of WORLD or "
-                        "EVIDENCE_CANDIDATES. Keep the output compact: at most four "
-                        "durable operations, short field values, and only the evidence "
-                        "quotes needed to support each operation. Preserve every durable "
-                        "delta that can be supported by the chapter; put uncertain "
-                        "details in short unresolved items rather than inventing them. "
-                        "Do not restate the input catalog.\n"
-                        "</COMPACT_OUTPUT_RETRY>"
-                    ),
-                }
-            )
-            compact_request = self._bind_cumulative_budget(
-                compact_request.model_copy(
-                    update={"budget_source": None},
-                ),
+                chapter,
+                current_world,
+                planned_obligations,
+                base_commit=base_commit,
                 cumulative_token_budget=cumulative_token_budget,
-                cumulative_token_budgets=cumulative_token_budgets,
                 cumulative_tokens_used=cumulative_tokens_used,
             )
-            try:
-                evidence_draft, call = await self._gateway.generate_structured(
-                    compact_request,
-                    CuratorV2EvidenceDraft,
-                    json_object_framing=True,
-                )
-            except OpenAIChatOutputLengthError as error:
-                raise ModelCurationOutputIncomplete() from error
+        except (OrdinaryCurationIncomplete, OpenAIChatOutputLengthError) as error:
+            # Either the bounded extraction could not finish the chapter within its
+            # page/compaction budget, or the provider truncated even the compact retry.
+            # Both are typed content failures for the repair corridor, never a silent
+            # partial chapter.
+            raise ModelCurationOutputIncomplete() from error
+        self.last_ordinary_calls = ordinary_calls
+        self.last_ordinary_pages = ordinary_pages
+        call = ordinary_calls[-1]
         self.last_no_op_verification = None
         if evidence_draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")

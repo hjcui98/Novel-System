@@ -391,7 +391,14 @@ class CuratorV2EvidenceDraft(DomainModel):
             self.no_durable_delta_reason is not None or self.no_op_evidence_quotes
         ):
             raise ValueError("non-empty Curator draft cannot include no-op proof")
-        if not self.operations and not self.no_durable_delta_reason:
+        if (
+            not self.operations
+            and not self.no_durable_delta_reason
+            and not (self.has_more or self.world_lookup_terms or self.plan_observations)
+        ):
+            # A page may legitimately carry no operation: it can be asking for a World
+            # lookup, continuing its source slice, or reporting plan observations.  Only
+            # an exhausted page with no such work must prove the chapter had no delta.
             raise ValueError("empty Curator draft requires a no-durable-delta reason")
         if any(not quote.strip() for quote in self.no_op_evidence_quotes):
             raise ValueError("no-op evidence quotes must not be blank")

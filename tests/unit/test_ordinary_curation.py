@@ -119,7 +119,13 @@ def _operation(target: str, *, kind: WorldRecordKind = WorldRecordKind.EVENT):
     )
 
 
-def _draft(*, operations=(), has_more: bool, coverage: float = 1.0) -> CuratorV2EvidenceDraft:
+def _draft(
+    *,
+    operations=(),
+    has_more: bool,
+    coverage: float = 1.0,
+    no_durable_delta_reason: str | None = None,
+) -> CuratorV2EvidenceDraft:
     return CuratorV2EvidenceDraft.model_construct(
         chapter_index=21,
         operations=operations,
@@ -129,7 +135,7 @@ def _draft(*, operations=(), has_more: bool, coverage: float = 1.0) -> CuratorV2
         plan_observations=(),
         unresolved=(),
         declared_vs_observed_diff=(),
-        no_durable_delta_reason=None,
+        no_durable_delta_reason=no_durable_delta_reason,
         no_op_evidence_quotes=(),
     )
 
@@ -296,23 +302,38 @@ def test_a_stalled_continuation_fails_closed() -> None:
         )
 
 
-def test_incomplete_coverage_without_more_fails_closed() -> None:
-    partial = _draft(operations=(), has_more=False, coverage=0.5)
+def test_incomplete_coverage_without_more_is_reported_not_silently_covered() -> None:
+    """A contradictory coverage claim is a contract defect for the support gate.
+
+    Page exhaustion proves the *source* was read to the end; the model's own coverage
+    self-report is a separate, less trustworthy signal.  This layer records the page as
+    not covered and leaves the typed refusal to the no-durable-delta support gate,
+    which already rejects `coverage != 1` with actionable feedback.
+    """
+
+    partial = _draft(operations=(), has_more=False, coverage=0.5, no_durable_delta_reason="无变化")
     gateway = _PageGateway([partial])
 
-    with pytest.raises(OrdinaryCurationIncomplete, match="incomplete coverage"):
-        asyncio.run(
-            extract_source_batches(
-                gateway,
-                _enveloped_request(),
-                CHAPTER,
-                _world(),
-                (),
-                base_commit=COMMIT,
-                cumulative_token_budget=None,
-                cumulative_tokens_used=0,
-            )
+    draft, _calls, receipts = asyncio.run(
+        extract_source_batches(
+            gateway,
+            _enveloped_request(),
+            CHAPTER,
+            _world(),
+            (),
+            base_commit=COMMIT,
+            cumulative_token_budget=None,
+            cumulative_tokens_used=0,
         )
+    )
+
+    assert receipts[0].covered is False
+    assert receipts[0].has_more is False
+    # The page is exhausted, so the aggregate must not claim more work either.  The
+    # model's own coverage self-report survives aggregation: overwriting it with 1.0
+    # would hide exactly the incomplete chapter the support gate exists to refuse.
+    assert draft.has_more is False
+    assert draft.coverage == 0.5
 
 
 def test_missing_source_envelope_fails_closed() -> None:
@@ -377,3 +398,26 @@ def test_request_payload_carries_the_page_contract() -> None:
     assert "PLANNED_OBLIGATIONS" in prompt
     assert prompt.startswith("curator instructions")
     assert prompt.rstrip().endswith("tail instructions")
+
+
+def test_empty_page_is_allowed_when_it_continues_or_looks_up() -> None:
+    """The draft contract must not demand no-op proof from a working page."""
+
+    continuation = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(),
+        coverage=0.5,
+        has_more=True,
+    )
+    assert continuation.operations == ()
+
+    lookup = CuratorV2EvidenceDraft(
+        chapter_index=21,
+        operations=(),
+        coverage=0.5,
+        world_lookup_terms=("陆沉舟",),
+    )
+    assert lookup.world_lookup_terms == ("陆沉舟",)
+
+    with pytest.raises(ValueError, match="no-durable-delta reason"):
+        CuratorV2EvidenceDraft(chapter_index=21, operations=(), coverage=1.0)

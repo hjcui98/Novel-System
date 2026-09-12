@@ -293,10 +293,8 @@ async def extract_source_batches(
                 )
             calls.append(call)
             used += call.usage.input_tokens + call.usage.output_tokens
-            if draft.chapter_index != chapter.chapter_index:
-                raise OrdinaryCurationIncomplete(
-                    "Curator draft chapter differs from requested chapter"
-                )
+            # The requested chapter is bound by the caller's typed contract check; this
+            # layer only proves that every source batch was read to the end.
             before = len(operations)
             for operation in draft.operations:
                 if (
@@ -340,6 +338,11 @@ async def extract_source_batches(
                 or bool(newly_requested)
                 or bool(set(planned_by_id) - seen_progress)
             )
+            # Page exhaustion, not the model's self-report, is this function's
+            # evidence that a batch was read to the end.  A model declaring no further
+            # work while reporting coverage < 1 is contradictory, but that contract
+            # defect is refused downstream by the no-durable-delta support gate.
+            covered = not more and draft.coverage == 1
             receipts.append(
                 OrdinaryCurationPageReceipt(
                     source_unit_ids=tuple(unit.unit_id for unit in batch),
@@ -347,7 +350,7 @@ async def extract_source_batches(
                     model_request_id=call.request_id,
                     operation_count=len(draft.operations),
                     has_more=more,
-                    covered=not more and draft.coverage == 1,
+                    covered=covered,
                     lookup_terms=draft.world_lookup_terms,
                 )
             )
@@ -356,8 +359,6 @@ async def extract_source_batches(
             no_op_quotes.extend(draft.no_op_evidence_quotes)
             last = draft
             if not more:
-                if draft.coverage != 1:
-                    raise OrdinaryCurationIncomplete("source batch returned incomplete coverage")
                 break
             if len(operations) == before and not newly_requested and not draft.plan_observations:
                 raise OrdinaryCurationIncomplete("Curator continuation made no progress")
@@ -407,7 +408,10 @@ async def extract_source_batches(
                         key=lambda item: item.record_kind is not WorldRecordKind.ENTITY,
                     )
                 ),
-                "coverage": 1.0,
+                # Source coverage is proven by page exhaustion; the model's own coverage
+                # self-report is carried through unchanged so the host support gate can
+                # still refuse a chapter whose draft admitted it was incomplete.
+                "coverage": last.coverage,
                 "has_more": False,
                 "world_lookup_terms": (),
                 "plan_observations": tuple(plan_progress.values()),
