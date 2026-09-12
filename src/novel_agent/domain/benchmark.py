@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from itertools import pairwise
 from typing import Any, cast
 
 from pydantic import Field, JsonValue, model_validator
@@ -27,7 +28,14 @@ from novel_agent.domain.retrieval_decision import (
 )
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.text import TextBlock as TextBlock
-from novel_agent.domain.world import Entity, Event, PlanNode, RelationRecord, StateRecord
+from novel_agent.domain.world import (
+    Entity,
+    Event,
+    PlanLevel,
+    PlanNode,
+    RelationRecord,
+    StateRecord,
+)
 
 
 class SceneDocument(DomainModel):
@@ -259,7 +267,59 @@ class PlanRootDocument(DomainModel):
         chapter_indexes = tuple(goal.chapter_index for goal in self.chapter_goals)
         if len(chapter_indexes) != len(set(chapter_indexes)):
             raise ValueError("each chapter index may have at most one active chapter goal")
+        parents = {
+            node.plan_node_id: node.parent_id
+            for node in self.nodes
+            if node.parent_id is not None
+        }
+        for node_id in parents:
+            seen = {node_id}
+            current = parents[node_id]
+            while current is not None:
+                if current in seen:
+                    raise ValueError("plan node parent chain contains a cycle")
+                seen.add(current)
+                current = parents.get(current)
+        self._validate_scope_coverage()
         return self
+
+    def _validate_scope_coverage(self) -> None:
+        """Keep one owner per covered chapter and inside the parent scope.
+
+        A rolling plan replaces declared ranges.  Two nodes at the same plan level
+        may therefore not own the same chapter, and a child may not cover chapters
+        outside its parent, otherwise an unrelated later plan could silently take
+        over an already written chapter.
+        """
+
+        by_id = {node.plan_node_id: node for node in self.nodes}
+        grouped: dict[tuple[PlanLevel | None, StableId | None], list[PlanNode]] = {}
+        for node in self.nodes:
+            if node.chapter_start is None or node.chapter_end is None:
+                continue
+            grouped.setdefault((node.plan_level, node.parent_id), []).append(node)
+        for siblings in grouped.values():
+            ordered = sorted(
+                siblings, key=lambda node: (node.chapter_start or 0, node.chapter_end or 0)
+            )
+            for previous, current in pairwise(ordered):
+                if (current.chapter_start or 0) <= (previous.chapter_end or 0):
+                    raise ValueError(
+                        "plan scope overlap: nodes "
+                        f"{previous.plan_node_id.root} and {current.plan_node_id.root} "
+                        "cover the same chapter at one plan level"
+                    )
+        for node in self.nodes:
+            if node.parent_id is None or node.chapter_start is None or node.chapter_end is None:
+                continue
+            parent = by_id.get(node.parent_id)
+            if parent is None or parent.chapter_start is None or parent.chapter_end is None:
+                continue
+            if node.chapter_start < parent.chapter_start or node.chapter_end > parent.chapter_end:
+                raise ValueError(
+                    f"plan node {node.plan_node_id.root} covers chapters outside its parent "
+                    f"{parent.plan_node_id.root}"
+                )
 
 
 class WorldConstructionDraft(DomainModel):
