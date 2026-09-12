@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -242,6 +244,30 @@ class ModelCallLedgerEntry(DomainModel):
         ):
             raise ValueError("transport exhaustion requires error evidence and completion")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class ModelReplayOutcome:
+    """Result of asking the gateway whether a completed call can be reused.
+
+    ``replayed`` is only true when the ledger hash matched, the provider identity still
+    matches the registered endpoint, and the stored raw response re-parses under the
+    current strict contract.  Otherwise ``reason`` names the exact drift so a caller can
+    decide between a fresh call and a typed failure instead of guessing.
+    """
+
+    replayed: bool
+    reason: str | None = None
+    # The parsed value is the caller's own output model, so it is carried untyped; the
+    # caller re-validates it, and the ledger/raw evidence remain the audited record.
+    output: Any = None
+    call_record: ModelCallRecord | None = None
+
+    def __post_init__(self) -> None:
+        if self.replayed and (self.output is None or self.call_record is None):
+            raise ValueError("a replayed outcome requires its output and call record")
+        if not self.replayed and self.reason is None:
+            raise ValueError("a non-replayed outcome requires a reason")
 
 
 class RawModelResponseArtifact(DomainModel):

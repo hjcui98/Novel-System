@@ -20,6 +20,7 @@ from novel_agent.domain.model_calls import (
     ModelCallLedgerStatus,
     ModelCallPurpose,
     ModelCallRecord,
+    ModelReplayOutcome,
     ModelRequest,
     ModelRole,
     ModelTextResult,
@@ -951,6 +952,71 @@ class ModelGateway:
                     }
                 )
         raise AssertionError("structured retry loop did not terminate")  # pragma: no cover
+
+    def replay_completed_structured(
+        self,
+        request: ModelRequest,
+        output_type: type[OutputModel],
+        *,
+        json_object_framing: bool = False,
+    ) -> ModelReplayOutcome:
+        """Return a completed response without paying for the call again.
+
+        A restart must not re-issue a request the ledger already completed, and must not
+        replay anything whose identity drifted.  The ledger request hash is the source of
+        truth for "same request"; the raw response artifact is re-read and re-parsed with
+        the same strict contract instead of trusting a stored verdict.  A request that was
+        sent but never settled is *uncertain*, so it is reported as such rather than
+        silently re-sent or silently replayed.
+        """
+
+        expected_endpoint = self._endpoints.get(request.model_role)
+        if expected_endpoint is None:
+            return ModelReplayOutcome(replayed=False, reason="endpoint_no_longer_registered")
+        # The ledger records the identity of the fully bound request (resolved budget
+        # included), so replay binds through the same path.  That makes a changed model,
+        # sequence limit or budget policy surface as request-identity drift instead of a
+        # silently reused response.
+        schema = None if json_object_framing else output_type.model_json_schema()
+        bound, _budget = self._bind_budget(
+            request.model_copy(update={"response_schema": schema}), expected_endpoint
+        )
+        with self._ledger_lock:
+            entry = self._call_ledger.load(bound.request_id)
+        if entry is None:
+            return ModelReplayOutcome(replayed=False, reason="no_ledger_entry")
+        # An unresolved call is reported before any identity comparison: it must be
+        # reconciled rather than mistaken for ordinary drift or re-sent.
+        if entry.status is ModelCallLedgerStatus.UNCERTAIN:
+            return ModelReplayOutcome(replayed=False, reason="uncertain_call_not_replayable")
+        if entry.request_hash != model_request_hash(bound):
+            return ModelReplayOutcome(replayed=False, reason="request_identity_drift")
+        if entry.status is not ModelCallLedgerStatus.COMPLETED:
+            return ModelReplayOutcome(
+                replayed=False, reason=f"terminal_status:{entry.status.value}"
+            )
+        if entry.call_record is None or entry.raw_artifact_ref is None:
+            return ModelReplayOutcome(replayed=False, reason="missing_raw_evidence")
+        if entry.call_record.endpoint != expected_endpoint.endpoint_name:
+            return ModelReplayOutcome(replayed=False, reason="endpoint_identity_drift")
+        if entry.call_record.model != expected_endpoint.model_name:
+            return ModelReplayOutcome(replayed=False, reason="model_identity_drift")
+        if self._raw_artifacts is None:
+            return ModelReplayOutcome(replayed=False, reason="raw_evidence_unavailable")
+        envelope = RawModelResponseArtifact.model_validate_json(
+            self._raw_artifacts.read_verified(entry.raw_artifact_ref)
+        )
+        if envelope.request_hash != entry.request_hash:
+            return ModelReplayOutcome(replayed=False, reason="raw_evidence_identity_drift")
+        if entry.raw_response_hash is not None and (
+            sha256_id(envelope.raw_response_text.encode("utf-8")) != entry.raw_response_hash
+        ):
+            return ModelReplayOutcome(replayed=False, reason="raw_response_hash_mismatch")
+        try:
+            parsed = self._parse_structured_output(output_type, envelope.raw_response_text)
+        except ValidationError:
+            return ModelReplayOutcome(replayed=False, reason="raw_response_no_longer_parses")
+        return ModelReplayOutcome(replayed=True, output=parsed, call_record=entry.call_record)
 
     async def generate_structured_audited(
         self,
