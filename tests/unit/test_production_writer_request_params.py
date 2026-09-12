@@ -114,3 +114,46 @@ def test_openai_adapter_prefers_request_temperature() -> None:
         )
     )
     assert captured[0]["temperature"] == 0.8
+
+
+def test_non_canon_world_states_are_not_injected_as_current_truth() -> None:
+    """Planned content must not reach the chapter as ``Canon current state``.
+
+    A live genesis recorded a volume-4 event as ``accepted_world_fact``, and the
+    Writer labelled every participating character's state as canon.  The injection
+    now separates accepted facts from classified non-facts by truth class, so the
+    classifier's decision actually reaches the draft.
+    """
+
+    from novel_agent.domain.memory import TruthClass
+    from novel_agent.domain.world import StateRecord, StoryTime
+
+    accepted = StateRecord(
+        state_id=StableId("state.accepted"),
+        subject_id=StableId("entity.bootstrap.1"),
+        predicate="character",
+        value="边镇少年，斩星武者。",
+        valid_time=StoryTime(worldline="main", start_ordinal=0),
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+    )
+    planned = StateRecord(
+        state_id=StableId("state.planned"),
+        subject_id=StableId("entity.bootstrap.1"),
+        predicate="character",
+        value="第四卷：锻打而成武器沉曜。",
+        valid_time=StoryTime(worldline="main", start_ordinal=0),
+        truth_class=TruthClass.PREDICTION,
+    )
+
+    canon = tuple(
+        state for state in (accepted, planned) if state.truth_class is TruthClass.ACCEPTED_WORLD_FACT
+    )
+    planned_only = tuple(
+        state
+        for state in (accepted, planned)
+        if state.truth_class is not TruthClass.ACCEPTED_WORLD_FACT
+    )
+
+    assert [state.state_id.root for state in canon] == ["state.accepted"]
+    assert [state.state_id.root for state in planned_only] == ["state.planned"]
+    assert planned_only[0].truth_class.value == "prediction"

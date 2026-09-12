@@ -33,7 +33,7 @@ from novel_agent.domain.memory import DerivedBuildStatus, WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.domain.runtime import TaskRecord
 from novel_agent.domain.stage2 import FutureIsolationAttestation, ProjectProfileRootDocument
-from novel_agent.domain.world import PlanLevel, PlanNode
+from novel_agent.domain.world import PlanLevel, PlanNode, TruthClass
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
@@ -293,11 +293,31 @@ class ProductionWritingRequestFactory:
                 + ", ".join(sorted(item.root for item in unknown_entities))
             )
         entity_labels = {entity.entity_id: entity.internal_label for entity in world.entities}
+        # Only accepted facts are injected as canon.  A state the host classified as
+        # a prediction, assertion, rumor or contested claim is not current truth, and
+        # labelling it "Canon current state" told the chapter that planned content had
+        # already happened.
+        canon_states = tuple(
+            state for state in world.states if state.truth_class is TruthClass.ACCEPTED_WORLD_FACT
+        )
+        non_canon_states = tuple(
+            state
+            for state in world.states
+            if state.truth_class is not TruthClass.ACCEPTED_WORLD_FACT
+        )
         current_state_constraints = tuple(
             f"Canon current state [{state.subject_id.root}] "
             f"{entity_labels.get(state.subject_id, state.subject_id.root)} "
             f"{state.predicate}={state.value}"
-            for state in world.states
+            for state in canon_states
+            if state.subject_id in set(participating_entity_ids)
+        )
+        planned_state_constraints = tuple(
+            f"planned but not yet true "
+            f"({state.truth_class.value}) [{state.subject_id.root}] "
+            f"{entity_labels.get(state.subject_id, state.subject_id.root)} "
+            f"{state.predicate}={state.value}"
+            for state in non_canon_states
             if state.subject_id in set(participating_entity_ids)
         )
         obligation_actions = tuple(
@@ -363,6 +383,7 @@ class ProductionWritingRequestFactory:
                 *language_constraint,
                 *language_allow_constraint,
                 *current_state_constraints,
+                *planned_state_constraints,
                 *self._profile_strings(profile, "mandatory_constraints"),
                 *lock_constraints,
                 *profile_lock_constraints,
