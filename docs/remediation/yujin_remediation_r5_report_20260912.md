@@ -46,17 +46,53 @@ uncertain 或已发送未完成请求不能当成普通失败直接重发。”
 prompt 漂移、响应契约漂移、模型身份漂移、uncertain 调用、原始响应损坏（先保持哈希一致
 以专门走到重新解析分支）、原始响应哈希不符、校验被拒调用、重放不消耗新预算。
 
-## 2. R5 未完成项
+## 2. 已完成：修稿前沿持久化（A15 预算部分）
+
+### 2.1 缺陷
+
+`writer_context_loop` 在恢复时无条件写：
+
+```python
+local_repair_attempt = 0
+...
+rewrite_attempt = 0
+```
+
+而大改分支的循环条件是 `while rewrite_attempt < request.budgets.max_major_rewrites`，
+局修分支的无变化守卫也是 `local_repair_attempt < request.budgets.max_local_repairs`。
+因此**每次重启都会重新发放整套修稿配额**——一个在两次修稿之间重启的进程可以无限次
+支付同一份 pinned 预算。这既是预算失控，也违反方案“最多一次 Canon 提交 / 有限尝试”的要求。
+
+### 2.2 实现
+
+- `WritingLoopPhase` 新增 `REPAIR_PENDING` 作为显式耐久前沿（与盲修一致）；
+- `WritingLoopCheckpoint` 新增 `repair_stage`（dispatch/local_review/rewrite_draft/
+  rewrite_review）、`local_repairs_used`、`major_rewrites_used`、`repair_input`，
+  并加校验：repair 前沿必须带输入与拒绝历史，`local_review` 必须有已结算的局修，
+  `rewrite_review` 必须有已结算的大改；
+- 两个计数改为从 checkpoint 恢复；两个 post-draft 前沿在写 checkpoint 时一并持久化
+  当前计数与阶段。
+
+### 2.3 证据
+
+`tests/unit/test_writing_loop_repair_frontier.py`（6 项）：新 checkpoint 计数为零、
+计数与阶段可序列化往返、负值与未知阶段被拒、`REPAIR_PENDING` 是已声明前沿且其规则存在、
+以及一条源码检查断言恢复路径**确实读取**持久化计数（防止只写不读）。
+
+## 3. R5 未完成项
 
 | 项 | 内容 |
 |---|---|
-| 修稿前沿持久化 | `WritingLoopCheckpoint` 已持久化 `initial_draft`/`rewritten_draft`/`repaired_draft`/`editorial_reports`/`final_*`/`observation`，但缺 `repair_stage`、`local_repairs_used`、`major_rewrites_used`、`repair_input`（盲修新增字段），恢复时无法判断“局修/大改/复审”处于哪一步 |
+| `REPAIR_PENDING` 端到端 | 构造完整 post-Draft fixture 验证“局修中/大改中重启”的完整行为，属集成测试层 |
 | 恢复入口统一 | 恢复请求与新建请求共用 readiness（R3 已完成部分）；恢复时的 frozen request 重建需接入 `replay_completed_structured` |
 | 共享调用预算 | 单轮预算需覆盖 Writer/Editor/内部重试，并区分 slice yield、累计耗尽、provider 错误与契约错误；重放不占新配额 |
 | 旧 checkpoint | 缺必需证明的旧 checkpoint 必须返回明确的“重建/新任务”要求，不得补造 passed 标志 |
 | A15 | Memory/首稿/局修/大改/复审后重启的端到端证据 |
 
-## 3. 回归与失败身份
+## 4. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 2999 passed / 1 skipped**；
-失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R5 至今新增 10 项通过测试。
+`tests/unit tests/contract`：**76 failed / 3005 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R5 至今新增 16 项通过测试。
+
+`tests/integration/test_writer_context_loop.py` 在整合前就有 11 项失败（已用 stash 对照确认与本次改动无关），
+不在 R0 基线的命令范围内，将在 R6 前单独登记。
