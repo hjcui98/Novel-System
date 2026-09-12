@@ -1373,7 +1373,9 @@ def test_advance_plan_commit_materializer_error_blocks() -> None:
     commands.get_task.return_value = _task(kind=TaskKind.PLAN_COMMIT)
     cast(Any, service)._accepted_binding = Mock(return_value=Mock())
     result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
-    assert result.reason_code == "candidate_materialization_rejected"
+    # The reason carries the defect so the blocked run is diagnosable from its
+    # own durable record instead of only the failure class.
+    assert result.reason_code == "candidate_materialization_rejected: bad plan"
 
 
 def test_advance_freshness_reports_lookahead_pending() -> None:

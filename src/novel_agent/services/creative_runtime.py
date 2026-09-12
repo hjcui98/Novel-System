@@ -884,7 +884,10 @@ class CreativeRuntimeService:
                     CreativeRunTerminal.WAITING_RETRY,
                     "draft_length_contract_retry",
                 )
-            except CandidateMaterializationError:
+            except CandidateMaterializationError as error:
+                # Name the defect.  Without it the attempt records only
+                # "candidate_materialization_rejected" and the blocked run cannot
+                # be diagnosed from the durable record.
                 settled = self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.FAILED,
@@ -894,9 +897,12 @@ class CreativeRuntimeService:
                 return self._result(
                     settled,
                     CreativeRunTerminal.REVIEW_REQUIRED,
-                    "candidate_materialization_rejected",
+                    f"candidate_materialization_rejected: {error}",
                 )
             if report.status is not ValidationStatus.PASSED:
+                failing = tuple(
+                    f"{finding.code}: {finding.message}" for finding in report.findings
+                )
                 settled = self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.FAILED,
@@ -905,7 +911,10 @@ class CreativeRuntimeService:
                     failure_class=FailureClass.VALIDATION_REJECTED,
                 )
                 return self._result(
-                    settled, CreativeRunTerminal.REVIEW_REQUIRED, "validation_rejected"
+                    settled,
+                    CreativeRunTerminal.REVIEW_REQUIRED,
+                    "validation_rejected: "
+                    + ("; ".join(failing[:5]) if failing else "no finding reported"),
                 )
             commit_request = CommitRequest(
                 request_id=bounded_runtime_identity(
