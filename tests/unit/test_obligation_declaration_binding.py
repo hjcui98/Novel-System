@@ -156,6 +156,34 @@ def _materializer() -> PlanCandidateMaterializer:
     return PlanCandidateMaterializer(artifacts, Mock(), schema_version=VERSION)
 
 
+def test_current_and_legacy_forms_on_one_item_keep_distinct_identities() -> None:
+    """A responsibility table must never be appended twice under different ordinals."""
+
+    planner = _materializer()
+    proposal = _proposal(
+        (
+            _item(
+                "vol_01",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_plan": list(_VOLUME_ONE),
+                    "obligation_declarations": [
+                        {"kind": "promise", "summary": "铜铭另有来历", "not_before_chapter": 1}
+                    ],
+                },
+            ),
+        )
+    )
+
+    world, _ref, bindings = planner._bind_obligation_declarations(_world(), proposal)
+
+    descriptions = [obligation.description for obligation in world.obligations]
+    assert descriptions == ["铜铭另有来历", "陆沉舟获得铜铭", "确认残星纹为断序星纹"]
+    ids = [obligation.obligation_id for obligation in world.obligations]
+    assert len(ids) == len(set(ids)) == 3
+    assert len(bindings[StableId("vol_01")]) == 3
+
+
 def test_legacy_volume_responsibility_table_now_declares_world_obligations() -> None:
     planner = _materializer()
     proposal = _proposal(

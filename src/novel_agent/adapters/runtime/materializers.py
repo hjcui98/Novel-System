@@ -1098,15 +1098,15 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         bindings: dict[StableId, list[StableId]] = {}
         obligation_kinds = {kind.value for kind in ObligationKind}
         # ``obligation_plan`` is the legacy upper-layer responsibility table.  It is
-        # normalized here instead of being ignored, so an eight-volume responsibility
-        # table can no longer produce zero World obligations.
+        # compiled only through the legacy branch below: keeping it out of this key
+        # loop prevents the same responsibility from being appended twice under
+        # different ordinals (and therefore two different host-derived ids).
         declaration_keys = {
             "obligation",
             "obligations",
             "obligation_declarations",
             "key_obligations",
             "obligation_declaration",
-            "obligation_plan",
         }
         for item in proposal.items:
             payload = item.payload
@@ -1146,7 +1146,9 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             has_direct_declaration = direct_kind is not None or item_kind in obligation_kinds | {
                 "obligation"
             }
-            has_nested_declaration = any(key in payload for key in declaration_keys)
+            has_nested_declaration = any(key in payload for key in declaration_keys) or (
+                payload.get("obligation_plan") is not None
+            )
             if trusted_level in declaration_forbidden and (
                 has_direct_declaration or has_nested_declaration
             ):
