@@ -79,19 +79,34 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 | A18 | 真实旧 v4/v6 roots 与新 schema | `test_obligation_declaration_binding.py` + R0 的 v6 roots 只读加载 | ✅ 部分 |
 | A19 | 多条反序匹配、lease 取消、跨 gateway 切片 | `test_writer_change_reconciliation_indices.py`（3 项） | ✅ 反序部分 |
 | A20 | canonical 游标与 100→101 卷边界 | `tests/integration/test_plan_hierarchy_production.py::test_volume_boundary_retriggers_arc_volume_instead_of_next_chapter_set`（7 项文件全绿）、`tests/unit/test_stage5_vertical_runner.py::test_stale_zero_cursor_is_normalized_from_committed_projections` | ✅ |
-| A21 | 单个英文违规词与白名单代号 | 既有中文 token 门禁（`test_editorial.py` 等）；不在本次改动范围 | ⚠️ 待单独登记 |
+| A21 | 单个英文违规词与白名单代号 | 三个入口同一判定器：`draft_surface_error`（`services/writer_cognition.py`），调用点为 Writer 首稿（`writer_cognition.py:614`）、局修/重试后（`writer_cognition.py:658`）、最终 Draft 物化（`adapters/runtime/materializers.py:1591`）；三处均以 `mandatory_constraints` 的 `正文语言：` 取目标语言、`language_allowlist_tokens` 取白名单 | ✅ 已登记 |
 | A22 | 作者约束/证据超预算、四类 coverage | `test_planning_coverage.py`（8 项） | ✅ |
 
 图例：✅ 已有确定性证据；⚠️ 部分或需真实运行补证；❌ 尚未覆盖。
+
+### 3.1 A21 登记（中文门禁三入口一致性）
+
+| 入口 | 位置 | 目标语言来源 | 白名单来源 | 失败语义 |
+|---|---|---|---|---|
+| Writer 首稿 | `services/writer_cognition.py:614` | `mandatory_constraints` 中 `正文语言：` | `language_allowlist_tokens(mandatory_constraints)` | `WriterCognitionError` |
+| 局修 / 复读重试后 | `services/writer_cognition.py:658` | 同上 | 同上 | `WriterCognitionError` |
+| 最终 Draft 物化 | `adapters/runtime/materializers.py:1591` | 同上 | 同上 | `CandidateMaterializationError` |
+
+三处共用同一个纯函数 `draft_surface_error`，判定顺序、白名单语义与"目标语言为英文时跳过"条件一致，
+不存在只在一侧生效的中文门禁。目标语言为空时三处都退化为不判定（`language is None`），
+因为 `_split_composite_brief` 只从作者 brief 与风格指南编译 `正文语言：` 约束。
+
 
 ## 4. R6 未完成项
 
 | 项 | 内容 |
 |---|---|
-| A21 | 中文门禁在成稿/修稿/最终物化三个入口的统一性登记（实现已存在，缺一次集中核对） |
+| ~~A21~~ | **已完成**，见 3.1 节三入口登记 |
 | A05/A12/A15 端到端 | 需真实 v7 运行补证 |
-| ~~8003 预检补齐~~ | **已完成**，见第 6 节 |
-| 真实 v7 运行 | 第 9 节 G0 配置与规划 → G1 两章 → G2 五章 → G3 20 章 |
+| ~~8003 预检补齐~~ | **已完成**，见第 5 节 |
+| ~~G0 作者锁通道~~ | **已完成**，见第 7 节 |
+| 真实 v7 运行 | 第 9 节 G0 配置与规划 → G1 两章 → G2 五章 → G3 20 章；G0 受 bootstrap 输出预算约束，见第 7 节 |
+
 
 ## 5. 8003 预检实跑证据（2026-09-12）
 
@@ -145,3 +160,58 @@ tests/integration          失败身份集合 == 本节 2.2 清单（19 项）
 ```
 
 比较对象是**具体测试身份**，不是失败数量。
+
+## 7. G0 作者锁通道与 bootstrap 预算（2026-09-12 真实运行）
+
+### 7.1 作者锁从"模型转述"改为"作者冻结通道"
+
+**发现的缺陷**：v6 的 `ProjectProfileRoot` 中 `planning_constraints` 为空对象，
+`author-constraint-root` 只编译出 1 条约束（`author-constraint.language.0`）。
+brief 第 212–215 行明确写有第一卷内府禁止、第一卷末铜铭、断星六号不得完成核心回收、
+第三碎片/ER-07 最早第三卷、长程真相最早第四卷后段，但这些**只以自然语言存在于 brief**，
+由模型抽取，实际被全部丢弃。结果是 Planner 与 Writer 都拿不到作者声明的边界。
+
+**修复**：`bootstrap-prepare --planning-locks <file>` 引入作者冻结通道。
+文件在**绑定任何 endpoint 之前**校验并内容寻址；编译出的分道写入
+`capability_profile.planning_constraints`，也就是 `compile_author_constraint_root`
+与 Stage 3 Writer 锁投影已经在读的同一处。指向其它项目的锁文件 fail-closed。
+
+`input/planning-locks.json` 声明 5 条锁：
+
+| lock_id | category | 边界 | 来源 |
+|---|---|---|---|
+| `lock.inner-court.vol2` | timeline | not_before 101 / latest 200 | brief 212 |
+| `lock.copper-token.vol1-end` | equipment | earliest 90 / latest 100 | brief 213 |
+| `lock.duanxing-core.vol1-forbidden` | progression | not_before 101 / latest 200 | brief 213 |
+| `lock.third-shard-er07.vol3` | reveal | not_before 201 / latest 300 | brief 214 |
+| `lock.long-truth.vol4-late` | reveal | 无显式下界（作者只给"最早第四卷后段"） | brief 215 |
+
+`timeline` 类强制要求同时给出 `not_before_chapter` 与 `chapter_latest`，
+因为只有下界的"锁"可以被一个短规划视野静默满足；`reveal` 类允许不写下界，
+作者没有声明 deadline 时不替作者发明一个。
+
+证据：`tests/unit/test_author_planning_locks.py`（10 项，含推导根哈希、
+陈旧哈希拒绝、作者通道覆盖模型自报、编译后进入 author-constraint root）、
+`tests/unit/test_production_novel_bootstrap.py`（14 项，含 CLI 透传与跨项目 fail-closed）。
+
+### 7.2 bootstrap 输出预算与请求超时是硬上限
+
+v7 真实 G0 连续失败三次，全部是预算而非模型错误：
+
+| 次 | 配置 | 结果 |
+|---|---|---|
+| 1 | 默认 12 000 输出 token / 300 s | `OpenAIChatOutputLengthError`（finish_reason=length） |
+| 2 | 48 000 / 300 s | `TimeoutError`：300 s 时仍在生成 |
+| 3 | 48 000 / 900 s（探针） | 375.4 s 后 `OpenAIChatOutputLengthError`，`output_tokens=48000`、`input_tokens=13019`、原始内容 81 761 字符 |
+
+即：这份 800 章 brief 的 bootstrap Planner 响应**超过 48 000 token**，
+v6 的同类响应当初在 12 000 以内完成。结论与处置：
+
+- `BOOTSTRAP_REQUEST_TIMEOUT_SECONDS` 默认从 300 s 提到 900 s（`ModelRequest.timeout_seconds` 的域上限）；
+- `--max-output-tokens` 与 `--bootstrap-timeout-seconds` 在 `bootstrap-prepare` 上暴露并记录，
+  长程运行必须显式申报所请求的预算，而不是被一个 Stage 0 默认值静默截断。
+
+这仍是 G0 的**未闭合约束**：在 900 s × 900 s 上限内能否产出完整响应，
+取决于该模型对 800 章 brief 的真实输出长度，属于运行配置问题而非既有缺陷的回归。
+G0 未产出 `state/genesis-prepared.json` 前，G1/G2/G3 都不启动。
+
