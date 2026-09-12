@@ -35,19 +35,19 @@ class WriterChangeReconciliationService:
             raise ReconciliationError("Curator observation belongs to another Draft")
         hints = tuple(writer_hints)
         comparisons: list[ReconciliationComparison] = []
-        remaining = list(enumerate(observation.changes))
+        remaining = list(observation.changes)
         matched_hint_indexes: set[int] = set()
 
         # First consume exact identity/value matches so a partial mismatch cannot steal an
         # observation that is an exact match for a later declaration.
         for hint_index, hint in enumerate(hints):
             exact_index = next(
-                (index for index, item in remaining if _exact_match(hint, item)),
+                (index for index, item in enumerate(remaining) if _exact_match(hint, item)),
                 None,
             )
             if exact_index is None:
                 continue
-            _, item = remaining.pop(exact_index)
+            item = remaining.pop(exact_index)
             matched_hint_indexes.add(hint_index)
             comparisons.append(
                 _comparison(
@@ -65,7 +65,7 @@ class WriterChangeReconciliationService:
             partial_index = next(
                 (
                     index
-                    for index, item in remaining
+                    for index, item in enumerate(remaining)
                     if _same_subject(hint, item) and _partial_identity(hint, item)
                 ),
                 None,
@@ -81,7 +81,7 @@ class WriterChangeReconciliationService:
                     )
                 )
                 continue
-            _, item = remaining.pop(partial_index)
+            item = remaining.pop(partial_index)
             comparisons.append(
                 _comparison(
                     ReconciliationClass.MISMATCHED,
@@ -92,7 +92,7 @@ class WriterChangeReconciliationService:
                 )
             )
 
-        for _, item in remaining:
+        for item in remaining:
             comparisons.append(
                 _comparison(
                     ReconciliationClass.OBSERVED_ONLY,
