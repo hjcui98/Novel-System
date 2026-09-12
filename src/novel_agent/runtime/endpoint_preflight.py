@@ -27,7 +27,7 @@ from novel_agent.domain.model_calls import (
     ModelRole,
 )
 from novel_agent.runtime.production_bootstrap import resolve_registered_model_endpoints
-from novel_agent.services.model_gateway import RegisteredModelEndpoint
+from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 
 _PREFLIGHT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -106,6 +106,37 @@ async def _fetch_live_models(base_url: str, *, timeout_seconds: float) -> tuple[
     return tuple(models)
 
 
+_LONG_FORM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["ok"]},
+        "paragraph": {"type": "string"},
+        "character_count": {"type": "integer"},
+    },
+    "required": ["status", "paragraph", "character_count"],
+    "additionalProperties": False,
+}
+# A real answer also proves the endpoint honours a schema, returns usage, and can write
+# sustained target-language prose rather than a one-token JSON reply.
+_LONG_FORM_PROMPT = (
+    "用中文写一段连贯的叙事文字，描写一个人物在旧城中寻找一件失落信物，"  # noqa: RUF001
+    "长度不少于 400 个汉字，只输出叙事正文，不要解释。然后返回 JSON："  # noqa: RUF001
+    '"status" 为 "ok"、"paragraph" 为正文、"character_count" 为正文汉字数。'
+)
+
+
+def _probe_gateway(endpoint: RegisteredModelEndpoint) -> ModelGateway:
+    """Smallest production gateway so probes share the real call contract.
+
+    Calling ``endpoint.adapter.generate`` directly skips budget binding, and the adapter
+    rejects an unbound request (``OpenAI adapter requires a gateway-bound
+    EffectiveBudgetResult``).  Routing through the gateway also records the probe in the
+    call ledger instead of hiding a real model call.
+    """
+
+    return ModelGateway((endpoint,), forbid_external_calls=not endpoint.adapter.is_external)
+
+
 async def _run_bounded_generation(
     endpoint: RegisteredModelEndpoint, *, timeout_seconds: float
 ) -> tuple[bool, tuple[str, ...]]:
@@ -122,8 +153,9 @@ async def _run_bounded_generation(
         timeout_seconds=timeout_seconds,
         enable_thinking=False,
     )
+    gateway = _probe_gateway(endpoint)
     try:
-        result = await endpoint.adapter.generate(request)
+        result = await gateway.generate_text(request)
     except Exception as error:
         return False, (f"bounded generation failed: {type(error).__name__}: {error}",)
     try:
@@ -133,8 +165,67 @@ async def _run_bounded_generation(
     issues: list[str] = []
     if not isinstance(payload, dict) or payload.get("status") != "ok":
         issues.append("bounded generation did not return the required status field")
-    if not result.model_version:
+    if not result.call_record.model_version:
         issues.append("bounded generation returned no model version")
+    if result.call_record.usage.input_tokens <= 0:
+        issues.append("bounded generation reported no input usage")
+    return True, tuple(issues)
+
+
+async def _run_long_form_generation(
+    endpoint: RegisteredModelEndpoint,
+    *,
+    timeout_seconds: float,
+    minimum_characters: int = 300,
+) -> tuple[bool, tuple[str, ...]]:
+    """Prove sustained target-language output, not just a one-token JSON reply."""
+
+    request = ModelRequest(
+        request_id=StableId("preflight.endpoint.long-form"),
+        run_id=RunId("run.preflight"),
+        task_id=TaskId("task.preflight.long-form"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.preflight.long-form",
+        prompt=_LONG_FORM_PROMPT,
+        response_schema=_LONG_FORM_SCHEMA,
+        max_output_tokens=2_048,
+        timeout_seconds=timeout_seconds,
+        enable_thinking=False,
+    )
+    gateway = _probe_gateway(endpoint)
+    try:
+        result = await gateway.generate_text(request)
+    except Exception as error:
+        return False, (f"long-form generation failed: {type(error).__name__}: {error}",)
+    try:
+        payload = json.loads(result.text)
+    except json.JSONDecodeError as error:
+        return False, (f"long-form generation returned non-JSON output: {error}",)
+    issues: list[str] = []
+    paragraph = payload.get("paragraph") if isinstance(payload, dict) else None
+    if not isinstance(paragraph, str) or not paragraph.strip():
+        issues.append("long-form generation returned no paragraph")
+        paragraph = ""
+    han = [character for character in paragraph if "\u4e00" <= character <= "\u9fff"]
+    if len(han) < minimum_characters:
+        issues.append(
+            f"long-form generation returned {len(han)} Chinese characters, "
+            f"fewer than the requested {minimum_characters}"
+        )
+    latin = sum(
+        1
+        for character in paragraph
+        if character.isascii() and character.isalpha()
+    )
+    if len(han) and latin > len(han):
+        issues.append(
+            "long-form generation is mostly Latin text; the target language is not respected"
+        )
+    if result.call_record.usage.output_tokens <= 0:
+        issues.append("long-form generation reported no output usage")
+    if not result.call_record.model_version:
+        issues.append("long-form generation returned no model version")
     return True, tuple(issues)
 
 
@@ -174,6 +265,12 @@ async def preflight_endpoint_profile(
             endpoint, timeout_seconds=generation_timeout_seconds
         )
         issues.extend(generation_issues)
+        long_form_ran, long_form_issues = await _run_long_form_generation(
+            endpoint, timeout_seconds=generation_timeout_seconds
+        )
+        issues.extend(long_form_issues)
+        if not long_form_ran:
+            generation_ran = False
     return EndpointPreflightResult(
         endpoint_profile=profile,
         endpoint_name=endpoint.endpoint_name,

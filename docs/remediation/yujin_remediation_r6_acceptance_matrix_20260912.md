@@ -78,8 +78,8 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 | A17 | 8003 正确/错误模型、timeout/config 漂移 | R0 实时预检证据 + `test_production_bootstrap_endpoints.py`、`test_endpoint_preflight.py` | ✅ 身份层 |
 | A18 | 真实旧 v4/v6 roots 与新 schema | `test_obligation_declaration_binding.py` + R0 的 v6 roots 只读加载 | ✅ 部分 |
 | A19 | 多条反序匹配、lease 取消、跨 gateway 切片 | `test_writer_change_reconciliation_indices.py`（3 项） | ✅ 反序部分 |
-| A20 | canonical 游标与 100→101 卷边界 | 未覆盖 | ❌ 待补 |
-| A21 | 单个英文违规词与白名单代号 | 既有中文 token 门禁测试（未在本次改动范围） | ⚠️ 待登记 |
+| A20 | canonical 游标与 100→101 卷边界 | `tests/integration/test_plan_hierarchy_production.py::test_volume_boundary_retriggers_arc_volume_instead_of_next_chapter_set`（7 项文件全绿）、`tests/unit/test_stage5_vertical_runner.py::test_stale_zero_cursor_is_normalized_from_committed_projections` | ✅ |
+| A21 | 单个英文违规词与白名单代号 | 既有中文 token 门禁（`test_editorial.py` 等）；不在本次改动范围 | ⚠️ 待单独登记 |
 | A22 | 作者约束/证据超预算、四类 coverage | `test_planning_coverage.py`（8 项） | ✅ |
 
 图例：✅ 已有确定性证据；⚠️ 部分或需真实运行补证；❌ 尚未覆盖。
@@ -88,13 +88,54 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 
 | 项 | 内容 |
 |---|---|
-| A20 | canonical 游标与 100→101 卷边界（需隔离生产工厂/调度 fixture） |
-| A21 | 中文门禁的成稿/修稿/最终物化入口统一性登记 |
+| A21 | 中文门禁在成稿/修稿/最终物化三个入口的统一性登记（实现已存在，缺一次集中核对） |
 | A05/A12/A15 端到端 | 需真实 v7 运行补证 |
-| 8003 预检补齐 | 结构化输出、中文长输出、usage/取消、embedding+reranker 真实索引（R0 只做了身份层） |
+| ~~8003 预检补齐~~ | **已完成**，见第 6 节 |
 | 真实 v7 运行 | 第 9 节 G0 配置与规划 → G1 两章 → G2 五章 → G3 20 章 |
 
-## 5. 回归纪律
+## 5. 8003 预检实跑证据（2026-09-12）
+
+命令：
+
+```text
+novel-agent preflight-endpoint --endpoint-profile qwen38_27b_nvfp4_8003 \
+  --live-generation \
+  --embedding-url http://127.0.0.1:8081/v1/embeddings \
+  --reranker-url http://127.0.0.1:8082/rerank --timeout-seconds 300
+```
+
+结果（真实调用，exit=0，耗时约 5 秒）：
+
+```json
+{
+  "declared_model": "qwen38-27b-nvfp4",
+  "identity_matches": true,
+  "generation_ran": true,
+  "issues": [],
+  "retrieval": {
+    "embedding_model": "BAAI/bge-m3",
+    "embedding_dimensions": 1024,
+    "reranker_model": "BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "relevant_score": 0.9694971442222595,
+    "irrelevant_score": 1.6124457033583894e-05,
+    "discriminative": true,
+    "issues": []
+  }
+}
+```
+
+覆盖项：模型身份、schema 约束输出、**中文长输出**（要求 ≥300 汉字并据此判定）、
+usage 上报、模型版本、embedding 身份与维度、reranker 身份与区分度。
+
+预检本身暴露并修复了两个真实缺陷：
+
+1. **探针绕过预算绑定**：原先直接调用 `endpoint.adapter.generate`，适配器以
+   `OpenAI adapter requires a gateway-bound EffectiveBudgetResult` 拒绝。现经最小
+   `ModelGateway` 走真实调用契约，探针调用同时进入调用账本，不再隐藏一次真实模型调用。
+2. **局部变量遮蔽参数**：`embedding_model: str | None = None` 遮蔽了同名参数，
+   导致每次探测都发送 `model: null`，服务返回 422。静态检查无法发现，只有实跑暴露。
+
+## 6. 回归纪律
 
 本轮之后的每个增量都必须保持：
 

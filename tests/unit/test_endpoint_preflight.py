@@ -26,6 +26,11 @@ from novel_agent.services.model_gateway import RegisteredModelEndpoint
 class _StubAdapter:
     """Minimal ModelEndpointPort double with a scripted result or failure."""
 
+    is_external = False
+    model = "stub-model"
+    max_retries = 0
+    default_thinking = False
+
     def __init__(
         self,
         *,
@@ -46,8 +51,23 @@ class _StubAdapter:
         self.requests.append(request)
         if self._error is not None:
             raise self._error
+        text = self._text
+        schema = request.response_schema or {}
+        if "paragraph" in (schema.get("properties") or {}):
+            # The long-form probe asks for sustained target-language prose; answer it
+            # with Chinese text so the probe exercises the language contract rather
+            # than reporting a stub shape as a language failure.
+            paragraph = "陆沉舟在旧城中寻找失落的信物。" * 30
+            text = json.dumps(
+                {
+                    "status": "ok",
+                    "paragraph": paragraph,
+                    "character_count": len(paragraph),
+                },
+                ensure_ascii=False,
+            )
         return ProviderModelResult(
-            text=self._text,
+            text=text,
             model_version=self._model_version,
             usage=ModelUsage(input_tokens=1, output_tokens=1, cost_usd=Decimal("0")),
         )
@@ -195,10 +215,18 @@ def test_optional_live_generation_uses_the_registered_adapter(
 
     assert result.ok is True
     assert result.generation_ran is True
-    assert len(adapter.requests) == 1
-    request = adapter.requests[0]
-    assert request.response_schema is not None
-    assert request.response_schema["required"] == ["status", "language"]
+    # Two probes: the bounded schema check and the target-language long-form check.
+    assert len(adapter.requests) == 2
+    schema_probe, long_form_probe = adapter.requests
+    assert schema_probe.response_schema is not None
+    assert schema_probe.response_schema["required"] == ["status", "language"]
+    assert long_form_probe.response_schema is not None
+    assert long_form_probe.response_schema["required"] == [
+        "status",
+        "paragraph",
+        "character_count",
+    ]
+    assert long_form_probe.request_id.root.endswith("long-form")
 
 
 def test_live_generation_failure_is_reported_and_skips_on_mismatch(
