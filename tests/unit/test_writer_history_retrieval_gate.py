@@ -10,7 +10,11 @@ from pydantic import ValidationError
 from novel_agent.adapters.runtime.stage3_writer import Stage2MWriterContextInvocation
 from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument
 from novel_agent.domain.generation import WritingLengthPolicy, WritingTaskContract
-from novel_agent.domain.ids import ArtifactId, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    StableId,
+)
+from novel_agent.domain.memory import RetrievalUnitKind
 from novel_agent.domain.retrieval_decision import (
     FIRST_CHAPTER_WAIVER_REF,
     HistoryRetrievalReasonCode,
@@ -27,6 +31,10 @@ from novel_agent.domain.writer_readiness import (
 from novel_agent.runtime.production_components import ProductionStage2MWriterContext
 from novel_agent.services.evidence_first_writer_context_assembler import (
     EvidenceFirstWriterContextAssembler,
+)
+from novel_agent.services.evidence_slice_resolver import (
+    LiveEvidenceBasis,
+    text_root_indexes,
 )
 from novel_agent.services.task_conditioned_need_generation import (
     NeedGenerationResult,
@@ -458,3 +466,66 @@ def test_future_locked_obligation_stays_in_scope_before_its_boundary() -> None:
     )
     assert obligation_in_scope_for_chapter(windowed, 1) is False
     assert obligation_in_scope_for_chapter(windowed, 150) is True
+
+
+def test_grounded_canonical_prose_is_not_skipped_by_live_l0(tmp_path: Path) -> None:
+    """R3: the live L0 path must not skip grounded block/span candidates.
+
+    ``_selection_for_trace`` used to `continue` for GROUNDED_BLOCK/GROUNDED_SPAN, so
+    canonical prose could be retrieved and frozen yet never reach the Writer.  The
+    resolver still validates commit/snapshot/quote/span, so an invalid grounded unit
+    is filtered out rather than trusted.
+    """
+
+    from tests.unit.test_planning_graph_zero_l0_fallback import (
+        COMMIT as R1_COMMIT,
+    )
+    from tests.unit.test_planning_graph_zero_l0_fallback import (
+        SNAPSHOT as R1_SNAPSHOT,
+    )
+    from tests.unit.test_planning_graph_zero_l0_fallback import (
+        _context,
+        _need,
+        _text_root,
+    )
+
+    text, block = _text_root()
+    need = _need()
+    context = _context(need, block, _context.__globals__["_evidence"](block))
+    trace = context.retrieval_traces[0]
+    grounded_unit = trace.candidates[0].unit.model_copy(
+        update={
+            "unit_id": StableId("grounded.block.r1.1"),
+            "unit_kind": RetrievalUnitKind.GROUNDED_BLOCK,
+        }
+    )
+    grounded_trace = trace.model_copy(
+        update={"candidates": (trace.candidates[0].model_copy(update={"unit": grounded_unit}),)}
+    )
+    blocks, chapter_indexes = text_root_indexes(text)
+    service, _ = _gateway(tmp_path, grounded_unit)
+    selection, evidence_refs, slice_ids, truncated = service._selection_for_trace(
+        need=need,
+        trace=grounded_trace,
+        basis=LiveEvidenceBasis(
+            request_commit=R1_COMMIT,
+            request_snapshot_id=R1_SNAPSHOT,
+            checkpoint_chapter=1,
+        ),
+        blocks=blocks,
+        chapter_indexes=chapter_indexes,
+        access_scope="writer_safe",
+    )
+
+    assert slice_ids, "a grounded candidate with valid evidence must produce slices"
+    assert selection.slices
+    assert evidence_refs
+    assert truncated is False
+    traced = selection.selections[0]
+    assert traced.unit_id.root == "grounded.block.r1.1"
+    # Facet support stays predicate-bound: a grounded unit that establishes no
+    # predicate must not claim the Need's facets.
+    assert traced.supported_facet_ids == ()
+
+    # Facet closure for grounded slices is decided by the semantic judge over the
+    # frozen selections, never by retrieval relevance (facet_support design note).
