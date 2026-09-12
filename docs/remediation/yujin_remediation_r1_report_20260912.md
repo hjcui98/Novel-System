@@ -83,19 +83,33 @@ PYTHONPATH=<worktree>/src python3 scripts/audit_v6_responsibility_binding.py \
 
 | 项 | 现状 | 下一步 |
 |---|---|---|
-| R1.4 waiver 回执真实性 | 未实现：宿主仍会接受模型自造的 `waiver_ref` 字符串 | 第 1 章豁免必须由宿主在 canonical 正文为空时生成并可回读；其它章 `NOT_REQUIRED` 需真实审批回执 |
+| R1.4 waiver 回执真实性 | **已完成**（见第 6 节） | — |
 | R1.5 advisory 逐条处理 | 未实现：3 条揭露疑问仍是 `UNSPECIFIED / blocking=false` | 语义不确定保留独立审查结果与精确影响范围；不笼统降级 |
-| A04/A05 | 依赖 R1.4/R3 | 随 R3 完成 |
+| A05（未来章规划时无正文） | 部分：宿主任仍需按执行时 canonical 历史检索 | 随 R3 完成 |
 
-## 5. 回归与失败身份
+## 5. R1.4 waiver 真实性（本轮追加完成）
 
-受影响测试集合：8 个文件、115 项，其中 4 项失败**与整合前基线逐项同名**（`test_stage5_production_factories.py` 的既有失败），本次未新增失败。
-命令：
+冻结 v6 候选把第 2—5 章标为 `NOT_REQUIRED`，`waiver_ref="first_chapter_waiver_extension"`——
+宿主从未签发过的字符串，而 host review 当时接受了它。
 
-```text
-PYTHONPATH=<worktree>/src NOVEL_AGENT_FORBID_MODEL_CALLS=true \
-  .conda-env/bin/pytest -q -p no:cacheprovider --no-cov <files>
-```
+实现：
 
-Ruff 在本次改动行上干净（`plan_reviewer.py`/`materializers.py` 仅保留整合前既有的 E501/RUF001），
-`domain/obligation_contract.py` 严格 MyPy 无错误。
+- `domain/retrieval_decision.py` 成为宿主签发豁免的唯一归属：
+  `FIRST_CHAPTER_WAIVER_REF`、`HOST_ISSUED_WAIVER_REFS`，以及 `waiver_is_host_issued`；
+- host review 新增两条 blocking 规则：
+  `HISTORY_WAIVER_UNVERIFIED`（waiver_ref 非宿主签发）、
+  `HISTORY_WAIVER_INAPPLICABLE`（把首章豁免用于第 1 章以外的章节）；
+- `writer_readiness` 新增 `HISTORY_WAIVER_NOT_APPLICABLE`：canonical Text basis 已有正文时，
+  首章豁免不再成立；Stage 3 writer 工厂传入真实的 basis 信号
+  （`any(chapter.blocks for chapter in text.chapters)`）。
+
+证据：`tests/unit/test_history_waiver_authenticity.py` 用 v6 原始 decision payload 断言 REVISE；
+`tests/unit/test_writer_history_retrieval_gate.py` 断言同一 waiver 在空 basis 下不报该码、
+在已有正文时报错且 `ready is False`。两文件共 11 项通过。
+
+## 6. 回归与失败身份（R1 全部增量）
+
+`tests/unit tests/contract`：**76 failed / 2937 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复），本次新增 61 项通过测试。
+命令与清单见工作区 `tmp/yujin-remediation-20260912/R0|R1/`。
+
