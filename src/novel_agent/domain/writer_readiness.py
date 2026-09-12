@@ -11,7 +11,10 @@ from novel_agent.domain.benchmark import (
     chapter_goal_history_retrieval_decision,
 )
 from novel_agent.domain.generation import WritingTaskContract
-from novel_agent.domain.memory import WorldRootDocument, obligation_active_for_chapter
+from novel_agent.domain.memory import (
+    WorldRootDocument,
+    obligation_in_scope_for_chapter,
+)
 from novel_agent.domain.retrieval_decision import (
     FIRST_CHAPTER_WAIVER_REF,
     HistoryRetrievalRequirement,
@@ -186,7 +189,7 @@ def evaluate_writer_readiness(
     due_obligations = {
         obligation.obligation_id
         for obligation in world.obligations
-        if obligation_active_for_chapter(obligation, target_chapter)
+        if obligation_in_scope_for_chapter(obligation, target_chapter)
     }
     missing_obligations = due_obligations - set(writing_task.active_plan_obligations)
     if missing_obligations:

@@ -86,15 +86,36 @@ class PlanObligation(DomainModel):
 
 
 def obligation_active_for_chapter(obligation: PlanObligation, chapter_index: int) -> bool:
-    """Whether this open obligation is due in or covers the target chapter.
+    """Whether this open obligation is *due* in the target chapter.
 
-    Future-locked obligations stay SETUP-only and do not demand retrieval or
-    injection before their ``not_before_chapter`` boundary.
+    This is the resolution-aware question: a future-locked obligation may be set up
+    but may not be paid off, so it is not "due" before its ``not_before`` boundary.
+    Use :func:`obligation_in_scope_for_chapter` when deciding whether the chapter has
+    to carry the obligation at all, because a future-locked responsibility still needs
+    its setup/progress evidence before that boundary.
     """
 
     if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
         return False
     if obligation.forbids_resolution(chapter_index):
+        return False
+    if obligation.target_chapter_start is not None:
+        target_end = obligation.target_chapter_end or obligation.target_chapter_start
+        return obligation.target_chapter_start <= chapter_index <= target_end
+    if obligation.due_chapter is not None:
+        return chapter_index <= obligation.due_chapter
+    return True
+
+
+def obligation_in_scope_for_chapter(obligation: PlanObligation, chapter_index: int) -> bool:
+    """Whether this open obligation must be carried by the target chapter.
+
+    Scope ignores the payoff/reveal lock.  An open responsibility whose declared window
+    already covers the chapter stays in scope while it is future-locked, so its
+    setup/progress evidence is still retrieved and injected.
+    """
+
+    if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
         return False
     if obligation.target_chapter_start is not None:
         target_end = obligation.target_chapter_end or obligation.target_chapter_start

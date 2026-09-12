@@ -418,3 +418,43 @@ def test_first_chapter_waiver_is_not_applicable_once_canonical_prose_exists(
     )
     assert WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE in with_prose.reason_codes
     assert with_prose.ready is False
+
+
+def test_future_locked_obligation_stays_in_scope_before_its_boundary() -> None:
+    """A reveal-locked obligation still needs its setup evidence (acceptance A06).
+
+    ``obligation_active_for_chapter`` answers the resolution question; using it for
+    scope made chapter 1 treat a not-before-101 obligation as absent, which also
+    weakened the obligation-binding readiness check.
+    """
+
+    from novel_agent.domain.memory import (
+        ObligationKind,
+        ObligationStatus,
+        PlanObligation,
+        obligation_active_for_chapter,
+        obligation_in_scope_for_chapter,
+    )
+
+    # The real v6 shape: a reveal boundary with no separate target window.
+    obligation = PlanObligation(
+        obligation_id=StableId("obligation.vol_02.0.objective"),
+        kind=ObligationKind.FORESHADOWING,
+        description="残星纹的最终来历",
+        status=ObligationStatus.OPEN,
+        not_before_chapter=101,
+    )
+
+    assert obligation_active_for_chapter(obligation, 1) is False
+    assert obligation_in_scope_for_chapter(obligation, 1) is True
+    assert obligation_active_for_chapter(obligation, 150) is True
+    assert obligation_in_scope_for_chapter(obligation, 150) is True
+
+    resolved = obligation.model_copy(update={"status": ObligationStatus.RESOLVED})
+    assert obligation_in_scope_for_chapter(resolved, 1) is False
+
+    windowed = obligation.model_copy(
+        update={"target_chapter_start": 101, "target_chapter_end": 200}
+    )
+    assert obligation_in_scope_for_chapter(windowed, 1) is False
+    assert obligation_in_scope_for_chapter(windowed, 150) is True
