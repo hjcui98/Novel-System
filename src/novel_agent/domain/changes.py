@@ -301,6 +301,39 @@ class ChapterChangeDraftV2(DomainModel):
         return self
 
 
+class PlannedObligationObservation(DomainModel):
+    """One chapter's observed progress against an accepted durable obligation."""
+
+    obligation_id: StableId
+    status: Literal["not_observed", "progressed", "resolved", "abandoned"]
+    rationale: str = Field(min_length=1)
+    evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="after")
+    def evidence_for_change(self) -> PlannedObligationObservation:
+        if self.status != "not_observed" and not self.evidence_quotes:
+            raise ValueError("observed plan progress requires source quotes")
+        return self
+
+
+class OrdinaryCurationPageReceipt(DomainModel):
+    """One bounded Curator response over a source slice of the chapter.
+
+    The receipt is the page-level audit trail: which source units were sent, which
+    model request answered them, how many operations the page produced, and whether
+    the model declared more material.  Whole-chapter settlement happens only after
+    every page is accounted for.
+    """
+
+    source_unit_ids: tuple[str, ...]
+    source_hash: ArtifactId
+    model_request_id: StableId
+    operation_count: int = Field(ge=0)
+    has_more: bool
+    covered: bool
+    lookup_terms: tuple[str, ...] = ()
+
+
 class CuratorV2EvidenceDraft(DomainModel):
     """Model-output curator draft: evidence is semantic quotes, never ids.
 
@@ -315,6 +348,11 @@ class CuratorV2EvidenceDraft(DomainModel):
     declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
     no_durable_delta_reason: CuratorShortText | None = None
     no_op_evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(default=(), max_length=4)
+    # A page declares whether it exhausted its source slice, and which World records
+    # it had to look up.  Both are page-level signals consumed by ordinary curation.
+    has_more: bool = False
+    world_lookup_terms: tuple[CuratorShortText, ...] = Field(default=(), max_length=8)
+    plan_observations: tuple[PlannedObligationObservation, ...] = Field(default=(), max_length=8)
 
     @model_validator(mode="before")
     @classmethod
