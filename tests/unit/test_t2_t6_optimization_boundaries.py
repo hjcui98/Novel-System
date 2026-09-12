@@ -636,6 +636,33 @@ def test_genesis_prepare_keeps_style_guide_in_profile_and_plan_payload_publicly(
     assert node.payload == plan_items[0].payload
 
 
+def _volume_slots(index: int, *, slots: bool = True) -> dict[str, object]:
+    """Build one volume payload with a readable responsibility table.
+
+    ``obligation_plan`` is part of ``VOLUME_STRUCTURE_REQUIRED_KEYS``, but it is a
+    contract-bearing slot rather than an opaque string: host review now rejects an
+    unreadable responsibility table, so the fixture must declare a real entry.
+    """
+
+    payload: dict[str, object] = {
+        key: f"{key}.{index}" for key in VOLUME_STRUCTURE_REQUIRED_KEYS
+    }
+    if slots:
+        payload["obligation_plan"] = [
+            {
+                "kind": "objective",
+                "summary": f"volume.{index} responsibility",
+                "not_before_chapter": index * 100 + 1,
+                "setup_window": f"{index * 100 + 1}-{index * 100 + 40}",
+                "progress_windows": [f"{index * 100 + 41}-{index * 100 + 70}"],
+                "payoff_window": f"{index * 100 + 71}-{(index + 1) * 100}",
+            }
+        ]
+    else:
+        payload.pop("obligation_plan", None)
+    return payload
+
+
 def test_plan_review_rejects_three_volumes_when_profile_requires_eight() -> None:
     def payload(count: int, *, slots: bool = True) -> str:
         return json.dumps(
@@ -650,14 +677,7 @@ def test_plan_review_rejects_three_volumes_when_profile_requires_eight() -> None
                             "plan_level": "arc_volume",
                             "chapter_start": index * 800 // count + 1,
                             "chapter_end": (index + 1) * 800 // count,
-                            **(
-                                {
-                                    key: f"{key}.{index}"
-                                    for key in VOLUME_STRUCTURE_REQUIRED_KEYS
-                                }
-                                if slots
-                                else {}
-                            ),
+                            **_volume_slots(index, slots=slots),
                         },
                     }
                     for index in range(count)
@@ -1171,10 +1191,7 @@ def test_host_review_blocks_volume_range_gap() -> None:
                         "plan_level": "arc_volume",
                         "chapter_start": start,
                         "chapter_end": end,
-                        **{
-                            key: f"{key}.{index}"
-                            for key in VOLUME_STRUCTURE_REQUIRED_KEYS
-                        },
+                        **_volume_slots(index),
                     },
                 }
                 for index, (start, end) in enumerate(ranges)
