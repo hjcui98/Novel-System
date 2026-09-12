@@ -297,3 +297,43 @@ def test_bootstrap_draft_rejects_more_unresolved_entries_than_the_schema_allows(
         )
     )
     assert len(accepted.unresolved) == BOOTSTRAP_UNRESOLVED_LIMIT
+
+
+def test_lock_without_any_boundary_is_rejected() -> None:
+    """A boundary-less lock compiles to nothing, so it must not load."""
+
+    payload = _lock_document()
+    payload["locks"] = [  # type: ignore[list-item]
+        {
+            "lock_id": "lock.no-boundary",
+            "category": "reveal",
+            "description": "只说'后期'但没有任何章节边界",
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="at least one chapter boundary"):
+        load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+
+
+def test_reveal_window_without_latest_still_carries_its_lower_boundary() -> None:
+    payload = _lock_document()
+    payload["locks"] = [  # type: ignore[list-item]
+        {
+            "lock_id": "lock.long-truth.350",
+            "category": "reveal",
+            "description": "长程真相最早第四卷后段起暗示",
+            "not_before_chapter": 350,
+        }
+    ]
+    document = load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+
+    channels = compile_planning_lock_channels(document)
+
+    assert channels["reveal_windows"] == [
+        {
+            "lock_id": "lock.long-truth.350",
+            "category": "reveal",
+            "description": "长程真相最早第四卷后段起暗示",
+            "not_before_chapter": 350,
+        }
+    ]

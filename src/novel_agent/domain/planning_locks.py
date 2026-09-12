@@ -59,6 +59,18 @@ class AuthorPlanningLock(DomainModel):
         ):
             raise ValueError("author planning lock chapter window is reversed")
         if self.category is not PlanningLockCategory.TIMELINE:
+            if (
+                self.not_before_chapter is None
+                and self.chapter_earliest is None
+                and self.chapter_latest is None
+            ):
+                # Without any boundary the lock compiles to empty planning
+                # channels and constrains nothing, which is indistinguishable
+                # from having dropped it silently.
+                raise ValueError(
+                    "author planning lock must declare at least one chapter boundary: "
+                    "not_before_chapter, chapter_earliest or chapter_latest"
+                )
             return self
         if self.not_before_chapter is None or self.chapter_latest is None:
             raise ValueError(
