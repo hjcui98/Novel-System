@@ -367,3 +367,47 @@ coverage 0.95、2 条非阻断 unresolved，经 host review 后由作者接受�
 | 大改路径夹具 | 8 个相关单测文件实测 **1 失败**：`test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal`（断言英文串，prompt 是中文，R0 基线既有） |
 
 八卷与章节目标未产生之前不进入两章 smoke。
+
+## 10. 审校入口缺口的两处修复（2026-09-13）
+
+### 10.1 义务声明缺少可读 kind（真实复现 → 已修）
+
+用 v12 真实接受绑定直接调用 `PlanCandidateMaterializer`，复现出 commit 被拒的确切原因：
+
+```text
+CandidateMaterializationError: obligation declaration has an unknown kind
+```
+
+来源是 STORY 提案里的 `story.obligation.reveal_lock`：`kind="obligation"`，
+payload 里只有 `title` 与 `constraints`，**没有 `obligation_kind`**。
+host review 当时返回 ACCEPT，于是又走了一遍"审校通过、commit 才拒绝"。
+
+修复：host review 现在复刻物化器的直接声明面——item 自身 kind 是义务类
+（含字面量 `"obligation"`）或带嵌套 `obligation` 对象时，必须给出可读的
+`obligation_kind`；给出未知值同样 REVISE。旧版 `obligation_plan` 责任表与
+`obligation_declarations` 列表各有自己的检查，不被当作直接声明，因此卷级计划不受影响。
+
+回归：`test_a_declaration_without_an_obligation_kind_is_revise`、
+`test_an_unknown_obligation_kind_is_revise`、
+`test_a_legacy_responsibility_table_is_not_treated_as_a_direct_declaration`。
+
+### 10.2 目录读取没有沿可信引用继续（已修）
+
+两个目录读取器此前只在自己收到的制品列表里按专用媒体类型找，而规划循环传的是
+**Planner context package**，真实 World 根的媒体类型又是 `application/json`。
+结果是真实路径上目录返回空：未声明义务的 action 与作者约束分母同时失效。
+
+修复：审校现在读取 host 组装的 `PlannerContextPackage`，并沿它的
+`profile_ref` 与 `author_constraint_root_ref` 继续取用；没有 World 根引用时，
+义务目录从可信 profile 携带的声明按 host 自己的标识约定（
+`obligation.<item_id>.<ordinal>.<kind>`）推导。目录确实读不到时仍返回 `None`
+而不是空集合，让检查报告"缺失"而不是放行。
+
+### 10.3 仍未闭合
+
+| 项 | 现状 |
+|---|---|
+| Genesis 未来事件分类 | v12 把第四卷"唐钧打造沉曜"写成 `truth_class=accepted_world_fact`、`start_ordinal=0`。`world_graph` 与 R1 只把 `ACCEPTED_WORLD_FACT` 当 Canon，因此这类条目会被当作开篇事实；正确落点是把作者声明的未来意图标成 `PREDICTION`（或等价非 Canon 类），而不是当前事实。**尚未修** |
+| 卷阶段时间语义 | 阶段槽投影未按条目章节窗口筛选，且已属 `relevant_nodes` 的卷节点被排除在阶段投影之外，卷首/卷中/卷末收到同一组约束。**尚未修** |
+| STORY 八卷与章节目标 | STORY 提案只有 3 条卷结构、无章节目标。G0 未通过 |
+| 修稿恢复执行证据 | `REPAIR_PENDING` 仍未实际写入；恢复入口仍先重建 Memory 包 |
