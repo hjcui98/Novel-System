@@ -66,7 +66,33 @@ class PlanLevel(StrEnum):
     SCENE = "scene"
 
 
-class PlanNode(DomainModel):
+class NarrativeRequirements(DomainModel):
+    """Accepted planning requirements; prose outcomes must be reviewed independently."""
+
+    preconditions: tuple[str, ...] = ()
+    invariants: tuple[str, ...] = ()
+    required_outcomes: tuple[str, ...] = ()
+    forbidden_outcomes: tuple[str, ...] = ()
+    acceptance_criteria: tuple[str, ...] = ()
+    dependency_ids: tuple[StableId, ...] = ()
+
+    @field_validator(
+        "preconditions",
+        "invariants",
+        "required_outcomes",
+        "forbidden_outcomes",
+        "acceptance_criteria",
+    )
+    @classmethod
+    def validate_requirements(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError("narrative requirements cannot be blank")
+        if len(values) != len(set(values)):
+            raise ValueError("narrative requirements must be unique")
+        return values
+
+
+class PlanNode(NarrativeRequirements):
     plan_node_id: StableId
     node_type: str = Field(min_length=1)
     title: str = Field(min_length=1)

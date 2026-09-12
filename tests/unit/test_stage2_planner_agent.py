@@ -196,6 +196,12 @@ def harness(
         version=VERSION,
         content_hash=content_hash(skill_path.read_bytes()),
     )
+    inquiry_path = ROOT / "src/novel_agent/skills/planning_inquiry_v1.md"
+    inquiry_skill = SkillContractRef(
+        contract_id=StableId("skill.planning-inquiry"),
+        version=VERSION,
+        content_hash=content_hash(inquiry_path.read_bytes()),
+    )
     schema = ContractRef(
         contract_id=StableId("schema.planner-proposal-draft"),
         version=VERSION,
@@ -211,7 +217,7 @@ def harness(
         output_schema=schema,
         system_prompt=system,
         task_prompt=mode_prompt,
-        skills=(skill,),
+        skills=(skill, inquiry_skill),
         tool_policy=ToolPolicy(
             policy_id=StableId(f"policy.planner.{mode.value}"),
             version=VERSION,
@@ -247,7 +253,14 @@ def harness(
                 ),
             )
         ),
-        SkillRegistry((SkillTemplate(skill.contract_id, VERSION, skill_path, skill.content_hash),)),
+        SkillRegistry(
+            (
+                SkillTemplate(skill.contract_id, VERSION, skill_path, skill.content_hash),
+                SkillTemplate(
+                    inquiry_skill.contract_id, VERSION, inquiry_path, inquiry_skill.content_hash
+                ),
+            )
+        ),
     )
     repository = ArtifactRepository(FilesystemObjectStore(tmp_path / mode.value))
     return PlannerAgent(runner, repository), endpoint, repository
@@ -325,7 +338,10 @@ def test_planner_inquiry_prompt_binds_compact_output_contract(tmp_path: Path) ->
         )
     )
 
-    assert INQUIRY_OUTPUT_CONSTRAINTS in endpoint.requests[0].prompt
+    expected = INQUIRY_OUTPUT_CONSTRAINTS.replace("{max_goals}", "6").replace(
+        "{max_questions}", "5"
+    )
+    assert expected in endpoint.requests[0].prompt
     assert "PROVENANCE_CONSTRAINT" in endpoint.requests[0].prompt
     assert "GROUNDING_CONSTRAINT" in endpoint.requests[0].prompt
     assert "LINEAGE_CONSTRAINT" in endpoint.requests[0].prompt

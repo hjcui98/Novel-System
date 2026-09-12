@@ -39,6 +39,7 @@ from novel_agent.domain.memory import (
     FreshnessMode,
     FreshnessRequest,
     FreshnessStatus,
+    PlanObligation,
     WorldRootDocument,
 )
 from novel_agent.domain.memory_write import (
@@ -401,6 +402,9 @@ class TeacherForcedCuratorPort:
             chapter_index=chapter_index,
             base_commit=basis.commit_id,
             current_world=world,
+            planned_obligations=(
+                () if basis.canonical_plan is None else basis.canonical_plan.obligations
+            ),
             request=model_request,
             graph_request=graph_request,
             repair_query=request.request.repair_query,
@@ -484,6 +488,9 @@ class TeacherForcedCuratorPort:
                 chapter_index=chapter_index,
                 base_commit=basis.commit_id,
                 current_world=world,
+                planned_obligations=(
+                    () if basis.canonical_plan is None else basis.canonical_plan.obligations
+                ),
                 request=model_request,
                 proposal_feedback=feedback,
                 graph_request=graph_request,
@@ -556,6 +563,10 @@ class TeacherForcedCuratorPort:
             )
         coverage_receipt = getattr(receipt_curator, "last_record_kind_coverage", None)
         curator_receipt_sources: tuple[tuple[tuple[DomainModel, ...], str], ...] = (
+            (
+                getattr(receipt_curator, "last_ordinary_pages", ()),
+                "application/vnd.novel-agent.ordinary-curation-page+json",
+            ),
             (
                 receipt_curator.last_evidence_merge_receipts,
                 "application/vnd.novel-agent.proposal-evidence-merge-receipt+json",
@@ -711,6 +722,7 @@ class TeacherForcedCuratorPort:
         current_world: WorldRootDocument,
         request: ModelRequest,
         graph_request: ModelRequest | None,
+        planned_obligations: tuple[PlanObligation, ...] = (),
         source_chapter_indices: tuple[int, ...] = (),
         graph_only: bool = False,
         proposal_feedback: str | None = None,
@@ -822,6 +834,7 @@ class TeacherForcedCuratorPort:
             chapter_index=chapter_index,
             base_commit=base_commit,
             current_world=current_world,
+            planned_obligations=planned_obligations,
             request=request,
             proposal_feedback=proposal_feedback,
             repair_query=repair_query,
@@ -857,6 +870,7 @@ class TeacherForcedCuratorPort:
                         chapter_index=source_chapter,
                         base_commit=base_commit,
                         current_world=current_world,
+                        planned_obligations=planned_obligations,
                         request=source_request,
                         proposal_feedback=proposal_feedback,
                         repair_query=repair_query,
@@ -866,7 +880,10 @@ class TeacherForcedCuratorPort:
                     )
                 results.append(source_result)
                 if source_call is not None:
-                    used_tokens += source_call.usage.input_tokens + source_call.usage.output_tokens
+                    used_tokens += sum(
+                        call.usage.input_tokens + call.usage.output_tokens
+                        for call in (self._replay.curator.last_ordinary_calls or (source_call,))
+                    )
             return _CuratorProposalExecution(
                 result=self._merge_replay_results(results, base_commit),
                 replay_requests=replay_requests,

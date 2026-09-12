@@ -379,6 +379,7 @@ class ProjectBootstrapRequest(DomainModel):
 
 
 class PlanningTask(DomainModel):
+    allowed_skill_ids: tuple[StableId, ...] = ()
     planning_task_id: StableId
     project_id: ProjectId
     mode: AgentMode

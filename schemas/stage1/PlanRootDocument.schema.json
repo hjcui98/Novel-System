@@ -8,13 +8,45 @@
     "ChapterGoal": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "chapter_index": {
           "minimum": 1,
           "title": "Chapter Index",
           "type": "integer"
         },
+        "dependency_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dependency Ids",
+          "type": "array"
+        },
+        "forbidden_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Outcomes",
+          "type": "array"
+        },
         "goal_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Invariants",
+          "type": "array"
         },
         "obligation_ids": {
           "default": [],
@@ -22,6 +54,22 @@
             "$ref": "#/$defs/StableId"
           },
           "title": "Obligation Ids",
+          "type": "array"
+        },
+        "preconditions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "required_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Outcomes",
           "type": "array"
         },
         "summary": {
@@ -38,6 +86,115 @@
       "title": "ChapterGoal",
       "type": "object"
     },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "chapter_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "object_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "quote_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuoteHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolved_at_commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "root_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextSpanRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "support_status": {
+          "$ref": "#/$defs/EvidenceSupportStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "root_hash",
+        "object_hash",
+        "support_status",
+        "resolved_at_commit"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceSupportStatus": {
+      "enum": [
+        "current_support",
+        "historical_support",
+        "superseded_support",
+        "orphaned",
+        "contradicted"
+      ],
+      "title": "EvidenceSupportStatus",
+      "type": "string"
+    },
+    "ObligationKind": {
+      "enum": [
+        "foreshadowing",
+        "promise",
+        "objective",
+        "unresolved_conflict"
+      ],
+      "title": "ObligationKind",
+      "type": "string"
+    },
+    "ObligationStatus": {
+      "enum": [
+        "open",
+        "progressed",
+        "resolved",
+        "abandoned"
+      ],
+      "title": "ObligationStatus",
+      "type": "string"
+    },
     "PlanLevel": {
       "enum": [
         "story",
@@ -52,6 +209,14 @@
     "PlanNode": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "chapter_end": {
           "anyOf": [
             {
@@ -77,6 +242,30 @@
           ],
           "default": null,
           "title": "Chapter Start"
+        },
+        "dependency_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dependency Ids",
+          "type": "array"
+        },
+        "forbidden_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Outcomes",
+          "type": "array"
+        },
+        "invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Invariants",
+          "type": "array"
         },
         "node_type": {
           "minLength": 1,
@@ -116,6 +305,22 @@
         "plan_node_id": {
           "$ref": "#/$defs/StableId"
         },
+        "preconditions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "required_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Outcomes",
+          "type": "array"
+        },
         "summary": {
           "title": "Summary",
           "type": "string"
@@ -135,6 +340,113 @@
       "title": "PlanNode",
       "type": "object"
     },
+    "PlanObligation": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "due_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Due Chapter"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObligationKind"
+        },
+        "not_before_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Before Chapter"
+        },
+        "obligation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "owner_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Owner Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ObligationStatus"
+        },
+        "target_chapter_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter End"
+        },
+        "target_chapter_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Chapter Start"
+        }
+      },
+      "required": [
+        "obligation_id",
+        "kind",
+        "description",
+        "status"
+      ],
+      "title": "PlanObligation",
+      "type": "object"
+    },
+    "QuoteHash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "QuoteHash",
+      "type": "string"
+    },
+    "RangeUnit": {
+      "enum": [
+        "unicode_codepoint"
+      ],
+      "title": "RangeUnit",
+      "type": "string"
+    },
     "SchemaVersion": {
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
       "title": "SchemaVersion",
@@ -144,6 +456,35 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
+    },
+    "TextSpanRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "range_unit": {
+          "$ref": "#/$defs/RangeUnit",
+          "default": "unicode_codepoint"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "block_id",
+        "start",
+        "end"
+      ],
+      "title": "TextSpanRef",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -162,6 +503,14 @@
         "$ref": "#/$defs/PlanNode"
       },
       "title": "Nodes",
+      "type": "array"
+    },
+    "obligations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlanObligation"
+      },
+      "title": "Obligations",
       "type": "array"
     },
     "root_hash": {

@@ -2,7 +2,7 @@
 
 > Lifecycle: `ACTIVE`
 >
-> Updated: 2026-09-02 +08:00
+> Updated: 2026-09-12 +08:00 (development workflow; product Gate evidence unchanged)
 >
 > Revision: `v8 / hierarchy and future-lock patch on ee8849a production baseline`
 >
@@ -25,6 +25,9 @@
 > 不把未提交代码或未经真实模型验收的结果写成 Gate PASS
 >
 > Successor: 本文原位维护至统一系统 Gate U8；通过后由 `docs/project_status.md` 与一份不可变验收结果接管，不预建第二份路线图
+
+开发流程以用户当前指令和 `AGENTS.md` 为准，由 Codex 直接完成分析、实现、验证与文档维护。
+本文历史工作树路径、角色分工和旧任务授权不驱动当前执行；真实运行与正式 Gate 仍须遵守各自证据边界。
 
 ## 0. 执行结论
 
@@ -183,7 +186,7 @@ Temporal 或 LangGraph 都不能把这三层合并成一个模糊的“workflow 
 | L0 技术恢复 | provider transient retry、schema reparse、checkpoint resume、effect reconcile、projection rebuild | Model Gateway、RuntimeRecovery、Projection/Freshness | 否；只恢复同一意图 |
 | L1 局部语义修复 | REQUEST_MEMORY、Editor local repair、Writer rewrite、Planner replan | Stage 2/3/4 现有 loop | 否；仍产生 candidate |
 | L2 运行策略纠偏 | basis/freshness 失效后 supersede/replan、poison-loop 停止、budget review | Stage 5 FailurePolicy/Supervisor | 否；受 command 与 Gate 约束 |
-| L3 系统演化 | prompt/Skill/policy/code 修复候选、held-out、canary、显式 promotion | 离线 Codex–DSH 开发循环 | 只有通过现有发布/接受过程后 |
+| L3 系统演化 | prompt/Skill/policy/code 修复候选、held-out、canary、显式 promotion | 离线 Codex 开发与审查 | 只有通过现有发布/接受过程后 |
 
 不在长期运行进程中直接修改 Python、active prompt、active Skill 或数据库 schema。所谓“代码自修复”
 仅指：运行证据形成可复现 incident → 隔离工作树产生候选 patch → deterministic/real gate → 人类/Codex
@@ -1544,7 +1547,7 @@ immutable incidents + artifacts
 
 - prompt 与 Skill 沿用现有 content-addressed registry/pin/rollback；
 - evaluator/policy 自身不在同一训练样本上自证；
-- code patch 由 Codex–DSH loop 在隔离 worktree 实现，runtime 不拥有 Git/merge 权限；
+- code patch 由 Codex 在授权的开发工作区实现，确需隔离时使用 worktree；小说 runtime 不拥有 Git/merge 权限；
 - promotion 不删除旧 artifact/history；失败可回到前一 active version；
 - 没有重复 incident 和 held-out 收益时，不自动生成或晋升任何候选。
 
@@ -1722,24 +1725,19 @@ make integration
 
 ### 9.2 本文直接驱动的执行协议
 
-本路线不使用 `.agent/task.md`/`.agent/plan.md` 作为阶段真源。每个执行 Agent 接收
-Codex/人类当次直接指令，并以§12 对应代码级执行包为 authority：
+Codex 按用户当前任务直接工作，§12 提供相关实施与验收背景，不自动启动整条历史路线。
+`.agent/task.md` 记录当前范围，持久实施计划按需创建，不另建阶段真源。
 
-1. 只在 `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration` 中工作；
-   根工作树只读，不从根树复制或覆盖文件；
-2. 执行 Agent 只改 Prompt 列明的代码/测试/运行配置 owner，不修改 `docs/`、`.agent/`、
-   分支、commit 或 worktree；文档和最终 Git 接受由 Codex/人类单独完成；
-3. 执行前声明“该检查会发现什么具体失败、失败后改哪个 owner”；没有答案的
-   检查不运行；
-4. 回报必须列出 changed files、执行命令、逐项结果、artifact/output path、未闭合 Gate
-   和下一个唯一 owner；不用“功能已完成”代替 Gate 证据；
-5. 后续阶段只在前置 Gate 通过后改默认路径。可并行的只有纯文档/注释审阅、私有数据不可见的
-   isolated spike，以及不发模型请求的 manifest/fake wiring；
-6. 不 merge、不提交、不 push、不删 worktree/分支/运行产物。
+1. 使用当前授权工作区并保留用户改动，不固定到历史机器路径；需要隔离时再建 worktree。
+2. Codex 可以修改任务涉及的生产代码、测试、契约和文档；跨模块修复仍需保持各层职责与数据不变量。
+3. 检查围绕真实失败与改动风险选择。用户要求只读或不跑测试时继续静态分析，明确未验证部分。
+4. 回报改动、已执行的验证、适用版本、证据位置与剩余问题，不用流程完成替代产品质量证据。
+5. 生产默认路径、策略晋升和正式实验继续遵守适用准入条件；离线修复范围按当前任务判断。
+6. Git 提交、合并、推送和运行数据清理按当前用户授权处理，不从旧文件继承授权。
 
 ### 9.3 人类 Gate
 
-只有以下决定必须暂停请求人类：
+以下事项需要判断是否缺少用户输入或授权；当前会话已经明确的决定不重复询问：
 
 1. 已建立的 Stage 2 正式 ref/identity 与用户认知不一致；
 2. 兼容性失败要求改变 ADR-0009、Stage boundary 或 Writer-visible 产品语义；
@@ -1749,7 +1747,8 @@ Codex/人类当次直接指令，并以§12 对应代码级执行包为 authorit
 5. active prompt/Skill/policy 的生产晋升，或任何放宽 Canon/permission/acceptance 的决定；
 6. 删除旧分支、worktree、运行产物或历史数据；
 7. V0.5 独立第二标注、双人 judge 校准或 sealed evaluation 需要人工角色/资源；
-8. 同一 Gate 三个连续 REPAIR 未收敛。
+
+多次修复仍未收敛时应重新审视根因并说明证据，不能仅因达到固定轮数要求用户重新授权。
 
 ### 9.4 立即停止条件
 

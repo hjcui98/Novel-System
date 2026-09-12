@@ -141,6 +141,8 @@ class NeedEvidenceSemanticJudge:
         token_counter: TokenCounter | None = None,
         thinking_enabled: bool | None = False,
         thinking_token_budget: int | None = None,
+        model_role: ModelRole = ModelRole.BATCH_TEST,
+        purpose: ModelCallPurpose = ModelCallPurpose.BATCH_TEST,
     ) -> None:
         if max_input_tokens < 256:
             raise ValueError("semantic judge input budget must be at least 256 tokens")
@@ -149,6 +151,8 @@ class NeedEvidenceSemanticJudge:
         if thinking_token_budget is not None and thinking_token_budget < 0:
             raise ValueError("semantic judge thinking token budget must be non-negative")
         self._gateway = gateway
+        self._model_role = model_role
+        self._purpose = purpose
         self._max_input_tokens = max_input_tokens
         self._max_output_tokens = max_output_tokens
         self._thinking_enabled = thinking_enabled
@@ -192,9 +196,15 @@ class NeedEvidenceSemanticJudge:
         for index, batch in enumerate(batches, start=1):
             batch_id = StableId(f"semantic-judge.batch.{index}"[:128])
             prompt = self._prompt(batch)
-            request_id = StableId(
-                f"semantic-judge.{content_id({'batch': index, 'prompt': prompt}).root[7:]}"[:128]
+            request_digest = content_id(
+                {
+                    "batch": index,
+                    "prompt": prompt,
+                    "run": selections[0].need.run_id.root,
+                    "task": selections[0].need.task_id.root,
+                }
             )
+            request_id = StableId(f"semantic-judge.{request_digest.root[7:]}"[:128])
             input_tokens = self._count(prompt)
             batch_keys = tuple(
                 (chunk.work.need_id, facet_id)
@@ -207,8 +217,8 @@ class NeedEvidenceSemanticJudge:
                 request_id=request_id,
                 run_id=next(iter(selections)).need.run_id,
                 task_id=next(iter(selections)).need.task_id,
-                model_role=ModelRole.BATCH_TEST,
-                purpose=ModelCallPurpose.BATCH_TEST,
+                model_role=self._model_role,
+                purpose=self._purpose,
                 trace_id=f"need-evidence-semantic:{request_id.root}",
                 prompt=prompt,
                 max_output_tokens=self._max_output_tokens,

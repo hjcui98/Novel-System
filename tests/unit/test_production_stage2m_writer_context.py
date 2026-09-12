@@ -92,7 +92,18 @@ class _FixedNeedGenerator:
         self._needs = needs
 
     def generate_with_lineage(self, *_args: object, **_kwargs: object) -> object:
-        return type("Result", (), {"needs": self._needs})()
+        return type(
+            "Result",
+            (),
+            {
+                "needs": self._needs,
+                "model_dump": lambda _self, **_kw: {
+                    "needs": [need.model_dump(mode="json") for need in self._needs],
+                    "status": "READY",
+                    "generator_version": "fixture",
+                },
+            },
+        )()
 
 
 def _task() -> BenchmarkTaskContract:

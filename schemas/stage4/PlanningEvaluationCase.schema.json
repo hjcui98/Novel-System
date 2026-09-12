@@ -247,6 +247,14 @@
         "model_fingerprint": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "planning_feedback_artifacts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Planning Feedback Artifacts",
+          "type": "array"
+        },
         "project_id": {
           "$ref": "#/$defs/ProjectId"
         },
@@ -302,6 +310,14 @@
     "PlanningTask": {
       "additionalProperties": false,
       "properties": {
+        "allowed_skill_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Allowed Skill Ids",
+          "type": "array"
+        },
         "base_commit": {
           "anyOf": [
             {

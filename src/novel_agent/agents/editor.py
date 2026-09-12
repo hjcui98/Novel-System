@@ -86,6 +86,7 @@ def build_editor_contract_bundle(
     package_root: Path | None = None,
     *,
     modes: tuple[AgentMode, ...] = EDITOR_MODES,
+    allowed_skill_ids: tuple[StableId, ...] = (),
 ) -> EditorContractBundle:
     """Build the independent Editor contracts without mutating a global registry."""
 
@@ -194,6 +195,8 @@ def build_editor_contract_bundle(
             )
         )
     for lens_id, lens_filename in _EDITOR_LENS_ASSETS:
+        if allowed_skill_ids and StableId(lens_id) not in allowed_skill_ids:
+            continue
         lens_path = skill_directory / lens_filename
         lens_digest = content_hash(lens_path.read_bytes())
         skill_templates.append(
@@ -207,6 +210,19 @@ def build_editor_contract_bundle(
                 applicable_modes=(AgentMode.REVIEW.value,),
             )
         )
+    lens_refs = tuple(
+        SkillContractRef(
+            contract_id=item.skill_id, version=item.version, content_hash=item.expected_hash
+        )
+        for item in skill_templates
+        if item.skill_id.root.startswith("skill.editor.")
+    )
+    specs = [
+        seal_agent_spec(item.model_copy(update={"skills": (*item.skills, *lens_refs)}))
+        if item.mode is AgentMode.REVIEW
+        else item
+        for item in specs
+    ]
     return EditorContractBundle(
         agent_specs=tuple(specs),
         prompt_templates=tuple(prompt_templates),
@@ -235,6 +251,9 @@ class EditorAgent:
     ) -> PreparedAgentRun:
         if mode not in EDITOR_MODES:
             raise EditorAgentError(f"unsupported Editor mode: {mode.value}")
+        lenses = payload.get("admitted_lenses", ())
+        if not isinstance(lenses, (tuple, list)):
+            raise EditorAgentError("admitted lenses must be an array")
         # The runner owns the AgentSpec, Prompt, Skill, and tool-policy fingerprints.
         # Payload is deliberately passed as a bounded untrusted JSON layer.
         return self._runner.prepare(
@@ -243,6 +262,14 @@ class EditorAgent:
             EDITOR_CONTRACT_VERSION.root,
             request,
             _escaped_json(payload),
+            selected_skill_ids=(
+                (
+                    StableId("skill.editor-review"),
+                    *(StableId(str(item)) for item in lenses),
+                )
+                if mode is AgentMode.REVIEW
+                else (StableId("skill.editor-local-repair"),)
+            ),
             source_hashes=source_hashes,
             input_artifacts=input_artifacts,
             base_commit=base_commit,

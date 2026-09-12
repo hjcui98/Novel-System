@@ -92,6 +92,7 @@ from novel_agent.services.content_addressing import (
     world_root_content_id,
 )
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from novel_agent.services.planning_contracts import declared_obligations, narrative_requirements
 from novel_agent.services.projection import snapshot_id_for_commit
 from novel_agent.skills.registry import SkillRegistry, SkillTemplate
 
@@ -235,7 +236,7 @@ class ProductionNovelBootstrap:
                 SqlAuthorApprovalRepository(self._session_factory),
                 self._clock,
             ).create_approval_request(candidates, validation)
-        preview = {
+        preview: dict[str, object] = {
             "project_id": project_id.root,
             "plan_nodes": [
                 {"id": node.plan_node_id.root, "title": node.title, "summary": node.summary}
@@ -451,6 +452,13 @@ def _payload_text(item: ProposedItem, *keys: str) -> str:
     return ""
 
 
+def _bootstrap_obligation_ids(item: ProposedItem) -> tuple[StableId, ...]:
+    raw = item.payload.get("obligation_ids", [])
+    if not isinstance(raw, list) or any(not isinstance(value, str) for value in raw):
+        raise ValueError("bootstrap obligation_ids must be an array of identifiers")
+    return tuple(StableId(value) for value in raw if isinstance(value, str))
+
+
 def _plan_root(
     result: PlannerExecutionResult,
     schema_version: SchemaVersion,
@@ -474,17 +482,29 @@ def _plan_root(
                     goal_id=item.item_id,
                     chapter_index=chapter_index,
                     summary=summary or title,
+                    obligation_ids=_bootstrap_obligation_ids(item),
+                    **narrative_requirements(item).model_dump(),
                 )
             )
-            return
-        nodes.append(
-            PlanNode(
-                plan_node_id=item.item_id,
-                node_type=item.kind,
-                title=title,
-                summary=summary,
-            )
-        )
+        node_payload = {
+            "plan_node_id": item.item_id.root,
+            "node_type": item.kind,
+            "title": title,
+            "summary": summary,
+            **{
+                key: item.payload[key]
+                for key in (
+                    "parent_id",
+                    "obligation_ids",
+                    "plan_level",
+                    "chapter_start",
+                    "chapter_end",
+                )
+                if key in item.payload
+            },
+            **narrative_requirements(item).model_dump(mode="json"),
+        }
+        nodes.append(PlanNode.model_validate_json(canonical_json_bytes(node_payload)))
 
     for item in result.plan_proposal.items:
         add_node(item)
@@ -496,6 +516,17 @@ def _plan_root(
         schema_version=schema_version,
         nodes=tuple(nodes),
         chapter_goals=tuple(goals),
+        obligations=declared_obligations(
+            tuple(
+                {
+                    item.item_id: item
+                    for item in (
+                        *(result.project_intent.items if result.project_intent is not None else ()),
+                        *result.plan_proposal.items,
+                    )
+                }.values()
+            )
+        ),
     )
     return provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
 

@@ -1029,6 +1029,14 @@ def test_v2_incomplete_empty_draft_fails_closed_at_support_gate(
         evidence_generator=gen,
         enforce_support_gate=True,
     )
+    if update.get("coverage", 1.0) != 1.0:
+        with pytest.raises(ModelCurationContractError, match="incomplete coverage"):
+            asyncio.run(
+                curator.extract_reported_v2(
+                    root, 21, _COMMIT, _world(), _request("req.v2.noop.coverage")
+                )
+            )
+        return
     with pytest.raises(
         CuratorProposalSemanticRejected,
         match="CURATOR_PROPOSAL_EMPTY_DELTA_UNVERIFIED",
@@ -2819,7 +2827,7 @@ def test_v2_normalizes_fully_duplicate_proposal_to_verified_no_op() -> None:
                 evidence_quotes=(candidate.text,),
             ),
         ),
-        coverage=0.8,
+        coverage=1.0,
         unresolved=("state.unresolved",),
     )
     world = WorldRootDocument(
@@ -3233,7 +3241,7 @@ def _ch22_identity_mismatch_draft(value: str) -> CuratorV2EvidenceDraft:
                 evidence_quotes=("一天一夜时间\uff0c他凝结神识成功。",),
             ),
         ),
-        coverage=0.8,
+        coverage=1.0,
     )
 
 

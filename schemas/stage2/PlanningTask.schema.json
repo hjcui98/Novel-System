@@ -50,6 +50,14 @@
   },
   "additionalProperties": false,
   "properties": {
+    "allowed_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Allowed Skill Ids",
+      "type": "array"
+    },
     "base_commit": {
       "anyOf": [
         {

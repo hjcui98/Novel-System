@@ -1,42 +1,45 @@
-# Current task
+# 当前任务
 
-- Task: consolidate the verified unified long-running novel-agent implementation onto `main`,
-  create an auditable commit, and run a fresh production-path smoke from an initial author setting.
-- Authority: the user's explicit 2026-09-01 instruction, together with
-  `docs/stage2_to_stage5_unified_long_running_agent_integration_execution_20260818.md`,
-  `docs/project_status.md`, and ADR-0003/0006/0007/0008/0009/0010.
-- Source worktree: `/home/cuihengjia/agent/novel/NS/.worktrees/unified-agent-runtime-integration`
-  on `codex/unified-agent-runtime-integration`.
-- Integration target: `main`, using a separate clean worktree so the dirty root worktree and its
-  independent user changes remain untouched.
+更新日期：2026-09-12。当前工作区：`D:\agent\Novel-System`。
+源码基线：`feat/hierarchy-progressive-skill-patch`，
+`1856153298856bdcb6eb7a8c6ad62f0727ac9683`。
 
-## Current evidence
+## 长期目标
 
-- The unified implementation includes Stage 2 Memory, Stage 3 Writer, Stage 4 Planner, Stage 5
-  long-running Runtime, U6 endurance/fault/readout infrastructure, U7 Temporal candidates, and the
-  production-disabled U8-C/U8-D/U8-E recovery/evolution mechanisms.
-- The latest relation-gap repair preserves the explicit ordered subject/predicate/object triple and
-  prevents unrelated anchors from falsely closing Planner Memory facets.
-- Deterministic verification is green: `tests/unit + tests/contract` is `2841 passed` and
-  property/golden/regression is `21 passed`; related U8/relation verification, strict MyPy, Ruff,
-  schema contracts, and compileall pass.
-- Local environment/model/private-benchmark symlinks are excluded from source control.
+构建能够长期自主运行并持续生产高质量小说的 Agent 系统。优先关注记忆是否有效交付、各层计划
+是否有约束力、正文是否遵循大纲，以及审稿和修复能否使小说质量持续达标。
 
-## Required result
+## 已完成与当前范围
 
-- Commit the unified source, schemas, migrations, prompts/skills, tests, and governing documentation.
-- Integrate that commit onto `main` without modifying or stashing the dirty root worktree.
-- Re-run deterministic verification from the committed `main` tree before attempting real services.
-- Check native services and model endpoints immediately before a fresh production smoke.
-- Run the ordinary production composition path from an initial author brief with a fresh project/run,
-  database/object/output identity. Keep RecoveryReasoner and production hot-swap disabled unless a
-  separate admission result authorizes them.
-- Record the exact terminal, artifacts, model usage, completed chapters, and any fail-closed reason.
+- 已完整克隆指定分支，并完成一次生产调用链静态审查，结论见 `review.md`。
+- 用户已停用旧开发工具；现由 Codex 直接承担分析、设计、实现、验证及文档维护。
+- 已清理旧交接技能、命令、过时任务计划与实现报告，更新 `AGENTS.md` 和关联开发流程说明。
+- 第一轮生产内容链修复及收尾离线验证已完成：246 项通过；范围、结果和剩余限制见 `review.md`。
+- 已按追加要求审查完整生产通路、保留的假端点工件及全部 38 个运行时 Skill 的调用与正文。
+  新发现、完整技能清单与实施优先级见
+  [二次审查](../docs/production_path_and_skill_audit_20260912.md)。全部发现现已修复，最后的定向离线
+  回归 375 项通过，Ruff 和变更源码 mypy 通过；逐项实现与限制见
+  [修复记录](../docs/production_content_repair_completion_20260912.md)。
 
-## Stop conditions
+## 当前执行约束
 
-- Do not commit local model weights, environments, private novel/benchmark content, runtime objects,
-  databases, logs, or temporary outputs.
-- Do not overwrite the root worktree's independent changes.
-- Do not relabel a transport/resource failure as a semantic failure or a smoke result as a formal Gate.
-- Do not activate U8 reasoner/evolution in production merely because the code is present.
+- 最新用户指令为“尽快进行修改，验收和测试放到最后”，覆盖此前暂不测试的阶段限制。
+- 先实施，最后执行定向离线回归、schema 同步与静态检查；所有测试设置
+  `NOVEL_AGENT_FORBID_MODEL_CALLS=true`。使用 fake endpoint 的生产装配检查不等于真实模型验收。
+- 没有调用真实模型、启动真实混合检索服务、执行 benchmark 或小说长跑。
+- 用户确认之前真实跑书的产物暂时无法提供；二次审查基于现有代码及保留的离线工件，
+  实施后的验证仅使用假端点，不能据此评价真实小说的文学质量。
+- 不改变正式验收指标、覆盖率阈值。用户已追加授权本轮本地 Git 提交；不合并或推送。
+
+## 第一轮修复与新增待办
+
+- 已补齐 Memory 正文证据交付、facet 支持信息、生产 Need planner 与按请求公平路由。
+- 已补齐分层计划的结构化要求、Reviewer 对照正文、计划义务和 Writer 当前章/祖先约束投影。
+- 已补齐 Editor 逐项判断及引用检查、记忆缺口处置、字数不合格重写和连续修复链。
+- 已补齐 Editor 退回当前章重规划的预算与任务转移，修复跨卷窗口和变更匹配索引问题。
+- 二次审查修复完成：技能协议及选择接线、同章旧计划替换、要求的阶段语义、普通变化抽取分页、
+  计划义务身份映射、Editor 证据权限、生产冻结恢复及逐调用修复预算。
+- 跨章里程碑使用 Plan 稳定 ID 和 World 证据记录；大改阶段尚不支持再进入 Memory 交互轮次。
+  真实产物可用后再验证检索实效、计划具体程度、正文因果与质量及长期自主恢复。
+
+历史 `.agent` 文件可通过 `git show 1856153298856bdcb6eb7a8c6ad62f0727ac9683:.agent/<文件名>` 查阅。

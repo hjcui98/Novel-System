@@ -171,7 +171,6 @@
       "additionalProperties": false,
       "properties": {
         "description": {
-          "maxLength": 160,
           "minLength": 1,
           "title": "Description",
           "type": "string"
@@ -500,7 +499,6 @@
         "minLength": 1,
         "type": "string"
       },
-      "maxItems": 4,
       "title": "Declared Vs Observed Diff",
       "type": "array"
     },
@@ -531,7 +529,6 @@
       "items": {
         "$ref": "#/$defs/CuratedOperationDraftV2"
       },
-      "maxItems": 4,
       "title": "Operations",
       "type": "array"
     },
@@ -542,7 +539,6 @@
         "minLength": 1,
         "type": "string"
       },
-      "maxItems": 4,
       "title": "Unresolved",
       "type": "array"
     }

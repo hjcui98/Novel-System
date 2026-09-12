@@ -5,6 +5,36 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "EditorialVerdict": {
       "description": "The only routing outcomes an Editor may produce.",
       "enum": [
@@ -13,6 +43,11 @@
         "MAJOR_REWRITE"
       ],
       "title": "EditorialVerdict",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
       "type": "string"
     },
     "StableId": {
@@ -26,10 +61,29 @@
     "draft_id": {
       "$ref": "#/$defs/ArtifactId"
     },
+    "issue_summaries": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Issue Summaries",
+      "type": "array"
+    },
     "repaired_draft_id": {
       "anyOf": [
         {
           "$ref": "#/$defs/ArtifactId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "report_artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
         },
         {
           "type": "null"

@@ -326,16 +326,68 @@
       "title": "DraftArtifact",
       "type": "object"
     },
+    "DraftSpan": {
+      "additionalProperties": false,
+      "description": "A trusted, service-generated character range in a candidate Draft.",
+      "properties": {
+        "block_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DraftSpan",
+      "type": "object"
+    },
     "EditorialRepairHistoryEntry": {
       "additionalProperties": false,
       "properties": {
         "draft_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "issue_summaries": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Issue Summaries",
+          "type": "array"
+        },
         "repaired_draft_id": {
           "anyOf": [
             {
               "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "report_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
             },
             {
               "type": "null"
@@ -597,6 +649,74 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "ProjectId",
       "type": "string"
+    },
+    "RepairedDraft": {
+      "additionalProperties": false,
+      "description": "A new candidate text produced by one bounded Editor local repair.",
+      "properties": {
+        "candidate_only": {
+          "const": true,
+          "default": true,
+          "title": "Candidate Only",
+          "type": "boolean"
+        },
+        "changed_spans": {
+          "items": {
+            "$ref": "#/$defs/DraftSpan"
+          },
+          "minItems": 1,
+          "title": "Changed Spans",
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "editor_receipt": {
+          "$ref": "#/$defs/AgentExecutionReceipt"
+        },
+        "model_call_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "preserve_verified": {
+          "const": true,
+          "default": true,
+          "title": "Preserve Verified",
+          "type": "boolean"
+        },
+        "repair_report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "text_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        }
+      },
+      "required": [
+        "draft_id",
+        "parent_draft_id",
+        "repair_report_id",
+        "text_artifact",
+        "changed_spans",
+        "editor_receipt",
+        "created_at"
+      ],
+      "title": "RepairedDraft",
+      "type": "object"
     },
     "RunId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -1012,6 +1132,14 @@
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
         },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
         "source_commit": {
           "$ref": "#/$defs/CommitId"
         },
@@ -1071,6 +1199,14 @@
           ],
           "default": null,
           "title": "Truth Class"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [
@@ -1201,6 +1337,15 @@
     "WritingTaskContract": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "active_plan_obligations": {
           "default": [],
           "items": {
@@ -1225,6 +1370,15 @@
         },
         "contract_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "entry_conditions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Entry Conditions",
+          "type": "array"
         },
         "forbidden_reveals": {
           "default": [],
@@ -1335,6 +1489,14 @@
         "$ref": "#/$defs/EditorialRepairHistoryEntry"
       },
       "title": "Prior Repair History",
+      "type": "array"
+    },
+    "repair_chain": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RepairedDraft"
+      },
+      "title": "Repair Chain",
       "type": "array"
     },
     "writing_task": {

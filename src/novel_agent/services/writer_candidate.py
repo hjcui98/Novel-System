@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 
-from novel_agent.domain.agent_context import AgentContextView
+from novel_agent.domain.agent_context import AgentContextView, ContextItemKind
+from novel_agent.domain.editorial import RepairedDraft
 from novel_agent.domain.generation import (
     DraftArtifact,
     WriterArtifactBasis,
@@ -53,7 +54,7 @@ class WriterCandidateMaterializer:
         turn: WriterTurnResult,
         *,
         mode: AgentMode,
-        parent_draft: DraftArtifact | None = None,
+        parent_draft: DraftArtifact | RepairedDraft | None = None,
     ) -> DraftArtifact:
         output = turn.output
         if output.action is not WriterTurnAction.DRAFT_READY or output.draft_text is None:
@@ -190,8 +191,18 @@ class WriterCandidateMaterializer:
                     source_commit=request.base_commit,
                     snapshot_id=request.snapshot_id,
                     information_label=item.information_scope,
-                    truth_class="runtime" if item.information_scope == "runtime" else "visible",
-                    support_status="verified",
+                    truth_class=(
+                        "source_text"
+                        if item.verified_evidence
+                        else "proposal"
+                        if item.kind is ContextItemKind.WORK_PLAN
+                        else "instruction"
+                        if item.instruction_boundary
+                        else "unverified"
+                    ),
+                    support_status="source_verified" if item.verified_evidence else "unverified",
+                    verified_evidence=item.verified_evidence,
+                    source_artifact_refs=item.source_artifact_refs,
                     mandatory=item.mandatory,
                 )
                 for item in items

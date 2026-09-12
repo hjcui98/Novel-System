@@ -12,7 +12,6 @@ from novel_agent.domain.memory import (
     FacetEvidenceReceipt,
     NeedFacetKind,
     RetrievalTrace,
-    RetrievalUnitKind,
     Stage1MemoryNeed,
 )
 from novel_agent.domain.stage2 import (
@@ -45,6 +44,7 @@ from novel_agent.services.evidence_slice_resolver import (
     LiveEvidenceBasis,
     text_root_indexes,
 )
+from novel_agent.services.facet_support import FacetSupportEvaluator
 from novel_agent.services.need_evidence_semantic_judgment import (
     NeedEvidenceSemanticJudge,
     NeedEvidenceSemanticResult,
@@ -528,11 +528,6 @@ class MemoryGateway:
         slice_traces: list[SliceSelectionTrace] = []
         seen_slice_ids: set[StableId] = set()
         for candidate in selected:
-            if candidate.unit.unit_kind in {
-                RetrievalUnitKind.GROUNDED_BLOCK,
-                RetrievalUnitKind.GROUNDED_SPAN,
-            }:
-                continue
             first_hit = sorted(
                 candidate.channel_hits,
                 key=lambda hit: (hit.channel_rank, hit.channel.value),
@@ -570,6 +565,9 @@ class MemoryGateway:
                                 f"channel={first_hit.channel.value};rank={candidate.fused_rank}"
                             ),
                             evidence_ref=evidence,
+                            supported_facet_ids=FacetSupportEvaluator.supporting_facet_ids(
+                                need, candidate.unit
+                            ),
                         )
                     )
         return (

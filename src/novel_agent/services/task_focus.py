@@ -16,6 +16,7 @@ from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
 )
+from novel_agent.services.planning_contracts import chapter_plan_nodes
 
 
 class TaskFocusType(StrEnum):
@@ -218,25 +219,25 @@ class TaskFocusExtractor:
             task.information_profile is BenchmarkInformationProfile.AUTHOR_PLAN_CONDITIONED
             and plan is not None
         ):
-            target_range_node_records = tuple(
-                node
-                for node in plan.nodes
-                if self._plan_node_intersects_target(node.plan_node_id, task)
-            )
-            target_range_nodes = tuple(node.plan_node_id for node in target_range_node_records)
-            other_plan_nodes = tuple(
-                node.plan_node_id
-                for node in plan.nodes
-                if node.plan_node_id not in target_range_nodes
-            )
-            visible_plan_ids = (
-                *target_range_nodes,
-                *other_plan_nodes[:8],
-                *(
-                    goal.goal_id
-                    for goal in plan.chapter_goals
-                    if task.target_chapter_start <= goal.chapter_index <= task.target_chapter_end
-                ),
+            scoped = {
+                node.plan_node_id: node
+                for chapter in range(task.target_chapter_start, task.target_chapter_end + 1)
+                for node in chapter_plan_nodes(plan, chapter)
+            }
+            target_range_node_records = tuple(scoped.values())
+            visible_plan_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *scoped,
+                        *(
+                            goal.goal_id
+                            for goal in plan.chapter_goals
+                            if task.target_chapter_start
+                            <= goal.chapter_index
+                            <= task.target_chapter_end
+                        ),
+                    )
+                )
             )
             for plan_id in visible_plan_ids:
                 add(
@@ -254,8 +255,8 @@ class TaskFocusExtractor:
             # Names elsewhere in a long author plan must not consume the need budget.
             folded_plan = " ".join(
                 (
-                    *(node.title + " " + node.summary for node in target_range_node_records),
-                    *(goal.summary for goal in target_goals),
+                    *(node.model_dump_json() for node in target_range_node_records),
+                    *(goal.model_dump_json() for goal in target_goals),
                 )
             ).casefold()
             for entity_id, aliases in labels.items():

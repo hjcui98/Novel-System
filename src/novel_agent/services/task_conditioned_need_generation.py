@@ -31,6 +31,7 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
     WorldRootDocument,
 )
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning_memory import (
     GroundedNeedDraft,
     GroundingStatus,
@@ -177,6 +178,8 @@ class TaskPlanConditionedNeedGenerator:
         max_total_needs: int | None = None,
         focus_extractor: TaskFocusExtractor | None = None,
         planner_gateway: ModelGateway | None = None,
+        planner_model_role: ModelRole = ModelRole.BATCH_TEST,
+        planner_model_purpose: ModelCallPurpose = ModelCallPurpose.BATCH_TEST,
         planner_artifact_writer: Callable[[bytes, str], ArtifactRef] | None = None,
         planner_max_output_tokens: int = 8192,
         planner_max_input_tokens: int = 12_000,
@@ -192,6 +195,8 @@ class TaskPlanConditionedNeedGenerator:
         self._planner = (
             PlanConditionedNeedPlanner(
                 gateway=planner_gateway,
+                model_role=planner_model_role,
+                model_purpose=planner_model_purpose,
                 max_output_tokens=planner_max_output_tokens,
                 max_input_tokens=planner_max_input_tokens,
                 thinking_enabled=planner_thinking_enabled,

@@ -416,13 +416,45 @@
     "ChapterGoal": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "chapter_index": {
           "minimum": 1,
           "title": "Chapter Index",
           "type": "integer"
         },
+        "dependency_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dependency Ids",
+          "type": "array"
+        },
+        "forbidden_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Outcomes",
+          "type": "array"
+        },
         "goal_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Invariants",
+          "type": "array"
         },
         "obligation_ids": {
           "default": [],
@@ -430,6 +462,22 @@
             "$ref": "#/$defs/StableId"
           },
           "title": "Obligation Ids",
+          "type": "array"
+        },
+        "preconditions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "required_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Outcomes",
           "type": "array"
         },
         "summary": {
@@ -1061,6 +1109,14 @@
     "PlanNode": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "chapter_end": {
           "anyOf": [
             {
@@ -1086,6 +1142,30 @@
           ],
           "default": null,
           "title": "Chapter Start"
+        },
+        "dependency_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Dependency Ids",
+          "type": "array"
+        },
+        "forbidden_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Outcomes",
+          "type": "array"
+        },
+        "invariants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Invariants",
+          "type": "array"
         },
         "node_type": {
           "minLength": 1,
@@ -1124,6 +1204,22 @@
         },
         "plan_node_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "preconditions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "required_outcomes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Outcomes",
+          "type": "array"
         },
         "summary": {
           "title": "Summary",
@@ -1256,6 +1352,14 @@
             "$ref": "#/$defs/PlanNode"
           },
           "title": "Nodes",
+          "type": "array"
+        },
+        "obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanObligation"
+          },
+          "title": "Obligations",
           "type": "array"
         },
         "root_hash": {

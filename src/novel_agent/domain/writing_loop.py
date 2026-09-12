@@ -18,6 +18,7 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.editorial import (
     CuratorObservation,
     EditorialReport,
+    EditorialReviewInput,
     ReconciliationResult,
     RepairedDraft,
 )
@@ -30,7 +31,7 @@ from novel_agent.domain.generation import (
     WriterWorkPlanResult,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
-from novel_agent.domain.model_calls import ModelCallRecord
+from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 
 WRITING_LOOP_CHECKPOINT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-checkpoint+json"
 
@@ -40,6 +41,7 @@ class WritingLoopPhase(StrEnum):
 
     REACTIVE_MEMORY_PENDING = "REACTIVE_MEMORY_PENDING"
     EDITOR_PENDING = "EDITOR_PENDING"
+    REPAIR_PENDING = "REPAIR_PENDING"
     OBSERVER_PENDING = "OBSERVER_PENDING"
     RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
 
@@ -48,6 +50,15 @@ class WritingLoopCheckpoint(DomainModel):
     """Minimal durable state for a settled Writer turn awaiting reactive Memory."""
 
     checkpoint_id: StableId
+    frozen_request_ref: ArtifactRef | None = None
+    model_request: ModelRequest | None = None
+    repair_input: EditorialReviewInput | None = None
+    repair_stage: Literal["dispatch", "local_review", "rewrite_draft", "rewrite_review"] = (
+        "dispatch"
+    )
+    local_repairs_used: int = Field(default=0, ge=0)
+    major_rewrites_used: int = Field(default=0, ge=0)
+    model_call_records: tuple[ModelCallRecord, ...] = ()
     run_id: RunId
     task_id: TaskId
     phase: WritingLoopPhase
@@ -105,6 +116,17 @@ class WritingLoopCheckpoint(DomainModel):
             raise ValueError("post-Draft checkpoint requires the settled Writer candidate")
         if self.phase is WritingLoopPhase.EDITOR_PENDING and self.editor_context is None:
             raise ValueError("Editor-pending checkpoint requires the exact Draft Context")
+        if self.phase is WritingLoopPhase.REPAIR_PENDING:
+            if self.repair_input is None or not self.editorial_reports:
+                raise ValueError("repair checkpoint requires its input and rejection history")
+            if self.repair_stage == "local_review" and self.repaired_draft is None:
+                raise ValueError("local review checkpoint requires the settled repair")
+            if self.repair_stage == "rewrite_review" and self.rewritten_draft is None:
+                raise ValueError("rewrite review checkpoint requires the settled rewrite")
+        if self.model_request is not None and (
+            self.model_request.run_id != self.run_id or self.model_request.task_id != self.task_id
+        ):
+            raise ValueError("checkpoint model request belongs to another task")
         if self.phase in {
             WritingLoopPhase.OBSERVER_PENDING,
             WritingLoopPhase.RECONCILIATION_PENDING,
@@ -139,6 +161,7 @@ class WritingLoopTerminalStatus(StrEnum):
     DRAFT_CANDIDATE_READY = "DRAFT_CANDIDATE_READY"
     YIELDED = "YIELDED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    PLANNER_REPLAN_REQUIRED = "PLANNER_REPLAN_REQUIRED"
     REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED = "REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED"
     REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED = "REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED"
     INPUT_NOT_READY = "INPUT_NOT_READY"
@@ -185,6 +208,10 @@ class WritingLoopResult(DomainModel):
 
     @model_validator(mode="after")
     def validate_terminal(self) -> WritingLoopResult:
+        if self.status is WritingLoopTerminalStatus.PLANNER_REPLAN_REQUIRED and (
+            not self.editorial_reports or not self.editorial_reports[-1].planner_replan_required
+        ):
+            raise ValueError("Planner replan requires an independent Editor report")
         ready = self.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
         resumable = self.status in {
             WritingLoopTerminalStatus.YIELDED,

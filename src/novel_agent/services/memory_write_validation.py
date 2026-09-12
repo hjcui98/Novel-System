@@ -265,6 +265,7 @@ class Stage2ValidationV2Adapter:
             proposed,
             validation_text,
             canonical_commit=canonical.commit_id,
+            canonical_plan=canonical.canonical_plan,
         )
         if source_bound_finding is not None:
             report = report.model_copy(

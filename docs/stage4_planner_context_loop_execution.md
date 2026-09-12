@@ -819,7 +819,7 @@ Stage 4 完成时交付：
 4. path receipt、conditional Anchor→Graph、compact→expand、diversity；
 5. versioned schema、Prompt/Skill/AgentSpec/receipt；
 6. 全量测试、Stage 2 回归、真实 planning benchmark 与消融报告；
-7. `.agent/implementation.md` 的命令、Artifact、失败修复和限制；
+7. 当前审查或相关执行文档中的命令、Artifact、失败修复和限制；
 8. Codex 独立 review 的 `PASS / REPAIR / CONDITIONAL_PASS`。
 
 本文不授权 Stage 5 的 Plan 接受、Canon Commit 或长期调度。

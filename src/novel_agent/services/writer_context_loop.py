@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import Literal, TypeVar, cast
 
 from pydantic import JsonValue
 
@@ -31,6 +33,7 @@ from novel_agent.domain.agent_context import (
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.editorial import (
+    EditorialRepairHistoryEntry,
     EditorialReport,
     EditorialReviewInput,
     EditorialVerdict,
@@ -77,6 +80,8 @@ from novel_agent.services.loop_round_progress import (
     writer_package_precondition,
     writer_round_progress,
 )
+from novel_agent.services.model_gateway import ModelCallSliceExhausted
+from novel_agent.services.planning_contracts import chapter_plan_nodes
 from novel_agent.services.writer_candidate import (
     WriterCandidateError,
     WriterCandidateMaterializer,
@@ -95,6 +100,8 @@ from novel_agent.services.writer_reactive_memory import (
     WriterReactiveMemoryError,
     WriterReactiveNeedAdapter,
 )
+
+PostCallResult = TypeVar("PostCallResult")
 
 WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
 EDITORIAL_REPORT_MEDIA_TYPE = "application/vnd.novel-agent.editorial-report+json"
@@ -166,6 +173,8 @@ class WriterContextLoopService:
             )
         try:
             resume_checkpoint = self._load_resume_checkpoint(request)
+            if resume_checkpoint is not None and resume_checkpoint.model_request is not None:
+                model_request = resume_checkpoint.model_request
             view = (
                 self._seed(request)
                 if resume_checkpoint is None
@@ -366,6 +375,7 @@ class WriterContextLoopService:
                     memory_rounds=memory_rounds,
                     writer_turns=writer_turns,
                     seen_fingerprints=seen_fingerprints,
+                    model_request=model_request,
                 )
                 artifacts.append(checkpoint_ref)
                 return self._result(
@@ -467,6 +477,7 @@ class WriterContextLoopService:
                     memory_rounds=memory_rounds,
                     writer_turns=writer_turns,
                     seen_fingerprints=seen_fingerprints,
+                    model_request=model_request,
                 )
                 artifacts.append(checkpoint_ref)
                 return self._result(
@@ -534,42 +545,85 @@ class WriterContextLoopService:
         ):
             initial_editor_context = resume_checkpoint.editor_context
 
-        if (
-            resume_checkpoint is None
-            and post_draft_calls_this_slice >= request.budgets.max_post_draft_model_calls
-        ):
+        final_id = initial_draft.draft_id
+        final_text = initial_draft.text_artifact
+        final_hints = active_turn.output.declared_memory_hints
+        local_attempt = 0 if resume_checkpoint is None else resume_checkpoint.local_repairs_used
+        rewrite_attempt = 0 if resume_checkpoint is None else resume_checkpoint.major_rewrites_used
+        repair_stage: Literal["dispatch", "local_review", "rewrite_draft", "rewrite_review"] = (
+            "dispatch" if resume_checkpoint is None else resume_checkpoint.repair_stage
+        )
+        review_input = None if resume_checkpoint is None else resume_checkpoint.repair_input
+        if review_input is None and initial_editor_context is not None:
+            review_input = EditorialReviewInput(
+                draft=initial_draft,
+                writing_task=request.writing_task,
+                context=initial_editor_context,
+            )
+
+        async def post_call(call: Callable[[], Awaitable[PostCallResult]]) -> PostCallResult:
+            nonlocal post_draft_calls_this_slice
+            remaining = request.budgets.max_post_draft_model_calls - post_draft_calls_this_slice
+            scope = getattr(self._cognition, "model_call_budget", None)
+            if scope is None:
+                if remaining <= 0:
+                    raise ModelCallSliceExhausted("post-Draft call allowance exhausted")
+                post_draft_calls_this_slice += 1
+                return await call()
+            with scope(remaining) as allowance:
+                try:
+                    return await call()
+                finally:
+                    post_draft_calls_this_slice += allowance.calls_started
+
+        def yield_post_draft(phase: WritingLoopPhase) -> WritingLoopResult:
+            assert work_plan is not None and active_turn is not None
             checkpoint_ref = self._persist_workflow_checkpoint(
                 request,
                 view,
                 work_plan,
                 active_turn,
+                model_request=model_request,
                 memory_rounds=memory_rounds,
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
-                phase=WritingLoopPhase.EDITOR_PENDING,
+                phase=phase,
                 initial_draft=initial_draft,
                 editor_context=initial_editor_context,
-                final_candidate_id=initial_draft.draft_id,
-                final_text_artifact=initial_draft.text_artifact,
-                final_declared_memory_hints=active_turn.output.declared_memory_hints,
+                rewritten_draft=rewritten_draft,
+                repaired_draft=repaired_draft,
+                repair_input=review_input,
+                repair_stage=repair_stage,
+                local_repairs_used=local_attempt,
+                major_rewrites_used=rewrite_attempt,
+                reports=tuple(reports),
+                final_candidate_id=final_id,
+                final_text_artifact=final_text,
+                final_declared_memory_hints=final_hints,
                 settled_artifacts=tuple(artifacts),
             )
             artifacts.append(checkpoint_ref)
             return self._result(
                 request,
                 WritingLoopTerminalStatus.YIELDED,
-                "post-Draft work slice ended before Editor",
+                f"post-Draft call allowance ended at {phase.value}/{repair_stage}",
                 view=view,
                 work_plan=work_plan,
                 initial_draft=initial_draft,
-                final_candidate_id=initial_draft.draft_id,
-                final_text_artifact=initial_draft.text_artifact,
+                rewritten_draft=rewritten_draft,
+                repaired_draft=repaired_draft,
+                reports=tuple(reports),
+                final_candidate_id=final_id,
+                final_text_artifact=final_text,
+                deltas=tuple(deltas),
+                compactions=tuple(compactions),
                 artifacts=tuple(artifacts),
                 checkpoint_ref=checkpoint_ref,
                 active_turn=active_turn,
             )
 
         if resume_checkpoint is not None and resume_checkpoint.phase in {
+            WritingLoopPhase.REPAIR_PENDING,
             WritingLoopPhase.OBSERVER_PENDING,
             WritingLoopPhase.RECONCILIATION_PENDING,
         }:
@@ -580,18 +634,15 @@ class WriterContextLoopService:
             final_text = resume_checkpoint.final_text_artifact
             final_hints = resume_checkpoint.final_declared_memory_hints
         else:
-            assert initial_editor_context is not None
-            review_input = EditorialReviewInput(
-                draft=initial_draft,
-                writing_task=request.writing_task,
-                context=initial_editor_context,
-            )
+            assert review_input is not None
             try:
-                report = await self._editorial.review(
-                    review_input,
-                    self._request(model_request, "editor-review-initial"),
+                report = await post_call(
+                    partial(
+                        self._editorial.review,
+                        review_input,
+                        self._request(model_request, "editor-review-initial"),
+                    )
                 )
-                post_draft_calls_this_slice += 1
                 reports.append(report)
                 report_ref = self._persist_report(report)
                 artifacts.append(report_ref)
@@ -603,6 +654,8 @@ class WriterContextLoopService:
                     (report_ref,),
                     "editor-review-initial",
                 )
+            except ModelCallSliceExhausted:
+                return yield_post_draft(WritingLoopPhase.EDITOR_PENDING)
             except EditorialReviewError as error:
                 return self._result(
                     request,
@@ -617,201 +670,192 @@ class WriterContextLoopService:
                     artifacts=tuple(artifacts),
                 )
 
-            final_id = initial_draft.draft_id
-            final_text = initial_draft.text_artifact
-            final_hints = active_turn.output.declared_memory_hints
-        if report.verdict is EditorialVerdict.LOCAL_REPAIR:
-            if request.budgets.max_local_repairs < 1:
+        while report.verdict is not EditorialVerdict.PASS:
+            assert review_input is not None
+            if report.planner_replan_required:
                 return self._result(
                     request,
-                    WritingLoopTerminalStatus.REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED,
-                    "local repair requires a new reviewed attempt under the pinned policy",
-                    view=view,
-                    work_plan=work_plan,
-                    initial_draft=initial_draft,
-                    reports=tuple(reports),
-                    final_candidate_id=initial_draft.draft_id,
-                    final_text_artifact=initial_draft.text_artifact,
-                    deltas=tuple(deltas),
-                    compactions=tuple(compactions),
-                    artifacts=tuple(artifacts),
-                )
-            local_repair_attempt = 0
-            while True:
-                local_repair_attempt += 1
-                repair_label = (
-                    "editor-local-repair"
-                    if local_repair_attempt == 1
-                    else f"editor-local-repair-{local_repair_attempt}"
-                )
-                review_label = (
-                    "editor-review-local-repair"
-                    if local_repair_attempt == 1
-                    else f"editor-review-local-repair-{local_repair_attempt}"
-                )
-                try:
-                    repaired_draft = await self._editorial.repair(
-                        review_input,
-                        report,
-                        self._request(model_request, repair_label),
-                    )
-                    post_draft_calls_this_slice += 1
-                    artifacts.append(repaired_draft.text_artifact)
-                    view = self._append_and_apply(
-                        request,
-                        view,
-                        RunEventType.EDITOR_REPAIR_SETTLED,
-                        SettledArtifactPayload(
-                            artifact_ref=repaired_draft.text_artifact,
-                            parent_artifact_ref=initial_draft.text_artifact,
-                        ).model_dump(mode="json"),
-                        (repaired_draft.text_artifact,),
-                        repair_label,
-                    )
-                    verification = await self._editorial.review_repaired(
-                        review_input,
-                        report,
-                        repaired_draft,
-                        self._request(model_request, review_label),
-                    )
-                    post_draft_calls_this_slice += 1
-                    reports.append(verification)
-                    verification_ref = self._persist_report(verification)
-                    artifacts.append(verification_ref)
-                    view = self._append_and_apply(
-                        request,
-                        view,
-                        RunEventType.EDITOR_REVIEW_SETTLED,
-                        SettledArtifactPayload(
-                            artifact_ref=verification_ref,
-                            parent_artifact_ref=repaired_draft.text_artifact,
-                        ).model_dump(mode="json"),
-                        (verification_ref,),
-                        review_label,
-                    )
-                except EditorialRepairError as error:
-                    if (
-                        str(error) == "LOCAL_REPAIR produced no text change"
-                        and local_repair_attempt < request.budgets.max_local_repairs
-                    ):
-                        continue
-                    return self._result(
-                        request,
-                        WritingLoopTerminalStatus.EDITOR_FAILED,
-                        error,
-                        view=view,
-                        work_plan=work_plan,
-                        initial_draft=initial_draft,
-                        repaired_draft=repaired_draft,
-                        reports=tuple(reports),
-                        deltas=tuple(deltas),
-                        compactions=tuple(compactions),
-                        artifacts=tuple(artifacts),
-                    )
-                except EditorialReviewError as error:
-                    return self._result(
-                        request,
-                        WritingLoopTerminalStatus.EDITOR_FAILED,
-                        error,
-                        view=view,
-                        work_plan=work_plan,
-                        initial_draft=initial_draft,
-                        repaired_draft=repaired_draft,
-                        reports=tuple(reports),
-                        deltas=tuple(deltas),
-                        compactions=tuple(compactions),
-                        artifacts=tuple(artifacts),
-                    )
-                break
-            if verification.verdict is not EditorialVerdict.PASS:
-                return self._result(
-                    request,
-                    WritingLoopTerminalStatus.REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED,
-                    "independent re-review did not pass the one allowed local repair",
+                    WritingLoopTerminalStatus.PLANNER_REPLAN_REQUIRED,
+                    "Editor requires correction of the accepted plan before another Draft",
                     view=view,
                     work_plan=work_plan,
                     initial_draft=initial_draft,
                     repaired_draft=repaired_draft,
+                    rewritten_draft=rewritten_draft,
                     reports=tuple(reports),
-                    final_candidate_id=repaired_draft.draft_id,
-                    final_text_artifact=repaired_draft.text_artifact,
+                    final_candidate_id=final_id,
+                    final_text_artifact=final_text,
                     deltas=tuple(deltas),
                     compactions=tuple(compactions),
                     artifacts=tuple(artifacts),
                 )
-            final_id = repaired_draft.draft_id
-            final_text = repaired_draft.text_artifact
-        elif report.verdict is EditorialVerdict.MAJOR_REWRITE:
-            assert initial_draft is not None
-            rewrite_attempt = 0
-            rewrite_parent = initial_draft
-            rewrite_turn: WriterTurnResult | None = None
-            major_verification: EditorialReport | None = None
-            while True:
-                if rewrite_attempt >= request.budgets.max_major_rewrites:
-                    allowance = request.budgets.max_major_rewrites
-                    return self._result(
-                        request,
-                        WritingLoopTerminalStatus.REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED,
-                        f"full re-review did not pass the {allowance} allowed major rewrite(s)",
-                        view=view,
-                        work_plan=work_plan,
-                        initial_draft=initial_draft,
-                        rewritten_draft=rewritten_draft,
-                        reports=tuple(reports),
-                        final_candidate_id=(
-                            rewritten_draft.draft_id
-                            if rewritten_draft is not None
-                            else initial_draft.draft_id
+            is_local = report.verdict is EditorialVerdict.LOCAL_REPAIR
+            exhausted = (
+                local_attempt >= request.budgets.max_local_repairs
+                if is_local
+                else rewrite_attempt >= request.budgets.max_major_rewrites
+            )
+            if repair_stage == "dispatch" and exhausted:
+                terminal = (
+                    WritingLoopTerminalStatus.REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED
+                    if is_local
+                    else WritingLoopTerminalStatus.REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED
+                )
+                return self._result(
+                    request,
+                    terminal,
+                    "independent review still rejects the candidate after repair budget",
+                    view=view,
+                    work_plan=work_plan,
+                    initial_draft=initial_draft,
+                    repaired_draft=repaired_draft,
+                    rewritten_draft=rewritten_draft,
+                    reports=tuple(reports),
+                    final_candidate_id=final_id,
+                    final_text_artifact=final_text,
+                    deltas=tuple(deltas),
+                    compactions=tuple(compactions),
+                    artifacts=tuple(artifacts),
+                )
+            try:
+                if repair_stage == "dispatch":
+                    if is_local:
+                        label = f"editor-local-repair-{local_attempt + 1}"
+                        repaired_draft = await post_call(
+                            partial(
+                                self._editorial.repair,
+                                review_input,
+                                report,
+                                self._request(model_request, label),
+                            )
+                        )
+                        local_attempt += 1
+                        artifacts.append(repaired_draft.text_artifact)
+                        view = self._append_and_apply(
+                            request,
+                            view,
+                            RunEventType.EDITOR_REPAIR_SETTLED,
+                            SettledArtifactPayload(
+                                artifact_ref=repaired_draft.text_artifact,
+                                parent_artifact_ref=review_input.current_text_artifact,
+                            ).model_dump(mode="json"),
+                            (repaired_draft.text_artifact,),
+                            label,
+                        )
+                        repair_stage = "local_review"
+                    else:
+                        directive = cast(RewriteDirective, report.rewrite_directive)
+                        instruction_item = ContextViewItem(
+                            item_id=StableId(
+                                f"editor-directive.{directive.directive_id.root}"[:128]
+                            ),
+                            layer=ContextLayer.WORKING,
+                            kind=ContextItemKind.EDITOR_INSTRUCTION,
+                            content=directive.model_dump_json(),
+                            token_count=max(
+                                1, len(directive.model_dump_json().encode("utf-8")) // 3
+                            ),
+                            source_artifact_refs=(directive.directive_artifact,),
+                            mandatory=True,
+                            information_scope="writer_safe",
+                        )
+                        view = self._projector.put_working_item(
+                            view,
+                            instruction_item,
+                            replace_kind=ContextItemKind.EDITOR_INSTRUCTION,
+                        )
+                        view, receipt = self._ensure_dispatch(request, view, policy)
+                        if receipt is not None:
+                            compactions.append(receipt)
+                        rewrite_request = request.model_copy(
+                            update={"mode": AgentMode.MAJOR_REWRITE}
+                        )
+                        label = f"writer-rewrite-plan-{rewrite_attempt + 1}"
+                        work_plan = await post_call(
+                            partial(
+                                self._cognition.create_work_plan,
+                                rewrite_request,
+                                view,
+                                self._request(model_request, label),
+                            )
+                        )
+                        rewrite_attempt += 1
+                        artifacts.append(work_plan.work_plan_artifact)
+                        plan_item = ContextViewItem(
+                            item_id=StableId(f"rewrite-work-plan.{rewrite_attempt}"),
+                            layer=ContextLayer.WORKING,
+                            kind=ContextItemKind.WORK_PLAN,
+                            content=work_plan.work_plan.model_dump_json(),
+                            token_count=max(
+                                1, len(work_plan.work_plan.model_dump_json().encode("utf-8")) // 3
+                            ),
+                            source_artifact_refs=(work_plan.work_plan_artifact,),
+                            mandatory=True,
+                            information_scope="writer_safe",
+                        )
+                        view = self._append_and_apply(
+                            request,
+                            view,
+                            RunEventType.WRITER_WORK_PLAN_SETTLED,
+                            WriterWorkPlanSettledPayload(
+                                work_plan_ref=work_plan.work_plan_artifact,
+                                working_item=plan_item,
+                            ).model_dump(mode="json"),
+                            (work_plan.work_plan_artifact,),
+                            label,
+                        )
+                        repair_stage = "rewrite_draft"
+                    continue
+
+                if repair_stage == "local_review":
+                    assert repaired_draft is not None
+                    previous_report = report
+                    report = await post_call(
+                        partial(
+                            self._editorial.review_repaired,
+                            review_input,
+                            previous_report,
+                            repaired_draft,
+                            self._request(
+                                model_request, f"editor-review-local-repair-{local_attempt}"
+                            ),
+                        )
+                    )
+                    history = EditorialRepairHistoryEntry(
+                        report_id=previous_report.report_id,
+                        draft_id=review_input.current_draft_id,
+                        verdict=previous_report.verdict,
+                        repaired_draft_id=repaired_draft.draft_id,
+                        issue_summaries=tuple(
+                            issue.description for issue in previous_report.issues
                         ),
-                        final_text_artifact=(
-                            rewritten_draft.text_artifact
-                            if rewritten_draft is not None
-                            else initial_draft.text_artifact
-                        ),
-                        deltas=tuple(deltas),
-                        compactions=tuple(compactions),
-                        artifacts=tuple(artifacts),
+                        report_artifact=self._persist_report(previous_report),
                     )
-                rewrite_attempt += 1
-                try:
-                    directive = cast(RewriteDirective, report.rewrite_directive)
-                    instruction_item = ContextViewItem(
-                        item_id=StableId(f"editor-directive.{directive.directive_id.root}"[:128]),
-                        layer=ContextLayer.WORKING,
-                        kind=ContextItemKind.EDITOR_INSTRUCTION,
-                        content=directive.model_dump_json(),
-                        token_count=max(1, len(directive.model_dump_json().encode("utf-8")) // 3),
-                        source_artifact_refs=(directive.directive_artifact,),
-                        mandatory=True,
-                        information_scope="writer_safe",
+                    review_input = review_input.model_copy(
+                        update={
+                            "repair_chain": (*review_input.repair_chain, repaired_draft),
+                            "prior_repair_history": (*review_input.prior_repair_history, history),
+                        }
                     )
-                    view = self._projector.put_working_item(
-                        view,
-                        instruction_item,
-                        replace_kind=ContextItemKind.EDITOR_INSTRUCTION,
-                    )
+                    final_id, final_text = repaired_draft.draft_id, repaired_draft.text_artifact
+                elif repair_stage == "rewrite_draft":
                     view, receipt = self._ensure_dispatch(request, view, policy)
                     if receipt is not None:
                         compactions.append(receipt)
                     rewrite_request = request.model_copy(update={"mode": AgentMode.MAJOR_REWRITE})
-                    rewrite_label = (
-                        "writer-major-rewrite"
-                        if rewrite_attempt == 1
-                        else f"writer-major-rewrite-{rewrite_attempt}"
-                    )
-                    rewrite_turn = await self._cognition.take_turn(
-                        rewrite_request,
-                        view,
-                        work_plan,
-                        self._request(model_request, rewrite_label),
-                        major_rewrite_attempt=rewrite_attempt,
-                    )
-                    post_draft_calls_this_slice += 1
-                    if rewrite_turn.output.action is not WriterTurnAction.DRAFT_READY:
-                        raise WriterCognitionError(
-                            "major rewrite cannot start another Memory round"
+                    label = f"writer-major-rewrite-{rewrite_attempt}"
+                    rewrite_turn = await post_call(
+                        partial(
+                            self._cognition.take_turn,
+                            rewrite_request,
+                            view,
+                            work_plan,
+                            self._request(model_request, label),
+                            major_rewrite_attempt=rewrite_attempt,
                         )
+                    )
+                    if rewrite_turn.output.action is not WriterTurnAction.DRAFT_READY:
+                        raise WriterCognitionError("major rewrite requires a complete candidate")
                     artifacts.extend((rewrite_turn.artifact, rewrite_turn.raw_output_artifact))
                     view = self._append_and_apply(
                         request,
@@ -821,7 +865,12 @@ class WriterContextLoopService:
                             mode="json"
                         ),
                         (rewrite_turn.artifact, rewrite_turn.raw_output_artifact),
-                        rewrite_label,
+                        label,
+                    )
+                    rewrite_parent = (
+                        review_input.repair_chain[-1]
+                        if review_input.repair_chain
+                        else review_input.draft
                     )
                     rewritten_draft = self._materializer.materialize(
                         rewrite_request,
@@ -838,86 +887,105 @@ class WriterContextLoopService:
                             rewritten_draft.raw_output_artifact,
                         )
                     )
-                    rewritten_input = EditorialReviewInput(
+                    history = EditorialRepairHistoryEntry(
+                        report_id=report.report_id,
+                        draft_id=review_input.current_draft_id,
+                        verdict=report.verdict,
+                        repaired_draft_id=rewritten_draft.draft_id,
+                        issue_summaries=tuple(issue.description for issue in report.issues),
+                        report_artifact=self._persist_report(report),
+                    )
+                    review_input = EditorialReviewInput(
                         draft=rewritten_draft,
                         writing_task=request.writing_task,
                         context=self._materializer.editor_context(request, view),
+                        prior_repair_history=(*review_input.prior_repair_history, history),
                     )
-                    editor_label = (
-                        "editor-review-major-rewrite"
-                        if rewrite_attempt == 1
-                        else f"editor-review-major-rewrite-{rewrite_attempt}"
-                    )
-                    major_verification = await self._editorial.review(
-                        rewritten_input,
-                        self._request(model_request, editor_label),
-                    )
-                    post_draft_calls_this_slice += 1
-                    reports.append(major_verification)
-                    verification_ref = self._persist_report(major_verification)
-                    artifacts.append(verification_ref)
-                    view = self._append_and_apply(
-                        request,
-                        view,
-                        RunEventType.EDITOR_REVIEW_SETTLED,
-                        SettledArtifactPayload(
-                            artifact_ref=verification_ref,
-                            parent_artifact_ref=rewritten_draft.text_artifact,
-                        ).model_dump(mode="json"),
-                        (verification_ref,),
-                        editor_label,
-                    )
-                except (
-                    WriterCognitionError,
-                    WriterCandidateError,
-                    EditorialReviewError,
-                    ContextLimitError,
-                    ValueError,
-                    RuntimeError,
-                ) as error:
-                    return self._result(
-                        request,
-                        WritingLoopTerminalStatus.WRITER_FAILED,
-                        error,
-                        view=view,
-                        work_plan=work_plan,
-                        initial_draft=initial_draft,
-                        rewritten_draft=rewritten_draft,
-                        reports=tuple(reports),
-                        deltas=tuple(deltas),
-                        compactions=tuple(compactions),
-                        artifacts=tuple(artifacts),
-                    )
-                assert major_verification is not None
-                assert rewrite_turn is not None
-                assert rewritten_draft is not None
-                if major_verification.verdict is EditorialVerdict.PASS:
-                    final_id = rewritten_draft.draft_id
-                    final_text = rewritten_draft.text_artifact
+                    active_turn = rewrite_turn
+                    final_id, final_text = rewritten_draft.draft_id, rewritten_draft.text_artifact
                     final_hints = rewrite_turn.output.declared_memory_hints
-                    break
-                if (
-                    major_verification.verdict is not EditorialVerdict.MAJOR_REWRITE
-                    or rewrite_attempt >= request.budgets.max_major_rewrites
-                ):
-                    allowance = request.budgets.max_major_rewrites
-                    return self._result(
-                        request,
-                        WritingLoopTerminalStatus.REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED,
-                        f"full re-review did not pass the {allowance} allowed major rewrite(s)",
-                        view=view,
-                        work_plan=work_plan,
-                        initial_draft=initial_draft,
-                        rewritten_draft=rewritten_draft,
-                        reports=tuple(reports),
-                        final_candidate_id=rewritten_draft.draft_id,
-                        final_text_artifact=rewritten_draft.text_artifact,
-                        deltas=tuple(deltas),
-                        compactions=tuple(compactions),
-                        artifacts=tuple(artifacts),
+                    repair_stage = "rewrite_review"
+                    continue
+                else:
+                    report = await post_call(
+                        partial(
+                            self._editorial.review,
+                            review_input,
+                            self._request(
+                                model_request, f"editor-review-major-rewrite-{rewrite_attempt}"
+                            ),
+                        )
                     )
-                report = major_verification
-                rewrite_parent = rewritten_draft
+                repair_stage = "dispatch"
+                reports.append(report)
+                report_ref = self._persist_report(report)
+                artifacts.append(report_ref)
+                view = self._append_and_apply(
+                    request,
+                    view,
+                    RunEventType.EDITOR_REVIEW_SETTLED,
+                    SettledArtifactPayload(
+                        artifact_ref=report_ref, parent_artifact_ref=final_text
+                    ).model_dump(mode="json"),
+                    (report_ref,),
+                    f"editor-review-repair-{local_attempt}-{rewrite_attempt}",
+                )
+            except ModelCallSliceExhausted:
+                return yield_post_draft(WritingLoopPhase.REPAIR_PENDING)
+            except EditorialRepairError as error:
+                if str(error) == "LOCAL_REPAIR produced no text change":
+                    local_attempt += 1
+                    continue
+                return self._result(
+                    request,
+                    WritingLoopTerminalStatus.EDITOR_FAILED,
+                    error,
+                    view=view,
+                    work_plan=work_plan,
+                    initial_draft=initial_draft,
+                    repaired_draft=repaired_draft,
+                    rewritten_draft=rewritten_draft,
+                    reports=tuple(reports),
+                    deltas=tuple(deltas),
+                    compactions=tuple(compactions),
+                    artifacts=tuple(artifacts),
+                )
+            except EditorialReviewError as error:
+                return self._result(
+                    request,
+                    WritingLoopTerminalStatus.EDITOR_FAILED,
+                    error,
+                    view=view,
+                    work_plan=work_plan,
+                    initial_draft=initial_draft,
+                    repaired_draft=repaired_draft,
+                    rewritten_draft=rewritten_draft,
+                    reports=tuple(reports),
+                    deltas=tuple(deltas),
+                    compactions=tuple(compactions),
+                    artifacts=tuple(artifacts),
+                )
+            except (
+                WriterCognitionError,
+                WriterCandidateError,
+                ContextLimitError,
+                ValueError,
+                RuntimeError,
+            ) as error:
+                return self._result(
+                    request,
+                    WritingLoopTerminalStatus.WRITER_FAILED,
+                    error,
+                    view=view,
+                    work_plan=work_plan,
+                    initial_draft=initial_draft,
+                    repaired_draft=repaired_draft,
+                    rewritten_draft=rewritten_draft,
+                    reports=tuple(reports),
+                    deltas=tuple(deltas),
+                    compactions=tuple(compactions),
+                    artifacts=tuple(artifacts),
+                )
 
         if (
             resume_checkpoint is None
@@ -931,6 +999,7 @@ class WriterContextLoopService:
                 memory_rounds=memory_rounds,
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
+                model_request=model_request,
                 phase=WritingLoopPhase.OBSERVER_PENDING,
                 initial_draft=initial_draft,
                 rewritten_draft=rewritten_draft,
@@ -969,13 +1038,15 @@ class WriterContextLoopService:
             observation_ref = resume_checkpoint.observation_artifact
         else:
             try:
-                observation, observation_ref, _call = await self._observer.observe(
-                    final_id,
-                    final_text,
-                    view.context_hash,
-                    self._request(model_request, "candidate-observation"),
+                observation, observation_ref, _call = await post_call(
+                    partial(
+                        self._observer.observe,
+                        final_id,
+                        final_text,
+                        view.context_hash,
+                        self._request(model_request, "candidate-observation"),
+                    )
                 )
-                post_draft_calls_this_slice += 1
                 artifacts.append(observation_ref)
                 view = self._append_and_apply(
                     request,
@@ -988,6 +1059,8 @@ class WriterContextLoopService:
                     (observation_ref,),
                     "candidate-observation",
                 )
+            except ModelCallSliceExhausted:
+                return yield_post_draft(WritingLoopPhase.OBSERVER_PENDING)
             except (CandidateObservationError, ValueError, RuntimeError) as error:
                 return self._result(
                     request,
@@ -1018,6 +1091,7 @@ class WriterContextLoopService:
                 memory_rounds=memory_rounds,
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
+                model_request=model_request,
                 phase=WritingLoopPhase.RECONCILIATION_PENDING,
                 initial_draft=initial_draft,
                 rewritten_draft=rewritten_draft,
@@ -1249,6 +1323,17 @@ class WriterContextLoopService:
                     item_id=StableId(f"evidence-handle.{package_item.item_id.root}"[:128]),
                     layer=ContextLayer.MEMORY,
                     kind=ContextItemKind.EVIDENCE_HANDLE,
+                    verified_evidence=tuple(
+                        entry.evidence_text
+                        for ledger_id in package_item.evidence_ledger_ids
+                        for entry in (entries[ledger_id],)
+                        if entry.dereference_receipt == "verified_read"
+                        and entry.taint == "none"
+                        and entry.basis_commit_id == request.base_commit
+                        and entry.basis_snapshot_id == request.snapshot_id
+                        and entry.cutoff_chapter < request.writing_task.target_chapter
+                        and entry.evidence_text in package_item.raw_preview
+                    ),
                     content=content,
                     token_count=max(1, len(content.encode("utf-8")) // 3),
                     source_artifact_refs=(
@@ -1277,6 +1362,7 @@ class WriterContextLoopService:
             items.append(
                 ContextViewItem(
                     item_id=StableId(f"recent-prose.full.chapter.{previous.chapter_index}"),
+                    verified_evidence=(text,),
                     layer=ContextLayer.MEMORY,
                     kind=ContextItemKind.RECENT_PROSE,
                     content=content,
@@ -1315,17 +1401,8 @@ class WriterContextLoopService:
         except ValueError:
             return raw.decode("utf-8")
         target = request.writing_task.target_chapter
-        goals = tuple(
-            goal for goal in plan.chapter_goals if target - 1 <= goal.chapter_index <= target + 2
-        )
-        selected_goal_ids = {goal.goal_id for goal in goals}
-        active_obligations = set(request.writing_task.active_plan_obligations)
-        nodes = tuple(
-            node
-            for node in plan.nodes
-            if node.plan_node_id in selected_goal_ids
-            or bool(set(node.obligation_ids) & active_obligations)
-        )
+        goals = tuple(goal for goal in plan.chapter_goals if goal.chapter_index == target)
+        nodes = chapter_plan_nodes(plan, target)
         return canonical_json_bytes(
             {
                 "revision": request.accepted_plan.revision,
@@ -1504,6 +1581,13 @@ class WriterContextLoopService:
         memory_rounds: int,
         writer_turns: int,
         seen_fingerprints: set[ArtifactId],
+        model_request: ModelRequest | None = None,
+        repair_input: EditorialReviewInput | None = None,
+        repair_stage: Literal[
+            "dispatch", "local_review", "rewrite_draft", "rewrite_review"
+        ] = "dispatch",
+        local_repairs_used: int = 0,
+        major_rewrites_used: int = 0,
         phase: WritingLoopPhase = WritingLoopPhase.REACTIVE_MEMORY_PENDING,
         initial_draft: DraftArtifact | None = None,
         editor_context: object | None = None,
@@ -1530,9 +1614,24 @@ class WriterContextLoopService:
         ).root[-48:]
         checkpoint = WritingLoopCheckpoint(
             checkpoint_id=StableId(f"writing-loop-checkpoint.{suffix}"),
+            frozen_request_ref=self._artifacts.put(
+                canonical_json_bytes(
+                    request.model_copy(update={"resume_checkpoint_ref": None}).model_dump(
+                        mode="json"
+                    )
+                ),
+                "application/vnd.novel-agent.frozen-writing-request+json",
+                CONTEXT_EVENT_SCHEMA_VERSION,
+            ),
             run_id=request.run_id,
             task_id=request.task_id,
             phase=phase,
+            model_request=model_request,
+            repair_input=repair_input,
+            repair_stage=repair_stage,
+            local_repairs_used=local_repairs_used,
+            major_rewrites_used=major_rewrites_used,
+            model_call_records=self._all_model_calls(request),
             base_commit=request.base_commit,
             snapshot_id=request.snapshot_id,
             writing_task_ref=request.writing_task_artifact,
@@ -1655,6 +1754,48 @@ class WriterContextLoopService:
         detail_text = None if detail is None else (str(detail).strip() or type(detail).__name__)
         if status is WritingLoopTerminalStatus.MODEL_UNAVAILABLE:
             artifacts = tuple(dict.fromkeys((*self._available_lineage(request), *artifacts)))
+        if (
+            status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+            and work_plan is not None
+            and reports
+            and reports[-1].verdict is EditorialVerdict.PASS
+            and reports[-1].draft_id == final_candidate_id
+            and final_text_artifact is not None
+        ):
+            from novel_agent.domain.stage2 import ExecutionStatus
+
+            assessed = {item.criterion_id: item for item in reports[-1].plan_assessments}
+            completed_receipts = []
+            for receipt in work_plan.skill_receipts:
+                completed = tuple(
+                    checkpoint
+                    for index, checkpoint in enumerate(receipt.selected_checkpoints)
+                    if (
+                        assessment := assessed.get(
+                            f"skill:{receipt.skill.contract_id.root}:{index}"
+                        )
+                    )
+                    is not None
+                    and assessment.satisfied
+                    and assessment.evidence_quotes
+                )
+                completed_receipts.append(
+                    receipt.model_copy(
+                        update={
+                            "completed_checkpoints": completed,
+                            "status": (
+                                ExecutionStatus.SUCCEEDED
+                                if completed and completed == receipt.selected_checkpoints
+                                else ExecutionStatus.PARTIAL
+                            ),
+                            "output_artifacts": (
+                                final_text_artifact,
+                                self._persist_report(reports[-1]),
+                            ),
+                        }
+                    )
+                )
+            work_plan = work_plan.model_copy(update={"skill_receipts": tuple(completed_receipts)})
         result = WritingLoopResult(
             result_id=StableId(f"writing-loop-result.{request.run_id.root}.{status.value}"[:128]),
             run_id=request.run_id,
@@ -1678,14 +1819,17 @@ class WriterContextLoopService:
             compaction_receipts=tuple(
                 item for item in compactions if isinstance(item, ContextCompactionReceipt)
             ),
-            model_call_records=self._model_calls(
-                work_plan,
-                initial_draft,
-                rewritten_draft,
-                repaired_draft,
-                reports,
-                observation,
-                active_turn,
+            model_call_records=self._all_model_calls(
+                request,
+                self._model_calls(
+                    work_plan,
+                    initial_draft,
+                    rewritten_draft,
+                    repaired_draft,
+                    reports,
+                    observation,
+                    active_turn,
+                ),
             ),
             artifacts=tuple(dict.fromkeys(artifacts)),
             failure_detail=detail_text,
@@ -1742,6 +1886,24 @@ class WriterContextLoopService:
                 return True
             current = current.__cause__
         return False
+
+    def _all_model_calls(
+        self,
+        request: WritingLoopRequest,
+        fallback: tuple[ModelCallRecord, ...] = (),
+    ) -> tuple[ModelCallRecord, ...]:
+        calls = list(fallback)
+        if request.resume_checkpoint_ref is not None:
+            try:
+                checkpoint = self._load_resume_checkpoint(request)
+            except (OSError, ValueError, RuntimeError):
+                checkpoint = None
+            if checkpoint is not None:
+                calls.extend(checkpoint.model_call_records)
+        collect = getattr(self._cognition, "model_calls_for", None)
+        if collect is not None:
+            calls.extend(collect(request))
+        return tuple({call.request_id: call for call in calls}.values())
 
     @staticmethod
     def _model_calls(

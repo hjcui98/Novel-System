@@ -250,6 +250,12 @@ class WriterReactiveNeedAdapter:
                 layer=ContextLayer.MEMORY,
                 kind=ContextItemKind.MEMORY_CLAIM,
                 content=unit.text,
+                verified_evidence=(
+                    (unit.text,)
+                    if unit in result.context.raw_evidence_spans
+                    and unit.support_status in {"verified", "supported"}
+                    else ()
+                ),
                 token_count=max(1, self._count_tokens(unit.text)),
                 source_artifact_refs=(result.frozen_context_artifact,),
                 mandatory=unit.mandatory,

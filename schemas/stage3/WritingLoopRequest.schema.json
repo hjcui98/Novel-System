@@ -417,6 +417,39 @@
           "title": "Assembler Version",
           "type": "string"
         },
+        "budget_expansion_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frozen_evidence_selections_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gateway_context_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "generator_version": {
           "default": "",
           "title": "Generator Version",
@@ -426,6 +459,17 @@
           "default": "",
           "title": "Grounder Version",
           "type": "string"
+        },
+        "need_generation_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "need_ids": {
           "default": [],
@@ -1700,6 +1744,15 @@
     "WritingTaskContract": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "active_plan_obligations": {
           "default": [],
           "items": {
@@ -1724,6 +1777,15 @@
         },
         "contract_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "entry_conditions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Entry Conditions",
+          "type": "array"
         },
         "forbidden_reveals": {
           "default": [],

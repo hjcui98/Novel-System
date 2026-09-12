@@ -28,6 +28,7 @@ from novel_agent.domain.stage2 import AgentMode, ProjectProfileRootDocument
 from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+from novel_agent.services.planning_contracts import effective_obligations
 
 
 class PlannerContextAssemblyError(ValueError):
@@ -46,6 +47,45 @@ class PlannerContextAssembler:
     ) -> None:
         self._artifacts = artifacts
         self._schema_version = schema_version
+
+    def _revision_feedback_items(self, request: PlanningLoopRequest) -> list[PlannerContextItem]:
+        items: list[PlannerContextItem] = []
+        for index, ref in enumerate(request.planning_feedback_artifacts):
+            if ref.media_type != "application/vnd.novel-agent.editor-plan-feedback+json":
+                raise PlannerContextAssemblyError("unsupported planning feedback artifact")
+            items.append(
+                self._artifact_item(
+                    StableId(f"planner-context.revision-feedback.{index}"),
+                    PlannerContextSection.REVISION_FEEDBACK,
+                    ref,
+                    protected=True,
+                    mandatory=True,
+                )
+            )
+        return items
+
+    def inquiry_basis(self, request: PlanningLoopRequest) -> tuple[str, ArtifactRef]:
+        """Expose the same authoritative scoped plan before Needs are proposed."""
+        items: list[PlannerContextItem] = []
+        if request.project_profile_ref is not None:
+            items.append(self._project_profile_item(request.project_profile_ref))
+        if request.accepted_plan_ref is not None:
+            items.append(self._accepted_plan_item(request, request.accepted_plan_ref))
+        items.extend(self._revision_feedback_items(request))
+        text = canonical_json_bytes(
+            {
+                "planning_basis": [item.model_dump(mode="json") for item in items],
+                "explicit_author_overrides": request.explicit_author_overrides,
+            }
+        ).decode("utf-8")
+        if self._tokens(text) > request.budgets.context.token_budget:
+            raise PlannerContextAssemblyError("authoritative inquiry basis exceeds context budget")
+        ref = self._artifacts.put(
+            text.encode("utf-8"),
+            "application/vnd.novel-agent.planning-basis+json",
+            self._schema_version,
+        )
+        return text, ref
 
     def assemble(
         self,
@@ -102,6 +142,7 @@ class PlannerContextAssembler:
             mandatory.append(self._project_profile_item(request.project_profile_ref))
         if request.accepted_plan_ref is not None:
             mandatory.append(self._accepted_plan_item(request, request.accepted_plan_ref))
+        mandatory.extend(self._revision_feedback_items(request))
         for goal in inquiry.goal_proposals:
             mandatory.append(
                 PlannerContextItem(
@@ -321,9 +362,6 @@ class PlannerContextAssembler:
                 for goal in plan.chapter_goals
                 if lower <= goal.chapter_index <= request.horizon_end
             )
-            obligation_ids = {
-                obligation_id for goal in goals for obligation_id in goal.obligation_ids
-            }
             by_id = {node.plan_node_id: node for node in plan.nodes}
             horizon_start = request.horizon_start
             horizon_end = request.horizon_end
@@ -336,7 +374,7 @@ class PlannerContextAssembler:
             selected_ids = {
                 node.plan_node_id
                 for node in plan.nodes
-                if bool(set(node.obligation_ids) & obligation_ids)
+                if node.plan_node_id in {goal.goal_id for goal in goals}
                 or (
                     overlaps(node)
                     and node.plan_level
@@ -444,7 +482,13 @@ class PlannerContextAssembler:
         except ValueError:
             return []
         summaries: list[dict[str, object]] = []
-        for obligation in world.obligations:
+        obligations = world.obligations
+        if request.accepted_plan_ref is not None:
+            plan = PlanRootDocument.model_validate_json(
+                self._artifacts.read_verified(request.accepted_plan_ref)
+            )
+            obligations = effective_obligations(plan, world)
+        for obligation in obligations:
             if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
                 continue
             summaries.append(
@@ -469,7 +513,13 @@ class PlannerContextAssembler:
         except ValueError:
             return []
         summaries: list[dict[str, object]] = []
-        for obligation in world.obligations:
+        obligations = world.obligations
+        if request.accepted_plan_ref is not None:
+            plan = PlanRootDocument.model_validate_json(
+                self._artifacts.read_verified(request.accepted_plan_ref)
+            )
+            obligations = effective_obligations(plan, world)
+        for obligation in obligations:
             if not obligation.is_future_locked(current_chapter):
                 continue
             summaries.append(

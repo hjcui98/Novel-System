@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
@@ -41,6 +43,7 @@ from novel_agent.domain.writer_context import (
 )
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
+    WritingLoopCheckpoint,
     WritingLoopResult,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -48,6 +51,11 @@ from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.evidence_first_writer_context_assembler import (
     EvidenceFirstAssemblyResult,
+)
+from novel_agent.services.planning_contracts import (
+    chapter_plan_nodes,
+    dependency_constraints,
+    effective_obligations,
 )
 from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.writer_context_loop import WriterContextLoopService
@@ -141,6 +149,115 @@ class ProductionWritingRequestFactory:
         profile = ProjectProfileRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.project_profile_root), strict=True
         )
+        checkpoint_ref = next(
+            (
+                ref
+                for ref in reversed(task.terminal_artifact_refs)
+                if ref.media_type == WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+            ),
+            None,
+        )
+        if checkpoint_ref is not None:
+            checkpoint = WritingLoopCheckpoint.model_validate_json(
+                self._artifacts.read_verified(checkpoint_ref)
+            )
+            if (
+                checkpoint.run_id != task.run_id
+                or checkpoint.task_id != task.task_id
+                or checkpoint.base_commit != task.basis_commit
+                or checkpoint.snapshot_id != task.basis_snapshot
+                or checkpoint.accepted_plan_ref.artifact_id != manifest.plan_root.artifact_id
+                or checkpoint.project_profile_ref.artifact_id
+                != manifest.project_profile_root.artifact_id
+            ):
+                raise ValueError("frozen Writer checkpoint differs from current task/Canon basis")
+            if checkpoint.frozen_request_ref is not None:
+                frozen = WritingLoopRequest.model_validate_json(
+                    self._artifacts.read_verified(checkpoint.frozen_request_ref)
+                )
+                if (
+                    frozen.writer_configuration_fingerprint
+                    != self._policy.writer_configuration_fingerprint
+                    or frozen.model_configuration_fingerprint
+                    != self._policy.model_configuration_fingerprint
+                    or frozen.allowed_skills != self._policy.allowed_skills
+                    or frozen.budgets != self._policy.budgets
+                ):
+                    raise ValueError("Writer configuration changed; explicit rebase is required")
+            else:
+                # Legacy checkpoints already freeze these artifacts individually.
+                def read(ref: ArtifactRef) -> dict[str, object]:
+                    return cast(dict[str, object], json.loads(self._artifacts.read_verified(ref)))
+
+                contract = read(checkpoint.writing_task_ref)
+                payload = {
+                    "run_id": task.run_id.root,
+                    "task_id": task.task_id.root,
+                    "project_id": task.project_id.root,
+                    "base_commit": task.basis_commit.root,
+                    "snapshot_id": task.basis_snapshot.root,
+                    "writing_task": contract,
+                    "writing_task_artifact": checkpoint.writing_task_ref.model_dump(mode="json"),
+                    "accepted_plan": {
+                        "artifact": checkpoint.accepted_plan_ref.model_dump(mode="json"),
+                        "revision": plan.root_hash.root,
+                        "task_contract_id": contract["contract_id"],
+                        "base_commit": task.basis_commit.root,
+                        "snapshot_id": task.basis_snapshot.root,
+                    },
+                    "project_profile_artifact": checkpoint.project_profile_ref.model_dump(
+                        mode="json"
+                    ),
+                    "project_profile_revision": profile.root_hash.root,
+                    "writer_context_package": read(checkpoint.writer_context_ref),
+                    "writer_context_package_artifact": checkpoint.writer_context_ref.model_dump(
+                        mode="json"
+                    ),
+                    "recent_prose_context": read(checkpoint.recent_prose_ref),
+                    "recent_prose_context_artifact": checkpoint.recent_prose_ref.model_dump(
+                        mode="json"
+                    ),
+                    "future_isolation_attestation": {
+                        "attestation_id": "future-isolation.restored",
+                        "checkpoint_chapter": task.chapter_index - 1,
+                        "canonical_source_ids": [item.chapter_id.root for item in text.chapters],
+                        "evaluator_only_source_ids": [],
+                        "passed": True,
+                        "configuration_fingerprint": (
+                            self._policy.future_isolation_configuration_fingerprint.root
+                        ),
+                    },
+                    "allowed_skills": [item.root for item in self._policy.allowed_skills],
+                    "budgets": self._policy.budgets.model_dump(mode="json"),
+                    "writer_configuration_fingerprint": (
+                        self._policy.writer_configuration_fingerprint.root
+                    ),
+                    "model_configuration_fingerprint": (
+                        self._policy.model_configuration_fingerprint.root
+                    ),
+                }
+                frozen = WritingLoopRequest.model_validate_json(json.dumps(payload))
+            if (
+                frozen.base_commit != task.basis_commit
+                or frozen.snapshot_id != task.basis_snapshot
+                or frozen.task_id != task.task_id
+                or frozen.run_id != task.run_id
+                or frozen.writing_task.target_chapter != task.chapter_index
+                or frozen.writing_task_artifact != checkpoint.writing_task_ref
+                or frozen.accepted_plan.artifact != checkpoint.accepted_plan_ref
+                or frozen.project_profile_artifact != checkpoint.project_profile_ref
+                or frozen.writer_context_package_artifact != checkpoint.writer_context_ref
+                or frozen.recent_prose_context_artifact != checkpoint.recent_prose_ref
+                or frozen.future_isolation_attestation.configuration_fingerprint
+                != self._policy.future_isolation_configuration_fingerprint
+            ):
+                raise ValueError("frozen Writer request belongs to another task")
+            return frozen.model_copy(
+                update={
+                    "attempt_id": task.current_attempt_id,
+                    "resume_checkpoint_ref": checkpoint_ref,
+                }
+            )
         latest = text.chapters[-1].chapter_index if text.chapters else 0
         if task.chapter_index != latest + 1:
             raise ValueError(
@@ -151,22 +268,78 @@ class ProductionWritingRequestFactory:
         )
         if not goals:
             raise ValueError("accepted PlanRoot must contain a target chapter goal")
-        goal_ids = {goal.goal_id for goal in goals}
+        relevant_nodes = chapter_plan_nodes(plan, task.chapter_index)
         obligation_ids = tuple(
-            dict.fromkeys(item for goal in goals for item in goal.obligation_ids)
-        )
-        relevant_nodes = tuple(
-            node
-            for node in plan.nodes
-            if node.plan_node_id in goal_ids
-            or bool(set(node.obligation_ids) & set(obligation_ids))
+            dict.fromkeys(
+                (
+                    *[item for goal in goals for item in goal.obligation_ids],
+                    *[item for node in relevant_nodes for item in node.obligation_ids],
+                )
+            )
         )
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
         chapter_goal = "；".join(summaries)  # noqa: RUF001
+        # Parent outcomes become due at their boundary, not on every child chapter.
+        due_nodes = tuple(node for node in relevant_nodes if node.chapter_end == task.chapter_index)
         required_beats = tuple(
-            dict.fromkeys((*(node.summary for node in relevant_nodes), *summaries))
+            dict.fromkeys(
+                outcome
+                for source in (*goals, *due_nodes)
+                for outcome in (
+                    source.required_outcomes or ((source.summary,) if source in goals else ())
+                )
+            )
         )
-        lock_constraints, lock_forbids = self._future_lock_constraints(world, task.chapter_index)
+        due_obligations = tuple(
+            obligation
+            for obligation in effective_obligations(plan, world)
+            if obligation.due_chapter is not None
+            and obligation.due_chapter <= task.chapter_index
+            and obligation.status.value not in {"resolved", "abandoned"}
+        )
+        required_beats = tuple(
+            dict.fromkeys(
+                (
+                    *required_beats,
+                    *(f"Fulfill due obligation: {item.description}" for item in due_obligations),
+                )
+            )
+        )
+        acceptance_criteria = tuple(
+            dict.fromkeys(
+                criterion
+                for source in (*goals, *due_nodes)
+                for criterion in source.acceptance_criteria
+            )
+        )
+        entry_nodes = tuple(
+            node for node in relevant_nodes if (node.chapter_start or 1) == task.chapter_index
+        )
+        preconditions = tuple(
+            dict.fromkeys(
+                value for source in (*goals, *entry_nodes) for value in source.preconditions
+            )
+        )
+        invariants = tuple(
+            dict.fromkeys(
+                value for source in (*goals, *relevant_nodes) for value in source.invariants
+            )
+        )
+        forbidden = tuple(
+            dict.fromkeys(
+                value for source in (*goals, *relevant_nodes) for value in source.forbidden_outcomes
+            )
+        )
+        parent_constraints = tuple(
+            f"Parent plan {node.plan_node_id.root} "
+            f"(chapters {node.chapter_start}-{node.chapter_end}): "
+            f"{node.summary}. Required by its end: {'; '.join(node.required_outcomes)}"
+            for node in relevant_nodes
+            if node not in due_nodes
+        )
+        lock_constraints, lock_forbids = self._future_lock_constraints(
+            world, task.chapter_index, plan=plan
+        )
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
                 f"writing-contract.{task.task_id.root}",
@@ -181,14 +354,28 @@ class ProductionWritingRequestFactory:
             chapter_goal=chapter_goal,
             scene_goals=required_beats,
             required_beats=required_beats,
+            acceptance_criteria=acceptance_criteria,
             active_plan_obligations=obligation_ids,
+            entry_conditions=preconditions,
             mandatory_constraints=(
                 *self._profile_strings(profile, "mandatory_constraints"),
                 *lock_constraints,
+                *invariants,
+                *dependency_constraints(
+                    plan,
+                    world,
+                    tuple(
+                        item
+                        for source in (*goals, *entry_nodes, *due_nodes)
+                        for item in source.dependency_ids
+                    ),
+                ),
+                *parent_constraints,
             ),
             forbidden_reveals=(
                 *self._profile_strings(profile, "forbidden_reveals"),
                 *lock_forbids,
+                *forbidden,
             ),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
             style_requirements=self._profile_strings(profile, "style_requirements"),
@@ -318,16 +505,21 @@ class ProductionWritingRequestFactory:
         obligations = ", ".join(item.root for item in task.active_plan_obligations) or "none"
         return (
             f"Write chapter {task.target_chapter}. Goal: {task.chapter_goal}. "
-            f"Active obligations: {obligations}."
+            f"Active obligations: {obligations}. "
+            f"Entry conditions: {task.entry_conditions}. "
+            f"Persistent constraints: {task.mandatory_constraints}. "
+            f"Required outcomes: {task.required_beats}. "
+            f"Acceptance: {task.acceptance_criteria}."
         )
 
     @staticmethod
     def _future_lock_constraints(
-        world: WorldRootDocument, chapter_index: int
+        world: WorldRootDocument, chapter_index: int, *, plan: PlanRootDocument | None = None
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         constraints: list[str] = []
         forbids: list[str] = []
-        for obligation in world.obligations:
+        obligations = world.obligations if plan is None else effective_obligations(plan, world)
+        for obligation in obligations:
             if not obligation.is_future_locked(chapter_index):
                 continue
             boundary = obligation.not_before_chapter
@@ -335,9 +527,7 @@ class ProductionWritingRequestFactory:
                 f"{obligation.description}当前只能 SETUP/PROGRESS, 不得 RESOLVE/PAYOFF; "
                 f"最早第{boundary}章。"
             )
-            forbids.append(
-                f"不得在本章完成{obligation.description}最终获得或宣布该长期目标已解决."
-            )
+            forbids.append(f"不得在本章完成{obligation.description}最终获得或宣布该长期目标已解决.")
         return tuple(constraints), tuple(forbids)
 
     @staticmethod
@@ -350,33 +540,17 @@ class ProductionWritingRequestFactory:
         scoped_goals = current_goals or tuple(
             goal for goal in plan.chapter_goals if goal.chapter_index == task.chapter_index
         )
-        goal_ids = {goal.goal_id for goal in scoped_goals}
-        obligation_ids = {item for goal in scoped_goals for item in goal.obligation_ids}
-        by_id = {node.plan_node_id: node for node in plan.nodes}
-        selected: dict[StableId, object] = {}
-        for node in plan.nodes:
-            related = node.plan_node_id in goal_ids or bool(
-                set(node.obligation_ids) & obligation_ids
-            )
-            if not related:
-                continue
-            selected[node.plan_node_id] = node
-            if node.parent_id is not None and node.parent_id in by_id:
-                selected[node.parent_id] = by_id[node.parent_id]
+        selected = {node.plan_node_id for node in chapter_plan_nodes(plan, task.chapter_index)}
         nodes = tuple(
             VisibleOutlineNode(
                 node_id=node.plan_node_id,
                 title=node.title,
-                summary=node.summary,
+                summary=canonical_json_bytes(node.model_dump(mode="json")).decode("utf-8"),
             )
             for node in plan.nodes
             if node.plan_node_id in selected
         )
-        goals = tuple(
-            goal
-            for goal in plan.chapter_goals
-            if task.chapter_index <= goal.chapter_index <= (task.horizon_end or task.chapter_index)
-        )
+        goals = scoped_goals
         source_hash = content_id(
             {
                 "plan": plan.root_hash.root,

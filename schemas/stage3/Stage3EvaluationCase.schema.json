@@ -2206,6 +2206,15 @@
     "WritingTaskContract": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "active_plan_obligations": {
           "default": [],
           "items": {
@@ -2230,6 +2239,15 @@
         },
         "contract_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "entry_conditions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Entry Conditions",
+          "type": "array"
         },
         "forbidden_reveals": {
           "default": [],

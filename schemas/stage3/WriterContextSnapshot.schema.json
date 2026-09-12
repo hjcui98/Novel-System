@@ -1,8 +1,48 @@
 {
   "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "CommitId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
       "type": "string"
     },
     "StableId": {
@@ -98,6 +138,14 @@
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
         },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
         "source_commit": {
           "$ref": "#/$defs/CommitId"
         },
@@ -157,6 +205,14 @@
           ],
           "default": null,
           "title": "Truth Class"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [

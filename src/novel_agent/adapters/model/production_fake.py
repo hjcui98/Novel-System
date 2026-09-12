@@ -12,12 +12,14 @@ import re
 
 from novel_agent.adapters.model.fake import FakeModelEndpoint
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.changes import CuratorV2EvidenceDraft
+from novel_agent.domain.changes import CuratorV2EvidenceDraft, PlannedObligationObservation
 from novel_agent.domain.editorial import (
     CandidateObservationPayload,
     CuratorObservation,
     EditorialVerdict,
     EditorReviewPayload,
+    MemoryGapAssessment,
+    PlanRequirementAssessment,
 )
 from novel_agent.domain.generation import WriterTurnAction, WriterTurnOutput, WriterWorkPlan
 from novel_agent.domain.ids import ArtifactId, StableId
@@ -45,11 +47,12 @@ from novel_agent.domain.world import GraphCandidatePageDraft, GraphCandidatePage
 from novel_agent.services.model_curation import NoOpSemanticVerificationDraft
 
 _HASH = ArtifactId("sha256:" + "1" * 64)
-_DRAFT_TEXT = (
-    "Lin studies the moonlit groove along the tower gate and opens it without "
-    "using her injured arm. She keeps the tower's final secret unsaid while the "
-    "injured-arm constraint stays visible in every motion. "
-) * 20
+_DRAFT_TEXT = " ".join(
+    f"At stair {index}, Lin studies the moonlit groove along the tower gate and opens it "
+    "without using her injured arm. She keeps the tower's final secret unsaid while the "
+    "injured-arm constraint stays visible in every motion."
+    for index in range(20)
+)
 _CHAPTER_GOAL = "Enter the tower while protecting the injured arm."
 
 
@@ -65,7 +68,7 @@ def _catalog_quote(prompt: str) -> str:
     marker = "EVIDENCE_CANDIDATES="
     start = prompt.index(marker) + len(marker)
     end = prompt.index("\n</CURATOR_INPUT>", start)
-    raw_views = json.loads(prompt[start:end])
+    raw_views, _ = json.JSONDecoder().raw_decode(prompt[start:end])
     if not isinstance(raw_views, list):
         raise AssertionError("curator evidence catalog is not a list")
     quotes: list[str] = []
@@ -77,7 +80,7 @@ def _catalog_quote(prompt: str) -> str:
             quotes.append(text)
     if not quotes:
         raise AssertionError("curator prompt has no copyable evidence catalog text")
-    return max(quotes, key=len)
+    return max(quotes, key=len)[:240]
 
 
 def _no_op_verification(prompt: str) -> NoOpSemanticVerificationDraft:
@@ -136,7 +139,40 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                 work_plan_checkpoint="gate opens",
             ).model_dump_json()
         if title == "EditorReviewPayload" or agent.startswith("agent.editor"):
-            return EditorReviewPayload(verdict=EditorialVerdict.PASS).model_dump_json()
+            decoder = json.JSONDecoder()
+            for json_match in re.finditer(r"\{", prompt):
+                try:
+                    payload, _ = decoder.raw_decode(prompt[json_match.start() :])
+                except ValueError:
+                    continue
+                if not isinstance(payload, dict) or "plan_checklist" not in payload:
+                    continue
+                return EditorReviewPayload(
+                    verdict=EditorialVerdict.PASS,
+                    plan_assessments=tuple(
+                        PlanRequirementAssessment(
+                            criterion_id=item["criterion_id"],
+                            satisfied=True,
+                            rationale="Smoke judgment; literary quality is not evaluated.",
+                            evidence_quotes=(payload["draft_text"],),
+                        )
+                        for item in payload["plan_checklist"]
+                    ),
+                    memory_gap_assessments=tuple(
+                        MemoryGapAssessment(
+                            gap=gap,
+                            disposition="avoided",
+                            required_for_plan=False,
+                            draft_evidence_quotes=(payload["draft_text"],),
+                            rationale="Deterministic smoke avoids the missing detail.",
+                        )
+                        for gap in payload["unresolved_memory_gaps"]
+                    ),
+                ).model_dump_json()
+            raise AssertionError("Editor smoke request lacks its content checklist")
+        if request.scheduling_stage in {"need_planner", "planner_coverage_audit"}:
+            # Exercise the existing visible fallback when the smoke has no scripted Need page.
+            return "{}"
         if title == "CandidateObservationPayload":
             match = re.search(r'"draft_id"\s*:\s*"(sha256:[0-9a-f]{64})"', prompt)
             draft_id = ArtifactId(match.group(1)) if match is not None else _HASH
@@ -150,7 +186,18 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
             match = re.search(r"chapter_index=(\d+)", prompt)
             if match is not None:
                 chapter = int(match.group(1))
+            directory_match = re.search(r"^PLANNED_OBLIGATIONS=(.*)$", prompt, re.MULTILINE)
+            directory = json.loads(directory_match.group(1)) if directory_match is not None else []
             return CuratorV2EvidenceDraft(
+                plan_observations=tuple(
+                    PlannedObligationObservation(
+                        obligation_id=StableId(item["obligation_id"]),
+                        status="resolved",
+                        rationale="Scripted smoke observation; no literary judgment.",
+                        evidence_quotes=(_catalog_quote(prompt),),
+                    )
+                    for item in directory
+                ),
                 chapter_index=chapter,
                 operations=(),
                 no_durable_delta_reason="chapter states no new world records",
@@ -230,6 +277,12 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                         "title": "Enter the tower",
                         "summary": _CHAPTER_GOAL,
                         "chapter_index": chapter,
+                        "required_outcomes": [
+                            "Lin opens the tower gate without using her injured arm."
+                        ],
+                        "acceptance_criteria": [
+                            "The prose shows the gate opening and preserves the injury."
+                        ],
                     },
                     provenance=ProposalProvenance.PLANNER_PROPOSED,
                 ),

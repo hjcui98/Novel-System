@@ -29,7 +29,7 @@ from novel_agent.domain.changes import (
 from novel_agent.domain.creative_runtime import AcceptedCandidateBinding, CandidateKind
 from novel_agent.domain.editorial import ReconciliationResult
 from novel_agent.domain.generation import WritingTaskContract
-from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
+from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
     ObligationKind,
     TemporalObligationError,
@@ -63,6 +63,12 @@ from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import (
     canonical_json_bytes,
     plan_root_content_id,
+)
+from novel_agent.services.planning_contracts import (
+    declared_obligations,
+    effective_obligations,
+    milestone_obligations,
+    narrative_requirements,
 )
 from novel_agent.services.text_timeline import SequentialTextRootService
 
@@ -234,6 +240,26 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         )
         incoming_node_ids = {item.plan_node_id for item in incoming_nodes}
         incoming_goal_ids = {item.goal_id for item in incoming_goals}
+        current, superseded = self._supersede_active_scope(
+            current, incoming_nodes, current_chapter=current_chapter
+        )
+        invalidated |= superseded
+        milestones = milestone_obligations(incoming_nodes)
+        incoming_nodes = tuple(
+            node.model_copy(
+                update={
+                    "obligation_ids": tuple(
+                        dict.fromkeys(
+                            (
+                                *node.obligation_ids,
+                                *(item.obligation_id for item in milestone_obligations((node,))),
+                            )
+                        )
+                    )
+                }
+            )
+            for node in incoming_nodes
+        )
         nodes = (
             tuple(
                 item
@@ -253,7 +279,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             if item.goal_id in invalidated or item.goal_id in incoming_goal_ids:
                 continue
             if (
-                trusted_level is PlanLevel.CHAPTER_SET
+                trusted_level in {PlanLevel.CHAPTER_SET, None}
                 and candidate.horizon_start is not None
                 and candidate.horizon_end is not None
                 and candidate.horizon_start <= item.chapter_index <= candidate.horizon_end
@@ -268,13 +294,35 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             horizon_start=candidate.horizon_start,
             horizon_end=candidate.horizon_end,
         )
+        obligations = {item.obligation_id: item for item in current.obligations}
+        obligations.update(
+            {
+                item.obligation_id: item
+                for item in (
+                    *declared_obligations(proposal.items),
+                    *milestones,
+                )
+            }
+        )
+        self._validate_goal_scope(nodes, incoming_goals)
+        typed_node_ids = {node.plan_node_id for node in nodes if node.plan_level is not None}
+        self._validate_goal_scope(
+            nodes,
+            tuple(
+                goal
+                for goal in goals
+                if goal.chapter_index > current_chapter and goal.goal_id in typed_node_ids
+            ),
+        )
         provisional = current.model_copy(
             update={
-                "root_hash": "sha256:" + "0" * 64,
+                "root_hash": ArtifactId("sha256:" + "0" * 64),
                 "nodes": nodes,
+                "obligations": tuple(obligations.values()),
                 "chapter_goals": tuple(sorted(goals, key=lambda item: item.chapter_index)),
             }
         )
+        provisional = PlanRootDocument.model_validate_json(provisional.model_dump_json())
         updated = provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
         root_artifact = self._artifacts.put(
             canonical_json_bytes(updated.model_dump(mode="json")),
@@ -413,6 +461,9 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         chapter_end = (
             raw_end if isinstance(raw_end, int) and not isinstance(raw_end, bool) else None
         )
+        chapter_index = cls._chapter_number(item.payload)
+        if chapter_start is None and chapter_end is None and chapter_index is not None:
+            chapter_start = chapter_end = chapter_index
         return PlanNode(
             plan_node_id=item.item_id,
             node_type=item.kind,
@@ -423,6 +474,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             plan_level=plan_level,
             chapter_start=chapter_start,
             chapter_end=chapter_end,
+            **narrative_requirements(item).model_dump(),
         )
 
     @classmethod
@@ -438,6 +490,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             chapter_index=chapter_index,
             summary=summary,
             obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
+            **narrative_requirements(item).model_dump(),
         )
 
     @staticmethod
@@ -521,6 +574,90 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         return {item for item in roots | descendants if not committed(item)}
 
     @staticmethod
+    def _supersede_active_scope(
+        current: PlanRootDocument, incoming: tuple[PlanNode, ...], *, current_chapter: int
+    ) -> tuple[PlanRootDocument, set[StableId]]:
+        retired: set[StableId] = set()
+        clipped: dict[StableId, PlanNode] = {}
+        incoming_ids = {node.plan_node_id for node in incoming}
+        for old in current.nodes:
+            for new in incoming:
+                if old.plan_level is None or old.plan_level is not new.plan_level:
+                    continue
+                overlap = old.plan_level is PlanLevel.STORY or (
+                    old.chapter_start is not None
+                    and old.chapter_end is not None
+                    and new.chapter_start is not None
+                    and new.chapter_end is not None
+                    and old.chapter_start <= new.chapter_end
+                    and new.chapter_start <= old.chapter_end
+                )
+                if not overlap or (
+                    old.chapter_end is not None and old.chapter_end <= current_chapter
+                ):
+                    continue
+                if (
+                    old.plan_node_id not in incoming_ids
+                    and old.chapter_start is not None
+                    and old.chapter_start <= current_chapter
+                ):
+                    clipped[old.plan_node_id] = old.model_copy(
+                        update={"chapter_end": current_chapter}
+                    )
+                else:
+                    retired.add(old.plan_node_id)
+        # Future children and dependants cannot retain references to a superseded scope.
+        changed = True
+        while changed:
+            changed = False
+            for node in current.nodes:
+                if node.plan_node_id in retired:
+                    continue
+                is_future = node.chapter_end is None or node.chapter_end > current_chapter
+                clipped_parent = node.parent_id in clipped and is_future
+                if is_future and (
+                    node.parent_id in retired
+                    or clipped_parent
+                    or set(node.dependency_ids) & retired
+                ):
+                    retired.add(node.plan_node_id)
+                    changed = True
+        removed_milestones = {
+            item.obligation_id
+            for item in milestone_obligations(
+                tuple(
+                    node
+                    for node in current.nodes
+                    if node.plan_node_id in retired or node.plan_node_id in clipped
+                )
+            )
+        }
+        return current.model_copy(
+            update={
+                "nodes": tuple(clipped.get(node.plan_node_id, node) for node in current.nodes),
+                "obligations": tuple(
+                    item
+                    for item in current.obligations
+                    if item.obligation_id not in removed_milestones
+                ),
+            }
+        ), retired
+
+    @staticmethod
+    def _validate_goal_scope(nodes: tuple[PlanNode, ...], goals: tuple[ChapterGoal, ...]) -> None:
+        by_id = {node.plan_node_id: node for node in nodes}
+        for goal in goals:
+            node = by_id.get(goal.goal_id)
+            if node is None:
+                raise CandidateMaterializationError("chapter goal must reference its plan node")
+            if node.plan_level is not None and (
+                node.chapter_start is None
+                or node.chapter_end is None
+                or not node.chapter_start <= goal.chapter_index <= node.chapter_end
+            ):
+                raise CandidateMaterializationError("chapter goal lies outside its own node range")
+
+    @staticmethod
     def _validate_parent_scope(
         nodes: tuple[PlanNode, ...],
         *,
@@ -553,6 +690,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     raise CandidateMaterializationError("child plan scope exceeds parent scope")
                 continue
             if node.parent_id is None:
+                if node.plan_level is PlanLevel.CHAPTER_SET and any(
+                    item.plan_level is PlanLevel.STORY for item in nodes
+                ):
+                    raise CandidateMaterializationError(
+                        "CHAPTER_SET nodes require an ARC_VOLUME parent"
+                    )
                 continue
             parent = by_id.get(node.parent_id)
             if parent is None:
@@ -565,6 +708,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             if parent.chapter_start is None or parent.chapter_end is None:
                 continue
             if node.chapter_start is None or node.chapter_end is None:
+                if node.plan_level is not None:
+                    raise CandidateMaterializationError("bounded parent requires a bounded child")
                 continue
             if node.chapter_start < parent.chapter_start or node.chapter_end > parent.chapter_end:
                 raise CandidateMaterializationError("child plan scope exceeds parent scope")
@@ -602,7 +747,23 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         world = self._read(base.world_root, WorldRootDocument)
         text = self._read(base.text_root, TextRootDocument)
         current_chapter = text.chapters[-1].chapter_index if text.chapters else 0
-        by_id = {item.obligation_id: item for item in world.obligations}
+        obligations = effective_obligations(current, world)
+        by_id = {item.obligation_id: item for item in obligations}
+        for declared in declared_obligations(proposal.items):
+            previous = by_id.get(declared.obligation_id)
+            if (
+                previous is not None
+                and previous.not_before_chapter is not None
+                and (
+                    declared.not_before_chapter is None
+                    or declared.not_before_chapter < previous.not_before_chapter
+                )
+            ):
+                raise CandidateMaterializationError(
+                    "Plan refinement cannot weaken an accepted time lock"
+                )
+            by_id[declared.obligation_id] = declared
+        obligations = tuple(by_id.values())
         try:
             for item in proposal.items:
                 self._reject_item_without_required_window(item)
@@ -624,7 +785,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         raise TemporalObligationError(
                             "future-locked obligation cannot be resolved in this planning scope"
                         )
-            for obligation in world.obligations:
+            for obligation in obligations:
                 for goal in incoming_goals:
                     if obligation.obligation_id not in goal.obligation_ids:
                         continue

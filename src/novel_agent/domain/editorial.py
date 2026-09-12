@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
@@ -17,6 +17,7 @@ from novel_agent.domain.generation import (
     MemoryHintChangeKind,
     RewriteDirective,
     RewriteScope,
+    WriterContextItem,
     WritingTaskContract,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
@@ -32,6 +33,9 @@ if TYPE_CHECKING:
 
     class _EditorContext(Protocol):
         @property
+        def items(self) -> tuple[WriterContextItem, ...]: ...
+
+        @property
         def context_id(self) -> StableId: ...
 
         @property
@@ -42,6 +46,9 @@ if TYPE_CHECKING:
 
         @property
         def task_contract(self) -> str: ...
+
+        @property
+        def unresolved_gaps(self) -> tuple[str, ...]: ...
 
     type WriterContextSnapshot = _EditorContext
 else:
@@ -156,6 +163,8 @@ class EditorialRepairHistoryEntry(DomainModel):
     draft_id: ArtifactId
     verdict: EditorialVerdict
     repaired_draft_id: ArtifactId | None = None
+    issue_summaries: tuple[str, ...] = ()
+    report_artifact: ArtifactRef | None = None
 
 
 class EditorialReviewInput(DomainModel):
@@ -165,6 +174,17 @@ class EditorialReviewInput(DomainModel):
     writing_task: WritingTaskContract
     context: WriterContextSnapshot
     prior_repair_history: tuple[EditorialRepairHistoryEntry, ...] = ()
+    repair_chain: tuple[RepairedDraft, ...] = ()
+
+    @property
+    def current_draft_id(self) -> ArtifactId:
+        return self.repair_chain[-1].draft_id if self.repair_chain else self.draft.draft_id
+
+    @property
+    def current_text_artifact(self) -> ArtifactRef:
+        return (
+            self.repair_chain[-1].text_artifact if self.repair_chain else self.draft.text_artifact
+        )
 
     @model_validator(mode="after")
     def validate_same_candidate_task(self) -> EditorialReviewInput:
@@ -177,8 +197,15 @@ class EditorialReviewInput(DomainModel):
             or basis.context_id != self.context.context_id
         ):
             raise ValueError("Editor Draft and Context belong to different snapshots")
+        parent_id = self.draft.draft_id
+        for repair in self.repair_chain:
+            if repair.parent_draft_id != parent_id:
+                raise ValueError("Editor repair chain is not contiguous")
+            if repair.editor_receipt.base_commit != self.context.base_commit:
+                raise ValueError("Editor repair chain belongs to another basis")
+            parent_id = repair.draft_id
         draft_ids = tuple(item.draft_id for item in self.prior_repair_history)
-        if any(item_id == self.draft.draft_id for item_id in draft_ids):
+        if any(item_id == self.current_draft_id for item_id in draft_ids):
             raise ValueError("Editor repair history cannot contain the current Draft")
         return self
 
@@ -196,6 +223,37 @@ class EditorialIssueDraft(DomainModel):
     structural: bool = False
 
 
+class PlanRequirementAssessment(DomainModel):
+    """Independent Editor judgment bound by the host to a named criterion and actual prose."""
+
+    criterion_id: _NonEmptyText
+    satisfied: bool
+    rationale: _NonEmptyText
+    evidence_quotes: tuple[_NonEmptyText, ...] = ()
+
+    @field_validator("evidence_quotes", mode="before")
+    @classmethod
+    def tuple_quotes(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class MemoryGapAssessment(DomainModel):
+    affected_criterion_ids: tuple[str, ...] = ()
+    required_for_plan: bool | None = None
+    draft_evidence_quotes: tuple[_NonEmptyText, ...] = ()
+    gap: _NonEmptyText
+    disposition: Literal["avoided", "supported", "blocking"]
+    rationale: _NonEmptyText
+    evidence_quotes: tuple[_NonEmptyText, ...] = ()
+
+    @field_validator(
+        "evidence_quotes", "draft_evidence_quotes", "affected_criterion_ids", mode="before"
+    )
+    @classmethod
+    def tuple_quotes(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
 class EditorReviewPayload(DomainModel):
     """Structured response accepted from the Editor REVIEW model call."""
 
@@ -207,6 +265,8 @@ class EditorReviewPayload(DomainModel):
     rewrite_preserve_requirements: tuple[_NonEmptyText, ...] = ()
     planner_replan_required: bool = False
     unresolved_needs: tuple[_NonEmptyText, ...] = ()
+    plan_assessments: tuple[PlanRequirementAssessment, ...] = ()
+    memory_gap_assessments: tuple[MemoryGapAssessment, ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -223,6 +283,8 @@ class EditorReviewPayload(DomainModel):
             "rewrite_targets",
             "rewrite_preserve_requirements",
             "unresolved_needs",
+            "plan_assessments",
+            "memory_gap_assessments",
         ):
             sequence = raw.get(field)
             if isinstance(sequence, list):
@@ -371,6 +433,8 @@ class EditorialReport(DomainModel):
     rewrite_directive: RewriteDirective | None = None
     planner_replan_required: bool = False
     unresolved_needs: tuple[_NonEmptyText, ...] = ()
+    plan_assessments: tuple[PlanRequirementAssessment, ...] = ()
+    memory_gap_assessments: tuple[MemoryGapAssessment, ...] = ()
     receipt: AgentExecutionReceipt
     model_call_record: ModelCallRecord | None = None
     created_at: datetime

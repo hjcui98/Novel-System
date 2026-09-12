@@ -511,7 +511,12 @@ class CreativeRuntimeService:
                         "current_attempt_id": attempt.attempt_id,
                     }
                 )
-                writing_request = self._writing_request_factory(claimed_task)
+                writing_request = cast(
+                    WritingLoopRequest,
+                    await self._await_with_heartbeat(
+                        fence, asyncio.to_thread(self._writing_request_factory, claimed_task)
+                    ),
+                )
                 if (
                     writing_request.run_id != task.run_id
                     or writing_request.task_id != task.task_id
@@ -605,6 +610,92 @@ class CreativeRuntimeService:
                     waiting,
                     CreativeRunTerminal.WAITING_DRAFT_ACCEPTANCE,
                     "draft_candidate_ready",
+                )
+            if writing_result.status is WritingLoopTerminalStatus.PLANNER_REPLAN_REQUIRED:
+                policy = self._policy_resolver(task.policy_hash)
+                previous_replans = tuple(
+                    item
+                    for item in (
+                        self._task_reader.list_run(task.run_id)
+                        if self._task_reader is not None
+                        else ()
+                    )
+                    if item.kind is TaskKind.PLAN_CANDIDATE
+                    and item.chapter_index == task.chapter_index - 1
+                    and any(
+                        ref.media_type == "application/vnd.novel-agent.editor-plan-feedback+json"
+                        for ref in item.input_artifact_refs
+                    )
+                )
+                if (
+                    self._task_reader is None
+                    or task.basis_snapshot is None
+                    or len(previous_replans) >= policy.max_editor_replans_per_chapter
+                ):
+                    settled = self._commands.settle_attempt(
+                        fence,
+                        outcome=AttemptOutcome.SUSPENDED,
+                        terminal_status=TaskStatus.BUDGET_REVIEW,
+                        artifact_refs=result_artifacts,
+                        failure_class=FailureClass.BUDGET_EXHAUSTED,
+                    )
+                    return self._result(
+                        settled, CreativeRunTerminal.BUDGET_REVIEW, "editor_replan_budget_exhausted"
+                    )
+                editor_report = writing_result.editorial_reports[-1]
+                feedback = self._artifacts.put(
+                    canonical_json_bytes(
+                        {
+                            "source": "independent_editor_revision_request",
+                            "authority": "subordinate_to_author_intent_and_accepted_parent_plan",
+                            "chapter_index": task.chapter_index,
+                            "base_commit": task.basis_commit.root,
+                            "report_id": editor_report.report_id.root,
+                            "draft_id": editor_report.draft_id.root,
+                            "issues": [
+                                issue.model_dump(mode="json") for issue in editor_report.issues
+                            ],
+                            "instructions": (
+                                editor_report.rewrite_directive.instructions
+                                if editor_report.rewrite_directive is not None
+                                else ()
+                            ),
+                        }
+                    ),
+                    "application/vnd.novel-agent.editor-plan-feedback+json",
+                    SchemaVersion("1.0.0"),
+                )
+                horizon_end = self._clip_to_volume(
+                    task.basis_commit,
+                    task.chapter_index,
+                    task.horizon_end or task.chapter_index,
+                )
+                predecessor = task.model_copy(update={"chapter_index": task.chapter_index - 1})
+                successor = self._plan_candidate_successor(
+                    predecessor,
+                    task.basis_snapshot,
+                    plan_level=PlanLevel.CHAPTER_SET,
+                    horizon_start=task.chapter_index,
+                    horizon_end=horizon_end,
+                    generation=max(
+                        task.planning_generation + 1,
+                        self._next_planning_generation(task, PlanLevel.CHAPTER_SET),
+                    ),
+                )
+                successor = successor.model_copy(
+                    update={
+                        "input_artifact_refs": (*successor.input_artifact_refs, feedback),
+                    }
+                )
+                self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.SUCCEEDED,
+                    terminal_status=TaskStatus.SUCCEEDED,
+                    artifact_refs=(*result_artifacts, feedback),
+                    successor_tasks=(successor,),
+                )
+                return self._result(
+                    successor, CreativeRunTerminal.PROGRESSED, "editor_requested_chapter_replan"
                 )
             if writing_result.status is WritingLoopTerminalStatus.YIELDED:
                 settled = self._commands.settle_attempt(
@@ -951,7 +1042,9 @@ class CreativeRuntimeService:
                         fence,
                         outcome=AttemptOutcome.SUCCEEDED,
                         terminal_status=TaskStatus.SUCCEEDED,
-                        successor_tasks=(successor, lookahead),
+                        successor_tasks=(successor,)
+                        if lookahead is None
+                        else (successor, lookahead),
                     )
                     return self._result(
                         successor,
@@ -1637,6 +1730,7 @@ class CreativeRuntimeService:
                 task.target_chapters,
                 task.chapter_index + policy.planning_horizon,
             )
+            horizon_end = self._clip_to_volume(task.basis_commit, horizon_start, horizon_end)
             return self._plan_candidate_successor(
                 task,
                 snapshot_id,
@@ -1697,7 +1791,8 @@ class CreativeRuntimeService:
         return TaskRecord(
             task_id=TaskId(
                 bounded_runtime_identity(
-                    f"{previous.run_id.root}.draft.{chapter_index}",
+                    f"{previous.run_id.root}.draft.{chapter_index}"
+                    + (f".g{previous.planning_generation}" if previous.planning_generation else ""),
                     f"draft.{previous.project_id.root}.{previous.basis_commit.root}.{chapter_index}",
                     f"draft.{previous.basis_commit.root}.{chapter_index}",
                 ).root
@@ -1719,6 +1814,7 @@ class CreativeRuntimeService:
             target_chapters=previous.target_chapters,
             horizon_start=previous.horizon_start,
             horizon_end=previous.horizon_end,
+            planning_generation=previous.planning_generation,
         )
 
     def _next_planning_after_horizon(
@@ -1788,6 +1884,23 @@ class CreativeRuntimeService:
         ]
         return max(generations) + 1 if generations else 0
 
+    def _clip_to_volume(self, commit_id: CommitId, start: int, end: int) -> int:
+        volumes, story_present = self._plan_shape_for_commit(commit_id)
+        covering = tuple(
+            node
+            for node in volumes
+            if node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= start <= node.chapter_end
+        )
+        if len(covering) > 1:
+            raise ValueError("planning window belongs to overlapping accepted volumes")
+        if covering:
+            return min(end, covering[0].chapter_end or end)
+        if volumes or story_present:
+            raise ValueError("planning window has no accepted parent volume")
+        return end
+
     def _rolling_plan_task(
         self,
         previous: TaskRecord,
@@ -1801,6 +1914,8 @@ class CreativeRuntimeService:
             previous.chapter_index + policy.planning_horizon,
         )
         plan_level = previous.plan_level or PlanLevel.CHAPTER_SET
+        if plan_level is PlanLevel.CHAPTER_SET:
+            horizon_end = self._clip_to_volume(previous.basis_commit, horizon_start, horizon_end)
         return TaskRecord(
             task_id=self._plan_task_id(
                 previous.run_id,
@@ -1856,10 +1971,21 @@ class CreativeRuntimeService:
         *,
         protected_chapter: int,
         policy: CreativeRunPolicy,
-    ) -> TaskRecord:
+    ) -> TaskRecord | None:
         inputs = self._planning_inputs(previous)
         horizon_start = protected_chapter + 1
-        horizon_end = min(previous.target_chapters, horizon_start + policy.lookahead_horizon - 1)
+        volumes, story_present = self._plan_shape_for_commit(previous.basis_commit)
+        if (
+            self._next_plan_level_after_horizon(volumes, horizon_start, story_present=story_present)
+            is PlanLevel.ARC_VOLUME
+        ):
+            # The normal foreground successor will establish the next volume first.
+            return None
+        horizon_end = self._clip_to_volume(
+            previous.basis_commit,
+            horizon_start,
+            min(previous.target_chapters, horizon_start + policy.lookahead_horizon - 1),
+        )
         return TaskRecord(
             task_id=TaskId(
                 bounded_runtime_identity(
@@ -1888,6 +2014,7 @@ class CreativeRuntimeService:
             horizon_start=horizon_start,
             horizon_end=horizon_end,
             protected_chapter_index=protected_chapter,
+            plan_level=PlanLevel.CHAPTER_SET,
         )
 
     def _revalidate_lookahead(self, trigger: TaskRecord) -> CreativeRunResult | None:
@@ -1929,15 +2056,24 @@ class CreativeRuntimeService:
             return None
         candidate = self._candidate_for_task(waiting)
         assert waiting.horizon_start is not None and waiting.horizon_end is not None
-        if projection.affects_future_plan is False:
-            outcome = LookaheadRevalidationOutcome.PROMOTED
-            reason = "accepted Draft reported no future-Plan-affecting change"
-        elif projection.affects_future_plan is True:
-            outcome = LookaheadRevalidationOutcome.REPLAN_REQUIRED
-            reason = "accepted Draft changed future-Plan-relevant state"
-        else:
-            outcome = LookaheadRevalidationOutcome.SUPERSEDED
-            reason = "Draft impact was unavailable; stale lookahead cannot be promoted"
+        original = self._commits.load_manifest(waiting.basis_commit)
+        current = self._commits.load_manifest(current_commit)
+        # Planning can read any accepted prose, World fact and parent requirement. Until a
+        # narrower complete read-set is recorded, these roots are its dependency superset.
+        dependency_roots = ("text_root", "world_root", "plan_root", "project_profile_root")
+        changed_roots = tuple(
+            name for name in dependency_roots if getattr(original, name) != getattr(current, name)
+        )
+        outcome = (
+            LookaheadRevalidationOutcome.REPLAN_REQUIRED
+            if changed_roots
+            else LookaheadRevalidationOutcome.PROMOTED
+        )
+        reason = (
+            "committed planning dependencies changed: " + ", ".join(changed_roots)
+            if changed_roots
+            else "all committed planning dependency roots remain identical"
+        )
         receipt = LookaheadRevalidationReceipt(
             receipt_id=StableId(
                 "lookahead-revalidation."
@@ -1958,7 +2094,9 @@ class CreativeRuntimeService:
             protected_chapter_index=protected,
             horizon_start=waiting.horizon_start,
             horizon_end=waiting.horizon_end,
-            affects_future_plan=projection.affects_future_plan,
+            affects_future_plan=bool(changed_roots),
+            checked_dependency_roots=dependency_roots,
+            changed_dependency_roots=changed_roots,
             outcome=outcome,
             reason=reason,
         )
@@ -1999,6 +2137,28 @@ class CreativeRuntimeService:
             )
         parent_id = waiting.dependency_task_ids[0]
         parent = next(task for task in tasks if task.task_id == parent_id)
+        volumes, story_present = self._plan_shape_for_commit(current_commit)
+        next_level = self._next_plan_level_after_horizon(
+            volumes,
+            waiting.horizon_start,
+            story_present=story_present,
+        )
+        if next_level is PlanLevel.ARC_VOLUME:
+            replanned = self._plan_candidate_successor(
+                projection,
+                snapshot.snapshot_id,
+                plan_level=PlanLevel.ARC_VOLUME,
+                horizon_start=None,
+                horizon_end=None,
+                generation=self._next_planning_generation(projection, PlanLevel.ARC_VOLUME),
+            )
+            self._commands.create_task(replanned)
+            return self._result(
+                replanned, CreativeRunTerminal.PROGRESSED, "lookahead_requires_parent_volume"
+            )
+        horizon_end = self._clip_to_volume(
+            current_commit, waiting.horizon_start, waiting.horizon_end
+        )
         replanned = TaskRecord(
             task_id=TaskId(
                 bounded_runtime_identity(
@@ -2024,7 +2184,9 @@ class CreativeRuntimeService:
             chapter_index=protected,
             target_chapters=waiting.target_chapters,
             horizon_start=waiting.horizon_start,
-            horizon_end=waiting.horizon_end,
+            horizon_end=horizon_end,
+            plan_level=PlanLevel.CHAPTER_SET,
+            planning_generation=waiting.planning_generation + 1,
             protected_chapter_index=protected,
         )
         self._commands.create_task(replanned)

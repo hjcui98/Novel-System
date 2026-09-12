@@ -2214,7 +2214,22 @@ class RuntimeCommandService:
             if successor.task_id.root in seen_ids:
                 raise RuntimeCommandConflictError("successor task identity is duplicated")
             seen_ids.add(successor.task_id.root)
-            if successor.kind not in allowed_kinds:
+            editor_replan = (
+                predecessor.kind is TaskKind.DRAFT_CANDIDATE
+                and successor.kind is TaskKind.PLAN_CANDIDATE
+                and successor.plan_level is PlanLevel.CHAPTER_SET
+                and successor.purpose is TaskPurpose.NORMAL
+                and successor.horizon_start == predecessor.chapter_index
+                and successor.chapter_index == predecessor.chapter_index - 1
+                and successor.planning_generation > predecessor.planning_generation
+                and successor.basis_snapshot == predecessor.basis_snapshot
+                and any(
+                    ref.media_type == "application/vnd.novel-agent.editor-plan-feedback+json"
+                    and ref in predecessor.terminal_artifact_refs
+                    for ref in successor.input_artifact_refs
+                )
+            )
+            if successor.kind not in allowed_kinds and not editor_replan:
                 raise RuntimeCommandConflictError("successor skips the fixed runtime topology")
             if (
                 successor.run_id != predecessor.run_id

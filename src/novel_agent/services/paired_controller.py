@@ -96,6 +96,8 @@ class PairedMemoryControllerRunner:
         freshness_check: Callable[[MemoryResolutionRequest], bool],
         route_plans: tuple[RoutePlan, ...] = (),
         reranker: RerankService | None = None,
+        route_plan_factory: Callable[[MemoryResolutionRequest], tuple[RoutePlan, ...]]
+        | None = None,
     ) -> None:
         self._backend = backend
         self._controller = controller
@@ -104,6 +106,7 @@ class PairedMemoryControllerRunner:
         self._freshness_check = freshness_check
         self._route_plans = {plan.need_id: plan for plan in route_plans}
         self._reranker = reranker
+        self._route_plan_factory = route_plan_factory
         if len(self._route_plans) != len(route_plans):
             raise ValueError("paired runner route plans must have unique memory need ids")
 
@@ -125,6 +128,8 @@ class PairedMemoryControllerRunner:
         comparison_basis_fingerprint: ArtifactId,
         route_plans: tuple[RoutePlan, ...] = (),
         reranker: RerankService | None = None,
+        route_plan_factory: Callable[[MemoryResolutionRequest], tuple[RoutePlan, ...]]
+        | None = None,
     ) -> PairedMemoryControllerRunner:
         active_channels_by_need = {
             plan.need_id: tuple(
@@ -167,6 +172,7 @@ class PairedMemoryControllerRunner:
             freshness_check,
             route_plans,
             reranker,
+            route_plan_factory,
         )
 
     def run(
@@ -283,14 +289,21 @@ class PairedMemoryControllerRunner:
     ) -> PairedContextArmResult:
         budgeted = _BudgetedBackend(self._backend, request.retrieval_budget.max_tool_calls)
         fresh = self._freshness_check(request)
+        route_plans = self._route_plans
+        if fresh and self._route_plan_factory is not None:
+            resolved = self._route_plan_factory(request)
+            route_plans = {plan.need_id: plan for plan in resolved}
+            if len(route_plans) != len(resolved):
+                raise ValueError("request route plans must have unique Need ids")
         traces = (
             self._retrieve_fair_registered_routes(
                 budgeted,
                 request.initial_memory_needs,
+                route_plans=route_plans,
                 allow_future_plan=request.allow_future_plan,
                 per_channel_limit=request.retrieval_budget.max_candidates,
             )
-            if fresh and self._route_plans
+            if fresh and route_plans
             else self._retrieve_legacy_routes(
                 budgeted,
                 request.initial_memory_needs,
@@ -376,6 +389,7 @@ class PairedMemoryControllerRunner:
                     FusionService(),
                     per_channel_limit=per_channel_limit,
                     fused_limit=per_channel_limit,
+                    reranker=self._reranker,
                 ).retrieve(need)
                 allocated = backend.call_count - before
                 trace = trace.model_copy(
@@ -393,10 +407,11 @@ class PairedMemoryControllerRunner:
         backend: _BudgetedBackend,
         needs: tuple[Stage1MemoryNeed, ...],
         *,
+        route_plans: dict[StableId, RoutePlan],
         allow_future_plan: bool,
         per_channel_limit: int,
     ) -> list[tuple[Stage1MemoryNeed, RetrievalTrace]]:
-        """Execute registered route calls with deterministic max-min fairness."""
+        """Execute request-local route calls with deterministic max-min fairness."""
 
         plans: dict[StableId, RoutePlan] = {}
         results: dict[StableId, dict[RetrievalChannel, tuple[ChannelHit, ...]]] = {}
@@ -408,7 +423,7 @@ class PairedMemoryControllerRunner:
             if need.query_intent in PLAN_INTENTS and not allow_future_plan:
                 blocked[need.need_id] = NeedExecutionStatus.NOT_EXECUTED_SCOPE_BLOCKED
                 continue
-            plan = self._route_plans.get(need.need_id)
+            plan = route_plans.get(need.need_id)
             if plan is None:
                 raise ValueError("registered-route run has no RoutePlan for an actual Need")
             if plan.base_commit != need.base_commit:
@@ -545,7 +560,7 @@ class PairedMemoryControllerRunner:
                 trace = self._empty_trace(
                     need,
                     status=blocked[need.need_id],
-                    plan=self._route_plans.get(need.need_id),
+                    plan=route_plans.get(need.need_id),
                 )
             elif not call_counts[need.need_id] and backend.exhausted:
                 trace = self._empty_trace(

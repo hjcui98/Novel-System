@@ -3,6 +3,9 @@
 import asyncio
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -137,6 +140,21 @@ class StructuredValidationAttempt:
     error_detail: str
 
 
+class ModelCallSliceExhausted(Exception):
+    """A resumable invocation has no remaining provider-call allowance."""
+
+
+@dataclass
+class ModelCallSliceBudget:
+    limit: int
+    calls_started: int = 0
+
+
+_MODEL_CALL_SLICE: ContextVar[ModelCallSliceBudget | None] = ContextVar(
+    "model_call_slice", default=None
+)
+
+
 class ModelGateway:
     def __init__(
         self,
@@ -174,6 +192,7 @@ class ModelGateway:
         self.budget_results: dict[str, EffectiveBudgetResult] = {}
         self._records_lock = threading.Lock()
         self._ledger_lock = threading.Lock()
+        self._slice_budget = _MODEL_CALL_SLICE
 
     @property
     def call_ledger(self) -> ModelCallLedgerPort:
@@ -345,16 +364,69 @@ class ModelGateway:
             )
         return budget
 
+    @contextmanager
+    def model_call_budget(self, limit: int) -> Iterator[ModelCallSliceBudget]:
+        budget = ModelCallSliceBudget(limit=max(0, limit))
+        token = self._slice_budget.set(budget)
+        try:
+            yield budget
+        finally:
+            self._slice_budget.reset(token)
+
+    def _completed_result(self, request: ModelRequest) -> ModelTextResult | None:
+        entry = self._call_ledger.load(request.request_id)
+        if entry is None or entry.status not in {
+            ModelCallLedgerStatus.COMPLETED,
+            ModelCallLedgerStatus.VALIDATION_REJECTED,
+        }:
+            return None
+        if entry.request_hash != model_request_hash(request):
+            raise ModelCallLedgerCollision(
+                "completed request identity has different immutable content"
+            )
+        if entry.call_record is None:
+            raise RawResponseReparseError("completed request lacks its call record")
+        raw = self.raw_responses.get(request.request_id.root)
+        if entry.raw_artifact_ref is not None and self._raw_artifacts is not None:
+            envelope = RawModelResponseArtifact.model_validate_json(
+                self._raw_artifacts.read_verified(entry.raw_artifact_ref), strict=True
+            )
+            if (
+                envelope.request_hash != entry.request_hash
+                or envelope.request_id != request.request_id
+                or envelope.run_id != request.run_id
+                or envelope.task_id != request.task_id
+                or envelope.call_record != entry.call_record
+            ):
+                raise RawResponseReparseError("retained response does not match completed request")
+            raw = envelope.raw_response_text
+        if raw is None or sha256_id(raw.encode("utf-8")) != entry.raw_response_hash:
+            raise RawResponseReparseError(
+                "completed request raw response is unavailable or corrupted"
+            )
+        with self._records_lock:
+            self.raw_responses[request.request_id.root] = raw
+            if not any(item.request_id == request.request_id for item in self.call_records):
+                self.call_records.append(entry.call_record)
+        return ModelTextResult(text=raw, call_record=entry.call_record)
+
     async def generate_text(self, request: ModelRequest) -> ModelTextResult:
         self._validate_purpose(request)
         endpoint = self._endpoints.get(request.model_role)
         if endpoint is None:
             raise ModelRoutingError(f"no endpoint configured for {request.model_role.value}")
-        if self._forbid_external_calls and endpoint.adapter.is_external:
-            raise ModelCallForbiddenError("external model calls are disabled for this run")
-
         unbound_request = request
         request, budget = self._bind_budget(request, endpoint)
+        completed = self._completed_result(request)
+        if completed is not None:
+            return completed
+        if self._forbid_external_calls and endpoint.adapter.is_external:
+            raise ModelCallForbiddenError("external model calls are disabled for this run")
+        slice_budget = self._slice_budget.get()
+        if slice_budget is not None:
+            if slice_budget.calls_started >= slice_budget.limit:
+                raise ModelCallSliceExhausted("post-Draft provider-call allowance exhausted")
+            slice_budget.calls_started += 1
         scheduling_info = self._scheduling_info(request, endpoint.endpoint_name, budget)
         lease = None
         if self._admission_controller is not None:
@@ -382,6 +454,19 @@ class ModelGateway:
                         reasoning_included_in_completion_tokens=(
                             endpoint.reasoning_included_in_completion_tokens
                         ),
+                    )
+                completed = self._completed_result(request)
+                if completed is not None:
+                    if lease is not None:
+                        lease.release()
+                        lease = None
+                    return completed
+                if (
+                    requested.provider_sent_at is not None
+                    and requested.status is ModelCallLedgerStatus.REQUESTED
+                ):
+                    raise ModelCallUncertainError(
+                        "request has already been sent; reconcile before retry"
                     )
                 if requested.status is ModelCallLedgerStatus.UNCERTAIN:
                     raise ModelCallUncertainError(
@@ -814,7 +899,13 @@ class ModelGateway:
         try:
             return await asyncio.shield(completed)
         except asyncio.CancelledError:
-            completed.cancel()
+            if completed.done() and not completed.cancelled():
+                # Cancellation can win after delivery but before shield returns.
+                # The delivered lease still belongs to this waiter.
+                if completed.exception() is None:
+                    completed.result().release()
+            else:
+                completed.cancel()
             controller.abandon_request(scheduling_info.request_id)
             raise
 

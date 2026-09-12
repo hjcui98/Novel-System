@@ -374,6 +374,14 @@
       },
       "title": "Questions",
       "type": "array"
+    },
+    "selected_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Skill Ids",
+      "type": "array"
     }
   },
   "required": [

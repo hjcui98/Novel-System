@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -30,7 +31,7 @@ from novel_agent.prompts.registry import content_hash
 from novel_agent.services.agent_context import render_context
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes
-from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_gateway import ModelCallSliceBudget, ModelGateway
 from novel_agent.skills.registry import SkillRegistry
 
 WRITER_COGNITION_SCHEMA_VERSION = SchemaVersion("1.0.0")
@@ -190,6 +191,16 @@ class WriterCognitionService:
         root = package_root or Path(__file__).parents[1]
         self._prompt_root = root / "prompts"
 
+    def model_call_budget(self, limit: int) -> AbstractContextManager[ModelCallSliceBudget]:
+        return self._gateway.model_call_budget(limit)
+
+    def model_calls_for(self, request: WritingLoopRequest) -> tuple[ModelCallRecord, ...]:
+        return tuple(
+            entry.call_record
+            for entry in self._gateway.call_ledger.list_for_run(request.run_id)
+            if entry.task_id == request.task_id and entry.call_record is not None
+        )
+
     @staticmethod
     def skill_contracts(package_root: Path | None = None) -> tuple[SkillContractRef, ...]:
         root = package_root or Path(__file__).parents[1]
@@ -221,8 +232,24 @@ class WriterCognitionService:
         if set(catalog) != allowed:
             missing = sorted(item.root for item in allowed - set(catalog))
             raise WriterCognitionError(f"unregistered Writer Skill allowlist: {missing}")
+        core_id = StableId(
+            {
+                AgentMode.DRAFT: "skill.scene-composition",
+                AgentMode.CONTINUE: "skill.continuation",
+                AgentMode.MAJOR_REWRITE: "skill.major-rewrite",
+            }[request.mode]
+        )
+        mode_cores = {
+            StableId(value)
+            for value in ("skill.scene-composition", "skill.continuation", "skill.major-rewrite")
+        }
+        if core_id not in allowed:
+            raise WriterCognitionError(f"Writer mode requires {core_id.root}")
+        applicable = allowed - (mode_cores - {core_id})
         skill_payload = []
         for skill_id in request.allowed_skills:
+            if skill_id not in applicable:
+                continue
             contract = catalog[skill_id]
             card = self._skills.describe(skill_id, contract.version)
             skill_payload.append(f'<SKILL_CARD id="{skill_id.root}">\n{card}\n</SKILL_CARD>')
@@ -235,7 +262,11 @@ class WriterCognitionService:
                 "writer_context_ref": request.writer_context_package_artifact.model_dump(
                     mode="json"
                 ),
-                "allowed_skill_ids": [item.root for item in request.allowed_skills],
+                "allowed_skill_ids": [
+                    item.root for item in request.allowed_skills if item in applicable
+                ],
+                "required_skill_ids": [core_id.root],
+                "maximum_selected_skills": 4,
                 "context_hash": view.context_hash.root,
                 # The work plan must be conditioned on the same bounded View as
                 # the Writer turn, especially the previous chapter and typed gaps.
@@ -286,9 +317,28 @@ class WriterCognitionService:
                 "writer_context_ref": request.writer_context_package_artifact,
             }
         )
+        if not set(work_plan.selected_skill_ids) <= applicable:
+            raise WriterCognitionError("Writer selected a skill incompatible with its mode")
+        selected_ids = tuple(dict.fromkeys((core_id, *work_plan.selected_skill_ids)))
+        if len(selected_ids) > 4:
+            raise WriterCognitionError("Writer selected more than four methods")
+        work_plan = work_plan.model_copy(
+            update={
+                "selected_skill_ids": selected_ids,
+                "expected_skill_checkpoints": {
+                    item.root: self._skills.checkpoints(item, catalog[item].version)
+                    for item in selected_ids
+                },
+            }
+        )
         selected = set(work_plan.selected_skill_ids)
         if not selected.issubset(allowed):
             raise WriterCognitionError("WriterWorkPlan selected a Skill outside the allowlist")
+        for skill_id in selected:
+            contract = catalog[skill_id]
+            _, actual = self._skills.resolve(skill_id, contract.version)
+            if actual != contract:
+                raise WriterCognitionError(f"Writer Skill hash mismatch: {skill_id.root}")
         work_plan_ref = self._artifacts.put(
             canonical_json_bytes(work_plan.model_dump(mode="json")),
             WRITER_WORK_PLAN_MEDIA_TYPE,

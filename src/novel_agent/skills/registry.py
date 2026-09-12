@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,9 +57,27 @@ class SkillRegistry:
             skill = self._skills[(skill_id, version)]
         except KeyError as error:
             raise SkillRegistryError("skill version is not explicitly registered") from error
+        content, _ = self.resolve(skill_id, version)
+        sections = self._sections(content)
         lines = [f"ID: {skill.skill_id.root}"]
-        if skill.summary:
-            lines.append(f"summary: {skill.summary}")
+        summary = skill.summary or sections.get("purpose", "").strip()
+        if summary:
+            lines.append(f"summary: {summary}")
         if skill.tags:
             lines.append("tags: " + ", ".join(skill.tags))
+        if skill.applicable_modes:
+            lines.append("modes: " + ", ".join(skill.applicable_modes))
+        for name in ("when to use", "checkpoints", "failure handling"):
+            if sections.get(name):
+                lines.append(f"{name}: {sections[name].strip()}")
         return "\n".join(lines)
+
+    def checkpoints(self, skill_id: StableId, version: SchemaVersion) -> tuple[str, ...]:
+        content, _ = self.resolve(skill_id, version)
+        section = self._sections(content).get("checkpoints", "")
+        return tuple(line[2:].strip() for line in section.splitlines() if line.startswith("- "))
+
+    @staticmethod
+    def _sections(content: str) -> dict[str, str]:
+        parts = re.split(r"^##\s+(.+?)\s*$", content, flags=re.MULTILINE)
+        return {parts[i].lower(): parts[i + 1] for i in range(1, len(parts) - 1, 2)}

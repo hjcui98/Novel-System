@@ -623,7 +623,7 @@ Stage 3 完成时应交付：
 3. versioned schema、prompts、skills、AgentSpec/receipts；
 4. focused/full/integration/property 测试；
 5. 可复现真实三方案生成实验和 machine-readable/human-readable report；
-6. `.agent/implementation.md` 中的命令、Artifact、失败修复和剩余限制；
+6. 当前审查或相关执行文档中的命令、Artifact、失败修复和剩余限制；
 7. Codex 独立 review 后的 `PASS / REPAIR / CONDITIONAL_PASS`。
 
 本文不授权 Stage 5 的 Plan 接受、Canon Commit 或长期运行。

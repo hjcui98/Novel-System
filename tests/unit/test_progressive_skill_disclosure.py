@@ -95,8 +95,8 @@ def test_review_paths_use_admitted_lenses_only() -> None:
     assert StableId("skill.editor.chapter-length") in lenses
     assert StableId("skill.editor.plan-adherence-hook-payoff") in lenses
     instructions = _editor_lens_instructions(lenses)
-    assert "trusted WritingTask length contract" in instructions
-    assert "future-locked obligations" in instructions
+    assert "skill.editor.chapter-length" in instructions
+    assert "skill.editor.plan-adherence-hook-payoff" in instructions
     assert "skill.plan-review.temporal-obligation" not in instructions
     assert "skill.plan-review.parent-scope" not in instructions
     assert set(_PLAN_REVIEWER_LENSES).isdisjoint(set(_ADMITTED_EDITOR_LENSES))

@@ -1087,6 +1087,14 @@
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
         },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
         "source_commit": {
           "$ref": "#/$defs/CommitId"
         },
@@ -1146,6 +1154,14 @@
           ],
           "default": null,
           "title": "Truth Class"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [
@@ -1276,6 +1292,15 @@
     "WritingTaskContract": {
       "additionalProperties": false,
       "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
         "active_plan_obligations": {
           "default": [],
           "items": {
@@ -1300,6 +1325,15 @@
         },
         "contract_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "entry_conditions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Entry Conditions",
+          "type": "array"
         },
         "forbidden_reveals": {
           "default": [],

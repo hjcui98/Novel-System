@@ -86,6 +86,7 @@ class ContextViewItem(DomainModel):
     content: _Text
     token_count: int = Field(ge=1)
     source_artifact_refs: tuple[ArtifactRef, ...] = ()
+    verified_evidence: tuple[str, ...] = ()
     source_event_range: tuple[int, int] | None = None
     atomic_group_id: StableId | None = None
     supersedes_item_ids: tuple[StableId, ...] = ()

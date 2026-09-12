@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import ClassVar
 
-from novel_agent.domain.benchmark import TextRootDocument
+from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.changes import (
     CandidateChangeBundle,
     ChangeOperation,
@@ -51,6 +51,7 @@ class Stage1Validator:
         evidence_root: TextRootDocument,
         *,
         canonical_commit: CommitId | None = None,
+        canonical_plan: PlanRootDocument | None = None,
     ) -> ValidationReport:
         findings: list[ValidationFinding] = []
         expected_base = canonical_commit or canonical_world.source_commit
@@ -66,6 +67,25 @@ class Stage1Validator:
         self._check_transitions_and_order(
             bundle, canonical_world, proposed_world, evidence_root, findings
         )
+        if canonical_plan is not None:
+            chapter = evidence_root.chapters[-1].chapter_index if evidence_root.chapters else 0
+            intentions = {item.obligation_id: item for item in canonical_plan.obligations}
+            changed = {operation.target_id for operation in bundle.observed_changes.operations}
+            for observed in proposed_world.obligations:
+                intent = intentions.get(observed.obligation_id)
+                if (
+                    observed.obligation_id in changed
+                    and intent is not None
+                    and observed.status.value == "resolved"
+                    and intent.forbids_resolution(chapter)
+                ):
+                    findings.append(
+                        self._finding(
+                            "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
+                            "error",
+                            "observed resolution violates the accepted PlanRoot time lock",
+                        )
+                    )
         try:
             expected = WorldOverlay().apply(
                 canonical_world,
@@ -290,8 +310,7 @@ class Stage1Validator:
                         self._finding(
                             "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
                             "error",
-                            "future-locked obligation cannot be resolved before "
-                            "not_before_chapter",
+                            "future-locked obligation cannot be resolved before not_before_chapter",
                         )
                     )
             self._check_narrative_order(

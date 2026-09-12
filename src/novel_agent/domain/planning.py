@@ -96,6 +96,7 @@ class PlanningQuestion(DomainModel):
 
 
 class PlanningInquiry(DomainModel):
+    selected_skill_ids: tuple[StableId, ...] = ()
     inquiry_id: StableId
     project_id: ProjectId
     mode: AgentMode
@@ -190,6 +191,7 @@ class PlanningProblemIdentitySeed(DomainModel):
 
 
 class PlanningInquiryDraft(DomainModel):
+    selected_skill_ids: tuple[StableId, ...] = ()
     """Untrusted structured output normalized into ``PlanningInquiry`` by the agent."""
 
     mode: AgentMode
@@ -226,9 +228,7 @@ class ReviewIssueKind(StrEnum):
     MEMORY_GAP = "memory_gap"
     PROVENANCE = "provenance"
     LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW = "long_range_payoff_without_time_window"
-    EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION = (
-        "early_resolution_of_future_locked_obligation"
-    )
+    EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION = "early_resolution_of_future_locked_obligation"
     TARGET_WINDOW_OUTSIDE_PARENT_SCOPE = "target_window_outside_parent_scope"
 
 
@@ -298,6 +298,7 @@ class PlanningLoopRequest(DomainModel):
     project_id: ProjectId
     task: PlanningTask
     author_intent_artifacts: tuple[ArtifactRef, ...]
+    planning_feedback_artifacts: tuple[ArtifactRef, ...] = ()
     accepted_plan_ref: ArtifactRef | None = None
     accepted_world_ref: ArtifactRef | None = None
     accepted_text_ref: ArtifactRef | None = None
@@ -351,6 +352,7 @@ class PlannerContextSection(StrEnum):
     RELATION_CAUSAL = "relation_causal"
     STYLE_REFERENCE = "style_reference"
     WORKING_PROPOSAL = "working_proposal"
+    REVISION_FEEDBACK = "revision_feedback"
     UNRESOLVED = "unresolved"
 
 

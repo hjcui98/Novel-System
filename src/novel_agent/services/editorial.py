@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ValidationError
@@ -16,6 +15,7 @@ from novel_agent.domain.editorial import (
     DraftSpan,
     EditorialIssue,
     EditorialIssueDraft,
+    EditorialIssueType,
     EditorialLocation,
     EditorialRepairHistoryEntry,
     EditorialReport,
@@ -76,23 +76,20 @@ def _selected_editor_lenses(
         ):
             selected.append(_ADMITTED_EDITOR_LENSES[0])
     if (
-        review_input.writing_task.active_plan_obligations
+        review_input.writing_task.required_beats
+        or review_input.writing_task.acceptance_criteria
+        or review_input.writing_task.active_plan_obligations
         or review_input.writing_task.forbidden_reveals
     ):
         selected.append(_ADMITTED_EDITOR_LENSES[1])
-    if prior_report is not None or len(review_input.writing_task.required_beats) > 2:
+    if draft_length is not None or prior_report is not None:
         selected.append(_ADMITTED_EDITOR_LENSES[2])
     return tuple(dict.fromkeys(selected))[:3]
 
 
 def _editor_lens_instructions(selected: tuple[StableId, ...]) -> str:
-    root = Path(__file__).parents[1] / "skills"
-    parts: list[str] = []
-    for skill_id in selected:
-        filename = _EDITOR_LENS_FILES[skill_id.root]
-        text = (root / filename).read_text(encoding="utf-8")
-        parts.append(f'<ADMITTED_LENS id="{skill_id.root}">\n{text}\n</ADMITTED_LENS>')
-    return "\n\n".join(parts)
+    # Full methods are loaded and hash-verified by EditorAgent's registered Runner.
+    return "Registered review methods: " + ", ".join(item.root for item in selected)
 
 
 _EDITOR_CONTRACT_RETRY_INSTRUCTION = (
@@ -158,10 +155,13 @@ class EditorialService:
         editor: EditorAgent,
         artifacts: ArtifactRepository,
         schema_version: SchemaVersion,
+        *,
+        allowed_skill_ids: tuple[StableId, ...] = (),
     ) -> None:
         self._editor = editor
         self._artifacts = artifacts
         self._schema_version = schema_version
+        self._allowed_lenses = set(allowed_skill_ids or _ADMITTED_EDITOR_LENSES)
 
     async def review(
         self,
@@ -171,12 +171,16 @@ class EditorialService:
         """Produce one read-only report; no candidate text is written or modified."""
 
         text = self._read_draft_text(review_input)
-        blocks = _draft_blocks(review_input.draft.draft_id, text)
+        blocks = _draft_blocks(review_input.current_draft_id, text)
         payload = _review_payload(
             review_input,
             text,
             blocks,
-            admitted_lenses=_selected_editor_lenses(review_input, draft_length=len(text)),
+            admitted_lenses=tuple(
+                item
+                for item in _selected_editor_lenses(review_input, draft_length=len(text))
+                if item in self._allowed_lenses
+            ),
         )
         current_request = request
         current_payload: Mapping[str, object] = payload
@@ -185,8 +189,8 @@ class EditorialService:
                 run = await self._editor.review(
                     current_request,
                     current_payload,
-                    source_hashes=(review_input.draft.text_artifact.artifact_id,),
-                    input_artifacts=(review_input.draft.text_artifact,),
+                    source_hashes=(review_input.current_text_artifact.artifact_id,),
+                    input_artifacts=(review_input.current_text_artifact,),
                     base_commit=review_input.context.base_commit,
                 )
             except (StructuredGenerationExhausted, ValidationError) as error:
@@ -204,7 +208,7 @@ class EditorialService:
             try:
                 return self._build_report(
                     review_input,
-                    review_input.draft.draft_id,
+                    review_input.current_draft_id,
                     text,
                     blocks,
                     run,
@@ -233,7 +237,7 @@ class EditorialService:
         """Review the repaired candidate once before it can leave the local-repair path."""
 
         _validate_repair_target(review_input, repair_report)
-        if repaired.parent_draft_id != review_input.draft.draft_id:
+        if repaired.parent_draft_id != review_input.current_draft_id:
             raise EditorialReviewError("repaired candidate belongs to another Draft")
         if repaired.repair_report_id != repair_report.report_id:
             raise EditorialReviewError("repaired candidate belongs to another repair report")
@@ -248,9 +252,10 @@ class EditorialService:
             *review_input.prior_repair_history,
             EditorialRepairHistoryEntry(
                 report_id=repair_report.report_id,
-                draft_id=review_input.draft.draft_id,
+                draft_id=review_input.current_draft_id,
                 verdict=repair_report.verdict,
                 repaired_draft_id=repaired.draft_id,
+                issue_summaries=tuple(issue.description for issue in repair_report.issues),
             ),
         )
         payload = _review_payload(
@@ -259,10 +264,12 @@ class EditorialService:
             blocks,
             draft_id=repaired.draft_id,
             prior_repair_history=history,
-            admitted_lenses=_selected_editor_lenses(
-                review_input,
-                prior_report=repair_report,
-                draft_length=len(text),
+            admitted_lenses=tuple(
+                item
+                for item in _selected_editor_lenses(
+                    review_input, prior_report=repair_report, draft_length=len(text)
+                )
+                if item in self._allowed_lenses
             ),
         )
         try:
@@ -298,7 +305,7 @@ class EditorialService:
         if scope is None:  # pragma: no cover - protected by EditorialReport validation
             raise EditorialRepairError("LOCAL_REPAIR report has no repair scope")
         original = self._read_draft_text(review_input)
-        blocks = _draft_blocks(review_input.draft.draft_id, original)
+        blocks = _draft_blocks(review_input.current_draft_id, original)
         payload = _repair_payload(review_input, report, original, blocks)
         current_request = request
         current_payload: Mapping[str, object] = payload
@@ -307,8 +314,8 @@ class EditorialService:
                 run = await self._editor.local_repair(
                     current_request,
                     current_payload,
-                    source_hashes=(review_input.draft.text_artifact.artifact_id,),
-                    input_artifacts=(review_input.draft.text_artifact,),
+                    source_hashes=(review_input.current_text_artifact.artifact_id,),
+                    input_artifacts=(review_input.current_text_artifact,),
                     base_commit=review_input.context.base_commit,
                 )
             except (ValidationError, ValueError, RuntimeError) as error:
@@ -317,7 +324,7 @@ class EditorialService:
                 ) from error
 
             repaired_text = run.output.repaired_text
-            changed_spans = _changed_spans(review_input.draft.draft_id, original, repaired_text)
+            changed_spans = _changed_spans(review_input.current_draft_id, original, repaired_text)
             if changed_spans:
                 break
             if attempt == 0:
@@ -342,7 +349,7 @@ class EditorialService:
         repaired_id = content_id(
             {
                 "kind": "editor-local-repair-v1",
-                "parent_draft_id": review_input.draft.draft_id.root,
+                "parent_draft_id": review_input.current_draft_id.root,
                 "repair_report_id": report.report_id.root,
                 "text_artifact": text_artifact.model_dump(mode="json"),
             }
@@ -350,7 +357,7 @@ class EditorialService:
         try:
             return RepairedDraft(
                 draft_id=repaired_id,
-                parent_draft_id=review_input.draft.draft_id,
+                parent_draft_id=review_input.current_draft_id,
                 repair_report_id=report.report_id,
                 text_artifact=text_artifact,
                 changed_spans=changed_spans,
@@ -362,7 +369,7 @@ class EditorialService:
             raise EditorialRepairError("LOCAL_REPAIR candidate lineage is invalid") from error
 
     def _read_draft_text(self, review_input: EditorialReviewInput) -> str:
-        artifact = review_input.draft.text_artifact
+        artifact = review_input.current_text_artifact
         try:
             text = self._artifacts.read_verified(artifact).decode("utf-8")
         except Exception as error:
@@ -381,7 +388,7 @@ class EditorialService:
     ) -> EditorialReport:
         # The concrete type is kept local to avoid making the public AgentRunResult part of the
         # service contract; the runner has already validated the output and receipt.
-        payload = run.output
+        payload = _enforce_content_contract(review_input, text, run.output)
         report_id = _stable_id(
             "editorial-report",
             {
@@ -474,10 +481,132 @@ class EditorialService:
             rewrite_directive=rewrite_directive,
             planner_replan_required=payload.planner_replan_required,
             unresolved_needs=payload.unresolved_needs,
+            plan_assessments=payload.plan_assessments,
+            memory_gap_assessments=payload.memory_gap_assessments,
             receipt=receipt,
             model_call_record=run.model_call,
             created_at=run.model_call.completed_at,
         )
+
+
+def _plan_checklist(review_input: EditorialReviewInput) -> tuple[dict[str, str], ...]:
+    task = review_input.writing_task
+    return tuple(
+        {"criterion_id": f"{kind}.{index}", "kind": kind, "requirement": requirement}
+        for kind, requirements in (
+            ("outcome", task.required_beats),
+            ("acceptance", task.acceptance_criteria),
+            ("entry", task.entry_conditions),
+            ("constraint", task.mandatory_constraints),
+            ("prohibition", task.forbidden_reveals),
+        )
+        for index, requirement in enumerate(requirements)
+    ) + tuple(
+        {
+            "criterion_id": f"skill:{receipt.skill.contract_id.root}:{index}",
+            "kind": "skill",
+            "requirement": checkpoint,
+        }
+        for receipt in review_input.draft.writer_receipt.skill_receipts
+        for index, checkpoint in enumerate(receipt.selected_checkpoints)
+    )
+
+
+def _enforce_content_contract(
+    review_input: EditorialReviewInput,
+    text: str,
+    payload: EditorReviewPayload,
+) -> EditorReviewPayload:
+    checklist = {item["criterion_id"]: item for item in _plan_checklist(review_input)}
+    assessments = {item.criterion_id: item for item in payload.plan_assessments}
+    if (
+        len(assessments) != len(payload.plan_assessments)
+        or not assessments.keys() <= checklist.keys()
+    ):
+        raise EditorialReviewError("Editor plan assessments contain duplicate or unknown criteria")
+    for key, assessment in assessments.items():
+        if any(quote not in text for quote in assessment.evidence_quotes):
+            raise EditorialReviewError("Editor plan evidence is absent from the reviewed Draft")
+        if (
+            assessment.satisfied
+            and checklist[key]["kind"] in {"outcome", "acceptance", "skill"}
+            and not assessment.evidence_quotes
+        ):
+            raise EditorialReviewError("positive plan assessment requires exact Draft evidence")
+    gaps = set(review_input.context.unresolved_gaps)
+    gap_assessments = {item.gap: item for item in payload.memory_gap_assessments}
+    if (
+        len(gap_assessments) != len(payload.memory_gap_assessments)
+        or not gap_assessments.keys() <= gaps
+    ):
+        raise EditorialReviewError("Editor gap assessments contain duplicate or unknown gaps")
+    context_texts = tuple(
+        quote
+        for item in review_input.context.items
+        if item.support_status == "source_verified" and item.source_artifact_refs
+        for quote in item.verified_evidence
+    )
+    for gap_assessment in gap_assessments.values():
+        if not set(gap_assessment.affected_criterion_ids) <= checklist.keys():
+            raise EditorialReviewError("Memory gap refers to an unknown plan criterion")
+        if gap_assessment.disposition == "avoided" and (
+            gap_assessment.required_for_plan is not False
+            or not gap_assessment.draft_evidence_quotes
+            or any(quote not in text for quote in gap_assessment.draft_evidence_quotes)
+        ):
+            raise EditorialReviewError(
+                "avoided gap requires an explicit nonessential dependency judgment and "
+                "exact Draft evidence"
+            )
+        if gap_assessment.disposition == "supported" and (
+            not gap_assessment.evidence_quotes
+            or any(
+                not any(quote in source for source in context_texts)
+                for quote in gap_assessment.evidence_quotes
+            )
+        ):
+            raise EditorialReviewError("gap support requires exact supplied context evidence")
+    failures: list[str] = []
+    length = review_input.writing_task.length_policy
+    if not length.minimum_characters <= len(text) <= length.maximum_characters:
+        failures.append(
+            f"Draft length is {len(text)} characters; rewrite within "
+            f"{length.minimum_characters}-{length.maximum_characters} characters "
+            "while preserving required outcomes and continuity."
+        )
+    if payload.verdict is EditorialVerdict.PASS:
+        if assessments.keys() != checklist.keys() or gap_assessments.keys() != gaps:
+            raise EditorialReviewError("PASS requires every plan criterion and Memory gap assessed")
+        failures.extend(item.rationale for item in assessments.values() if not item.satisfied)
+        failures.extend(
+            item.rationale for item in gap_assessments.values() if item.disposition == "blocking"
+        )
+    if not failures:
+        return payload
+    return payload.model_copy(
+        update={
+            "verdict": EditorialVerdict.MAJOR_REWRITE,
+            "issues": (
+                *payload.issues,
+                *(
+                    EditorialIssueDraft(
+                        issue_type=EditorialIssueType.CONSTRAINT_VIOLATION,
+                        severity=EditorialSeverity.ERROR,
+                        description=reason,
+                        structural=True,
+                    )
+                    for reason in failures
+                ),
+            ),
+            "rewrite_targets": (*payload.rewrite_targets, *failures),
+            "rewrite_preserve_requirements": (
+                *payload.rewrite_preserve_requirements,
+                *payload.preserve_requirements,
+            ),
+            "repair_instructions": (),
+            "preserve_requirements": (),
+        }
+    )
 
 
 def _review_payload(
@@ -491,8 +620,18 @@ def _review_payload(
 ) -> Mapping[str, object]:
     lenses = admitted_lenses or ()
     return {
-        "draft_id": (draft_id or review_input.draft.draft_id).root,
+        "draft_id": (draft_id or review_input.current_draft_id).root,
         "writing_task": review_input.writing_task.model_dump(mode="json"),
+        "plan_checklist": _plan_checklist(review_input),
+        "unresolved_memory_gaps": review_input.context.unresolved_gaps,
+        "content_contract": (
+            "Assess every plan_checklist criterion by criterion_id. For satisfied positive "
+            "outcomes and acceptance criteria, quote exact final Draft evidence. For prohibitions "
+            "explain why the Draft does not violate them. Assess each unresolved_memory_gap: "
+            "supported needs exact supplied context evidence; avoided needs a concrete account "
+            "of how the Draft avoids relying on it; blocking forbids PASS. Missing assessments "
+            "are an invalid review. Judge causality and actual outcomes, not mere word overlap."
+        ),
         "context_summary": _context_summary(review_input),
         "prior_repair_history": (
             review_input.prior_repair_history
@@ -553,7 +692,7 @@ def _repair_payload(
     if scope is None:  # pragma: no cover - protected by EditorialReport validation
         raise EditorialRepairError("LOCAL_REPAIR report has no repair scope")
     return {
-        "draft_id": review_input.draft.draft_id.root,
+        "draft_id": review_input.current_draft_id.root,
         "repair_scope": scope,
         _EDITOR_REPAIR_COMPLETENESS_FIELD: _EDITOR_REPAIR_COMPLETENESS_INSTRUCTION,
         _EDITOR_REPAIR_BOUNDARY_FIELD: _EDITOR_REPAIR_BOUNDARY_INSTRUCTION,
@@ -617,6 +756,8 @@ def _context_item_summary(item: object) -> dict[str, object]:
         "predicate": raw.get("predicate"),
         "truth_class": raw.get("truth_class"),
         "support_status": raw.get("support_status"),
+        "verified_evidence": raw.get("verified_evidence", ()),
+        "source_artifact_refs": raw.get("source_artifact_refs", ()),
         "mandatory": raw.get("mandatory", False),
     }
 
@@ -745,7 +886,7 @@ def _span_inside(span: DraftSpan, allowed: Iterable[DraftSpan]) -> bool:
 def _validate_repair_target(review_input: EditorialReviewInput, report: EditorialReport) -> None:
     if report.verdict is not EditorialVerdict.LOCAL_REPAIR:
         raise EditorialRepairError("only a frozen LOCAL_REPAIR report can be repaired")
-    if report.draft_id != review_input.draft.draft_id:
+    if report.draft_id != review_input.current_draft_id:
         raise EditorialRepairError("repair report belongs to another Draft")
     if report.task_contract_id != review_input.writing_task.contract_id:
         raise EditorialRepairError("repair report belongs to another WritingTaskContract")

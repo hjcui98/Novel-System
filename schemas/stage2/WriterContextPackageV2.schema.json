@@ -244,6 +244,17 @@
           "title": "Grounder Version",
           "type": "string"
         },
+        "need_generation_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "need_ids": {
           "default": [],
           "items": {

@@ -1,5 +1,23 @@
 # Project status
 
+> Workflow update (2026-09-12): Codex now directly owns development under `AGENTS.md`.
+> Current task constraints and source findings are in `.agent/task.md` and `.agent/review.md`.
+> Historical handoffs, worktree paths, and run permissions below are not current execution orders.
+> This workflow update does not change historical measurements or establish a new product Gate PASS.
+
+> Repair update (2026-09-12): the current working tree repairs Memory evidence delivery,
+> structured plan constraints, Editor assessment/repair and bounded current-chapter replanning.
+> Final offline regressions: 246 passed; no real-model or long-run literary-quality acceptance.
+> Current repair evidence and limits: [repair review](../.agent/review.md).
+>
+> Follow-up audit (2026-09-12): deeper source and retained fake-artifact inspection identified
+> additional production and skill gaps. The [complete audit](production_path_and_skill_audit_20260912.md)
+> covers all 38 runtime skills. The additional fixes are now implemented; see the
+> [completion record](production_content_repair_completion_20260912.md). Final verification uses
+> offline fake endpoints only. Prior real novel outputs are currently unavailable.
+>
+> The status and integration measurements below are historical to their stated dates.
+>
 > Lifecycle: `AUTHORITATIVE`
 >
 > Status date: 2026-08-19 +08:00

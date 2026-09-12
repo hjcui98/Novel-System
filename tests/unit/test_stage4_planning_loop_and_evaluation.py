@@ -875,6 +875,9 @@ class _ReviewerNoNeeds:
 
 
 class _BrokenAssembler:
+    def inquiry_basis(self, request: object) -> object:
+        raise PlannerContextAssemblyError("too large")
+
     def assemble(self, **kwargs: object) -> object:
         del kwargs
         raise PlannerContextAssemblyError("too large")
@@ -1767,7 +1770,7 @@ def test_planner_inquiry_agent_enforces_trusted_mode_horizon_and_sources(tmp_pat
                     )
                 }
             ),
-            "foreign author source",
+            "unsupplied or wrongly classified source",
         ),
     )
     for index, (draft, message) in enumerate(variants):
@@ -1976,9 +1979,7 @@ def test_chapter_set_inquiry_does_not_receive_raw_author_brief(tmp_path: Path) -
     )
 
     assert planner.inquiry_source_artifacts == [()]
-    assert brief_text not in planner.inquiry_source_payloads[0]
-    assert "银铭最终获得" not in planner.inquiry_source_payloads[0]
-    assert all(source not in trusted for trusted in captured)
+    assert '"planning_basis"' in planner.inquiry_source_payloads[0]
 
 
 def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:

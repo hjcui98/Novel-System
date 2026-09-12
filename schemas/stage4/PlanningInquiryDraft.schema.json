@@ -242,7 +242,6 @@
     }
   },
   "additionalProperties": false,
-  "description": "Untrusted structured output normalized into ``PlanningInquiry`` by the agent.",
   "properties": {
     "alternatives": {
       "default": [],
@@ -331,6 +330,14 @@
         "$ref": "#/$defs/PlanningQuestion"
       },
       "title": "Questions",
+      "type": "array"
+    },
+    "selected_skill_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Selected Skill Ids",
       "type": "array"
     }
   },

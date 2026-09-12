@@ -39,7 +39,22 @@ def text_root_content_id(root: TextRootDocument) -> ArtifactId:
 
 
 def plan_root_content_id(root: PlanRootDocument) -> ArtifactId:
-    return content_id(root.model_dump(mode="json", exclude={"root_hash"}))
+    payload = root.model_dump(mode="json", exclude={"root_hash"})
+    # Adding optional planning contracts must not invalidate existing Canon identities.
+    if not payload["obligations"]:
+        payload.pop("obligations")
+    for item in (*payload["nodes"], *payload["chapter_goals"]):
+        for key in (
+            "preconditions",
+            "invariants",
+            "required_outcomes",
+            "forbidden_outcomes",
+            "acceptance_criteria",
+            "dependency_ids",
+        ):
+            if not item[key]:
+                item.pop(key)
+    return content_id(payload)
 
 
 def summary_root_content_id(root: ChapterSummaryRootDocument) -> ArtifactId:

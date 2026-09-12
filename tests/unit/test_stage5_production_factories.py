@@ -289,14 +289,17 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
         assert result.status is ContextAssemblyStatus.READY
         return result
 
-    request = ProductionWritingRequestFactory(
+    factory = ProductionWritingRequestFactory(
         commits=commits,
         artifacts=artifacts,
         recent_prose=RecentProseAssembler(artifacts, VERSION),
         writer_context=stage2m,
         policy=_writing_policy(),
         schema_version=VERSION,
-    )(task)
+    )
+    with pytest.raises(ValueError, match="WritingLoopCheckpoint"):
+        factory(task)
+    request = factory(task.model_copy(update={"terminal_artifact_refs": ()}))
 
     assert request.writing_task.target_chapter == 21
     assert request.writing_task.chapter_goal.startswith("Enter the tower")
@@ -305,8 +308,50 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     assert request.recent_prose_context.previous_chapter is not None
     assert request.recent_prose_context.previous_chapter.chapter_index == 20
     assert request.future_isolation_attestation.evaluator_only_source_ids == ()
-    assert request.resume_checkpoint_ref == checkpoint_ref
+    assert request.resume_checkpoint_ref is None
     assert request.attempt_id == task.current_attempt_id
+    # Exercise the real frozen checkpoint before any new Memory generation.
+    import asyncio
+    from dataclasses import replace
+    from typing import Any, cast
+
+    from novel_agent.domain.editorial import EditorialVerdict
+    from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
+    from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
+    from tests.integration.test_writer_context_loop import _loop
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    sessions = build_session_factory(engine)
+    repositories = (RunEventLogRepository(sessions), RunCheckpointRepository(sessions))
+    paused_request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 0})}
+    )
+    loop, fake_request, _ = _loop(
+        tmp_path / "frozen-resume",
+        repositories,
+        paused_request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+    paused = asyncio.run(loop.execute(paused_request, fake_request, cast(Any, object())))
+    assert paused.status is WritingLoopTerminalStatus.YIELDED
+    assert paused.checkpoint_ref is not None
+
+    def unexpected_memory(_invocation):
+        raise AssertionError("frozen restore must not generate Memory again")
+
+    resumed = ProductionWritingRequestFactory(
+        commits=commits,
+        artifacts=artifacts,
+        recent_prose=RecentProseAssembler(artifacts, VERSION),
+        writer_context=unexpected_memory,
+        policy=replace(_writing_policy(), budgets=paused_request.budgets),
+        schema_version=VERSION,
+    )(task.model_copy(update={"terminal_artifact_refs": (paused.checkpoint_ref,)}))
+    assert resumed.writer_context_package_artifact == request.writer_context_package_artifact
+    assert resumed.resume_checkpoint_ref == paused.checkpoint_ref
+    engine.dispose()
     model_request = ProductionWriterModelRequestFactory(
         role=ModelRole.IMPLEMENTATION,
         purpose=ModelCallPurpose.DEVELOPMENT,
@@ -436,7 +481,7 @@ def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
     )(task)
 
     assert request.writing_task.chapter_goal == (
-        "Enter the tower while protecting the injured arm.；"
+        "Enter the tower while protecting the injured arm.\uff1b"
         "Keep the injured arm out of the inner ward."
     )
     assert request.writing_task.active_plan_obligations == (StableId("obligation.arm"),)

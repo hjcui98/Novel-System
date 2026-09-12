@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "description": "Independent Editor judgment bound by the host to a named criterion and actual prose.",
+  "properties": {
+    "criterion_id": {
+      "minLength": 1,
+      "title": "Criterion Id",
+      "type": "string"
+    },
+    "evidence_quotes": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Evidence Quotes",
+      "type": "array"
+    },
+    "rationale": {
+      "minLength": 1,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "satisfied": {
+      "title": "Satisfied",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "criterion_id",
+    "satisfied",
+    "rationale"
+  ],
+  "title": "PlanRequirementAssessment",
+  "type": "object"
+}

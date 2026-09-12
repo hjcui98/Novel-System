@@ -156,12 +156,22 @@ PACKAGE_ROOT = Path(__file__).parents[2] / "src" / "novel_agent"
 
 
 class SequenceEndpoint(FakeModelEndpoint):
-    def __init__(self, responses: tuple[str, ...]) -> None:
+    def __init__(self, responses: tuple[str, ...], rewrite_work_plan: str | None = None) -> None:
         super().__init__("")
         self._responses = iter(responses)
+        self._rewrite_work_plan = rewrite_work_plan
 
     async def generate(self, request: ModelRequest) -> ProviderModelResult:
-        self.response_text = next(self._responses)
+        from tests.editor_review_fixtures import complete_fake_review
+
+        if (
+            "writer-rewrite-plan-" in request.request_id.root
+            and self._rewrite_work_plan is not None
+        ):
+            self.response_text = self._rewrite_work_plan
+        else:
+            self.response_text = next(self._responses)
+        self.response_text = complete_fake_review(self.response_text, request.prompt)
         return await super().generate(request)
 
 
@@ -298,12 +308,13 @@ def _request(artifacts: ArtifactRepository, suffix: str) -> WritingLoopRequest:
             passed=True,
             configuration_fingerprint=ArtifactId("sha256:" + "f" * 64),
         ),
-        allowed_skills=(StableId("skill.scene-composition"),),
+        allowed_skills=(StableId("skill.scene-composition"), StableId("skill.major-rewrite")),
         budgets=WritingLoopBudgets(
             context_sequence_limit=100_000,
             reserved_output_tokens=2_000,
             context_safety_allowance_tokens=1_000,
             context_soft_limit_tokens=90_000,
+            max_post_draft_model_calls=6,
         ),
         writer_configuration_fingerprint=ArtifactId("sha256:" + "e" * 64),
         model_configuration_fingerprint=ArtifactId("sha256:" + "d" * 64),
@@ -323,8 +334,18 @@ def _work_plan(request: WritingLoopRequest) -> WriterWorkPlan:
         reader_disclosure_boundary="Keep the tower's final secret hidden.",
         must_keep=request.writing_task.mandatory_constraints,
         must_avoid=request.writing_task.forbidden_reveals,
-        selected_skill_ids=request.allowed_skills,
-        expected_skill_checkpoints={"skill.scene-composition": ("gate opens",)},
+        selected_skill_ids=(
+            StableId("skill.major-rewrite")
+            if request.mode is AgentMode.MAJOR_REWRITE
+            else StableId("skill.scene-composition"),
+        ),
+        expected_skill_checkpoints={
+            (
+                "skill.major-rewrite"
+                if request.mode is AgentMode.MAJOR_REWRITE
+                else "skill.scene-composition"
+            ): ("gate opens",)
+        },
     )
 
 
@@ -420,10 +441,19 @@ def _loop(
     ]
     if route is EditorialVerdict.MAJOR_REWRITE and writer_turns is None:
         writer_responses.append(_writer_turn(rewrite_text).model_dump_json())
-    writer_gateway = _gateway(SequenceEndpoint(tuple(writer_responses)), "stage3-writer")
+    writer_gateway = _gateway(
+        SequenceEndpoint(
+            tuple(writer_responses),
+            _work_plan(
+                request.model_copy(update={"mode": AgentMode.MAJOR_REWRITE})
+            ).model_dump_json(),
+        ),
+        "stage3-writer",
+    )
     contracts = WriterCognitionService.skill_contracts()
     skill_paths = {
         "skill.scene-composition": PACKAGE_ROOT / "skills" / "scene_composition_v1.md",
+        "skill.major-rewrite": PACKAGE_ROOT / "skills" / "major_rewrite_v1.md",
     }
     skills = SkillRegistry(
         SkillTemplate(
@@ -756,7 +786,7 @@ def test_explicit_major_rewrite_budget_uses_second_reviewed_attempt(
     request = base_request.model_copy(
         update={
             "budgets": base_request.budgets.model_copy(
-                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 7}
+                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 9}
             )
         }
     )
@@ -817,15 +847,15 @@ def test_explicit_major_rewrite_budget_uses_second_reviewed_attempt(
         SequenceEndpoint,
         loop._cognition._gateway.endpoint_adapter(ModelRole.BATCH_TEST),
     )
-    assert "writer-major-rewrite" in writer_endpoint.requests[2].request_id.root
-    assert "writer-major-rewrite-2" in writer_endpoint.requests[3].request_id.root
-    assert "TRUSTED_MAJOR_REWRITE_RETRY" in writer_endpoint.requests[3].prompt
-    assert writer_endpoint.requests[3].prompt.count("</TRUSTED_EDITOR_REWRITE_DIRECTIVE>") == 1
+    assert "writer-major-rewrite" in writer_endpoint.requests[3].request_id.root
+    assert "writer-major-rewrite-2" in writer_endpoint.requests[5].request_id.root
+    assert "TRUSTED_MAJOR_REWRITE_RETRY" in writer_endpoint.requests[5].prompt
+    assert writer_endpoint.requests[5].prompt.count("</TRUSTED_EDITOR_REWRITE_DIRECTIVE>") == 1
     assert "Advance the scene instead of repeating the prior candidate." in (
-        writer_endpoint.requests[3].prompt
+        writer_endpoint.requests[5].prompt
     )
     assert "Rebuild the opening around the gate observation." not in (
-        writer_endpoint.requests[3].prompt
+        writer_endpoint.requests[5].prompt
     )
 
 
@@ -1067,7 +1097,11 @@ def test_explicit_two_major_rewrites_still_fail_closed_after_second_review(
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-major-rewrites-fail"))
     base_request = _request(artifacts, "two-major-rewrites-fail")
     request = base_request.model_copy(
-        update={"budgets": base_request.budgets.model_copy(update={"max_major_rewrites": 2})}
+        update={
+            "budgets": base_request.budgets.model_copy(
+                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 9}
+            )
+        }
     )
     review = json.dumps(
         {
@@ -1122,7 +1156,7 @@ def test_major_rewrite_rejects_another_memory_round(
     )
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
     assert result.status is WritingLoopTerminalStatus.WRITER_FAILED
-    assert result.failure_detail == "major rewrite cannot start another Memory round"
+    assert result.failure_detail == "major rewrite requires a complete candidate"
 
 
 def test_reconciliation_mismatch_is_retained_as_advisory_candidate(
@@ -1219,6 +1253,42 @@ def test_post_draft_slice_resumes_editor_and_observer_without_repeating_writer(
     second = asyncio.run(loop.execute(resumed, model_request, cast(Any, object())))
     assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
     assert second.initial_draft == first.initial_draft
+
+
+@pytest.mark.parametrize("route", [EditorialVerdict.LOCAL_REPAIR, EditorialVerdict.MAJOR_REWRITE])
+def test_one_provider_call_per_slice_preserves_repair_frontier(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+    route: EditorialVerdict,
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "repair-slices"))
+    request = _request(artifacts, "repair-slices")
+    request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 1})}
+    )
+    loop, model_request, _ = _loop(
+        tmp_path, repositories, request, route, artifact_repository=artifacts
+    )
+    phases = []
+    for _ in range(8):
+        result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+        if result.status is not WritingLoopTerminalStatus.YIELDED:
+            break
+        assert result.checkpoint_ref is not None
+        checkpoint = WritingLoopCheckpoint.model_validate_json(
+            artifacts.read_verified(result.checkpoint_ref)
+        )
+        phases.append(checkpoint.phase)
+        request = request.model_copy(update={"resume_checkpoint_ref": result.checkpoint_ref})
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert WritingLoopPhase.REPAIR_PENDING in phases
+    assert len(result.editorial_reports) == 2
+    endpoint = cast(
+        FakeModelEndpoint, loop._cognition._gateway.endpoint_adapter(ModelRole.BATCH_TEST)
+    )
+    expected = 4 if route is EditorialVerdict.MAJOR_REWRITE else 2
+    assert len(endpoint.requests) == expected
+    assert len({item.request_id for item in endpoint.requests}) == expected
 
 
 def test_stage3_public_lazy_exports_are_resolvable() -> None:
@@ -1647,6 +1717,14 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
                     path=skill_path,
                     expected_hash=content_hash(skill_path.read_bytes()),
                 ),
+                SkillTemplate(
+                    skill_id=StableId("skill.major-rewrite"),
+                    version=VERSION,
+                    path=PACKAGE_ROOT / "skills" / "major_rewrite_v1.md",
+                    expected_hash=content_hash(
+                        (PACKAGE_ROOT / "skills" / "major_rewrite_v1.md").read_bytes()
+                    ),
+                ),
             )
         )
         return (
@@ -1717,7 +1795,7 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
         }
     )
     cognition, _ = service((outside.model_dump_json(),))
-    with pytest.raises(WriterCognitionError, match="outside"):
+    with pytest.raises(WriterCognitionError, match="incompatible with its mode"):
         asyncio.run(cognition.create_work_plan(request, valid_view, plan_model_request))
 
     cognition, _ = service(
@@ -1802,7 +1880,10 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     )
     major_request = request.model_copy(update={"mode": AgentMode.MAJOR_REWRITE})
     major_cognition, major_gateway = service(
-        (plan.model_dump_json(), _writer_turn("A complete rewritten scene.").model_dump_json())
+        (
+            _work_plan(major_request).model_dump_json(),
+            _writer_turn("A complete rewritten scene.").model_dump_json(),
+        )
     )
     major_plan = asyncio.run(
         major_cognition.create_work_plan(major_request, major_view, plan_model_request)
@@ -2064,6 +2145,7 @@ def test_major_rewrite_retries_after_embedded_older_chapter_trail(
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "compact-trail-retry"))
     request = _request(artifacts, "compact-trail-retry")
+    request = request.model_copy(update={"mode": AgentMode.MAJOR_REWRITE})
     loop, model_request, _ = _loop(
         tmp_path,
         repositories,
@@ -3387,3 +3469,40 @@ def test_formal_evaluation_runs_all_three_real_candidate_chains(tmp_path: Path) 
     assert all(item.deterministic_rules is None for item in failed_report.cases[0].schemes)
     for engine in engines:
         cast(Any, engine).dispose()
+
+
+def test_two_changed_local_repairs_use_the_new_candidate_each_time(tmp_path, repositories):
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-changed-repairs"))
+    request = _request(artifacts, "two-changed-repairs")
+    request = request.model_copy(
+        update={
+            "budgets": request.budgets.model_copy(
+                update={"max_local_repairs": 2, "max_post_draft_model_calls": 20}
+            )
+        }
+    )
+    original = "Lin studies the moonlit groove and opens the gate without using her injured arm."
+    first = original.replace("opens the gate", "opens it anew")
+    second = first.replace("moonlit groove", "moonlit carving")
+    first_review = _editor_responses(EditorialVerdict.LOCAL_REPAIR, original)[0]
+    next_review = json.loads(first_review)
+    next_review["issues"][0]["evidence_quote"] = "moonlit groove"
+    next_review["repair_instructions"] = ["Use a more concrete noun."]
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(
+            first_review,
+            EditorRepairPayload(repaired_text=first).model_dump_json(),
+            json.dumps(next_review),
+            EditorRepairPayload(repaired_text=second).model_dump_json(),
+            EditorReviewPayload(verdict=EditorialVerdict.PASS).model_dump_json(),
+        ),
+    )
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY, result.failure_detail
+    assert len(result.editorial_reports) == 3
+    assert artifacts.read_verified(result.final_text_artifact).decode() == second

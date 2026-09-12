@@ -106,7 +106,7 @@ class CuratorRelationRecord(DomainModel):
 
 class CuratorObligationRecord(DomainModel):
     kind: Literal["foreshadowing", "promise", "objective", "unresolved_conflict"]
-    description: CuratorShortText
+    description: str = Field(min_length=1)
     status: Literal["open", "progressed", "resolved", "abandoned"]
     owner_ids: tuple[StableId, ...] = Field(default=(), max_length=6)
     not_before_chapter: int | None = Field(default=None, ge=1)
@@ -282,10 +282,10 @@ class ChapterChangeDraftV2(DomainModel):
     """V2 Curator draft: no model-emitted character offsets."""
 
     chapter_index: int = Field(ge=1)
-    operations: tuple[CuratedOperationDraftV2, ...] = Field(max_length=4)
+    operations: tuple[CuratedOperationDraftV2, ...]
     coverage: float = Field(default=1.0, ge=0, le=1)
-    unresolved: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
-    declared_vs_observed_diff: tuple[CuratorShortText, ...] = Field(default=(), max_length=4)
+    unresolved: tuple[CuratorShortText, ...] = ()
+    declared_vs_observed_diff: tuple[CuratorShortText, ...] = ()
     no_durable_delta_reason: CuratorShortText | None = None
     no_op_evidence_candidate_ids: tuple[StableId, ...] = Field(
         default=(),
@@ -301,6 +301,29 @@ class ChapterChangeDraftV2(DomainModel):
         return self
 
 
+class PlannedObligationObservation(DomainModel):
+    obligation_id: StableId
+    status: Literal["not_observed", "progressed", "resolved", "abandoned"]
+    rationale: str = Field(min_length=1)
+    evidence_quotes: tuple[CuratorEvidenceQuote, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="after")
+    def evidence_for_change(self) -> PlannedObligationObservation:
+        if self.status != "not_observed" and not self.evidence_quotes:
+            raise ValueError("observed plan progress requires source quotes")
+        return self
+
+
+class OrdinaryCurationPageReceipt(DomainModel):
+    source_unit_ids: tuple[str, ...]
+    source_hash: ArtifactId
+    model_request_id: StableId
+    operation_count: int = Field(ge=0)
+    has_more: bool
+    covered: bool
+    lookup_terms: tuple[str, ...] = ()
+
+
 class CuratorV2EvidenceDraft(DomainModel):
     """Model-output curator draft: evidence is semantic quotes, never ids.
 
@@ -308,6 +331,9 @@ class CuratorV2EvidenceDraft(DomainModel):
     (Grounder principle: LLM emits semantics, deterministic code binds ids).
     """
 
+    has_more: bool = False
+    world_lookup_terms: tuple[str, ...] = Field(default=(), max_length=8)
+    plan_observations: tuple[PlannedObligationObservation, ...] = Field(default=(), max_length=8)
     chapter_index: int = Field(ge=1)
     operations: tuple[CuratorV2OperationDraft, ...] = Field(max_length=4)
     coverage: float = Field(default=1.0, ge=0, le=1)
@@ -353,7 +379,11 @@ class CuratorV2EvidenceDraft(DomainModel):
             self.no_durable_delta_reason is not None or self.no_op_evidence_quotes
         ):
             raise ValueError("non-empty Curator draft cannot include no-op proof")
-        if not self.operations and not self.no_durable_delta_reason:
+        if (
+            not self.operations
+            and not self.no_durable_delta_reason
+            and not (self.has_more or self.world_lookup_terms or self.plan_observations)
+        ):
             raise ValueError("empty Curator draft requires a no-durable-delta reason")
         if any(not quote.strip() for quote in self.no_op_evidence_quotes):
             raise ValueError("no-op evidence quotes must not be blank")

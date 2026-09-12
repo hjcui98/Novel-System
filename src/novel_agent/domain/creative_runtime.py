@@ -82,6 +82,8 @@ class CreativeRunPolicy(DomainModel):
     enable_planner_lookahead: bool = False
     lookahead_horizon: int = Field(default=3, ge=1)
 
+    max_editor_replans_per_chapter: int = Field(default=2, ge=0, le=10)
+
     @model_validator(mode="after")
     def validate_auto_policy(self) -> CreativeRunPolicy:
         if self.automation_mode is not AutomationMode.AUTO and (
@@ -187,6 +189,8 @@ class LookaheadRevalidationReceipt(DomainModel):
     horizon_start: int
     horizon_end: int
     affects_future_plan: bool | None = None
+    checked_dependency_roots: tuple[str, ...] = ()
+    changed_dependency_roots: tuple[str, ...] = ()
     outcome: LookaheadRevalidationOutcome
     reason: str = Field(min_length=1, max_length=256)
 

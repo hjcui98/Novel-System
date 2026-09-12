@@ -1,102 +1,71 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## 项目目标与当前依据
 
-Production code lives in `src/novel_agent/`. Keep business models in `domain/`, orchestration in
-`services/` and `runtime/`, external integrations in `adapters/`, and interfaces in `ports/`.
-API, CLI, agents, prompts, skills, and tools have matching subpackages. Tests mirror behavior under
-`tests/unit/`, `tests/contract/`, `tests/integration/`, `tests/model/`, `tests/property/`,
-`tests/golden/`, and `tests/regression/`. Database changes belong in `migrations/versions/`;
-versioned JSON contracts are in `schemas/stage0` through `schemas/stage2`. Use `scripts/` for
-operational entry points, `docs/adr/` for architecture decisions, and `benchmarks/` for benchmark
-inputs. Do not commit runtime data from `tmp/`, `volumes/`, or the local `.conda-env/`.
+目标是长期自主运行、持续产出高质量长篇小说的 Agent 系统。工作应围绕生产路径中的记忆有效性、
+分层计划约束、正文质量、审稿修复和运行恢复展开。任务完成数、工件齐全、单元测试通过，分别只能
+证明对应的工程事实，不能直接证明小说好看、遵循大纲或能够长期无人干预。
 
-## Build, Test, and Development Commands
+以用户当前指令确定任务范围和执行方式，再读取本文件、`.agent/task.md` 及相关代码与文档。
+`docs/README.md` 提供文档导航；ADR 和设计文档用于理解已接受的架构与不变量。旧状态页、旧计划和
+历史授权不自动成为本次任务，发现其与代码或当前要求冲突时应指出并更新相关内容。
 
-- `make bootstrap` creates the Python 3.12 environment, installs locked development dependencies,
-  and initializes local configuration.
-- `make quality` runs Ruff linting and format checks, strict MyPy, and deterministic Pytest tests.
-- `.conda-env/bin/pytest tests/unit/test_api.py` runs a focused test; add `--no-cov` only for quick
-  local iteration.
-- `make integration` runs tests against isolated real infrastructure; use
-  `make INFRA_BACKEND=docker integration` for Docker parity.
-- `make stage0` starts services, applies Alembic migrations, and runs the replayable demo.
-- `make stage1-smoke` exercises the deterministic Stage 1 memory kernel.
+## Codex 直接协作
 
-## Coding Style & Naming Conventions
+- Codex 直接承担分析、设计、代码修改、验证、诊断和文档维护，无需其他开发工具交接或专用命令。
+- 用户要求阅读或审查时，先调查实际生产调用链，区分代码事实、推断和已有运行证据。用户要求实现
+  或修复时，在已授权范围内连续完成工作，不因文件职责、旧 Stage 划分或固定返工轮数反复停下。
+- 阶段名用于划分产品责任和验收证据。跨模块问题可以修改相关生产调用方和契约；保持 Canon、
+  数据隔离及提交不变量，并同步必要的 schema、迁移和消费者。改变正式验收口径须明确说明。
+- 简单修改直接完成；复杂工作先说明根因、改动方向和验收依据。只有需要持续跟踪时才维护执行计划，
+  不强制每项任务生成 task/plan/implementation/review 四套文件。
+- 有足够上下文时自行处理常规实现选择。只有缺少不可推断的要求、存在实质架构取舍或缺少操作授权
+  时才提问；已有授权不因流程文件要求而重复索取。
+- 使用当前工作区并保留用户改动。确需隔离时再建工作树，禁止照抄旧文档中的机器路径继续历史任务。
+  Git 提交、合并、推送和发布按用户当前授权处理，不能从旧任务文件继承授权。
 
-Use four-space indentation, Python 3.12 typing, double quotes, and a 100-character line limit.
-Ruff enforces imports and common correctness rules; MyPy runs in strict mode. Name modules and
-functions `snake_case`, classes and Pydantic models `PascalCase`, and constants `UPPER_SNAKE_CASE`.
-Keep domain code independent of infrastructure and inject adapters through typed ports. Run
-`.conda-env/bin/pre-commit run --all-files` before submitting.
+## `.agent` 文件用途
 
-## Testing Guidelines
+- `task.md`：简短记录长期目标、当前事项、最新约束和待解决问题，随任务变化更新。
+- `review.md`：记录当前代码审查的证据、影响和未决项；修复后更新相应结论，避免混入旧版本验收。
+- `plan.md`：仅在复杂实施确实需要持久计划时创建，用完后收口，不作为启动工作的必备文件。
+- 旧交接记录、过时计划与历史审查从 Git 历史查阅，不继续堆在当前上下文目录。技术决策与不可变
+  实验结果在适当的 `docs/` 文档中维护，不复制出平行的文档体系。
 
-Pytest, Hypothesis, and pytest-cov are configured in `pyproject.toml`. Name files `test_*.py` and
-place fixtures in `tests/fixtures/`. The default suite requires 100% branch coverage. Mark
-infrastructure tests `integration` and endpoint-dependent tests `model_required`; deterministic
-tests must not call model endpoints. Add regression coverage for every bug fix and contract tests
-when changing schemas or public boundaries.
+## 实现原则
 
-## Minimum-Sufficient Engineering
+- 先查实际生产装配、请求内容、数据转换与消费者行为，再评价模块是否可用。模型收到工件哈希不等于
+  收到工件正文；实验 runner、fixture 或 mock 的能力不代表生产路径已经接线。
+- 优先修复既有负责模块并保持单一事实源。必要的领域模型、约束和反馈闭环应补齐；避免用“最小改动”
+  为已证明的信息丢失或质量缺口辩护，也避免无证据地新增框架、队列、控制面或兼容层。
+- 保持候选生成、独立审查、接受和 Canon 提交的职责边界。小说运行时的自主创作权限不等于开发代理
+  的代码修改或 Git 权限；开发工作流变化不会自动启用生产自改代码、热替换或策略晋升。
+- 保留来源证据、章节可见性、父计划范围、幂等提交、原子结算、版本绑定和失败可诊断性。
+  缺失的关键记忆或剧情约束应被明确处理，不能靠伪造支持证据、放宽校验或美化报告消除。
+- benchmark 的 Gold、未来正文和评估反馈不得泄漏进同次被评系统。不得提交密钥、私人小说、模型权重、
+  本地环境、数据库、运行对象或日志，不干扰用户正在运行的模型与服务。
 
-Do not overengineer. Implement the smallest mechanism that closes a demonstrated requirement or
-failure while preserving the repository's existing invariants. Prefer removing, merging, reusing,
-configuring, or extending the current owner before adding another abstraction, service, state
-machine, storage system, queue, configuration language, control plane, report family, or document.
+## 验证与证据
 
-Every new component or contract must name its current caller, responsible layer, protected
-invariant, and acceptance evidence. “It may be useful later” is not sufficient; speculative
-generality stays deferred until a real use case or benchmark proves it necessary. Keep one source of
-truth, one owner per responsibility, and one implementation path for the same semantics.
+- 尊重用户当前执行限制。用户说不跑测试、只读代码或暂不调用模型时，旧文档中的验收步骤不会覆盖
+  该要求；明确记录未执行的验证，不把静态阅读或历史结果写成本轮 PASS。
+- 允许验证时按实际风险选择检查：契约变化检查消费者和 schema，行为修复验证真实失败条件；只改
+  文档或工作流说明通常做差异与引用检查。全量测试、真实模型、长跑和 benchmark 要有具体目的，
+  不把每个小修改都变成一轮全套验收。
+- 实施验证应覆盖关键行为和有意义的回归，避免仅复述实现的测试或为了覆盖率堆砌测试。当前
+  `pyproject.toml` 仍配置 100% 分支覆盖率；正式运行该检查时如未达标，需如实报告，不能暗改阈值。
+- 正文质量需用真实成品及其计划、上下文和修复记录判断，关注因果、人物动机与声音、剧情推进、
+  节奏、伏笔兑现和可读性。报告需区分本轮实测、历史证据、静态推断和待确认问题。
 
-Minimum-sufficient engineering applies to mechanism size, not evidence strength. It never permits
-skipping strict typing, validation, permission and leakage boundaries, failure semantics,
-observability required for diagnosis, migrations, regression tests, reproducibility, or the active
-Stage gate. A smaller change that weakens those properties is incomplete, not simpler.
+## 目录、风格与命令
 
-## Commit & Pull Request Guidelines
+生产代码在 `src/novel_agent/`：`domain/` 放模型，`services/` 与 `runtime/` 放业务编排，
+`adapters/` 放外部接入，`ports/` 放接口。测试在 `tests/`，迁移在 `migrations/versions/`，
+版本化契约在 `schemas/`，操作入口在 `scripts/`。使用 Python 3.12、四空格、双引号和 100 字符行宽，
+保持类型检查与端口边界。提交采用 Conventional Commits，说明行为变化、验证范围和剩余限制。
 
-History follows concise Conventional Commit subjects, commonly `fix(curator): ...`,
-`fix(controller): ...`, and `feat: ...`. Keep each commit focused and describe behavior in the
-imperative mood. Pull requests should explain the problem and solution, list verification commands,
-link relevant issues or ADRs, and call out migrations, schema changes, configuration changes, or
-benchmark evidence. Include screenshots only for visible API or reporting changes; never include
-secrets from `.env` or private benchmark data.
-
-## Codex–OpenCode Development Workflow
-
-Canonical Stage documents remain the source of truth. `.agent/plan.md` carries Codex's technical
-direction for the current substantial task.
-
-- Codex is the top-level designer and architect. It determines root cause, effective design,
-  responsible layer, allowed direction, success signals, stop conditions, final acceptance, and
-  merge decisions.
-- Human approval is the act of starting OpenCode in this repository and invoking `/implement`.
-- OpenCode default `build` is the execution owner and sole code writer. It implements, tests, uses
-  and monitors real APIs, analyzes artifacts, repairs within Codex's direction, and reports in
-  `.agent/implementation.md` without returning after every small step. It never commits or merges.
-- Codex alone creates or edits architecture, design, planning, active execution, current-status,
-  ADR, `.agent/task.md`, `.agent/plan.md`, and `.agent/review.md` files. OpenCode reads them as
-  authority; it writes another result or summary document only when the plan explicitly names it.
-- Codex reviews the completed implementation and evidence. If repair is needed, Codex gives the
-  technical direction in the existing review/plan and OpenCode continues; a new design document is
-  created only for a materially new decision, and there is no arbitrary repair-count limit.
-- Use one shared worktree for the serial flow. Create separate worktrees only for genuinely
-  independent tasks with distinct owners and file boundaries.
-- Stage boundaries are fail-closed: a Stage 2M task must not modify or merge Stage 3 implementation.
-- The implementation must follow the minimum-sufficient engineering rule above. If satisfying the
-  plan appears to require a parallel framework, speculative platform, or unrelated cross-stage
-  expansion, OpenCode returns evidence to Codex instead of building it opportunistically.
-
-The normal interaction is deliberately short:
-
-1. Discuss the design with Codex; Codex updates an existing upper-level document when needed and
-   prepares or refreshes `.agent/plan.md` for the substantial implementation task.
-2. Invoke `/implement` in OpenCode. The default `build` agent completes implementation, tests, real
-   API work, monitoring, evidence-driven repair, and `.agent/implementation.md` reporting.
-3. Ask Codex to `review`. Codex writes `.agent/review.md` and either accepts the work or gives the
-   next technical direction.
-4. For `REPAIR`, invoke `/implement` again in the same worktree. For `PASS`, Codex integrates the
-   accepted evidence into the existing project documents and performs the authorized merge.
+仓库 Makefile 与 native 服务锁文件以 Linux 为主。Linux 常用命令包括 `make bootstrap`、
+`make quality`、`make integration`、`make stage0`；这些是可用入口，不是每轮必跑步骤。
+Windows 使用实际存在的环境，例如 `.venv\Scripts\python.exe`，不要套用 `.conda-env/bin/` 路径，
+也不要直接执行 Linux native bootstrap。测试时禁止意外模型调用，基础设施测试标记 `integration`，
+允许模型调用的测试标记 `model_required`。依赖使用 `pyproject.toml` 与 `uv.lock`。

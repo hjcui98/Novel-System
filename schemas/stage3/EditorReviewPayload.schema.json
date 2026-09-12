@@ -100,6 +100,111 @@
       ],
       "title": "EditorialVerdict",
       "type": "string"
+    },
+    "MemoryGapAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_criterion_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Criterion Ids",
+          "type": "array"
+        },
+        "disposition": {
+          "enum": [
+            "avoided",
+            "supported",
+            "blocking"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "draft_evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Draft Evidence Quotes",
+          "type": "array"
+        },
+        "evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "gap": {
+          "minLength": 1,
+          "title": "Gap",
+          "type": "string"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "required_for_plan": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required For Plan"
+        }
+      },
+      "required": [
+        "gap",
+        "disposition",
+        "rationale"
+      ],
+      "title": "MemoryGapAssessment",
+      "type": "object"
+    },
+    "PlanRequirementAssessment": {
+      "additionalProperties": false,
+      "description": "Independent Editor judgment bound by the host to a named criterion and actual prose.",
+      "properties": {
+        "criterion_id": {
+          "minLength": 1,
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "satisfied",
+        "rationale"
+      ],
+      "title": "PlanRequirementAssessment",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -111,6 +216,22 @@
         "$ref": "#/$defs/EditorialIssueDraft"
       },
       "title": "Issues",
+      "type": "array"
+    },
+    "memory_gap_assessments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryGapAssessment"
+      },
+      "title": "Memory Gap Assessments",
+      "type": "array"
+    },
+    "plan_assessments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlanRequirementAssessment"
+      },
+      "title": "Plan Assessments",
       "type": "array"
     },
     "planner_replan_required": {

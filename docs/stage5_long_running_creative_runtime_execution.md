@@ -169,8 +169,8 @@ commands、artifact/receipt refs 和 typed reason。
 
 ## 4. A 层：Isolated Runtime Kernel 连续开发包
 
-以下 A0～A9 是一个连续代码实现顺序，不是开发中测试门。OpenCode/开发者完成 A0～A9 全部代码和静态
-自检后，统一进入 §12 测试。
+以下 A0～A9 是实现顺序参考。Codex 按当前任务选择相关范围，结合风险安排必要的验证；§12 定义正式
+验收要求，不要求每次修改都重做全套。用户当前的只读或不跑测试要求优先。
 
 ### A0. 冻结 integration manifest 与 leaf contract
 

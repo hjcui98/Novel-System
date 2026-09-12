@@ -148,7 +148,6 @@
       "additionalProperties": false,
       "properties": {
         "description": {
-          "maxLength": 160,
           "minLength": 1,
           "title": "Description",
           "type": "string"

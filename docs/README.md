@@ -2,7 +2,7 @@
 
 > Lifecycle: `AUTHORITATIVE`
 >
-> Updated: 2026-08-18
+> Updated: 2026-09-12 (development workflow; historical Stage evidence unchanged)
 >
 > Current progress source: `docs/project_status.md`
 >
@@ -12,7 +12,17 @@
 
 ## 1. How to read this repository
 
-Use the following precedence when documents disagree:
+The user's current request determines task scope and execution permissions. `AGENTS.md` defines
+the current Codex development workflow; `.agent/task.md` records current constraints. Historical
+handoffs, machine paths, run permissions, and tool-specific workflows do not authorise new work.
+The 2026-09-12 source assessment is in `.agent/review.md`; it is not a formal Stage acceptance.
+The follow-up [production path and skill audit](production_path_and_skill_audit_20260912.md)
+documents additional gaps in the repaired working tree, retained offline artifact evidence,
+and invocation/content checks for all 38 runtime skills. These findings are now implemented in
+the working tree; see the [completion record](production_content_repair_completion_20260912.md)
+and [ADR 0012](adr/0012-production-content-contract-closure.md) for evidence and limits.
+
+For technical decisions and evidence, use the following precedence when documents disagree:
 
 1. accepted ADRs and current immutable runtime evidence;
 2. `docs/project_status.md`;
@@ -29,7 +39,9 @@ current requirement and all applicable invariants; reuse the existing owner and 
 do not create a second truth source, parallel pipeline, speculative platform, or duplicate document
 for possible future use. This constrains implementation complexity, not correctness evidence:
 typing, validation, security, leakage controls, failure semantics, required observability, tests,
-reproducibility, and active Gates remain mandatory.
+reproducibility, and applicable formal Gates remain required for their corresponding acceptance.
+Choose verification according to the change and current user constraints; these requirements do
+not instruct the agent to run tests or model jobs during a read-only or no-test task.
 
 ## 2. Canonical stage names
 
@@ -145,6 +157,7 @@ maintenance and regression analysis but do not define current progress:
 
 | Document | Lifecycle | Intended use |
 |---|---|---|
+| `docs/deepseek_harness_t7_spike_design_20260912.md` | `PROPOSED / SOURCE_REVIEW` | Novel application profile and native DSH role presets; Python domain workflow/tools, retained compaction, actual caller migration and G0–G3 gates; proposed decision in `docs/adr/0011-deepseek-harness-execution-spike.md` |
 | `docs/inkos_longform_agent_technical_reference_20260809.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | Fixed-commit InkOS evidence for rolling planning, protected/compressible context, bounded revision, chapter transaction and recovery |
 | `docs/agentmemory_reference_and_memory_maturity_roadmap_20260801.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | agentmemory source/test comparison for conditional BM25+Dense+Graph, compact→expand, provenance and external Hook ingress |
 | `docs/long_running_agent_runtime_source_reference_20260810.md` | `TECHNICAL_REFERENCE / NON_AUTHORITATIVE` | Hermes/OpenClaw/OpenHands/PydanticAI source audit for Context View, compaction, Task/Attempt, fencing and long-running Runtime |
@@ -168,32 +181,32 @@ status entry, not by rewriting old evidence.
 
 ## 10. Updating progress
 
-Document ownership in the automated Codex–DSH loop (the loop contract lives in `AGENTS.md`):
+Codex directly owns analysis, design, implementation, verification, and documentation within the
+user's current scope. No separate implementation-tool handoff is required.
 
-- Codex creates or edits architecture, design, planning, active execution, current-status, ADR,
-  `.agent/task.md`, `.agent/plan.md`, `.agent/reviews/`, and `.agent/handover.md` files.
-- `.agent/plan.md` supplements the applicable upper-level documents for one implementation task; it
-  does not replace or duplicate them, and every update bumps its version header.
-- The DSH execution engine reads those documents and writes code, tests, runtime artifacts,
-  `.agent/implementation.md`, and `.agent/loop.md`. It writes a separate result/summary document
-  only when the Codex plan explicitly names one.
-- After review, Codex integrates accepted evidence into existing project documents. A new design,
-  remediation, or execution document is created only for a materially new decision that the current
-  hierarchy cannot represent.
-- Do not create a separate “simplicity”, “governance”, or “platform” document for a rule that fits an
-  existing authority. Add the minimum local clarification and link upward instead of copying a new
-  documentation system.
+- Keep `.agent/task.md` concise and current; use `.agent/review.md` for source findings and their
+  resolution. Create `.agent/plan.md` only when a substantial implementation needs a durable plan.
+- Record implementation evidence in the relevant task, review, or existing execution document;
+  a separate implementation report is not mandatory for every change.
+- Update long-lived designs or ADRs when a material decision changes, and update status only from
+  evidence applicable to that version. Documentation is not a substitute for resolving product gaps.
+- Legacy `.agent` plans, reports, and audits were removed from the active workspace on 2026-09-12.
+  Historical references to them refer to the Git snapshot, for example
+  `git show 1856153298856bdcb6eb7a8c6ad62f0727ac9683:.agent/implementation.md`.
+  They are provenance, not instructions to recreate that workflow or resume its jobs.
 
 When a gate or work package changes:
 
 1. update `docs/project_status.md`;
 2. append evidence to the relevant active execution plan;
 3. create or supersede an ADR if a stage boundary, default path, or invariant changes;
-4. create a dated result document for immutable metrics;
+4. create a dated result document when immutable experiment metrics need a durable record;
 5. update this index only if document lifecycle or navigation changes.
 
 ## 11. Development workflow reference
 
 | Document | Lifecycle | Notes |
 |---|---|---|
-| `docs/codex_dsh_automated_loop_reference.md` | `AUTHORITATIVE` | Full overview of the automated Codex–DSH loop: planes, document library, Codex session contract, verdicts, gates, and operating manual; the operative contract lives in `AGENTS.md` |
+| `AGENTS.md` | `AUTHORITATIVE` | Direct Codex collaboration, scope, engineering principles, and proportionate verification |
+| `.agent/task.md` | `CURRENT_TASK` | Current objective, constraints, and next work |
+| `.agent/review.md` | `CURRENT_SOURCE_ASSESSMENT` | Source findings, evidence boundaries, and repair direction |

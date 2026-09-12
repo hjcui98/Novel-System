@@ -36,6 +36,13 @@
       "title": "Lookahead Horizon",
       "type": "integer"
     },
+    "max_editor_replans_per_chapter": {
+      "default": 2,
+      "maximum": 10,
+      "minimum": 0,
+      "title": "Max Editor Replans Per Chapter",
+      "type": "integer"
+    },
     "max_task_attempts": {
       "default": 3,
       "minimum": 1,

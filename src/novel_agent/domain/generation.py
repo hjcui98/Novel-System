@@ -54,6 +54,8 @@ class WriterContextItem(DomainModel):
     story_time_end: _NonEmptyText | None = None
     truth_class: _NonEmptyText | None = None
     support_status: _NonEmptyText | None = None
+    verified_evidence: tuple[str, ...] = ()
+    source_artifact_refs: tuple[ArtifactRef, ...] = ()
     mandatory: bool = False
 
     @model_validator(mode="after")
@@ -200,7 +202,9 @@ class WritingTaskContract(DomainModel):
     chapter_goal: _NonEmptyText
     scene_goals: tuple[_NonEmptyText, ...] = ()
     required_beats: tuple[_NonEmptyText, ...] = ()
+    acceptance_criteria: tuple[_NonEmptyText, ...] = ()
     active_plan_obligations: tuple[StableId, ...] = ()
+    entry_conditions: tuple[_NonEmptyText, ...] = ()
     mandatory_constraints: tuple[_NonEmptyText, ...] = ()
     forbidden_reveals: tuple[_NonEmptyText, ...] = ()
     preserve_requirements: tuple[_NonEmptyText, ...] = ()

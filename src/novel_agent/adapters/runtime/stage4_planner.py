@@ -224,6 +224,11 @@ class ProductionStage4InvocationFactory:
             project_id=request.project_id,
             task=planning_task,
             author_intent_artifacts=author_intent,
+            planning_feedback_artifacts=tuple(
+                ref
+                for ref in request.input_artifact_refs
+                if ref.media_type == "application/vnd.novel-agent.editor-plan-feedback+json"
+            ),
             accepted_plan_ref=manifest.plan_root,
             accepted_world_ref=manifest.world_root,
             accepted_text_ref=manifest.text_root,

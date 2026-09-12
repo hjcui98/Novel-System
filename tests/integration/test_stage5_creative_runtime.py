@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -340,16 +341,96 @@ def test_two_lane_lookahead_is_revalidated_before_plan_acceptance(tmp_path: Path
         runtime.advance(draft_projection.current_task_id, worker_id="draft-freshness")
     )
     assert promoted.current_task_id is not None
-    assert commands.get_task(promoted.current_task_id).kind is TaskKind.PLAN_COMMIT
+    # A new committed chapter changes an actual planning dependency even when Observer's
+    # summary says affects_future_plan=False. Revalidate through a new planning task.
+    assert commands.get_task(promoted.current_task_id).kind is TaskKind.PLAN_CANDIDATE
+    assert promoted.reason_code == "lookahead_replan_required"
     superseded = commands.get_task(lookahead_waiting.task_id)
     assert superseded.status is TaskStatus.CANCELLED
     assert superseded.superseded
-    promoted_acceptance = next(
-        task
-        for task in tasks.list_run(RunId("run.lookahead"))
-        if task.kind is TaskKind.PLAN_ACCEPTANCE
-        and task.purpose is TaskPurpose.NORMAL
-        and task.task_id.root.endswith(".promoted")
+    assert not any(
+        task.task_id.root.endswith(".promoted") for task in tasks.list_run(RunId("run.lookahead"))
     )
-    assert promoted_acceptance.status is TaskStatus.SUCCEEDED
     engine.dispose()
+
+
+@pytest.mark.parametrize("replan_budget", [0, 2])
+def test_editor_replan_keeps_current_chapter_and_stops_at_budget(
+    creative_kernel: tuple[
+        CreativeRuntimeService, RuntimeCommandService, CreativeRunPolicy, CommitId
+    ],
+    replan_budget: int,
+) -> None:
+    runtime, commands, original_policy, base = creative_kernel
+    policy = original_policy.model_copy(update={"max_editor_replans_per_chapter": replan_budget})
+    runtime._policy_resolver = lambda _hash: policy
+    tasks = RuntimeTaskQueryRepository(commands._session_factory)
+    runtime._task_reader = tasks
+
+    class ReplanningWriter(_Writer):
+        async def run(self, request: WritingLoopRequest) -> WritingLoopResult:
+            ref = self._artifacts.put(b"editor feedback", "text/plain", SchemaVersion("1.0.0"))
+            return cast(
+                WritingLoopResult,
+                SimpleNamespace(
+                    status=WritingLoopTerminalStatus.PLANNER_REPLAN_REQUIRED,
+                    artifacts=(ref,),
+                    editorial_reports=(
+                        SimpleNamespace(
+                            report_id=StableId("report.replan"),
+                            draft_id=ref.artifact_id,
+                            issues=(),
+                            rewrite_directive=SimpleNamespace(instructions=("Clarify the goal",)),
+                        ),
+                    ),
+                ),
+            )
+
+    runtime._writer = ReplanningWriter(runtime._artifacts)
+    result = runtime.start(
+        CreativeRunRequest(
+            run_id=RunId("run.editor-replan"),
+            project_id=ProjectId("project.test"),
+            basis_commit=base,
+            policy=policy,
+            target_chapters=3,
+        )
+    )
+    for generation in range(replan_budget + 1):
+        assert result.current_task_id is not None
+        waiting = asyncio.run(runtime.advance(result.current_task_id, worker_id="planner"))
+        assert waiting.current_task_id is not None
+        commit_id = _accept(
+            runtime,
+            commands,
+            policy,
+            waiting.current_task_id,
+            kind=CandidateKind.PLAN,
+            number=generation,
+        )
+        projection = asyncio.run(runtime.advance(commit_id, worker_id="commit"))
+        assert projection.current_task_id is not None
+        draft = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
+        assert draft.current_task_id is not None
+        draft_task = commands.get_task(draft.current_task_id)
+        assert draft_task.chapter_index == 1
+        assert draft_task.planning_generation == generation
+        result = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer"))
+        if generation < replan_budget:
+            assert result.reason_code == "editor_requested_chapter_replan"
+            assert result.current_task_id is not None
+            plan_task = commands.get_task(result.current_task_id)
+            assert plan_task.horizon_start == 1
+            assert plan_task.chapter_index == 0
+            assert plan_task.planning_generation == generation + 1
+            assert any(
+                ref.media_type == "application/vnd.novel-agent.editor-plan-feedback+json"
+                for ref in plan_task.input_artifact_refs
+            )
+        else:
+            assert result.terminal is CreativeRunTerminal.BUDGET_REVIEW
+            assert result.reason_code == "editor_replan_budget_exhausted"
+    assert all(
+        task.kind is not TaskKind.DRAFT_COMMIT
+        for task in tasks.list_run(RunId("run.editor-replan"))
+    )

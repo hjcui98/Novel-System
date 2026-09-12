@@ -1,0 +1,69 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "affected_criterion_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Affected Criterion Ids",
+      "type": "array"
+    },
+    "disposition": {
+      "enum": [
+        "avoided",
+        "supported",
+        "blocking"
+      ],
+      "title": "Disposition",
+      "type": "string"
+    },
+    "draft_evidence_quotes": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Draft Evidence Quotes",
+      "type": "array"
+    },
+    "evidence_quotes": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Evidence Quotes",
+      "type": "array"
+    },
+    "gap": {
+      "minLength": 1,
+      "title": "Gap",
+      "type": "string"
+    },
+    "rationale": {
+      "minLength": 1,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "required_for_plan": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Required For Plan"
+    }
+  },
+  "required": [
+    "gap",
+    "disposition",
+    "rationale"
+  ],
+  "title": "MemoryGapAssessment",
+  "type": "object"
+}

@@ -37,10 +37,11 @@ from novel_agent.domain.changes import (
     EvidenceSupportDecision,
     EvidenceSupportDisposition,
     ObservedChangeSet,
+    OrdinaryCurationPageReceipt,
     WorldRecordKind,
 )
 from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
-from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory import PlanObligation, WorldRootDocument
 from novel_agent.domain.memory_write import (
     CuratorRecordKindCounts,
     CuratorRecordKindCoverageReceipt,
@@ -75,6 +76,12 @@ from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.evidence_support import EvidenceSupportGate
 from novel_agent.services.model_call_ledger import bounded_model_request_id
 from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.ordinary_curation import (
+    OrdinaryCurationIncomplete,
+    extract_source_batches,
+    source_batches,
+    world_working_view,
+)
 
 
 class ModelCurationContractError(ValueError):
@@ -270,6 +277,8 @@ class ModelCurator:
         self.last_prompt_fingerprint: ArtifactId | None = None
         self.last_operation_filter_receipts: tuple[ProposalOperationFilterReceipt, ...] = ()
         self.last_record_kind_coverage: CuratorRecordKindCoverageReceipt | None = None
+        self.last_ordinary_pages: tuple[OrdinaryCurationPageReceipt, ...] = ()
+        self.last_ordinary_calls: tuple[ModelCallRecord, ...] = ()
         self._pending_record_kind_proposed: dict[WorldRecordKind, int] = {}
 
     @property
@@ -475,6 +484,7 @@ class ModelCurator:
         current_world: WorldRootDocument,
         request: ModelRequest,
         *,
+        planned_obligations: tuple[PlanObligation, ...] = (),
         contract_prompt: str | None = None,
         repair_feedback: str | None = None,
         cumulative_token_budget: int | None = None,
@@ -488,6 +498,8 @@ class ModelCurator:
         binds each quote to a content-addressed candidate id.
         """
 
+        self.last_ordinary_calls = ()
+        self.last_ordinary_pages = ()
         chapter = Stage1Curator._chapter(text_root, chapter_index)
         candidates = self._evidence_generator.generate(text_root, chapter_index)
         self.last_evidence_candidates = candidates
@@ -518,7 +530,11 @@ class ModelCurator:
             if repair_feedback is not None
             else ""
         )
-        world_view_bytes = canonical_json_bytes(self._world_model_view(current_world))
+        world_view_bytes = canonical_json_bytes(
+            world_working_view(
+                current_world, "\n".join(unit.text for unit in source_batches(chapter)[0])
+            )
+        )
         print(
             f"[measure] curator prompt world_bytes={len(world_view_bytes)} "
             f"candidates={len(candidates)} chapter_bytes={len(chapter.model_dump_json())}",
@@ -532,8 +548,9 @@ class ModelCurator:
                     + _source_bound_prompt(source_evidence_requirement)
                     + "Extract the CURATOR_EVIDENCE_DRAFT JSON from this revealed chapter "
                     "only. "
-                    "The operations key is required. An empty operations array is valid only "
-                    "for a complete no-durable-delta result: coverage must equal 1, "
+                    "The operations key is required. Empty operations may request a World lookup, "
+                    "continue source coverage, or report plan observations. An exhausted batch "
+                    "with no such work requires a no-durable-delta proof: coverage must equal 1, "
                     "declared_vs_observed_diff must be empty, and the draft must include "
                     "no_durable_delta_reason plus supporting no_op_evidence_quotes. "
                     "Unresolved items may still carry short advisory context gaps; retain them "
@@ -563,13 +580,15 @@ class ModelCurator:
                     '<CURATOR_INPUT trusted="false">\n'
                     f"BASE_COMMIT={base_commit.root}\n"
                     "WORLD="
-                    f"{canonical_json_bytes(self._world_model_view(current_world)).decode()}\n"
+                    f"{world_view_bytes.decode()}\n"
                     f"CHAPTER={chapter.model_dump_json()}\n"
                     "EVIDENCE_CANDIDATES="
                     f"{canonical_json_bytes([v.model_dump(mode='json') for v in views]).decode()}\n"
                     "</CURATOR_INPUT>\n"
                     '<CURATOR_OUTPUT_CONTRACT trusted="true">\n'
-                    "Return at most four durable operations. Exclude transient encounters, "
+                    "Return at most four durable operations PER RESPONSE and continue through "
+                    "has_more until all source units are covered. Never truncate chapter changes. "
+                    "Exclude transient encounters, "
                     "temporary feelings, estimates, plans, and unresolved possibilities. "
                     "Prefer one or two precise operations over filling the maximum. "
                     "Use only facts directly stated by each cited evidence candidate. "
@@ -639,12 +658,6 @@ class ModelCurator:
             }
         )
         self.last_prompt_fingerprint = sha256_id(safe_request.prompt.encode("utf-8"))
-        if cumulative_token_budget is not None:
-            self._gateway.preflight_cumulative_token_budget(
-                safe_request,
-                token_budget=cumulative_token_budget,
-                tokens_used=cumulative_tokens_used,
-            )
         # Strict json_schema framing: the endpoint's guided grammar binds the
         # output fields so the model cannot emit legacy fields (evidence_refs,
         # evidence_candidate_ids) or malformed record payloads, and the draft
@@ -655,49 +668,25 @@ class ModelCurator:
         # validation plus contract-feedback retries remain the fail-closed
         # backstop exactly as in the semantic-support corridor.
         try:
-            evidence_draft, call = await self._gateway.generate_structured(
+            evidence_draft, calls, pages = await extract_source_batches(
+                self._gateway,
                 safe_request,
-                CuratorV2EvidenceDraft,
+                chapter,
+                current_world,
+                planned_obligations,
+                base_commit=base_commit,
+                cumulative_token_budget=cumulative_token_budget,
+                cumulative_tokens_used=cumulative_tokens_used,
             )
-        except OpenAIChatOutputLengthError:
-            # A truncated JSON object cannot be admitted or safely repaired from
-            # its prefix. Give the same chapter one bounded, independently
-            # identifiable request whose only change is an explicit compact
-            # output contract. This keeps durable deltas and unresolved context
-            # in the normal downstream pipeline without replaying the identical
-            # length-constrained request.
-            suffix = _COMPACT_OUTPUT_RETRY_SUFFIX
-            compact_request = safe_request.model_copy(
-                update={
-                    "request_id": _bounded_child_model_request_id(safe_request, suffix),
-                    "trace_id": f"{safe_request.trace_id}.compact"[:256],
-                    "max_output_tokens": min(
-                        safe_request.max_output_tokens or _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
-                        _COMPACT_OUTPUT_RETRY_MAX_TOKENS,
-                    ),
-                    "prompt": (
-                        safe_request.prompt + '\n\n<COMPACT_OUTPUT_RETRY trusted="true">\n'
-                        "The previous response reached the output limit before completing "
-                        "JSON. Return one complete replacement JSON object only; never "
-                        "return a prefix, explanation, markdown, or a copy of WORLD or "
-                        "EVIDENCE_CANDIDATES. Keep the output compact: at most four "
-                        "durable operations, short field values, and only the evidence "
-                        "quotes needed to support each operation. Preserve every durable "
-                        "delta that can be supported by the chapter; put uncertain "
-                        "details in short unresolved items rather than inventing them. "
-                        "Do not restate the input catalog.\n"
-                        "</COMPACT_OUTPUT_RETRY>"
-                    ),
-                }
-            )
-            try:
-                evidence_draft, call = await self._gateway.generate_structured(
-                    compact_request,
-                    CuratorV2EvidenceDraft,
-                    json_object_framing=True,
-                )
-            except OpenAIChatOutputLengthError as error:
-                raise ModelCurationOutputIncomplete() from error
+        except OpenAIChatOutputLengthError as error:
+            raise ModelCurationOutputIncomplete(
+                "Curator compact response exhausted output capacity"
+            ) from error
+        except OrdinaryCurationIncomplete as error:
+            raise ModelCurationContractError(str(error)) from error
+        self.last_ordinary_calls = calls
+        self.last_ordinary_pages = pages
+        call = calls[-1]
         self.last_no_op_verification = None
         if evidence_draft.chapter_index != chapter_index:
             raise ModelCurationContractError("Curator draft chapter differs from requested chapter")
@@ -970,6 +959,29 @@ class ModelCurator:
         # retryable proposal rejection instead of a fatal materialization error.
         self._reject_dangling_entity_references(draft, current_world)
 
+        existing = {item.obligation_id: item for item in current_world.obligations}
+        proposed = {
+            item.target_id: item.record
+            for item in draft.operations
+            if isinstance(item.record, CuratorObligationRecord)
+        }
+        missing_due = [
+            item.obligation_id.root
+            for item in planned_obligations
+            if item.obligation_id.root.startswith("milestone.")
+            and item.due_chapter is not None
+            and item.due_chapter <= chapter_index
+            and not (
+                (actual := proposed.get(item.obligation_id, existing.get(item.obligation_id)))
+                is not None
+                and actual.status == "resolved"
+            )
+        ]
+        if missing_due:
+            raise ModelCurationContractError(
+                "due plan milestones rejected or missing: " + ", ".join(missing_due)
+            )
+
         operations: list[ChangeOperation] = []
         for operation in draft.operations:
             bound_evidence = []
@@ -1116,7 +1128,14 @@ class ModelCurator:
                     previous_request_id = page_request.request_id
                 return tuple(batches), tuple(calls)
 
-        outputs = await asyncio.gather(*(run_unit(unit) for unit in units))
+        unit_tasks = [asyncio.create_task(run_unit(unit)) for unit in units]
+        try:
+            outputs = await asyncio.gather(*unit_tasks)
+        except BaseException:
+            for task in unit_tasks:
+                task.cancel()
+            await asyncio.gather(*unit_tasks, return_exceptions=True)
+            raise
         return (
             tuple(batch for batches, _ in outputs for batch in batches),
             tuple(call for _, calls in outputs for call in calls),
@@ -2475,7 +2494,9 @@ class ModelCurator:
                 {"candidate_id": item.candidate_id.root, "text": item.text}
                 for item in all_candidates
             ],
-            "current_world": self._world_model_view(current_world),
+            "current_world": world_working_view(
+                current_world, "\n".join(item.text for item in all_candidates)
+            ),
         }
         suffix = ".noop-verifier"
         verifier_request = request.model_copy(

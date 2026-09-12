@@ -91,6 +91,18 @@ from novel_agent.skills import SkillRegistry
 VERSION = SchemaVersion("1.0.0")
 
 
+class ContractFixtureEndpoint(FakeModelEndpoint):
+    async def generate(self, request: ModelRequest):
+        from tests.editor_review_fixtures import complete_fake_review
+
+        original = self.response_text
+        self.response_text = complete_fake_review(original, request.prompt)
+        try:
+            return await super().generate(request)
+        finally:
+            self.response_text = original
+
+
 @dataclass(slots=True)
 class Harness:
     output: Path
@@ -127,7 +139,7 @@ def _harness(tmp_path: Path, response: str, monkeypatch: pytest.MonkeyPatch) -> 
         (DEFAULT_FIXTURE_DIRECTORY / "writing_task_contract.json").read_text(encoding="utf-8")
     )
     bundle = build_editor_contract_bundle()
-    endpoint = FakeModelEndpoint(response)
+    endpoint = ContractFixtureEndpoint(response)
     gateway = ModelGateway(
         (
             RegisteredModelEndpoint(

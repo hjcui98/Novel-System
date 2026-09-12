@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+
 from novel_agent.adapters.memory_write import TeacherForcedCuratorPort
 from novel_agent.adapters.runtime.stage3_writer import Stage2MWriterContextInvocation
 from novel_agent.domain.artifacts import ArtifactRef
@@ -9,9 +11,19 @@ from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.creative_runtime import CreativeRunPolicy
 from novel_agent.domain.generation import WritingLoopRequest
 from novel_agent.domain.ids import RunId, SchemaVersion, TaskId, bounded_stable_id
-from novel_agent.domain.memory import DerivedBuildStatus, Stage1MemoryNeed, WorldRootDocument
+from novel_agent.domain.memory import (
+    DerivedBuildStatus,
+    RetrievalChannel,
+    Stage1MemoryNeed,
+    WorldRootDocument,
+)
 from novel_agent.domain.memory_write import CuratorProposalRejection, QuarantinePackage
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.retrieval_routing import (
+    RoutePlan,
+    SnapshotCapability,
+    SnapshotCapabilityStatus,
+)
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentMode,
@@ -43,6 +55,7 @@ from novel_agent.services.evidence_first_writer_context_assembler import (
 )
 from novel_agent.services.memory_gateway import MemoryGateway
 from novel_agent.services.projection import DerivedSnapshotRepository
+from novel_agent.services.retrieval_routing import DeterministicChannelPlanner
 from novel_agent.services.task_conditioned_need_generation import TaskPlanConditionedNeedGenerator
 from novel_agent.services.task_focus import TaskFocusExtractor
 from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
@@ -84,6 +97,49 @@ class ExactSnapshotFreshnessCheck:
         return (
             snapshot.snapshot_id == request.snapshot_id
             and snapshot.build_status is DerivedBuildStatus.EXACT
+        )
+
+
+class ProductionMemoryRoutePlans:
+    """Resolve every request against its own snapshot; never mutate shared runner routes."""
+
+    def __init__(self, snapshots: DerivedSnapshotRepository, *, in_memory: bool) -> None:
+        self._snapshots = snapshots
+        self._in_memory = in_memory
+
+    def __call__(self, request: MemoryResolutionRequest) -> tuple[RoutePlan, ...]:
+        attestation = self._snapshots.get_attestation_for_commit(request.base_commit)
+        if attestation is not None:
+            capability = attestation.capability
+            if capability.snapshot_id != request.snapshot_id:
+                raise ValueError("retrieval capability snapshot differs from request")
+        else:
+            # Smoke adapters implement these searches but cannot certify exact R1 lookup.
+            channels = (
+                tuple(
+                    channel
+                    for channel in RetrievalChannel
+                    if channel
+                    not in {
+                        RetrievalChannel.R0,
+                        RetrievalChannel.R1_EXACT,
+                        RetrievalChannel.R1_TEMPORAL,
+                        RetrievalChannel.RERANK,
+                    }
+                )
+                if self._in_memory
+                else ()
+            )
+            capability = SnapshotCapability(
+                source_commit=request.base_commit,
+                snapshot_id=request.snapshot_id,
+                status=SnapshotCapabilityStatus.EXACT,
+                available_channels=channels,
+            )
+        planner = DeterministicChannelPlanner()
+        return tuple(
+            planner.plan(need, capability, access_scope=request.access_scope.value)
+            for need in request.initial_memory_needs
         )
 
 
@@ -280,6 +336,7 @@ class ProductionStage2MWriterContext:
         schema_version: SchemaVersion | None = None,
     ) -> None:
         self._generator = generator
+        self._generation_lock = Lock()
         self._gateway = gateway
         self._assembler = assembler
         self._artifacts = artifacts
@@ -288,14 +345,22 @@ class ProductionStage2MWriterContext:
     def __call__(self, invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
         if invocation.project_id is None:
             raise ValueError("production Stage 2M Writer Context requires a project id")
-        generated = self._generator.generate_with_lineage(
-            invocation.task,
-            invocation.world,
-            invocation.plan,
-            invocation.planning_context,
-            history_text=invocation.text,
-            snapshot_id=invocation.snapshot_id,
-        ).needs
+        with self._generation_lock:
+            generation = self._generator.generate_with_lineage(
+                invocation.task,
+                invocation.world,
+                invocation.plan,
+                invocation.planning_context,
+                history_text=invocation.text,
+                snapshot_id=invocation.snapshot_id,
+                run_id=invocation.run_id,
+            )
+        generation_ref = self._artifacts.put(
+            canonical_json_bytes(generation.model_dump(mode="json")),
+            "application/vnd.novel-agent.need-generation-result+json",
+            self._schema_version,
+        )
+        generated = generation.needs
         if not generated:
             raise ValueError("production Stage 2M Writer Context produced no Memory Needs")
         needs = tuple(
@@ -447,6 +512,7 @@ class ProductionStage2MWriterContext:
                                     gateway_result.frozen_evidence_selections_artifact
                                 ),
                                 "budget_expansion_receipt": receipt_ref,
+                                "need_generation_artifact": generation_ref,
                             }
                         )
                     }

@@ -20,7 +20,14 @@ from novel_agent.domain.memory_benchmark import (
 from novel_agent.domain.model_calls import RetrievalInferenceCallRecord
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.text import TextBlock as TextBlock
-from novel_agent.domain.world import Entity, Event, PlanNode, RelationRecord, StateRecord
+from novel_agent.domain.world import (
+    Entity,
+    Event,
+    NarrativeRequirements,
+    PlanNode,
+    RelationRecord,
+    StateRecord,
+)
 
 
 class SceneDocument(DomainModel):
@@ -127,7 +134,7 @@ class ChapterSummaryRootDocument(DomainModel):
         return self
 
 
-class ChapterGoal(DomainModel):
+class ChapterGoal(NarrativeRequirements):
     goal_id: StableId
     chapter_index: int = Field(ge=1)
     summary: str = Field(min_length=1)
@@ -185,9 +192,14 @@ class PlanRootDocument(DomainModel):
     schema_version: SchemaVersion
     nodes: tuple[PlanNode, ...] = ()
     chapter_goals: tuple[ChapterGoal, ...] = ()
+    obligations: tuple[PlanObligation, ...] = ()
 
     @model_validator(mode="after")
     def validate_plan_graph(self) -> PlanRootDocument:
+        if len({item.obligation_id for item in self.obligations}) != len(self.obligations):
+            raise ValueError("planned obligation ids must be unique")
+        if any(item.status.value != "open" or item.evidence_refs for item in self.obligations):
+            raise ValueError("PlanRoot declares open intentions, not observed fulfillment")
         node_ids = {node.plan_node_id for node in self.nodes}
         if len(node_ids) != len(self.nodes):
             raise ValueError("plan node ids must be unique")
@@ -195,6 +207,23 @@ class PlanRootDocument(DomainModel):
             node.parent_id is not None and node.parent_id not in node_ids for node in self.nodes
         ):
             raise ValueError("plan node parent must exist in the same plan root")
+        by_id = {node.plan_node_id: node for node in self.nodes}
+        for node in self.nodes:
+            ancestors: set[StableId] = set()
+            current: PlanNode | None = node
+            while current is not None:
+                if current.plan_node_id in ancestors:
+                    raise ValueError("plan parent graph contains a cycle")
+                ancestors.add(current.plan_node_id)
+                current = by_id.get(current.parent_id) if current.parent_id is not None else None
+        known = (
+            node_ids
+            | {goal.goal_id for goal in self.chapter_goals}
+            | {obligation.obligation_id for obligation in self.obligations}
+        )
+        for source in (*self.nodes, *self.chapter_goals):
+            if not set(source.dependency_ids) <= known:
+                raise ValueError("plan dependency references an unknown accepted item")
         if len({goal.goal_id for goal in self.chapter_goals}) != len(self.chapter_goals):
             raise ValueError("chapter goal ids must be unique")
         return self

@@ -423,6 +423,16 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "BudgetSource": {
+      "enum": [
+        "explicit_request",
+        "invocation_budget",
+        "endpoint_default",
+        "model_max_auto"
+      ],
+      "title": "BudgetSource",
+      "type": "string"
+    },
     "CommitId": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "CommitId",
@@ -566,6 +576,14 @@
           "minimum": 1,
           "title": "Token Count",
           "type": "integer"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [
@@ -1014,6 +1032,57 @@
       "title": "EditorialLocation",
       "type": "object"
     },
+    "EditorialRepairHistoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "issue_summaries": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Issue Summaries",
+          "type": "array"
+        },
+        "repaired_draft_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "report_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verdict": {
+          "$ref": "#/$defs/EditorialVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "draft_id",
+        "verdict"
+      ],
+      "title": "EditorialRepairHistoryEntry",
+      "type": "object"
+    },
     "EditorialReport": {
       "additionalProperties": false,
       "description": "Read-only Editor result used for routing; it never authorizes a write.",
@@ -1040,6 +1109,14 @@
           "title": "Issues",
           "type": "array"
         },
+        "memory_gap_assessments": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MemoryGapAssessment"
+          },
+          "title": "Memory Gap Assessments",
+          "type": "array"
+        },
         "model_call_record": {
           "anyOf": [
             {
@@ -1050,6 +1127,14 @@
             }
           ],
           "default": null
+        },
+        "plan_assessments": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanRequirementAssessment"
+          },
+          "title": "Plan Assessments",
+          "type": "array"
         },
         "planner_replan_required": {
           "default": false,
@@ -1111,6 +1196,44 @@
         "created_at"
       ],
       "title": "EditorialReport",
+      "type": "object"
+    },
+    "EditorialReviewInput": {
+      "additionalProperties": false,
+      "description": "Minimum trusted input for an independent read-only Editor review.",
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/WriterContextSnapshot"
+        },
+        "draft": {
+          "$ref": "#/$defs/DraftArtifact"
+        },
+        "prior_repair_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EditorialRepairHistoryEntry"
+          },
+          "title": "Prior Repair History",
+          "type": "array"
+        },
+        "repair_chain": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RepairedDraft"
+          },
+          "title": "Repair Chain",
+          "type": "array"
+        },
+        "writing_task": {
+          "$ref": "#/$defs/WritingTaskContract"
+        }
+      },
+      "required": [
+        "draft",
+        "writing_task",
+        "context"
+      ],
+      "title": "EditorialReviewInput",
       "type": "object"
     },
     "EditorialSeverity": {
@@ -1320,6 +1443,75 @@
       "title": "LoopRoundProgressKind",
       "type": "string"
     },
+    "MemoryGapAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_criterion_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Criterion Ids",
+          "type": "array"
+        },
+        "disposition": {
+          "enum": [
+            "avoided",
+            "supported",
+            "blocking"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "draft_evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Draft Evidence Quotes",
+          "type": "array"
+        },
+        "evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "gap": {
+          "minLength": 1,
+          "title": "Gap",
+          "type": "string"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "required_for_plan": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required For Plan"
+        }
+      },
+      "required": [
+        "gap",
+        "disposition",
+        "rationale"
+      ],
+      "title": "MemoryGapAssessment",
+      "type": "object"
+    },
     "MemoryHintChangeKind": {
       "enum": [
         "ADD",
@@ -1436,6 +1628,297 @@
       "title": "ModelCostAvailability",
       "type": "string"
     },
+    "ModelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "agent_mode": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Mode"
+        },
+        "agent_spec_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "budget_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BudgetSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "enable_thinking": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enable Thinking"
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "maximum": 131072,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Output Tokens"
+        },
+        "model_role": {
+          "$ref": "#/$defs/ModelRole"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "prompt_contract_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Prompt Contract Hashes",
+          "type": "array"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ModelCallPurpose"
+        },
+        "render_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "repetition_penalty": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 2.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repetition Penalty"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "response_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Schema"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "scheduling_dependency_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Scheduling Dependency Ids",
+          "type": "array"
+        },
+        "scheduling_need_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scheduling_priority": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Scheduling Priority",
+          "type": "integer"
+        },
+        "scheduling_stage": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduling Stage"
+        },
+        "scheduling_timeout_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 3600.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduling Timeout Seconds"
+        },
+        "skill_contract_hashes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "title": "Skill Contract Hashes",
+          "type": "array"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "thinking_token_budget": {
+          "anyOf": [
+            {
+              "maximum": 131072,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Token Budget"
+        },
+        "timeout_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 900.0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "tool_policy_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "task_id",
+        "model_role",
+        "purpose",
+        "trace_id",
+        "prompt"
+      ],
+      "title": "ModelRequest",
+      "type": "object"
+    },
     "ModelRole": {
       "enum": [
         "implementation_model",
@@ -1487,6 +1970,42 @@
         "cost_usd"
       ],
       "title": "ModelUsage",
+      "type": "object"
+    },
+    "PlanRequirementAssessment": {
+      "additionalProperties": false,
+      "description": "Independent Editor judgment bound by the host to a named criterion and actual prose.",
+      "properties": {
+        "criterion_id": {
+          "minLength": 1,
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evidence_quotes": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "satisfied",
+        "rationale"
+      ],
+      "title": "PlanRequirementAssessment",
       "type": "object"
     },
     "ProjectId": {
@@ -2097,6 +2616,14 @@
         "snapshot_id": {
           "$ref": "#/$defs/StableId"
         },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
         "source_commit": {
           "$ref": "#/$defs/CommitId"
         },
@@ -2156,6 +2683,14 @@
           ],
           "default": null,
           "title": "Truth Class"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [
@@ -2596,16 +3131,183 @@
       "title": "WriterWorkPlanResult",
       "type": "object"
     },
+    "WritingLengthPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_characters": {
+          "minimum": 1,
+          "title": "Maximum Characters",
+          "type": "integer"
+        },
+        "minimum_characters": {
+          "minimum": 1,
+          "title": "Minimum Characters",
+          "type": "integer"
+        },
+        "target_characters": {
+          "minimum": 1,
+          "title": "Target Characters",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_characters",
+        "target_characters",
+        "maximum_characters"
+      ],
+      "title": "WritingLengthPolicy",
+      "type": "object"
+    },
     "WritingLoopPhase": {
       "description": "Durable safe frontiers in the fixed Writer product loop.",
       "enum": [
         "REACTIVE_MEMORY_PENDING",
         "EDITOR_PENDING",
+        "REPAIR_PENDING",
         "OBSERVER_PENDING",
         "RECONCILIATION_PENDING"
       ],
       "title": "WritingLoopPhase",
       "type": "string"
+    },
+    "WritingTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_criteria": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
+        "active_plan_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Active Plan Obligations",
+          "type": "array"
+        },
+        "blocking_gaps": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Blocking Gaps",
+          "type": "array"
+        },
+        "chapter_goal": {
+          "minLength": 1,
+          "title": "Chapter Goal",
+          "type": "string"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "entry_conditions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Entry Conditions",
+          "type": "array"
+        },
+        "forbidden_reveals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Forbidden Reveals",
+          "type": "array"
+        },
+        "length_policy": {
+          "$ref": "#/$defs/WritingLengthPolicy"
+        },
+        "mandatory_constraints": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Mandatory Constraints",
+          "type": "array"
+        },
+        "narrative_person": {
+          "minLength": 1,
+          "title": "Narrative Person",
+          "type": "string"
+        },
+        "pov": {
+          "minLength": 1,
+          "title": "Pov",
+          "type": "string"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        },
+        "required_beats": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Required Beats",
+          "type": "array"
+        },
+        "scene_goals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Scene Goals",
+          "type": "array"
+        },
+        "style_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Style Requirements",
+          "type": "array"
+        },
+        "target_chapter": {
+          "minimum": 1,
+          "title": "Target Chapter",
+          "type": "integer"
+        },
+        "target_scenes": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Target Scenes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract_id",
+        "target_chapter",
+        "target_scenes",
+        "pov",
+        "narrative_person",
+        "chapter_goal",
+        "length_policy"
+      ],
+      "title": "WritingTaskContract",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -2684,6 +3386,17 @@
       ],
       "default": null
     },
+    "frozen_request_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "initial_draft": {
       "anyOf": [
         {
@@ -2695,10 +3408,41 @@
       ],
       "default": null
     },
+    "local_repairs_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Local Repairs Used",
+      "type": "integer"
+    },
+    "major_rewrites_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Major Rewrites Used",
+      "type": "integer"
+    },
     "memory_rounds": {
       "minimum": 0,
       "title": "Memory Rounds",
       "type": "integer"
+    },
+    "model_call_records": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelCallRecord"
+      },
+      "title": "Model Call Records",
+      "type": "array"
+    },
+    "model_request": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelRequest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "observation": {
       "anyOf": [
@@ -2730,6 +3474,28 @@
     },
     "recent_prose_ref": {
       "$ref": "#/$defs/ArtifactRef"
+    },
+    "repair_input": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EditorialReviewInput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repair_stage": {
+      "default": "dispatch",
+      "enum": [
+        "dispatch",
+        "local_review",
+        "rewrite_draft",
+        "rewrite_review"
+      ],
+      "title": "Repair Stage",
+      "type": "string"
     },
     "repaired_draft": {
       "anyOf": [

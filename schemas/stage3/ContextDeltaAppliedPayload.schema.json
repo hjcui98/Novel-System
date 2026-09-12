@@ -310,6 +310,14 @@
           "minimum": 1,
           "title": "Token Count",
           "type": "integer"
+        },
+        "verified_evidence": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Verified Evidence",
+          "type": "array"
         }
       },
       "required": [

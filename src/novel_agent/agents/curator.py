@@ -6,7 +6,7 @@ from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.ids import CommitId, SchemaVersion
-from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory import PlanObligation, WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.stage2 import (
     AgentMode,
@@ -55,6 +55,7 @@ class CuratorReplayAgent:
         base_commit: CommitId,
         current_world: WorldRootDocument,
         request: ModelRequest,
+        planned_obligations: tuple[PlanObligation, ...] = (),
         proposal_feedback: str | None = None,
         repair_query: str | None = None,
         cumulative_token_budget: int | None = None,
@@ -69,6 +70,7 @@ class CuratorReplayAgent:
                 base_commit=base_commit,
                 current_world=current_world,
                 request=request,
+                planned_obligations=planned_obligations,
                 proposal_feedback=proposal_feedback,
                 repair_query=repair_query,
                 cumulative_token_budget=cumulative_token_budget,
@@ -171,6 +173,7 @@ class CuratorReplayAgent:
         base_commit: CommitId,
         current_world: WorldRootDocument,
         request: ModelRequest,
+        planned_obligations: tuple[PlanObligation, ...] = (),
         proposal_feedback: str | None,
         repair_query: str | None,
         cumulative_token_budget: int | None,
@@ -180,10 +183,12 @@ class CuratorReplayAgent:
         task_payload = (
             f"chapter_index={chapter_index}\n"
             f"base_commit={base_commit.root}\n"
-            "Output ChapterChangeDraftV2 only; cite registered evidence_candidate_ids. "
-            "Always emit the operations key. An empty array requires a complete explicit "
+            "Output CuratorV2EvidenceDraft only; cite exact semantic evidence_quotes. "
+            "Always emit the operations key. Empty arrays for plan observations, lookup "
+            "or continuation "
+            "are allowed; a final no-change response requires a complete explicit "
             "no-durable-delta proof using no_durable_delta_reason and "
-            "no_op_evidence_candidate_ids; unresolved may contain advisory gaps that must "
+            "no_op_evidence_quotes; unresolved may contain advisory gaps that must "
             "be preserved for downstream consumers and do not by themselves invalidate the "
             "no-op proof; incomplete empty output is rejected. "
             "The trusted service binds all offsets, hashes and EvidenceRef values."
@@ -219,6 +224,7 @@ class CuratorReplayAgent:
             current_world,
             prepared.request,
             contract_prompt=prepared.rendered_prompt,
+            planned_obligations=planned_obligations,
             repair_feedback=proposal_feedback,
             cumulative_token_budget=cumulative_token_budget,
             cumulative_tokens_used=cumulative_tokens_used,

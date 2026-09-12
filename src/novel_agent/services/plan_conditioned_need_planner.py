@@ -431,6 +431,7 @@ class PlanConditionedNeedPlanner:
         *,
         gateway: ModelGateway | None = None,
         model_role: ModelRole = ModelRole.BATCH_TEST,
+        model_purpose: ModelCallPurpose = ModelCallPurpose.BATCH_TEST,
         temperature: float = 0.0,
         max_drafts: int | None = None,
         max_retries: int = 1,
@@ -453,6 +454,7 @@ class PlanConditionedNeedPlanner:
             raise ValueError("planner thinking token budget must be non-negative")
         self._gateway = gateway
         self._model_role = model_role
+        self._model_purpose = model_purpose
         self._temperature = temperature
         self._max_drafts = max_drafts
         self._max_retries = max_retries
@@ -822,7 +824,7 @@ class PlanConditionedNeedPlanner:
             run_id=resolved_run_id,
             task_id=TaskId(task.task_id.root),
             model_role=self._model_role,
-            purpose=ModelCallPurpose.BATCH_TEST,
+            purpose=self._model_purpose,
             trace_id=f"stage2m-planner-coverage-audit:{task.task_id.root}:{page.page_id.root}",
             prompt=prompt,
             max_output_tokens=min(self._max_output_tokens, 4096),
@@ -946,7 +948,7 @@ class PlanConditionedNeedPlanner:
                 run_id=resolved_run_id,
                 task_id=task_id,
                 model_role=self._model_role,
-                purpose=ModelCallPurpose.BATCH_TEST,
+                purpose=self._model_purpose,
                 trace_id=(
                     f"stage2m-need-planner:{task.task_id.root}:{prompt_digest}:"
                     f"attempt{attempt_index + 1}"
@@ -1165,10 +1167,8 @@ class PlanConditionedNeedPlanner:
         repair_instruction: str | None = None,
         p1_block: str = "",
     ) -> str:
-        outline = "\n".join(f"- {node.summary}" for node in context.visible_outline_nodes)
-        goals = "\n".join(
-            f"- 第{goal.chapter_index}章: {goal.summary}" for goal in context.chapter_goals
-        )
+        outline = "\n".join(node.model_dump_json() for node in context.visible_outline_nodes)
+        goals = "\n".join(goal.model_dump_json() for goal in context.chapter_goals)
         entities = "\n".join(
             (
                 f"- {entity.label}"

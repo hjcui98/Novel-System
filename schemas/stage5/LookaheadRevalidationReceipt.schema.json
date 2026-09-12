@@ -44,6 +44,22 @@
       "default": null,
       "title": "Affects Future Plan"
     },
+    "changed_dependency_roots": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Dependency Roots",
+      "type": "array"
+    },
+    "checked_dependency_roots": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Checked Dependency Roots",
+      "type": "array"
+    },
     "current_commit": {
       "$ref": "#/$defs/CommitId"
     },

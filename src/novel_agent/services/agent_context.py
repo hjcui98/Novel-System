@@ -51,6 +51,17 @@ def _view_hash(view: AgentContextView) -> ArtifactId:
         mode="json",
         exclude={"context_hash", "provider_validity_receipt"},
     )
+    # Empty trust annotations must not invalidate checkpoints written before this field existed.
+    for layer in (
+        "protected_items",
+        "active_memory_items",
+        "working_items",
+        "compacted_prefix_items",
+        "recent_settled_tail",
+    ):
+        for item in payload[layer]:
+            if not item.get("verified_evidence"):
+                item.pop("verified_evidence", None)
     return content_id(payload)
 
 
@@ -739,10 +750,17 @@ class AgentContextRuntime:
         after = seed.basis_event_position
         if checkpoint is not None:
             raw = self._artifacts.read_verified(checkpoint.state_artifact_ref)
-            view = AgentContextView.model_validate_json(raw)
-            if view.task_id != seed.task_id or view.consumer is not seed.consumer:
+            persisted = AgentContextView.model_validate_json(raw)
+            if persisted.task_id != seed.task_id or persisted.consumer is not seed.consumer:
                 raise ContextProjectionError("checkpoint belongs to another Context stream")
-            after = checkpoint.event_position
+            # A workflow checkpoint can be newer than the periodic Context checkpoint,
+            # including working instructions added without advancing the event cursor.
+            if (persisted.basis_event_position, persisted.revision) > (
+                seed.basis_event_position,
+                seed.revision,
+            ):
+                view = persisted
+                after = checkpoint.event_position
         events = self._events.replay(run_id, after_sequence=after)
         return self._projector.full_replay(view, events)
 

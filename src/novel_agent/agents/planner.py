@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -44,6 +45,7 @@ from novel_agent.domain.text import EvidenceRef
 from novel_agent.prompts.registry import PromptRegistry, PromptTemplate, content_hash
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+from novel_agent.services.planning_sources import reference_ids, trusted_sections
 from novel_agent.skills.registry import SkillRegistry, SkillTemplate
 
 PLANNER_MODES = (
@@ -86,11 +88,12 @@ def constrain_planner_selected_skills(
 INQUIRY_OUTPUT_CONSTRAINTS = (
     "OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. Do not quote or restate "
     "SOURCE_DATA; do not emit markdown, reasoning, or commentary outside JSON. Use at most "
-    "three goal_proposals, three assumptions, and three questions, and keep every free-text "
-    "field under 240 characters. PROVENANCE_CONSTRAINT=For every goal_proposals, assumptions, "
-    'and questions item, set provenance exactly to {"provenance":"planner_proposed", '
-    '"reference_ids":[],"artifact_refs":[]}; never put source IDs in those arrays and '
-    "never use author_supplied, accepted_plan_derived, canon_derived, or reviewer_derived. "
+    "{max_goals} goal_proposals, {max_questions} assumptions and questions each; keep narrative "
+    "fields focused but sufficiently specific. PROVENANCE_CONSTRAINT=Use author_supplied, "
+    "accepted_plan_derived, canon_derived or reviewer_derived only with supplied source "
+    "references of that origin. New ideas use planner_proposed with empty reference arrays. "
+    "METHOD_SELECTION=Select at most two optional methods from METHOD_CARDS in "
+    "selected_skill_ids; choose only methods useful for this decision. "
     "GROUNDING_CONSTRAINT=For fact or relation questions, use exact labels from "
     "WORLD_ENTITY_LABELS in entity_labels or relation_subject/relation_object; never invent "
     "translated labels that are not listed. "
@@ -103,6 +106,14 @@ INQUIRY_OUTPUT_CONSTRAINTS = (
     "chapters:{horizon_start}-{horizon_end}. HORIZON_CONSTRAINT=Always include numeric "
     "horizon_start and horizon_end, copying the HORIZON values exactly; never omit them."
 )
+
+
+def _inquiry_constraints(mode: AgentMode) -> str:
+    broad = mode in {AgentMode.PROJECT_BOOTSTRAP, AgentMode.STORY, AgentMode.ARC_VOLUME}
+    return INQUIRY_OUTPUT_CONSTRAINTS.replace("{max_goals}", "10" if broad else "6").replace(
+        "{max_questions}", "8" if broad else "5"
+    )
+
 
 PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "TURN_OUTPUT_CONSTRAINTS=Return only compact JSON matching the schema. If action is "
@@ -147,6 +158,7 @@ def build_planner_contract_bundle(
     *,
     package_root: Path | None = None,
     version: SchemaVersion = DEFAULT_PLANNER_CONTRACT_VERSION,
+    reviewer_skill_ids: tuple[StableId, ...] = (),
 ) -> PlannerContractBundle:
     """Build the only production registration path for Planner and Reviewer."""
 
@@ -301,7 +313,14 @@ def build_planner_contract_bundle(
                     output_schema=review_output,
                     system_prompt=system,
                     task_prompt=reviewer_prompt,
-                    skills=(reviewer_skill, *reviewer_lenses),
+                    skills=(
+                        reviewer_skill,
+                        *(
+                            item
+                            for item in reviewer_lenses
+                            if not reviewer_skill_ids or item.contract_id in reviewer_skill_ids
+                        ),
+                    ),
                     tool_policy=reviewer_policy,
                 )
             )
@@ -363,6 +382,39 @@ class PlannerAgent:
         self._runner = runner
         self._artifacts = artifacts
 
+    @staticmethod
+    def _allowed_methods(task: PlanningTask) -> tuple[StableId, ...]:
+        mode_ids = planner_skill_ids_for_mode(task.mode)
+        allowed = tuple(
+            item
+            for item in mode_ids
+            if not task.allowed_skill_ids or item in task.allowed_skill_ids
+        )
+        required = {
+            StableId("skill.planning-inquiry"),
+            StableId(f"skill.planner.{task.mode.value}"),
+        }
+        if not required <= set(allowed):
+            raise PlannerInvocationError("Planner allowlist lacks the current mode's core methods")
+        return allowed
+
+    def _plan_methods(
+        self, task: PlanningTask, inquiry_ref: ArtifactRef | None
+    ) -> tuple[StableId, ...]:
+        allowed = self._allowed_methods(task)
+        chosen: tuple[StableId, ...] = ()
+        if inquiry_ref is not None:
+            inquiry = PlanningInquiry.model_validate_json(
+                self._artifacts.read_verified(inquiry_ref)
+            )
+            chosen = inquiry.selected_skill_ids
+        core = StableId(f"skill.planner.{task.mode.value}")
+        if not set(chosen) <= set(allowed):
+            raise PlannerInvocationError("Frozen inquiry selected a disallowed method")
+        return tuple(
+            dict.fromkeys((core, *(item for item in chosen if item in _PLANNER_OPTIONAL_SKILL_IDS)))
+        )
+
     async def run(
         self,
         *,
@@ -392,6 +444,7 @@ class PlannerAgent:
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
+            selected_skill_ids=self._plan_methods(task, reviewed_inquiry_ref),
         )
         execution = await self._runner.execute(prepared, _proposal_output_type(task))
         result = self._materialize_plan(
@@ -440,6 +493,7 @@ class PlannerAgent:
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
+            selected_skill_ids=self._plan_methods(task, reviewed_inquiry_ref),
         )
         execution = await self._runner.execute(prepared, PlanningTurnDraft)
         draft = execution.output
@@ -461,9 +515,7 @@ class PlannerAgent:
                     memory_questions=draft.memory_questions,
                     assumptions=draft.assumptions,
                     unresolved=draft.unresolved,
-                    selected_skill_ids=constrain_planner_selected_skills(
-                        task.mode, draft.selected_skill_ids
-                    ),
+                    selected_skill_ids=tuple(item.contract_id for item in prepared.skill_refs),
                     used_context_item_ids=draft.used_context_item_ids,
                 ),
                 None,
@@ -488,9 +540,7 @@ class PlannerAgent:
                 plan_proposal=result.plan_proposal,
                 assumptions=draft.assumptions,
                 unresolved=draft.unresolved,
-                selected_skill_ids=constrain_planner_selected_skills(
-                    task.mode, draft.selected_skill_ids
-                ),
+                selected_skill_ids=tuple(item.contract_id for item in prepared.skill_refs),
                 used_context_item_ids=draft.used_context_item_ids,
             ),
             result,
@@ -605,6 +655,7 @@ class PlannerAgent:
         task: PlanningTask,
         source_payload: str,
         source_artifacts: tuple[ArtifactRef, ...],
+        trusted_context_artifacts: tuple[ArtifactRef, ...] = (),
         request: ModelRequest,
         horizon_start: int | None = None,
         horizon_end: int | None = None,
@@ -616,6 +667,39 @@ class PlannerAgent:
             {artifact.artifact_id for artifact in source_artifacts}
         ) != len(source_artifacts):
             raise PlannerInvocationError("PlanningTask sources require unique artifact bindings")
+        origins: dict[str, tuple[set[str], set[ArtifactRef]]] = {
+            "author_supplied": ({item.root for item in task.source_ids}, set(source_artifacts)),
+            "accepted_plan_derived": (set(), set()),
+            "canon_derived": (set(), set()),
+            "reviewer_derived": (set(), set()),
+            "planner_proposed": (set(), set()),
+        }
+        for section, payload, refs in trusted_sections(self._artifacts, trusted_context_artifacts):
+            origin = {
+                "accepted_plan": "accepted_plan_derived",
+                "revision_feedback": "reviewer_derived",
+                "current_state": "canon_derived",
+                "project_profile": "canon_derived",
+            }.get(section)
+            if origin is not None:
+                origins[origin][0].update(reference_ids(payload))
+                origins[origin][1].update(refs)
+        source_catalog = json.dumps(
+            {
+                origin: {
+                    "reference_ids": sorted(ids),
+                    "artifact_refs": [
+                        ref.model_dump(mode="json")
+                        for ref in sorted(refs, key=lambda item: item.artifact_id.root)
+                    ],
+                }
+                for origin, (ids, refs) in origins.items()
+            },
+            ensure_ascii=False,
+        )
+        cards = self._runner.skill_cards(
+            AgentType.PLANNER, task.mode, version.root, self._allowed_methods(task)
+        )
         prepared = self._runner.prepare(
             AgentType.PLANNER,
             task.mode,
@@ -626,12 +710,15 @@ class PlannerAgent:
                 f"PLANNING_TASK={task.model_dump_json()}\n"
                 f"HORIZON={horizon_start}:{horizon_end}\n"
                 f"AUTHOR_OVERRIDES={explicit_overrides}\n"
-                f"{INQUIRY_OUTPUT_CONSTRAINTS}\n"
+                f"{_inquiry_constraints(task.mode)}\n"
+                f"METHOD_CARDS={cards}\n"
+                f"PROVENANCE_CATALOG={source_catalog}\n"
                 f"SOURCE_DATA={source_payload}"
             ),
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
-            input_artifacts=source_artifacts,
+            input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
+            selected_skill_ids=(StableId("skill.planning-inquiry"),),
         )
         execution = await self._runner.execute(prepared, PlanningInquiryDraft)
         draft = execution.output
@@ -639,18 +726,20 @@ class PlannerAgent:
             raise PlannerInvocationError("Planning inquiry mode differs from trusted task")
         if (draft.horizon_start, draft.horizon_end) != (horizon_start, horizon_end):
             raise PlannerInvocationError("Planning inquiry horizon differs from trusted request")
-        allowed_sources = set(task.source_ids)
         references = (
             *(item.provenance for item in draft.goal_proposals),
             *(item.provenance for item in draft.assumptions),
             *(item.provenance for item in draft.questions),
         )
-        if any(
-            reference.provenance.value == "author_supplied"
-            and not set(reference.reference_ids).issubset(allowed_sources)
-            for reference in references
-        ):
-            raise PlannerInvocationError("Planning inquiry cites a foreign author source")
+        for reference in references:
+            ids, allowed_refs = origins[reference.provenance.value]
+            if (
+                not {item.root for item in reference.reference_ids} <= ids
+                or not set(reference.artifact_refs) <= allowed_refs
+            ):
+                raise PlannerInvocationError(
+                    "Planning inquiry cites an unsupplied or wrongly classified source"
+                )
         identity = content_id(
             {
                 "task": task.model_dump(mode="json"),
@@ -666,7 +755,11 @@ class PlannerAgent:
             resolved_generation = 2 if generation is None else generation
         if resolved_generation < 1 or (parent_inquiry_id is not None and resolved_generation < 2):
             raise PlannerInvocationError("Planning inquiry generation is inconsistent")
+        optional = tuple(dict.fromkeys(draft.selected_skill_ids))
+        if not set(optional) <= set(self._allowed_methods(task)) or len(optional) > 3:
+            raise PlannerInvocationError("Inquiry selected unavailable or excessive methods")
         inquiry = PlanningInquiry(
+            selected_skill_ids=optional,
             inquiry_id=StableId(f"planning-inquiry.{identity}"),
             project_id=task.project_id,
             mode=task.mode,

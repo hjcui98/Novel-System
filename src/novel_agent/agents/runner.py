@@ -144,12 +144,22 @@ class StructuredAgentRunner:
         source_hashes: tuple[ArtifactId, ...] = (),
         input_artifacts: tuple[ArtifactRef, ...] = (),
         base_commit: CommitId | None = None,
+        selected_skill_ids: tuple[StableId, ...] | None = None,
     ) -> PreparedAgentRun:
         """Resolve immutable contracts and prepare an audited request without calling a model."""
         spec = self._agents.resolve(agent_type, mode, version)
+        selected = (
+            {item.contract_id for item in spec.skills}
+            if selected_skill_ids is None
+            else set(selected_skill_ids)
+        )
+        if not selected <= {item.contract_id for item in spec.skills}:
+            raise AgentExecutionError("selected skills exceed the registered AgentSpec")
         skill_texts: list[str] = []
         skill_refs: list[SkillContractRef] = []
         for expected_skill in spec.skills:
+            if expected_skill.contract_id not in selected:
+                continue
             text, actual = self._skills.resolve(expected_skill.contract_id, expected_skill.version)
             if actual.content_hash != expected_skill.content_hash:
                 raise AgentExecutionError(
@@ -198,6 +208,20 @@ class StructuredAgentRunner:
             skill_refs=tuple(skill_refs),
             input_artifacts=input_artifacts,
             base_commit=base_commit,
+        )
+
+    def skill_cards(
+        self,
+        agent_type: AgentType,
+        mode: AgentMode,
+        version: str,
+        allowed: tuple[StableId, ...],
+    ) -> str:
+        spec = self._agents.resolve(agent_type, mode, version)
+        return "\n\n".join(
+            self._skills.describe(item.contract_id, item.version)
+            for item in spec.skills
+            if item.contract_id in allowed
         )
 
     @staticmethod

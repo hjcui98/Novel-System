@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from threading import RLock
 from typing import cast
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -104,6 +105,7 @@ from novel_agent.runtime.production_components import (
     BoundPolicyResolver,
     ExactSnapshotFreshnessCheck,
     ProductionCuratorModelRequestFactory,
+    ProductionMemoryRoutePlans,
     ProductionReactiveMemoryInputsFactory,
     ProductionStage2MWriterContext,
     ProductionWriterModelRequestFactory,
@@ -779,6 +781,7 @@ class _CommitScopedRetrievalBackend:
     def __init__(self, commits: CommitService, artifacts: ArtifactRepository) -> None:
         self._loader = ArtifactProjectionSourceLoader(commits, artifacts)
         self._backends: dict[str, InMemoryRetrievalBackend] = {}
+        self._cache_lock = RLock()
 
     def search(
         self,
@@ -792,22 +795,29 @@ class _CommitScopedRetrievalBackend:
         self._backend_for(commits.current_commit(project_id))
 
     def _backend_for(self, commit: CommitId) -> InMemoryRetrievalBackend:
-        cached = self._backends.get(commit.root)
-        if cached is not None:
-            return cached
-        source = self._loader.load(commit)
-        units = AnchorBuilder().build(
-            source.world,
-            source.text,
-            source.plan,
-            snapshot_id=snapshot_id_for_commit(commit),
-            canonical_commit=commit,
-        )
-        if not units:
-            raise RuntimeError("production assembly canonical basis produced no retrieval units")
-        backend = InMemoryRetrievalBackend(units)
-        self._backends[commit.root] = backend
-        return backend
+        with self._cache_lock:
+            cached = self._backends.get(commit.root)
+            if cached is not None:
+                self._backends.pop(commit.root)
+                self._backends[commit.root] = cached
+                return cached
+            source = self._loader.load(commit)
+            units = AnchorBuilder().build(
+                source.world,
+                source.text,
+                source.plan,
+                snapshot_id=snapshot_id_for_commit(commit),
+                canonical_commit=commit,
+            )
+            if not units:
+                raise RuntimeError(
+                    "production assembly canonical basis produced no retrieval units"
+                )
+            backend = InMemoryRetrievalBackend(units)
+            self._backends[commit.root] = backend
+            while len(self._backends) > 2:
+                self._backends.pop(next(iter(self._backends)))
+            return backend
 
 
 def _resolve_production_retrieval(
@@ -1002,9 +1012,13 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     model_endpoints = _named_model_endpoints(context.model_endpoints, spec)
     schema_version = context.schema_version or SchemaVersion("1.0.0")
     planner_bundle = build_planner_contract_bundle(
-        package_root=PACKAGE_ROOT, version=schema_version
+        package_root=PACKAGE_ROOT,
+        version=schema_version,
+        reviewer_skill_ids=spec.plan_reviewer_skill_ids,
     )
-    editor_bundle = build_editor_contract_bundle(PACKAGE_ROOT)
+    editor_bundle = build_editor_contract_bundle(
+        PACKAGE_ROOT, allowed_skill_ids=spec.editor_skill_ids
+    )
     writer_skill_contracts = WriterCognitionService.skill_contracts(PACKAGE_ROOT)
     prompt_ids = tuple(
         dict.fromkeys(
@@ -1165,18 +1179,12 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         scheduling_timeout_seconds=admission.default_scheduling_timeout_seconds,
         budget_profile=BudgetResolutionProfile.STRICT,
     )
-    batch_endpoint = next(
-        (endpoint for endpoint in model_endpoints if endpoint.role is ModelRole.BATCH_TEST),
-        None,
-    )
-    semantic_judge = (
-        NeedEvidenceSemanticJudge(
-            model_gateway,
-            max_input_tokens=12_000,
-            max_output_tokens=batch_endpoint.output_limit or 2_048,
-        )
-        if batch_endpoint is not None
-        else None
+    semantic_judge = NeedEvidenceSemanticJudge(
+        model_gateway,
+        max_input_tokens=12_000,
+        max_output_tokens=2_048,
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
     )
     memory_gateway = MemoryGateway(
         PairedMemoryControllerRunner.from_shared_backend(
@@ -1189,6 +1197,9 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             checkpointer=InMemorySaver(),
             comparison_basis_fingerprint=comparison_fingerprint,
             reranker=context.reranker,
+            route_plan_factory=ProductionMemoryRoutePlans(
+                snapshots, in_memory=isinstance(retrieval_backend, _CommitScopedRetrievalBackend)
+            ),
         ),
         MemoryGatewayPolicy(
             policy_id=StableId("policy.production-memory-gateway"),
@@ -1261,6 +1272,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         ),
         artifacts,
         schema_version,
+        allowed_skill_ids=spec.editor_skill_ids,
     )
     writer = Stage3WritingLeafAdapter(
         WriterContextLoopService(
@@ -1310,6 +1322,12 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         recent_prose=RecentProseAssembler(artifacts, schema_version),
         writer_context=ProductionStage2MWriterContext(
             generator=TaskPlanConditionedNeedGenerator(
+                planner_gateway=model_gateway,
+                planner_model_role=ModelRole.IMPLEMENTATION,
+                planner_model_purpose=ModelCallPurpose.DEVELOPMENT,
+                planner_artifact_writer=lambda data, media: artifacts.put(
+                    data, media, schema_version
+                ),
                 planner_max_output_tokens=spec.model_policy.default_output_limit,
                 planner_max_input_tokens=stage4_policy.budgets.context.token_budget,
             ),

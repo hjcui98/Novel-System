@@ -698,6 +698,7 @@ class EvidenceFirstLineage(DomainModel):
     gateway_context_artifact: ArtifactRef | None = None
     frozen_evidence_selections_artifact: ArtifactRef | None = None
     budget_expansion_receipt: ArtifactRef | None = None
+    need_generation_artifact: ArtifactRef | None = None
 
 
 class WriterContextPackageV2(DomainModel):
