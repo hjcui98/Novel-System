@@ -45,6 +45,10 @@ from novel_agent.domain.memory import (
     WorldRootDocument,
     require_not_before_for_kind,
 )
+from novel_agent.domain.obligation_contract import (
+    compile_legacy_obligation_plan,
+    compile_obligation_actions,
+)
 from novel_agent.domain.planning import (
     PlanningLoopEventReceipt,
     PlanReview,
@@ -1093,12 +1097,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         declarations: list[PlanObligation] = []
         bindings: dict[StableId, list[StableId]] = {}
         obligation_kinds = {kind.value for kind in ObligationKind}
+        # ``obligation_plan`` is the legacy upper-layer responsibility table.  It is
+        # normalized here instead of being ignored, so an eight-volume responsibility
+        # table can no longer produce zero World obligations.
         declaration_keys = {
             "obligation",
             "obligations",
             "obligation_declarations",
             "key_obligations",
             "obligation_declaration",
+            "obligation_plan",
         }
         for item in proposal.items:
             payload = item.payload
@@ -1114,38 +1122,22 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     referenced_ids.append(StableId(raw_reference))
             raw_actions = payload.get("obligation_actions")
             if raw_actions is not None:
-                if not isinstance(raw_actions, (list, tuple)):
-                    raise CandidateMaterializationError("obligation_actions must be a list")
-                for action in raw_actions:
-                    if isinstance(action, dict):
-                        raw_reference = action.get("obligation_id") or action.get("id")
-                        if not isinstance(raw_reference, str) or not raw_reference.strip():
-                            raise CandidateMaterializationError(
-                                "obligation action requires a string obligation_id"
-                            )
-                        referenced_ids.append(StableId(raw_reference.strip()))
-                    elif isinstance(action, str):
-                        raw_reference = action.strip()
-                        if not raw_reference:
-                            raise CandidateMaterializationError(
-                                "obligation action must not be empty"
-                            )
-                        try:
-                            candidate_id = StableId(raw_reference)
-                        except ValueError as error:
-                            raise CandidateMaterializationError(
-                                "obligation_actions strings must be an existing obligation "
-                                "StableId; declare durable obligations at STORY/ARC_VOLUME and "
-                                f"reference them by id: {raw_reference!r}"
-                            ) from error
-                        if not any(
-                            item.obligation_id == candidate_id for item in world.obligations
-                        ):
-                            raise CandidateMaterializationError(
-                                "obligation action references an undeclared obligation: "
-                                f"{candidate_id.root}"
-                            )
-                        referenced_ids.append(candidate_id)
+                action_compilation = compile_obligation_actions(raw_actions)
+                if not action_compilation.complete:
+                    raise CandidateMaterializationError(
+                        "chapter obligation actions are not readable: "
+                        + "; ".join(action_compilation.discrepancies)
+                    )
+                for action in action_compilation.actions:
+                    candidate_id = StableId(action.obligation_id)
+                    if not any(
+                        item.obligation_id == candidate_id for item in world.obligations
+                    ):
+                        raise CandidateMaterializationError(
+                            "obligation action references an undeclared obligation: "
+                            f"{candidate_id.root}"
+                        )
+                    referenced_ids.append(candidate_id)
             if referenced_ids:
                 bindings[item.item_id] = list(dict.fromkeys(referenced_ids))
 
@@ -1191,6 +1183,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         f"{key} must contain obligation declaration objects"
                     )
                 raw_declarations.extend(cast(list[Mapping[str, object]], values))
+            if payload.get("obligation_plan") is not None:
+                legacy = compile_legacy_obligation_plan(payload["obligation_plan"])
+                if not legacy.complete:
+                    raise CandidateMaterializationError(
+                        "legacy obligation_plan entries are not readable: "
+                        + "; ".join(legacy.discrepancies)
+                    )
+                raw_declarations.extend(
+                    declaration.as_binder_payload() for declaration in legacy.declarations
+                )
 
             for ordinal, raw in enumerate(raw_declarations):
                 kind_raw = (
@@ -1328,31 +1330,22 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         }
         for item in proposal.items:
             actions = item.payload.get("obligation_actions")
-            if not isinstance(actions, (list, tuple)):
+            if actions is None:
                 continue
-            for action in actions:
-                if isinstance(action, dict):
-                    raw_id = action.get("obligation_id") or action.get("id")
-                    if not isinstance(raw_id, str) or not raw_id.strip():
-                        raise CandidateMaterializationError(
-                            "obligation action requires a string obligation_id"
-                        )
-                    referenced.add(StableId(raw_id.strip()))
-                elif isinstance(action, str):
-                    raw_reference = action.strip()
-                    try:
-                        candidate_id = StableId(raw_reference)
-                    except ValueError as error:
-                        raise CandidateMaterializationError(
-                            "obligation_actions strings must be an existing obligation "
-                            f"StableId: {raw_reference!r}"
-                        ) from error
-                    if candidate_id not in known:
-                        raise CandidateMaterializationError(
-                            "obligation action references an undeclared obligation: "
-                            f"{candidate_id.root}"
-                        )
-                    referenced.add(candidate_id)
+            compilation = compile_obligation_actions(actions)
+            if not compilation.complete:
+                raise CandidateMaterializationError(
+                    "chapter obligation actions are not readable: "
+                    + "; ".join(compilation.discrepancies)
+                )
+            for action in compilation.actions:
+                candidate_id = StableId(action.obligation_id)
+                if candidate_id not in known:
+                    raise CandidateMaterializationError(
+                        "obligation action references an undeclared obligation: "
+                        f"{candidate_id.root}"
+                    )
+                referenced.add(candidate_id)
         unknown = sorted(item.root for item in referenced if item not in known)
         if unknown:
             raise CandidateMaterializationError(
