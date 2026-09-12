@@ -31,14 +31,17 @@ from novel_agent.domain.agent_context import (
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.editorial import (
+    CuratorObservation,
     EditorialReport,
     EditorialReviewInput,
     EditorialVerdict,
     RepairedDraft,
 )
 from novel_agent.domain.generation import (
+    DeclaredMemoryHint,
     DraftArtifact,
     RewriteDirective,
+    WriterContextSnapshot,
     WriterTurnAction,
     WriterWorkPlanResult,
     WritingLoopRequest,
@@ -51,6 +54,7 @@ from novel_agent.domain.world import PlanNode
 from novel_agent.domain.writer_context import EvidenceLedgerV2, WriterContextPackageV2
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
+    RepairStage,
     WritingLoopCheckpoint,
     WritingLoopPhase,
     WritingLoopResult,
@@ -632,6 +636,20 @@ class WriterContextLoopService:
             final_id = initial_draft.draft_id
             final_text = initial_draft.text_artifact
             final_hints = active_turn.output.declared_memory_hints
+        # Repair accounting is settled before any verdict branch runs.  Only the
+        # LOCAL_REPAIR and MAJOR_REWRITE branches used to initialise these names,
+        # so a yield from an ordinary PASS raised UnboundLocalError while writing
+        # the checkpoint.  The counters stay lifetime values for the attempt.
+        local_repair_attempt = (
+            0 if resume_checkpoint is None else resume_checkpoint.local_repairs_used
+        )
+        rewrite_attempt = (
+            0 if resume_checkpoint is None else resume_checkpoint.major_rewrites_used
+        )
+        repair_stage: RepairStage = (
+            "dispatch" if resume_checkpoint is None else resume_checkpoint.repair_stage
+        )
+        major_verification: EditorialReport | None = None
         if report.planner_replan_required:
             return self._result(
                 request,
@@ -666,11 +684,7 @@ class WriterContextLoopService:
                     compactions=tuple(compactions),
                     artifacts=tuple(artifacts),
                 )
-            # A restart resumes the repair allowance instead of resetting it; otherwise
-            # recovery could pay for the same Editor/Writer repair without bound.
-            local_repair_attempt = (
-                0 if resume_checkpoint is None else resume_checkpoint.local_repairs_used
-            )
+            repair_stage = "local_review"
             while True:
                 local_repair_attempt += 1
                 repair_label = (
@@ -796,12 +810,9 @@ class WriterContextLoopService:
             final_text = repaired_draft.text_artifact
         elif report.verdict is EditorialVerdict.MAJOR_REWRITE:
             assert initial_draft is not None
-            rewrite_attempt = (
-                0 if resume_checkpoint is None else resume_checkpoint.major_rewrites_used
-            )
+            repair_stage = "rewrite_draft"
             rewrite_parent = initial_draft
             rewrite_turn: WriterTurnResult | None = None
-            major_verification: EditorialReport | None = None
             while True:
                 if rewrite_attempt >= request.budgets.max_major_rewrites:
                     allowance = request.budgets.max_major_rewrites
@@ -903,6 +914,9 @@ class WriterContextLoopService:
                         if rewrite_attempt == 1
                         else f"editor-review-major-rewrite-{rewrite_attempt}"
                     )
+                    # The checkpoint records that the rewrite draft is in review,
+                    # so a restart resumes at re-review instead of re-drafting.
+                    repair_stage = "rewrite_review"
                     major_verification = await self._editorial.review(
                         rewritten_input,
                         self._request(model_request, editor_label),
@@ -1006,7 +1020,7 @@ class WriterContextLoopService:
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
                 phase=WritingLoopPhase.OBSERVER_PENDING,
-                repair_stage="rewrite_review" if major_verification is not None else "local_review",
+                repair_stage=repair_stage,
                 local_repairs_used=local_repair_attempt,
                 major_rewrites_used=rewrite_attempt,
                 repair_input=None,
@@ -1097,7 +1111,7 @@ class WriterContextLoopService:
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
                 phase=WritingLoopPhase.RECONCILIATION_PENDING,
-                repair_stage="rewrite_review" if major_verification is not None else "local_review",
+                repair_stage=repair_stage,
                 local_repairs_used=local_repair_attempt,
                 major_rewrites_used=rewrite_attempt,
                 repair_input=None,
@@ -1664,23 +1678,21 @@ class WriterContextLoopService:
         seen_fingerprints: set[ArtifactId],
         phase: WritingLoopPhase = WritingLoopPhase.REACTIVE_MEMORY_PENDING,
         initial_draft: DraftArtifact | None = None,
-        editor_context: object | None = None,
+        editor_context: WriterContextSnapshot | None = None,
         rewritten_draft: DraftArtifact | None = None,
         repaired_draft: RepairedDraft | None = None,
         reports: tuple[EditorialReport, ...] = (),
         final_candidate_id: ArtifactId | None = None,
         final_text_artifact: ArtifactRef | None = None,
-        final_declared_memory_hints: tuple[object, ...] = (),
-        observation: object | None = None,
+        final_declared_memory_hints: tuple[DeclaredMemoryHint, ...] = (),
+        observation: CuratorObservation | None = None,
         observation_artifact: ArtifactRef | None = None,
         settled_artifacts: tuple[ArtifactRef, ...] = (),
-        repair_stage: str = "dispatch",
+        repair_stage: RepairStage = "dispatch",
         local_repairs_used: int = 0,
         major_rewrites_used: int = 0,
-        repair_input: object | None = None,
+        repair_input: EditorialReviewInput | None = None,
     ) -> ArtifactRef:
-        from novel_agent.domain.editorial import CuratorObservation
-        from novel_agent.domain.generation import DeclaredMemoryHint, WriterContextSnapshot
 
         suffix = content_id(
             (

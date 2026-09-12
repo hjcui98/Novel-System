@@ -396,6 +396,18 @@ def repositories() -> Iterator[tuple[RunEventLogRepository, RunCheckpointReposit
     engine.dispose()
 
 
+def _with_mode_skill(request: WritingLoopRequest) -> WritingLoopRequest:
+    """Widen the allowlist so a MAJOR_REWRITE work plan may select its mode Skill."""
+
+    if StableId("skill.major-rewrite") in request.allowed_skills:
+        return request
+    return request.model_copy(
+        update={
+            "allowed_skills": (*request.allowed_skills, StableId("skill.major-rewrite")),
+        }
+    )
+
+
 def _loop(
     tmp_path: Path,
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
@@ -414,16 +426,40 @@ def _loop(
     )
     rewrite_text = "Lin studies first, then redirects moonlight to open the gate safely."
     selected_turns = writer_turns or (_writer_turn(initial_text),)
+    # The durable allowlist is shared by every Writer mode, but the DRAFT work
+    # plan of the first turn may only select DRAFT-legal Skills.  A widened
+    # allowlist therefore needs an explicitly draft-scoped work plan.
+    draft_plan_request = request.model_copy(
+        update={
+            "allowed_skills": tuple(
+                item
+                for item in request.allowed_skills
+                if item != StableId("skill.major-rewrite")
+            )
+        }
+    )
+    # The Writer is re-planned per mode, so a MAJOR_REWRITE route consumes a
+    # DRAFT plan, the first draft, a MAJOR_REWRITE plan and the rewrite draft.
     writer_responses = [
-        _work_plan(request).model_dump_json(),
-        *(turn.model_dump_json() for turn in selected_turns),
+        _work_plan(draft_plan_request).model_dump_json(),
+        selected_turns[0].model_dump_json(),
     ]
-    if route is EditorialVerdict.MAJOR_REWRITE and writer_turns is None:
-        writer_responses.append(_writer_turn(rewrite_text).model_dump_json())
+    if route is EditorialVerdict.MAJOR_REWRITE:
+        if writer_turns is None:
+            writer_responses.append(_work_plan(request).model_dump_json())
+            writer_responses.append(_writer_turn(rewrite_text).model_dump_json())
+        elif len(selected_turns) > 1:
+            writer_responses.append(_work_plan(request).model_dump_json())
+            writer_responses.extend(turn.model_dump_json() for turn in selected_turns[1:])
+    else:
+        writer_responses.extend(turn.model_dump_json() for turn in selected_turns[1:])
     writer_gateway = _gateway(SequenceEndpoint(tuple(writer_responses)), "stage3-writer")
     contracts = WriterCognitionService.skill_contracts()
+    # The cognition service validates the MAJOR_REWRITE allowlist, so the harness
+    # must register every Skill a route can select instead of only scene composition.
     skill_paths = {
         "skill.scene-composition": PACKAGE_ROOT / "skills" / "scene_composition_v1.md",
+        "skill.major-rewrite": PACKAGE_ROOT / "skills" / "major_rewrite_v1.md",
     }
     skills = SkillRegistry(
         SkillTemplate(
@@ -1219,6 +1255,127 @@ def test_post_draft_slice_resumes_editor_and_observer_without_repeating_writer(
     second = asyncio.run(loop.execute(resumed, model_request, cast(Any, object())))
     assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
     assert second.initial_draft == first.initial_draft
+
+
+def test_ordinary_pass_reaches_candidate_ready_with_a_dispatch_repair_frontier(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    """An unbroken PASS must not touch the repair accounting at all.
+
+    The checkpoint write used to read repair counters that only the LOCAL_REPAIR
+    and MAJOR_REWRITE branches initialised, so any PASS-path checkpoint raised
+    UnboundLocalError.  This case proves the ordinary road still completes and
+    that no repair was charged to it.
+    """
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "pass-slice"))
+    request = _request(artifacts, "pass-slice")
+    initial = request.model_copy(
+        update={
+            "resume_checkpoint_ref": None,
+            "budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 6}),
+        }
+    )
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+
+    first = asyncio.run(loop.execute(initial, model_request, cast(Any, object())))
+
+    assert first.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert first.initial_draft is not None
+
+
+def test_every_declared_repair_stage_round_trips_through_a_real_checkpoint(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    """The repair frontier a yield writes is exactly what a restart reads.
+
+    A PASS-path checkpoint used to read branch-local repair names, so its write
+    raised UnboundLocalError.  The persisted checkpoint therefore has to carry a
+    settled stage and the lifetime counters for every declared stage.
+    """
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "frontier"))
+    request = _request(artifacts, "frontier")
+    initial = request.model_copy(
+        update={
+            "resume_checkpoint_ref": None,
+            # Memory, the Draft, the Editor review and the Observer leg are all
+            # outside this slice, so the loop must persist a checkpoint.
+            "budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 0}),
+        }
+    )
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+
+    first = asyncio.run(loop.execute(initial, model_request, cast(Any, object())))
+    assert first.status is WritingLoopTerminalStatus.YIELDED
+    assert first.checkpoint_ref is not None
+    payload = json.loads(artifacts.read_verified(first.checkpoint_ref).decode("utf-8"))
+    assert payload["phase"] == WritingLoopPhase.EDITOR_PENDING.value
+
+    for stage in ("dispatch", "local_review", "rewrite_draft", "rewrite_review"):
+        for local_used, major_used in ((0, 0), (2, 1)):
+            restored = WritingLoopCheckpoint.model_validate_json(
+                json.dumps(
+                    payload
+                    | {
+                        "repair_stage": stage,
+                        "local_repairs_used": local_used,
+                        "major_rewrites_used": major_used,
+                    }
+                )
+            )
+            assert restored.repair_stage == stage
+            assert restored.local_repairs_used == local_used
+            assert restored.major_rewrites_used == major_used
+
+    with pytest.raises(ValidationError):
+        WritingLoopCheckpoint.model_validate_json(
+            json.dumps(payload | {"repair_stage": "invented_stage"})
+        )
+
+
+def test_local_repair_slice_records_the_local_review_stage(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    """A local repair that runs out of budget resumes at local review, not dispatch."""
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "local-slice"))
+    request = _request(artifacts, "local-slice")
+    initial = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 1})}
+    )
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+    )
+
+    first = asyncio.run(loop.execute(initial, model_request, cast(Any, object())))
+
+    assert first.status is WritingLoopTerminalStatus.YIELDED
+    assert first.checkpoint_ref is not None
+    checkpoint = WritingLoopCheckpoint.model_validate_json(
+        artifacts.read_verified(first.checkpoint_ref)
+    )
+    assert checkpoint.repair_stage == "local_review"
+    assert checkpoint.local_repairs_used == 1
 
 
 def test_stage3_public_lazy_exports_are_resolvable() -> None:

@@ -46,6 +46,11 @@ class WritingLoopPhase(StrEnum):
     RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
 
 
+# The repair frontier a restart resumes from.  One alias keeps the domain field,
+# the executor and the checkpoint writer on the same set of values.
+RepairStage = Literal["dispatch", "local_review", "rewrite_draft", "rewrite_review"]
+
+
 class WritingLoopCheckpoint(DomainModel):
     """Minimal durable state for a settled Writer turn awaiting reactive Memory."""
 
@@ -53,9 +58,7 @@ class WritingLoopCheckpoint(DomainModel):
     # Repair frontier: without it a restart resets the repair allowance and can pay for
     # the same Editor/Writer repair forever.  The counters are lifetime values for the
     # attempt, so the pinned budget stays meaningful across recovery.
-    repair_stage: Literal["dispatch", "local_review", "rewrite_draft", "rewrite_review"] = (
-        "dispatch"
-    )
+    repair_stage: RepairStage = "dispatch"
     local_repairs_used: int = Field(default=0, ge=0)
     major_rewrites_used: int = Field(default=0, ge=0)
     repair_input: EditorialReviewInput | None = None
