@@ -233,6 +233,7 @@ class ReviewIssueKind(StrEnum):
     TARGET_WINDOW_OUTSIDE_PARENT_SCOPE = "target_window_outside_parent_scope"
     BLOCKING_UNRESOLVED = "blocking_unresolved"
     VOLUME_STRUCTURE_INCOMPLETE = "volume_structure_incomplete"
+    OBLIGATION_CONTRACT = "obligation_contract"
 
 
 # The minimum executable volume outline (2026-09-10 remediation P0-5).  A

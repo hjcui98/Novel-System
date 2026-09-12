@@ -10,6 +10,10 @@ from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import ObligationKind, long_range_kind_requires_not_before
+from novel_agent.domain.obligation_contract import (
+    compile_legacy_obligation_plan,
+    compile_obligation_actions,
+)
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
     PlannerContextPackage,
@@ -217,6 +221,7 @@ def _host_issues_for_items(
                 )
         if mode is AgentMode.CHAPTER_SET and _is_chapter_item(raw, item_payload):
             _append_history_need_issues(issues, item_payload, item_id)
+        _append_obligation_contract_issues(issues, item_payload, item_id, mode=mode)
     if (
         mode is AgentMode.ARC_VOLUME
         and expected_volume_count is not None
@@ -348,6 +353,72 @@ def _is_chapter_item(raw: dict[str, Any], payload: dict[str, Any]) -> bool:
         or isinstance(payload.get("chapter_index"), int)
         or isinstance(payload.get("chapter"), int)
     )
+
+
+def _append_obligation_contract_issues(
+    issues: list[PlanReviewIssue],
+    payload: dict[str, Any],
+    item_id: str,
+    *,
+    mode: AgentMode,
+) -> None:
+    """Surface unreadable obligation shapes before the candidate is accepted.
+
+    Host review is the boundary that must catch a legacy free-text chapter action
+    or an unreadable responsibility table.  The materializer keeps the same final
+    check, but a candidate must not reach acceptance with either defect.
+    """
+
+    actions = payload.get("obligation_actions")
+    if actions is not None:
+        compilation = compile_obligation_actions(actions)
+        for discrepancy in compilation.discrepancies:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.OBLIGATION_CONTRACT,
+                    f"OBLIGATION_ACTION_UNREADABLE: {discrepancy}",
+                    item_id,
+                    blocking=True,
+                )
+            )
+    declarations = payload.get("obligation_declarations")
+    if declarations is not None:
+        if not isinstance(declarations, (list, tuple)) or not all(
+            isinstance(entry, dict) for entry in declarations
+        ):
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.OBLIGATION_CONTRACT,
+                    "OBLIGATION_DECLARATION_UNREADABLE: obligation_declarations must be "
+                    "a list of declaration objects",
+                    item_id,
+                    blocking=True,
+                )
+            )
+    if payload.get("obligation_plan") is None:
+        return
+    legacy = compile_legacy_obligation_plan(payload["obligation_plan"])
+    if mode in {AgentMode.CHAPTER_SET, AgentMode.CHAPTER, AgentMode.SCENE}:
+        # Lower planning levels reference accepted obligations; a durable
+        # responsibility may only be created by the upper-level plan.
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                "OBLIGATION_PLAN_FORBIDDEN: this planning level may reference accepted "
+                "obligation ids but may not declare a durable responsibility table",
+                item_id,
+                blocking=True,
+            )
+        )
+    for discrepancy in legacy.discrepancies:
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                f"OBLIGATION_PLAN_UNREADABLE: {discrepancy}",
+                item_id,
+                blocking=True,
+            )
+        )
 
 
 def _append_history_need_issues(
