@@ -234,6 +234,7 @@ class ReviewIssueKind(StrEnum):
     BLOCKING_UNRESOLVED = "blocking_unresolved"
     VOLUME_STRUCTURE_INCOMPLETE = "volume_structure_incomplete"
     OBLIGATION_CONTRACT = "obligation_contract"
+    UNRESOLVED_SCOPE_MISSING = "unresolved_scope_missing"
 
 
 # The minimum executable volume outline (2026-09-10 remediation P0-5).  A

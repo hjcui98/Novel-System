@@ -312,8 +312,27 @@ def _proposal_chapter_window(raw_items: object) -> tuple[int, int] | None:
     return min(chapters), max(chapters)
 
 
+def _summary_chapter_window(summary: str) -> tuple[int, int] | None:
+    """Return the chapter window a summary text is actually asking about."""
+
+    numbers: list[int] = []
+    for start, end in re.findall(r"(?<!\d)(\d{1,4})\s*-\s*(\d{1,4})(?!\d)", summary):
+        numbers.extend((int(start), int(end)))
+    for single in re.findall(r"第\s*(\d{1,4})\s*章", summary):
+        numbers.append(int(single))
+    if not numbers:
+        return None
+    return min(numbers), max(numbers)
+
+
 def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
-    """Block accepted proposals that still carry unresolved hard conflicts."""
+    """Block accepted proposals that still carry unresolved hard conflicts.
+
+    A non-blocking advisory also has to state the chapters it actually questions.
+    An issue that names a bounded window in its text while leaving
+    ``affected_chapters`` empty cannot be checked at the affected chapter, so it
+    must not be accepted as a plan-wide advisory.
+    """
 
     raw_issues = payload.get("unresolved")
     if not isinstance(raw_issues, list) or not raw_issues:
@@ -346,6 +365,22 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
                     blocking=True,
                 )
             )
+            continue
+        if issue.affected_chapters:
+            continue
+        questioned = _summary_chapter_window(issue.summary)
+        if questioned is None:
+            continue
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.UNRESOLVED_SCOPE_MISSING,
+                "UNRESOLVED_SCOPE_MISSING: this advisory questions chapters "
+                f"{questioned[0]}-{questioned[1]} but declares no affected_chapters, so the "
+                "uncertainty cannot be checked at the affected chapter",
+                issue.issue_id.root,
+                blocking=True,
+            )
+        )
     return issues
 
 
