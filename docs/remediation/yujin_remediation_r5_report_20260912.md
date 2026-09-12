@@ -79,7 +79,39 @@ rewrite_attempt = 0
 计数与阶段可序列化往返、负值与未知阶段被拒、`REPAIR_PENDING` 是已声明前沿且其规则存在、
 以及一条源码检查断言恢复路径**确实读取**持久化计数（防止只写不读）。
 
-## 3. R5 未完成项
+## 3. 已完成：完成态请求的自动重放（A16 续）
+
+### 3.1 缺陷（比“多花钱”更严重）
+
+账本**拒绝重新绑定已结算条目**（`model request cannot rebind after reservation`）。
+因此任何重试同一请求身份的行为，得到的不是原答案，而是
+`ModelCallLedgerCollision` / `cannot rebind after reservation`——重放不是省钱优化，
+而是**正确性修复**。
+
+### 3.2 实现
+
+`generate_structured` 入口先查账本：身份一致且状态为 `COMPLETED` 时直接返回记录答案；
+非 `COMPLETED` 一律不在此处复用（`UNCERTAIN` 仍走 `ModelCallUncertainError` 的“先对账”路径，
+其它终态保留各自的 typed 错误）。`allow_replay=False` 供需要真实调用提供方的调用方使用。
+
+**可恢复性已核实**：生产 Writer 的模型请求 id 由
+`model-request.<task>.writer[.<attempt>]` 派生，同一 attempt 的同一任务恢复后得到**完全相同的 id**，
+因此恢复路径确实能命中重放；新建 attempt 则得到新 id，符合“新尝试应重新调用”的语义。
+
+证据：`tests/unit/test_model_replay.py` 追加 3 项（重复请求复用答案且不触发第二次 provider 调用、
+不同请求仍调用提供方、uncertain 重试被拒）。
+
+## 4. 已核实的预算与错误分类现状
+
+| 类别 | 机制 | 结论 |
+|---|---|---|
+| 切片让出 | `post_draft_calls_this_slice >= max_post_draft_model_calls` → `YIELDED` + 可恢复 checkpoint | 已实现，让出是正常可恢复状态而非错误 |
+| 累计预算耗尽 | `ModelCallCumulativeBudgetExceeded`（带 request_id/budget/used/estimate/reserve） | 已实现，typed 且可诊断 |
+| provider 错误 | `ModelCallUncertainError`（已发送未结算）、各 adapter 的 typed transport 错误 | 已实现 |
+| 契约错误 | `ModelCurationContractError` / `ModelCurationOutputIncomplete` / `WritingLoopTerminalStatus.*_FAILED` | 已实现，不与 provider 错误混用 |
+| attempt 级上限 | 不在 `WritingLoopBudgets`，由 Stage 5 Task/Attempt（`failure_budget` 等）拥有 | 设计如此（`WritingLoopBudgets` 注释明确 per-invocation），不是缺口 |
+
+## 5. R5 未完成项
 
 | 项 | 内容 |
 |---|---|
@@ -91,8 +123,8 @@ rewrite_attempt = 0
 
 ## 4. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 3005 passed / 1 skipped**；
-失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R5 至今新增 16 项通过测试。
+`tests/unit tests/contract`：**76 failed / 3008 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R5 至今新增 19 项通过测试。
 
 `tests/integration/test_writer_context_loop.py` 在整合前就有 11 项失败（已用 stash 对照确认与本次改动无关），
 不在 R0 基线的命令范围内，将在 R6 前单独登记。
