@@ -1047,3 +1047,82 @@ def test_scheduled_later_states_are_not_written_as_accepted_facts() -> None:
     assert classes["state.bootstrap.2"] is TruthClass.ACCEPTED_WORLD_FACT
     assert [item[0].root for item in demoted] == ["state.bootstrap.1"]
     assert "future volume reference" in demoted[0][1]
+
+
+def test_an_explicit_curator_prediction_is_classified_without_prose_matching() -> None:
+    """Prose with no volume reference cannot be classified by keywords.
+
+    ``"在钧炉城锻打而成武器沉曜"`` carries no volume number, so the wording
+    heuristic misses it.  The Curator states the time intent instead, and the host
+    honours it.
+    """
+
+    from novel_agent.domain.memory import TruthClass
+    from novel_agent.runtime.production_novel_bootstrap import _world_root
+
+    world_patch = SimpleNamespace(
+        items=(
+            ProposedItem(
+                item_id=StableId("world.item.tangjun.now"),
+                kind="character",
+                payload={
+                    "label": "唐钧",
+                    "entity_type": "character",
+                    "truth_class": "accepted_world_fact",
+                    "description": "钧炉城灵械师。",
+                },
+                provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                source_ids=(StableId("source.author-initial-brief"),),
+            ),
+            ProposedItem(
+                item_id=StableId("world.item.tangjun.forge"),
+                kind="character",
+                payload={
+                    "label": "唐钧",
+                    "entity_type": "character",
+                    "truth_class": "prediction",
+                    "not_before_chapter": 350,
+                    "description": "在钧炉城锻打而成武器沉曜。",
+                },
+                provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                source_ids=(StableId("source.author-initial-brief"),),
+            ),
+        ),
+    )
+
+    world, demoted = _world_root(world_patch, VERSION)
+
+    classes = {state.state_id.root: state.truth_class for state in world.states}
+    assert classes["state.bootstrap.1"] is TruthClass.ACCEPTED_WORLD_FACT
+    assert classes["state.bootstrap.2"] is TruthClass.PREDICTION
+    assert [item[0].root for item in demoted] == ["state.bootstrap.2"]
+    assert "curator declared prediction" in demoted[0][1]
+
+
+def test_a_scheduled_lock_overrides_a_curator_fact_claim() -> None:
+    """The author's lock wins over the model labelling the same content a fact."""
+
+    from novel_agent.domain.memory import TruthClass
+    from novel_agent.runtime.production_novel_bootstrap import _world_root
+
+    world_patch = SimpleNamespace(
+        items=(
+            ProposedItem(
+                item_id=StableId("world.item.forge"),
+                kind="character",
+                payload={
+                    "label": "唐钧",
+                    "entity_type": "character",
+                    "truth_class": "accepted_world_fact",
+                    "description": "第四卷：在钧炉城锻打而成武器沉曜。",
+                },
+                provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                source_ids=(StableId("source.author-initial-brief"),),
+            ),
+        ),
+    )
+
+    world, demoted = _world_root(world_patch, VERSION)
+
+    assert world.states[0].truth_class is TruthClass.PREDICTION
+    assert "future volume reference" in demoted[0][1]

@@ -828,10 +828,24 @@ def _world_root(
         # "唐钧 forges 沉曜" as an accepted fact at ordinal 0, and the Writer
         # injects a participating character's state as canon current state, so the
         # chapter was told a volume-4 event had already happened.
-        future_intent, future_reason = _declares_future_intent(
+        locked_future, locked_reason = _declares_future_intent(
             fact,
             future_lock_texts=lock_texts,
         )
+        declared_truth, declared_reason = _declared_truth_class(dict(item.payload))
+        if locked_future:
+            # The author's own lock wins over the model's claim: a state that
+            # restates content the author scheduled for a later volume is not an
+            # opening fact, however the Curator labelled it.
+            future_intent = True
+            future_reason = locked_reason
+            if declared_truth is TruthClass.ACCEPTED_WORLD_FACT:
+                declared_truth = None
+        elif declared_truth is not None:
+            future_intent = declared_truth is not TruthClass.ACCEPTED_WORLD_FACT
+            future_reason = declared_reason
+        else:
+            future_intent, future_reason = False, None
         if future_intent:
             demoted.append((StableId(f"state.bootstrap.{index}"), future_reason or "future intent"))
         states.append(
@@ -842,7 +856,13 @@ def _world_root(
                 value=fact,
                 valid_time=StoryTime(worldline="main", start_ordinal=0),
                 truth_class=(
-                    TruthClass.PREDICTION if future_intent else TruthClass.ACCEPTED_WORLD_FACT
+                    declared_truth
+                    if declared_truth is not None
+                    else (
+                        TruthClass.PREDICTION
+                        if future_intent
+                        else TruthClass.ACCEPTED_WORLD_FACT
+                    )
                 ),
             )
         )
@@ -879,6 +899,44 @@ _FUTURE_INTENT_MARKERS: tuple[str, ...] = (
     "的路线",
 )
 _FUTURE_VOLUME_RE = re.compile(r"第[一二三四五六七八九十0-9]+卷")
+
+
+# Truth classes the Curator may state explicitly for one world item.
+_DECLARED_TRUTH_CLASSES: dict[str, TruthClass] = {
+    "accepted_world_fact": TruthClass.ACCEPTED_WORLD_FACT,
+    "prediction": TruthClass.PREDICTION,
+    "assertion": TruthClass.ASSERTION,
+    "rumor": TruthClass.RUMOR,
+    "unknown": TruthClass.UNKNOWN,
+    "contested": TruthClass.CONTESTED,
+}
+
+
+def _declared_truth_class(payload: dict[str, JsonValue]) -> tuple[TruthClass | None, str | None]:
+    """Read the time intent the Curator stated for one world item.
+
+    An explicit declaration is authoritative: the model knows whether a passage
+    describes the opening state or content the author scheduled for a later
+    volume, and a whole-sentence heuristic cannot recover that for prose with no
+    volume reference.  Prose matching stays as the fallback for items that say
+    nothing.
+    """
+
+    raw = payload.get("truth_class")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    resolved = _DECLARED_TRUTH_CLASSES.get(raw.strip().lower())
+    if resolved is None:
+        return None, None
+    if resolved is TruthClass.ACCEPTED_WORLD_FACT:
+        return resolved, None
+    not_before = payload.get("not_before_chapter")
+    window = (
+        f" (not_before_chapter={not_before})"
+        if type(not_before) is int and not_before >= 1
+        else ""
+    )
+    return resolved, f"curator declared {resolved.value}{window}"
 
 
 def _declares_future_intent(
