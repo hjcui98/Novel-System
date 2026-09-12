@@ -85,7 +85,6 @@ from novel_agent.domain.stage2 import (
     ContractRef,
     MemoryGatewayMode,
     MemoryGatewayPolicy,
-    ProjectProfileRootDocument,
     PromptContractRef,
     RetrievalBudget,
     SkillContractRef,
@@ -1458,11 +1457,12 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     prompt_pins, skill_pins = production_contract_pins(schema_version=schema_version)
     try:
         manifest = commits.load_manifest(commits.current_commit(context.project_id))
-        profile = ProjectProfileRootDocument.model_validate_json(
-            artifacts.read_verified(manifest.project_profile_root),
-            strict=True,
-        )
-        profile_root_hash = profile.root_hash
+        # Identity is the content address the manifest commits to.  The root_hash
+        # field inside the document differs because the builder stores the profile
+        # including that field, and using the field here made the assembly attest a
+        # different fingerprint than the frozen descriptor, so every dispatch failed
+        # closed with RUN_CONFIGURATION_CHANGED before its first task.
+        profile_root_hash = manifest.project_profile_root.artifact_id
     except ProjectNotFoundError:
         profile_root_hash = None
     settlement_policy_fingerprint = settlement_policy.configuration_fingerprint

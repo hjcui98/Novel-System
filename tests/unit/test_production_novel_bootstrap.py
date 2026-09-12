@@ -15,8 +15,18 @@ from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.cli import main
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
 from novel_agent.domain.creative_runtime import AutomationMode
-from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
+from novel_agent.domain.memory import WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning_locks import (
     AuthorPlanningLocksDocument,
@@ -25,11 +35,16 @@ from novel_agent.domain.planning_locks import (
 from novel_agent.domain.stage2 import (
     AgentMode,
     BootstrapStrategy,
+    ContractRef,
     PlannerExecutionResult,
     ProjectIntentModel,
     ProjectProfileProposal,
+    ProjectProfileRootDocument,
+    PromptContractRef,
     ProposalProvenance,
     ProposedItem,
+    ReferenceRootDocument,
+    SkillContractRef,
     SourceClass,
     WorldDesignProposal,
     WorldPatchCandidate,
@@ -46,6 +61,7 @@ from novel_agent.runtime.production_novel_bootstrap import (
     bind_bootstrap_model_agents,
 )
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.bootstrap_workflow import BootstrapRootBuilder
 from novel_agent.services.model_gateway import RegisteredModelEndpoint
 from tests.unit.test_stage2_bootstrap_workflow import proposals
 
@@ -851,3 +867,104 @@ def test_bootstrap_prepare_cli_rejects_foreign_planning_locks(
                 "run.bootstrap.locks",
             ]
         )
+
+
+def test_root_document_identity_is_the_manifest_content_address() -> None:
+    """The fingerprint identity must be the manifest's artifact, not the inner field.
+
+    BootstrapRootBuilder stores each root document *including* its ``root_hash``
+    field, so the stored artifact id and the field value differ.  The bootstrap
+    commit and the runtime assembly each picked a different one, so every frozen
+    run failed closed with RUN_CONFIGURATION_CHANGED before its first task.
+    """
+
+    from novel_agent.services.bootstrap_workflow import project_profile_root_content_id
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path := Path("/tmp")))
+    project_id = ProjectId("project.bootstrap.identity")
+    plan_proposal, world_patch = proposals(project_id)
+    plan_proposal = plan_proposal.model_copy(
+        update={"strategy": BootstrapStrategy.DEVELOP_CANDIDATES}
+    )
+    profile = ProjectProfileRootDocument(
+        root_hash=ArtifactId("sha256:" + "0" * 64),
+        schema_version=VERSION,
+        style_profile={"language": "zh-CN"},
+        capability_profile={"planning_constraints": {}},
+        agent_specs=(
+            ContractRef(
+                contract_id=StableId("agent.production-bootstrap"),
+                version=VERSION,
+                content_hash=ArtifactId("sha256:" + "1" * 64),
+            ),
+        ),
+        prompt_contracts=(
+            PromptContractRef(
+                contract_id=StableId("prompt.system-policy"),
+                version=VERSION,
+                content_hash=ArtifactId("sha256:" + "1" * 64),
+                render_fingerprint=ArtifactId("sha256:" + "1" * 64),
+            ),
+        ),
+        skill_contracts=(
+            SkillContractRef(
+                contract_id=StableId("skill.scene-composition"),
+                version=VERSION,
+                content_hash=ArtifactId("sha256:" + "1" * 64),
+            ),
+        ),
+        tool_policies=(
+            ContractRef(
+                contract_id=StableId("agent.production-bootstrap"),
+                version=VERSION,
+                content_hash=ArtifactId("sha256:" + "1" * 64),
+            ),
+        ),
+        model_profiles=("qwen38-27b-nvfp4@8003",),
+    )
+    profile = profile.model_copy(
+        update={"root_hash": project_profile_root_content_id(profile)}
+    )
+    builder = BootstrapRootBuilder(artifacts)
+    candidate = builder.build(
+        project_id,
+        StableId("bootstrap.identity"),
+        TextRootDocument(
+            root_hash=ArtifactId("sha256:" + "0" * 64),
+            schema_version=VERSION,
+            chapters=(),
+        ),
+        PlanRootDocument(
+            root_hash=ArtifactId("sha256:" + "0" * 64),
+            schema_version=VERSION,
+            nodes=(),
+            chapter_goals=(),
+        ),
+        WorldRootDocument(
+            root_hash=ArtifactId("sha256:" + "0" * 64),
+            schema_version=VERSION,
+            source_commit=CommitId("sha256:" + "0" * 64),
+            entities=(),
+            states=(),
+        ),
+        ReferenceRootDocument(
+            root_hash=ArtifactId("sha256:" + "0" * 64),
+            schema_version=VERSION,
+            assets=(),
+        ),
+        profile,
+        plan_proposal,
+        world_patch,
+        (),
+    )
+
+    assert (
+        candidate.manifest.project_profile_root.artifact_id != candidate.profile.root_hash
+    ), "the fixture must reproduce the two distinct identities"
+    stored = artifacts.read_verified(candidate.manifest.project_profile_root)
+    assert (
+        ProjectProfileRootDocument.model_validate_json(stored, strict=True).root_hash
+        == candidate.profile.root_hash
+    )

@@ -32,7 +32,17 @@ class RunConfigurationChangedError(RuntimeError):
 
     code = "RUN_CONFIGURATION_CHANGED"
 
-    def __init__(self, message: str = "RUN_CONFIGURATION_CHANGED") -> None:
+    def __init__(
+        self,
+        message: str = "RUN_CONFIGURATION_CHANGED",
+        *,
+        frozen: str | None = None,
+        observed: str | None = None,
+    ) -> None:
+        # Naming both values is what makes this diagnosable: the bare code reads
+        # like operator drift and hides which input moved.
+        if frozen is not None and observed is not None:
+            message = f"{message}: frozen={frozen} observed={observed}"
         super().__init__(message)
 
 
@@ -360,7 +370,10 @@ class ProductionDispatchCoordinator:
                     attestation is not None
                     and descriptor.policy.policy_hash != attestation.configuration_fingerprint.root
                 ):
-                    raise RunConfigurationChangedError()
+                    raise RunConfigurationChangedError(
+                        frozen=descriptor.policy.policy_hash,
+                        observed=attestation.configuration_fingerprint.root,
+                    )
                 self._assemblies[key] = assembly
             except Exception as error:
                 self._assembly_errors[key] = error
@@ -377,8 +390,18 @@ class ProductionDispatchCoordinator:
                 for task in tasks
                 if task.project_id == descriptor.project_id and not task.superseded
             )
-            if any(task.policy_hash != descriptor.policy.policy_hash for task in matching):
-                raise RunConfigurationChangedError()
+            drifted = next(
+                (
+                    task
+                    for task in matching
+                    if task.policy_hash != descriptor.policy.policy_hash
+                ),
+                None,
+            )
+            if drifted is not None:
+                raise RunConfigurationChangedError(
+                    frozen=drifted.policy_hash, observed=descriptor.policy.policy_hash
+                )
             return descriptor.request
         tasks = assembly.task_reader.list_run(descriptor.run_id)
         if not tasks:
@@ -390,8 +413,14 @@ class ProductionDispatchCoordinator:
         )
         if not matching:
             raise RuntimeError("production run has no matching project tasks")
-        if any(task.policy_hash != descriptor.policy.policy_hash for task in matching):
-            raise RunConfigurationChangedError()
+        drifted = next(
+            (task for task in matching if task.policy_hash != descriptor.policy.policy_hash),
+            None,
+        )
+        if drifted is not None:
+            raise RunConfigurationChangedError(
+                frozen=drifted.policy_hash, observed=descriptor.policy.policy_hash
+            )
         first = min(matching, key=lambda task: (task.chapter_index, task.task_id.root))
         return CreativeRunRequest(
             run_id=descriptor.run_id,
@@ -421,7 +450,8 @@ class ProductionDispatchCoordinator:
                     descriptor.run_id,
                     "failed",
                     error_type=assembly_error.code,
-                    error_message=assembly_error.code,
+                    # Keep the two hashes: the bare code cannot say which input moved.
+                    error_message=str(assembly_error),
                 )
             return ProductionProjectDispatchResult(
                 descriptor.project_id,
@@ -453,7 +483,7 @@ class ProductionDispatchCoordinator:
                         descriptor.run_id,
                         "failed",
                         error_type=error.code,
-                        error_message=error.code,
+                        error_message=str(error),
                     )
                 return ProductionProjectDispatchResult(
                     descriptor.project_id,
