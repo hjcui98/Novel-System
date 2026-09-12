@@ -41,12 +41,18 @@ def _payload(*items: dict[str, object]) -> str:
     return json.dumps({"items": list(items)})
 
 
-def _review(payload: str, *, mode: str) -> PlanReviewDraft:
+def _review(
+    payload: str,
+    *,
+    mode: str,
+    accepted_obligation_ids: frozenset[str] | None = None,
+) -> PlanReviewDraft:
     return apply_host_plan_review_constraints(
         _draft(),
         target_kind=ReviewTargetKind.PLAN_PROPOSAL,
         target_payload=payload,
         mode=AgentMode(mode),
+        accepted_obligation_ids=accepted_obligation_ids,
     )
 
 
@@ -172,3 +178,118 @@ def test_malformed_declaration_list_is_revise() -> None:
     )
 
     assert any("OBLIGATION_DECLARATION_UNREADABLE" in issue.summary for issue in review.issues)
+
+
+def test_chapter_set_may_not_declare_a_durable_obligation_directly() -> None:
+    """The declaration list is the same level rule as the legacy table."""
+
+    review = _review(
+        _payload(
+            {
+                "item_id": "plan-item.ch1",
+                "kind": "chapter_goal",
+                "payload": {
+                    "chapter_index": 1,
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "summary": "章级偷建长期义务",
+                            "setup_window": "1-10",
+                            "payoff_window": "80-100",
+                        }
+                    ],
+                },
+            }
+        ),
+        mode="chapter_set",
+    )
+
+    assert review.decision is ReviewDecision.REVISE
+    assert any(
+        "OBLIGATION_DECLARATION_FORBIDDEN" in issue.summary and issue.blocking
+        for issue in review.issues
+    )
+
+
+def test_structured_action_on_an_undeclared_obligation_is_revise() -> None:
+    """An action may reference the accepted catalogue, never invent an entry."""
+
+    review = _review(
+        _payload(
+            {
+                "item_id": "plan-item.ch1",
+                "kind": "chapter_goal",
+                "payload": {
+                    "chapter_index": 1,
+                    "obligation_actions": [
+                        {
+                            "obligation_id": "obligation.vol_99.7.objective",
+                            "action": "SETUP",
+                            "expected_delta": "不存在的义务",
+                        }
+                    ],
+                },
+            }
+        ),
+        mode="chapter_set",
+        accepted_obligation_ids=frozenset({"obligation.vol_01.0.objective"}),
+    )
+
+    assert review.decision is ReviewDecision.REVISE
+    assert any(
+        "OBLIGATION_ACTION_UNDECLARED" in issue.summary
+        and "obligation.vol_99.7.objective" in issue.summary
+        and issue.blocking
+        for issue in review.issues
+    )
+
+
+def test_structured_action_on_a_declared_obligation_still_passes() -> None:
+    review = _review(
+        _payload(
+            {
+                "item_id": "plan-item.ch1",
+                "kind": "chapter_goal",
+                "payload": {
+                    "chapter_index": 1,
+                    "obligation_actions": [
+                        {
+                            "obligation_id": "obligation.vol_01.0.objective",
+                            "action": "SETUP",
+                            "expected_delta": "铜铭首次出现但不解释来历",
+                        }
+                    ],
+                },
+            }
+        ),
+        mode="chapter_set",
+        accepted_obligation_ids=frozenset({"obligation.vol_01.0.objective"}),
+    )
+
+    assert not any(issue.kind is ReviewIssueKind.OBLIGATION_CONTRACT for issue in review.issues)
+
+
+def test_a_catalogue_is_not_required_to_flag_an_undeclared_action() -> None:
+    """Without a trusted catalogue the host cannot claim an id is invented."""
+
+    review = _review(
+        _payload(
+            {
+                "item_id": "plan-item.ch1",
+                "kind": "chapter_goal",
+                "payload": {
+                    "chapter_index": 1,
+                    "obligation_actions": [
+                        {
+                            "obligation_id": "obligation.vol_01.0.objective",
+                            "action": "SETUP",
+                            "expected_delta": "铜铭首次出现但不解释来历",
+                        }
+                    ],
+                },
+            }
+        ),
+        mode="chapter_set",
+    )
+
+    assert not any("UNDECLARED" in issue.summary for issue in review.issues)

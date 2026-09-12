@@ -476,7 +476,16 @@ class ProductionWritingRequestFactory:
         sources: dict[str, object] = dict(profile.capability_profile)
         if isinstance(planning, dict):
             sources.update(planning)
-        for key in ("timeline_locks", "reveal_windows", "progression_locks"):
+        # Every compiled author lock channel reaches the Writer.  Equipment and
+        # location locks were compiled into the profile but never projected, so a
+        # "copper token at the end of volume 1" rule was invisible to the draft.
+        for key in (
+            "timeline_locks",
+            "reveal_windows",
+            "progression_locks",
+            "equipment_locks",
+            "location_preconditions",
+        ):
             raw = sources.get(key)
             if not isinstance(raw, list):
                 continue
@@ -500,14 +509,31 @@ class ProductionWritingRequestFactory:
                         ),
                         None,
                     )
+                    latest = next(
+                        (
+                            value
+                            for field in ("chapter_end", "end", "deadline_chapter")
+                            for value in (item.get(field),)
+                            if type(value) is int and value >= 1
+                        ),
+                        None,
+                    )
                 elif isinstance(item, str) and item.strip():
                     text = item.strip()
                     boundary = None
+                    latest = None
                 else:
                     continue
                 constraints.append(f"Profile {key}: {text}")
                 if isinstance(boundary, int) and chapter_index < boundary:
                     forbids.append(f"Profile {key} is locked until chapter {boundary}: {text}")
+                if isinstance(latest, int) and chapter_index > latest:
+                    # A deadline is the opposite of a lock: the chapter must land
+                    # the item by then.  "locked until 90" would read as the
+                    # inverse of an author rule that says "obtain it by 100".
+                    forbids.append(
+                        f"Profile {key} is past its chapter {latest} deadline: {text}"
+                    )
         return tuple(dict.fromkeys(constraints)), tuple(dict.fromkeys(forbids))
 
     @staticmethod

@@ -68,6 +68,7 @@ def apply_host_plan_review_constraints(
     mode: AgentMode = AgentMode.ARC_VOLUME,
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
+    accepted_obligation_ids: frozenset[str] | None = None,
 ) -> PlanReviewDraft:
     """Overlay trusted temporal/parent-scope issues onto a model Plan review."""
 
@@ -94,6 +95,7 @@ def apply_host_plan_review_constraints(
                 if expected_target_chapters is not None
                 else _expected_target_chapters(payload)
             ),
+            accepted_obligation_ids=accepted_obligation_ids,
         ),
         *_unresolved_host_issues(payload),
     )
@@ -168,6 +170,7 @@ def _host_issues_for_items(
     mode: AgentMode,
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
+    accepted_obligation_ids: frozenset[str] | None = None,
 ) -> list[PlanReviewIssue]:
     issues: list[PlanReviewIssue] = []
     by_id: dict[str, dict[str, Any]] = {}
@@ -276,7 +279,13 @@ def _host_issues_for_items(
                 )
         if mode is AgentMode.CHAPTER_SET and _is_chapter_item(raw, item_payload):
             _append_history_need_issues(issues, item_payload, item_id)
-        _append_obligation_contract_issues(issues, item_payload, item_id, mode=mode)
+        _append_obligation_contract_issues(
+            issues,
+            item_payload,
+            item_id,
+            mode=mode,
+            accepted_obligation_ids=accepted_obligation_ids,
+        )
     if (
         mode is AgentMode.ARC_VOLUME
         and expected_volume_count is not None
@@ -451,12 +460,15 @@ def _append_obligation_contract_issues(
     item_id: str,
     *,
     mode: AgentMode,
+    accepted_obligation_ids: frozenset[str] | None = None,
 ) -> None:
     """Surface unreadable obligation shapes before the candidate is accepted.
 
-    Host review is the boundary that must catch a legacy free-text chapter action
-    or an unreadable responsibility table.  The materializer keeps the same final
-    check, but a candidate must not reach acceptance with either defect.
+    Host review is the boundary that must catch a legacy free-text chapter action,
+    an unreadable responsibility table, a lower-level plan that creates a durable
+    obligation, or an action that points at an obligation nobody declared.  The
+    materializer keeps the same checks as the last line of defence, but a
+    candidate must not reach acceptance with any of these defects.
     """
 
     actions = payload.get("obligation_actions")
@@ -471,6 +483,20 @@ def _append_obligation_contract_issues(
                     blocking=True,
                 )
             )
+        if accepted_obligation_ids is not None:
+            for action in compilation.actions:
+                if action.obligation_id in accepted_obligation_ids:
+                    continue
+                issues.append(
+                    _host_issue(
+                        ReviewIssueKind.OBLIGATION_CONTRACT,
+                        "OBLIGATION_ACTION_UNDECLARED: "
+                        f"{action.obligation_id} is not a declared obligation; this level "
+                        "may reference accepted obligation ids but may not invent one",
+                        item_id,
+                        blocking=True,
+                    )
+                )
     declarations = payload.get("obligation_declarations")
     if declarations is not None and (
         not isinstance(declarations, (list, tuple))
@@ -481,6 +507,23 @@ def _append_obligation_contract_issues(
                 ReviewIssueKind.OBLIGATION_CONTRACT,
                 "OBLIGATION_DECLARATION_UNREADABLE: obligation_declarations must be "
                 "a list of declaration objects",
+                item_id,
+                blocking=True,
+            )
+        )
+    elif declarations and mode in {
+        AgentMode.CHAPTER_SET,
+        AgentMode.CHAPTER,
+        AgentMode.SCENE,
+    }:
+        # The same level rule the materializer enforces: a lower-level plan may
+        # project or reference accepted obligations, never create one.  Without
+        # this the candidate was accepted here and only rejected later.
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                "OBLIGATION_DECLARATION_FORBIDDEN: this planning level may reference "
+                "accepted obligation ids but may not declare a durable obligation",
                 item_id,
                 blocking=True,
             )
@@ -779,6 +822,9 @@ class PlanReviewerAgent:
             target_payload=target_payload,
             expected_volume_count=_expected_volume_count_from_context(review_context),
             expected_target_chapters=_expected_target_chapters_from_context(review_context),
+            accepted_obligation_ids=_accepted_obligation_ids(
+                self._artifacts, trusted_source_artifacts
+            ),
         )
         draft_artifact = self._artifacts.put(
             canonical_json_bytes(draft.model_dump(mode="json")),
@@ -836,6 +882,32 @@ class PlanReviewerAgent:
                 if part.strip()
             )
         )
+
+
+def _accepted_obligation_ids(
+    artifacts: ArtifactRepository,
+    refs: tuple[ArtifactRef, ...],
+) -> frozenset[str] | None:
+    """Read the accepted obligation catalogue a lower-level plan must reference.
+
+    A chapter may point at an obligation the upper-level plan already declared;
+    it may not invent one.  The catalogue therefore comes from the trusted World
+    root the host passed in, never from the candidate under review.
+    """
+
+    from novel_agent.domain.memory import WorldRootDocument
+
+    for ref in refs:
+        if ref.media_type != "application/vnd.novel-agent.world-root+json":
+            continue
+        try:
+            world = WorldRootDocument.model_validate_json(
+                artifacts.read_verified(ref), strict=True
+            )
+        except (UnicodeDecodeError, ValueError):
+            continue
+        return frozenset(item.obligation_id.root for item in world.obligations)
+    return None
 
 
 def _expected_target_chapters_from_context(context: str) -> int | None:

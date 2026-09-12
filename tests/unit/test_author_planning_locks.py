@@ -337,3 +337,113 @@ def test_reveal_window_without_latest_still_carries_its_lower_boundary() -> None
             "not_before_chapter": 350,
         }
     ]
+
+
+def _writer_profile(capability: dict[str, object]) -> ProjectProfileRootDocument:
+    """A minimal pinned profile the Writer lock projection can read."""
+
+    contract = ContractRef(
+        contract_id=StableId("agent.production-bootstrap"),
+        version=SCHEMA_VERSION,
+        content_hash=content_id({"bootstrap": "profile"}),
+    )
+    provisional = ProjectProfileRootDocument(
+        root_hash=ArtifactId("sha256:" + "0" * 64),
+        schema_version=SCHEMA_VERSION,
+        style_profile={"language": "zh-CN"},
+        capability_profile=capability,  # type: ignore[arg-type]
+        agent_specs=(contract,),
+        prompt_contracts=(
+            PromptContractRef(
+                contract_id=StableId("prompt.system-policy"),
+                version=SCHEMA_VERSION,
+                content_hash=contract.content_hash,
+                render_fingerprint=contract.content_hash,
+            ),
+        ),
+        skill_contracts=(
+            SkillContractRef(
+                contract_id=StableId("skill.scene-composition"),
+                version=SCHEMA_VERSION,
+                content_hash=contract.content_hash,
+            ),
+        ),
+        tool_policies=(contract,),
+        model_profiles=("qwen38-27b-nvfp4@8003",),
+    )
+    return provisional.model_copy(
+        update={"root_hash": project_profile_root_content_id(provisional)}
+    )
+
+
+def test_every_compiled_lock_channel_reaches_the_writer() -> None:
+    """Equipment and location locks were compiled but never projected."""
+
+    from novel_agent.adapters.runtime.stage3_writer import ProductionWritingRequestFactory
+    from novel_agent.runtime.production_novel_bootstrap import apply_author_planning_locks
+
+    payload = _lock_document()
+    payload["locks"] = [  # type: ignore[list-item]
+        {
+            "lock_id": "lock.equipment",
+            "category": "equipment",
+            "description": "铜铭须在第一卷末取得",
+            "chapter_earliest": 90,
+            "chapter_latest": 100,
+        },
+        {
+            "lock_id": "lock.location",
+            "category": "location",
+            "description": "断星六号内府区域最早第二卷开放",
+            "not_before_chapter": 101,
+        },
+        {
+            "lock_id": "lock.reveal",
+            "category": "reveal",
+            "description": "第三碎片最早第三卷",
+            "not_before_chapter": 201,
+        },
+    ]
+    document = load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+    capability: dict[str, object] = {}
+    apply_author_planning_locks(capability, document)  # type: ignore[arg-type]
+
+    constraints, forbids = ProductionWritingRequestFactory._profile_lock_constraints(
+        _writer_profile(capability), 1
+    )
+
+    joined = " ".join(constraints)
+    assert "equipment_locks" in joined
+    assert "location_preconditions" in joined
+    assert "reveal_windows" in joined
+    assert any("locked until chapter 101" in item for item in forbids)
+    assert any("locked until chapter 201" in item for item in forbids)
+
+
+def test_a_lock_deadline_is_not_reported_as_a_lock() -> None:
+    """A latest chapter is a deadline; only a lower bound is a lock."""
+
+    from novel_agent.adapters.runtime.stage3_writer import ProductionWritingRequestFactory
+    from novel_agent.runtime.production_novel_bootstrap import apply_author_planning_locks
+
+    payload = _lock_document()
+    payload["locks"] = [  # type: ignore[list-item]
+        {
+            "lock_id": "lock.copper-token.100",
+            "category": "equipment",
+            "description": "第一卷末获得铜铭",
+            "chapter_earliest": 90,
+            "chapter_latest": 100,
+        }
+    ]
+    document = load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+    capability: dict[str, object] = {}
+    apply_author_planning_locks(capability, document)  # type: ignore[arg-type]
+    profile = _writer_profile(capability)
+
+    _, before = ProductionWritingRequestFactory._profile_lock_constraints(profile, 1)
+    _, after = ProductionWritingRequestFactory._profile_lock_constraints(profile, 120)
+
+    assert any("locked until chapter 90" in item for item in before)
+    assert not any("deadline" in item for item in before)
+    assert any("past its chapter 100 deadline" in item for item in after)
