@@ -53,6 +53,19 @@ history_decision_coverage    applicable=False 0/0   missing=0
 它们来自 brief 的自由文本。说明该运行的 Profile→约束编译覆盖本身不完整，
 本轮不修改冻结产物，把这一点留给 v7 装配时的约束编译核对（方案 R2 第 2 项）。
 
+### 1.4 未来锁定义务的作用域（A06）
+
+`writer_readiness` 原先用 `obligation_active_for_chapter` 构造“本章必须携带的义务”集合。
+该函数是**兑现语义**：未来锁定义务在 `not_before_chapter` 之前返回 False。于是第 1 章会把
+“最早第 101 章才能兑现”的责任视为不存在——这既违反方案第 5.2 节（`not_before` 约束兑现/揭露，
+不把待埋设/推进的义务从注入与检索集合删除），也让 readiness 的义务绑定检查在该处失效。
+
+修复：新增 `obligation_in_scope_for_chapter`（作用域语义，忽略兑现锁），readiness 改用它；
+`obligation_active_for_chapter` 保留兑现语义并更正文档字符串。
+证据：`tests/unit/test_writer_history_retrieval_gate.py` 用真实 v6 义务形状
+（只有 `not_before_chapter`、无 target 窗口）断言作用域包含、兑现仍被锁、已解决义务出作用域、
+带 target 窗口时窗口外不出现在作用域内。
+
 ## 2. R2 未完成项
 
 | 项 | 内容 |
@@ -64,6 +77,6 @@ history_decision_coverage    applicable=False 0/0   missing=0
 
 ## 3. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 2956 passed / 1 skipped**；
+`tests/unit tests/contract`：**76 failed / 2957 passed / 1 skipped**；
 失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。
-R2 至今新增 15 项通过测试（图守卫 7、coverage 8）。
+R2 至今新增 16 项通过测试（图守卫 7、coverage 8、作用域 1）。
