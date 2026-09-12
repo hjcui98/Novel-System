@@ -66,17 +66,29 @@ history_decision_coverage    applicable=False 0/0   missing=0
 （只有 `not_before_chapter`、无 target 窗口）断言作用域包含、兑现仍被锁、已解决义务出作用域、
 带 target 窗口时窗口外不出现在作用域内。
 
+### 1.5 卷阶段语义（A11）
+
+`missing_volume_structure_keys` 只检查 19 个结构槽**非空**——v6 八卷因此全部通过，
+但没有任何阶段真正绑定到章节区间或责任上，“十个非空字段”被当成了阶段网格。
+
+新增 `domain/planning.volume_stage_grid_defects`：当 `entry_conditions`、`exit_conditions`、
+`reveal_window`、`capability_ceiling`、`equipment_ceiling` 以**结构化条目**表达时，必须声明
+落在本卷范围内的 `chapter_start/chapter_end` 与它服务的 `obligation_ids`。
+自由文本槽保持可用——它们按定义就是整卷范围，不会伪造出阶段网格，因此冻结的 v6 候选
+不会被追溯判失败。宿主 Review 以 `VOLUME_STAGE_UNUSABLE`（blocking）逐条报告。
+证据：`tests/unit/test_volume_stage_grid.py`（5 项，含“自由文本仍通过”的反例）。
+
 ## 2. R2 未完成项
 
 | 项 | 内容 |
 |---|---|
-| 阶段语义 | 卷入口条件/持续约束/出口结果与 acceptance criteria 分别在进入、范围内、末端检查；不每章提前兑现卷目标 |
+| 阶段语义（余项） | 入口/出口结果在范围端点的实际检查；不每章提前兑现卷目标（EARLY_RESOLUTION 已有，需在真实运行验证） |
 | 来源权限 | 工作计划/指令/候选 vs 真实历史证据分开；Editor 不能用 avoided 绕过强制 Need |
 | 内容审查 | Editor outcome/evidence 检查、章节目标需明确变化与完成证据 |
 | scope supersession 全量 | 已做同级重叠与父子越界；重规划父卷时后代处理与已写前缀冻结待续 |
 
 ## 3. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 2957 passed / 1 skipped**；
+`tests/unit tests/contract`：**76 failed / 2962 passed / 1 skipped**；
 失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。
-R2 至今新增 16 项通过测试（图守卫 7、coverage 8、作用域 1）。
+R2 至今新增 21 项通过测试（图守卫 7、coverage 8、作用域 1、阶段网格 5）。
