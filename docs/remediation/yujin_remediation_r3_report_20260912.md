@@ -38,16 +38,48 @@ if candidate.unit.unit_kind in {GROUNDED_BLOCK, GROUNDED_SPAN}:
 修复前返回空切片，修复后返回切片与 evidence refs；并断言 grounded 切片
 `supported_facet_ids == ()`，防止把检索相关度当成语义支持。
 
-## 2. R3 未完成项
+## 2. 已完成：semantic judge 接线
+
+### 2.1 缺陷
+
+生产 `bootstrap` 只在注册了 `ModelRole.BATCH_TEST` 端点时才构造 semantic judge：
+
+```python
+semantic_judge = NeedEvidenceSemanticJudge(...) if batch_endpoint is not None else None
+```
+
+8003 profile 只注册 `IMPLEMENTATION`，于是 judge 恒为 `None`——语义检查**静默消失**，
+且没有任何报错或降级标记。这正是方案第 7.1 节要求的“不能因为没有 BATCH_TEST 端点而无语义检查”。
+
+### 2.2 修复
+
+- `NeedEvidenceSemanticJudge` 显式接收 `model_role` / `purpose`，并拒绝
+  “batch/evaluation purpose + 非 batch_test role”的组合（gateway 侧同规则）；
+- bootstrap 改为回退到已注册的 `IMPLEMENTATION` 端点，purpose 记为 `DEVELOPMENT`；
+  只有**完全没有注册端点**时 judge 才为 `None`；
+- judge 的 request id 现在包含 run 与 task，单批调用可归因。
+
+证据：`tests/unit/test_need_evidence_semantic_judgment.py`
+（实现端点端到端判定、batch purpose 拒绝、request id 含 run/task）。
+
+## 3. 关于 `PLAN_BLOCKING_UNRESOLVED`
+
+该 reason code 在仓库中**从未被赋值**（死代码）。核查后决定不新增重复机制：
+`WritingTaskContract.blocking_gaps` 已在 `writer_draft_integration`（BLOCKING_GAP）与
+`writer_generation`（WRITING_TASK_BLOCKING_GAPS）两处阻断，且提交边界由
+`PlanCandidateMaterializer._accepted_review` 强制“ACCEPT 且无 blocking issue、
+receipt 成功、绑定同一 proposal”。已提交的 PlanRoot 结构上不含 unresolved，因此
+阻塞项只可能来自未被接受的计划——那条路径已在更早的边界 fail closed。
+
+## 4. R3 未完成项
 
 | 项 | 内容 |
 |---|---|
-| semantic judge 正式接线 | 8003 IMPLEMENTATION endpoint 注册（R0 已完成 profile），仍需按 purpose 显式配置并让 request id 含 run/task |
 | request-local route plan | 依据实际 snapshot attestation 生成、公平使用工具预算、传入 reranker、无证明不补写 EXACT |
-| readiness 收口 | 父级范围、blocking issue、真实审批回执、Plan/context/goal 引用与 exact projection 的实测输入 |
-| A07/A08 | 合法正文进包、非法证据（错 quote/snapshot/cutoff）阻断 Writer 的端到端断言 |
+| readiness 余项 | A5—A8 的端到端断言（合法正文进包；错 quote/snapshot/cutoff/零 Need 在模型调用前阻断）已有部分覆盖（A1—A4/A9），需在真实运行时补齐证据 |
+| 死代码清理 | `PLAN_BLOCKING_UNRESOLVED` 是否删除或改为真实信号，留待 R6 前的契约清理 |
 
-## 3. 回归与失败身份
+## 5. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 2963 passed / 1 skipped**；
+`tests/unit tests/contract`：**76 failed / 2965 passed / 1 skipped**；
 失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。
