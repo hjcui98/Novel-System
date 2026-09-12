@@ -411,3 +411,64 @@ host review 当时返回 ACCEPT，于是又走了一遍"审校通过、commit �
 | 卷阶段时间语义 | 阶段槽投影未按条目章节窗口筛选，且已属 `relevant_nodes` 的卷节点被排除在阶段投影之外，卷首/卷中/卷末收到同一组约束。**尚未修** |
 | STORY 八卷与章节目标 | STORY 提案只有 3 条卷结构、无章节目标。G0 未通过 |
 | 修稿恢复执行证据 | `REPAIR_PENDING` 仍未实际写入；恢复入口仍先重建 Memory 包 |
+
+## 11. 审校与物化统一到同一份义务声明契约（2026-09-13）
+
+### 11.1 两份实现互相矛盾，两个方向都错
+
+用 v12 真实候选逐项对照，发现审校与物化对同一 payload 的判断不一致：
+
+| 输入 | 物化器 | 旧审校 |
+|---|---|---|
+| 线上坏条目：`kind="obligation"`、只有 `title`+`constraints` | 拒绝（unknown kind） | **ACCEPT** |
+| 合法：直接 `obligation_kind=objective` + summary | 接受 | **拒绝**（OBLIGATION_KIND_MISSING） |
+| 合法：嵌套 `obligation.kind=objective` | 接受 | **拒绝** |
+| 只补 kind、没有描述 | 拒绝（requires a description） | 通过 |
+
+也就是说"审校通过、commit 才拒绝"这条故障模式仍然活着，只是这次以另一种形式出现。
+
+### 11.2 统一到 `domain/obligation_contract.py`
+
+契约模块现在是唯一owner：`parse_obligation_declarations` 按绑定顺序读取全部声明面
+（item 自身 kind、`obligation_kind`/`obligation_type`、嵌套 `obligation`、
+`obligations`/`obligation_declarations`/`key_obligations`/`obligation_declaration`、
+旧版 `obligation_plan`），逐条报告不可读原因；`claims_direct_obligation` 判定"断言了一条义务"；
+`declared_obligation_identities` 把 host 的标识约定暴露一次。审校与物化都调用它们。
+
+配套修正：`not_before_chapter` 现在随声明一起传递（此前在转换中丢失，导致长程
+`promise`/`foreshadowing` 报"requires not_before_chapter"）。
+
+回归：`tests/unit/test_obligation_declaration_binding.py`、`test_obligation_contract.py`、
+`test_plan_review_obligation_contract.py` 全绿；`tests/unit tests/contract` 与 R0 基线
+逐条一致（76 项）。
+
+### 11.3 目录改回 World 权威来源
+
+`_accepted_obligation_ids` 不再读 `Profile.capability_profile.obligation_declarations`
+（真实 v12 Profile 没有该字段），也不再复制 ID 算法。目录来自装配绑定的已接受 World 根
+（`manifest.world_root`），由 `PlanReviewerAgent` 在构造时持有；没有 World 根时返回
+`None` 表示"无法核验"，与"目录为空"区分开。
+
+### 11.4 v12 候选的正确处置：修订，不是补 kind
+
+用统一契约重跑 v12 的接受绑定，仍然拒绝，且原因更清楚：
+
+```text
+obligation declaration is not readable:
+item.story.obligation.reveal_lock[0] declares no obligation kind;
+name one of foreshadowing, promise, objective, unresolved_conflict
+```
+
+该条目本质是作者锁汇总，属于约束上下文而非新增义务，**不应**通过补一个占位 kind 让它过关；
+旧候选必须修订并重审。已把契约写进 `planner_story_v1.md`：声明需要 kind 与非空描述、
+作者锁不是本章新增义务、占位 kind 不是通关手段。
+
+### 11.5 仍未闭合
+
+| 项 | 现状 |
+|---|---|
+| Writer 忽略 `truth_class` | `stage3_writer` 把参与人物的**任何**状态注入 `Canon current state`，所以即使 Genesis 把未来条目标成 `PREDICTION`，它仍可能以"当前事实"进入正文。需要在注入侧按 `truth_class` 过滤（**尚未修**） |
+| Genesis 未来事件分类本身 | 关键词 + 作者锁文本匹配只能捕捉字面含"第N卷/最终/后续/成长路线"的条目；像"唐钧在钧炉城锻打沉曜"这种**不含卷号**的整段人物描述仍判为当前事实。需要拆分描述（当前身份 vs 未来经历）或由 Curator 显式给出时间意图（**尚未完成**） |
+| 卷阶段时间语义 | 阶段槽投影仍未按条目章节窗口区分卷首/卷中/卷末（**尚未修**） |
+| `REPAIR_PENDING` | 仍无实际写入与修稿中断恢复的执行证据（**尚未修**） |
+| G0 八卷与首批五章 | 未进入 ARC_VOLUME；STORY 候选需按新契约重新生成 |
