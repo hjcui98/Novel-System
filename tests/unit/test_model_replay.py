@@ -275,3 +275,61 @@ def test_replay_does_not_consume_a_new_budget(tmp_path: Path) -> None:
     assert outcome.call_record.usage.input_tokens == first_call.usage.input_tokens
     assert after is not None and after.completed_at == before.completed_at
     assert after.status is ModelCallLedgerStatus.COMPLETED
+
+
+def test_repeating_a_completed_structured_request_reuses_the_answer(tmp_path: Path) -> None:
+    """A retry of the same request must not reach the provider again.
+
+    The ledger refuses to rebind a settled entry, so without this the second attempt
+    surfaced a collision instead of the original answer.
+    """
+
+    adapter = _CountingEndpoint()
+    gateway, _artifacts, _ledger = _gateway(tmp_path, adapter)
+    request = _request()
+
+    first, first_call = asyncio.run(gateway.generate_structured(request, _Answer))
+    second, second_call = asyncio.run(gateway.generate_structured(request, _Answer))
+
+    assert adapter.calls == 1
+    assert first.status == second.status == "ok"
+    assert first_call.request_id == second_call.request_id
+
+
+def test_repeating_a_different_request_still_calls_the_provider(tmp_path: Path) -> None:
+    adapter = _CountingEndpoint()
+    gateway, _artifacts, _ledger = _gateway(tmp_path, adapter)
+
+    asyncio.run(
+        gateway.generate_structured(
+            _request(request_id="model.request.replay.1", prompt="chapter one"), _Answer
+        )
+    )
+    asyncio.run(
+        gateway.generate_structured(
+            _request(request_id="model.request.replay.2", prompt="chapter two"), _Answer
+        )
+    )
+
+    assert adapter.calls == 2
+
+
+def test_an_uncertain_retry_is_refused_rather_than_replayed(tmp_path: Path) -> None:
+    """Reconcile first: an unresolved call is never answered from a stale response."""
+
+    class _UncertainEndpoint(FakeModelEndpoint):
+        async def generate(self, request):
+            raise TimeoutError("provider did not answer")
+
+    gateway, _artifacts, ledger = _gateway(tmp_path, _UncertainEndpoint('{"status": "ok"}'))
+    request = _request()
+    with pytest.raises(TimeoutError):
+        asyncio.run(gateway.generate_structured(request, _Answer))
+
+    entry = ledger.load(request.request_id)
+    assert entry is not None and entry.status is ModelCallLedgerStatus.UNCERTAIN
+
+    from novel_agent.services.model_gateway import ModelCallUncertainError
+
+    with pytest.raises(ModelCallUncertainError):
+        asyncio.run(gateway.generate_structured(request, _Answer))

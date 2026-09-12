@@ -877,7 +877,18 @@ class ModelGateway:
         output_type: type[OutputModel],
         *,
         json_object_framing: bool = False,
+        allow_replay: bool = True,
     ) -> tuple[OutputModel, ModelCallRecord]:
+        # A request whose identity was already completed must not be issued again: the
+        # ledger refuses to rebind a settled entry, so a retry would surface a collision
+        # instead of the original answer.  Reuse the recorded response when its identity
+        # still matches, and fall through to a fresh call otherwise.
+        if allow_replay:
+            recorded = self._completed_structured_result(
+                request, output_type, json_object_framing=json_object_framing
+            )
+            if recorded is not None:
+                return recorded
         schema = None if json_object_framing else output_type.model_json_schema()
         retry_request = request.model_copy(update={"response_schema": schema})
         for attempt in range(self._structured_max_retries + 1):
@@ -952,6 +963,42 @@ class ModelGateway:
                     }
                 )
         raise AssertionError("structured retry loop did not terminate")  # pragma: no cover
+
+    def _completed_structured_result(
+        self,
+        request: ModelRequest,
+        output_type: type[OutputModel],
+        *,
+        json_object_framing: bool,
+    ) -> tuple[OutputModel, ModelCallRecord] | None:
+        """Return a replayed answer when the request was already completed."""
+
+        expected_endpoint = self._endpoints.get(request.model_role)
+        if expected_endpoint is None:
+            return None
+        schema = None if json_object_framing else output_type.model_json_schema()
+        bound, _budget = self._bind_budget(
+            request.model_copy(update={"response_schema": schema}), expected_endpoint
+        )
+        with self._ledger_lock:
+            entry = self._call_ledger.load(bound.request_id)
+        # Only a settled COMPLETED entry is reusable here.  UNCERTAIN stays an explicit
+        # reconcile-before-retry failure, and other terminal states keep their typed
+        # error paths rather than being silently converted into a replay.
+        if (
+            entry is None
+            or entry.status is not ModelCallLedgerStatus.COMPLETED
+            or entry.request_hash != model_request_hash(bound)
+        ):
+            return None
+        outcome = self.replay_completed_structured(
+            request, output_type, json_object_framing=json_object_framing
+        )
+        if not outcome.replayed:
+            return None
+        assert isinstance(outcome.output, output_type)
+        assert outcome.call_record is not None
+        return outcome.output, outcome.call_record
 
     def replay_completed_structured(
         self,
