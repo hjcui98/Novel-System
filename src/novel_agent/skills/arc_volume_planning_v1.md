@@ -1,5 +1,12 @@
 # arc_volume_planning 1.0.0
 
-构建分卷与剧情弧线阶段，排期情节主线与关键承诺，验证依赖关系，保留锁定意图，并暴露未决的叙事节奏或结构抉择。所有规划内容必须遵守受信 `ProjectProfile` language。
+构建可执行分卷架构。严格覆盖 Profile 规定的全部卷范围（`expected_volume_count` 卷、连续覆盖 1..`target_chapters`），不能只规划开头几卷。所有规划内容必须遵守受信 `ProjectProfile` language，并遵守 Profile 的时间锁、能力/装备里程碑与地点前置条件。
 
-必须覆盖 Profile 规定的全部卷范围，不能只规划开头几卷。每卷给出可支持滚动 ChapterSet 的事件阶梯；每个事件尽量说明 cause、participants、conflict、cost、state_delta、obligation_action 与 chapter_window。后卷的武器、地点和真相不得提前；若某卷无法安全规划，返回明确阻断项，不以不完整 coverage 宣称 PLAN_READY。
+每个卷 item（`kind=volume`/`arc_volume`，payload.plan_level=`arc_volume`）必须给出 chapter_start、chapter_end，并逐项填写以下非空 payload 字段：
+
+- 十个结构槽：`opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`；
+- 弧线与上限：`protagonist_arc`、`supporting_arc`、`faction_arc`、`capability_ceiling`、`equipment_ceiling`；
+- 边界与排期：`entry_conditions`、`exit_conditions`、`reveal_window`、`obligation_plan`；
+- 每个结构槽尽量说明 cause、participants、conflict、cost、state_delta 与 chapter_window。
+
+`obligation_plan` 为责任表条目列表，每条包含 `summary`、`kind`（objective/promise/foreshadowing/...）、`setup_window`、`progress_windows`、`payoff_window` 与 `not_before_chapter`。后卷的武器、地点和真相不得提前：`reveal_window` 与 `not_before_chapter` 必须与 Profile 时间锁一致。若某卷无法安全规划，返回结构化 `unresolved` 阻断项（kind 必须使用 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN 之一，`blocking=true`），不要以不完整 coverage 宣称 PLAN_READY。

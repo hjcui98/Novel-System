@@ -1,0 +1,101 @@
+"""Explicit history retrieval decisions shared by planning, memory and Writer.
+
+These contracts live outside ``benchmark``/``writer_context`` so both modules
+can consume them without a circular import.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import Field, model_validator
+
+from novel_agent.domain.base import DomainModel
+from novel_agent.domain.ids import StableId
+
+
+class HistoryRetrievalRequirement(StrEnum):
+    REQUIRED = "REQUIRED"
+    NOT_REQUIRED = "NOT_REQUIRED"
+    UNDECIDED = "UNDECIDED"
+
+
+class HistoryRetrievalReasonCode(StrEnum):
+    FIRST_CHAPTER = "first_chapter"
+    NO_HISTORICAL_DEPENDENCY = "no_historical_dependency"
+    REVIEW_WAIVER = "review_waiver"
+
+
+class RetrievalExecutionStatus(StrEnum):
+    NOT_REQUESTED = "NOT_REQUESTED"
+    EXECUTED = "EXECUTED"
+    NO_HIT = "NO_HIT"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+_HISTORY_RETRIEVAL_NEED_KINDS = frozenset(
+    {
+        "causal_history",
+        "knowledge_origin",
+        "relationship_origin",
+        "setup_evidence",
+        "object_origin",
+    }
+)
+
+
+class HistoryRetrievalNeed(DomainModel):
+    """One explicit historical retrieval need declared by an accepted plan item."""
+
+    kind: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    entity_ids: tuple[StableId, ...] = ()
+    predicates: tuple[str, ...] = ()
+    why_needed: str | None = None
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> HistoryRetrievalNeed:
+        if self.kind not in _HISTORY_RETRIEVAL_NEED_KINDS:
+            raise ValueError(f"history retrieval need kind is not allowed: {self.kind!r}")
+        return self
+
+
+class HistoryRetrievalDecision(DomainModel):
+    """Explicit decision about whether the chapter needs historical retrieval.
+
+    ``history_needs: []`` alone can never prove the question was decided; an
+    empty decision is ``UNDECIDED`` and must block Writer execution.
+    """
+
+    requirement: HistoryRetrievalRequirement = HistoryRetrievalRequirement.UNDECIDED
+    reason: str = ""
+    reason_code: HistoryRetrievalReasonCode | None = None
+    waiver_ref: str | None = Field(default=None, min_length=1)
+    needs: tuple[HistoryRetrievalNeed, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> HistoryRetrievalDecision:
+        if self.requirement is HistoryRetrievalRequirement.REQUIRED:
+            if not self.needs:
+                raise ValueError("REQUIRED history retrieval decision needs at least one Need")
+            if len(self.needs) > 3:
+                raise ValueError("REQUIRED history retrieval decision permits at most three Needs")
+        elif self.requirement is HistoryRetrievalRequirement.NOT_REQUIRED:
+            if self.needs:
+                raise ValueError("NOT_REQUIRED history retrieval decision cannot carry Needs")
+            if self.reason_code is None:
+                raise ValueError("NOT_REQUIRED history retrieval decision requires a reason_code")
+            if not self.waiver_ref:
+                raise ValueError("NOT_REQUIRED history retrieval decision requires a waiver_ref")
+        elif self.needs:
+            raise ValueError("UNDECIDED history retrieval decision cannot carry Needs")
+        return self
+
+    @classmethod
+    def first_chapter_waiver(cls) -> HistoryRetrievalDecision:
+        return cls(
+            requirement=HistoryRetrievalRequirement.NOT_REQUIRED,
+            reason="chapter 1 has no canonical prose history",
+            reason_code=HistoryRetrievalReasonCode.FIRST_CHAPTER,
+            waiver_ref="waiver.history.first_chapter",
+        )

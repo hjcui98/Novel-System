@@ -26,6 +26,10 @@ from novel_agent.domain.memory import (
     RequirementLevel,
     Stage1MemoryNeed,
 )
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalRequirement,
+    RetrievalExecutionStatus,
+)
 from novel_agent.domain.stage2 import ContextAssemblySpec  # noqa: F401  (legacy import parity)
 from novel_agent.domain.text import EvidenceRef, TextBlock
 from novel_agent.domain.writer_context import (
@@ -123,7 +127,9 @@ class EvidenceFirstAssemblyResult(DomainModel):
     # (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
-    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    semantic_status: Literal[
+        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
+    ] = "UNASSESSED"
     usable_with_gaps: bool = True
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
     semantic_receipts: tuple[NeedFacetSemanticReceipt, ...] = ()
@@ -178,6 +184,15 @@ class EvidenceFirstWriterContextAssembler:
         gateway_context_artifact: ArtifactRef | None = None,
         frozen_evidence_selections_artifact: ArtifactRef | None = None,
         budget_expansion_receipt: ArtifactRef | None = None,
+        retrieval_requirement: HistoryRetrievalRequirement = (
+            HistoryRetrievalRequirement.UNDECIDED
+        ),
+        retrieval_status: RetrievalExecutionStatus | None = None,
+        history_waiver_ref: str | None = None,
+        plan_root_ref: ArtifactRef | None = None,
+        plan_revision: str | None = None,
+        chapter_goal_ids: tuple[StableId, ...] = (),
+        planning_context_ref: ArtifactRef | None = None,
     ) -> EvidenceFirstAssemblyResult:
         """Build a v2 package + ledger from selected exact slices only.
 
@@ -193,10 +208,34 @@ class EvidenceFirstWriterContextAssembler:
             raise ValueError("evidence-first writer context arm must be A, B, or C")
         if writer_token_budget < 1 or evidence_ledger_token_budget < 1:
             raise ValueError("writer and ledger budgets must be positive")
-        # A canonical projection with no declared history Need is a valid
-        # zero-retrieval production case.  It must still produce the same
-        # immutable v2 package, but it never needs a Memory Gateway call.
-        diagnostics = ["HISTORICAL_RETRIEVAL_NOT_REQUIRED"] if not selections else []
+        # The assembler never guesses why selections are empty: it consumes the
+        # explicit upstream retrieval decision and only then labels execution.
+        # Callers that already executed retrieval without carrying a decision
+        # are promoted to REQUIRED; empty selections are never inferred.
+        if retrieval_requirement is HistoryRetrievalRequirement.UNDECIDED and selections:
+            retrieval_requirement = HistoryRetrievalRequirement.REQUIRED
+        resolved_retrieval_status = (
+            retrieval_status
+            if retrieval_status is not None
+            else (
+                RetrievalExecutionStatus.NOT_APPLICABLE
+                if retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED
+                else (
+                    RetrievalExecutionStatus.EXECUTED
+                    if selections
+                    else RetrievalExecutionStatus.NOT_REQUESTED
+                )
+            )
+        )
+        diagnostics: list[str] = []
+        if retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED:
+            if selections:
+                raise ValueError("NOT_REQUIRED retrieval must not carry selections")
+            if resolved_retrieval_status is not RetrievalExecutionStatus.NOT_APPLICABLE:
+                raise ValueError("NOT_REQUIRED retrieval status must be NOT_APPLICABLE")
+            diagnostics.append("HISTORY_RETRIEVAL_NOT_APPLICABLE")
+        elif not selections:
+            diagnostics.append(f"HISTORY_RETRIEVAL_{resolved_retrieval_status.value}")
         if any(not ref.media_type or not text.strip() for ref, text in advisory_items):
             raise ValueError("advisory items require a source artifact and non-empty text")
         blocks, chapter_indexes = text_root_indexes(text_root)
@@ -889,9 +928,11 @@ class EvidenceFirstWriterContextAssembler:
         structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = (
             "COMPLETE" if not structural_mandatory_gap_items else "INCOMPLETE"
         )
-        semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"]
-        if not selections:
-            semantic_status = "COMPLETE"
+        semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"]
+        if retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED:
+            semantic_status = "NOT_APPLICABLE"
+        elif not selections:
+            semantic_status = "UNASSESSED"
         elif planner_fallback_used:
             # A Planner fallback means the target-goal Need set was not fully
             # validated, even when retrieval/semantic judging can serve every
@@ -911,7 +952,7 @@ class EvidenceFirstWriterContextAssembler:
             )
         else:
             semantic_status = "UNASSESSED"
-        if advisory_items:
+        if advisory_items and retrieval_requirement is not HistoryRetrievalRequirement.NOT_REQUIRED:
             semantic_status = "INCOMPLETE"
         unclosed_mandatory_need_facets = tuple(
             dict.fromkeys(
@@ -964,6 +1005,13 @@ class EvidenceFirstWriterContextAssembler:
             gateway_context_artifact=gateway_context_artifact,
             frozen_evidence_selections_artifact=frozen_evidence_selections_artifact,
             budget_expansion_receipt=budget_expansion_receipt,
+            retrieval_requirement=retrieval_requirement,
+            retrieval_status=resolved_retrieval_status,
+            history_waiver_ref=history_waiver_ref,
+            plan_root_ref=plan_root_ref,
+            plan_revision=plan_revision,
+            chapter_goal_ids=chapter_goal_ids,
+            planning_context_ref=planning_context_ref,
         )
         package = WriterContextPackageV2(
             contract_version=cast(Literal["writer_context.v2"], self.contract_version),
@@ -978,6 +1026,17 @@ class EvidenceFirstWriterContextAssembler:
             lineage=lineage,
             rendered_context=rendered,
             assembly_status=status.value,
+            retrieval_requirement=retrieval_requirement,
+            retrieval_status=resolved_retrieval_status,
+            need_generation_status=(
+                "READY"
+                if selections or retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED
+                else (
+                    "NO_FOCUS"
+                    if retrieval_requirement is HistoryRetrievalRequirement.REQUIRED
+                    else "INVALID"
+                )
+            ),
             semantic_status=semantic_status,
             usable_with_gaps=usable_with_gaps,
             structural_mandatory_facet_closure=structural_mandatory_facet_closure,

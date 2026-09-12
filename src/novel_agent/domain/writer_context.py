@@ -12,6 +12,10 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.canonical import CanonicalAliasReceipt
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, StableId
 from novel_agent.domain.model_calls import ModelCallRecord
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalRequirement,
+    RetrievalExecutionStatus,
+)
 from novel_agent.domain.text import EvidenceRef, QuoteHash
 
 
@@ -698,6 +702,13 @@ class EvidenceFirstLineage(DomainModel):
     gateway_context_artifact: ArtifactRef | None = None
     frozen_evidence_selections_artifact: ArtifactRef | None = None
     budget_expansion_receipt: ArtifactRef | None = None
+    retrieval_requirement: HistoryRetrievalRequirement = HistoryRetrievalRequirement.UNDECIDED
+    retrieval_status: RetrievalExecutionStatus = RetrievalExecutionStatus.NOT_REQUESTED
+    history_waiver_ref: str | None = None
+    plan_root_ref: ArtifactRef | None = None
+    plan_revision: str | None = None
+    chapter_goal_ids: tuple[StableId, ...] = ()
+    planning_context_ref: ArtifactRef | None = None
 
 
 class WriterContextPackageV2(DomainModel):
@@ -721,7 +732,12 @@ class WriterContextPackageV2(DomainModel):
     lineage: EvidenceFirstLineage
     rendered_context: str = ""
     assembly_status: str = "READY"
-    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    retrieval_requirement: HistoryRetrievalRequirement = HistoryRetrievalRequirement.UNDECIDED
+    retrieval_status: RetrievalExecutionStatus = RetrievalExecutionStatus.NOT_REQUESTED
+    need_generation_status: str = "INVALID"
+    semantic_status: Literal[
+        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
+    ] = "UNASSESSED"
     usable_with_gaps: bool = True
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
@@ -738,6 +754,39 @@ class WriterContextPackageV2(DomainModel):
             set(self.unclosed_mandatory_need_facets)
         ):
             raise ValueError("unclosed mandatory Need facets must be unique")
+        if self.retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED:
+            if self.retrieval_status is not RetrievalExecutionStatus.NOT_APPLICABLE:
+                raise ValueError("NOT_REQUIRED retrieval must be NOT_APPLICABLE")
+            if self.semantic_status != "NOT_APPLICABLE":
+                raise ValueError("NOT_REQUIRED retrieval must be semantically NOT_APPLICABLE")
+            if self.lineage.need_ids or self.unclosed_mandatory_need_facets:
+                raise ValueError("NOT_REQUIRED retrieval cannot carry Needs or unclosed facets")
+        if self.retrieval_requirement is HistoryRetrievalRequirement.UNDECIDED:
+            if (
+                not self.lineage.need_ids
+                and self.retrieval_status is not RetrievalExecutionStatus.NOT_REQUESTED
+            ):
+                raise ValueError(
+                    "UNDECIDED retrieval without Needs cannot claim an execution status"
+                )
+            if self.semantic_status == "COMPLETE":
+                raise ValueError("UNDECIDED retrieval cannot be semantically COMPLETE")
+        if self.retrieval_requirement is HistoryRetrievalRequirement.REQUIRED and (
+            self.retrieval_status is RetrievalExecutionStatus.NOT_APPLICABLE
+        ):
+            raise ValueError("REQUIRED retrieval cannot be NOT_APPLICABLE")
+        if self.semantic_status == "COMPLETE":
+            if self.retrieval_status not in {
+                RetrievalExecutionStatus.EXECUTED,
+                RetrievalExecutionStatus.NOT_APPLICABLE,
+            }:
+                raise ValueError("COMPLETE retrieval requires an EXECUTED retrieval")
+            if self.unclosed_mandatory_need_facets:
+                raise ValueError("COMPLETE retrieval cannot carry unclosed mandatory facets")
+        if self.lineage.retrieval_requirement is not self.retrieval_requirement:
+            raise ValueError("package and lineage retrieval requirements must agree")
+        if self.lineage.retrieval_status is not self.retrieval_status:
+            raise ValueError("package and lineage retrieval statuses must agree")
         receipt_keys = tuple(
             (receipt.need_id, receipt.need_facet_id) for receipt in self.semantic_receipts
         )
@@ -802,7 +851,9 @@ class EvidenceFirstPackageManifest(DomainModel):
     # the success state (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
-    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED"] = "UNASSESSED"
+    semantic_status: Literal[
+        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
+    ] = "UNASSESSED"
     usable_with_gaps: bool = True
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
     derived_tool_call_budget: int = Field(default=0, ge=0)

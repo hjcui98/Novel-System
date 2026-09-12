@@ -102,6 +102,17 @@ EDITORIAL_REPORT_MEDIA_TYPE = "application/vnd.novel-agent.editorial-report+json
 RECONCILIATION_MEDIA_TYPE = "application/vnd.novel-agent.reconciliation+json"
 
 
+def _is_volume_node(node: PlanNode) -> bool:
+    if node.plan_level is not None and node.plan_level.value == "arc_volume":
+        return True
+    return node.node_type.lower() in {
+        "arc_volume",
+        "volume",
+        "volume_arc",
+        "volume_scope",
+    }
+
+
 class WriterContextLoopService:
     """Own only fixed routing, budgets, events, checkpoints, and terminal mapping."""
 
@@ -1414,14 +1425,57 @@ class WriterContextLoopService:
                 selected.add(current.plan_node_id)
                 current = by_id.get(current.parent_id) if current.parent_id is not None else None
         nodes = tuple(node for node in plan.nodes if node.plan_node_id in selected)
+        current_volume = tuple(
+            {
+                "plan_node_id": node.plan_node_id.root,
+                "title": node.title,
+                "summary": node.summary,
+                "chapter_start": node.chapter_start,
+                "chapter_end": node.chapter_end,
+                "payload": dict(node.payload),
+                "plan_level": None if node.plan_level is None else node.plan_level.value,
+            }
+            for node in plan.nodes
+            if _is_volume_node(node)
+            and node.chapter_start is not None
+            and node.chapter_end is not None
+            and node.chapter_start <= target <= node.chapter_end
+        )
+        active_obligation_projection = tuple(
+            {
+                "goal_id": goal.goal_id.root,
+                "chapter_index": goal.chapter_index,
+                "obligation_ids": [item.root for item in goal.obligation_ids],
+                "obligation_actions": list(
+                    goal.payload.get("obligation_actions", [])
+                    if isinstance(goal.payload.get("obligation_actions"), list)
+                    else []
+                ),
+            }
+            for goal in goals
+        )
+        unresolved_advisories = tuple(
+            advisory
+            for goal in goals
+            for advisory in (
+                goal.payload.get("unresolved_advisories")
+                if isinstance(goal.payload.get("unresolved_advisories"), list)
+                else []
+            )
+            if isinstance(advisory, dict)
+        )
         return canonical_json_bytes(
             {
                 "revision": request.accepted_plan.revision,
+                "plan_root_ref": request.accepted_plan.artifact.artifact_id.root,
                 "target_chapter": target,
                 "chapter_goals": [goal.model_dump(mode="json") for goal in goals],
                 "recent_chapter_goals": [goal.model_dump(mode="json") for goal in recent_goals],
                 "plan_ancestor_chain": [node.model_dump(mode="json") for node in nodes],
                 "relevant_plan_nodes": [node.model_dump(mode="json") for node in nodes],
+                "current_volume": current_volume,
+                "active_obligation_projection": active_obligation_projection,
+                "unresolved_advisories": unresolved_advisories,
             }
         ).decode("utf-8")
 

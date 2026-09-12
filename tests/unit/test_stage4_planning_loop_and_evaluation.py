@@ -2886,7 +2886,7 @@ def test_planning_memory_budget_yields_checkpoint_and_incomplete_facets_never_re
     assert advisory.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY, advisory.diagnostic_codes
     assert advisory.diagnostic_codes == ("REVIEWER_MEMORY_UNRESOLVED_ADVISORY",)
     assert advisory.proposal is not None
-    assert any("reviewer_memory_gap" in item for item in advisory.proposal.unresolved)
+    assert any("reviewer_memory_gap" in item.summary for item in advisory.proposal.unresolved)
     assert advisory.plan_review_ref is not None
     advisory_review = PlanReview.model_validate_json(
         advisory_artifacts.read_verified(advisory.plan_review_ref),

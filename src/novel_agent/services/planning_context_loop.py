@@ -12,7 +12,7 @@ from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
 from novel_agent.agents.runner import AgentExecutionError
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
-from novel_agent.domain.ids import SchemaVersion, StableId
+from novel_agent.domain.ids import SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
     FacetClosureStatus,
     RetrievalTrace,
@@ -50,6 +50,7 @@ from novel_agent.domain.stage2 import (
     MemoryResolutionRequest,
     PlannerExecutionResult,
     PlanProposal,
+    PlanUnresolvedIssue,
     RequiredSnapshotPolicy,
 )
 from novel_agent.ports.model_endpoint import ModelEndpointError
@@ -282,8 +283,21 @@ def _retain_unsupported_memory_gaps(
     markers = _unsupported_memory_gap_markers(unresolved_questions)
     if not markers:
         return result
+    existing = {issue.summary for issue in result.plan_proposal.unresolved}
+    added = tuple(
+        PlanUnresolvedIssue(
+            issue_id=bounded_stable_id(
+                f"plan-issue.memory-gap.{index}", f"plan-issue.memory-gap.{marker}"
+            ),
+            summary=marker,
+            blocking=False,
+            forbidden_assumptions=("不得把该未决记忆缺口当作已证实事实",),
+        )
+        for index, marker in enumerate(markers)
+        if marker not in existing
+    )
     proposal = result.plan_proposal.model_copy(
-        update={"unresolved": tuple(dict.fromkeys((*result.plan_proposal.unresolved, *markers)))}
+        update={"unresolved": (*result.plan_proposal.unresolved, *added)}
     )
     return result.model_copy(update={"plan_proposal": proposal})
 
@@ -579,19 +593,22 @@ class PlanningContextLoopService:
             ModelCallForbiddenError,
             ModelEndpointError,
             TimeoutError,
-        ):
+        ) as error:
             return self._terminal(
                 request,
                 PlanningLoopTerminal.MODEL_UNAVAILABLE,
                 event_refs,
-                diagnostics=("MODEL_RUNTIME_UNAVAILABLE",),
+                diagnostics=(
+                    "MODEL_RUNTIME_UNAVAILABLE",
+                    f"{type(error).__name__}: {error}"[:240],
+                ),
             )
-        except PlannerContextRuntimeFailure:
+        except PlannerContextRuntimeFailure as error:
             return self._terminal(
                 request,
                 PlanningLoopTerminal.SUSPENDED,
                 event_refs,
-                diagnostics=("CONTEXT_RUNTIME_FAILURE",),
+                diagnostics=("CONTEXT_RUNTIME_FAILURE", str(error)[:240]),
             )
 
     async def _run(
@@ -1267,7 +1284,16 @@ class PlanningContextLoopService:
                         base_commit=request.task.base_commit,
                     )
                     record_model_call(_call)
-                    if planner_memory_review.decision is not ReviewDecision.ACCEPT:
+                    if planner_memory_review.decision is not ReviewDecision.ACCEPT and not (
+                        planner_memory_review.decision is ReviewDecision.REVISE
+                        and not any(
+                            issue.blocking for issue in planner_memory_review.issues
+                        )
+                    ):
+                        # A REVISE without blocking issues is a bounded advisory: the
+                        # reviewer judged the questions already answerable from
+                        # accepted context, so the Need generator rejects them and the
+                        # reprompt plans without them instead of parking the task.
                         return self._terminal(
                             request,
                             (

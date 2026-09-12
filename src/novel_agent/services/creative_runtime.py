@@ -52,6 +52,7 @@ from novel_agent.domain.runtime import (
 )
 from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.domain.writer_context import MemoryContextBudgetExhaustedError
+from novel_agent.domain.writer_readiness import WriterContextInputNotReady
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializationError,
@@ -549,6 +550,18 @@ class CreativeRuntimeService:
                     settled,
                     CreativeRunTerminal.BUDGET_REVIEW,
                     "writer_context_budget_exhausted",
+                )
+            except WriterContextInputNotReady:
+                settled = self._commands.settle_attempt(
+                    fence,
+                    outcome=AttemptOutcome.FAILED,
+                    terminal_status=TaskStatus.BLOCKED,
+                    failure_class=FailureClass.VALIDATION_REJECTED,
+                )
+                return self._result(
+                    settled,
+                    CreativeRunTerminal.REVIEW_REQUIRED,
+                    "writer_input_not_ready",
                 )
             except ValueError:
                 settled = self._commands.settle_attempt(

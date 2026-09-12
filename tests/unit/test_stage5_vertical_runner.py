@@ -461,3 +461,58 @@ def test_vertical_runner_rejects_invalid_slice_limits() -> None:
             pass
         else:
             raise AssertionError("invalid dispatch limits must fail before using runtime ports")
+
+
+def test_stale_zero_cursor_is_normalized_from_committed_projections() -> None:
+    class _Runtime:
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("an existing run must not be started again")
+
+    class _Dispatcher:
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            raise AssertionError("no runnable work remains")
+
+    class _Tasks:
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            return (
+                TaskRecord(
+                    task_id=TaskId("task.vertical.chapter.56.projection"),
+                    run_id=run_id,
+                    project_id=ProjectId("project.vertical"),
+                    kind=TaskKind.PROJECTION_FRESHNESS,
+                    task_revision=1,
+                    status=TaskStatus.SUCCEEDED,
+                    basis_commit=FINAL,
+                    policy_hash=HASH,
+                    permission_hash=HASH,
+                    chapter_index=56,
+                    target_chapters=56,
+                    projection_after="draft",
+                ),
+            )
+
+    request = CreativeRunRequest(
+        run_id=RunId("run.vertical"),
+        project_id=ProjectId("project.vertical"),
+        basis_commit=BASE,
+        current_chapter=0,
+        target_chapters=56,
+        policy=CreativeRunPolicy(
+            automation_mode=AutomationMode.AUTO,
+            policy_hash=HASH,
+            permission_hash=HASH,
+            auto_accept_plan=True,
+            auto_accept_draft=True,
+        ),
+    )
+    runner = VerticalCreativeRunner(
+        runtime=cast(CreativeRuntimeService, _Runtime()),
+        dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+        tasks=cast(RuntimeTaskReader, _Tasks()),
+    )
+
+    report = asyncio.run(runner.run(request, max_tasks=1))
+
+    assert report.requested_current_chapter == 0
+    assert report.current_chapter == 56
+    assert report.completed_chapters == (56,)

@@ -98,6 +98,39 @@ class PlanningInquiryConditionedNeedGenerator:
             and review.decision is ReviewDecision.REVISE
             and review.memory_gap_questions
         ):
+            if review.decision is ReviewDecision.REVISE and not any(
+                issue.blocking for issue in review.issues
+            ):
+                # A non-blocking revision means the reviewer found the memory
+                # questions already answerable from accepted context.  Reject the
+                # questions explicitly so the bounded reprompt can plan without
+                # them instead of parking the task on a leaf review.
+                excluded = set(exclude_question_ids)
+                rejected_questions = {
+                    question.question_id.root: "reviewer_revise_existing_evidence_sufficient"
+                    for question in (*inquiry.assumptions, *inquiry.questions)
+                    if question.question_id not in excluded
+                }
+                return PlannerNeedGenerationResult(
+                    inquiry_ref=inquiry_ref,
+                    inquiry_review_ref=review_ref,
+                    needs=(),
+                    query_bundles={},
+                    selected_question_ids=(),
+                    rejected_question_ids=tuple(
+                        StableId(item) for item in sorted(rejected_questions)
+                    ),
+                    deferred_question_ids=(),
+                    rejection_reasons=rejected_questions,
+                    validated_need_set_hash=content_id(
+                        {
+                            "version": self.version,
+                            "inquiry": inquiry_ref.artifact_id.root,
+                            "needs": (),
+                        }
+                    ),
+                    generator_version=self.version,
+                )
             raise PlanningInquiryNeedError("Planner Need generation requires an accepted inquiry")
         if not reviewer_bound and review.target_artifact_ref != inquiry_ref:
             raise PlanningInquiryNeedError("inquiry review target differs from supplied inquiry")

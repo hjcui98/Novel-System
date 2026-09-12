@@ -4360,3 +4360,153 @@ PYTHONPATH=src python scripts/run_temporal_runtime_spike.py
 
 Gate U3.5 PASS, U7 Temporal cutover, production Temporal worker, and any U2/U3/U4
 PASS. Plugin success does not lift the worker-restart or sandbox notes.
+
+## 34. v4 规划—记忆—写作闭环专项整改（2026-09-11，P0 代码切片）
+
+- 基线：`.worktrees/main-production` HEAD `934b3fb7292ab81322d0a2cfe66029e8c7fe64b5`
+  + 未提交的 `writer_candidate.py`、`writer_cognition.py`、`test_writer_context_loop.py`。
+  基线冻结回执：`yujin-jiuxu-v4/receipts/production-baseline-receipt-20260911.json`。
+- 执行文档：`docs/yujin_jiuxu_v4_targeted_remediation_plan_20260910.md` 的 P0-1—P0-4、
+  7.6 与 P1-7 游标部分；P0-5 卷级门禁与第 3 节存量内容迁移需要人工
+  `CanonMigrationDecision`，未在本切片内改动 canonical 数据。
+
+### 已实现
+
+- **P0-1 HistoryRetrievalDecision**：新增
+  `domain/retrieval_decision.py`（REQUIRED/NOT_REQUIRED/UNDECIDED、reason_code、waiver_ref、
+  1—3 Need 上限）；`ChapterGoal` payload 由
+  `chapter_goal_history_retrieval_decision` 显式解析，裸 `history_needs: []` 一律
+  UNDECIDED；第 1 章自动 first_chapter waiver。
+- **Need 生成**：`generate_for_writing_task` 消费显式决策，合并宿主 obligation
+  setup-evidence 与逾期实体来源 Need（超 3 条裁剪并记录
+  `dropped_history_candidates`）；UNDECIDED → `NeedGenerationStatus.INVALID`。
+- **PlanReviewer 宿主门禁**：第 2 章以后缺失 `history_retrieval` 直接 blocking
+  `HISTORY_DECISION_MISSING`；非法 decision 报 `HISTORY_RETRIEVAL_INVALID`。
+- **P0-2 四态拆分**：`WriterContextPackageV2`/`EvidenceFirstLineage` 新增
+  `retrieval_requirement`、`retrieval_status`（NOT_REQUESTED/EXECUTED/NO_HIT/
+  NOT_APPLICABLE）、`need_generation_status`；Assembler 不再把空 selections 推断为
+  `HISTORICAL_RETRIEVAL_NOT_REQUIRED` 或 semantic COMPLETE。
+- **P0-3 统一 readiness**：新增 `domain/writer_readiness.py`
+  （`WriterReadinessDecision`、`WriterContextInputNotReady`、package/full 两个纯函数）；
+  Stage 3 request factory 用 full gate，WritingLoop 的 `writer_package_precondition`
+  用 package gate；`ProductionStage2MWriterContext` 在 REQUIRED 零 Need 时抛
+  `HISTORY_NEED_EMPTY`，UNDECIDED 抛 `HISTORY_DECISION_MISSING`，均发生在模型调用前。
+- **P0-4 obligation 强类型**：materializer 两处对非 StableId 字符串 action 由静默
+  `pass` 改为 `CandidateMaterializationError`；readiness 对账本章 due/open obligation；
+  Need 生成器为 PROGRESS/PAYOFF obligation 自动补 setup evidence。
+- **P1-4 lineage**：Stage 3 持久化 `AuthorPlanningContext` 并写入
+  `plan_root_ref`、`plan_revision`、`chapter_goal_ids`、`planning_context_ref`。
+- **7.6 纯中文门禁**：`draft_surface_error` 改为 token 级 `[A-Za-z]{2,}` 扫描，
+  白名单来自 `允许英文代号：` 约束（ProjectProfile `language_allowlist` 编译）；
+  Writer 首稿/重试稿与 Draft materialization 共用同一纯函数。
+- **P1-7 游标**：vertical runner 从已提交 draft projection 推导 canonical cursor；
+  报告新增 `requested_current_chapter`，不再静默报告陈旧 0。
+- `PlanRootDocument` 不变量：同一章最多一个 active ChapterGoal。
+
+### 验证
+
+- 新增 `tests/unit/test_writer_history_retrieval_gate.py`（A1/A2/A3/A4/A9 及宿主
+  obligation Need），并更新 A14/A16 断言。
+- `pytest tests/unit --no-cov`（production worktree）：**2739 passed / 60 failed**；
+  与 baseline+dirty diff 的 **2732 passed / 60 failed** 对比，失败集合逐条相同，
+  即无新增回归，且新增/修复 7 条通过。
+- 基线已存在失败：`test_production_stage2m_writer_context.py` 预算断言、
+  `test_evidence_first_writer_context.py::test_assembler_argument_validation`、
+  MAJOR_REWRITE 系列（dirty `writer_cognition.py`）等，均在该 baseline 上复现，
+  不属于本切片。
+- Ruff：本切片新增行无新违规（余下 21 条均为基线或既存 dirty 行）；
+  MyPy：改动模块无新增类型错误。
+- `scripts/export_stage2_schemas.py` 已同步
+  `WriterContextPackageV2`、`EvidenceFirstLineage`、`EvidenceFirstPackageManifest`，
+  其余无关漂移已还原。
+
+### 未完成 / 需人工决策
+
+- P0-5（八卷结构槽与 Genesis 完备门禁）、P1-1（结构化 unresolved 与四类 coverage）、
+  P1-2 的完整 PlanRoot/PlanHistory 迁移、P1-3 AuthorConstraintRoot、P1-5 卷约束投影、
+  P1-6 `audit-memory-projection` 命令：未在本切片实现。
+- 文档第 7 节 route A/B、四张设定账本与 1—56 章正文修复必须等待人工
+  `CanonMigrationDecision`；本轮未改 canonical PlanRoot/WorldRoot/正文。
+- 第 57 章 `leaf_review_required` 仍需走独立叶子审查，未解除。
+
+## 35. v4 整改 P0-5/P1-1/P1-3/P1-5/P1-6 + v5 隔离新跑（2026-09-11）
+
+### 代码补齐
+
+- **P0-5 八卷结构门禁**：`domain/planning.py` 新增
+  `VOLUME_STRUCTURE_REQUIRED_KEYS`/`missing_volume_structure_keys`；`plan_reviewer`
+  对 ARC_VOLUME 逐卷校验 10 结构槽 + 弧线/上限/进出条件/揭示窗口/obligation 责任表，
+  并校验卷范围从第 1 章连续、不重叠、覆盖 `target_chapters`；卷数仍按
+  `expected_volume_count`。`arc_volume_planning_v1.md` 与
+  `stage4_planner_arc_volume_v1.md` 同步声明必填字段与结构化 unresolved。
+- **P1-1 结构化 unresolved**：`PlanUnresolvedIssue`/`PlanUnresolvedKind`
+  （含 `hard_unresolved_kinds()`），`PlanProposal.unresolved` 由字符串升级为结构化对象
+  且保留 legacy 字符串兼容；host review 对影响当前窗口的硬冲突生成
+  `BLOCKING_UNRESOLVED` 并强制 REVISE；materializer 拒绝 blocking unresolved，并把
+  advisory 的 forbidden assumptions 写入 ChapterGoal payload，Stage 3 Writer 再编译
+  进 mandatory constraints / forbidden_reveals。
+- **P1-3 AuthorConstraintRoot**：新增 `domain/author_constraints.py` 与确定性编译器；
+  `PlannerContextAssembler` 注入必填 `AUTHOR_CONSTRAINTS` section 与
+  `author_constraint_root_ref`；mandatory 超过预算时报
+  `CONTEXT_BUDGET_INSUFFICIENT`（不再静默软溢出），并为检索证据预留最低配额。
+- **P1-5 局部 PlanRoot 投影**：`_accepted_plan_content` 增加当前卷结构槽与出口状态、
+  active obligation 最小投影、unresolved advisory 与 plan_root_ref/revision。
+- **P1-6 audit-memory-projection**：新增
+  `domain/projection_audit.py`＋`services/memory_projection_audit.py`（TextRoot/R1/
+  anchor/grounded 逐章对账、missing/extra/stale、canary），CLI 增加
+  `runtime audit-memory-projection`。
+- 新跑阻塞修复：Planner 现在把 profile-only source 约束显式写进 prompt（此前只做
+  事后拒绝）；`NeedQueryCompiler` 对 entity/predicate 去重（模型重复 entity_id 会让
+  `RetrievalQueryBundle` 校验崩溃）。
+
+### v5 隔离新跑
+
+- 新工作区 `yujin-jiuxu-v5/`（新 project/run id、独立 object store，共用
+  Postgres/OpenSearch），brief 与 v4 相同，target 800。
+- Genesis 已 prepare + commit：basis
+  `sha256:5e7ea0a8057e75cb41dff849773fcee4d83225e24b78bd9c23b5178e5316f2d4`。
+- 后台进程：dispatch（`logs/dispatch.pid`）、auto-accept（`logs/auto-accept.pid`）、
+  retry pump（`logs/retry-pump.pid`）。
+- 当前阻塞：STORY 规划任务 `run.yujin-jiuxu.v5.plan` 在 inquiry ACCEPT（含 3 个
+  memory-gap question）后返回 `PLANNER_MEMORY_REVIEW_NOT_ACCEPTED` →
+  `leaf_review_required`（task rev 10, failure_budget 1）。按整改文档 §8 阶段6，
+  该阻塞必须走独立 leaf review，不能用重试/代次绕过；关闭后才会进入 ARC_VOLUME
+  （P0-5 门禁）与首批章节。
+- 注意：commit 时未显式传 `--scheduling-timeout-seconds`，默认 120s 已写入
+  policy hash；dispatch 必须使用同一值（v5 watch 脚本已固定 120），否则
+  `RUN_CONFIGURATION_CHANGED`。
+
+### 验证
+
+- `pytest tests/unit --no-cov`：**2745 passed / 60 failed**，失败集合与整改前
+  baseline 完全一致；新增 audit/A5/A9/volume-gate 测试通过。
+- Ruff：本切片新增行无违规；MyPy：改动模块无新增错误。
+
+## 36. v6 隔离新跑与规划闭环补丁（2026-09-11 续）
+
+### 追加代码修复
+
+- `planner_chapter_set_v1.md` + `chapter_set_planning_v1.md` 改写为 P0-1 新契约：
+  第 2 章以后每个章节 goal 必须携带显式 `history_retrieval`（REQUIRED 1—3 个合法
+  kind 的 Need；NOT_REQUIRED 带 reason_code 与 waiver_ref），旧 `history_needs` 不再接受。
+- `PlanningInquiryNeedGeneration.generate`：对“无 blocking issue 的 REVISE”审校返回
+  空 Need 集合并把相关 memory question 标记 rejected；`PlanningContextLoop` 不再把该
+  情形直接落成 `PLANNER_MEMORY_REVIEW_NOT_ACCEPTED`，而是走既有 rejected-reprompt 路径
+  继续规划（有界 advisory，而非 leaf 阻塞）。
+- `PlanningContextLoop` 的 `PlannerContextRuntimeFailure` 终止现在携带底层消息
+  （`CONTEXT_RUNTIME_FAILURE` + detail），便于诊断。
+
+### v6 运行
+
+- 工作区 `yujin-jiuxu-v6/`（project/run v6，独立 object store），brief = v4 brief +
+  作者时间锁附录（第一卷铜铭/不进内府、第三碎片≥201、长程真相≥350、history_retrieval 契约）。
+- Genesis 已提交：basis
+  `sha256:9b7849e6addff872b31962c55252075752083c94dc28e21313349d49673c9376`。
+- STORY：g0 因旧规划的 planner-memory REVISE 终止，补丁后创建 g1 并成功
+  accept/commit/projection。
+- ARC_VOLUME：进入规划后，每次 Attempt 约 60s 被外部共享 8006 端点的
+  `provider_transient` 打断（模型指标显示外部 code2paper 任务占用同一 vLLM，
+  非本仓库可控制）；retry pump 持续重试，任务保持在 ready/running/waiting_retry 循环。
+  直接调用同一 leaf 可正常推进（inquiry/review 成功，按 8k token slice 正常 YIELD），
+  证明是我的代码路径正常、失败源于端点争用。
+- 后台进程保持运行：`logs/dispatch.pid`、`logs/auto-accept.pid`、`logs/retry-pump.pid`。

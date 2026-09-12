@@ -212,6 +212,14 @@
           ],
           "default": null
         },
+        "chapter_goal_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Chapter Goal Ids",
+          "type": "array"
+        },
         "frozen_evidence_selections_artifact": {
           "anyOf": [
             {
@@ -244,6 +252,18 @@
           "title": "Grounder Version",
           "type": "string"
         },
+        "history_waiver_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "History Waiver Ref"
+        },
         "need_ids": {
           "default": [],
           "items": {
@@ -251,6 +271,29 @@
           },
           "title": "Need Ids",
           "type": "array"
+        },
+        "plan_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plan Revision"
+        },
+        "plan_root_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "planner_artifact_hash": {
           "anyOf": [
@@ -279,6 +322,17 @@
           "title": "Planner Fallback Used",
           "type": "boolean"
         },
+        "planning_context_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "query_compiler_version": {
           "default": "",
           "title": "Query Compiler Version",
@@ -288,6 +342,14 @@
           "default": "",
           "title": "Resolver Version",
           "type": "string"
+        },
+        "retrieval_requirement": {
+          "$ref": "#/$defs/HistoryRetrievalRequirement",
+          "default": "UNDECIDED"
+        },
+        "retrieval_status": {
+          "$ref": "#/$defs/RetrievalExecutionStatus",
+          "default": "NOT_REQUESTED"
         },
         "route_plan_version": {
           "default": "",
@@ -333,6 +395,15 @@
         "semantic_unresolved"
       ],
       "title": "EvidenceGapKind",
+      "type": "string"
+    },
+    "HistoryRetrievalRequirement": {
+      "enum": [
+        "REQUIRED",
+        "NOT_REQUIRED",
+        "UNDECIDED"
+      ],
+      "title": "HistoryRetrievalRequirement",
       "type": "string"
     },
     "NeedEvidenceJudgmentBatchReceipt": {
@@ -516,6 +587,16 @@
       ],
       "title": "NeedFacetSemanticReceipt",
       "type": "object"
+    },
+    "RetrievalExecutionStatus": {
+      "enum": [
+        "NOT_REQUESTED",
+        "EXECUTED",
+        "NO_HIT",
+        "NOT_APPLICABLE"
+      ],
+      "title": "RetrievalExecutionStatus",
+      "type": "string"
     },
     "SchemaVersion": {
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
@@ -859,10 +940,23 @@
     "lineage": {
       "$ref": "#/$defs/EvidenceFirstLineage"
     },
+    "need_generation_status": {
+      "default": "INVALID",
+      "title": "Need Generation Status",
+      "type": "string"
+    },
     "rendered_context": {
       "default": "",
       "title": "Rendered Context",
       "type": "string"
+    },
+    "retrieval_requirement": {
+      "$ref": "#/$defs/HistoryRetrievalRequirement",
+      "default": "UNDECIDED"
+    },
+    "retrieval_status": {
+      "$ref": "#/$defs/RetrievalExecutionStatus",
+      "default": "NOT_REQUESTED"
     },
     "semantic_batch_receipts": {
       "default": [],
@@ -885,7 +979,8 @@
       "enum": [
         "COMPLETE",
         "INCOMPLETE",
-        "UNASSESSED"
+        "UNASSESSED",
+        "NOT_APPLICABLE"
       ],
       "title": "Semantic Status",
       "type": "string"

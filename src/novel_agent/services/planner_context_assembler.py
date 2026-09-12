@@ -6,6 +6,11 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.author_constraints import (
+    AuthorConstraintRoot,
+    compile_author_constraint_root,
+    render_author_constraint_context,
+)
 from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument, TextRootDocument
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.memory import (
@@ -28,6 +33,8 @@ from novel_agent.domain.stage2 import AgentMode, ProjectProfileRootDocument
 from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
+
+AUTHOR_CONSTRAINT_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.author-constraint-root+json"
 
 
 class PlannerContextAssemblyError(ValueError):
@@ -97,8 +104,15 @@ class PlannerContextAssembler:
                     token_count=self._tokens(override),
                 )
             )
+        author_constraint_root_ref: ArtifactRef | None = None
         if request.project_profile_ref is not None:
             mandatory.append(self._project_profile_item(request.project_profile_ref))
+            author_constraint_root_ref = self._author_constraint_item(
+                request,
+                mandatory,
+                horizon_start=inquiry.horizon_start,
+                horizon_end=inquiry.horizon_end,
+            )
         if request.accepted_plan_ref is not None:
             mandatory.append(self._accepted_plan_item(request, request.accepted_plan_ref))
         for goal in inquiry.goal_proposals:
@@ -194,12 +208,45 @@ class PlannerContextAssembler:
             request.budgets.planner_context_target_tokens or request.budgets.context.token_budget
         )
         mandatory_tokens = sum(item.token_count for item in mandatory)
+        if mandatory_tokens > budget:
+            raise PlannerContextAssemblyError(
+                "CONTEXT_BUDGET_INSUFFICIENT: required Planner context needs "
+                f"{mandatory_tokens} tokens but the budget is {budget}; the required "
+                "author/plan/constraint sections were never demoted to optional drops"
+            )
         selected = list({item.context_item_id.root: item for item in mandatory}.values())
         selected_tokens = sum(item.token_count for item in selected)
         seen_ids = {item.context_item_id.root for item in selected}
         dropped: list[StableId] = []
         drop_reasons: dict[str, str] = {}
-        for item in self._diverse(optional):
+        diverse_optional = self._diverse(optional)
+        evidence_sections = {
+            PlannerContextSection.CURRENT_STATE,
+            PlannerContextSection.HISTORY_DEVIATION,
+            PlannerContextSection.RELATION_CAUSAL,
+        }
+        evidence_items = [
+            item for item in diverse_optional if item.section in evidence_sections
+        ]
+        other_items = [item for item in diverse_optional if item.section not in evidence_sections]
+        # Reserve a minimum share for retrieved history evidence so author text
+        # cannot consume the whole optional budget (2026-09-10 remediation P1-3).
+        evidence_floor = (
+            min(budget - mandatory_tokens, max(1, budget // 4)) if evidence_items else 0
+        )
+        evidence_tokens = 0
+        for item in evidence_items:
+            if evidence_tokens >= evidence_floor:
+                break
+            if item.context_item_id.root in seen_ids:
+                continue
+            if selected_tokens + item.token_count > budget:
+                continue
+            selected.append(item)
+            selected_tokens += item.token_count
+            evidence_tokens += item.token_count
+            seen_ids.add(item.context_item_id.root)
+        for item in (*evidence_items, *other_items):
             if item.context_item_id.root in seen_ids:
                 continue
             if selected_tokens + item.token_count <= budget:
@@ -230,6 +277,7 @@ class PlannerContextAssembler:
             base_commit=request.task.base_commit,
             snapshot_id=request.snapshot_id,
             profile_ref=request.project_profile_ref,
+            author_constraint_root_ref=author_constraint_root_ref,
             reviewed_inquiry_ref=inquiry_ref,
             stage1_context_ref=stage1_context_ref,
             items=tuple(selected),
@@ -480,6 +528,47 @@ class PlannerContextAssembler:
                 }
             )
         return summaries
+
+    def _author_constraint_item(
+        self,
+        request: PlanningLoopRequest,
+        mandatory: list[PlannerContextItem],
+        *,
+        horizon_start: int | None,
+        horizon_end: int | None,
+    ) -> ArtifactRef | None:
+        assert request.project_profile_ref is not None
+        raw = self._artifacts.read_verified(request.project_profile_ref)
+        try:
+            profile = ProjectProfileRootDocument.model_validate_json(raw)
+        except ValueError:
+            return None
+        root: AuthorConstraintRoot = compile_author_constraint_root(
+            profile=profile,
+            profile_ref=request.project_profile_ref,
+            source_refs=request.author_intent_artifacts,
+        )
+        text = render_author_constraint_context(
+            root,
+            chapter_start=horizon_start,
+            chapter_end=horizon_end,
+        )
+        mandatory.append(
+            PlannerContextItem(
+                context_item_id=StableId("planner-context.author-constraints"),
+                section=PlannerContextSection.AUTHOR_CONSTRAINTS,
+                text=text,
+                protected=True,
+                mandatory=True,
+                token_count=self._tokens(text),
+                source_artifact_refs=(request.project_profile_ref,),
+            )
+        )
+        return self._artifacts.put(
+            canonical_json_bytes(root.model_dump(mode="json")),
+            AUTHOR_CONSTRAINT_ROOT_MEDIA_TYPE,
+            self._schema_version,
+        )
 
     def _project_profile_item(self, artifact: ArtifactRef) -> PlannerContextItem:
         raw = self._artifacts.read_verified(artifact)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from typing import Any, cast
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -18,6 +20,11 @@ from novel_agent.domain.memory_benchmark import (
     GoldType,
 )
 from novel_agent.domain.model_calls import RetrievalInferenceCallRecord
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalDecision,
+    HistoryRetrievalNeed,
+    HistoryRetrievalRequirement,
+)
 from novel_agent.domain.text import EvidenceRef
 from novel_agent.domain.text import TextBlock as TextBlock
 from novel_agent.domain.world import Entity, Event, PlanNode, RelationRecord, StateRecord
@@ -127,6 +134,56 @@ class ChapterSummaryRootDocument(DomainModel):
         return self
 
 
+def chapter_goal_history_retrieval_decision(goal: ChapterGoal) -> HistoryRetrievalDecision:
+    """Read the explicit decision from a ChapterGoal payload.
+
+    Legacy non-empty ``history_needs`` remains a valid declaration; a bare
+    empty list (or a missing field) is deliberately ``UNDECIDED``.
+    """
+
+    raw = goal.payload.get("history_retrieval")
+    if raw is not None:
+        if not isinstance(raw, dict):
+            raise ValueError("ChapterGoal history_retrieval must be an object")
+        return HistoryRetrievalDecision.model_validate(raw, strict=False)
+    raw_needs = goal.payload.get("history_needs")
+    if raw_needs is None:
+        return HistoryRetrievalDecision()
+    if not isinstance(raw_needs, list) or not all(isinstance(item, dict) for item in raw_needs):
+        raise ValueError("history_needs must be a list of objects")
+    if not raw_needs:
+        return HistoryRetrievalDecision()
+    needs: list[HistoryRetrievalNeed] = []
+    for raw_item in cast("Sequence[Mapping[str, Any]]", raw_needs):
+        kind = raw_item.get("kind") or raw_item.get("need_type")
+        query = raw_item.get("query") or raw_item.get("question") or raw_item.get("description")
+        raw_entities = raw_item.get("entity_ids")
+        raw_predicates = raw_item.get("predicates")
+        why_needed = raw_item.get("why_needed")
+        needs.append(
+            HistoryRetrievalNeed(
+                kind=kind if isinstance(kind, str) else "",
+                query=query if isinstance(query, str) else "",
+                entity_ids=(
+                    tuple(StableId(value) for value in raw_entities if isinstance(value, str))
+                    if isinstance(raw_entities, list)
+                    else ()
+                ),
+                predicates=(
+                    tuple(value for value in raw_predicates if isinstance(value, str))
+                    if isinstance(raw_predicates, list)
+                    else ()
+                ),
+                why_needed=why_needed if isinstance(why_needed, str) else None,
+            )
+        )
+    return HistoryRetrievalDecision(
+        requirement=HistoryRetrievalRequirement.REQUIRED,
+        reason="legacy history_needs declaration",
+        needs=tuple(needs),
+    )
+
+
 class ChapterGoal(DomainModel):
     goal_id: StableId
     chapter_index: int = Field(ge=1)
@@ -199,6 +256,9 @@ class PlanRootDocument(DomainModel):
             raise ValueError("plan node parent must exist in the same plan root")
         if len({goal.goal_id for goal in self.chapter_goals}) != len(self.chapter_goals):
             raise ValueError("chapter goal ids must be unique")
+        chapter_indexes = tuple(goal.chapter_index for goal in self.chapter_goals)
+        if len(chapter_indexes) != len(set(chapter_indexes)):
+            raise ValueError("each chapter index may have at most one active chapter goal")
         return self
 
 

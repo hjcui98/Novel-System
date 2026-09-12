@@ -1038,15 +1038,16 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
     assert set(tight.budget_report.drop_reasons.values()) == {"optional_token_budget"}
 
     tiny_budgets = request.budgets.model_copy(update={"planner_context_target_tokens": 1})
-    overflow, _ = assembler.assemble(
-        request=request.model_copy(update={"budgets": tiny_budgets}),
-        inquiry=inquiry,
-        inquiry_ref=inquiry_ref,
-        stage1_context=context,
-        stage1_context_ref=context_ref,
-    )
-    assert overflow.budget_report.soft_overflow_tokens > 0
-    assert overflow.budget_report.selected_tokens > overflow.budget_report.token_budget
+    from novel_agent.services.planner_context_assembler import PlannerContextAssemblyError
+
+    with pytest.raises(PlannerContextAssemblyError, match="CONTEXT_BUDGET_INSUFFICIENT"):
+        assembler.assemble(
+            request=request.model_copy(update={"budgets": tiny_budgets}),
+            inquiry=inquiry,
+            inquiry_ref=inquiry_ref,
+            stage1_context=context,
+            stage1_context_ref=context_ref,
+        )
     with pytest.raises(ValueError, match="differs from loop request"):
         assembler.assemble(
             request=request,
@@ -1154,7 +1155,7 @@ def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
             "budgets": PlanningBudgets(
                 retrieval=RetrievalBudget(),
                 context=ContextBudget(token_budget=8_000),
-                planner_context_target_tokens=1,
+                planner_context_target_tokens=8_000,
             ),
         }
     )
@@ -1189,4 +1190,5 @@ def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
     assert "FAR_GOAL_SHOULD_NOT_BE_RENDERED" not in rendered
     assert "FAR_PLAN_SHOULD_NOT_BE_RENDERED" not in rendered
     assert "third person limited" in rendered
-    assert package.budget_report.soft_overflow_tokens > 0
+    assert package.budget_report.soft_overflow_tokens == 0
+    assert package.author_constraint_root_ref is not None

@@ -61,6 +61,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.model_calls import ModelRole
 from novel_agent.domain.planning import (
+    VOLUME_STRUCTURE_REQUIRED_KEYS,
     PlanningBudgets,
     PlanningLoopEventReceipt,
     PlanningLoopPhase,
@@ -70,6 +71,7 @@ from novel_agent.domain.planning import (
     ReviewIssueKind,
     ReviewTargetKind,
 )
+from novel_agent.domain.retrieval_decision import HistoryRetrievalRequirement
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -635,15 +637,28 @@ def test_genesis_prepare_keeps_style_guide_in_profile_and_plan_payload_publicly(
 
 
 def test_plan_review_rejects_three_volumes_when_profile_requires_eight() -> None:
-    def payload(count: int) -> str:
+    def payload(count: int, *, slots: bool = True) -> str:
         return json.dumps(
             {
                 "expected_volume_count": 8,
+                "target_chapters": 800,
                 "items": [
                     {
                         "item_id": f"volume.{index}",
                         "kind": "arc_volume",
-                        "payload": {"plan_level": "arc_volume"},
+                        "payload": {
+                            "plan_level": "arc_volume",
+                            "chapter_start": index * 800 // count + 1,
+                            "chapter_end": (index + 1) * 800 // count,
+                            **(
+                                {
+                                    key: f"{key}.{index}"
+                                    for key in VOLUME_STRUCTURE_REQUIRED_KEYS
+                                }
+                                if slots
+                                else {}
+                            ),
+                        },
                     }
                     for index in range(count)
                 ],
@@ -660,11 +675,21 @@ def test_plan_review_rejects_three_volumes_when_profile_requires_eight() -> None
         target_kind=ReviewTargetKind.PLAN_PROPOSAL,
         target_payload=payload(8),
     )
+    missing_slots = apply_host_plan_review_constraints(
+        _review(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload(8, slots=False),
+    )
 
     assert incomplete.decision is ReviewDecision.REVISE
     assert any(issue.kind is ReviewIssueKind.COVERAGE for issue in incomplete.issues)
     assert complete.decision is ReviewDecision.ACCEPT
     assert complete.issues == ()
+    assert missing_slots.decision is ReviewDecision.REVISE
+    assert any(
+        issue.kind is ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE
+        for issue in missing_slots.issues
+    )
 
 
 def test_plan_review_blocks_missing_or_early_future_payoff() -> None:
@@ -902,7 +927,7 @@ def test_obligation_evidence_positive_and_missing_promise_are_distinct() -> None
     assert negative.reason_code == "TYPE_AWARE_EVENT_OR_OBLIGATION_NEEDS_SEMANTIC_VERIFIER"
 
 
-def test_zero_history_need_is_typed_no_focus_and_does_not_expand() -> None:
+def test_missing_history_decision_is_invalid_and_does_not_expand() -> None:
     goal = ChapterGoal(
         goal_id=StableId("goal.chapter.21"),
         chapter_index=21,
@@ -917,7 +942,8 @@ def test_zero_history_need_is_typed_no_focus_and_does_not_expand() -> None:
         _task(), _writing_task(), _world(), plan, None
     )
 
-    assert result.status is NeedGenerationStatus.NO_FOCUS
+    assert result.status is NeedGenerationStatus.INVALID
+    assert result.retrieval_requirement is HistoryRetrievalRequirement.UNDECIDED
     assert result.needs == ()
     assert len(MEMORY_CONTEXT_BUDGET_TIERS) == 3
 
@@ -984,6 +1010,26 @@ def test_draft_surface_gate_is_public_and_rejects_internal_future_or_copy_text()
         is not None
     )
     assert draft_surface_error("林澈推开门，风从塔内涌出。", target_language="zh-CN") is None
+    assert draft_surface_error("钟声rhythmic地响起。", target_language="zh-CN") is not None
+    assert draft_surface_error("researchers走进大厅。", target_language="zh-CN") is not None
+    assert draft_surface_error("接口ER-07开启。", target_language="zh-CN") is not None
+    assert (
+        draft_surface_error(
+            "接口ER-07开启。",
+            target_language="zh-CN",
+            allowed_language_tokens=("ER-07",),
+        )
+        is None
+    )
+    assert (
+        draft_surface_error(
+            "接口ER-07开启。",
+            target_language="zh-CN",
+            allowed_language_tokens=("ER",),
+        )
+        is not None
+    )
+    assert draft_surface_error("The tower opens.", target_language="en") is None
 
 
 def test_canary_policy_is_candidate_only_through_public_genesis_commit(tmp_path: Path) -> None:
@@ -1031,3 +1077,118 @@ def test_canary_policy_is_candidate_only_through_public_genesis_commit(tmp_path:
     assert policy.auto_accept_draft is False
     assert request.policy.policy_hash == policy.policy_hash
     assert descriptor.stop_after_chapter == 2
+
+
+def test_host_review_blocks_structured_unresolved_conflict_affecting_window() -> None:
+    payload = json.dumps(
+        {
+            "items": [
+                {
+                    "item_id": "ch7_plan_item",
+                    "kind": "chapter",
+                    "payload": {"chapter_index": 7, "plan_level": "chapter"},
+                }
+            ],
+            "unresolved": [
+                {
+                    "issue_id": "plan-issue.ch7.inner-court",
+                    "kind": "AUTHOR_INTENT_CONFLICT",
+                    "summary": "第7章进入内府与第三卷进入内府冲突",
+                    "affected_chapters": [7],
+                    "blocking": False,
+                    "forbidden_assumptions": ["第7章已正式取得内府身份"],
+                }
+            ],
+        }
+    )
+    reviewed = apply_host_plan_review_constraints(
+        _review(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload,
+    )
+
+    assert reviewed.decision is ReviewDecision.REVISE
+    assert any(
+        issue.kind is ReviewIssueKind.BLOCKING_UNRESOLVED and issue.blocking
+        for issue in reviewed.issues
+    )
+
+
+def test_materializer_propagates_advisories_and_rejects_blocking_unresolved() -> None:
+    from novel_agent.domain.stage2 import (
+        PlanProposal,
+        PlanUnresolvedIssue,
+        PlanUnresolvedKind,
+    )
+
+    issue = PlanUnresolvedIssue(
+        issue_id=StableId("plan-issue.advisory.state"),
+        kind=PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        summary="伤情恢复程度未知",
+        affected_chapters=(21,),
+        blocking=False,
+        forbidden_assumptions=("不得假设伤势已经完全康复",),
+    )
+    proposal = PlanProposal.model_construct(
+        proposal_id=StableId("proposal.advisory"),
+        unresolved=(issue,),
+    )
+    goal = ChapterGoal(
+        goal_id=StableId("goal.chapter.21"),
+        chapter_index=21,
+        summary="Enter the tower.",
+    )
+    propagated = PlanCandidateMaterializer._propagate_unresolved_advisories((goal,), proposal)
+    advisories = propagated[0].payload["unresolved_advisories"]
+    assert isinstance(advisories, list)
+    assert advisories[0]["summary"] == "伤情恢复程度未知"
+    assert advisories[0]["forbidden_assumptions"] == ["不得假设伤势已经完全康复"]
+
+    blocking = issue.model_copy(update={"blocking": True})
+    with pytest.raises(CandidateMaterializationError, match="blocking unresolved"):
+        PlanCandidateMaterializer._propagate_unresolved_advisories(
+            (goal,),
+            PlanProposal.model_construct(
+                proposal_id=StableId("proposal.blocking"),
+                unresolved=(blocking,),
+            ),
+        )
+
+
+def test_host_review_blocks_volume_range_gap() -> None:
+    ranges = [(index * 100 + 1, (index + 1) * 100) for index in range(8)]
+    ranges[3] = (301, 450)
+    ranges[4] = (452, 500)
+    payload = json.dumps(
+        {
+            "expected_volume_count": 8,
+            "target_chapters": 800,
+            "items": [
+                {
+                    "item_id": f"volume.{index}",
+                    "kind": "arc_volume",
+                    "payload": {
+                        "plan_level": "arc_volume",
+                        "chapter_start": start,
+                        "chapter_end": end,
+                        **{
+                            key: f"{key}.{index}"
+                            for key in VOLUME_STRUCTURE_REQUIRED_KEYS
+                        },
+                    },
+                }
+                for index, (start, end) in enumerate(ranges)
+            ],
+        }
+    )
+    reviewed = apply_host_plan_review_constraints(
+        _review(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload,
+    )
+
+    assert reviewed.decision is ReviewDecision.REVISE
+    assert any(
+        issue.kind is ReviewIssueKind.COVERAGE and "VOLUME_RANGE" in issue.summary
+        for issue in reviewed.issues
+    )

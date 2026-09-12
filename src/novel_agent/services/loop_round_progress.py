@@ -13,7 +13,8 @@ from novel_agent.domain.editorial import EditorialVerdict
 from novel_agent.domain.ids import ArtifactId, CommitId, StableId
 from novel_agent.domain.memory_write import RepairAction
 from novel_agent.domain.planning import PlanningLoopTerminal
-from novel_agent.domain.writer_context import ContextAssemblyStatus
+from novel_agent.domain.writer_context import ContextAssemblyStatus, WriterContextPackageV2
+from novel_agent.domain.writer_readiness import evaluate_package_readiness
 from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
 
 NO_PROGRESS_STALL_LIMIT = 2
@@ -55,14 +56,22 @@ _REPAIR_TERMINAL = frozenset(
 
 
 def writer_package_precondition(package: object) -> WritingLoopTerminalStatus | None:
-    """Map an expected not-ready Writer package to INPUT_NOT_READY."""
+    """Map an expected not-ready Writer package to INPUT_NOT_READY.
 
+    Evidence-first packages use the shared ``WriterReadinessDecision`` so the
+    loop cannot accept a package whose retrieval decision or facet closure is
+    incomplete; legacy packages keep the mechanical status check.
+    """
+
+    if isinstance(package, WriterContextPackageV2):
+        decision = evaluate_package_readiness(package)
+        return None if decision.ready else WritingLoopTerminalStatus.INPUT_NOT_READY
     assembly_status = getattr(package, "assembly_status", ContextAssemblyStatus.READY)
     budget = getattr(package, "budget_report", None)
     final_status = getattr(budget, "final_status", ContextAssemblyStatus.READY)
     if (
         assembly_status != ContextAssemblyStatus.READY
-        or final_status is not ContextAssemblyStatus.READY
+        or final_status != ContextAssemblyStatus.READY
     ):
         return WritingLoopTerminalStatus.INPUT_NOT_READY
     return None

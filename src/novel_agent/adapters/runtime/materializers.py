@@ -76,7 +76,7 @@ from novel_agent.services.content_addressing import (
     world_root_content_id,
 )
 from novel_agent.services.text_timeline import SequentialTextRootService
-from novel_agent.services.writer_cognition import draft_surface_error
+from novel_agent.services.writer_cognition import draft_surface_error, language_allowlist_tokens
 
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
@@ -336,6 +336,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             )
             for goal in incoming_goals
         )
+        incoming_goals = self._propagate_unresolved_advisories(incoming_goals, proposal)
         self._validate_obligation_references(world, incoming_nodes, incoming_goals, proposal)
         if trusted_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME} and (
             candidate.horizon_start is not None or candidate.horizon_end is not None
@@ -1010,6 +1011,49 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     "CHAPTER_SET scope requires exactly one structural wrapper"
                 )
 
+    @classmethod
+    def _propagate_unresolved_advisories(
+        cls,
+        goals: tuple[ChapterGoal, ...],
+        proposal: PlanProposal,
+    ) -> tuple[ChapterGoal, ...]:
+        """Fail closed on blocking unresolved issues and carry advisories downstream."""
+
+        blocking = tuple(issue for issue in proposal.unresolved if issue.blocking)
+        if blocking:
+            raise CandidateMaterializationError(
+                "accepted PlanProposal retains blocking unresolved issues: "
+                + ", ".join(issue.issue_id.root for issue in blocking)
+            )
+        advisories = tuple(issue for issue in proposal.unresolved if not issue.blocking)
+        if not advisories:
+            return goals
+        propagated: list[ChapterGoal] = []
+        for goal in goals:
+            applicable = tuple(
+                issue
+                for issue in advisories
+                if not issue.affected_chapters or goal.chapter_index in issue.affected_chapters
+            )
+            if not applicable:
+                propagated.append(goal)
+                continue
+            payload = dict(goal.payload)
+            existing = payload.get("unresolved_advisories")
+            entries = list(existing) if isinstance(existing, list) else []
+            entries.extend(
+                {
+                    "issue_id": issue.issue_id.root,
+                    "kind": issue.kind.value,
+                    "summary": issue.summary,
+                    "forbidden_assumptions": list(issue.forbidden_assumptions),
+                }
+                for issue in applicable
+            )
+            payload["unresolved_advisories"] = entries
+            propagated.append(goal.model_copy(update={"payload": payload}))
+        return tuple(propagated)
+
     @staticmethod
     def _attach_obligations(
         value: PlanNode | ChapterGoal,
@@ -1081,12 +1125,27 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                             )
                         referenced_ids.append(StableId(raw_reference.strip()))
                     elif isinstance(action, str):
+                        raw_reference = action.strip()
+                        if not raw_reference:
+                            raise CandidateMaterializationError(
+                                "obligation action must not be empty"
+                            )
                         try:
-                            candidate_id = StableId(action.strip())
-                            if any(o.obligation_id == candidate_id for o in world.obligations):
-                                referenced_ids.append(candidate_id)
-                        except ValueError:
-                            pass
+                            candidate_id = StableId(raw_reference)
+                        except ValueError as error:
+                            raise CandidateMaterializationError(
+                                "obligation_actions strings must be an existing obligation "
+                                "StableId; declare durable obligations at STORY/ARC_VOLUME and "
+                                f"reference them by id: {raw_reference!r}"
+                            ) from error
+                        if not any(
+                            item.obligation_id == candidate_id for item in world.obligations
+                        ):
+                            raise CandidateMaterializationError(
+                                "obligation action references an undeclared obligation: "
+                                f"{candidate_id.root}"
+                            )
+                        referenced_ids.append(candidate_id)
             if referenced_ids:
                 bindings[item.item_id] = list(dict.fromkeys(referenced_ids))
 
@@ -1280,12 +1339,20 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         )
                     referenced.add(StableId(raw_id.strip()))
                 elif isinstance(action, str):
+                    raw_reference = action.strip()
                     try:
-                        candidate_id = StableId(action.strip())
-                        if candidate_id in known:
-                            referenced.add(candidate_id)
-                    except ValueError:
-                        pass
+                        candidate_id = StableId(raw_reference)
+                    except ValueError as error:
+                        raise CandidateMaterializationError(
+                            "obligation_actions strings must be an existing obligation "
+                            f"StableId: {raw_reference!r}"
+                        ) from error
+                    if candidate_id not in known:
+                        raise CandidateMaterializationError(
+                            "obligation action references an undeclared obligation: "
+                            f"{candidate_id.root}"
+                        )
+                    referenced.add(candidate_id)
         unknown = sorted(item.root for item in referenced if item not in known)
         if unknown:
             raise CandidateMaterializationError(
@@ -1529,6 +1596,9 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         surface_error = draft_surface_error(
             text,
             target_language=language,
+            allowed_language_tokens=language_allowlist_tokens(
+                writing_task.mandatory_constraints
+            ),
             forbidden_reveals=writing_task.forbidden_reveals,
             recent_prose=tuple(recent_prose),
         )

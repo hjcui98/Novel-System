@@ -5,14 +5,21 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from pydantic import Field
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.benchmark import AuthorPlanningContext, PlanRootDocument, TextRootDocument
+from novel_agent.domain.benchmark import (
+    AuthorPlanningContext,
+    ChapterGoal,
+    PlanRootDocument,
+    TextRootDocument,
+    chapter_goal_history_retrieval_decision,
+)
 from novel_agent.domain.generation import WritingTaskContract
 from novel_agent.domain.ids import ArtifactId, RunId, StableId, TaskId, bounded_stable_id
 from novel_agent.domain.memory import (
@@ -44,7 +51,13 @@ from novel_agent.domain.planning_memory import (
     PlannerPageStatus,
     PlannerRunResult,
 )
-from novel_agent.domain.world import StateRecord
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalDecision,
+    HistoryRetrievalNeed,
+    HistoryRetrievalReasonCode,
+    HistoryRetrievalRequirement,
+)
+from novel_agent.domain.world import Entity, StateRecord
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
@@ -71,6 +84,7 @@ class NeedGenerationStatus(StrEnum):
     NEED_BUDGET_EXHAUSTED = "NEED_BUDGET_EXHAUSTED"
     NO_FOCUS = "NO_FOCUS"
     PLANNER_FALLBACK = "PLANNER_FALLBACK"
+    INVALID = "INVALID"
 
 
 class NeedGenerationResult(DomainModel):
@@ -87,6 +101,18 @@ class NeedGenerationResult(DomainModel):
     grounding_status_counts: tuple[int, int, int] = (0, 0, 0)
     planner_artifact: PlannerInvocationArtifact | None = None
     planner_artifact_document_ref: ArtifactRef | None = None
+    retrieval_requirement: HistoryRetrievalRequirement = HistoryRetrievalRequirement.UNDECIDED
+    retrieval_reason_code: HistoryRetrievalReasonCode | None = None
+    history_waiver_ref: str | None = None
+    dropped_history_candidates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _HistoryNeedCandidate:
+    need: HistoryRetrievalNeed
+    source: str
+    key: str
+    why: str
 
 
 class TaskPlanConditionedNeedGenerator:
@@ -239,44 +265,84 @@ class TaskPlanConditionedNeedGenerator:
         plan: PlanRootDocument | None,
         planning_context: AuthorPlanningContext | None,
     ) -> NeedGenerationResult:
-        """Project only the accepted chapter payload's declared history Needs.
+        """Project the explicit chapter retrieval decision into bounded Needs.
 
-        Production writing deliberately does not use the general focus extractor:
-        the chapter contract is the sole authority for historical retrieval, so
-        unrelated entities, events, and open obligations cannot fan out the Need
-        set.
+        The accepted ChapterGoal must carry an explicit ``history_retrieval``
+        decision; a bare ``history_needs: []`` is ``UNDECIDED`` and returns
+        ``INVALID`` so the production Writer Context blocks before any Writer
+        model call.  Host policy additionally derives deterministic
+        setup-evidence Needs from this chapter's open obligations and older
+        entity origins.
         """
 
         del planning_context
         if writing_task.target_chapter != task.target_chapter_start:
             raise ValueError("WritingTask and memory task target different chapters")
-        allowed_kinds = {
-            "causal_history",
-            "knowledge_origin",
-            "relationship_origin",
-            "setup_evidence",
-            "object_origin",
-        }
+        target_chapter = writing_task.target_chapter
         goals = tuple(
             goal
             for goal in (plan.chapter_goals if plan is not None else ())
-            if goal.chapter_index == writing_task.target_chapter
+            if goal.chapter_index == target_chapter
         )
-        declared: list[tuple[StableId, Mapping[str, Any]]] = []
-        for goal in goals:
-            raw_needs = goal.payload.get("history_needs")
-            if raw_needs is None:
-                continue
-            if not isinstance(raw_needs, list) or not all(
-                isinstance(item, dict) for item in raw_needs
-            ):
-                raise ValueError("history_needs must be a list of objects")
-            for item in raw_needs:
-                declared.append((goal.goal_id, cast(Mapping[str, Any], item)))
-        if len(declared) > 3:
-            raise ValueError(
-                "accepted ChapterGoal violated reviewed history_needs contract: "
-                "production writing permits at most three history Needs"
+        decisions = tuple(chapter_goal_history_retrieval_decision(goal) for goal in goals)
+        if target_chapter == 1:
+            decisions = tuple(
+                HistoryRetrievalDecision.first_chapter_waiver()
+                if decision.requirement is HistoryRetrievalRequirement.UNDECIDED
+                else decision
+                for decision in decisions
+            ) or (HistoryRetrievalDecision.first_chapter_waiver(),)
+        requirement, reason_code, waiver_ref = self._merge_history_decisions(decisions)
+        planner_candidates = tuple(
+            _HistoryNeedCandidate(
+                need=need,
+                source="planner",
+                key=f"{goal.goal_id.root}.{index}",
+                why=need.why_needed or need.query,
+            )
+            for goal, decision in zip(goals, decisions, strict=False)
+            for index, need in enumerate(decision.needs)
+        )
+        host_candidates = self._host_derived_history_needs(goals, world, target_chapter)
+        if host_candidates and requirement is not HistoryRetrievalRequirement.REQUIRED:
+            # Host-derived deterministic Needs override a planner NOT_REQUIRED or
+            # missing decision: open obligations always need their setup evidence.
+            requirement = HistoryRetrievalRequirement.REQUIRED
+            reason_code = None
+            waiver_ref = None
+        if requirement in {
+            HistoryRetrievalRequirement.UNDECIDED,
+            HistoryRetrievalRequirement.NOT_REQUIRED,
+        }:
+            return NeedGenerationResult(
+                task_id=task.task_id,
+                focus_set=FocusSet(task_id=task.task_id, focuses=()),
+                needs=(),
+                status=(
+                    NeedGenerationStatus.INVALID
+                    if requirement is HistoryRetrievalRequirement.UNDECIDED
+                    else NeedGenerationStatus.READY
+                ),
+                need_completion_spec_version=self.completion_spec_version,
+                generator_version=f"{self.version}.production_contract",
+                retrieval_requirement=requirement,
+                retrieval_reason_code=reason_code,
+                history_waiver_ref=waiver_ref,
+            )
+        assert requirement is HistoryRetrievalRequirement.REQUIRED
+        candidates, dropped_candidates = self._cap_history_candidates(
+            (*planner_candidates, *host_candidates)
+        )
+        if not candidates:
+            return NeedGenerationResult(
+                task_id=task.task_id,
+                focus_set=FocusSet(task_id=task.task_id, focuses=()),
+                needs=(),
+                status=NeedGenerationStatus.NO_FOCUS,
+                need_completion_spec_version=self.completion_spec_version,
+                generator_version=f"{self.version}.production_contract",
+                retrieval_requirement=HistoryRetrievalRequirement.REQUIRED,
+                dropped_history_candidates=dropped_candidates,
             )
 
         focuses: list[TaskFocus] = []
@@ -305,45 +371,31 @@ class TaskPlanConditionedNeedGenerator:
         entity_ids = {entity.entity_id for entity in world.entities}
         resolved_run_id = RunId(f"run.stage2m.{task.task_id.root}"[:128])
         resolved_task_id = TaskId(task.task_id.root)
-        for index, (goal_id, raw) in enumerate(declared):
-            kind = raw.get("kind") or raw.get("need_type")
-            if not isinstance(kind, str) or kind not in allowed_kinds:
-                raise ValueError(f"history Need kind is not allowed: {kind!r}")
-            query = raw.get("query") or raw.get("question") or raw.get("description")
-            if not isinstance(query, str) or not query.strip():
-                raise ValueError("history Need requires a non-empty query")
-            query = query.strip()
-            raw_entities = raw.get("entity_ids", [])
-            if not isinstance(raw_entities, list) or not all(
-                isinstance(item, str) for item in raw_entities
-            ):
-                raise ValueError("history Need entity_ids must be a string list")
-            selected_entities = tuple(dict.fromkeys(StableId(item) for item in raw_entities))
+        for index, candidate in enumerate(candidates):
+            kind = candidate.need.kind
+            query = candidate.need.query
+            selected_entities = tuple(dict.fromkeys(candidate.need.entity_ids))
             if not set(selected_entities).issubset(entity_ids):
                 raise ValueError("history Need references an unknown entity")
             need_id = bounded_stable_id(
-                f"need.production.history.{goal_id.root}", f"need.production.history.{index}"
+                f"need.production.history.{candidate.key}",
+                f"need.production.history.{index}",
             )
             focus = TaskFocus(
                 focus_id=bounded_stable_id(
-                    f"focus.production.history.{goal_id.root}", f"focus.production.history.{index}"
+                    f"focus.production.history.{candidate.key}",
+                    f"focus.production.history.{index}",
                 ),
                 focus_type=TaskFocusType.PLAN_INTENT,
-                canonical_id=goal_id,
+                canonical_id=bounded_stable_id(
+                    f"plan.production.{candidate.key}", f"plan.production.{index}"
+                ),
                 source=TaskFocusSource.PLAN_INTENT,
-                reason="explicit history Need declared by the accepted ChapterGoal payload",
+                reason=f"explicit history Need declared by {candidate.source}",
             )
             focuses.append(focus)
             facet_kind = facet_by_kind[kind]
-            predicates = (
-                tuple(
-                    item.strip()
-                    for item in raw.get("predicates", [])
-                    if isinstance(item, str) and item.strip()
-                )
-                if isinstance(raw.get("predicates", []), list)
-                else ()
-            )
+            predicates = tuple(dict.fromkeys(candidate.need.predicates))
             facets, completion_spec = self._completion_contract(
                 need_id=need_id,
                 need_type=kind,
@@ -373,7 +425,7 @@ class TaskPlanConditionedNeedGenerator:
                     retrieval_may_return_plan=False,
                     claim_may_cite_plan=False,
                     legacy_allow_plan=False,
-                    why_needed=str(raw.get("why_needed") or query),
+                    why_needed=candidate.why,
                     risk_level=NeedRisk.HIGH,
                     requirement=RequirementLevel.MANDATORY,
                     preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
@@ -394,10 +446,171 @@ class TaskPlanConditionedNeedGenerator:
             task_id=task.task_id,
             focus_set=FocusSet(task_id=task.task_id, focuses=tuple(focuses)),
             needs=tuple(needs),
-            status=NeedGenerationStatus.READY if needs else NeedGenerationStatus.NO_FOCUS,
+            status=NeedGenerationStatus.READY,
             need_completion_spec_version=self.completion_spec_version,
             generator_version=f"{self.version}.production_contract",
+            retrieval_requirement=HistoryRetrievalRequirement.REQUIRED,
+            dropped_history_candidates=dropped_candidates,
         )
+
+    @staticmethod
+    def _merge_history_decisions(
+        decisions: tuple[HistoryRetrievalDecision, ...],
+    ) -> tuple[
+        HistoryRetrievalRequirement,
+        HistoryRetrievalReasonCode | None,
+        str | None,
+    ]:
+        if not decisions:
+            return HistoryRetrievalRequirement.UNDECIDED, None, None
+        if any(
+            decision.requirement is HistoryRetrievalRequirement.REQUIRED
+            for decision in decisions
+        ):
+            return HistoryRetrievalRequirement.REQUIRED, None, None
+        if any(
+            decision.requirement is HistoryRetrievalRequirement.UNDECIDED
+            for decision in decisions
+        ):
+            return HistoryRetrievalRequirement.UNDECIDED, None, None
+        first = decisions[0]
+        return (
+            HistoryRetrievalRequirement.NOT_REQUIRED,
+            first.reason_code,
+            first.waiver_ref,
+        )
+
+    @staticmethod
+    def _cap_history_candidates(
+        candidates: tuple[_HistoryNeedCandidate, ...],
+    ) -> tuple[tuple[_HistoryNeedCandidate, ...], tuple[str, ...]]:
+        deduplicated: list[_HistoryNeedCandidate] = []
+        seen: set[tuple[str, str]] = set()
+        for candidate in candidates:
+            key = (candidate.need.kind, candidate.need.query.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(candidate)
+        kept = tuple(deduplicated[:3])
+        dropped = tuple(
+            f"{candidate.source}:{candidate.need.kind}:{candidate.need.query}"
+            for candidate in deduplicated[3:]
+        )
+        return kept, dropped
+
+    def _host_derived_history_needs(
+        self,
+        goals: tuple[ChapterGoal, ...],
+        world: WorldRootDocument,
+        target_chapter: int,
+    ) -> tuple[_HistoryNeedCandidate, ...]:
+        candidates: list[_HistoryNeedCandidate] = []
+        obligations = {item.obligation_id: item for item in world.obligations}
+        for goal in goals:
+            referenced: dict[StableId, str] = {
+                obligation_id: "PROGRESS" for obligation_id in goal.obligation_ids
+            }
+            raw_actions = goal.payload.get("obligation_actions")
+            if isinstance(raw_actions, list):
+                for action in raw_actions:
+                    if not isinstance(action, dict):
+                        continue
+                    raw_id = action.get("obligation_id") or action.get("id")
+                    if not isinstance(raw_id, str) or not raw_id.strip():
+                        continue
+                    operation = action.get("action")
+                    referenced[StableId(raw_id.strip())] = (
+                        operation.upper() if isinstance(operation, str) else "PROGRESS"
+                    )
+            for obligation_id, operation in referenced.items():
+                obligation = obligations.get(obligation_id)
+                if obligation is None or obligation.status in {
+                    ObligationStatus.RESOLVED,
+                    ObligationStatus.ABANDONED,
+                }:
+                    continue
+                candidates.append(
+                    _HistoryNeedCandidate(
+                        need=HistoryRetrievalNeed(
+                            kind="setup_evidence",
+                            query=(
+                                f"本章需对长程责任「{obligation.description}」执行 "
+                                f"{operation}. 请召回此前 SETUP/PROGRESS 阶段的既有证据、"
+                                "当前状态与已知边界。"
+                            ),
+                            predicates=("setup", "progress"),
+                            why_needed=(
+                                "host-derived obligation evidence required before this chapter"
+                            ),
+                        ),
+                        source="host_obligation",
+                        key=f"obligation.{obligation_id.root}",
+                        why="host-derived obligation setup evidence",
+                    )
+                )
+            for entity in self._participating_entities(goal, world):
+                earliest = self._earliest_event_chapter(world, entity.entity_id)
+                if earliest is None or target_chapter - earliest < 3:
+                    continue
+                candidates.append(
+                    _HistoryNeedCandidate(
+                        need=HistoryRetrievalNeed(
+                            kind="causal_history",
+                            query=(
+                                f"实体「{entity.internal_label}」最早出现于第{earliest}章. "
+                                "请召回其截至当前章节的状态、来源与已知边界。"
+                            ),
+                            entity_ids=(entity.entity_id,),
+                            predicates=("current_state", "origin"),
+                            why_needed="host-derived older entity origin evidence",
+                        ),
+                        source="host_entity_origin",
+                        key=f"entity.{entity.entity_id.root}",
+                        why="host-derived older entity origin evidence",
+                    )
+                )
+        return tuple(candidates)
+
+    @staticmethod
+    def _participating_entities(
+        goal: ChapterGoal, world: WorldRootDocument
+    ) -> tuple[Entity, ...]:
+        raw: list[str] = []
+        for field in (
+            "participating_entity_ids",
+            "entity_ids",
+            "participant_ids",
+            "entities",
+        ):
+            value = goal.payload.get(field)
+            if isinstance(value, list):
+                raw.extend(item for item in value if isinstance(item, str))
+        if not raw:
+            return ()
+        by_id = {entity.entity_id.root: entity for entity in world.entities}
+        by_label: dict[str, Entity] = {}
+        for entity in world.entities:
+            by_label.setdefault(entity.internal_label, entity)
+            for alias in entity.aliases:
+                by_label.setdefault(alias, entity)
+        resolved: list[Entity] = []
+        for item in raw:
+            resolved_entity = by_id.get(item) or by_label.get(item)
+            if resolved_entity is not None and resolved_entity not in resolved:
+                resolved.append(resolved_entity)
+        return tuple(resolved)
+
+    @staticmethod
+    def _earliest_event_chapter(world: WorldRootDocument, entity_id: StableId) -> int | None:
+        chapters = [
+            event.narrative_order.chapter_index
+            for event in world.events
+            if entity_id in event.participant_ids
+            and event.narrative_order is not None
+            and event.narrative_order.chapter_index >= 1
+        ]
+        return min(chapters) if chapters else None
 
     def generate_with_lineage(
         self,

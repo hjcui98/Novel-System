@@ -245,6 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--manifest", type=Path, required=True)
     report.add_argument("--executable-commit", required=True)
     report.add_argument("--output", type=Path, required=True)
+    audit = runtime_commands.add_parser("audit-memory-projection")
+    audit.add_argument("--project-id", required=True)
+    audit.add_argument("--commit", required=True)
+    audit.add_argument("--snapshot-id", required=True)
+    audit.add_argument("--object-store-root", type=Path, required=True)
+    audit.add_argument("--opensearch-url")
+    audit.add_argument("--output", type=Path)
     prepare = runtime_commands.add_parser("bootstrap-prepare")
     prepare.add_argument("--brief", type=Path, required=True)
     prepare.add_argument("--project-id", required=True)
@@ -319,6 +326,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                 RuntimeError("runtime CLI does not claim work; dispatcher must inject permissions")
             ),
         )
+        if args.runtime_command == "audit-memory-projection":
+            from novel_agent.domain.benchmark import TextRootDocument
+            from novel_agent.services.memory_projection_audit import MemoryProjectionAuditor
+            from novel_agent.services.projection import DerivedSnapshotRepository
+
+            artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
+            commits = CommitService(factory)
+            commit_id = CommitId(args.commit)
+            manifest = commits.load_manifest(commit_id)
+            text_root = TextRootDocument.model_validate_json(
+                artifacts.read_verified(manifest.text_root), strict=True
+            )
+            index = None
+            grounded_index = None
+            anchor_index = None
+            if args.opensearch_url:
+                from opensearchpy import OpenSearch
+
+                from novel_agent.adapters.opensearch.search_index import OpenSearchIndex
+                from novel_agent.services.search_retrieval import Stage2RSearchIndexer
+
+                index = OpenSearchIndex(OpenSearch(args.opensearch_url))
+                anchor_index, grounded_index = Stage2RSearchIndexer.aliases(
+                    ProjectId(args.project_id)
+                )
+            report = MemoryProjectionAuditor(
+                session_factory=factory,
+                snapshots=DerivedSnapshotRepository(factory),
+                index=index,
+                grounded_index=grounded_index,
+                anchor_index=anchor_index,
+            ).audit(
+                project_id=ProjectId(args.project_id),
+                commit_id=commit_id,
+                snapshot_id=StableId(args.snapshot_id),
+                text_root=text_root,
+            )
+            payload = report.model_dump(mode="json")
+            if args.output is not None:
+                _write_json_once(args.output, payload)
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+            return 0
         if args.runtime_command == "start":
             request = CreativeRunRequest.model_validate_json(args.request.read_bytes())
             task = commands.create_run_and_initial_task(request)

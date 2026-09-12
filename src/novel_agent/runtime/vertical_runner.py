@@ -52,14 +52,23 @@ class VerticalCreativeRunner:
             raise ValueError("vertical runner dispatch slice size must be positive")
         if max_slices is not None and max_slices < 1:
             raise ValueError("vertical runner max_slices must be positive")
+
+        tasks = self._tasks.list_run(request.run_id)
+        requested_current_chapter = request.current_chapter
+        canonical_current_chapter = self._canonical_current_chapter(request, tasks)
+        if canonical_current_chapter != request.current_chapter:
+            # A continuation request may carry a stale 0 cursor even though the
+            # canonical projection already committed later chapters; never
+            # silently report or drive the run from the stale value.
+            request = request.model_copy(
+                update={"current_chapter": canonical_current_chapter}
+            )
         if stop_after_chapter is not None and not (
             request.current_chapter < stop_after_chapter <= request.target_chapters
         ):
             raise ValueError(
                 "vertical runner stop_after_chapter must be after current and at or before target"
             )
-
-        tasks = self._tasks.list_run(request.run_id)
         bind_request = getattr(self._runtime, "bind_run_request", None)
         if callable(bind_request):
             bind_request(request)
@@ -70,7 +79,9 @@ class VerticalCreativeRunner:
 
         dispatch_slices = 0
         while True:
-            completed_chapters = self._completed_chapters(request, tasks)
+            completed_chapters = self._completed_chapters(
+                request, tasks, floor=requested_current_chapter
+            )
             reached_chapter_boundary = stop_after_chapter is not None and any(
                 chapter >= stop_after_chapter for chapter in completed_chapters
             )
@@ -107,7 +118,9 @@ class VerticalCreativeRunner:
                 # this slice produce no result; return control instead of spinning.
                 break
 
-        completed_chapters = self._completed_chapters(request, tasks)
+        completed_chapters = self._completed_chapters(
+            request, tasks, floor=requested_current_chapter
+        )
         reached_chapter_boundary = stop_after_chapter is not None and any(
             chapter >= stop_after_chapter for chapter in completed_chapters
         )
@@ -132,6 +145,7 @@ class VerticalCreativeRunner:
             run_id=request.run_id,
             project_id=request.project_id,
             current_chapter=request.current_chapter,
+            requested_current_chapter=requested_current_chapter,
             target_chapter=request.target_chapters,
             status=status,
             final_commit=final_commit,
@@ -177,9 +191,29 @@ class VerticalCreativeRunner:
         return None
 
     @staticmethod
-    def _completed_chapters(
+    def _canonical_current_chapter(
         request: CreativeRunRequest, tasks: tuple[TaskRecord, ...]
+    ) -> int:
+        """Derive the canonical cursor from committed draft projections."""
+
+        committed = [
+            task.chapter_index
+            for task in tasks
+            if task.kind is TaskKind.PROJECTION_FRESHNESS
+            and task.projection_after == "draft"
+            and task.status is TaskStatus.SUCCEEDED
+            and task.chapter_index >= 1
+        ]
+        return max(committed, default=request.current_chapter)
+
+    @staticmethod
+    def _completed_chapters(
+        request: CreativeRunRequest,
+        tasks: tuple[TaskRecord, ...],
+        *,
+        floor: int | None = None,
     ) -> tuple[int, ...]:
+        lower_bound = request.current_chapter if floor is None else floor
         return tuple(
             sorted(
                 {
@@ -188,7 +222,7 @@ class VerticalCreativeRunner:
                     if task.kind is TaskKind.PROJECTION_FRESHNESS
                     and task.projection_after == "draft"
                     and task.status is TaskStatus.SUCCEEDED
-                    and task.chapter_index > request.current_chapter
+                    and task.chapter_index > lower_bound
                 }
             )
         )

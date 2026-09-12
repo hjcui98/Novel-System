@@ -11,7 +11,7 @@ from pydantic import ConfigDict, field_validator
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec
 from novel_agent.agents.runner import PreparedAgentRun, StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
+from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
     PlanningInquiry,
@@ -31,6 +31,7 @@ from novel_agent.domain.stage2 import (
     PlannerProposalDraft,
     PlanningTask,
     PlanProposal,
+    PlanUnresolvedIssue,
     ProjectIntentModel,
     ProjectProfileProposal,
     PromptContractRef,
@@ -407,13 +408,23 @@ class PlannerAgent:
             {artifact.artifact_id for artifact in source_artifacts}
         ) != len(source_artifacts):
             raise PlannerInvocationError("PlanningTask sources require unique artifact bindings")
+        plan_prompt = (
+            f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\n"
+            f"SOURCE_DATA={source_payload}"
+        )
+        if profile_only_source_ids:
+            plan_prompt += (
+                "\nSOURCE_CLASS_CONSTRAINT=Sources "
+                + ", ".join(item.root for item in profile_only_source_ids)
+                + " are style/profile sources and may only support ProjectProfile items; "
+                "never cite them from project_intent, plan, or world_design items."
+            )
         prepared = self._runner.prepare(
             AgentType.PLANNER,
             task.mode,
             version.root,
             request,
-            f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\n"
-            f"SOURCE_DATA={source_payload}",
+            plan_prompt,
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
@@ -458,14 +469,24 @@ class PlannerAgent:
             {artifact.artifact_id for artifact in source_artifacts}
         ) != len(source_artifacts):
             raise PlannerInvocationError("PlanningTask sources require unique artifact bindings")
+        turn_prompt = (
+            f"PLANNING_PHASE=plan_turn\nPLANNING_TASK={task.model_dump_json()}\n"
+            "Return PLAN_READY with plan_proposal_draft, or REQUEST_MEMORY with only "
+            f"memory_questions.\n{PLANNING_TURN_OUTPUT_CONSTRAINTS}\nSOURCE_DATA={source_payload}"
+        )
+        if profile_only_source_ids:
+            turn_prompt += (
+                "\nSOURCE_CLASS_CONSTRAINT=Sources "
+                + ", ".join(item.root for item in profile_only_source_ids)
+                + " are style/profile sources and may only support ProjectProfile items; "
+                "never cite them from project_intent, plan, or world_design items."
+            )
         prepared = self._runner.prepare(
             AgentType.PLANNER,
             task.mode,
             version.root,
             request,
-            f"PLANNING_PHASE=plan_turn\nPLANNING_TASK={task.model_dump_json()}\n"
-            "Return PLAN_READY with plan_proposal_draft, or REQUEST_MEMORY with only "
-            f"memory_questions.\n{PLANNING_TURN_OUTPUT_CONSTRAINTS}\nSOURCE_DATA={source_payload}",
+            turn_prompt,
             source_hashes=tuple(artifact.artifact_id for artifact in source_artifacts),
             input_artifacts=(*source_artifacts, *trusted_context_artifacts),
             base_commit=task.base_commit,
@@ -578,6 +599,16 @@ class PlannerAgent:
             unresolved=draft.unresolved,
         )
         digest = output_artifact.artifact_id.root.removeprefix("sha256:")[:24]
+        unresolved_issues = tuple(
+            PlanUnresolvedIssue(
+                issue_id=bounded_stable_id(
+                    f"plan-issue.draft.{digest}.{index}",
+                    f"plan-issue.draft.{index}",
+                ),
+                summary=summary,
+            )
+            for index, summary in enumerate(draft.unresolved)
+        )
         plan = PlanProposal(
             proposal_id=StableId(f"plan-proposal.{digest}"),
             project_id=task.project_id,
@@ -585,7 +616,7 @@ class PlannerAgent:
             strategy=task.strategy,
             base_commit=task.base_commit,
             items=draft.plan_items,
-            unresolved=draft.unresolved,
+            unresolved=unresolved_issues,
             coverage=draft.coverage,
             receipt=receipt,
             reviewed_inquiry_ref=reviewed_inquiry_ref,

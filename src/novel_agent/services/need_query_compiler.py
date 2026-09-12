@@ -29,12 +29,14 @@ class NeedQueryCompiler:
         # set; unresolved lexical anchors keep lexical/dense eligible while
         # exact/graph fail closed on the missing seed (eligible_channels).
         graph_relations = tuple(dict.fromkeys(need.predicates))
+        exact_entity_ids = tuple(dict.fromkeys(need.entity_ids))
+        exact_predicates = tuple(dict.fromkeys(need.predicates))
         return RetrievalQueryBundle(
             semantic_query=semantic_query,
             lexical_queries=lexical_queries,
-            exact_entity_ids=need.entity_ids,
-            exact_predicates=need.predicates,
-            graph_seeds=need.entity_ids,
+            exact_entity_ids=exact_entity_ids,
+            exact_predicates=exact_predicates,
+            graph_seeds=exact_entity_ids,
             graph_relations=graph_relations,
             time_scope=need.time_scope,
             excluded_information_labels=excluded_information_labels,

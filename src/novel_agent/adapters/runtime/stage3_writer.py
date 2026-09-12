@@ -37,8 +37,10 @@ from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
-    ContextAssemblyStatus,
-    WriterContextPackageV2,
+)
+from novel_agent.domain.writer_readiness import (
+    WriterContextInputNotReady,
+    evaluate_writer_readiness,
 )
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
@@ -57,6 +59,9 @@ from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
 WRITING_TASK_MEDIA_TYPE = "application/vnd.novel-agent.writing-task+json"
 WRITER_CONTEXT_V2_MEDIA_TYPE = "application/vnd.novel-agent.writer-context-v2+json"
 EVIDENCE_LEDGER_V2_MEDIA_TYPE = "application/vnd.novel-agent.evidence-ledger-v2+json"
+AUTHOR_PLANNING_CONTEXT_MEDIA_TYPE = (
+    "application/vnd.novel-agent.author-planning-context+json"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,10 @@ class Stage2MWriterContextInvocation:
     writing_task: WritingTaskContract | None = None
     project_id: ProjectId | None = None
     advisory_artifact_refs: tuple[ArtifactRef, ...] = ()
+    plan_root_ref: ArtifactRef | None = None
+    plan_revision: str | None = None
+    chapter_goal_ids: tuple[StableId, ...] = ()
+    planning_context_ref: ArtifactRef | None = None
 
 
 Stage2MWriterContextFactory = Callable[
@@ -221,12 +230,43 @@ class ProductionWritingRequestFactory:
                 for action in self._payload_obligation_actions(goal.payload, world_obligation_ids)
             )
         )
+        advisory_entries = tuple(
+            raw
+            for goal in goals
+            for raw in (
+                goal.payload.get("unresolved_advisories")
+                if isinstance(goal.payload.get("unresolved_advisories"), list)
+                else ()
+            )
+            if isinstance(raw, dict)
+        )
+        advisory_constraints = tuple(
+            "未决 advisory (不得当作已证实事实)\uff1a" + summary
+            for raw in advisory_entries
+            if isinstance(summary := raw.get("summary"), str) and summary.strip()
+        )
+        advisory_forbidden = tuple(
+            assumption.strip()
+            for raw in advisory_entries
+            for assumption in (
+                raw.get("forbidden_assumptions")
+                if isinstance(raw.get("forbidden_assumptions"), list)
+                else ()
+            )
+            if isinstance(assumption, str) and assumption.strip()
+        )
         lock_constraints, lock_forbids = self._future_lock_constraints(world, task.chapter_index)
         profile_lock_constraints, profile_lock_forbids = self._profile_lock_constraints(
             profile, task.chapter_index
         )
         language = self._profile_string(profile, "language", "")
         language_constraint = (f"正文语言：{language}",) if language else ()
+        language_allowlist = self._profile_strings(profile, "language_allowlist")
+        language_allow_constraint = (
+            ("允许英文代号\uff1a" + ", ".join(language_allowlist),)
+            if language_allowlist
+            else ()
+        )
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
                 f"writing-contract.{task.task_id.root}",
@@ -244,15 +284,18 @@ class ProductionWritingRequestFactory:
             active_plan_obligations=obligation_ids,
             mandatory_constraints=(
                 *language_constraint,
+                *language_allow_constraint,
                 *current_state_constraints,
                 *self._profile_strings(profile, "mandatory_constraints"),
                 *lock_constraints,
                 *profile_lock_constraints,
+                *advisory_constraints,
             ),
             forbidden_reveals=(
                 *self._profile_strings(profile, "forbidden_reveals"),
                 *lock_forbids,
                 *profile_lock_forbids,
+                *advisory_forbidden,
             ),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
             style_requirements=(
@@ -269,6 +312,11 @@ class ProductionWritingRequestFactory:
             self._schema_version,
         )
         planning_context = self._planning_context(task, plan, chapter_goal, goals)
+        planning_context_artifact = self._artifacts.put(
+            canonical_json_bytes(planning_context.model_dump(mode="json")),
+            AUTHOR_PLANNING_CONTEXT_MEDIA_TYPE,
+            self._schema_version,
+        )
         memory_task = BenchmarkTaskContract(
             task_id=bounded_stable_id(
                 f"memory-task.{task.task_id.root}",
@@ -284,6 +332,7 @@ class ProductionWritingRequestFactory:
             task_intent=chapter_goal,
             planning_context_hash=planning_context.source_hash,
         )
+        accepted_plan_ref = _as_artifact_ref(manifest.plan_root)
         assembly = self._writer_context(
             Stage2MWriterContextInvocation(
                 run_id=task.run_id,
@@ -301,17 +350,24 @@ class ProductionWritingRequestFactory:
                     for ref in task.input_artifact_refs
                     if ref.media_type == "application/vnd.novel-agent.quarantine-package+json"
                 ),
+                plan_root_ref=accepted_plan_ref,
+                plan_revision=plan.root_hash.root,
+                chapter_goal_ids=tuple(goal.goal_id for goal in goals),
+                planning_context_ref=planning_context_artifact,
             )
         )
         package = assembly.package
-        if assembly.status is not ContextAssemblyStatus.READY:
-            raise ValueError("Writer context assembly is not ready for writing")
-        if isinstance(package, WriterContextPackageV2) and (
-            package.semantic_status != "COMPLETE"
-            or package.unclosed_mandatory_need_facets
-            or package.usable_with_gaps
-        ):
-            raise ValueError("Writer context has unresolved historical needs")
+        readiness = evaluate_writer_readiness(
+            plan=plan,
+            target_chapter=task.chapter_index,
+            writing_task=writing_task,
+            world=world,
+            package=package,
+            expected_plan_root_ref=accepted_plan_ref,
+            manifest_plan_revision=plan.root_hash.root,
+        )
+        if not readiness.ready:
+            raise WriterContextInputNotReady(readiness)
         if (
             package.task_contract != memory_task
             or package.basis_commit_id != task.basis_commit
@@ -357,7 +413,7 @@ class ProductionWritingRequestFactory:
             writing_task=writing_task,
             writing_task_artifact=writing_task_artifact,
             accepted_plan=AcceptedPlanBinding(
-                artifact=_as_artifact_ref(manifest.plan_root),
+                artifact=accepted_plan_ref,
                 revision=plan.root_hash.root,
                 task_contract_id=writing_task.contract_id,
                 base_commit=task.basis_commit,

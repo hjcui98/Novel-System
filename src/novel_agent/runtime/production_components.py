@@ -12,6 +12,10 @@ from novel_agent.domain.ids import RunId, SchemaVersion, TaskId, bounded_stable_
 from novel_agent.domain.memory import DerivedBuildStatus, Stage1MemoryNeed, WorldRootDocument
 from novel_agent.domain.memory_write import CuratorProposalRejection, QuarantinePackage
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalRequirement,
+    RetrievalExecutionStatus,
+)
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentMode,
@@ -30,6 +34,11 @@ from novel_agent.domain.writer_context import (
     MemoryContextBudgetExpansionReceipt,
     MemoryContextBudgetTier,
     MemoryContextBudgetTierRecord,
+)
+from novel_agent.domain.writer_readiness import (
+    WriterContextInputNotReady,
+    WriterReadinessDecision,
+    WriterReadinessReasonCode,
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -312,8 +321,42 @@ class ProductionStage2MWriterContext:
                 snapshot_id=invocation.snapshot_id,
             )
         generated = generated_result.needs
-        if not generated:
+        requirement = getattr(
+            generated_result,
+            "retrieval_requirement",
+            (
+                HistoryRetrievalRequirement.REQUIRED
+                if generated
+                else HistoryRetrievalRequirement.NOT_REQUIRED
+            ),
+        )
+
+        if requirement is HistoryRetrievalRequirement.UNDECIDED:
+            raise WriterContextInputNotReady(
+                WriterReadinessDecision.blocked(
+                    (WriterReadinessReasonCode.HISTORY_DECISION_MISSING,),
+                    (
+                        f"chapter {invocation.task.target_chapter_start} has no explicit "
+                        "history retrieval decision",
+                    ),
+                )
+            )
+        if requirement is HistoryRetrievalRequirement.REQUIRED and not generated:
+            raise WriterContextInputNotReady(
+                WriterReadinessDecision.blocked(
+                    (WriterReadinessReasonCode.HISTORY_NEED_EMPTY,),
+                    (
+                        f"chapter {invocation.task.target_chapter_start} requires retrieval "
+                        "but the Need set is empty",
+                    ),
+                )
+            )
+        if requirement is HistoryRetrievalRequirement.NOT_REQUIRED:
             tier, context_tokens, ledger_tokens, _call_budget = MEMORY_CONTEXT_BUDGET_TIERS[0]
+            waiver_ref = (
+                getattr(generated_result, "history_waiver_ref", None)
+                or "waiver.history.not_required"
+            )
             zero_need_assembly = self._assembler.assemble(
                 task=invocation.task,
                 selections=(),
@@ -325,6 +368,13 @@ class ProductionStage2MWriterContext:
                 advisory_items=tuple(
                     (ref, self._advisory_text(ref)) for ref in invocation.advisory_artifact_refs
                 ),
+                retrieval_requirement=HistoryRetrievalRequirement.NOT_REQUIRED,
+                retrieval_status=RetrievalExecutionStatus.NOT_APPLICABLE,
+                history_waiver_ref=waiver_ref,
+                plan_root_ref=invocation.plan_root_ref,
+                plan_revision=invocation.plan_revision,
+                chapter_goal_ids=invocation.chapter_goal_ids,
+                planning_context_ref=invocation.planning_context_ref,
             )
             if zero_need_assembly.status is not ContextAssemblyStatus.READY:
                 raise ValueError("zero-Need Writer Context assembly is not ready")
@@ -413,6 +463,16 @@ class ProductionStage2MWriterContext:
                 frozen_evidence_selections_artifact=(
                     gateway_result.frozen_evidence_selections_artifact
                 ),
+                retrieval_requirement=HistoryRetrievalRequirement.REQUIRED,
+                retrieval_status=(
+                    RetrievalExecutionStatus.EXECUTED
+                    if any(selection.slices for selection in selections)
+                    else RetrievalExecutionStatus.NO_HIT
+                ),
+                plan_root_ref=invocation.plan_root_ref,
+                plan_revision=invocation.plan_revision,
+                chapter_goal_ids=invocation.chapter_goal_ids,
+                planning_context_ref=invocation.planning_context_ref,
             )
             expansion = self._expansion_reason(
                 gateway_result=gateway_result,

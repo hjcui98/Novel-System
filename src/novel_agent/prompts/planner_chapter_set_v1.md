@@ -14,9 +14,17 @@
 - 每个 goal 必须带 `chapter_index`、非空 `summary`、可执行的 `beats`、所需 `state_changes`、参与实体以及必要的 `obligation_actions`；没有对应数据时可以为空，但不得用空总述掩盖缺口。
 - 章节目标必须从上一章可见终态向前推进，避免重复上一章事件；说明本章终态和下一章接口。
 - 长程 promise/foreshadowing/objective/conflict 需要声明 `not_before_chapter`，且不得早于当前窗口允许的兑现边界。
-- `history_needs` 只列缺失即不能安全写作的问题，最多 3 个；每个 query 必须有明确 kind、范围和实体绑定，允许为 0 个。
+- 第 2 章以后（含）的每个章节 goal 的 payload 必须携带显式 `history_retrieval` 决策，结构如下：
+  - `requirement`: `"REQUIRED"` 或 `"NOT_REQUIRED"`；
+  - `REQUIRED` 时必须给出 1—3 个 `needs`，每个 need 的 `kind` 只允许
+    `causal_history`、`knowledge_origin`、`relationship_origin`、`setup_evidence`、`object_origin`，
+    且 `query` 非空、必要时绑定 `entity_ids` 与 `predicates`；
+  - `NOT_REQUIRED` 必须给出枚举化 `reason_code`
+    （`no_historical_dependency` 或 `review_waiver`）与 `waiver_ref`，且不得携带 needs；
+  - 第 1 章可以省略（host 以 `first_chapter` waiver 处理）。
+- 旧的 `history_needs` 数组不再被接受：裸 `[]` 或其它 kind 会被审校拒绝并阻断 Writer。
 - post-Genesis ChapterSet 不输出 `project_intent_items`，不得用整卷摘要代替逐章目标；若协议字段要求存在，填空数组或 null。
 
 ## 输出前自检
 
-检查章节覆盖、父级范围、已有 Plan/World 的显式时间锁、obligation ID 是否存在、每项 payload 是否可被 Writer 消费，以及所有 unresolved 是否仍是候选而非 Canon。保留 `source_ids` 和作者原文的引用边界；不要把 Profile 风格或外部参考升级成故事事实。
+检查章节覆盖、父级范围、已有 Plan/World 的显式时间锁、obligation ID 是否存在、每项 payload 是否可被 Writer 消费，以及所有 unresolved 是否仍是候选而非 Canon。逐章核对：第 2 章以后每个 goal 都有合法 `history_retrieval`（REQUIRED 有 1—3 个合法 kind 的 Need，NOT_REQUIRED 有 reason_code 与 waiver_ref），不存在裸 `history_needs` 或空决策。保留 `source_ids` 和作者原文的引用边界；不要把 Profile 风格或外部参考升级成故事事实。

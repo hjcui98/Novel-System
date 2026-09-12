@@ -54,7 +54,8 @@ _INTERNAL_CHAPTER_LABEL = re.compile(
     r"(?<![A-Za-z0-9_])(?:ch\d+|chapter\s+\d+)(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
-_NON_TARGET_LANGUAGE_RE = re.compile(r"(?:\b[A-Za-z]{4,}\b(?:[\s,.;:!?\-]+|$)){5,}", re.IGNORECASE)
+_LANGUAGE_TOKEN_RE = re.compile(r"[A-Za-z]{2,}[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*")
+_LANGUAGE_ALLOWLIST_PREFIX = "允许英文代号\uff1a"
 _RECENT_PROSE_MIN_LENGTH = 384
 _RECENT_PROSE_MIN_MATCH_CHARS = 128
 _RECENT_PROSE_SIMILARITY_THRESHOLD = 0.85
@@ -64,6 +65,9 @@ _RECENT_PROSE_LONG_MATCH_RATIO = 0.25
 _COMPACT_RECENT_PROSE_MIN_MATCH_CHARS = 80
 _COMPACT_RECENT_PROSE_MIN_OVERLAP_RATIO = 0.10
 _SURFACE_RETRY_REPETITION_PENALTY = 1.10
+_LENGTH_REPAIR_MIN_POLICY_THRESHOLD = 1_000
+_LENGTH_REPAIR_MAX_ROUNDS = 3
+_LENGTH_REPAIR_REPETITION_PENALTY = 1.05
 
 
 def repeats_recent_prose(
@@ -124,10 +128,23 @@ class WriterCognitionError(ValueError):
     """Writer cognition violated a trusted plan, Skill, or Context boundary."""
 
 
+def language_allowlist_tokens(constraints: tuple[str, ...]) -> tuple[str, ...]:
+    """Read the explicit ProjectProfile English-token allowlist from constraints."""
+
+    tokens: list[str] = []
+    for constraint in constraints:
+        if not constraint.startswith(_LANGUAGE_ALLOWLIST_PREFIX):
+            continue
+        raw = constraint.split("\uff1a", 1)[1]
+        tokens.extend(item.strip() for item in re.split("[,\uff0c]", raw) if item.strip())
+    return tuple(dict.fromkeys(tokens))
+
+
 def draft_surface_error(
     draft_text: str,
     *,
     target_language: str | None = None,
+    allowed_language_tokens: tuple[str, ...] = (),
     forbidden_reveals: tuple[str, ...] = (),
     recent_prose: tuple[tuple[str, bool], ...] = (),
 ) -> str | None:
@@ -143,12 +160,12 @@ def draft_surface_error(
     for reveal in forbidden_reveals:
         if reveal and reveal in draft_text:
             return "Writer draft reveals a forbidden future detail"
-    if (
-        target_language
-        and not target_language.lower().startswith(("en", "english"))
-        and (_NON_TARGET_LANGUAGE_RE.search(draft_text) is not None)
-    ):
-        return "Writer draft contains an obvious non-target-language passage"
+    if target_language and not target_language.lower().startswith(("en", "english")):
+        allowed = {token.strip() for token in allowed_language_tokens if token.strip()}
+        for token in _LANGUAGE_TOKEN_RE.findall(draft_text):
+            if token in allowed:
+                continue
+            return f"Writer draft contains a non-target-language token: {token}"
     for prose, compact_trail in recent_prose:
         if repeats_recent_prose(prose, draft_text, compact_trail=compact_trail):
             return "Writer draft repeats visible recent prose"
@@ -160,6 +177,7 @@ def _writer_draft_surface_error(
     view: AgentContextView,
     *,
     target_language: str | None = None,
+    allowed_language_tokens: tuple[str, ...] = (),
     forbidden_reveals: tuple[str, ...] = (),
 ) -> str | None:
     """Reject only demonstrated model surface failures before editorial review."""
@@ -180,6 +198,7 @@ def _writer_draft_surface_error(
     return draft_surface_error(
         draft_text,
         target_language=target_language,
+        allowed_language_tokens=allowed_language_tokens,
         forbidden_reveals=forbidden_reveals,
         recent_prose=tuple(recent_prose),
     )
@@ -276,8 +295,32 @@ class WriterCognitionService:
                 "production Writer allowlist is missing required mode Skill: "
                 f"{required_mode_skill.root}"
             )
+        if StableId("skill.style-genre-writing") in allowed:
+            base_skill_ids.append(StableId("skill.style-genre-writing"))
+        optional_skill_ids = {
+            StableId(item)
+            for item in (
+                "skill.character-voice-writing",
+                "skill.dialogue-subtext-writing",
+                "skill.pov-epistemic-writing",
+                "skill.pacing-transition-writing",
+                "skill.hook-foreshadowing-writing",
+            )
+        }
+        permitted_skill_ids = {
+            *base_skill_ids,
+            *optional_skill_ids,
+            *(() if required_mode_skill is None else (required_mode_skill,)),
+        }
+        # The durable allowlist is shared by all Writer modes, but the model
+        # must only see the subset that is legal for this particular mode.
+        # Otherwise a DRAFT request can select CONTINUE/MAJOR_REWRITE skills,
+        # forcing a deterministic host rejection after spending a model call.
+        mode_allowed_skill_ids = tuple(
+            item for item in request.allowed_skills if item in permitted_skill_ids
+        )
         skill_payload = []
-        for skill_id in request.allowed_skills:
+        for skill_id in mode_allowed_skill_ids:
             contract = catalog[skill_id]
             _skill_text, actual = self._skills.resolve(skill_id, contract.version)
             if actual != contract:
@@ -293,7 +336,7 @@ class WriterCognitionService:
                 "writer_context_ref": request.writer_context_package_artifact.model_dump(
                     mode="json"
                 ),
-                "allowed_skill_ids": [item.root for item in request.allowed_skills],
+                "allowed_skill_ids": [item.root for item in mode_allowed_skill_ids],
                 "context_hash": view.context_hash.root,
                 # The work plan must be conditioned on the same bounded View as
                 # the Writer turn, especially the previous chapter and typed gaps.
@@ -323,7 +366,9 @@ class WriterCognitionService:
                 ),
                 "agent_id": StableId("agent.writer.work-plan"),
                 "agent_mode": request.mode.value,
-                "skill_contract_hashes": tuple(item.content_hash for item in catalog.values()),
+                "skill_contract_hashes": tuple(
+                    catalog[item].content_hash for item in mode_allowed_skill_ids
+                ),
                 "max_output_tokens": (
                     request.budgets.reserved_output_tokens
                     if request.budgets.reserved_output_tokens >= 1
@@ -347,29 +392,18 @@ class WriterCognitionService:
         selected = set(work_plan.selected_skill_ids)
         if not selected.issubset(allowed):
             raise WriterCognitionError("WriterWorkPlan selected a Skill outside the allowlist")
-        if StableId("skill.style-genre-writing") in allowed:
-            base_skill_ids.append(StableId("skill.style-genre-writing"))
-        optional_skill_ids = {
-            StableId(item)
-            for item in (
-                "skill.character-voice-writing",
-                "skill.dialogue-subtext-writing",
-                "skill.pov-epistemic-writing",
-                "skill.pacing-transition-writing",
-                "skill.hook-foreshadowing-writing",
-            )
-        }
         selected_optional = tuple(
             item for item in work_plan.selected_skill_ids if item in optional_skill_ids
         )
-        permitted_skill_ids = {
-            *base_skill_ids,
-            *optional_skill_ids,
-            *(() if required_mode_skill is None else (required_mode_skill,)),
-        }
         if any(item not in permitted_skill_ids for item in work_plan.selected_skill_ids):
+            unsupported = tuple(
+                item.root
+                for item in work_plan.selected_skill_ids
+                if item not in permitted_skill_ids
+            )
             raise WriterCognitionError(
-                "production WriterWorkPlan selected an unsupported Skill for its mode"
+                "production WriterWorkPlan selected an unsupported Skill for its mode: "
+                + ", ".join(unsupported)
             )
         if request.mode is AgentMode.DRAFT and len(selected_optional) > 1:
             selected_optional = (selected_optional[0],)
@@ -525,6 +559,9 @@ class WriterCognitionService:
             ),
             None,
         )
+        allowed_language_tokens = language_allowlist_tokens(
+            request.writing_task.mandatory_constraints
+        )
         language_label = language or "the language specified by WritingTask"
         prompt = (
             mode_prompt
@@ -567,11 +604,18 @@ class WriterCognitionService:
         )
         output, call = await self._gateway.generate_structured(prepared, WriterTurnOutput)
         if output.action is WriterTurnAction.DRAFT_READY and output.draft_text is not None:
+            output, call = await self._repair_short_draft(
+                request,
+                prepared,
+                output,
+                call,
+            )
             draft_text = output.draft_text
             surface_error = _writer_draft_surface_error(
                 draft_text,
                 view,
                 target_language=language,
+                allowed_language_tokens=allowed_language_tokens,
                 forbidden_reveals=request.writing_task.forbidden_reveals,
             )
             retries = 0
@@ -615,6 +659,7 @@ class WriterCognitionService:
                         draft_text,
                         view,
                         target_language=language,
+                        allowed_language_tokens=allowed_language_tokens,
                         forbidden_reveals=request.writing_task.forbidden_reveals,
                     )
             if surface_error is not None:
@@ -666,6 +711,123 @@ class WriterCognitionService:
             raw_output_artifact=raw_output_artifact,
             model_call=call,
         )
+
+    async def _repair_short_draft(
+        self,
+        request: WritingLoopRequest,
+        prepared: ModelRequest,
+        output: WriterTurnOutput,
+        call: ModelCallRecord,
+    ) -> tuple[WriterTurnOutput, ModelCallRecord]:
+        """Bounded host-side continuation for a short DRAFT_READY response.
+
+        Qwen can return a semantically complete scene well below a long-form character
+        contract.  Replaying the same task merely produces another short candidate, so the
+        recovery call asks for prose that continues from the exact final sentence and the host
+        combines the immutable response fragments before the regular candidate gate runs.
+        """
+
+        assert output.draft_text is not None
+        policy = request.writing_task.length_policy
+        combined = output.draft_text.strip()
+        if (
+            policy.minimum_characters < _LENGTH_REPAIR_MIN_POLICY_THRESHOLD
+            or len(combined) >= policy.minimum_characters
+        ):
+            return output, call
+
+        final_output = output
+        final_call = call
+        for round_number in range(1, _LENGTH_REPAIR_MAX_ROUNDS + 1):
+            if len(combined) >= policy.minimum_characters:
+                break
+            remaining = policy.minimum_characters - len(combined)
+            digest = hashlib.sha256(
+                f"{prepared.request_id.root}:length-repair-{round_number}".encode()
+            ).hexdigest()[:48]
+            repair_request = prepared.model_copy(
+                update={
+                    "request_id": StableId(
+                        f"request.stage3.writer-length-repair.{digest}"
+                    ),
+                    "trace_id": f"{prepared.trace_id}:length-repair-{round_number}",
+                    "repetition_penalty": _LENGTH_REPAIR_REPETITION_PENALTY,
+                    "scheduling_stage": "stage3.writer_length_repair",
+                    "prompt": (
+                        prepared.prompt
+                        + "\n\n<WRITER_LENGTH_REPAIR>\n"
+                        + "【长度恢复】当前正文草稿尚未达到受信写作契约的最低长度。"
+                        + f"当前为{len(combined)}字, 最低要求为{policy.minimum_characters}字, "
+                        + (
+                            f"目标为{policy.target_characters}字, "
+                            f"上限为{policy.maximum_characters}字。\n"
+                        )
+                        + f"请从当前草稿的最后一句之后继续本章, 至少补写约{remaining}字。"
+                        + "本轮 draft_text 字段只输出需要追加的沉浸式小说正文, 不得输出提纲、解释、"
+                        + "审校意见或内部标签; 不得复述当前草稿, 不得提前结束本章。"
+                        + "保持同一人物视角、"
+                        + "语言和已确认节拍, 直到合并后的正文达到最低长度。\n"
+                        + "<CURRENT_DRAFT>\n"
+                        + combined
+                        + "\n</CURRENT_DRAFT>\n"
+                        + "</WRITER_LENGTH_REPAIR>"
+                    ),
+                }
+            )
+            repaired, repaired_call = await self._gateway.generate_structured(
+                repair_request,
+                WriterTurnOutput,
+            )
+            if (
+                repaired.action is not WriterTurnAction.DRAFT_READY
+                or repaired.draft_text is None
+            ):
+                raise WriterCognitionError(
+                    "length repair must return DRAFT_READY with a continuation fragment"
+                )
+            fragment = repaired.draft_text.strip()
+            if fragment.startswith(combined[: min(128, len(combined))]):
+                # Some providers echo the prefix while adding new prose. Treat that response as
+                # a replacement so the already-visible text is not duplicated by the host.
+                combined = fragment
+            else:
+                combined = f"{combined}\n\n{fragment}"
+            if len(combined) > policy.maximum_characters:
+                if policy.minimum_characters <= len(fragment) <= policy.maximum_characters:
+                    combined = fragment
+                else:
+                    raise WriterCognitionError(
+                        "length repair exceeded the trusted WritingTask maximum"
+                    )
+            final_output = repaired
+            final_call = repaired_call
+
+        if len(combined) < policy.minimum_characters:
+            raise WriterCognitionError(
+                "length repair exhausted its bounded continuation rounds "
+                f"({len(combined)} < {policy.minimum_characters})"
+            )
+        merged = output.model_copy(
+            update={
+                "draft_text": combined,
+                "declared_memory_hints": tuple(
+                    dict.fromkeys(
+                        (*output.declared_memory_hints, *final_output.declared_memory_hints)
+                    )
+                ),
+                "unresolved_questions": tuple(
+                    dict.fromkeys(
+                        (*output.unresolved_questions, *final_output.unresolved_questions)
+                    )
+                ),
+                "self_observations": tuple(
+                    dict.fromkeys((*output.self_observations, *final_output.self_observations))
+                ),
+            }
+        )
+        # ``call`` is the last provider response; ``merged`` is the auditable host result that
+        # is subsequently persisted as the Writer turn and checked by the Candidate materializer.
+        return merged, final_call
 
     def _read_prompt(self, filename: str) -> str:
         return (self._prompt_root / filename).read_text(encoding="utf-8")

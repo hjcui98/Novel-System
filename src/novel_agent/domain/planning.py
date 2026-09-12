@@ -7,6 +7,7 @@ Planner or Reviewer permission to mutate canonical roots or commit state.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from enum import StrEnum
 
 from pydantic import Field, JsonValue, model_validator
@@ -230,6 +231,50 @@ class ReviewIssueKind(StrEnum):
         "early_resolution_of_future_locked_obligation"
     )
     TARGET_WINDOW_OUTSIDE_PARENT_SCOPE = "target_window_outside_parent_scope"
+    BLOCKING_UNRESOLVED = "blocking_unresolved"
+    VOLUME_STRUCTURE_INCOMPLETE = "volume_structure_incomplete"
+
+
+# The minimum executable volume outline (2026-09-10 remediation P0-5).  A
+# volume arc must carry each of these non-empty payload keys so the rolling
+# CHAPTER_SET planner and the Writer inherit a real stage grid instead of a
+# three-event roadmap.
+VOLUME_STRUCTURE_REQUIRED_KEYS: tuple[str, ...] = (
+    "opening_state",
+    "trigger_event",
+    "first_escalation",
+    "first_cost",
+    "midpoint_reversal",
+    "second_escalation",
+    "volume_climax",
+    "climax_cost",
+    "ending_state",
+    "next_volume_hook",
+    "protagonist_arc",
+    "supporting_arc",
+    "faction_arc",
+    "capability_ceiling",
+    "equipment_ceiling",
+    "entry_conditions",
+    "exit_conditions",
+    "reveal_window",
+    "obligation_plan",
+)
+
+
+def missing_volume_structure_keys(payload: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the required volume slots that are absent or empty."""
+
+    missing: list[str] = []
+    for key in VOLUME_STRUCTURE_REQUIRED_KEYS:
+        value = payload.get(key)
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
+            missing.append(key)
+        elif isinstance(value, (list, tuple, dict)) and not value:
+            missing.append(key)
+    return tuple(missing)
 
 
 class PlanReviewIssue(DomainModel):
@@ -345,6 +390,7 @@ class PlanningLoopRequest(DomainModel):
 
 class PlannerContextSection(StrEnum):
     AUTHOR_INTENT = "author_intent"
+    AUTHOR_CONSTRAINTS = "author_constraints"
     ACCEPTED_PLAN = "accepted_plan"
     CURRENT_STATE = "current_state"
     HISTORY_DEVIATION = "history_deviation"
@@ -396,6 +442,7 @@ class PlannerContextPackage(DomainModel):
     base_commit: CommitId | None = None
     snapshot_id: StableId | None = None
     profile_ref: ArtifactRef | None = None
+    author_constraint_root_ref: ArtifactRef | None = None
     reviewed_inquiry_ref: ArtifactRef
     stage1_context_ref: ArtifactRef | None = None
     items: tuple[PlannerContextItem, ...]

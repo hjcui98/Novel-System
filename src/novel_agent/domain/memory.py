@@ -85,6 +85,25 @@ class PlanObligation(DomainModel):
         return self.is_future_locked(current_chapter)
 
 
+def obligation_active_for_chapter(obligation: PlanObligation, chapter_index: int) -> bool:
+    """Whether this open obligation is due in or covers the target chapter.
+
+    Future-locked obligations stay SETUP-only and do not demand retrieval or
+    injection before their ``not_before_chapter`` boundary.
+    """
+
+    if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
+        return False
+    if obligation.forbids_resolution(chapter_index):
+        return False
+    if obligation.target_chapter_start is not None:
+        target_end = obligation.target_chapter_end or obligation.target_chapter_start
+        return obligation.target_chapter_start <= chapter_index <= target_end
+    if obligation.due_chapter is not None:
+        return chapter_index <= obligation.due_chapter
+    return True
+
+
 def long_range_kind_requires_not_before(kind: ObligationKind) -> bool:
     return kind in {ObligationKind.PROMISE, ObligationKind.FORESHADOWING}
 

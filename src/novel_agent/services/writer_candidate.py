@@ -58,6 +58,7 @@ class WriterCandidateMaterializer:
         output = turn.output
         if output.action is not WriterTurnAction.DRAFT_READY or output.draft_text is None:
             raise WriterCandidateError("only DRAFT_READY can form a DraftArtifact")
+        self.enforce_length_contract(output.draft_text, request)
         if mode is AgentMode.DRAFT and parent_draft is not None:
             raise WriterCandidateError("initial Draft cannot have a parent")
         if mode is AgentMode.MAJOR_REWRITE and parent_draft is None:
@@ -164,6 +165,23 @@ class WriterCandidateMaterializer:
             model_call_record=call,
             created_at=call.completed_at,
         )
+
+    @staticmethod
+    def enforce_length_contract(text: str, request: WritingLoopRequest) -> None:
+        """Reject a Writer output before it can become an accepted candidate."""
+
+        length = len(text)
+        policy = request.writing_task.length_policy
+        if length < policy.minimum_characters:
+            raise WriterCandidateError(
+                "Writer draft is shorter than trusted WritingTask minimum "
+                f"({length} < {policy.minimum_characters})"
+            )
+        if length > policy.maximum_characters:
+            raise WriterCandidateError(
+                "Writer draft exceeds trusted WritingTask maximum "
+                f"({length} > {policy.maximum_characters})"
+            )
 
     @staticmethod
     def editor_context(

@@ -301,7 +301,9 @@ class ProductionNovelBootstrap:
                 for state in candidates.world.states
             ],
             "style_profile": candidates.profile.style_profile,
-            "unresolved_plan": list(planner_result.plan_proposal.unresolved),
+            "unresolved_plan": [
+                issue.summary for issue in planner_result.plan_proposal.unresolved
+            ],
             "unresolved_world": list(world_patch.unresolved_claims),
             "validation_status": validation.status.value,
             "validation_findings": [

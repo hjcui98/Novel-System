@@ -19,8 +19,15 @@ from novel_agent.domain.planning import (
     ReviewDecision,
     ReviewIssueKind,
     ReviewTargetKind,
+    missing_volume_structure_keys,
 )
-from novel_agent.domain.stage2 import AgentMode, AgentType
+from novel_agent.domain.retrieval_decision import HistoryRetrievalDecision
+from novel_agent.domain.stage2 import (
+    AgentMode,
+    AgentType,
+    PlanUnresolvedIssue,
+    hard_unresolved_kinds,
+)
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
@@ -47,6 +54,7 @@ def apply_host_plan_review_constraints(
     target_payload: str,
     mode: AgentMode = AgentMode.ARC_VOLUME,
     expected_volume_count: int | None = None,
+    expected_target_chapters: int | None = None,
 ) -> PlanReviewDraft:
     """Overlay trusted temporal/parent-scope issues onto a model Plan review."""
 
@@ -59,8 +67,8 @@ def apply_host_plan_review_constraints(
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         return draft
-    extra = tuple(
-        _host_issues_for_items(
+    extra = (
+        *_host_issues_for_items(
             raw_items,
             mode=mode,
             expected_volume_count=(
@@ -68,7 +76,13 @@ def apply_host_plan_review_constraints(
                 if expected_volume_count is not None
                 else _expected_volume_count(payload)
             ),
-        )
+            expected_target_chapters=(
+                expected_target_chapters
+                if expected_target_chapters is not None
+                else _expected_target_chapters(payload)
+            ),
+        ),
+        *_unresolved_host_issues(payload),
     )
     if not extra:
         return draft
@@ -86,7 +100,8 @@ def apply_host_plan_review_constraints(
         )
     instruction = (
         draft.revision_instruction
-        or "Revise future-locked payoff and parent-scope violations; keep SETUP/PROGRESS only."
+        or "Revise blocking unresolved conflicts, incomplete volume structure, "
+        "future-locked payoff, and parent-scope violations; keep SETUP/PROGRESS only."
     )
     return draft.model_copy(
         update={
@@ -98,7 +113,11 @@ def apply_host_plan_review_constraints(
 
 
 def _host_issues_for_items(
-    raw_items: list[object], *, mode: AgentMode, expected_volume_count: int | None = None
+    raw_items: list[object],
+    *,
+    mode: AgentMode,
+    expected_volume_count: int | None = None,
+    expected_target_chapters: int | None = None,
 ) -> list[PlanReviewIssue]:
     issues: list[PlanReviewIssue] = []
     by_id: dict[str, dict[str, Any]] = {}
@@ -106,6 +125,7 @@ def _host_issues_for_items(
         if isinstance(raw, dict) and isinstance(raw.get("item_id"), str):
             by_id[raw["item_id"]] = raw
     volume_items = 0
+    volume_ranges: list[tuple[str, int | None, int | None]] = []
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
@@ -118,6 +138,25 @@ def _host_issues_for_items(
         level_raw = str(item_payload.get("plan_level") or raw.get("kind") or "").lower()
         if level_raw in {"arc_volume", "volume", "volume_scope", "volume_arc", "arc"}:
             volume_items += 1
+            if mode is AgentMode.ARC_VOLUME:
+                volume_ranges.append(
+                    (
+                        item_id,
+                        _optional_int(item_payload.get("chapter_start") or raw.get("chapter_start")),
+                        _optional_int(item_payload.get("chapter_end") or raw.get("chapter_end")),
+                    )
+                )
+                missing_slots = missing_volume_structure_keys(item_payload)
+                if missing_slots:
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
+                            "VOLUME_STRUCTURE_INCOMPLETE: missing required volume slots: "
+                            + ", ".join(missing_slots),
+                            item_id,
+                            blocking=True,
+                        )
+                    )
         try:
             kind = ObligationKind(kind_raw)
         except ValueError:
@@ -191,6 +230,112 @@ def _host_issues_for_items(
                 blocking=True,
             )
         )
+    if mode is AgentMode.ARC_VOLUME and volume_ranges:
+        range_issue = _volume_range_issue(volume_ranges, expected_target_chapters)
+        if range_issue is not None:
+            issues.append(range_issue)
+    return issues
+
+
+def _volume_range_issue(
+    ranges: list[tuple[str, int | None, int | None]],
+    expected_target_chapters: int | None,
+) -> PlanReviewIssue | None:
+    incomplete = tuple(
+        item_id for item_id, start, end in ranges if start is None or end is None or end < start
+    )
+    if incomplete:
+        return _host_issue(
+            ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
+            "VOLUME_STRUCTURE_INCOMPLETE: volume chapter_start/chapter_end missing or reversed",
+            incomplete[0],
+            blocking=True,
+        )
+    ordered = sorted(
+        ((start, end, item_id) for item_id, start, end in ranges if start and end),
+        key=lambda item: (item[0], item[1]),
+    )
+    expected_start = 1
+    for start, end, item_id in ordered:
+        if start != expected_start:
+            return _host_issue(
+                ReviewIssueKind.COVERAGE,
+                "VOLUME_RANGE_GAP_OR_OVERLAP: volume ranges must be contiguous from "
+                f"chapter 1; expected {expected_start}, got {start}",
+                item_id,
+                blocking=True,
+            )
+        expected_start = end + 1
+    if expected_target_chapters is not None and expected_start - 1 != expected_target_chapters:
+        return _host_issue(
+            ReviewIssueKind.COVERAGE,
+            "VOLUME_RANGE_COVERAGE: volumes must cover chapters 1.."
+            f"{expected_target_chapters}, got 1..{expected_start - 1}",
+            "volume-range-coverage",
+            blocking=True,
+        )
+    return None
+
+
+def _proposal_chapter_window(raw_items: object) -> tuple[int, int] | None:
+    chapters: list[int] = []
+    if isinstance(raw_items, list):
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            payload = raw.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            for key in (
+                "chapter_index",
+                "chapter",
+                "target_chapter_start",
+                "chapter_start",
+                "target_chapter_end",
+                "chapter_end",
+            ):
+                value = payload.get(key)
+                if type(value) is int and value >= 1:
+                    chapters.append(value)
+    if not chapters:
+        return None
+    return min(chapters), max(chapters)
+
+
+def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
+    """Block accepted proposals that still carry unresolved hard conflicts."""
+
+    raw_issues = payload.get("unresolved")
+    if not isinstance(raw_issues, list) or not raw_issues:
+        return []
+    window = _proposal_chapter_window(payload.get("items"))
+    issues: list[PlanReviewIssue] = []
+    hard_kinds = hard_unresolved_kinds()
+    for index, raw in enumerate(raw_issues):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            issue = PlanUnresolvedIssue.model_validate(raw, strict=False)
+        except ValueError as error:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.BLOCKING_UNRESOLVED,
+                    f"PLAN_UNRESOLVED_INVALID: {error}",
+                    f"unresolved.{index}",
+                    blocking=True,
+                )
+            )
+            continue
+        affects_window = window is not None and issue.affects_chapters(*window)
+        if issue.blocking or (issue.kind in hard_kinds and (affects_window or window is None)):
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.BLOCKING_UNRESOLVED,
+                    f"BLOCKING_UNRESOLVED[{issue.kind.value}]: {issue.summary}",
+                    issue.issue_id.root,
+                    blocking=True,
+                )
+            )
     return issues
 
 
@@ -208,7 +353,48 @@ def _is_chapter_item(raw: dict[str, Any], payload: dict[str, Any]) -> bool:
 def _append_history_need_issues(
     issues: list[PlanReviewIssue], payload: dict[str, Any], item_id: str
 ) -> None:
+    chapter = payload.get("chapter_index")
+    if not isinstance(chapter, int):
+        chapter = payload.get("chapter")
+    raw_decision = payload.get("history_retrieval")
     declared = payload.get("history_needs")
+    if raw_decision is None and (declared is None or declared == []):
+        # A bare empty list never proves the question was decided.  Only the
+        # first chapter may omit the explicit decision.
+        if chapter != 1:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.COVERAGE,
+                    "HISTORY_DECISION_MISSING: chapters after chapter 1 require an "
+                    "explicit history_retrieval decision",
+                    item_id,
+                    blocking=True,
+                )
+            )
+        return
+    if raw_decision is not None:
+        if not isinstance(raw_decision, dict):
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.COVERAGE,
+                    "HISTORY_RETRIEVAL_INVALID: history_retrieval must be an object",
+                    item_id,
+                    blocking=True,
+                )
+            )
+            return
+        try:
+            HistoryRetrievalDecision.model_validate(raw_decision, strict=False)
+        except ValueError as error:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.COVERAGE,
+                    f"HISTORY_RETRIEVAL_INVALID: {error}",
+                    item_id,
+                    blocking=True,
+                )
+            )
+            return
     if declared is None:
         return
     if not isinstance(declared, list):
@@ -274,6 +460,17 @@ def _append_history_need_issues(
                     )
                 )
             seen.add(key)
+
+
+def _expected_target_chapters(payload: dict[str, Any]) -> int | None:
+    candidates: list[object] = [payload.get("target_chapters")]
+    for raw in payload.get("items", ()):
+        if isinstance(raw, dict) and isinstance(raw.get("payload"), dict):
+            candidates.append(raw["payload"].get("target_chapters"))
+    for candidate in candidates:
+        if type(candidate) is int and candidate > 0:
+            return candidate
+    return None
 
 
 def _expected_volume_count(payload: dict[str, Any]) -> int | None:
@@ -379,6 +576,7 @@ class PlanReviewerAgent:
             target_kind=target_kind,
             target_payload=target_payload,
             expected_volume_count=_expected_volume_count_from_context(review_context),
+            expected_target_chapters=_expected_target_chapters_from_context(review_context),
         )
         draft_artifact = self._artifacts.put(
             canonical_json_bytes(draft.model_dump(mode="json")),
@@ -436,6 +634,16 @@ class PlanReviewerAgent:
                 if part.strip()
             )
         )
+
+
+def _expected_target_chapters_from_context(context: str) -> int | None:
+    """Read the trusted project chapter target used by host range coverage checks."""
+
+    match = re.search(r'"target_chapters"\s*:\s*(\d+)', context)
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
 
 
 def _expected_volume_count_from_context(context: str) -> int | None:

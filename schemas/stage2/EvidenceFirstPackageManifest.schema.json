@@ -313,7 +313,8 @@
       "enum": [
         "COMPLETE",
         "INCOMPLETE",
-        "UNASSESSED"
+        "UNASSESSED",
+        "NOT_APPLICABLE"
       ],
       "title": "Semantic Status",
       "type": "string"

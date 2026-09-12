@@ -1407,6 +1407,14 @@ def test_writer_candidate_rejects_non_draft_and_invalid_parent_rules(tmp_path: P
             cast(Any, memory_turn),
             mode=request.mode,
         )
+    with pytest.raises(WriterCandidateError, match="shorter than trusted WritingTask minimum"):
+        materializer.materialize(
+            request,
+            cast(Any, object()),
+            cast(Any, object()),
+            SimpleNamespace(output=_writer_turn("短稿")),
+            mode=request.mode,
+        )
     draft_turn = SimpleNamespace(output=_writer_turn("A valid candidate draft."))
     with pytest.raises(WriterCandidateError, match="cannot have a parent"):
         materializer.materialize(
@@ -1423,8 +1431,30 @@ def test_writer_candidate_rejects_non_draft_and_invalid_parent_rules(tmp_path: P
             cast(Any, object()),
             cast(Any, object()),
             cast(Any, draft_turn),
-            mode=request.mode.MAJOR_REWRITE,
+        mode=request.mode.MAJOR_REWRITE,
         )
+
+
+def test_short_writer_output_becomes_a_retryable_writer_failure(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "short-writer-output"))
+    request = _request(artifacts, "short-writer-output")
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn("短稿"),),
+    )
+
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.WRITER_FAILED
+    assert result.failure_detail is not None
+    assert "shorter than trusted WritingTask minimum" in result.failure_detail
 
 
 def test_observer_and_cognition_require_admission_and_fail_closed(tmp_path: Path) -> None:

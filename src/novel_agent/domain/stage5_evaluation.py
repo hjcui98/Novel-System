@@ -81,6 +81,7 @@ class Stage5VerticalRunReport(DomainModel):
     run_id: RunId
     project_id: ProjectId
     current_chapter: int = Field(ge=0)
+    requested_current_chapter: int | None = Field(default=None, ge=0)
     target_chapter: int = Field(ge=1)
     status: VerticalRunStatus
     final_commit: CommitId

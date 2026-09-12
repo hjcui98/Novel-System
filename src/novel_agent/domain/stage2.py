@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import Field, JsonValue, StringConstraints, model_validator
+from pydantic import Field, JsonValue, StringConstraints, field_validator, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef, PlanRootRef, RootManifest
 from novel_agent.domain.base import DomainModel
@@ -573,6 +573,61 @@ class ProjectProfileProposal(DomainModel):
     unresolved: tuple[str, ...] = ()
 
 
+class PlanUnresolvedKind(StrEnum):
+    AUTHOR_INTENT_CONFLICT = "AUTHOR_INTENT_CONFLICT"
+    CURRENT_STATE_UNKNOWN = "CURRENT_STATE_UNKNOWN"
+    POWER_LEVEL_UNKNOWN = "POWER_LEVEL_UNKNOWN"
+    KNOWLEDGE_BOUNDARY_UNKNOWN = "KNOWLEDGE_BOUNDARY_UNKNOWN"
+    OBLIGATION_WINDOW_CONFLICT = "OBLIGATION_WINDOW_CONFLICT"
+    UNSPECIFIED = "UNSPECIFIED"
+
+
+_HARD_UNRESOLVED_KINDS = frozenset(
+    {
+        PlanUnresolvedKind.AUTHOR_INTENT_CONFLICT,
+        PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        PlanUnresolvedKind.POWER_LEVEL_UNKNOWN,
+        PlanUnresolvedKind.KNOWLEDGE_BOUNDARY_UNKNOWN,
+    }
+)
+
+
+class PlanUnresolvedIssue(DomainModel):
+    """Structured planning unknown that can block the current window."""
+
+    issue_id: StableId
+    kind: PlanUnresolvedKind = PlanUnresolvedKind.UNSPECIFIED
+    summary: str = Field(min_length=1)
+    affected_chapters: tuple[int, ...] = ()
+    blocking: bool = False
+    resolution_owner: str = "PLANNER"
+    allowed_assumptions: tuple[str, ...] = ()
+    forbidden_assumptions: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_issue(self) -> PlanUnresolvedIssue:
+        if any(chapter < 1 for chapter in self.affected_chapters):
+            raise ValueError("unresolved issue affected chapters must be positive")
+        if (
+            self.kind in _HARD_UNRESOLVED_KINDS
+            and not self.blocking
+            and not self.forbidden_assumptions
+        ):
+            raise ValueError(
+                "a non-blocking hard unresolved issue requires explicit forbidden assumptions"
+            )
+        return self
+
+    def affects_chapters(self, chapter_start: int, chapter_end: int) -> bool:
+        if not self.affected_chapters:
+            return False
+        return any(chapter_start <= chapter <= chapter_end for chapter in self.affected_chapters)
+
+
+def hard_unresolved_kinds() -> frozenset[PlanUnresolvedKind]:
+    return _HARD_UNRESOLVED_KINDS
+
+
 class PlanProposal(DomainModel):
     proposal_id: StableId
     project_id: ProjectId
@@ -580,7 +635,7 @@ class PlanProposal(DomainModel):
     strategy: BootstrapStrategy | None = None
     base_commit: CommitId | None = None
     items: tuple[ProposedItem, ...]
-    unresolved: tuple[str, ...] = ()
+    unresolved: tuple[PlanUnresolvedIssue, ...] = ()
     coverage: float = Field(ge=0, le=1)
     receipt: AgentExecutionReceipt
     # Stage 4 lineage is optional so existing Stage 2 proposals keep identical behaviour.
@@ -590,6 +645,35 @@ class PlanProposal(DomainModel):
     graph_path_receipt_refs: tuple[ArtifactRef, ...] = ()
     parent_proposal_id: StableId | None = None
     reviewer_receipt_ref: ArtifactRef | None = None
+
+    @field_validator("unresolved", mode="before")
+    @classmethod
+    def lift_legacy_unresolved(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            return value
+        converted: list[object] = []
+        for index, item in enumerate(value):
+            if isinstance(item, str):
+                converted.append(
+                    {
+                        "issue_id": f"plan-issue.legacy.{index}",
+                        "summary": item,
+                    }
+                )
+            elif isinstance(item, dict):
+                normalized = dict(item)
+                for key in (
+                    "affected_chapters",
+                    "allowed_assumptions",
+                    "forbidden_assumptions",
+                ):
+                    raw = normalized.get(key)
+                    if isinstance(raw, list):
+                        normalized[key] = tuple(raw)
+                converted.append(normalized)
+            else:
+                converted.append(item)
+        return tuple(converted)
 
 
 class PlannerExecutionResult(DomainModel):
