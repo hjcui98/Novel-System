@@ -381,9 +381,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             )
             + incoming_nodes
         )
+        incoming_goal_indexes = {item.chapter_index for item in incoming_goals}
         keep_goals = []
         for item in current.chapter_goals:
             if item.goal_id in invalidated or item.goal_id in incoming_goal_ids:
+                continue
+            # The plan root carries at most one active goal per chapter index, so a new
+            # goal for a chapter replaces the goal it supersedes even when the candidate's
+            # level and horizon would not have invalidated it by id.  Surviving the
+            # projection here would write a plan root that its own reader rejects.
+            if item.chapter_index in incoming_goal_indexes:
                 continue
             if (
                 trusted_level is PlanLevel.CHAPTER_SET

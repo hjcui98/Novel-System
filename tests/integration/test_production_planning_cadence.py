@@ -427,7 +427,9 @@ def test_blocked_plan_replacement_supersedes_and_does_not_reuse_task_id(
     replacement = commands.get_task(recovered.current_task_id)
     assert replacement.kind is TaskKind.PLAN_CANDIDATE
     assert replacement.status is TaskStatus.READY
-    assert replacement.task_id.root == "plan.chapter-set.1-5.g1"
+    # A replacement is a new generation of the same horizon inside the same run, so
+    # its identity is run-scoped and never the identity of the blocked task.
+    assert replacement.task_id.root == "run.replace.plan.chapter-set.1-5.g1"
     assert replacement.planning_generation == 1
     assert replacement.horizon_start == 1
     assert replacement.horizon_end == 5

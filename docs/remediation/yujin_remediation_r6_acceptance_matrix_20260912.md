@@ -597,19 +597,52 @@ tests/unit/test_writing_loop_repair_frontier.py  6 passed
 切片预算随之调整：大改每次尝试多一次"模式计划"调用，两个相关用例的
 `max_post_draft_model_calls` 相应提高（生产策略 6 次仍覆盖"复审+模式计划+大改回合+复审+观察"）。
 
+另外两项原因也已在同一轮复核，其中一项是生产缺陷：
+
+| 用例 | 原因 | 处置 |
+|---|---|---|
+| `test_stage5_real_writer_e2e.py::test_real_writer_adapter_composes_through_draft_chain` | **生产缺陷**：计划的章节目标投影只在 `CHAPTER_SET` + 滚动窗口下按 id 失效旧目标；其他层级/无窗口时，同一 `chapter_index` 的旧目标会与新目标**同时留下**，`model_copy` 不跑校验，于是一份自己的读取端会拒绝的 PlanRoot 被写进提交，直到回读才炸 | `materializers` 的目标合并改为"同章号必然替换"（不依赖层级与窗口），并记入回归；不回退读取端校验 |
+| `test_production_planning_cadence.py::test_blocked_plan_replacement_supersedes_and_does_not_reuse_task_id` | 夹具断言的是无 run 前缀的旧任务 ID 字面量；当前身份是 run 作用域（`run.replace.plan.chapter-set.1-5.g1`），同文件单测用 `endswith` 早已按新口径断言 | 夹具改为断言 run 作用域的完整身份，替换语义（新身份、g+1、原任务 superseded）不变 |
+
 integration 全量结果：
 
 ```text
 tests/integration（-m "not model_required and not integration"）
 修复前基线 17 failed / 93 passed
-现在        6 failed / 109 passed
-fixed: 11（全部在 test_writer_context_loop.py）  new: 0
+现在        4 failed / 111 passed
+fixed: 13   new: 0
 ```
 
-剩余 6 项为同一基线中的另外两个文件（`test_production_planning_cadence.py` 5 项、
-`test_stage5_real_writer_e2e.py` 1 项），原因尚未复核，保持登记不做掩盖。
+剩余 4 项全部是同一处**语义冲突**，需要设计裁决而不是改夹具（见 13.6）。
 
-### 13.6 回归（确定性）
+### 13.6 待裁决：长度契约在提交端"重试"还是"直接要人看"
+
+`test_production_planning_cadence.py::test_final_draft_outside_length_policy_cannot_mutate_text_root[4 组]`
+要求：已接受但超出 `length_policy` 的正文在提交时判 `BLOCKED` / `REVIEW_REQUIRED`，
+`reason=draft_length_contract_rejected`。设计文档（`docs/Novel-System_分层规划与渐进Skill_
+收敛版补丁执行设计_v2_ee8849a.md` §"Stage 5 单独映射"）写的是同一件事，并明确"不自动重写"。
+
+当前实现（`services/creative_runtime.py`，由 `b64d461 fix(runtime): recover continuation planning
+and retry short drafts` 引入，且有单测 `test_advance_draft_commit_length_contract_error_waits_for_retry`
+锁住）走的是另一条路：
+
+```text
+AttemptOutcome.SUSPENDED / WAITING_RETRY / LEAF_SCHEMA_REJECTED
+reason = draft_length_contract_retry
+```
+
+两条都是"已经有测试锁住的现状"，不能靠改夹具掩盖。事实层面：提交任务重试时读到的是**同一个
+已接受候选**（正文已冻结），所以重试不会产生更长/更短的正文，只会在 `failure_budget` 用尽后
+回到同样的终点，并把可诊断的 `draft_length_contract_rejected` 藏进 `LEAF_SCHEMA_REJECTED`。
+
+需要决定（本项未闭合）：
+
+- **A（建议）**：提交端恢复设计文档语义——`BLOCKED` / `REVIEW_REQUIRED` /
+  `draft_length_contract_rejected`，不自动重试；同步更新那条单测。
+- **B**：保留重试语义，把设计文档与集成用例一起改成"允许有界重试"，并说明重试到底改变了什么
+  （目前看不出有什么会变）。
+
+### 13.7 回归（确定性）
 
 ```text
 tests/unit tests/contract  76 failed / 3048 passed / 1 skipped
