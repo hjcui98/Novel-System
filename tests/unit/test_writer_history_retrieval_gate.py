@@ -412,6 +412,7 @@ def test_first_chapter_waiver_is_not_applicable_once_canonical_prose_exists(
         writing_task=invocation.writing_task,
         world=invocation.world,
         package=package,
+        projection_exact=True,
         canonical_prose_present=False,
     )
     assert WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE not in (empty_basis.reason_codes)
@@ -422,6 +423,7 @@ def test_first_chapter_waiver_is_not_applicable_once_canonical_prose_exists(
         writing_task=invocation.writing_task,
         world=invocation.world,
         package=package,
+        projection_exact=True,
         canonical_prose_present=True,
     )
     assert WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE in with_prose.reason_codes

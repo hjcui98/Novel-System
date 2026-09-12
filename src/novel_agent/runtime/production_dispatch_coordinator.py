@@ -54,6 +54,25 @@ class ProductionRunDescriptor:
     settlement_max_total_model_calls: int | None = None
     max_major_rewrites: int | None = None
     max_local_repairs: int | None = None
+    # The retrieval deployment this lane was frozen against.  It is part of the
+    # configuration fingerprint, so a dispatch that used a different profile or a
+    # different service silently produced a different fingerprint and every run
+    # failed closed with RUN_CONFIGURATION_CHANGED.  None keeps descriptors that
+    # predate the field readable.
+    retrieval_backend_profile: str | None = None
+    opensearch_url: str | None = None
+    embedding_url: str | None = None
+    reranker_url: str | None = None
+
+    def retrieval_options(self) -> dict[str, str | None]:
+        """The committed retrieval deployment, or empty when it was not recorded."""
+
+        return {
+            "retrieval_backend_profile": self.retrieval_backend_profile,
+            "opensearch_url": self.opensearch_url,
+            "embedding_url": self.embedding_url,
+            "reranker_url": self.reranker_url,
+        }
 
     def __post_init__(self) -> None:
         if self.max_tasks < 1:
@@ -125,6 +144,10 @@ class ProductionRunDescriptor:
             ),
             max_major_rewrites=_optional_int(payload.get("max_major_rewrites")),
             max_local_repairs=_optional_int(payload.get("max_local_repairs")),
+            retrieval_backend_profile=_optional_str(payload.get("retrieval_backend_profile")),
+            opensearch_url=_optional_str(payload.get("opensearch_url")),
+            embedding_url=_optional_str(payload.get("embedding_url")),
+            reranker_url=_optional_str(payload.get("reranker_url")),
         )
 
 
@@ -631,6 +654,13 @@ def _payload_int(value: object) -> int:
 
 def _optional_int(value: object) -> int | None:
     return None if value is None else _payload_int(value)
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _optional_float(value: object) -> float | None:

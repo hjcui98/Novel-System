@@ -1467,6 +1467,17 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         profile_root_hash = None
     settlement_policy_fingerprint = settlement_policy.configuration_fingerprint
     admission_snapshot = admission.snapshot()
+    import os as _trace_os
+    if _trace_os.environ.get("NOVEL_FP_TRACE"):
+        with open(_trace_os.environ["NOVEL_FP_TRACE"] + ".assembly", "a", encoding="utf-8") as _fh:
+            _fh.write(json.dumps({
+                "profile_root_hash": None if profile_root_hash is None else profile_root_hash.root,
+                "manifest_profile": manifest.project_profile_root.artifact_id.root,
+                "retrieval": context.retrieval_backend_profile,
+                "reranker_resolved": context.reranker is not None,
+                "endpoint_names": [e.endpoint_name for e in model_endpoints],
+                "scheduling": admission_snapshot["default_scheduling_timeout_seconds"],
+            }, sort_keys=True) + "\n")
     current_configuration_fingerprint = production_configuration_fingerprint(
         spec=spec,
         migration_head=migration_head,
@@ -1711,6 +1722,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     writing_request_factory = ProductionWritingRequestFactory(
         commits=commits,
         artifacts=artifacts,
+        snapshots=snapshots,
         recent_prose=RecentProseAssembler(artifacts, schema_version),
         writer_context=ProductionStage2MWriterContext(
             generator=TaskPlanConditionedNeedGenerator(

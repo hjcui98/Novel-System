@@ -29,7 +29,7 @@ from novel_agent.domain.ids import (
     StableId,
     bounded_stable_id,
 )
-from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.memory import DerivedBuildStatus, WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.domain.runtime import TaskRecord
 from novel_agent.domain.stage2 import FutureIsolationAttestation, ProjectProfileRootDocument
@@ -52,6 +52,7 @@ from novel_agent.services.content_addressing import canonical_json_bytes, conten
 from novel_agent.services.evidence_first_writer_context_assembler import (
     EvidenceFirstAssemblyResult,
 )
+from novel_agent.services.projection import DerivedSnapshotRepository
 from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.writer_context_loop import WriterContextLoopService
 from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
@@ -134,6 +135,7 @@ class ProductionWritingRequestFactory:
         writer_context: Stage2MWriterContextFactory,
         policy: WritingRequestPolicy,
         schema_version: SchemaVersion,
+        snapshots: DerivedSnapshotRepository | None = None,
     ) -> None:
         self._commits = commits
         self._artifacts = artifacts
@@ -141,6 +143,26 @@ class ProductionWritingRequestFactory:
         self._writer_context = writer_context
         self._policy = policy
         self._schema_version = schema_version
+        self._snapshots = snapshots
+
+    def _projection_is_exact(self, task: TaskRecord) -> bool:
+        """Prove the task's Memory snapshot is the exact published projection.
+
+        Returning a bare ``None`` used to mean "unknown" and silently disabled the
+        readiness freshness gate on every production request.  A missing snapshot
+        repository means the host cannot prove exactness, which is a blocked
+        state, not a pass.
+        """
+
+        if self._snapshots is None or task.basis_snapshot is None:
+            return False
+        snapshot = self._snapshots.get_for_commit(task.basis_commit)
+        return (
+            snapshot is not None
+            and snapshot.build_status is DerivedBuildStatus.EXACT
+            and snapshot.source_commit == task.basis_commit
+            and snapshot.published_at is not None
+        )
 
     def __call__(self, task: TaskRecord) -> WritingLoopRequest:
         if task.basis_snapshot is None:
@@ -183,10 +205,35 @@ class ProductionWritingRequestFactory:
                 "WritingTask references unknown obligations: "
                 + ", ".join(sorted(item.root for item in unknown_obligations))
             )
+        # Only nodes that own this chapter's goal, are its accepted parent, or
+        # share an obligation *at or above* its own planning level belong in the
+        # chapter's required beats.  A chapter goal and a later volume can cite the
+        # same durable obligation, and matching on the obligation alone pulled that
+        # future sibling volume's summary into this chapter as a requirement.
+        goal_parent_ids = {
+            node.parent_id
+            for node in plan.nodes
+            if node.plan_node_id in goal_ids and node.parent_id is not None
+        }
+        goal_levels = {
+            node.plan_level for node in plan.nodes if node.plan_node_id in goal_ids
+        }
         relevant_nodes = tuple(
             node
             for node in plan.nodes
-            if node.plan_node_id in goal_ids or bool(set(node.obligation_ids) & set(obligation_ids))
+            if node.plan_node_id in goal_ids
+            or node.plan_node_id in goal_parent_ids
+            or (
+                bool(set(node.obligation_ids) & set(obligation_ids))
+                and not (
+                    goal_levels
+                    and node.plan_level is not None
+                    and node.plan_level not in goal_levels
+                    and node.plan_node_id not in goal_parent_ids
+                    and node.chapter_start is not None
+                    and node.chapter_start > task.chapter_index
+                )
+            )
         )
         # The enclosing volume's stage slots are the plan's own statement of what
         # the volume must enter with, hold to, and exit with.  Only a node directly
@@ -396,6 +443,7 @@ class ProductionWritingRequestFactory:
             package=package,
             expected_plan_root_ref=accepted_plan_ref,
             manifest_plan_revision=plan.root_hash.root,
+            projection_exact=self._projection_is_exact(task),
             canonical_prose_present=any(chapter.blocks for chapter in text.chapters),
         )
         if not readiness.ready:

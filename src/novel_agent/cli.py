@@ -19,10 +19,17 @@ from novel_agent.domain.runtime import FailureClass
 from novel_agent.ports.model_endpoint import ModelEndpointError
 from novel_agent.runtime.creative_assembly import DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
 from novel_agent.runtime.production_bootstrap import resolve_registered_model_endpoints
+from novel_agent.runtime.production_dispatch_coordinator import ProductionRunDescriptor
 from novel_agent.runtime.production_novel_bootstrap import (
     BOOTSTRAP_MAX_OUTPUT_TOKENS,
     BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
 )
+
+# The scheduling timeout is part of the configuration fingerprint.  The
+# bootstrap commit records it for the run, so a dispatch or advance that did
+# not receive it explicitly has to use the same value instead of a different
+# CLI default, which would fail every run closed with RUN_CONFIGURATION_CHANGED.
+DEFAULT_SCHEDULING_TIMEOUT_SECONDS = 300.0
 
 
 def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
@@ -67,6 +74,58 @@ def _load_artifact_refs(path: Path | None) -> tuple[ArtifactRef, ...]:
         raise ValueError("artifact refs file contains an invalid ArtifactRef") from error
 
 
+
+def _resolve_retrieval_options(
+    args: argparse.Namespace,
+    descriptors: tuple[ProductionRunDescriptor, ...],
+) -> dict[str, str | None]:
+    """Resolve the retrieval deployment, deferring to what the run committed.
+
+    The retrieval profile and service URLs are all inputs to the configuration
+    fingerprint.  A dispatch that fell back to a CLI default therefore computed a
+    different fingerprint than the frozen descriptor and failed every run closed
+    with RUN_CONFIGURATION_CHANGED, which reads like configuration drift rather
+    than a missing flag.  An explicit flag that contradicts the committed value is
+    rejected instead of silently overriding it.
+    """
+
+    committed = {d.retrieval_backend_profile for d in descriptors if d.retrieval_backend_profile}
+    if len(committed) > 1:
+        raise RuntimeError(
+            "run descriptors were frozen against different retrieval profiles: "
+            + ", ".join(sorted(committed))
+        )
+    committed_profile = next(iter(committed), None)
+    if (
+        args.retrieval_backend_profile is not None
+        and committed_profile is not None
+        and args.retrieval_backend_profile != committed_profile
+    ):
+        raise RuntimeError(
+            "--retrieval-backend-profile contradicts the committed run configuration: "
+            f"{args.retrieval_backend_profile} != {committed_profile}"
+        )
+    resolved: dict[str, str | None] = {
+        "retrieval_backend_profile": (
+            args.retrieval_backend_profile or committed_profile or "memory"
+        )
+    }
+    for name in ("opensearch_url", "embedding_url", "reranker_url"):
+        explicit = getattr(args, name)
+        if explicit is not None:
+            resolved[name] = explicit
+            continue
+        from_descriptor = {
+            getattr(d, name) for d in descriptors if getattr(d, name) is not None
+        }
+        if len(from_descriptor) > 1:
+            raise RuntimeError(
+                f"run descriptors were frozen against different {name} values: "
+                + ", ".join(sorted(from_descriptor))
+            )
+        resolved[name] = next(iter(from_descriptor), None)
+    return resolved
+
 def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runtime-parallelism", type=int, choices=(1, 2))
     lookahead = parser.add_mutually_exclusive_group()
@@ -75,11 +134,16 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(planner_lookahead=None)
     parser.add_argument("--endpoint-request-limit", type=int, choices=(1, 2), default=1)
     parser.add_argument("--kv-token-budget", type=int)
-    parser.add_argument("--scheduling-timeout-seconds", type=float, default=120.0)
+    # No default here: the frozen run descriptors already carry the scheduling
+    # timeout that was committed into the configuration fingerprint, and a CLI
+    # default would silently disagree with it and fail the run closed.
+    parser.add_argument("--scheduling-timeout-seconds", type=float)
+    # No default: the retrieval deployment is part of the configuration
+    # fingerprint the run was frozen against, so an unset flag must defer to the
+    # committed descriptor instead of silently selecting memory.
     parser.add_argument(
         "--retrieval-backend-profile",
         choices=("memory", "real_hybrid"),
-        default="memory",
     )
     parser.add_argument("--opensearch-url")
     parser.add_argument("--embedding-url")
@@ -521,7 +585,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 retrieval_backend_profile=args.retrieval_backend_profile,
                 endpoint_request_limit=args.endpoint_request_limit,
                 kv_token_budget=args.kv_token_budget,
-                scheduling_timeout_seconds=args.scheduling_timeout_seconds,
+                scheduling_timeout_seconds=(
+                    args.scheduling_timeout_seconds
+                    if args.scheduling_timeout_seconds is not None
+                    else DEFAULT_SCHEDULING_TIMEOUT_SECONDS
+                ),
             )
             if args.retrieval_backend_profile == "real_hybrid":
                 from novel_agent.runtime.real_hybrid import assemble_production_real_hybrid
@@ -549,6 +617,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "policy": str(args.policy),
                         "request": str(args.request),
                         "stop_after_chapter": descriptor.stop_after_chapter,
+                        # Record the deployment the fingerprint was computed
+                        # against, so dispatch can reuse it instead of guessing.
+                        "retrieval_backend_profile": args.retrieval_backend_profile,
+                        "opensearch_url": args.opensearch_url,
+                        "embedding_url": args.embedding_url,
+                        "reranker_url": args.reranker_url,
                     }
                 ],
             )
@@ -583,6 +657,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 for descriptor in load_production_run_descriptors(args.runs)
             )
+            retrieval = _resolve_retrieval_options(args, descriptors)
             coordinator = ProductionDispatchCoordinator(
                 database_url=args.database_url,
                 manifest=manifest,
@@ -592,12 +667,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 project_parallelism=args.project_parallelism,
                 endpoint_request_limit=args.endpoint_request_limit,
                 kv_token_budget=args.kv_token_budget,
-                scheduling_timeout_seconds=args.scheduling_timeout_seconds,
+                scheduling_timeout_seconds=(
+                    args.scheduling_timeout_seconds
+                    if args.scheduling_timeout_seconds is not None
+                    else DEFAULT_SCHEDULING_TIMEOUT_SECONDS
+                ),
                 max_total_tasks=args.max_total_tasks,
-                retrieval_backend_profile=args.retrieval_backend_profile,
-                opensearch_url=args.opensearch_url,
-                embedding_url=args.embedding_url,
-                reranker_url=args.reranker_url,
+                retrieval_backend_profile=retrieval["retrieval_backend_profile"] or "memory",
+                opensearch_url=retrieval["opensearch_url"] or "",
+                embedding_url=retrieval["embedding_url"] or "",
+                reranker_url=retrieval["reranker_url"] or "",
             )
             try:
                 result = _run_async(
@@ -645,7 +724,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
                         endpoint_request_limit=args.endpoint_request_limit,
                         kv_token_budget=args.kv_token_budget,
-                        scheduling_timeout_seconds=args.scheduling_timeout_seconds,
+                        scheduling_timeout_seconds=(
+                            args.scheduling_timeout_seconds
+                            if args.scheduling_timeout_seconds is not None
+                            else DEFAULT_SCHEDULING_TIMEOUT_SECONDS
+                        ),
                         retrieval_backend_profile=args.retrieval_backend_profile,
                         opensearch_url=args.opensearch_url,
                         embedding_url=args.embedding_url,

@@ -131,15 +131,17 @@ def evaluate_writer_readiness(
     package: object,
     expected_plan_root_ref: ArtifactRef | None = None,
     manifest_plan_revision: str | None = None,
-    projection_exact: bool | None = None,
+    projection_exact: bool,
     canonical_prose_present: bool | None = None,
 ) -> WriterReadinessDecision:
     """Full pre-model readiness gate for the production Writer request.
 
-    ``canonical_prose_present`` states whether the canonical Text basis already holds
-    prose.  The host first-chapter history waiver is only valid while that basis is
-    still empty; once prose exists the chapter must retrieve real history instead of
-    inheriting a waiver.
+    ``projection_exact`` is required: a caller that cannot prove the Memory
+    projection is exact must say so and be blocked, because ``None`` used to mean
+    "unknown" and silently disabled the freshness gate for every production
+    request.  ``canonical_prose_present`` states whether the canonical Text basis
+    already holds prose; the host first-chapter history waiver is only valid while
+    that basis is still empty.
     """
 
     codes: list[WriterReadinessReasonCode] = []
@@ -216,7 +218,7 @@ def evaluate_writer_readiness(
         ):
             codes.append(WriterReadinessReasonCode.PLANNING_LINEAGE_INCOMPLETE)
             details.append("Writer Context lineage plan revision does not match the manifest")
-    if projection_exact is False:
+    if not projection_exact:
         codes.append(WriterReadinessReasonCode.PROJECTION_NOT_EXACT)
         details.append("projection freshness is not exact")
 

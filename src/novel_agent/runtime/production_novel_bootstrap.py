@@ -504,7 +504,12 @@ class ProductionNovelBootstrap:
             retrieval_backend_profile=retrieval_backend_profile,
             reranker_declared=spec.reranker_required,
             reranker_resolved=retrieval_backend_profile == "real_hybrid",
-            profile_root_hash=document.profile.root_hash,
+            # The runtime assembly reads manifest.project_profile_root, whose
+            # content address differs from the root_hash field inside it because
+            # BootstrapRootBuilder stores the profile document *including* its
+            # root_hash.  Using the field here made every production run fail
+            # closed with RUN_CONFIGURATION_CHANGED before its first task.
+            profile_root_hash=document.manifest.project_profile_root.artifact_id,
             settlement_policy_fingerprint=settlement.configuration_fingerprint,
             run_policy=policy_seed,
             admission_policy={
