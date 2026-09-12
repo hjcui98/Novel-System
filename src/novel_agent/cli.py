@@ -19,6 +19,10 @@ from novel_agent.domain.runtime import FailureClass
 from novel_agent.ports.model_endpoint import ModelEndpointError
 from novel_agent.runtime.creative_assembly import DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
 from novel_agent.runtime.production_bootstrap import resolve_registered_model_endpoints
+from novel_agent.runtime.production_novel_bootstrap import (
+    BOOTSTRAP_MAX_OUTPUT_TOKENS,
+    BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
+)
 
 
 def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
@@ -163,10 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--timeout-seconds", type=float, default=120.0)
     preflight.add_argument(
         "--embedding-url",
-        help=(
-            "also probe this embedding endpoint "
-            "(for example http://127.0.0.1:8081/v1/embeddings)"
-        ),
+        help="also probe this embedding endpoint (for example "
+        "http://127.0.0.1:8081/v1/embeddings)",
     )
     preflight.add_argument(
         "--reranker-url",
@@ -286,6 +288,18 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--prepared", type=Path, required=True)
     prepare.add_argument("--preview", type=Path)
     prepare.add_argument("--planning-locks", type=Path)
+    prepare.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=BOOTSTRAP_MAX_OUTPUT_TOKENS,
+        help="output budget for the bootstrap Planner and Curator requests",
+    )
+    prepare.add_argument(
+        "--bootstrap-timeout-seconds",
+        type=float,
+        default=BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
+        help="request timeout for the bootstrap Planner and Curator calls",
+    )
     prepare.add_argument("--run-id", required=True)
     commit = runtime_commands.add_parser("bootstrap-commit")
     commit.add_argument("--prepared", type=Path, required=True)
@@ -458,6 +472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_factory=factory,
                     endpoints=endpoints,
                     run_id=run_id,
+                    bootstrap_max_output_tokens=args.max_output_tokens,
+                    bootstrap_request_timeout_seconds=args.bootstrap_timeout_seconds,
                 ).prepare(
                     project_id=project_id,
                     brief_text=brief_text,

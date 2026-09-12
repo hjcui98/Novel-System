@@ -105,6 +105,14 @@ PREPARED_BOOTSTRAP_CONTRACT = "production_novel_bootstrap.prepared.v1"
 ZERO_COMMIT = CommitId("sha256:" + "0" * 64)
 ZERO_HASH = ArtifactId("sha256:" + "0" * 64)
 VERSION = SchemaVersion("1.0.0")
+# A whole-novel bootstrap asks for volume-spanning obligations, an entity and
+# state table, and the opening chapter goals in one structured response.  These
+# defaults keep the Stage 0 demo budgets; a long-form brief must raise them,
+# and a live 800-chapter brief failed against both ceilings in turn (truncated
+# at 12k output tokens, then cancelled at a 300 s request timeout while the
+# model was still producing).
+BOOTSTRAP_MAX_OUTPUT_TOKENS = 12_000
+BOOTSTRAP_REQUEST_TIMEOUT_SECONDS = 900.0
 
 PlannerBootstrap = Callable[[], Awaitable[PlannerExecutionResult]]
 CuratorBootstrap = Callable[[], Awaitable[WorldPatchCandidate]]
@@ -151,7 +159,13 @@ class ProductionNovelBootstrap:
         run_id: RunId | None = None,
         schema_version: SchemaVersion = VERSION,
         clock: Callable[[], datetime] | None = None,
+        bootstrap_max_output_tokens: int = BOOTSTRAP_MAX_OUTPUT_TOKENS,
+        bootstrap_request_timeout_seconds: float = BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
+        if bootstrap_max_output_tokens < 1:
+            raise ValueError("bootstrap output budget must be positive")
+        if bootstrap_request_timeout_seconds <= 0:
+            raise ValueError("bootstrap request timeout must be positive")
         self._artifacts = artifacts
         self._session_factory = session_factory
         self._planner = planner
@@ -160,6 +174,8 @@ class ProductionNovelBootstrap:
         self._run_id = run_id
         self._schema_version = schema_version
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._bootstrap_max_output_tokens = bootstrap_max_output_tokens
+        self._bootstrap_request_timeout_seconds = bootstrap_request_timeout_seconds
 
     async def prepare(
         self,
@@ -198,6 +214,8 @@ class ProductionNovelBootstrap:
                 endpoints=self._endpoints,
                 project_id=project_id,
                 run_id=self._run_id,
+                max_output_tokens=self._bootstrap_max_output_tokens,
+                timeout_seconds=self._bootstrap_request_timeout_seconds,
                 source_ids=tuple(item.source.source_id for item in ingested),
                 source_payload=_joined_source_payload(ingested),
                 source_artifacts=tuple(item.source.artifact_ref for item in ingested),
@@ -1389,6 +1407,8 @@ def bind_bootstrap_model_agents(
     source_ids: tuple[StableId, ...],
     source_payload: str,
     source_artifacts: tuple[ArtifactRef, ...],
+    max_output_tokens: int = BOOTSTRAP_MAX_OUTPUT_TOKENS,
+    timeout_seconds: float = BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
     planner_source_ids: tuple[StableId, ...] | None = None,
     planner_source_payload: str | None = None,
     planner_source_artifacts: tuple[ArtifactRef, ...] | None = None,
@@ -1440,6 +1460,8 @@ def bind_bootstrap_model_agents(
                 run_id,
                 TaskId("task.bootstrap.planner"),
                 "planner.project_bootstrap",
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
             ),
         )
         return result
@@ -1455,6 +1477,8 @@ def bind_bootstrap_model_agents(
                 run_id,
                 TaskId("task.bootstrap.curator"),
                 "curator.bootstrap",
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
             ),
         )
         return patch
@@ -1462,7 +1486,14 @@ def bind_bootstrap_model_agents(
     return planner, curator
 
 
-def _bootstrap_model_request(run_id: RunId, task_id: TaskId, phase: str) -> ModelRequest:
+def _bootstrap_model_request(
+    run_id: RunId,
+    task_id: TaskId,
+    phase: str,
+    *,
+    max_output_tokens: int = BOOTSTRAP_MAX_OUTPUT_TOKENS,
+    timeout_seconds: float = BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
+) -> ModelRequest:
     return ModelRequest(
         request_id=bounded_stable_id(
             f"model-request.{run_id.root}.{phase}",
@@ -1475,8 +1506,8 @@ def _bootstrap_model_request(run_id: RunId, task_id: TaskId, phase: str) -> Mode
         trace_id=f"trace.{run_id.root}.{phase}",
         prompt="",
         agent_mode=phase,
-        max_output_tokens=12_000,
-        timeout_seconds=300.0,
+        max_output_tokens=max_output_tokens,
+        timeout_seconds=timeout_seconds,
         enable_thinking=False,
     )
 

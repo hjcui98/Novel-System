@@ -16,8 +16,8 @@ from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.cli import main
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import AutomationMode
-from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId
-from novel_agent.domain.model_calls import ModelRole
+from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.planning_locks import (
     AuthorPlanningLocksDocument,
     author_planning_locks_content_id,
@@ -36,6 +36,8 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.world import PlanLevel
 from novel_agent.runtime.production_novel_bootstrap import (
+    BOOTSTRAP_MAX_OUTPUT_TOKENS,
+    BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
     COMPOSITE_BRIEF_CHARS,
     ProductionNovelBootstrap,
     _merge_world_patch,
@@ -85,6 +87,7 @@ def test_bootstrap_planner_binds_a_missing_trusted_strategy(tmp_path: Path) -> N
         source_ids=(StableId("source.author-initial-brief"),),
         source_payload="SOURCE=source.author-initial-brief\nA wounded heir enters the tower.",
         source_artifacts=(source_artifact,),
+        max_output_tokens=48_000,
     )
 
     async def run_planner() -> PlannerExecutionResult:
@@ -94,6 +97,7 @@ def test_bootstrap_planner_binds_a_missing_trusted_strategy(tmp_path: Path) -> N
 
     assert result.plan_proposal.strategy is BootstrapStrategy.DEVELOP_CANDIDATES
     assert len(endpoint.requests) == 1
+    assert endpoint.requests[0].max_output_tokens == 48_000
     schema = endpoint.requests[0].response_schema
     assert schema is not None
     required = schema.get("required")
@@ -104,6 +108,50 @@ def test_bootstrap_planner_binds_a_missing_trusted_strategy(tmp_path: Path) -> N
     strategy_schema = properties.get("strategy")
     assert isinstance(strategy_schema, dict)
     assert strategy_schema.get("const") == "develop_candidates"
+
+
+def test_bootstrap_prepare_rejects_a_non_positive_output_budget(tmp_path: Path) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with pytest.raises(ValueError, match="bootstrap output budget must be positive"):
+        ProductionNovelBootstrap(
+            artifacts=ArtifactRepository(FilesystemObjectStore(tmp_path / "objects")),
+            session_factory=build_session_factory(engine),
+            bootstrap_max_output_tokens=0,
+        )
+
+
+def test_bootstrap_budget_and_timeout_defaults_stay_within_the_domain_ceiling(
+    tmp_path: Path,
+) -> None:
+    from novel_agent.domain.model_calls import ModelRequest
+
+    defaults = ProductionNovelBootstrap.__init__.__kwdefaults__
+    assert defaults is not None
+    assert defaults["bootstrap_max_output_tokens"] == BOOTSTRAP_MAX_OUTPUT_TOKENS
+    assert defaults["bootstrap_request_timeout_seconds"] == BOOTSTRAP_REQUEST_TIMEOUT_SECONDS
+    configured = ModelRequest(
+        request_id=StableId("model-request.budget-ceiling"),
+        run_id=RunId("run.budget-ceiling"),
+        task_id=TaskId("task.budget-ceiling"),
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.budget-ceiling",
+        prompt="",
+        agent_mode="planner.project_bootstrap",
+        max_output_tokens=BOOTSTRAP_MAX_OUTPUT_TOKENS,
+        timeout_seconds=BOOTSTRAP_REQUEST_TIMEOUT_SECONDS,
+    )
+    assert configured.timeout_seconds == 900.0
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with pytest.raises(ValueError, match="bootstrap request timeout must be positive"):
+        ProductionNovelBootstrap(
+            artifacts=ArtifactRepository(FilesystemObjectStore(tmp_path / "objects")),
+            session_factory=build_session_factory(engine),
+            bootstrap_request_timeout_seconds=0.0,
+        )
 
 
 def test_bootstrap_prepare_then_commit_emits_auto_dispatch_descriptor(tmp_path: Path) -> None:
