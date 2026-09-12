@@ -277,3 +277,121 @@ def test_live_generation_rejects_a_missing_status_field(
 
     assert result.ok is False
     assert any("required status field" in issue for issue in result.issues)
+
+
+class _StubRetrievalClient:
+    """Stub httpx client for the retrieval preflight probes."""
+
+    def __init__(self, *, embedding_status: int = 200, reranker_status: int = 200) -> None:
+        self._embedding_status = embedding_status
+        self._reranker_status = reranker_status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def post(self, url: str, json: dict[str, object]) -> object:
+        assert json.get("model"), "the probe must name the locked model identity"
+
+        class _Response:
+            def __init__(self, status: int, payload: dict[str, object]) -> None:
+                self.status_code = status
+                self._payload = payload
+                self.text = "stub"
+
+            def json(self) -> dict[str, object]:
+                return self._payload
+
+        if "embedding" in url:
+            return _Response(
+                self._embedding_status,
+                {
+                    "model": "BAAI/bge-m3",
+                    "data": [{"embedding": [0.1] * 1024}],
+                },
+            )
+        return _Response(
+            self._reranker_status,
+            {
+                "id": "BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+                "results": [
+                    {"index": 0, "relevance_score": 0.9},
+                    {"index": 1, "relevance_score": 0.1},
+                ],
+            },
+        )
+
+
+def _patch_client(monkeypatch: pytest.MonkeyPatch, client: object) -> None:
+    monkeypatch.setattr(endpoint_preflight.httpx, "AsyncClient", lambda *args, **kwargs: client)
+
+
+def test_retrieval_preflight_reports_identity_and_discrimination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    _patch_client(monkeypatch, _StubRetrievalClient())
+
+    result = asyncio.run(
+        endpoint_preflight.preflight_retrieval_services(
+            embedding_url="http://127.0.0.1:8081/v1/embeddings",
+            reranker_url="http://127.0.0.1:8082/rerank",
+        )
+    )
+
+    assert result.ok is True
+    assert result.embedding_model == "BAAI/bge-m3"
+    assert result.embedding_dimensions == 1024
+    assert result.discriminative is True
+    assert result.relevant_score == 0.9
+    assert "bge-reranker" in str(result.reranker_model)
+
+
+def test_retrieval_preflight_rejects_a_non_discriminating_reranker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    class _FlatClient(_StubRetrievalClient):
+        async def post(self, url: str, json: dict[str, object]) -> object:
+            response = await super().post(url, json)
+            if "embedding" not in url:
+                response._payload["results"] = [
+                    {"index": 0, "relevance_score": 0.5},
+                    {"index": 1, "relevance_score": 0.5},
+                ]
+            return response
+
+    _patch_client(monkeypatch, _FlatClient())
+
+    result = asyncio.run(
+        endpoint_preflight.preflight_retrieval_services(
+            embedding_url="http://127.0.0.1:8081/v1/embeddings",
+            reranker_url="http://127.0.0.1:8082/rerank",
+        )
+    )
+
+    assert result.ok is False
+    assert result.discriminative is False
+    assert any("does not rank the relevant document" in issue for issue in result.issues)
+
+
+def test_retrieval_preflight_reports_a_failing_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    _patch_client(monkeypatch, _StubRetrievalClient(embedding_status=409))
+
+    result = asyncio.run(
+        endpoint_preflight.preflight_retrieval_services(
+            embedding_url="http://127.0.0.1:8081/v1/embeddings",
+            reranker_url="http://127.0.0.1:8082/rerank",
+        )
+    )
+
+    assert result.ok is False
+    assert any("embedding service returned 409" in issue for issue in result.issues)

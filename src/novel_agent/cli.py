@@ -161,6 +161,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run one bounded schema-constrained generation through the adapter",
     )
     preflight.add_argument("--timeout-seconds", type=float, default=120.0)
+    preflight.add_argument(
+        "--embedding-url",
+        help="also probe this embedding endpoint (for example "
+        "http://127.0.0.1:8081/v1/embeddings)",
+    )
+    preflight.add_argument(
+        "--reranker-url",
+        help="also probe this reranker endpoint and require it to discriminate",
+    )
     runtime = subparsers.add_parser("runtime", help="operate the Stage 5 durable runtime")
     runtime.add_argument("--database-url", required=True)
     runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
@@ -306,15 +315,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     if args.top_command == "preflight-endpoint":
-        from novel_agent.runtime.endpoint_preflight import run_endpoint_preflight
+        from novel_agent.runtime.endpoint_preflight import (
+            run_endpoint_preflight,
+            run_retrieval_preflight,
+        )
 
         result = run_endpoint_preflight(
             args.endpoint_profile,
             live_generation=bool(args.live_generation),
             generation_timeout_seconds=float(args.timeout_seconds),
         )
-        print(json.dumps(result.as_payload(), ensure_ascii=False, sort_keys=True))
-        return 0 if result.ok else 2
+        payload: dict[str, object] = dict(result.as_payload())
+        retrieval_ok = True
+        if args.embedding_url and args.reranker_url:
+            retrieval = run_retrieval_preflight(
+                embedding_url=str(args.embedding_url),
+                reranker_url=str(args.reranker_url),
+                timeout_seconds=float(args.timeout_seconds),
+            )
+            payload["retrieval"] = retrieval.as_payload()
+            retrieval_ok = retrieval.ok
+        elif bool(args.embedding_url) != bool(args.reranker_url):
+            payload["retrieval_error"] = "both --embedding-url and --reranker-url are required"
+            retrieval_ok = False
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0 if result.ok and retrieval_ok else 2
     if args.top_command == "runtime":
         from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
         from novel_agent.adapters.postgres.database import build_engine, build_session_factory

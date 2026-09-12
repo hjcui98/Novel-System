@@ -204,3 +204,142 @@ def run_endpoint_preflight(
             generation_timeout_seconds=generation_timeout_seconds,
         )
     )
+
+@dataclass(frozen=True, slots=True)
+class RetrievalPreflightResult:
+    """Evidence for the embedding and reranker services the retrieval profile uses.
+
+    The model endpoint preflight proves which model answers chat requests.  Retrieval
+    has its own services, so their identity and discrimination are checked separately:
+    a reranker that returns the same score for a relevant and an irrelevant document is
+    not discriminating, whatever its health endpoint says.
+    """
+
+    embedding_url: str
+    reranker_url: str
+    embedding_model: str | None
+    embedding_dimensions: int | None
+    reranker_model: str | None
+    relevant_score: float | None
+    irrelevant_score: float | None
+    discriminative: bool
+    issues: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.issues
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "embedding_url": self.embedding_url,
+            "reranker_url": self.reranker_url,
+            "embedding_model": self.embedding_model,
+            "embedding_dimensions": self.embedding_dimensions,
+            "reranker_model": self.reranker_model,
+            "relevant_score": self.relevant_score,
+            "irrelevant_score": self.irrelevant_score,
+            "discriminative": self.discriminative,
+            "issues": list(self.issues),
+        }
+
+
+async def preflight_retrieval_services(
+    *,
+    embedding_url: str,
+    reranker_url: str,
+    embedding_model: str = "BAAI/bge-m3",
+    reranker_model: str = "BAAI/bge-reranker-v2-m3",
+    probe_text: str = "陆沉舟握紧铜铭，走进灰垣镇的旧城门。",  # noqa: RUF001 - probe prose
+    irrelevant_text: str = "与之无关的天气记录。",
+    query: str = "陆沉舟与铜铭",
+    timeout_seconds: float = 60.0,
+) -> RetrievalPreflightResult:
+    """Probe both retrieval services with real requests and check discrimination."""
+
+    issues: list[str] = []
+    # Values the services actually report; the requested model names are parameters.
+    reported_embedding_model: str | None = None
+    embedding_dimensions: int | None = None
+    reported_reranker_model: str | None = None
+    relevant_score: float | None = None
+    irrelevant_score: float | None = None
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        try:
+            response = await client.post(
+                embedding_url, json={"input": [probe_text], "model": embedding_model}
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"embedding service returned {response.status_code}: "
+                    f"{response.text[:240]}"
+                )
+            payload = response.json()
+            vector = payload["data"][0]["embedding"]
+            reported_embedding_model = str(payload.get("model") or "")
+            embedding_dimensions = len(vector)
+            if embedding_dimensions < 8:
+                issues.append(f"embedding vector is suspiciously short: {embedding_dimensions}")
+        except Exception as error:
+            issues.append(f"embedding probe failed: {type(error).__name__}: {error}")
+        try:
+            response = await client.post(
+                reranker_url,
+                json={
+                    "model": reranker_model,
+                    "query": query,
+                    "documents": [probe_text, irrelevant_text],
+                },
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"reranker service returned {response.status_code}: {response.text[:240]}"
+                )
+            payload = response.json()
+            reported_reranker_model = str(payload.get("id") or "")
+            results = payload["results"]
+            relevant_score = float(results[0]["relevance_score"])
+            irrelevant_score = float(results[1]["relevance_score"])
+        except Exception as error:
+            issues.append(f"reranker probe failed: {type(error).__name__}: {error}")
+    discriminative = (
+        relevant_score is not None
+        and irrelevant_score is not None
+        and relevant_score > irrelevant_score
+    )
+    if relevant_score is not None and irrelevant_score is not None and not discriminative:
+        issues.append(
+            "reranker does not rank the relevant document above the irrelevant one: "
+            f"{relevant_score} <= {irrelevant_score}"
+        )
+    return RetrievalPreflightResult(
+        embedding_url=embedding_url,
+        reranker_url=reranker_url,
+        embedding_model=reported_embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        reranker_model=reported_reranker_model,
+        relevant_score=relevant_score,
+        irrelevant_score=irrelevant_score,
+        discriminative=discriminative,
+        issues=tuple(issues),
+    )
+
+
+def run_retrieval_preflight(
+    *,
+    embedding_url: str,
+    reranker_url: str,
+    embedding_model: str = "BAAI/bge-m3",
+    reranker_model: str = "BAAI/bge-reranker-v2-m3",
+    timeout_seconds: float = 60.0,
+) -> RetrievalPreflightResult:
+    """Synchronous entry point for operational scripts."""
+
+    return asyncio.run(
+        preflight_retrieval_services(
+            embedding_url=embedding_url,
+            reranker_url=reranker_url,
+            embedding_model=embedding_model,
+            reranker_model=reranker_model,
+            timeout_seconds=timeout_seconds,
+        )
+    )
