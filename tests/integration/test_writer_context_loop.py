@@ -90,6 +90,7 @@ from novel_agent.domain.stage3_loop_evaluation import (
 )
 from novel_agent.domain.writer_context import EvidenceFirstGap, EvidenceGapKind
 from novel_agent.domain.writing_loop import (
+    WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
     WritingLoopCheckpoint,
     WritingLoopPhase,
     WritingLoopResult,
@@ -432,14 +433,12 @@ def _loop(
     draft_plan_request = request.model_copy(
         update={
             "allowed_skills": tuple(
-                item
-                for item in request.allowed_skills
-                if item != StableId("skill.major-rewrite")
+                item for item in request.allowed_skills if item != StableId("skill.major-rewrite")
             )
         }
     )
-    # The Writer is re-planned per mode, so a MAJOR_REWRITE route consumes a
-    # DRAFT plan, the first draft, a MAJOR_REWRITE plan and the rewrite draft.
+    # The Writer is re-planned per mode, so every MAJOR_REWRITE attempt consumes its
+    # own plan before its rewrite draft.
     writer_responses = [
         _work_plan(draft_plan_request).model_dump_json(),
         selected_turns[0].model_dump_json(),
@@ -449,8 +448,9 @@ def _loop(
             writer_responses.append(_work_plan(request).model_dump_json())
             writer_responses.append(_writer_turn(rewrite_text).model_dump_json())
         elif len(selected_turns) > 1:
-            writer_responses.append(_work_plan(request).model_dump_json())
-            writer_responses.extend(turn.model_dump_json() for turn in selected_turns[1:])
+            for turn in selected_turns[1:]:
+                writer_responses.append(_work_plan(request).model_dump_json())
+                writer_responses.append(turn.model_dump_json())
     else:
         writer_responses.extend(turn.model_dump_json() for turn in selected_turns[1:])
     writer_gateway = _gateway(SequenceEndpoint(tuple(writer_responses)), "stage3-writer")
@@ -743,7 +743,12 @@ def test_real_candidate_loop_closes_all_editor_routes(
     expected_rewrite: bool,
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "request-objects"))
-    request = _request(artifacts, route.value.casefold())
+    request = _with_mode_skill(_request(artifacts, route.value.casefold()))
+    # A MAJOR_REWRITE route plans its rewrite under its own mode, so it needs one
+    # more post-Draft call than a plain PASS route in the same slice.
+    request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 6})}
+    )
     loop, model_request, loop_artifacts = _loop(
         tmp_path,
         repositories,
@@ -788,11 +793,14 @@ def test_explicit_major_rewrite_budget_uses_second_reviewed_attempt(
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-major-rewrites"))
-    base_request = _request(artifacts, "two-major-rewrites")
+    base_request = _with_mode_skill(_request(artifacts, "two-major-rewrites"))
     request = base_request.model_copy(
         update={
+            # Two rewrite attempts, each planned under its own mode, plus the initial
+            # review and the one observer leg: eight post-Draft calls, and the slice
+            # boundary is only crossed once the next leg would exceed the allowance.
             "budgets": base_request.budgets.model_copy(
-                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 7}
+                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 9}
             )
         }
     )
@@ -853,16 +861,27 @@ def test_explicit_major_rewrite_budget_uses_second_reviewed_attempt(
         SequenceEndpoint,
         loop._cognition._gateway.endpoint_adapter(ModelRole.BATCH_TEST),
     )
-    assert "writer-major-rewrite" in writer_endpoint.requests[2].request_id.root
-    assert "writer-major-rewrite-2" in writer_endpoint.requests[3].request_id.root
-    assert "TRUSTED_MAJOR_REWRITE_RETRY" in writer_endpoint.requests[3].prompt
-    assert writer_endpoint.requests[3].prompt.count("</TRUSTED_EDITOR_REWRITE_DIRECTIVE>") == 1
-    assert "Advance the scene instead of repeating the prior candidate." in (
-        writer_endpoint.requests[3].prompt
+    labels = [
+        item.request_id.root.split(".")[2]
+        for item in writer_endpoint.requests
+        if "writer-major-rewrite" in item.request_id.root
+    ]
+    # Each attempt is planned under the rewrite mode before it turns.
+    assert labels == [
+        "writer-major-rewrite-plan",
+        "writer-major-rewrite",
+        "writer-major-rewrite-2-plan",
+        "writer-major-rewrite-2",
+    ]
+    retry = next(
+        item
+        for item in writer_endpoint.requests
+        if item.request_id.root.split(".")[2] == "writer-major-rewrite-2"
     )
-    assert "Rebuild the opening around the gate observation." not in (
-        writer_endpoint.requests[3].prompt
-    )
+    assert "TRUSTED_MAJOR_REWRITE_RETRY" in retry.prompt
+    assert retry.prompt.count("</TRUSTED_EDITOR_REWRITE_DIRECTIVE>") == 1
+    assert "Advance the scene instead of repeating the prior candidate." in retry.prompt
+    assert "Rebuild the opening around the gate observation." not in retry.prompt
 
 
 def test_explicit_two_local_repairs_retry_an_unchanged_candidate(
@@ -1073,7 +1092,7 @@ def test_loop_stops_after_one_failed_repair_or_rewrite_review(
     expected: WritingLoopTerminalStatus,
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / f"request-{route.value}"))
-    request = _request(artifacts, f"exhausted-{route.value.casefold()}")
+    request = _with_mode_skill(_request(artifacts, f"exhausted-{route.value.casefold()}"))
     initial_text = (
         "Lin studies the moonlit groove and opens the gate without using her injured arm."
     )
@@ -1101,7 +1120,7 @@ def test_explicit_two_major_rewrites_still_fail_closed_after_second_review(
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-major-rewrites-fail"))
-    base_request = _request(artifacts, "two-major-rewrites-fail")
+    base_request = _with_mode_skill(_request(artifacts, "two-major-rewrites-fail"))
     request = base_request.model_copy(
         update={"budgets": base_request.budgets.model_copy(update={"max_major_rewrites": 2})}
     )
@@ -1147,7 +1166,7 @@ def test_major_rewrite_rejects_another_memory_round(
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "rewrite-memory-request"))
-    request = _request(artifacts, "rewrite-memory-request")
+    request = _with_mode_skill(_request(artifacts, "rewrite-memory-request"))
     loop, model_request, _ = _loop(
         tmp_path,
         repositories,
@@ -1378,6 +1397,171 @@ def test_local_repair_slice_records_the_local_review_stage(
     assert checkpoint.local_repairs_used == 1
 
 
+_INITIAL_DRAFT_TEXT = (
+    "Lin studies the moonlit groove and opens the gate without using her injured arm."
+)
+
+
+def _repair_frontiers(
+    artifacts: ArtifactRepository, refs: tuple[ArtifactRef, ...]
+) -> tuple[tuple[ArtifactRef, WritingLoopCheckpoint], ...]:
+    """Every durable REPAIR_PENDING frontier a failed repair left behind, in order."""
+
+    checkpoints = (
+        (ref, WritingLoopCheckpoint.model_validate_json(artifacts.read_verified(ref)))
+        for ref in refs
+        if ref.media_type == WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+    )
+    return tuple(item for item in checkpoints if item[1].phase is WritingLoopPhase.REPAIR_PENDING)
+
+
+def _task_events(
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+    run_id: RunId,
+    task_id: TaskId,
+    event_type: RunEventType,
+) -> tuple[RunEvent, ...]:
+    events, _ = repositories
+    return tuple(
+        event
+        for event in events.replay(run_id)
+        if event.task_id == task_id and event.event_type is event_type
+    )
+
+
+def test_a_restart_after_a_settled_repair_only_owes_the_independent_re_review(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    """Mid-repair recovery: a settled local repair must not be paid for twice.
+
+    The first pass settles the local repair and then dies in the independent
+    re-review.  The durable frontier therefore records the settled repair, and the
+    restart is served by a single re-review response: if it re-ran the repair, the
+    Editor would answer a repair request with a review payload and the run would
+    fail instead of reaching a candidate.
+    """
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "settled-repair"))
+    request = _request(artifacts, "settled-repair")
+    initial = request.model_copy(update={"resume_checkpoint_ref": None})
+    review, repair, passing = _editor_responses(EditorialVerdict.LOCAL_REPAIR, _INITIAL_DRAFT_TEXT)
+    first_loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(review, repair, "not a review payload"),
+    )
+
+    first = asyncio.run(first_loop.execute(initial, model_request, cast(Any, object())))
+
+    assert first.status is WritingLoopTerminalStatus.EDITOR_FAILED
+    frontiers = _repair_frontiers(artifacts, first.artifacts)
+    assert [item[1].repair_stage for item in frontiers] == ["dispatch", "local_review"]
+    assert frontiers[0][1].repaired_draft is None
+    assert frontiers[0][1].local_repairs_used == 0
+    frontier_ref, frontier = frontiers[-1]
+    assert frontier.repaired_draft is not None
+    assert frontier.repair_input is not None
+    assert frontier.local_repairs_used == 1
+
+    resumed = initial.model_copy(update={"resume_checkpoint_ref": frontier_ref})
+    second_loop, second_request, _ = _loop(
+        tmp_path,
+        repositories,
+        resumed,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(passing,),
+    )
+    second = asyncio.run(second_loop.execute(resumed, second_request, cast(Any, object())))
+
+    assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert second.final_candidate_id == frontier.repaired_draft.draft_id
+    assert (
+        len(
+            _task_events(
+                repositories,
+                request.run_id,
+                request.task_id,
+                RunEventType.EDITOR_REPAIR_SETTLED,
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            _task_events(
+                repositories,
+                request.run_id,
+                request.task_id,
+                RunEventType.EDITOR_REVIEW_SETTLED,
+            )
+        )
+        == 2
+    )
+
+
+def test_a_restart_inside_a_dispatched_repair_returns_to_that_repair(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    """A repair that never settled resumes at the repair, not at a fresh review."""
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "pending-repair"))
+    request = _request(artifacts, "pending-repair")
+    initial = request.model_copy(update={"resume_checkpoint_ref": None})
+    review, repair, passing = _editor_responses(EditorialVerdict.LOCAL_REPAIR, _INITIAL_DRAFT_TEXT)
+    first_loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        initial,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(review, "not a repair payload"),
+    )
+
+    first = asyncio.run(first_loop.execute(initial, model_request, cast(Any, object())))
+
+    assert first.status is WritingLoopTerminalStatus.EDITOR_FAILED
+    frontiers = _repair_frontiers(artifacts, first.artifacts)
+    assert [item[1].repair_stage for item in frontiers] == ["dispatch"]
+    frontier_ref, frontier = frontiers[0]
+    assert frontier.local_repairs_used == 0
+    assert frontier.repaired_draft is None
+
+    # The restart is served the repair and re-review payloads in that order: a loop
+    # that re-ran the initial review would consume the repair payload as a review.
+    resumed = initial.model_copy(update={"resume_checkpoint_ref": frontier_ref})
+    second_loop, second_request, _ = _loop(
+        tmp_path,
+        repositories,
+        resumed,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(repair, passing),
+    )
+    second = asyncio.run(second_loop.execute(resumed, second_request, cast(Any, object())))
+
+    assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert second.final_candidate_id is not None
+    assert first.initial_draft is not None
+    assert second.final_candidate_id != first.initial_draft.draft_id
+    assert (
+        len(
+            _task_events(
+                repositories,
+                request.run_id,
+                request.task_id,
+                RunEventType.EDITOR_REPAIR_SETTLED,
+            )
+        )
+        == 1
+    )
+
+
 def test_stage3_public_lazy_exports_are_resolvable() -> None:
     import novel_agent.agents as agents
     import novel_agent.services as services
@@ -1588,7 +1772,7 @@ def test_writer_candidate_rejects_non_draft_and_invalid_parent_rules(tmp_path: P
             cast(Any, object()),
             cast(Any, object()),
             cast(Any, draft_turn),
-        mode=request.mode.MAJOR_REWRITE,
+            mode=request.mode.MAJOR_REWRITE,
         )
 
 
@@ -1819,23 +2003,28 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
         responses: tuple[str, ...],
         *,
         skill_path: Path = PACKAGE_ROOT / "skills" / "scene_composition_v1.md",
+        with_major_rewrite: bool = False,
     ) -> tuple[WriterCognitionService, ModelGateway]:
         gateway = _gateway(SequenceEndpoint(responses), "stage3-cognition-errors")
-        contract = next(
-            item
-            for item in WriterCognitionService.skill_contracts()
-            if item.contract_id == StableId("skill.scene-composition")
-        )
-        registry = SkillRegistry(
-            (
+        registered = {StableId("skill.scene-composition"): skill_path}
+        if with_major_rewrite:
+            registered[StableId("skill.major-rewrite")] = (
+                PACKAGE_ROOT / "skills" / "major_rewrite_v1.md"
+            )
+        templates = []
+        for contract in WriterCognitionService.skill_contracts():
+            path = registered.get(contract.contract_id)
+            if path is None:
+                continue
+            templates.append(
                 SkillTemplate(
                     skill_id=contract.contract_id,
                     version=contract.version,
-                    path=skill_path,
-                    expected_hash=content_hash(skill_path.read_bytes()),
-                ),
+                    path=path,
+                    expected_hash=content_hash(path.read_bytes()),
+                )
             )
-        )
+        registry = SkillRegistry(tuple(templates))
         return (
             WriterCognitionService(
                 gateway,
@@ -1963,7 +2152,7 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     assert endpoint.requests
     work_plan_prompt = endpoint.requests[0].prompt
     assert "<OPAQUE_LINEAGE_BINDING>" in work_plan_prompt
-    assert "This final binding block is the only source" in work_plan_prompt
+    assert "该最终绑定区块是这三个字段的唯一有效来源" in work_plan_prompt
     assert request.writing_task_artifact.artifact_id.root in work_plan_prompt
     assert request.accepted_plan.artifact.artifact_id.root in work_plan_prompt
     assert request.writer_context_package_artifact.artifact_id.root in work_plan_prompt
@@ -1972,8 +2161,8 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     assert "<TRUSTED_WRITING_LENGTH_POLICY>" in writer_turn_prompt
     assert "between 20 and 500 characters inclusive" in writer_turn_prompt
     assert '"target_characters":100' in writer_turn_prompt
-    assert "diegetic narrative for the target chapter" in writer_turn_prompt
-    assert "latest complete recent prose" in writer_turn_prompt
+    assert "目标章节的沉浸式正文叙事" in writer_turn_prompt
+    assert "以最新可见的完整前文作为即时连续性的唯一权威依据" in writer_turn_prompt
 
     major_instruction = ContextViewItem(
         item_id=StableId("editor-directive.cognition"),
@@ -1987,9 +2176,21 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     major_view = major_view.model_copy(
         update={"provider_validity_receipt": loop._compactor.provider_receipt(major_view, policy)}
     )
-    major_request = request.model_copy(update={"mode": AgentMode.MAJOR_REWRITE})
+    # The rewrite mode is its own capability boundary: the durable allowlist has to
+    # carry the mode Skill and the plan has to select it.
+    major_request = request.model_copy(
+        update={
+            "mode": AgentMode.MAJOR_REWRITE,
+            "allowed_skills": (*request.allowed_skills, StableId("skill.major-rewrite")),
+        }
+    )
+    major_plan_payload = _work_plan(major_request)
     major_cognition, major_gateway = service(
-        (plan.model_dump_json(), _writer_turn("A complete rewritten scene.").model_dump_json())
+        (
+            major_plan_payload.model_dump_json(),
+            _writer_turn("A complete rewritten scene.").model_dump_json(),
+        ),
+        with_major_rewrite=True,
     )
     major_plan = asyncio.run(
         major_cognition.create_work_plan(major_request, major_view, plan_model_request)
@@ -2005,8 +2206,8 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     assert "# Writer MAJOR_REWRITE v1" in major_prompt
     assert "<TRUSTED_EDITOR_REWRITE_DIRECTIVE>" in major_prompt
     assert "Write the complete scene before returning DRAFT_READY." in major_prompt
-    assert "new target-chapter narrative" in major_prompt
-    assert "latest complete recent prose" in major_prompt
+    assert "目标章节的全新正文叙事" in major_prompt
+    assert "从最新可见的完整前文出发并承接其最终状态" in major_prompt
 
     gateway.raw_responses = DiscardingRawResponses()
     raw_turn_model_request = turn_model_request.model_copy(
@@ -2018,7 +2219,9 @@ def test_writer_cognition_rejects_untrusted_plan_skill_context_and_memory_output
     changed_request = request.model_copy(
         update={"allowed_skills": (StableId("skill.continuation"),)}
     )
-    with pytest.raises(WriterCognitionError, match="no longer allowed"):
+    # The allowlist is checked before the dispatched plan: an allowlist that has lost
+    # the base Skill fails closed on the capability boundary itself.
+    with pytest.raises(WriterCognitionError, match="missing a required base Skill"):
         asyncio.run(
             cognition.take_turn(changed_request, valid_view, plan_result, turn_model_request)
         )
@@ -2059,12 +2262,12 @@ def test_writer_surface_guard_rejects_c48_failures_but_keeps_narrative_and_needs
     assert _writer_draft_surface_error("evidence.curator.entity-1 被写进正文。", view) == (
         "Writer draft contains internal planning marker: evidence.curator."
     )
-    assert _writer_draft_surface_error("婚约线只是冲突载体。", view) == (
-        "Writer draft contains a planning relation marker"
-    )
-    assert _writer_draft_surface_error("契约非交易。", view) == (
-        "Writer draft contains internal planning marker: 契约非交易"
-    )
+    # The surface gate rejects demonstrated mechanical leakage only.  The project
+    # specific marker table that used to live here (a benchmark phrase and a
+    # relation regex) was withdrawn from production, so private benchmark content
+    # must not come back through this gate; prose quality is the Editor's call.
+    assert _writer_draft_surface_error("婚约线只是冲突载体。", view) is None
+    assert _writer_draft_surface_error("契约非交易。", view) is None
 
     full_recent = next(
         item
@@ -2162,19 +2365,28 @@ def test_writer_surface_guard_rejects_an_embedded_older_chapter_trail(
     )
 
 
-def test_writer_turn_rewrites_known_contract_marker_before_surface_guard(
+def test_writer_turn_keeps_a_draft_the_editor_has_not_rejected(
     tmp_path: Path,
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
 ) -> None:
+    """The Writer returns its draft as written; only its own surface gate may change it.
+
+    The turn used to rewrite one hard-coded benchmark phrase in place.  That table
+    was private benchmark content inside production code and is withdrawn, so an
+    ordinary draft now reaches the Editor unchanged and prose quality stays with
+    the Editor instead of a phrase list.
+    """
+
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "marker-rewrite"))
     request = _request(artifacts, "marker-rewrite")
+    draft_text = "徐有容明白: 契约非交易."
     loop, model_request, _ = _loop(
         tmp_path,
         repositories,
         request,
         EditorialVerdict.PASS,
         artifact_repository=artifacts,
-        writer_turns=(_writer_turn("徐有容明白: 契约非交易."),),
+        writer_turns=(_writer_turn(draft_text),),
     )
     view = loop._seed(request)
     policy = ContextWindowPolicy(
@@ -2205,9 +2417,7 @@ def test_writer_turn_rewrites_known_contract_marker_before_surface_guard(
         )
     )
 
-    assert result.output.draft_text is not None
-    assert "契约非交易" not in result.output.draft_text
-    assert "这份婚约不是可以拿来交换的筹码" in result.output.draft_text
+    assert result.output.draft_text == draft_text
 
 
 def test_writer_turn_retries_once_after_complete_recent_prose_copy(
@@ -2242,7 +2452,8 @@ def test_writer_turn_retries_once_after_complete_recent_prose_copy(
     )
     assert endpoint.requests[1].repetition_penalty is None
     assert endpoint.requests[2].repetition_penalty == 1.10
-    assert "contiguous phrase longer than 64 characters" in endpoint.requests[2].prompt
+    assert "严禁复制前文任何完整段落或长句" in endpoint.requests[2].prompt
+    assert "does not reproduce any complete" in endpoint.requests[2].prompt
 
 
 def test_major_rewrite_retries_after_embedded_older_chapter_trail(
@@ -2250,7 +2461,7 @@ def test_major_rewrite_retries_after_embedded_older_chapter_trail(
     repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "compact-trail-retry"))
-    request = _request(artifacts, "compact-trail-retry")
+    request = _with_mode_skill(_request(artifacts, "compact-trail-retry"))
     loop, model_request, _ = _loop(
         tmp_path,
         repositories,
@@ -2979,7 +3190,12 @@ def test_loop_retains_compaction_receipts_across_writer_dispatches(
     route: EditorialVerdict,
 ) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / f"receipt-{route.value}"))
-    request = _request(artifacts, f"receipt-{route.value.casefold()}")
+    request = _with_mode_skill(_request(artifacts, f"receipt-{route.value.casefold()}"))
+    # A MAJOR_REWRITE route is planned under its own mode, so its slice pays for one
+    # more model call than a plain PASS route.
+    request = request.model_copy(
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 6})}
+    )
     loop, model_request, _ = _loop(
         tmp_path / route.value,
         repositories,

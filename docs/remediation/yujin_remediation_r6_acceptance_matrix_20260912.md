@@ -73,7 +73,7 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 | A12 | 工作计划冒充历史、Editor avoided 强制缺口 | 宿主机理已核实（Editor 只能引用 Draft 内精确引文），端到端待真实运行 | ⚠️ 部分 |
 | A13 | 六条以上变化、满四条末页、跨段依赖、无进展 | `test_ordinary_curation.py`（11 项） | ✅ |
 | A14 | 义务正文观察、提前 payoff、到期未完成 | `test_obligation_observation_writeback.py`（5 项） | ✅ |
-| A15 | Memory/首稿/局修/大改/复审后重启 | `test_writing_loop_repair_frontier.py`（计数与前沿）+ 恢复路径断言 | ⚠️ 端到端待补 |
+| A15 | Memory/首稿/局修/大改/复审后重启 | `test_writing_loop_repair_frontier.py`（计数与前沿）+ 两个真实执行用例（大改前/大改后重启）见第 13 节 | ✅ 执行证据已补 |
 | A16 | 错请求 hash、损坏原始响应、uncertain 调用 | `test_model_replay.py`（13 项） | ✅ |
 | A17 | 8003 正确/错误模型、timeout/config 漂移 | R0 实时预检证据 + `test_production_bootstrap_endpoints.py`、`test_endpoint_preflight.py` | ✅ 身份层 |
 | A18 | 真实旧 v4/v6 roots 与新 schema | `test_obligation_declaration_binding.py` + R0 的 v6 roots 只读加载 | ✅ 部分 |
@@ -102,7 +102,7 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 | 项 | 内容 |
 |---|---|
 | ~~A21~~ | **已完成**，见 3.1 节三入口登记 |
-| A05/A12/A15 端到端 | 需真实 v7 运行补证 |
+| A05/A12 端到端 | 需真实 v7 运行补证（A15 的确定性执行证据已在第 13 节补齐） |
 | ~~8003 预检补齐~~ | **已完成**，见第 5 节 |
 | ~~G0 作者锁通道~~ | **已完成**，见第 7 节 |
 | ~~修稿恢复崩溃~~ | **已修复**，见第 8 节（复现 + 修复 + 回归） |
@@ -364,7 +364,7 @@ coverage 0.95、2 条非阻断 unresolved，经 host review 后由作者接受�
 | 审校输入缺口 | `planning_context_loop` 调用审校器时未传 World 根与作者约束根；目录读取器只认专用媒体类型，真实 World 根是 `application/json`；`trusted_window` 生产未传 |
 | Genesis 未来事件分类 | bootstrap 把第四卷"唐钧打造沉曜"写成 `valid_time.start_ordinal = 0` 的当前事实，而 Writer 会把参与人物状态注入 `Canon current state`，与时间锁直接冲突 |
 | 卷阶段时间语义 | 阶段槽投影未按条目章节窗口筛选，卷首/卷中/卷末收到同一组约束 |
-| 修稿恢复执行证据 | 正常 PASS 的未初始化变量已修并有回归；`REPAIR_PENDING` 仍未实际写入，恢复入口仍先重建 Memory 包 |
+| 修稿恢复执行证据 | 已闭合，见第 13 节（`REPAIR_PENDING` 真实写入 + 两处中断恢复执行证据） |
 | 大改路径夹具 | 8 个相关单测文件实测 **1 失败**：`test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal`（断言英文串，prompt 是中文，R0 基线既有） |
 
 八卷与章节目标未产生之前不进入两章 smoke。
@@ -411,7 +411,7 @@ host review 当时返回 ACCEPT，于是又走了一遍"审校通过、commit �
 | Genesis 未来事件分类 | v12 把第四卷"唐钧打造沉曜"写成 `truth_class=accepted_world_fact`、`start_ordinal=0`。`world_graph` 与 R1 只把 `ACCEPTED_WORLD_FACT` 当 Canon，因此这类条目会被当作开篇事实；正确落点是把作者声明的未来意图标成 `PREDICTION`（或等价非 Canon 类），而不是当前事实。**尚未修** |
 | 卷阶段时间语义 | 阶段槽投影未按条目章节窗口筛选，且已属 `relevant_nodes` 的卷节点被排除在阶段投影之外，卷首/卷中/卷末收到同一组约束。**尚未修** |
 | STORY 八卷与章节目标 | STORY 提案只有 3 条卷结构、无章节目标。G0 未通过 |
-| 修稿恢复执行证据 | `REPAIR_PENDING` 仍未实际写入；恢复入口仍先重建 Memory 包 |
+| 修稿恢复执行证据 | 已闭合，见第 13 节 |
 
 ## 11. 审校与物化统一到同一份义务声明契约（2026-09-13）
 
@@ -471,7 +471,7 @@ name one of foreshadowing, promise, objective, unresolved_conflict
 | Writer 忽略 `truth_class` | `stage3_writer` 把参与人物的**任何**状态注入 `Canon current state`，所以即使 Genesis 把未来条目标成 `PREDICTION`，它仍可能以"当前事实"进入正文。需要在注入侧按 `truth_class` 过滤（**尚未修**） |
 | Genesis 未来事件分类本身 | 关键词 + 作者锁文本匹配只能捕捉字面含"第N卷/最终/后续/成长路线"的条目；像"唐钧在钧炉城锻打沉曜"这种**不含卷号**的整段人物描述仍判为当前事实。需要拆分描述（当前身份 vs 未来经历）或由 Curator 显式给出时间意图（**尚未完成**） |
 | 卷阶段时间语义 | 已修，见第 12 节（条目窗口优先，自由文本按槽位语义绑定阶段） |
-| `REPAIR_PENDING` | 仍无实际写入与修稿中断恢复的执行证据（**尚未修**） |
+| `REPAIR_PENDING` | 已修，见第 13 节（写在大改/局修派发之前，恢复只补未结算的那一步） |
 | G0 八卷与首批五章 | 未进入 ARC_VOLUME；STORY 候选需按新契约重新生成 |
 
 ## 12. 卷阶段真正区分卷首/卷中/卷尾（2026-09-13）
@@ -520,6 +520,100 @@ tests/unit/test_author_planning_locks.py  20 passed
 ```text
 76 failed / 3048 passed / 1 skipped
 new: []   fixed: []   identical: True
+```
+
+未运行完整 `make quality`，未修改覆盖率阈值。
+
+## 13. 修稿前沿真实写入与中断恢复（2026-09-13）
+
+### 13.1 缺陷一：`REPAIR_PENDING` 从未被写入
+
+`WritingLoopPhase.REPAIR_PENDING` 与 `repair_stage` / 两个计数器在 R5 就已进入契约，
+但**没有任何代码写它**：循环只在 EDITOR_PENDING / OBSERVER_PENDING /
+RECONCILIATION_PENDING / REACTIVE_MEMORY_PENDING 四个前沿落盘。于是"修稿中重启"落到
+最近的 EDITOR_PENDING 前沿，恢复入口会重新跑一次初始 Editor 复审（多花一次调用），
+而修稿配额只能等到下一次切片让出时才被持久化。
+
+### 13.2 缺陷二：大改路径在生产上必然失败
+
+`WriterCognitionService.take_turn` 对 `MAJOR_REWRITE` 要求 work plan **选定**
+`skill.major-rewrite`（模式能力边界），但循环拿到的是 DRAFT 模式的 work plan，
+从不按模式重新规划：
+
+```text
+WriterWorkPlan is missing the required mode Skill: skill.major-rewrite
+```
+
+生产 allowlist 本身包含该 Skill（`production_assembly_spec.json` 的 `writer_skill_ids`），
+所以这不是配置问题，而是循环缺少"按模式重规划"这一步：**任何 MAJOR_REWRITE 判定都会
+以 WRITER_FAILED 结束**。integration 夹具注释写着"the Writer is re-planned per mode"，
+实现里没有对应代码。
+
+### 13.3 实现
+
+| 位置 | 机制 |
+|---|---|
+| `_persist_repair_checkpoint` | 以 `phase=REPAIR_PENDING` 落盘，带 `repair_stage`、已用配额、触发修稿的复审输入与拒绝历史、以及已结算的候选（局修 / 大改 / 首稿） |
+| 局修 | 派发**之前**写 `repair_stage="dispatch"`；局修结算后写 `"local_review"`（带 `repaired_draft`）；两处都写 |
+| 大改 | 每次尝试派发前写 `"dispatch"`；大改写结算后写 `"rewrite_review"`（带 `rewritten_draft` 与它的 memory hints） |
+| 恢复入口 | `phase=REPAIR_PENDING` 直接取 `reports[-1]` 与 `checkpoint.repair_input`，不再重跑初始复审；`repaired_draft` / `rewritten_draft` 已结算时跳过对应的模型调用，只补未结算的那一步 |
+| `rewrite_awaiting_review` | 区分"已结算待复审"与"需要新一次尝试"：只有后者才递增计数并重新规划+派发，避免用同一次大改反复复审 |
+| `_settle_work_plan` | 首稿与大改共用同一段"把 work plan 绑定进 view"的逻辑；大改前按 `MAJOR_REWRITE` 重新规划并替换 WORK_PLAN 条目，再重新取得 provider-validity receipt |
+
+### 13.4 证据
+
+```text
+tests/integration/test_writer_context_loop.py
+  test_a_restart_after_a_settled_repair_only_owes_the_independent_re_review
+  test_a_restart_inside_a_dispatched_repair_returns_to_that_repair
+  52 passed（本文件，修复前 11 failed / 39 passed）
+tests/unit/test_writing_loop_repair_frontier.py  6 passed
+```
+
+两个执行用例的做法与断言：
+
+- 第一个用例让局修结算、复审失败：失败的 `artifacts` 里同时存在
+  `["dispatch", "local_review"]` 两个 `REPAIR_PENDING` 前沿；用后者恢复时 Editor 只被喂一个
+  PASS 响应就必须到达 `DRAFT_CANDIDATE_READY`——若恢复重跑局修，请求类型不匹配会直接失败。
+  事件账本同时断言 `EDITOR_REPAIR_SETTLED == 1`、`EDITOR_REVIEW_SETTLED == 2`。
+- 第二个用例让局修**未结算**（Editor 返回非法修复载荷）：只剩 `"dispatch"` 前沿，
+  `repaired_draft is None`、`local_repairs_used == 0`；恢复后按顺序消费"修复→复审"两个响应，
+  最终候选不同于首稿，且 `EDITOR_REPAIR_SETTLED == 1`（同一次尝试，不是重新发放配额）。
+
+### 13.5 integration 基线按原因复核（17 → 6）
+
+`test_writer_context_loop.py` 的 11 项既有失败全部来自上述两个缺陷与三处过期断言，
+逐条原因如下：
+
+| 原因 | 处置 |
+|---|---|
+| 夹具从未调用已存在的 `_with_mode_skill`，大改请求缺模式 Skill | 7 个用例接入 `_with_mode_skill` |
+| 循环不按模式重规划（生产缺陷，见 13.2） | 修复循环；夹具为每次大改尝试提供一份模式计划 |
+| 夹具 `writer_turns` 只为多次大改提供一份计划响应 | 每次尝试"计划+回合"成对提供 |
+| 断言英文 prompt 文案，实际 prompt 已中文化 | 3 处改为断言当前中文原文（`writer_work_plan_v1`、`writer_turn_v1`、`writer_major_rewrite_v1`） |
+| 断言 `_META_RELATION_MARKER` 与"已知短语改写表" | 该表是**私有基准内容**写进生产代码，T2–T6 已撤销，不应回归；改为断言通用门禁（内部标记、章节标签、复读、目标语言）并要求项目专有短语**不再**被门禁拒绝 |
+| 断言"allowlist 不再覆盖已结算计划"的具体文案 | allowlist 现在先于计划校验，改为断言更强的 `missing a required base Skill` |
+
+切片预算随之调整：大改每次尝试多一次"模式计划"调用，两个相关用例的
+`max_post_draft_model_calls` 相应提高（生产策略 6 次仍覆盖"复审+模式计划+大改回合+复审+观察"）。
+
+integration 全量结果：
+
+```text
+tests/integration（-m "not model_required and not integration"）
+修复前基线 17 failed / 93 passed
+现在        6 failed / 109 passed
+fixed: 11（全部在 test_writer_context_loop.py）  new: 0
+```
+
+剩余 6 项为同一基线中的另外两个文件（`test_production_planning_cadence.py` 5 项、
+`test_stage5_real_writer_e2e.py` 1 项），原因尚未复核，保持登记不做掩盖。
+
+### 13.6 回归（确定性）
+
+```text
+tests/unit tests/contract  76 failed / 3048 passed / 1 skipped
+new: []   fixed: []   identical vs R0 baseline: True
 ```
 
 未运行完整 `make quality`，未修改覆盖率阈值。
