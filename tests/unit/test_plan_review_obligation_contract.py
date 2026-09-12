@@ -293,3 +293,90 @@ def test_a_catalogue_is_not_required_to_flag_an_undeclared_action() -> None:
     )
 
     assert not any("UNDECLARED" in issue.summary for issue in review.issues)
+
+
+def _constraint(constraint_id: str, text: str) -> object:
+    from novel_agent.domain.artifacts import ArtifactRef
+    from novel_agent.domain.author_constraints import (
+        AuthorConstraint,
+        AuthorConstraintCategory,
+    )
+    from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
+    from novel_agent.services.content_addressing import content_id
+
+    return AuthorConstraint(
+        constraint_id=StableId(constraint_id),
+        category=AuthorConstraintCategory.TIME_LOCK,
+        text=text,
+        source_ref=ArtifactRef(
+            artifact_id=content_id({"probe": constraint_id}),
+            byte_length=1,
+            media_type="application/json",
+            schema_version=SchemaVersion("1.0.0"),
+        ),
+        source_hash=ArtifactId(content_id({"probe": constraint_id}).root),
+        not_before_chapter=101,
+    )
+
+
+def test_author_constraint_coverage_uses_the_frozen_catalogue_as_denominator() -> None:
+    """A proposal that restates nothing must not score a perfect coverage."""
+
+    constraints = (
+        _constraint("author-constraint.time_lock.1", "斩星府内府资格不得早于第二卷"),
+        _constraint("author-constraint.time_lock.2", "断星六号核心回收不得在第一卷完成"),
+    )
+    review = apply_host_plan_review_constraints(
+        _draft(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=_payload(
+            {
+                "item_id": "vol_01",
+                "kind": "arc_volume",
+                "payload": {
+                    "plan_level": "arc_volume",
+                    "chapter_start": 1,
+                    "chapter_end": 100,
+                },
+            }
+        ),
+        mode=AgentMode.ARC_VOLUME,
+        author_constraints=constraints,
+    )
+
+    assert review.coverage_evidence
+    line = next(
+        item for item in review.coverage_evidence if item.startswith("author_constraint_coverage")
+    )
+    assert line.startswith("author_constraint_coverage: 0/2")
+
+
+def test_author_constraint_coverage_credits_a_restated_constraint() -> None:
+    constraints = (
+        _constraint("author-constraint.time_lock.1", "斩星府内府资格不得早于第二卷"),
+    )
+    review = apply_host_plan_review_constraints(
+        _draft(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=_payload(
+            {
+                "item_id": "vol_02",
+                "kind": "arc_volume",
+                "payload": {
+                    "plan_level": "arc_volume",
+                    "chapter_start": 101,
+                    "chapter_end": 200,
+                    "summary": "斩星府内府资格不得早于第二卷"
+                    + "，"  # noqa: RUF001 - author text uses a fullwidth comma
+                    + "本卷才开放内府推进",
+                },
+            }
+        ),
+        mode=AgentMode.ARC_VOLUME,
+        author_constraints=constraints,
+    )
+
+    line = next(
+        item for item in review.coverage_evidence if item.startswith("author_constraint_coverage")
+    )
+    assert line.startswith("author_constraint_coverage: 1/1")

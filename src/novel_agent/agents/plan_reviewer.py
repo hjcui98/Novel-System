@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.author_constraints import AuthorConstraint
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import ObligationKind, long_range_kind_requires_not_before
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
@@ -69,6 +71,8 @@ def apply_host_plan_review_constraints(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    author_constraints: Sequence[AuthorConstraint] = (),
+    trusted_window: tuple[int, int] | None = None,
 ) -> PlanReviewDraft:
     """Overlay trusted temporal/parent-scope issues onto a model Plan review."""
 
@@ -99,7 +103,13 @@ def apply_host_plan_review_constraints(
         ),
         *_unresolved_host_issues(payload),
     )
-    coverage = _coverage_evidence(payload, raw_items, mode=mode)
+    coverage = _coverage_evidence(
+        payload,
+        raw_items,
+        mode=mode,
+        constraints=author_constraints,
+        trusted_window=trusted_window,
+    )
     if not extra and not coverage:
         return draft
     issues = (*draft.issues, *extra)
@@ -137,11 +147,19 @@ def _coverage_evidence(
     raw_items: list[object],
     *,
     mode: AgentMode,
+    constraints: Sequence[AuthorConstraint] = (),
+    trusted_window: tuple[int, int] | None = None,
 ) -> tuple[str, ...]:
-    """Return one host-computed coverage line per coverage question."""
+    """Return one host-computed coverage line per coverage question.
+
+    The denominators come from trusted inputs: the task horizon when the host
+    supplies one, otherwise the candidate's own declared window, plus the frozen
+    author-constraint catalogue.  A candidate therefore cannot raise its own
+    score by declaring less.
+    """
 
     items = [item for item in raw_items if isinstance(item, dict)]
-    window = _proposal_chapter_window(items)
+    window = trusted_window or _proposal_chapter_window(items)
     if window is None:
         return ()
     start, end = window
@@ -149,6 +167,7 @@ def _coverage_evidence(
         items=items,
         target_chapter_start=start,
         target_chapter_end=end,
+        constraints=constraints,
         mode=mode.value,
     )
     lines: list[str] = []
@@ -825,6 +844,9 @@ class PlanReviewerAgent:
             accepted_obligation_ids=_accepted_obligation_ids(
                 self._artifacts, trusted_source_artifacts
             ),
+            author_constraints=_author_constraint_catalogue(
+                self._artifacts, trusted_source_artifacts
+            ),
         )
         draft_artifact = self._artifacts.put(
             canonical_json_bytes(draft.model_dump(mode="json")),
@@ -882,6 +904,32 @@ class PlanReviewerAgent:
                 if part.strip()
             )
         )
+
+
+def _author_constraint_catalogue(
+    artifacts: ArtifactRepository,
+    refs: tuple[ArtifactRef, ...],
+) -> tuple[AuthorConstraint, ...]:
+    """Read the frozen author-constraint root the host compiled for this plan.
+
+    Coverage must be measured against what the author declared, not against what
+    the candidate chose to restate: with no catalogue the denominator collapsed to
+    0/0 and a proposal that dropped every hard constraint scored perfectly.
+    """
+
+    from novel_agent.domain.author_constraints import AuthorConstraintRoot
+
+    for ref in refs:
+        if ref.media_type != "application/vnd.novel-agent.author-constraint-root+json":
+            continue
+        try:
+            root = AuthorConstraintRoot.model_validate_json(
+                artifacts.read_verified(ref), strict=True
+            )
+        except (UnicodeDecodeError, ValueError):
+            continue
+        return root.constraints
+    return ()
 
 
 def _accepted_obligation_ids(
