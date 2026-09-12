@@ -1559,13 +1559,27 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         (endpoint for endpoint in model_endpoints if endpoint.role is ModelRole.BATCH_TEST),
         None,
     )
+    # A registered implementation endpoint can serve the semantic judge directly; the
+    # judge only disappears when no endpoint is registered at all.  Previously it was
+    # silently dropped whenever no batch_test endpoint existed, which disabled the
+    # semantic check without any error.
+    judge_endpoint = batch_endpoint or next(
+        (endpoint for endpoint in model_endpoints if endpoint.role is ModelRole.IMPLEMENTATION),
+        None,
+    )
     semantic_judge = (
         NeedEvidenceSemanticJudge(
             model_gateway,
             max_input_tokens=12_000,
-            max_output_tokens=batch_endpoint.output_limit or 2_048,
+            max_output_tokens=(judge_endpoint.output_limit or 2_048),
+            model_role=judge_endpoint.role,
+            purpose=(
+                ModelCallPurpose.BATCH_TEST
+                if judge_endpoint.role is ModelRole.BATCH_TEST
+                else ModelCallPurpose.DEVELOPMENT
+            ),
         )
-        if batch_endpoint is not None
+        if judge_endpoint is not None
         else None
     )
     memory_gateway = MemoryGateway(

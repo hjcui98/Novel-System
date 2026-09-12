@@ -18,7 +18,12 @@ from novel_agent.domain.memory import (
     NeedGapPolicy,
     NeedUncertaintyPolicy,
 )
-from novel_agent.domain.model_calls import ModelRole, ModelUsage, ProviderModelResult
+from novel_agent.domain.model_calls import (
+    ModelCallPurpose,
+    ModelRole,
+    ModelUsage,
+    ProviderModelResult,
+)
 from novel_agent.services.evidence_first_writer_context_assembler import (
     NeedEvidenceSelection,
     SliceSelectionTrace,
@@ -371,3 +376,50 @@ def test_failed_batch_marks_aggregate_unresolved() -> None:
     assert receipt.status.value == "UNRESOLVED"
     assert result.planned_batch_count == result.completed_batch_count + result.failed_batch_count
     assert result.failed_batch_count == 1
+
+
+def test_judge_can_run_on_the_implementation_endpoint() -> None:
+    """R3: the semantic judge must not silently disappear without a batch endpoint.
+
+    Production only registers the implementation role for the 8003 profile, so a
+    batch-only wiring dropped the semantic check entirely.  The judge now declares the
+    role and purpose it runs under, and the gateway enforces the batch-only rule for
+    batch/evaluation purposes.
+    """
+
+    endpoint = _JudgeEndpoint("supported")
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.IMPLEMENTATION,
+                endpoint_name="qwen38-27b-nvfp4@8003",
+                model_name=endpoint.model,
+                adapter=endpoint,
+            ),
+        )
+    )
+    judge = NeedEvidenceSemanticJudge(
+        gateway,
+        max_input_tokens=12_000,
+        max_output_tokens=2_048,
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+    )
+
+    result = judge.judge((_selection(3),))
+
+    assert result.receipts[0].status.value == "SUPPORTED"
+    assert endpoint.requests[0].model_role is ModelRole.IMPLEMENTATION
+    assert endpoint.requests[0].purpose is ModelCallPurpose.DEVELOPMENT
+    request_id = endpoint.requests[0].request_id.root
+    assert f".{endpoint.requests[0].run_id.root}." in request_id
+    assert f".{endpoint.requests[0].task_id.root}." in request_id
+
+
+def test_batch_purpose_cannot_be_routed_to_the_implementation_role() -> None:
+    with pytest.raises(ValueError, match="batch_test role"):
+        NeedEvidenceSemanticJudge(
+            ModelGateway(()),
+            model_role=ModelRole.IMPLEMENTATION,
+            purpose=ModelCallPurpose.BATCH_TEST,
+        )
