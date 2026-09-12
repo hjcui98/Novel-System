@@ -99,14 +99,35 @@
 | 对 `not_before=101` 的义务报 resolved | fail closed（断言 typed cause 含 "before its time lock"） |
 | 到期 milestone 无完成证据 | fail closed |
 
-## 4. R4 其余未完成项
+## 4. 已完成：完整 World 校验与原子结算（R4.3 / R4.4）
 
-| 项 | 内容 |
+核查后确认这两项**已由现行 v2 路径实现**，因此只补证据，不新增并行机制：
+
+| 要求 | 实现位置 |
 |---|---|
-| R4.3 完整 World 校验 | 工作集不得替代最终完整校验；跨段状态、先实体后关系、同章新实体依赖 |
-| R4.4 同章原子提交 | 全章操作与同 ID obligation observations 汇总后统一验证、原子提交；分页失败/预算耗尽不得部分写入 |
+| 工作集不替代最终校验 | 模型 prompt 使用 `world_working_view`；`_reject_dangling_entity_references`、`_filter_existing_semantic_duplicates`、`_normalize_entity_reference_aliases` 全部对**完整 `current_world`** 校验 |
+| 同章新实体依赖 | `extract_source_batches` 聚合时把 ENTITY 操作排在最前，`known_entities` 覆盖整章草稿 |
+| 跨段状态 | 聚合在**整章**边界发生，验证看到全章操作集而非单页 |
+| 悬空引用不静默丢弃 | v2 路径 `_reject_dangling_entity_references` 抛 typed 拒绝并给出 JSON pointer |
+| 原子提交 | 抽取失败抛 typed 错误，调用方在任何 artifact/commit 之前失败；成功时以整套操作集提交一次 |
 
-## 5. 回归与失败身份
+证据：`tests/unit/test_curation_world_validation_and_settlement.py`（5 项）：
+同提案内实体引用被接受、悬空引用带 JSON pointer 拒绝、**工作集之外**的实体仍被完整 World 认作已知
+（断言 obligation 的 `owner_ids` 保持该实体）、页预算耗尽抛 typed 失败且不返回部分操作集、
+失败时不产生任何已覆盖页回执。
 
-`tests/unit tests/contract`：**76 failed / 2984 passed / 1 skipped**；
-失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R4 至今新增 21 项通过测试。
+### 4.1 记录在案的历史不一致（不在本轮修复）
+
+v1 路径的 `_normalize_operations` 对悬空实体引用是**静默丢弃**该操作并记一条 unresolved 文本，
+与 v2 的 typed 拒绝不同。生产 Writer 路径走 v2，因此不构成本轮阻塞；已记录，供后续
+v1 清理或退役时统一。
+
+## 5. R4 其余未完成项
+
+R4 范围内无剩余实现项；未完成的是**真实运行证据**（Curator 在真实模型下的分页行为、
+义务观察回写、原子结算），按方案第 9 节属于 G2/G3 阶段验收，随 R6 采集。
+
+## 6. 回归与失败身份
+
+`tests/unit tests/contract`：**76 failed / 2989 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。R4 至今新增 26 项通过测试。
