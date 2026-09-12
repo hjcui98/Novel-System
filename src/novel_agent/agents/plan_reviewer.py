@@ -25,6 +25,9 @@ from novel_agent.domain.planning import (
     ReviewTargetKind,
     missing_volume_structure_keys,
 )
+from novel_agent.domain.planning_coverage import (
+    compile_planning_coverage_report,
+)
 from novel_agent.domain.retrieval_decision import (
     FIRST_CHAPTER_WAIVER_REF,
     HOST_ISSUED_WAIVER_REFS,
@@ -93,7 +96,8 @@ def apply_host_plan_review_constraints(
         ),
         *_unresolved_host_issues(payload),
     )
-    if not extra:
+    coverage = _coverage_evidence(payload, raw_items, mode=mode)
+    if not extra and not coverage:
         return draft
     issues = (*draft.issues, *extra)
     missing_window = any(
@@ -103,10 +107,13 @@ def apply_host_plan_review_constraints(
         return draft.model_copy(
             update={
                 "issues": issues,
+                "coverage_evidence": coverage,
                 "decision": ReviewDecision.HUMAN_REQUIRED,
                 "revision_instruction": None,
             }
         )
+    if not extra:
+        return draft.model_copy(update={"coverage_evidence": coverage})
     instruction = (
         draft.revision_instruction
         or "Revise blocking unresolved conflicts, incomplete volume structure, "
@@ -115,10 +122,43 @@ def apply_host_plan_review_constraints(
     return draft.model_copy(
         update={
             "issues": issues,
+            "coverage_evidence": coverage,
             "decision": ReviewDecision.REVISE,
             "revision_instruction": instruction,
         }
     )
+
+
+def _coverage_evidence(
+    payload: dict[str, Any],
+    raw_items: list[object],
+    *,
+    mode: AgentMode,
+) -> tuple[str, ...]:
+    """Return one host-computed coverage line per coverage question."""
+
+    items = [item for item in raw_items if isinstance(item, dict)]
+    window = _proposal_chapter_window(items)
+    if window is None:
+        return ()
+    start, end = window
+    report = compile_planning_coverage_report(
+        items=items,
+        target_chapter_start=start,
+        target_chapter_end=end,
+        mode=mode.value,
+    )
+    lines: list[str] = []
+    for ratio in report.ratios:
+        if not ratio.applicable:
+            lines.append(f"{ratio.kind.value}: not applicable at this planning level")
+            continue
+        missing = ", ".join(ratio.missing[:10]) or "none"
+        lines.append(
+            f"{ratio.kind.value}: {ratio.covered}/{ratio.total} "
+            f"(denominator: {ratio.denominator_source}; missing: {missing})"
+        )
+    return tuple(lines)
 
 
 def _host_issues_for_items(

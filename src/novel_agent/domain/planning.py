@@ -270,11 +270,7 @@ def missing_volume_structure_keys(payload: Mapping[str, object]) -> tuple[str, .
     missing: list[str] = []
     for key in VOLUME_STRUCTURE_REQUIRED_KEYS:
         value = payload.get(key)
-        if value is None:
-            missing.append(key)
-        elif isinstance(value, str) and not value.strip():
-            missing.append(key)
-        elif isinstance(value, (list, tuple, dict)) and not value:
+        if value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, tuple, dict)) and not value):
             missing.append(key)
     return tuple(missing)
 
@@ -295,6 +291,10 @@ class PlanReviewDraft(DomainModel):
     preserve_item_ids: tuple[StableId, ...] = ()
     revision_instruction: str | None = Field(default=None, min_length=1)
     memory_gap_questions: tuple[str, ...] = ()
+    # Host-computed coverage evidence: one entry per coverage question, each with its
+    # own trusted denominator and missing items.  Kept as text so a long-standing
+    # review artifact stays schema-compatible while the numbers remain auditable.
+    coverage_evidence: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_decision(self) -> PlanReviewDraft:
