@@ -295,6 +295,7 @@ v7 锁文件现为 6 条：101（内府）、90-100（铜铭）、101（断星�
   `capability_ceiling` / `equipment_ceiling` 现在从覆盖当前章的卷节点投影进
   `mandatory_constraints`，并且 text / list / 结构化表三种写法都能读出。
   回归：`test_volume_stage_slots_reach_the_writer_in_every_declared_shape`。
+  （当时只做到"能读出"，卷首/卷中/卷尾尚无区别；第 12 节补齐窗口语义。）
 - **仍未闭合**：义务 coverage 的分母仍来自候选自报声明。把它改成已接受 World 义务目录
   需要先确定"提案如何算满足一条既有义务"，本轮不做半成品改动，明确记入未完成项。
 
@@ -469,6 +470,56 @@ name one of foreshadowing, promise, objective, unresolved_conflict
 |---|---|
 | Writer 忽略 `truth_class` | `stage3_writer` 把参与人物的**任何**状态注入 `Canon current state`，所以即使 Genesis 把未来条目标成 `PREDICTION`，它仍可能以"当前事实"进入正文。需要在注入侧按 `truth_class` 过滤（**尚未修**） |
 | Genesis 未来事件分类本身 | 关键词 + 作者锁文本匹配只能捕捉字面含"第N卷/最终/后续/成长路线"的条目；像"唐钧在钧炉城锻打沉曜"这种**不含卷号**的整段人物描述仍判为当前事实。需要拆分描述（当前身份 vs 未来经历）或由 Curator 显式给出时间意图（**尚未完成**） |
-| 卷阶段时间语义 | 阶段槽投影仍未按条目章节窗口区分卷首/卷中/卷末（**尚未修**） |
+| 卷阶段时间语义 | 已修，见第 12 节（条目窗口优先，自由文本按槽位语义绑定阶段） |
 | `REPAIR_PENDING` | 仍无实际写入与修稿中断恢复的执行证据（**尚未修**） |
 | G0 八卷与首批五章 | 未进入 ARC_VOLUME；STORY 候选需按新契约重新生成 |
+
+## 12. 卷阶段真正区分卷首/卷中/卷尾（2026-09-13）
+
+### 12.1 缺陷
+
+`volume_stage_grid_defects` 只要求结构化条目申报窗口，投影侧并不使用这些窗口：
+`_stage_slot_texts` 把 `chapter_start/chapter_end` 当成一句说明文字拼进约束，于是**任何**
+条目都会到达该卷的每一章；`covering_volume_nodes` 又把"已经是目标父节点"的卷排除在外。
+结果是"十个非空字段"在正文侧仍然是同一组约束，卷首与卷尾收到的要求完全一样，
+卷出口结果可以在第一章就被兑现。
+
+### 12.2 实现（`adapters/runtime/stage3_writer.py`）
+
+| 机制 | 语义 |
+|---|---|
+| `VolumeStageSlot` | 阶段条目连同它**自己声明的**窗口；`declares_window` / `covers(chapter)` / `window_label` |
+| `_volume_stage_positions` | 章在自己范围内的位置：首章为卷首、末章为卷尾、中间连续三等分，`(opening)`/`(middle)`/`(closing)` |
+| `VOLUME_STAGE_SLOT_SCOPE` | 自由文本槽的阶段归属：`entry_conditions`→卷首、`exit_conditions`→卷尾、`reveal_window`/两个 ceiling→整卷 |
+| `_volume_stage_constraints` | 结构化条目**只在其窗口内**绑定；自由文本按槽位归属绑定；窗口外不再作为本章要求 |
+
+两处补齐的语义：
+
+- **不得提前兑现卷出口**：卷首/卷中看到 `exit_conditions` 时，投影为
+  `当前卷阶段[卷中·出口未到期:exit_conditions]：…（本章不得提前兑现或解决本卷出口结果）`，
+  与既有 `EARLY_RESOLUTION` 判定同向；
+- **入口条件不是新任务**：卷中/卷尾看到 `entry_conditions` 时，投影为"本卷入口条件已经成立，
+  本章不得与之矛盾"，而不是要求本章重新达成入口状态。
+
+覆盖范围同时放开：只要节点**自己的**章节范围覆盖本章就参与投影，不再因为它是目标父节点而被跳过。
+
+### 12.3 证据
+
+```text
+tests/unit/test_author_planning_locks.py::test_volume_stage_grid_binds_free_text_slots_to_their_own_stage
+tests/unit/test_author_planning_locks.py::test_a_declared_stage_window_outranks_the_slot_scope
+tests/unit/test_author_planning_locks.py::test_volume_stage_slots_reach_the_writer_in_every_declared_shape
+tests/unit/test_author_planning_locks.py  20 passed
+```
+
+用例对同一卷的第 1、5、9 章分别断言三组**不同**约束，并断言窗口 `4-6` 的条目在第 2 章与第 9 章
+都不出现、只在第 5 章出现。
+
+回归（`tests/unit tests/contract`，冻结基线对比）：
+
+```text
+76 failed / 3048 passed / 1 skipped
+new: []   fixed: []   identical: True
+```
+
+未运行完整 `make quality`，未修改覆盖率阈值。
