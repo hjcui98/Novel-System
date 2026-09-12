@@ -67,6 +67,19 @@
    （保留本地 `_bind_cumulative_budget` 记账、删除重复块）。
 5. 需同步更新断言 prompt 文本的既有测试（`test_curator_evidence_contract_v2.py` 等）。
 
+## 2.5 已完成：剩余列表索引错配（R4.6，A19）
+
+`WriterChangeReconciliationService.reconcile` 先把观察列表 `enumerate` 成
+`(原索引, 元素)` 再按**位置**`pop`：第一次删除后，剩余元素保存的原索引全部失效，
+多条声明时会消费错误的观察，甚至直接崩溃。
+
+**实测确认**（临时还原旧代码）：`test_partial_match_after_an_exact_pop_keeps_a_distinct_observation`
+报 `IndexError: pop index out of range`——不是理论风险。
+
+修复即盲修 b79a751 的做法：只保存元素，匹配时现算索引，`pop` 命中元素。
+证据：`tests/unit/test_writer_change_reconciliation_indices.py`（3 项）：
+反序 exact match 各自绑定、partial mismatch 消费自己的 subject、pop 后未匹配观察仍如实上报。
+
 ## 3. R4 其余未完成项
 
 | 项 | 内容 |
@@ -79,5 +92,5 @@
 
 ## 4. 回归与失败身份
 
-`tests/unit tests/contract`：**76 failed / 2975 passed / 1 skipped**；
-失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。本轮新增 12 项通过测试。
+`tests/unit tests/contract`：**76 failed / 2978 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复）。本轮新增 15 项通过测试。
