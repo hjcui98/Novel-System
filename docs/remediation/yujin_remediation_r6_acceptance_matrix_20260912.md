@@ -307,3 +307,63 @@ tests/unit tests/contract  76 failed / 3038 passed / 1 skipped
 
 本轮新增通过测试：作者锁 18 项、host review 义务契约 12 项、修稿恢复与阶段前沿 3 项、
 中文门禁登记等，合计新增约 21 项确定性通过。未运行完整 `make quality`，未修改覆盖率阈值。
+
+## 9. 真实运行打通记录（v12，2026-09-13）
+
+### 9.1 阻塞真实运行的是一个身份口径 bug，已修复
+
+v7 到 v11 每一次 `dispatch` 都在第一个任务之前失败：
+
+```text
+RUN_CONFIGURATION_CHANGED
+```
+
+根因是同一个配置指纹的 `profile_root_hash` 输入在两条路径上取了不同的值：
+
+| 路径 | 取值 | 结果 |
+|---|---|---|
+| bootstrap commit | `manifest.project_profile_root.artifact_id` | 写进 descriptor |
+| 运行装配 | 文档内部的 `profile.root_hash` 字段 | 装配时重新计算 |
+
+`BootstrapRootBuilder` 存储根文档时**包含** `root_hash` 字段，因此制品的内容地址与该字段天然不同
+（v11 实测：制品 `26382340…`，字段 `4a527b23…`）。只替换这一项就能精确复现冻结的 policy hash，
+说明口径不一致就是全部原因。
+
+修复后实测（v12，同一份冻结配置）：
+
+```text
+descriptor policy_hash = 与装配 attestation 一致
+dispatch → status = progressed → run = waiting
+```
+
+`RUN_CONFIGURATION_CHANGED` 现在同时输出 `frozen=` 与 `observed=`，因为裸 code 读起来像"操作者改了配置"，
+掩盖了究竟是哪个输入动了。回归：`test_root_document_identity_is_the_manifest_content_address` 固定
+"两个身份确实不同"这一事实，防止口径再次分叉。
+
+### 9.2 v12 首次在真实调用链上跑通 STORY
+
+```text
+run.yujin-jiuxu.v12.plan              plan_candidate   succeeded   level=story
+run.yujin-jiuxu.v12.plan.accept       plan_acceptance  succeeded   level=story
+run.yujin-jiuxu.v12.plan.accept.commit plan_commit     blocked     validation_rejected
+```
+
+真实模型调用 4 次（`logical_phase=development`，全部 `completed`）。STORY 提案 9 条、
+coverage 0.95、2 条非阻断 unresolved，经 host review 后由作者接受并生成 commit 任务。
+
+这是本项目第一次让"bootstrap → 装配 → dispatch → 规划 → 审校 → 接受"整条链在真实端点上完成，
+而不是停在指纹校验。
+
+### 9.3 仍未闭合的项（按优先级）
+
+| 项 | 现状与下一步 |
+|---|---|
+| STORY commit 被拒 | `plan_commit` 任务 `validation_rejected`，事件只带 failure_class，没有细节。需要先让该拒绝输出具体失败项，再判断是数据还是校验问题 |
+| 八卷与首批五章 | STORY 提案只有 3 条卷结构（第一卷、第三卷、第四卷），没有完整八卷，也没有章节目标。G0 未通过 |
+| 审校输入缺口 | `planning_context_loop` 调用审校器时未传 World 根与作者约束根；目录读取器只认专用媒体类型，真实 World 根是 `application/json`；`trusted_window` 生产未传 |
+| Genesis 未来事件分类 | bootstrap 把第四卷"唐钧打造沉曜"写成 `valid_time.start_ordinal = 0` 的当前事实，而 Writer 会把参与人物状态注入 `Canon current state`，与时间锁直接冲突 |
+| 卷阶段时间语义 | 阶段槽投影未按条目章节窗口筛选，卷首/卷中/卷末收到同一组约束 |
+| 修稿恢复执行证据 | 正常 PASS 的未初始化变量已修并有回归；`REPAIR_PENDING` 仍未实际写入，恢复入口仍先重建 Memory 包 |
+| 大改路径夹具 | 8 个相关单测文件实测 **1 失败**：`test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal`（断言英文串，prompt 是中文，R0 基线既有） |
+
+八卷与章节目标未产生之前不进入两章 smoke。
