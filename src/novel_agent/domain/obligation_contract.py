@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from novel_agent.domain.ids import StableId, bounded_stable_id
 from novel_agent.domain.memory import ObligationKind
+from novel_agent.services.content_addressing import content_id
 
 _CHAPTER_WINDOW = re.compile(r"^(?P<start>[1-9][0-9]*)(?:\s*-\s*(?P<end>[1-9][0-9]*))?$")
 _ACTION_ALIASES = {
@@ -294,6 +296,219 @@ def compile_legacy_obligation_plan(value: object) -> ObligationDeclarationCompil
         )
     return ObligationDeclarationCompilation(
         declarations=tuple(declarations), discrepancies=tuple(discrepancies)
+    )
+
+
+# ---------------------------------------------------------------------------
+# One declaration contract for review and materialization.
+#
+# Host review and the plan materializer each grew their own reading of the same
+# payload, so a declaration could pass review and be refused at commit (live v12:
+# ``kind="obligation"`` with no readable kind).  Both now call the functions
+# below, which is the only place that decides what a declaration is, which keys
+# are declaration surfaces, and what a missing field means.
+# ---------------------------------------------------------------------------
+
+# Payload keys whose value is a declaration object (or a list of them).
+NESTED_OBLIGATION_DECLARATION_KEYS: tuple[str, ...] = (
+    "obligations",
+    "obligation_declarations",
+    "key_obligations",
+    "obligation_declaration",
+)
+# The item kind the materializer treats as a declaration surface even though it is
+# not an ObligationKind value.
+BARE_OBLIGATION_ITEM_KIND = "obligation"
+_DECLARATION_DESCRIPTION_KEYS: tuple[str, ...] = (
+    "description",
+    "summary",
+    "goal",
+    "text",
+    "objective",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedObligationDeclaration:
+    """One declaration in the order the identity convention binds it."""
+
+    ordinal: int
+    kind: ObligationKind
+    description: str
+    source_form: str
+    not_before_chapter: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationDeclarationParse:
+    """Every readable declaration plus every surface that could not be read."""
+
+    declarations: tuple[ParsedObligationDeclaration, ...]
+    discrepancies: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.discrepancies
+
+
+def claims_direct_obligation(payload: Mapping[str, object], item_kind: str) -> bool:
+    """Report whether an item asserts an obligation of its own.
+
+    True when the payload names a declaration kind, carries a nested ``obligation``
+    object, or the item kind itself is a declaration surface.  A legacy
+    ``obligation_plan`` table and the nested declaration lists are separate
+    surfaces with their own reading, so they do not make an item "direct".
+    """
+
+    if payload.get("obligation_kind") or payload.get("obligation_type"):
+        return True
+    if payload.get("obligation") is not None or payload.get("obligations") is not None:
+        return True
+    return item_kind in {kind.value for kind in ObligationKind} | {BARE_OBLIGATION_ITEM_KIND}
+
+
+def _declaration_description(entry: Mapping[str, object]) -> str | None:
+    for key in _DECLARATION_DESCRIPTION_KEYS:
+        raw = entry.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def parse_obligation_declarations(
+    payload: Mapping[str, object],
+    *,
+    item_kind: str = "",
+    item_id: str = "item",
+) -> ObligationDeclarationParse:
+    """Read every declaration an item asserts, reporting each unreadable surface.
+
+    The parser never invents a kind, fills a missing description, or drops an
+    unreadable entry: an item that says it declares an obligation but does not
+    describe one is reported so review and materialization refuse it for the same
+    stated reason.
+    """
+
+    declarations: list[ParsedObligationDeclaration] = []
+    discrepancies: list[str] = []
+
+    def read(entry: object, form: str, position: int) -> None:
+        label = f"{form}[{position}]"
+        if not isinstance(entry, Mapping):
+            discrepancies.append(f"{label} is not a declaration object")
+            return
+        kind_raw = entry.get("obligation_kind") or entry.get("kind") or entry.get("obligation_type")
+        if kind_raw is None or not str(kind_raw).strip():
+            discrepancies.append(
+                f"{label} declares no obligation kind; name one of "
+                + ", ".join(kind.value for kind in ObligationKind)
+            )
+            return
+        try:
+            kind = ObligationKind(str(kind_raw).strip().lower())
+        except ValueError:
+            discrepancies.append(
+                f"{label} has an unknown obligation kind {str(kind_raw)!r}; "
+                "allowed values are " + ", ".join(kind.value for kind in ObligationKind)
+            )
+            return
+        description = _declaration_description(entry)
+        if description is None:
+            discrepancies.append(
+                f"{label} requires a non-empty description, summary, goal, text or objective"
+            )
+            return
+        not_before_raw = entry.get("not_before_chapter")
+        not_before = (
+            not_before_raw
+            if type(not_before_raw) is int and not_before_raw >= 1
+            else None
+        )
+        declarations.append(
+            ParsedObligationDeclaration(
+                ordinal=len(declarations),
+                kind=kind,
+                description=description,
+                source_form=form,
+                not_before_chapter=not_before,
+            )
+        )
+
+    if (
+        payload.get("obligation_kind")
+        or payload.get("obligation_type")
+        or payload.get("obligations") is not None
+        or item_kind in {kind.value for kind in ObligationKind}
+    ):
+        direct = dict(payload)
+        direct.setdefault("kind", item_kind)
+        read(direct, f"item.{item_id}", 0)
+    elif item_kind == BARE_OBLIGATION_ITEM_KIND and payload.get("obligation") is None:
+        # The item says it is an obligation but its payload names no kind.  Report
+        # that instead of inventing one, so review and materialization agree.
+        read(dict(payload), f"item.{item_id}", 0)
+
+    nested = payload.get("obligation")
+    if nested is not None:
+        read(nested, f"item.{item_id}.obligation", 0)
+
+    for key in NESTED_OBLIGATION_DECLARATION_KEYS:
+        values = payload.get(key)
+        if values is None:
+            continue
+        if isinstance(values, Mapping):
+            values = (values,)
+        if not isinstance(values, (list, tuple)):
+            discrepancies.append(f"{key} must contain declaration objects")
+            continue
+        for position, entry in enumerate(values):
+            read(entry, f"item.{item_id}.{key}", position)
+
+    legacy = payload.get("obligation_plan")
+    if legacy is not None:
+        compilation = compile_legacy_obligation_plan(legacy)
+        discrepancies.extend(compilation.discrepancies)
+        for declaration in compilation.declarations:
+            declarations.append(
+                ParsedObligationDeclaration(
+                    ordinal=len(declarations),
+                    kind=declaration.kind,
+                    description=declaration.description,
+                    source_form="obligation_plan",
+                    not_before_chapter=declaration.not_before_chapter,
+                )
+            )
+    return ObligationDeclarationParse(
+        declarations=tuple(declarations), discrepancies=tuple(discrepancies)
+    )
+
+
+def declared_obligation_identities(
+    payload: Mapping[str, object],
+    *,
+    item_kind: str = "",
+    item_id: str = "item",
+) -> tuple[StableId, ...]:
+    """The host-derived obligation ids an item's declarations will bind.
+
+    This is the identity convention the plan binder uses, exposed once so review
+    can recognise the catalogue without keeping its own copy of the algorithm.
+    """
+
+    parse = parse_obligation_declarations(payload, item_kind=item_kind, item_id=item_id)
+    return tuple(
+        bounded_stable_id(
+            f"obligation.{item_id}.{declaration.ordinal}.{declaration.kind.value}",
+            "obligation."
+            + content_id(
+                {
+                    "plan_item_id": item_id,
+                    "ordinal": declaration.ordinal,
+                    "kind": declaration.kind.value,
+                }
+            ).root.removeprefix("sha256:")[:48],
+        )
+        for declaration in parse.declarations
     )
 
 

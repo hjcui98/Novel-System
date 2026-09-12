@@ -58,6 +58,7 @@ from novel_agent.agents.plan_reviewer import PlanReviewerAgent
 from novel_agent.agents.planner import PlannerAgent, build_planner_contract_bundle
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec, seal_tool_policy
 from novel_agent.agents.runner import StructuredAgentRunner
+from novel_agent.domain.artifacts import RootManifest
 from novel_agent.domain.generation import WritingLengthPolicy, WritingLoopBudgets
 from novel_agent.domain.ids import (
     ArtifactId,
@@ -1455,6 +1456,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         else context.projection_builder or ExactReplayProjectionBuilder()
     )
     prompt_pins, skill_pins = production_contract_pins(schema_version=schema_version)
+    manifest: RootManifest | None = None
     try:
         manifest = commits.load_manifest(commits.current_commit(context.project_id))
         # Identity is the content address the manifest commits to.  The root_hash
@@ -1467,17 +1469,6 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         profile_root_hash = None
     settlement_policy_fingerprint = settlement_policy.configuration_fingerprint
     admission_snapshot = admission.snapshot()
-    import os as _trace_os
-    if _trace_os.environ.get("NOVEL_FP_TRACE"):
-        with open(_trace_os.environ["NOVEL_FP_TRACE"] + ".assembly", "a", encoding="utf-8") as _fh:
-            _fh.write(json.dumps({
-                "profile_root_hash": None if profile_root_hash is None else profile_root_hash.root,
-                "manifest_profile": manifest.project_profile_root.artifact_id.root,
-                "retrieval": context.retrieval_backend_profile,
-                "reranker_resolved": context.reranker is not None,
-                "endpoint_names": [e.endpoint_name for e in model_endpoints],
-                "scheduling": admission_snapshot["default_scheduling_timeout_seconds"],
-            }, sort_keys=True) + "\n")
     current_configuration_fingerprint = production_configuration_fingerprint(
         spec=spec,
         migration_head=migration_head,
@@ -1646,7 +1637,11 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     planner = Stage4PlanningLeafAdapter(
         PlanningContextLoopService(
             planner=PlannerAgent(planner_runner, artifacts),
-            reviewer=PlanReviewerAgent(planner_runner, artifacts),
+            reviewer=PlanReviewerAgent(
+                planner_runner,
+                artifacts,
+                accepted_world_ref=None if manifest is None else manifest.world_root,
+            ),
             need_generator=PlanningInquiryConditionedNeedGenerator(),
             memory_gateway=memory_gateway,
             context_assembler=PlannerContextAssembler(artifacts, schema_version=schema_version),

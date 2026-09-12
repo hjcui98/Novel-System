@@ -46,8 +46,9 @@ from novel_agent.domain.memory import (
     require_not_before_for_kind,
 )
 from novel_agent.domain.obligation_contract import (
-    compile_legacy_obligation_plan,
+    claims_direct_obligation,
     compile_obligation_actions,
+    parse_obligation_declarations,
 )
 from novel_agent.domain.planning import (
     PlanningLoopEventReceipt,
@@ -1143,9 +1144,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
 
             direct_kind = payload.get("obligation_kind") or payload.get("obligation_type")
             item_kind = item.kind.lower()
-            has_direct_declaration = direct_kind is not None or item_kind in obligation_kinds | {
-                "obligation"
-            }
+            has_direct_declaration = claims_direct_obligation(payload, item_kind)
             has_nested_declaration = any(key in payload for key in declaration_keys) or (
                 payload.get("obligation_plan") is not None
             )
@@ -1157,45 +1156,25 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     "may not declare new obligations"
                 )
 
-            if has_direct_declaration:
-                direct_payload = dict(payload)
-                if direct_kind is None and item_kind in obligation_kinds:
-                    direct_payload.setdefault("kind", item_kind)
-                raw_declarations.append(direct_payload)
-            nested = payload.get("obligation")
-            if isinstance(nested, dict):
-                raw_declarations.append(nested)
-            elif nested is not None:
-                raise CandidateMaterializationError("obligation declaration must be an object")
-            for key in (
-                "obligations",
-                "obligation_declarations",
-                "key_obligations",
-                "obligation_declaration",
-            ):
-                values = payload.get(key)
-                if isinstance(values, dict):
-                    values = [values]
-                if values is None:
-                    continue
-                if not isinstance(values, (list, tuple)) or not all(
-                    isinstance(value, dict) for value in values
-                ):
-                    raise CandidateMaterializationError(
-                        f"{key} must contain obligation declaration objects"
-                    )
-                raw_declarations.extend(cast(list[Mapping[str, object]], values))
-            if payload.get("obligation_plan") is not None:
-                legacy = compile_legacy_obligation_plan(payload["obligation_plan"])
-                if not legacy.complete:
-                    raise CandidateMaterializationError(
-                        "legacy obligation_plan entries are not readable: "
-                        + "; ".join(legacy.discrepancies)
-                    )
-                raw_declarations.extend(
-                    declaration.as_binder_payload() for declaration in legacy.declarations
+            # One declaration contract with host review: the parser is the only
+            # place that decides what a declaration is and what a missing field
+            # means, so a candidate cannot pass review and fail here.
+            parse = parse_obligation_declarations(
+                payload, item_kind=item_kind, item_id=item.item_id.root
+            )
+            if not parse.complete:
+                raise CandidateMaterializationError(
+                    "obligation declaration is not readable: "
+                    + "; ".join(parse.discrepancies)
                 )
-
+            raw_declarations.extend(
+                {
+                    "kind": declaration.kind.value,
+                    "summary": declaration.description,
+                    "not_before_chapter": declaration.not_before_chapter,
+                }
+                for declaration in parse.declarations
+            )
             for ordinal, raw in enumerate(raw_declarations):
                 kind_raw = (
                     raw.get("obligation_kind") or raw.get("kind") or raw.get("obligation_type")

@@ -405,7 +405,7 @@ def test_a_declaration_without_an_obligation_kind_is_revise() -> None:
 
     assert review.decision is ReviewDecision.REVISE
     assert any(
-        "OBLIGATION_KIND_MISSING" in issue.summary and issue.blocking for issue in review.issues
+        "OBLIGATION_DECLARATION_UNREADABLE" in issue.summary and issue.blocking for issue in review.issues
     )
 
 
@@ -421,7 +421,7 @@ def test_an_unknown_obligation_kind_is_revise() -> None:
         mode="story",
     )
 
-    assert any("OBLIGATION_KIND_UNKNOWN" in issue.summary for issue in review.issues)
+    assert any("OBLIGATION_DECLARATION_UNREADABLE" in issue.summary for issue in review.issues)
 
 
 def test_a_legacy_responsibility_table_is_not_treated_as_a_direct_declaration() -> None:

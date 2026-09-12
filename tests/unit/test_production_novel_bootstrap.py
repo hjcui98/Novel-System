@@ -968,3 +968,82 @@ def test_root_document_identity_is_the_manifest_content_address() -> None:
         ProjectProfileRootDocument.model_validate_json(stored, strict=True).root_hash
         == candidate.profile.root_hash
     )
+
+
+def test_scheduled_later_states_are_not_written_as_accepted_facts() -> None:
+    """A volume-4 event must not become canon current state at chapter 1.
+
+    Live genesis recorded "唐钧 forges 沉曜" (a volume-4 event) as
+    ``accepted_world_fact`` at ordinal 0, and the Writer turns a participating
+    character's state into ``Canon current state``, so the chapter was told the
+    event had already happened.
+    """
+
+    from novel_agent.domain.memory import TruthClass
+    from novel_agent.domain.planning_locks import load_author_planning_locks
+    from novel_agent.domain.stage2 import ProposalProvenance
+    from novel_agent.runtime.production_novel_bootstrap import (
+        _scheduled_later_lock_texts,
+        _world_root,
+    )
+
+    locks = load_author_planning_locks(
+        {
+            "schema_version": "2.0.0",
+            "project_id": "project.bootstrap.future",
+            "locks": [
+                {
+                    "lock_id": "lock.forge.vol4",
+                    "category": "reveal",
+                    "description": "第四卷：唐钧在钧炉城锻打武器沉曜",
+                    "not_before_chapter": 350,
+                },
+                {
+                    "lock_id": "lock.court.vol2",
+                    "category": "reveal",
+                    "description": "内府资格最早第二卷",
+                    "not_before_chapter": 101,
+                },
+            ],
+        }
+    )
+    # _world_root reads only the patch items, and a real WorldPatchCandidate
+    # requires a full agent receipt that has nothing to do with this decision.
+    world_patch = SimpleNamespace(
+        items=(
+            ProposedItem(
+                item_id=StableId("world.item.forge"),
+                kind="character",
+                payload={
+                    "label": "唐钧",
+                    "entity_type": "character",
+                    "value": "灵械师。第四卷：在钧炉城以星铁为底锻打而成武器沉曜。",
+                },
+                provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                source_ids=(StableId("source.author-initial-brief"),),
+            ),
+            ProposedItem(
+                item_id=StableId("world.item.faction"),
+                kind="organization",
+                payload={
+                    "label": "斩星府",
+                    "entity_type": "organization",
+                    "value": "斩星武者所属组织，内部结构包括外府与内府。",
+                },
+                provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                source_ids=(StableId("source.author-initial-brief"),),
+            ),
+        ),
+    )
+
+    world, demoted = _world_root(
+        world_patch,
+        VERSION,
+        future_lock_texts=_scheduled_later_lock_texts(locks),
+    )
+
+    classes = {state.state_id.root: state.truth_class for state in world.states}
+    assert classes["state.bootstrap.1"] is TruthClass.PREDICTION
+    assert classes["state.bootstrap.2"] is TruthClass.ACCEPTED_WORLD_FACT
+    assert [item[0].root for item in demoted] == ["state.bootstrap.1"]
+    assert "future volume reference" in demoted[0][1]

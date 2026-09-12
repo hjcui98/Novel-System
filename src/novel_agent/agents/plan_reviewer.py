@@ -16,6 +16,7 @@ from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.obligation_contract import (
     compile_legacy_obligation_plan,
     compile_obligation_actions,
+    parse_obligation_declarations,
 )
 from novel_agent.domain.planning import (
     PlannerContextPackage,
@@ -41,7 +42,6 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
     PlanUnresolvedIssue,
-    ProjectProfileRootDocument,
     hard_unresolved_kinds,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -475,32 +475,6 @@ def _is_chapter_item(raw: dict[str, Any], payload: dict[str, Any]) -> bool:
     )
 
 
-def _is_known_obligation_kind(value: object) -> bool:
-    try:
-        ObligationKind(str(value))
-    except ValueError:
-        return False
-    return True
-
-
-def _claims_direct_obligation(payload: dict[str, Any], item_kind: str) -> bool:
-    """Mirror the materializer's direct-declaration surface.
-
-    The materializer reads a direct declaration from ``obligation_kind`` /
-    ``obligation_type``, from a nested ``obligation`` object, or from an item whose
-    own kind is an obligation kind.  A legacy ``obligation_plan`` table and an
-    ``obligation_declarations`` list are separate surfaces with their own checks,
-    so they must not be treated as direct declarations here.
-    """
-
-    # "obligation" itself is not an ObligationKind value but the materializer
-    # treats it as a declaration surface, which is exactly how the live STORY
-    # item slipped through.
-    if item_kind == "obligation" or item_kind in {kind.value for kind in ObligationKind}:
-        return True
-    return payload.get("obligation") is not None or payload.get("obligations") is not None
-
-
 def _append_obligation_contract_issues(
     issues: list[PlanReviewIssue],
     payload: dict[str, Any],
@@ -545,48 +519,22 @@ def _append_obligation_contract_issues(
                         blocking=True,
                     )
                 )
-    # A direct declaration has to name a readable obligation kind.  The
-    # materializer rejects an unknown kind, so accepting it here would produce
-    # exactly the "accepted by review, refused at commit" failure the remediation
-    # set out to close.  Reproduced live: a STORY item with kind="obligation" and
-    # no obligation_kind was ACCEPTed and then blocked the commit.
-    direct_kind = payload.get("obligation_kind") or payload.get("obligation_type")
-    if direct_kind is None and _claims_direct_obligation(payload, item_kind):
+    # One declaration contract with the materializer.  Host review previously
+    # had its own reading and both disagreed: a live STORY item was ACCEPTed here
+    # and refused at commit, and two legal declaration shapes were refused here
+    # while the materializer accepted them.
+    parse = parse_obligation_declarations(payload, item_kind=item_kind, item_id=item_id)
+    for discrepancy in parse.discrepancies:
         issues.append(
             _host_issue(
                 ReviewIssueKind.OBLIGATION_CONTRACT,
-                "OBLIGATION_KIND_MISSING: an item that declares an obligation must name an "
-                "obligation_kind of "
-                + ", ".join(kind.value for kind in ObligationKind),
-                item_id,
-                blocking=True,
-            )
-        )
-    elif direct_kind is not None and not _is_known_obligation_kind(direct_kind):
-        issues.append(
-            _host_issue(
-                ReviewIssueKind.OBLIGATION_CONTRACT,
-                f"OBLIGATION_KIND_UNKNOWN: {direct_kind!r} is not one of "
-                + ", ".join(kind.value for kind in ObligationKind),
+                f"OBLIGATION_DECLARATION_UNREADABLE: {discrepancy}",
                 item_id,
                 blocking=True,
             )
         )
     declarations = payload.get("obligation_declarations")
-    if declarations is not None and (
-        not isinstance(declarations, (list, tuple))
-        or not all(isinstance(entry, dict) for entry in declarations)
-    ):
-        issues.append(
-            _host_issue(
-                ReviewIssueKind.OBLIGATION_CONTRACT,
-                "OBLIGATION_DECLARATION_UNREADABLE: obligation_declarations must be "
-                "a list of declaration objects",
-                item_id,
-                blocking=True,
-            )
-        )
-    elif declarations and mode in {
+    if declarations and mode in {
         AgentMode.CHAPTER_SET,
         AgentMode.CHAPTER,
         AgentMode.SCENE,
@@ -848,9 +796,20 @@ def _is_stable_id(value: str) -> bool:
 
 
 class PlanReviewerAgent:
-    def __init__(self, runner: StructuredAgentRunner, artifacts: ArtifactRepository) -> None:
+    def __init__(
+        self,
+        runner: StructuredAgentRunner,
+        artifacts: ArtifactRepository,
+        *,
+        accepted_world_ref: ArtifactRef | None = None,
+    ) -> None:
         self._runner = runner
         self._artifacts = artifacts
+        # The accepted World root is the only authority for the obligation
+        # catalogue.  It is the root the task's basis commit binds, so the
+        # reviewer never has to guess it from the candidate or rebuild the ids
+        # from a second source.
+        self._accepted_world_ref = accepted_world_ref
 
     async def review(
         self,
@@ -899,7 +858,9 @@ class PlanReviewerAgent:
             expected_volume_count=_expected_volume_count_from_context(review_context),
             expected_target_chapters=_expected_target_chapters_from_context(review_context),
             accepted_obligation_ids=_accepted_obligation_ids(
-                self._artifacts, trusted_source_artifacts, context_package
+                self._artifacts,
+                trusted_source_artifacts,
+                accepted_world_ref=self._accepted_world_ref,
             ),
             author_constraints=_author_constraint_catalogue(
                 self._artifacts, trusted_source_artifacts, context_package
@@ -1071,7 +1032,8 @@ def _declared_obligation_ids(payload: Mapping[str, object], item_id: str) -> set
 def _accepted_obligation_ids(
     artifacts: ArtifactRepository,
     refs: tuple[ArtifactRef, ...],
-    context_package: PlannerContextPackage | None,
+    *,
+    accepted_world_ref: ArtifactRef | None,
 ) -> frozenset[str] | None:
     """Read the obligation catalogue a lower-level plan must reference.
 
@@ -1084,9 +1046,19 @@ def _accepted_obligation_ids(
 
     from novel_agent.domain.memory import WorldRootDocument
 
-    for ref in refs:
-        if ref.media_type != "application/vnd.novel-agent.world-root+json":
-            continue
+    candidates = [
+        ref
+        for ref in (
+            accepted_world_ref,
+            *(
+                item
+                for item in refs
+                if item.media_type == "application/vnd.novel-agent.world-root+json"
+            ),
+        )
+        if ref is not None
+    ]
+    for ref in candidates:
         try:
             world = WorldRootDocument.model_validate_json(
                 artifacts.read_verified(ref), strict=True
@@ -1094,26 +1066,10 @@ def _accepted_obligation_ids(
         except (UnicodeDecodeError, ValueError):
             continue
         return frozenset(item.obligation_id.root for item in world.obligations)
-    profile_ref = None if context_package is None else context_package.profile_ref
-    if profile_ref is None:
-        return None
-    try:
-        profile = ProjectProfileRootDocument.model_validate_json(
-            artifacts.read_verified(profile_ref), strict=True
-        )
-    except (UnicodeDecodeError, ValueError):
-        return None
-    catalogue: set[str] = set()
-    raw_declarations = profile.capability_profile.get("obligation_declarations")
-    if isinstance(raw_declarations, (list, tuple)):
-        for item in raw_declarations:
-            if not isinstance(item, Mapping):
-                continue
-            item_id = item.get("item_id") or item.get("plan_item_id")
-            payload = item.get("payload")
-            if isinstance(item_id, str) and isinstance(payload, Mapping):
-                catalogue |= _declared_obligation_ids(payload, item_id)
-    return frozenset(catalogue)
+    # No World root reached this review, so the catalogue is unknown.  ``None``
+    # means "cannot verify" and the callers report it; an empty frozenset would
+    # mean "there are no obligations", which is a different statement.
+    return None
 
 
 def _expected_target_chapters_from_context(context: str) -> int | None:

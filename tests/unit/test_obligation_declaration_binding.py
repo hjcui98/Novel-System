@@ -271,7 +271,7 @@ def test_unreadable_legacy_responsibility_entry_fails_closed() -> None:
         planner._bind_obligation_declarations(_world(), proposal)
 
     detail = str(error.value)
-    assert "legacy obligation_plan entries are not readable" in detail
+    assert "obligation declaration is not readable" in detail
     assert "no observable completion boundary" in detail
 
 

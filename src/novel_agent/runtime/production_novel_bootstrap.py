@@ -45,6 +45,7 @@ from novel_agent.domain.model_calls import (
 from novel_agent.domain.planning_locks import (
     AUTHOR_PLANNING_LOCKS_MEDIA_TYPE,
     AuthorPlanningLocksDocument,
+    PlanningLockCategory,
     compile_planning_lock_channels,
 )
 from novel_agent.domain.stage2 import (
@@ -247,7 +248,14 @@ class ProductionNovelBootstrap:
             chapters=(),
         )
         plan = _plan_root(planner_result, self._schema_version)
-        world = _world_root(world_patch, self._schema_version)
+        # Demote scheduled-later content using the author's own frozen channel,
+        # which is the only trustworthy statement of what belongs to a later
+        # volume.
+        world, demoted_future_states = _world_root(
+            world_patch,
+            self._schema_version,
+            future_lock_texts=_scheduled_later_lock_texts(planning_locks),
+        )
         reference = _reference_root(ingested, self._schema_version)
         planning_locks_ref: ArtifactRef | None = None
         if planning_locks is not None:
@@ -332,6 +340,12 @@ class ProductionNovelBootstrap:
                     "value": state.value,
                 }
                 for state in candidates.world.states
+            ],
+            # A demotion is a reviewable decision, not a silent rewrite: the
+            # preview names every state moved out of accepted fact and why.
+            "demoted_future_states": [
+                {"id": state_id.root, "reason": reason}
+                for state_id, reason in demoted_future_states
             ],
             "style_profile": candidates.profile.style_profile,
             "unresolved_plan": [issue.summary for issue in planner_result.plan_proposal.unresolved],
@@ -749,15 +763,47 @@ def _plan_root(
     return provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
 
 
+def _scheduled_later_lock_texts(
+    locks: AuthorPlanningLocksDocument | None,
+) -> tuple[str, ...]:
+    """The author's scheduled-later content, as the demotion vocabulary.
+
+    A reveal, progress, equipment or location lock is the author's own statement
+    that a piece of content belongs to a later volume, so a bootstrap state that
+    restates one of them describes planned content rather than an already-true
+    fact.  Only the text is needed here; the chapter windows keep their own owner.
+    """
+
+    if locks is None:
+        return ()
+    scheduled = {
+        PlanningLockCategory.REVEAL,
+        PlanningLockCategory.PROGRESSION,
+        PlanningLockCategory.EQUIPMENT,
+        PlanningLockCategory.LOCATION,
+    }
+    return tuple(
+        dict.fromkeys(
+            lock.description.strip()
+            for lock in locks.locks
+            if lock.category in scheduled and lock.description.strip()
+        )
+    )
+
+
 def _world_root(
     world_patch: WorldPatchCandidate,
     schema_version: SchemaVersion,
-) -> WorldRootDocument:
+    *,
+    future_lock_texts: tuple[str, ...] = (),
+) -> tuple[WorldRootDocument, tuple[tuple[StableId, str], ...]]:
     setting_id = DUMMY_WORLD_ENTITY_ID
     entities = [
         Entity(entity_id=setting_id, entity_type="setting", internal_label="故事世界"),
     ]
     states: list[StateRecord] = []
+    demoted: list[tuple[StableId, str]] = []
+    lock_texts = future_lock_texts
     for index, item in enumerate(world_patch.items, start=1):
         label = _payload_text(item, "label", "name", "title")
         entity_type = _payload_text(item, "entity_type", "type") or item.kind
@@ -776,6 +822,18 @@ def _world_root(
             subject = entity_id
         else:
             subject = setting_id
+        # The Curator prompt already forbids promoting planned content to a
+        # confirmed world fact, but the model still folds forward-looking
+        # knowledge into character entries.  A live genesis recorded volume 4's
+        # "唐钧 forges 沉曜" as an accepted fact at ordinal 0, and the Writer
+        # injects a participating character's state as canon current state, so the
+        # chapter was told a volume-4 event had already happened.
+        future_intent, future_reason = _declares_future_intent(
+            fact,
+            future_lock_texts=lock_texts,
+        )
+        if future_intent:
+            demoted.append((StableId(f"state.bootstrap.{index}"), future_reason or "future intent"))
         states.append(
             StateRecord(
                 state_id=StableId(f"state.bootstrap.{index}"),
@@ -783,7 +841,9 @@ def _world_root(
                 predicate=str(item.payload.get("predicate") or item.kind),
                 value=fact,
                 valid_time=StoryTime(worldline="main", start_ordinal=0),
-                truth_class=TruthClass.ACCEPTED_WORLD_FACT,
+                truth_class=(
+                    TruthClass.PREDICTION if future_intent else TruthClass.ACCEPTED_WORLD_FACT
+                ),
             )
         )
     provisional = WorldRootDocument(
@@ -793,7 +853,66 @@ def _world_root(
         entities=tuple(entities),
         states=tuple(states),
     )
-    return provisional.model_copy(update={"root_hash": world_root_content_id(provisional)})
+    document = provisional.model_copy(update={"root_hash": world_root_content_id(provisional)})
+    return document, tuple(demoted)
+
+
+# Forward-looking wording the Curator folds into present-tense character entries.
+# Ordered most-specific first so the reason stays readable in the preview.
+_FUTURE_INTENT_MARKERS: tuple[str, ...] = (
+    "最终",
+    "最终将",
+    "将会",
+    "将成为",
+    "后来",
+    "日后",
+    "后续",
+    "本卷目标",
+    "第三卷目标",
+    "第四卷",
+    "第五卷",
+    "第六卷",
+    "第七卷",
+    "第八卷",
+    "成长路线",
+    "路线包括",
+    "的路线",
+)
+_FUTURE_VOLUME_RE = re.compile(r"第[一二三四五六七八九十0-9]+卷")
+
+
+def _declares_future_intent(
+    fact: object,
+    *,
+    future_lock_texts: tuple[str, ...] = (),
+) -> tuple[bool, str | None]:
+    """Report whether a materialized world state states planned future content.
+
+    Bootstrap world states are all written at ordinal 0, and the Writer turns a
+    participating character's state into ``Canon current state``.  Anything the
+    author only scheduled for a later volume therefore has to leave this class
+    instead of being asserted as an already-true fact.
+
+    Two sources decide it, because wording alone is not enough: the author's own
+    frozen progress locks say which content was scheduled for later, and the
+    forward-looking markers catch planned prose the author expressed in the brief.
+    The returned reason is recorded next to the state so a demotion is reviewable.
+    """
+
+    if not isinstance(fact, str) or not fact.strip():
+        return False, None
+    text = fact.strip()
+    for lock in future_lock_texts:
+        body = lock.strip()
+        if len(body) >= 4 and body in text:
+            return True, f"author lock: {body[:48]}"
+    match = _FUTURE_VOLUME_RE.search(text)
+    if match is not None:
+        return True, f"future volume reference: {match.group(0)}"
+    for marker in _FUTURE_INTENT_MARKERS:
+        if marker in text:
+            return True, f"future wording: {marker}"
+    return False, None
 
 
 def _reference_root(
