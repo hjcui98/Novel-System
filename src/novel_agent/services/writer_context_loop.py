@@ -666,7 +666,11 @@ class WriterContextLoopService:
                     compactions=tuple(compactions),
                     artifacts=tuple(artifacts),
                 )
-            local_repair_attempt = 0
+            # A restart resumes the repair allowance instead of resetting it; otherwise
+            # recovery could pay for the same Editor/Writer repair without bound.
+            local_repair_attempt = (
+                0 if resume_checkpoint is None else resume_checkpoint.local_repairs_used
+            )
             while True:
                 local_repair_attempt += 1
                 repair_label = (
@@ -792,7 +796,9 @@ class WriterContextLoopService:
             final_text = repaired_draft.text_artifact
         elif report.verdict is EditorialVerdict.MAJOR_REWRITE:
             assert initial_draft is not None
-            rewrite_attempt = 0
+            rewrite_attempt = (
+                0 if resume_checkpoint is None else resume_checkpoint.major_rewrites_used
+            )
             rewrite_parent = initial_draft
             rewrite_turn: WriterTurnResult | None = None
             major_verification: EditorialReport | None = None
@@ -1000,6 +1006,10 @@ class WriterContextLoopService:
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
                 phase=WritingLoopPhase.OBSERVER_PENDING,
+                repair_stage="rewrite_review" if major_verification is not None else "local_review",
+                local_repairs_used=local_repair_attempt,
+                major_rewrites_used=rewrite_attempt,
+                repair_input=None,
                 initial_draft=initial_draft,
                 rewritten_draft=rewritten_draft,
                 repaired_draft=repaired_draft,
@@ -1087,6 +1097,10 @@ class WriterContextLoopService:
                 writer_turns=writer_turns,
                 seen_fingerprints=seen_fingerprints,
                 phase=WritingLoopPhase.RECONCILIATION_PENDING,
+                repair_stage="rewrite_review" if major_verification is not None else "local_review",
+                local_repairs_used=local_repair_attempt,
+                major_rewrites_used=rewrite_attempt,
+                repair_input=None,
                 initial_draft=initial_draft,
                 rewritten_draft=rewritten_draft,
                 repaired_draft=repaired_draft,
@@ -1660,6 +1674,10 @@ class WriterContextLoopService:
         observation: object | None = None,
         observation_artifact: ArtifactRef | None = None,
         settled_artifacts: tuple[ArtifactRef, ...] = (),
+        repair_stage: str = "dispatch",
+        local_repairs_used: int = 0,
+        major_rewrites_used: int = 0,
+        repair_input: object | None = None,
     ) -> ArtifactRef:
         from novel_agent.domain.editorial import CuratorObservation
         from novel_agent.domain.generation import DeclaredMemoryHint, WriterContextSnapshot
@@ -1674,6 +1692,10 @@ class WriterContextLoopService:
         ).root[-48:]
         checkpoint = WritingLoopCheckpoint(
             checkpoint_id=StableId(f"writing-loop-checkpoint.{suffix}"),
+            repair_stage=repair_stage,
+            local_repairs_used=local_repairs_used,
+            major_rewrites_used=major_rewrites_used,
+            repair_input=repair_input,
             run_id=request.run_id,
             task_id=request.task_id,
             phase=phase,

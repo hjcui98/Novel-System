@@ -18,6 +18,7 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.editorial import (
     CuratorObservation,
     EditorialReport,
+    EditorialReviewInput,
     ReconciliationResult,
     RepairedDraft,
 )
@@ -40,6 +41,7 @@ class WritingLoopPhase(StrEnum):
 
     REACTIVE_MEMORY_PENDING = "REACTIVE_MEMORY_PENDING"
     EDITOR_PENDING = "EDITOR_PENDING"
+    REPAIR_PENDING = "REPAIR_PENDING"
     OBSERVER_PENDING = "OBSERVER_PENDING"
     RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
 
@@ -48,6 +50,15 @@ class WritingLoopCheckpoint(DomainModel):
     """Minimal durable state for a settled Writer turn awaiting reactive Memory."""
 
     checkpoint_id: StableId
+    # Repair frontier: without it a restart resets the repair allowance and can pay for
+    # the same Editor/Writer repair forever.  The counters are lifetime values for the
+    # attempt, so the pinned budget stays meaningful across recovery.
+    repair_stage: Literal["dispatch", "local_review", "rewrite_draft", "rewrite_review"] = (
+        "dispatch"
+    )
+    local_repairs_used: int = Field(default=0, ge=0)
+    major_rewrites_used: int = Field(default=0, ge=0)
+    repair_input: EditorialReviewInput | None = None
     run_id: RunId
     task_id: TaskId
     phase: WritingLoopPhase
@@ -105,6 +116,13 @@ class WritingLoopCheckpoint(DomainModel):
             raise ValueError("post-Draft checkpoint requires the settled Writer candidate")
         if self.phase is WritingLoopPhase.EDITOR_PENDING and self.editor_context is None:
             raise ValueError("Editor-pending checkpoint requires the exact Draft Context")
+        if self.phase is WritingLoopPhase.REPAIR_PENDING:
+            if self.repair_input is None or not self.editorial_reports:
+                raise ValueError("repair checkpoint requires its input and rejection history")
+            if self.repair_stage == "local_review" and self.repaired_draft is None:
+                raise ValueError("local review checkpoint requires the settled repair")
+            if self.repair_stage == "rewrite_review" and self.rewritten_draft is None:
+                raise ValueError("rewrite review checkpoint requires the settled rewrite")
         if self.phase in {
             WritingLoopPhase.OBSERVER_PENDING,
             WritingLoopPhase.RECONCILIATION_PENDING,
