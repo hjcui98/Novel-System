@@ -1,0 +1,248 @@
+"""Author planning locks must reach both the Planner and the Writer surfaces."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.author_constraints import (
+    AuthorConstraintCategory,
+    compile_author_constraint_root,
+)
+from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
+from novel_agent.domain.planning_locks import (
+    ROOT_HASH_PLACEHOLDER,
+    AuthorPlanningLock,
+    PlanningLockCategory,
+    compile_planning_lock_channels,
+    load_author_planning_locks,
+)
+from novel_agent.domain.stage2 import (
+    ContractRef,
+    ProjectProfileRootDocument,
+    PromptContractRef,
+    SkillContractRef,
+)
+from novel_agent.services.bootstrap_workflow import project_profile_root_content_id
+from novel_agent.services.content_addressing import content_id
+
+SCHEMA_VERSION = SchemaVersion("2.0.0")
+
+
+def _lock_document() -> dict[str, object]:
+    return {
+        "schema_version": "2.0.0",
+        "project_id": "project.yujin-jiuxu.v7",
+        "story_title": "余烬九序",
+        "locks": [
+            {
+                "lock_id": "lock.inner-court.101",
+                "category": "timeline",
+                "description": "斩星府内府资格不得早于第二卷",
+                "anchor": "第二卷",
+                "not_before_chapter": 101,
+                "chapter_latest": 200,
+                "satisfies": "第一卷不得出现内府身份推进",
+            },
+            {
+                "lock_id": "lock.er07.201",
+                "category": "reveal",
+                "description": "第三碎片与陆远线索实质揭露最早第三卷",
+                "not_before_chapter": 201,
+                "chapter_latest": 300,
+            },
+            {
+                "lock_id": "lock.long-truth.350",
+                "category": "timeline",
+                "description": "长程真相最早第四卷后段起暗示",
+                "not_before_chapter": 350,
+                "chapter_latest": 500,
+            },
+            {
+                "lock_id": "lock.copper-token.100",
+                "category": "equipment",
+                "description": "第一卷末获得铜铭",
+                "chapter_earliest": 90,
+                "chapter_latest": 100,
+            },
+        ],
+    }
+
+
+def test_load_derives_content_addressed_root_hash() -> None:
+    document = load_author_planning_locks(_lock_document(), schema_version=SCHEMA_VERSION)
+
+    assert document.root_hash != ROOT_HASH_PLACEHOLDER
+    assert document.root_hash == content_id(
+        {
+            "schema_version": "2.0.0",
+            "project_id": "project.yujin-jiuxu.v7",
+            "locks": tuple(item.model_dump(mode="json") for item in document.locks),
+        }
+    )
+
+
+def test_load_rejects_stale_root_hash() -> None:
+    payload = {**_lock_document(), "root_hash": "sha256:" + "a" * 64}
+
+    with pytest.raises(ValueError, match="root_hash does not match"):
+        load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+
+
+def test_load_rejects_schema_version_drift() -> None:
+    with pytest.raises(ValueError, match="schema version mismatch"):
+        load_author_planning_locks(_lock_document(), schema_version=SchemaVersion("1.0.0"))
+
+
+def test_load_stamps_hash_after_edit_so_hash_tracks_content() -> None:
+    payload = _lock_document()
+    first = load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+    payload["locks"] = [
+        *payload["locks"],
+        {  # type: ignore[list-item]
+            "lock_id": "lock.forbidden-core.100",
+            "category": "progression",
+            "description": "断星六号核心回收不得在第一卷完成",
+            "not_before_chapter": 101,
+            "chapter_latest": 200,
+        },
+    ]
+    second = load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+
+    assert second.root_hash != first.root_hash
+
+
+def test_timeline_lock_requires_declared_window() -> None:
+    with pytest.raises(ValidationError, match="explicit not_before_chapter"):
+        AuthorPlanningLock(
+            lock_id=StableId("lock.bad"),
+            category=PlanningLockCategory.TIMELINE,
+            description="缺少边界",
+        )
+
+
+def test_reversed_window_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="reversed"):
+        AuthorPlanningLock(
+            lock_id=StableId("lock.bad"),
+            category=PlanningLockCategory.REVEAL,
+            description="反向窗口",
+            chapter_earliest=300,
+            chapter_latest=100,
+        )
+
+
+def test_duplicate_lock_ids_are_rejected() -> None:
+    payload = _lock_document()
+    duplicated = payload["locks"][0]  # type: ignore[index]
+    payload["locks"] = [duplicated, duplicated]  # type: ignore[list-item]
+
+    with pytest.raises(ValidationError, match="must be unique"):
+        load_author_planning_locks(payload, schema_version=SCHEMA_VERSION)
+
+
+def test_channels_map_every_lock_with_absolute_boundaries() -> None:
+    document = load_author_planning_locks(_lock_document(), schema_version=SCHEMA_VERSION)
+
+    channels = compile_planning_lock_channels(document)
+
+    assert [item["not_before_chapter"] for item in channels["timeline_locks"]] == [101, 350]
+    assert [item["not_before_chapter"] for item in channels["reveal_windows"]] == [201]
+    assert channels["equipment_locks"] == [
+        {
+            "lock_id": "lock.copper-token.100",
+            "category": "equipment",
+            "description": "第一卷末获得铜铭",
+            "chapter_start": 90,
+            "chapter_end": 100,
+        }
+    ]
+    assert channels["location_preconditions"] == []
+
+
+def _profile(capability: dict[str, object]) -> ProjectProfileRootDocument:
+    contract = ContractRef(
+        contract_id=StableId("agent.production-bootstrap"),
+        version=SCHEMA_VERSION,
+        content_hash=content_id({"bootstrap": "profile"}),
+    )
+    provisional = ProjectProfileRootDocument(
+        root_hash=ArtifactId("sha256:" + "0" * 64),
+        schema_version=SCHEMA_VERSION,
+        style_profile={"language": "zh-CN"},
+        capability_profile=capability,  # type: ignore[arg-type]
+        agent_specs=(contract,),
+        prompt_contracts=(
+            PromptContractRef(
+                contract_id=StableId("prompt.system-policy"),
+                version=SCHEMA_VERSION,
+                content_hash=contract.content_hash,
+                render_fingerprint=contract.content_hash,
+            ),
+        ),
+        skill_contracts=(
+            SkillContractRef(
+                contract_id=StableId("skill.scene-composition"),
+                version=SCHEMA_VERSION,
+                content_hash=contract.content_hash,
+            ),
+        ),
+        tool_policies=(contract,),
+        model_profiles=("qwen38-27b-nvfp4@8003",),
+    )
+    return provisional.model_copy(
+        update={"root_hash": project_profile_root_content_id(provisional)}
+    )
+
+
+def test_apply_planning_locks_seats_author_channel_in_capability_profile() -> None:
+    from novel_agent.runtime.production_novel_bootstrap import apply_author_planning_locks
+
+    document = load_author_planning_locks(_lock_document(), schema_version=SCHEMA_VERSION)
+    source = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "b" * 64),
+        byte_length=128,
+        media_type="application/vnd.novel-agent.author-planning-locks+json",
+        schema_version=SCHEMA_VERSION,
+    )
+    capability: dict[str, object] = {
+        "planning_constraints": {"timeline_locks": [{"description": "模型自行猜测"}]}
+    }
+
+    apply_author_planning_locks(capability, document, source=source)  # type: ignore[arg-type]
+
+    planning = capability["planning_constraints"]
+    assert isinstance(planning, dict)
+    assert [item["not_before_chapter"] for item in planning["timeline_locks"]] == [101, 350]
+    assert capability["planning_lock_count"] == 4
+    assert capability["planning_lock_root"] == document.root_hash.root
+    assert capability["planning_lock_source"] == source.artifact_id.root
+
+
+def test_compiled_channels_reach_the_author_constraint_root() -> None:
+    from novel_agent.runtime.production_novel_bootstrap import apply_author_planning_locks
+
+    document = load_author_planning_locks(_lock_document(), schema_version=SCHEMA_VERSION)
+    capability: dict[str, object] = {}
+    apply_author_planning_locks(capability, document)  # type: ignore[arg-type]
+    profile = _profile(capability)
+    profile_ref = ArtifactRef(
+        artifact_id=profile.root_hash,
+        byte_length=1,
+        media_type="application/json",
+        schema_version=SCHEMA_VERSION,
+    )
+
+    root = compile_author_constraint_root(profile=profile, profile_ref=profile_ref)
+
+    assert {item.category for item in root.constraints} == {
+        AuthorConstraintCategory.LANGUAGE,
+        AuthorConstraintCategory.TIME_LOCK,
+        AuthorConstraintCategory.REVEAL_WINDOW,
+        AuthorConstraintCategory.EQUIPMENT_MILESTONE,
+    }
+    timeline = [
+        item for item in root.constraints if item.category is AuthorConstraintCategory.TIME_LOCK
+    ]
+    assert [item.not_before_chapter for item in timeline] == [101, 350]

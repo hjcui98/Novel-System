@@ -163,8 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--timeout-seconds", type=float, default=120.0)
     preflight.add_argument(
         "--embedding-url",
-        help="also probe this embedding endpoint (for example "
-        "http://127.0.0.1:8081/v1/embeddings)",
+        help=(
+            "also probe this embedding endpoint "
+            "(for example http://127.0.0.1:8081/v1/embeddings)"
+        ),
     )
     preflight.add_argument(
         "--reranker-url",
@@ -283,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--endpoint-profile", required=True)
     prepare.add_argument("--prepared", type=Path, required=True)
     prepare.add_argument("--preview", type=Path)
+    prepare.add_argument("--planning-locks", type=Path)
     prepare.add_argument("--run-id", required=True)
     commit = runtime_commands.add_parser("bootstrap-commit")
     commit.add_argument("--prepared", type=Path, required=True)
@@ -428,9 +431,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
             return 0
         if args.runtime_command == "bootstrap-prepare":
+            from novel_agent.domain.planning_locks import load_author_planning_locks
             from novel_agent.runtime.production_novel_bootstrap import ProductionNovelBootstrap
 
             brief_text = args.brief.read_text(encoding="utf-8")
+            planning_locks = None
+            if args.planning_locks is not None:
+                planning_locks = load_author_planning_locks(args.planning_locks.read_bytes())
+                if (
+                    planning_locks.project_id is not None
+                    and planning_locks.project_id != args.project_id
+                ):
+                    raise RuntimeError(
+                        "author planning locks belong to another project: "
+                        f"{planning_locks.project_id}"
+                    )
             artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
             project_id = ProjectId(args.project_id)
             run_id = RunId(args.run_id)
@@ -443,7 +458,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_factory=factory,
                     endpoints=endpoints,
                     run_id=run_id,
-                ).prepare(project_id=project_id, brief_text=brief_text)
+                ).prepare(
+                    project_id=project_id,
+                    brief_text=brief_text,
+                    planning_locks=planning_locks,
+                )
             )
             approval = prepared.document.approval_request
             _write_json_once(

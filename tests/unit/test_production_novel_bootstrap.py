@@ -14,9 +14,14 @@ from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.model import FakeModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.cli import main
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import AutomationMode
-from novel_agent.domain.ids import ProjectId, RunId, SchemaVersion, StableId
+from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelRole
+from novel_agent.domain.planning_locks import (
+    AuthorPlanningLocksDocument,
+    author_planning_locks_content_id,
+)
 from novel_agent.domain.stage2 import (
     AgentMode,
     BootstrapStrategy,
@@ -573,12 +578,20 @@ def test_bootstrap_prepare_cli_binds_after_split(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: list[dict[str, object]] = []
+    lock_payloads: list[object] = []
 
     class FakeBootstrap:
         def __init__(self, **kwargs: object) -> None:
             captured.append(kwargs)
 
-        async def prepare(self, *, project_id: ProjectId, brief_text: str) -> Any:
+        async def prepare(
+            self,
+            *,
+            project_id: ProjectId,
+            brief_text: str,
+            planning_locks: object = None,
+        ) -> Any:
+            lock_payloads.append(planning_locks)
             artifacts = captured[0]["artifacts"]
             assert isinstance(artifacts, ArtifactRepository)
             return SimpleNamespace(
@@ -635,7 +648,158 @@ def test_bootstrap_prepare_cli_binds_after_split(
     assert captured[0].get("curator") is None
     assert captured[0]["endpoints"]
     assert captured[0]["run_id"] == RunId("run.bootstrap.cli")
+    assert lock_payloads == [None]
     payload = json.loads(prepared.read_text(encoding="utf-8"))
     assert payload["approval_request"] is None
     assert payload["validation_status"] == "failed"
     assert json.loads(preview.read_text(encoding="utf-8"))["validation_status"] == "failed"
+
+
+def test_bootstrap_prepare_cli_passes_author_planning_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_payloads: list[object] = []
+
+    class FakeBootstrap:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def prepare(
+            self,
+            *,
+            project_id: ProjectId,
+            brief_text: str,
+            planning_locks: object = None,
+        ) -> Any:
+            lock_payloads.append(planning_locks)
+            return SimpleNamespace(
+                artifact=ArtifactRef(
+                    artifact_id=ArtifactId("sha256:" + "0" * 64),
+                    byte_length=1,
+                    media_type="application/json",
+                    schema_version=VERSION,
+                ),
+                document=SimpleNamespace(
+                    preview={"validation_status": "failed"},
+                    approval_request=None,
+                    validation=SimpleNamespace(status=SimpleNamespace(value="failed")),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "novel_agent.runtime.production_novel_bootstrap.ProductionNovelBootstrap",
+        FakeBootstrap,
+    )
+    brief = tmp_path / "brief.md"
+    brief.write_text(_composite_brief(), encoding="utf-8")
+    locks = tmp_path / "planning-locks.json"
+    locks.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0.0",
+                "project_id": "project.bootstrap.locks",
+                "locks": [
+                    {
+                        "lock_id": "lock.inner-court.101",
+                        "category": "timeline",
+                        "description": "内府资格不得早于第二卷",
+                        "not_before_chapter": 101,
+                        "chapter_latest": 200,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                f"sqlite+pysqlite:///{tmp_path / 'locks.db'}",
+                "bootstrap-prepare",
+                "--brief",
+                str(brief),
+                "--planning-locks",
+                str(locks),
+                "--project-id",
+                "project.bootstrap.locks",
+                "--object-store-root",
+                str(tmp_path / "objects"),
+                "--endpoint-profile",
+                "deterministic_fake",
+                "--prepared",
+                str(tmp_path / "prepared.json"),
+                "--run-id",
+                "run.bootstrap.locks",
+            ]
+        )
+        == 0
+    )
+    delivered = lock_payloads[0]
+    assert isinstance(delivered, AuthorPlanningLocksDocument)
+    assert delivered.project_id == "project.bootstrap.locks"
+    assert delivered.root_hash == author_planning_locks_content_id(delivered)
+
+
+def test_bootstrap_prepare_cli_rejects_foreign_planning_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeBootstrap:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def prepare(self, **_kwargs: object) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("a foreign lock document must be rejected before prepare")
+
+    monkeypatch.setattr(
+        "novel_agent.runtime.production_novel_bootstrap.ProductionNovelBootstrap",
+        FakeBootstrap,
+    )
+    brief = tmp_path / "brief.md"
+    brief.write_text(_composite_brief(), encoding="utf-8")
+    locks = tmp_path / "planning-locks.json"
+    locks.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0.0",
+                "project_id": "project.other",
+                "locks": [
+                    {
+                        "lock_id": "lock.other.101",
+                        "category": "timeline",
+                        "description": "他人的锁",
+                        "not_before_chapter": 101,
+                        "chapter_latest": 200,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="belong to another project"):
+        main(
+            [
+                "runtime",
+                "--database-url",
+                f"sqlite+pysqlite:///{tmp_path / 'foreign.db'}",
+                "bootstrap-prepare",
+                "--brief",
+                str(brief),
+                "--planning-locks",
+                str(locks),
+                "--project-id",
+                "project.bootstrap.locks",
+                "--object-store-root",
+                str(tmp_path / "objects"),
+                "--endpoint-profile",
+                "deterministic_fake",
+                "--prepared",
+                str(tmp_path / "prepared.json"),
+                "--run-id",
+                "run.bootstrap.locks",
+            ]
+        )

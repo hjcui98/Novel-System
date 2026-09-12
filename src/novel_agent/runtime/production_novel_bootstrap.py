@@ -42,6 +42,11 @@ from novel_agent.domain.model_calls import (
     ModelRequest,
     ModelRole,
 )
+from novel_agent.domain.planning_locks import (
+    AUTHOR_PLANNING_LOCKS_MEDIA_TYPE,
+    AuthorPlanningLocksDocument,
+    compile_planning_lock_channels,
+)
 from novel_agent.domain.stage2 import (
     AgentMode,
     AgentSpec,
@@ -161,6 +166,7 @@ class ProductionNovelBootstrap:
         *,
         project_id: ProjectId,
         brief_text: str,
+        planning_locks: AuthorPlanningLocksDocument | None = None,
     ) -> PreparedNovelBootstrap:
         if not brief_text.strip():
             raise ValueError("bootstrap prepare requires a non-empty author brief")
@@ -225,10 +231,19 @@ class ProductionNovelBootstrap:
         plan = _plan_root(planner_result, self._schema_version)
         world = _world_root(world_patch, self._schema_version)
         reference = _reference_root(ingested, self._schema_version)
+        planning_locks_ref: ArtifactRef | None = None
+        if planning_locks is not None:
+            planning_locks_ref = self._artifacts.put(
+                canonical_json_bytes(planning_locks.model_dump(mode="json")),
+                AUTHOR_PLANNING_LOCKS_MEDIA_TYPE,
+                self._schema_version,
+            )
         profile = _profile_root(
             planner_result,
             self._schema_version,
             brief_text,
+            planning_locks=planning_locks,
+            planning_locks_ref=planning_locks_ref,
             profile_source_texts=tuple(
                 (
                     item.source.source_id,
@@ -301,9 +316,7 @@ class ProductionNovelBootstrap:
                 for state in candidates.world.states
             ],
             "style_profile": candidates.profile.style_profile,
-            "unresolved_plan": [
-                issue.summary for issue in planner_result.plan_proposal.unresolved
-            ],
+            "unresolved_plan": [issue.summary for issue in planner_result.plan_proposal.unresolved],
             "unresolved_world": list(world_patch.unresolved_claims),
             "validation_status": validation.status.value,
             "validation_findings": [
@@ -786,11 +799,41 @@ def _reference_root(
     return provisional.model_copy(update={"root_hash": reference_root_content_id(provisional)})
 
 
+def apply_author_planning_locks(
+    capability: dict[str, JsonValue],
+    locks: AuthorPlanningLocksDocument,
+    *,
+    source: ArtifactRef | None = None,
+) -> None:
+    """Merge the frozen author lock channel into a project capability profile.
+
+    The author channel wins on the keys it declares: a model-extracted lock list
+    for the same channel is replaced, not appended to, so the Planner never sees
+    two competing windows for one author rule.  The compiled provenance is
+    recorded next to the locks it produced.
+    """
+
+    nested = capability.get("planning_constraints")
+    merged: dict[str, JsonValue] = dict(nested) if isinstance(nested, dict) else {}
+    for channel, entries in compile_planning_lock_channels(locks).items():
+        if entries:
+            merged[channel] = cast(JsonValue, entries)
+    if locks.project_id is not None:
+        merged["compiled_for_project_id"] = locks.project_id
+    capability["planning_constraints"] = merged
+    capability["planning_lock_count"] = len(locks.locks)
+    capability["planning_lock_root"] = locks.root_hash.root
+    if source is not None:
+        capability["planning_lock_source"] = source.artifact_id.root
+
+
 def _profile_root(
     result: PlannerExecutionResult,
     schema_version: SchemaVersion,
     brief_text: str = "",
     *,
+    planning_locks: AuthorPlanningLocksDocument | None = None,
+    planning_locks_ref: ArtifactRef | None = None,
     profile_source_texts: tuple[tuple[StableId, SourceClass, str], ...] = (),
     model_profiles: tuple[str, ...] = ("qwen38-27b-fp8@8005",),
 ) -> ProjectProfileRootDocument:
@@ -866,6 +909,8 @@ def _profile_root(
             capability[key] = style[key]
     if capability:
         capability.setdefault("planning_constraints", {})
+    if planning_locks is not None:
+        apply_author_planning_locks(capability, planning_locks, source=planning_locks_ref)
     contract = ContractRef(
         contract_id=StableId("agent.production-bootstrap"),
         version=schema_version,
