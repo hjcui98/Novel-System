@@ -84,7 +84,7 @@ PYTHONPATH=<worktree>/src python3 scripts/audit_v6_responsibility_binding.py \
 | 项 | 现状 | 下一步 |
 |---|---|---|
 | R1.4 waiver 回执真实性 | **已完成**（见第 6 节） | — |
-| R1.5 advisory 逐条处理 | 未实现：3 条揭露疑问仍是 `UNSPECIFIED / blocking=false` | 语义不确定保留独立审查结果与精确影响范围；不笼统降级 |
+| R1.5 advisory 逐条处理 | **已完成**（见第 6.1 节） | 剩余：v7 重规划时逐条把 3 条疑问落到具体卷/章并给出 forbidden_assumptions |
 | A05（未来章规划时无正文） | 部分：宿主任仍需按执行时 canonical 历史检索 | 随 R3 完成 |
 
 ## 5. R1.4 waiver 真实性（本轮追加完成）
@@ -107,9 +107,21 @@ PYTHONPATH=<worktree>/src python3 scripts/audit_v6_responsibility_binding.py \
 `tests/unit/test_writer_history_retrieval_gate.py` 断言同一 waiver 在空 basis 下不报该码、
 在已有正文时报错且 `ready is False`。两文件共 11 项通过。
 
+### 6.1 R1.5 advisory 精确影响范围
+
+冻结 v6 八卷候选带 3 条 `UNSPECIFIED / blocking=false` advisory，分别质疑
+301-350 / 351-400、401-430、501-600 的揭露边界，但 `affected_chapters` 全为空——
+既无法在受影响章节检查，也让三个不同问题退化成一条全篇 advisory。
+
+实现：host review 新增 `UNRESOLVED_SCOPE_MISSING`（blocking）——非 blocking 的 unresolved
+若在文本中点名了章节窗口，就必须声明 `affected_chapters`。精确性由 issue 文本推导，
+不使用关键词白名单，因此真正全篇性的 advisory 仍可接受。
+证据：`tests/unit/test_plan_unresolved_scope.py` 用三条 v6 原始 payload 断言全部 REVISE，
+并断言加上精确范围后保持 advisory、blocking 仍照常阻断。
+
 ## 6. 回归与失败身份（R1 全部增量）
 
-`tests/unit tests/contract`：**76 failed / 2937 passed / 1 skipped**；
-失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复），本次新增 61 项通过测试。
+`tests/unit tests/contract`：**76 failed / 2941 passed / 1 skipped**；
+失败身份集合与整合前基线**逐项完全相同**（0 新增、0 修复），本次新增 65 项通过测试。
 命令与清单见工作区 `tmp/yujin-remediation-20260912/R0|R1/`。
 
