@@ -303,6 +303,7 @@ def _host_issues_for_items(
             item_payload,
             item_id,
             mode=mode,
+            item_kind=str(raw.get("kind") or "").lower(),
             accepted_obligation_ids=accepted_obligation_ids,
         )
     if (
@@ -473,12 +474,39 @@ def _is_chapter_item(raw: dict[str, Any], payload: dict[str, Any]) -> bool:
     )
 
 
+def _is_known_obligation_kind(value: object) -> bool:
+    try:
+        ObligationKind(str(value))
+    except ValueError:
+        return False
+    return True
+
+
+def _claims_direct_obligation(payload: dict[str, Any], item_kind: str) -> bool:
+    """Mirror the materializer's direct-declaration surface.
+
+    The materializer reads a direct declaration from ``obligation_kind`` /
+    ``obligation_type``, from a nested ``obligation`` object, or from an item whose
+    own kind is an obligation kind.  A legacy ``obligation_plan`` table and an
+    ``obligation_declarations`` list are separate surfaces with their own checks,
+    so they must not be treated as direct declarations here.
+    """
+
+    # "obligation" itself is not an ObligationKind value but the materializer
+    # treats it as a declaration surface, which is exactly how the live STORY
+    # item slipped through.
+    if item_kind == "obligation" or item_kind in {kind.value for kind in ObligationKind}:
+        return True
+    return payload.get("obligation") is not None or payload.get("obligations") is not None
+
+
 def _append_obligation_contract_issues(
     issues: list[PlanReviewIssue],
     payload: dict[str, Any],
     item_id: str,
     *,
     mode: AgentMode,
+    item_kind: str = "",
     accepted_obligation_ids: frozenset[str] | None = None,
 ) -> None:
     """Surface unreadable obligation shapes before the candidate is accepted.
@@ -516,6 +544,33 @@ def _append_obligation_contract_issues(
                         blocking=True,
                     )
                 )
+    # A direct declaration has to name a readable obligation kind.  The
+    # materializer rejects an unknown kind, so accepting it here would produce
+    # exactly the "accepted by review, refused at commit" failure the remediation
+    # set out to close.  Reproduced live: a STORY item with kind="obligation" and
+    # no obligation_kind was ACCEPTed and then blocked the commit.
+    direct_kind = payload.get("obligation_kind") or payload.get("obligation_type")
+    if direct_kind is None and _claims_direct_obligation(payload, item_kind):
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                "OBLIGATION_KIND_MISSING: an item that declares an obligation must name an "
+                "obligation_kind of "
+                + ", ".join(kind.value for kind in ObligationKind),
+                item_id,
+                blocking=True,
+            )
+        )
+    elif direct_kind is not None and not _is_known_obligation_kind(direct_kind):
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                f"OBLIGATION_KIND_UNKNOWN: {direct_kind!r} is not one of "
+                + ", ".join(kind.value for kind in ObligationKind),
+                item_id,
+                blocking=True,
+            )
+        )
     declarations = payload.get("obligation_declarations")
     if declarations is not None and (
         not isinstance(declarations, (list, tuple))

@@ -380,3 +380,67 @@ def test_author_constraint_coverage_credits_a_restated_constraint() -> None:
         item for item in review.coverage_evidence if item.startswith("author_constraint_coverage")
     )
     assert line.startswith("author_constraint_coverage: 1/1")
+
+
+def test_a_declaration_without_an_obligation_kind_is_revise() -> None:
+    """The live STORY defect: kind=obligation with no obligation_kind.
+
+    Host review accepted it and the commit then blocked with
+    "obligation declaration has an unknown kind".
+    """
+
+    review = _review(
+        _payload(
+            {
+                "item_id": "story.obligation.reveal_lock",
+                "kind": "obligation",
+                "payload": {
+                    "title": "揭示义务：时间锁与进度锁",
+                    "constraints": ["lock.copper-token.vol1-end: 铜铭须在第一卷末取得"],
+                },
+            }
+        ),
+        mode="story",
+    )
+
+    assert review.decision is ReviewDecision.REVISE
+    assert any(
+        "OBLIGATION_KIND_MISSING" in issue.summary and issue.blocking for issue in review.issues
+    )
+
+
+def test_an_unknown_obligation_kind_is_revise() -> None:
+    review = _review(
+        _payload(
+            {
+                "item_id": "story.obligation.reveal_lock",
+                "kind": "obligation",
+                "payload": {"obligation_kind": "reveal_lock", "summary": "揭示义务"},
+            }
+        ),
+        mode="story",
+    )
+
+    assert any("OBLIGATION_KIND_UNKNOWN" in issue.summary for issue in review.issues)
+
+
+def test_a_legacy_responsibility_table_is_not_treated_as_a_direct_declaration() -> None:
+    """The legacy table has its own check and must not demand an item-level kind."""
+
+    review = _review(
+        _payload(
+            {
+                "item_id": "vol_01",
+                "kind": "arc_volume",
+                "payload": {
+                    "plan_level": "arc_volume",
+                    "chapter_start": 1,
+                    "chapter_end": 100,
+                    "obligation_plan": [dict(_VOLUME_ONE)],
+                },
+            }
+        ),
+        mode="arc_volume",
+    )
+
+    assert not any("OBLIGATION_KIND" in issue.summary for issue in review.issues)
