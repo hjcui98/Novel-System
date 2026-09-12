@@ -447,3 +447,30 @@ def test_a_lock_deadline_is_not_reported_as_a_lock() -> None:
     assert any("locked until chapter 90" in item for item in before)
     assert not any("deadline" in item for item in before)
     assert any("past its chapter 100 deadline" in item for item in after)
+
+
+def test_volume_stage_slots_reach_the_writer_in_every_declared_shape() -> None:
+    """A volume's entry/exit/ceiling slots must not be lost by their JSON shape."""
+
+    from novel_agent.adapters.runtime.stage3_writer import ProductionWritingRequestFactory
+
+    reader = ProductionWritingRequestFactory._stage_slot_texts
+
+    assert reader({"entry_conditions": "必须已取得铜铭"}, "entry_conditions") == (
+        "必须已取得铜铭",
+    )
+    assert reader(
+        {"exit_conditions": ["断星六号外围记载已取得", "内府资格尚未获得"]},
+        "exit_conditions",
+    ) == ("断星六号外围记载已取得", "内府资格尚未获得")
+    assert reader(
+        {
+            "capability_ceiling": {
+                "description": "本卷不得突破三阶开脉",
+                "chapter_start": 1,
+                "chapter_end": 100,
+            }
+        },
+        "capability_ceiling",
+    ) == ("本卷不得突破三阶开脉 [chapter_start=1 chapter_end=100]",)
+    assert reader({"reveal_window": None}, "reveal_window") == ()

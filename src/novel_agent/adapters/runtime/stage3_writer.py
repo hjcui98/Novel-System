@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from novel_agent.domain.artifacts import ArtifactRef
@@ -55,6 +55,16 @@ from novel_agent.services.evidence_first_writer_context_assembler import (
 from novel_agent.services.recent_prose import RecentProseAssembler
 from novel_agent.services.writer_context_loop import WriterContextLoopService
 from novel_agent.services.writer_reactive_memory import ReactiveMemoryInputs
+
+# The volume stage slots a chapter draft must honour: what the volume enters
+# with, the ceilings it may not cross, and what it must exit with.
+VOLUME_STAGE_WRITER_KEYS: tuple[str, ...] = (
+    "entry_conditions",
+    "exit_conditions",
+    "reveal_window",
+    "capability_ceiling",
+    "equipment_ceiling",
+)
 
 WRITING_TASK_MEDIA_TYPE = "application/vnd.novel-agent.writing-task+json"
 WRITER_CONTEXT_V2_MEDIA_TYPE = "application/vnd.novel-agent.writer-context-v2+json"
@@ -178,6 +188,26 @@ class ProductionWritingRequestFactory:
             for node in plan.nodes
             if node.plan_node_id in goal_ids or bool(set(node.obligation_ids) & set(obligation_ids))
         )
+        # The enclosing volume's stage slots are the plan's own statement of what
+        # the volume must enter with, hold to, and exit with.  Only a node directly
+        # bound to the goal reached the Writer before, so a chapter inside volume 3
+        # never saw that volume's stage grid.
+        covering_volume_nodes = tuple(
+            node
+            for node in plan.nodes
+            if node not in relevant_nodes
+            and isinstance(node.chapter_start, int)
+            and isinstance(node.chapter_end, int)
+            and node.chapter_start <= task.chapter_index <= node.chapter_end
+        )
+        volume_stage_constraints = tuple(
+            dict.fromkeys(
+                f"当前卷阶段[{key}]：{value}"
+                for node in covering_volume_nodes
+                for key in VOLUME_STAGE_WRITER_KEYS
+                for value in self._stage_slot_texts(node.payload, key)
+            )
+        )
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
         chapter_goal = "；".join(summaries)
         payload_beats = tuple(
@@ -289,6 +319,7 @@ class ProductionWritingRequestFactory:
                 *self._profile_strings(profile, "mandatory_constraints"),
                 *lock_constraints,
                 *profile_lock_constraints,
+                *volume_stage_constraints,
                 *advisory_constraints,
             ),
             forbidden_reveals=(
@@ -721,6 +752,52 @@ class ProductionWritingRequestFactory:
                 values.extend(
                     item.strip() for item in raw if isinstance(item, str) and item.strip()
                 )
+        return tuple(dict.fromkeys(values))
+
+    @staticmethod
+    def _stage_slot_texts(payload: Mapping[str, object], key: str) -> tuple[str, ...]:
+        """Read one volume stage slot whether it is text, a list, or a table.
+
+        An ARC_VOLUME plan may express a stage slot as a bare string, a list of
+        strings, or structured entries carrying their own chapter range and
+        obligation.  All three must reach the Writer as a constraint instead of
+        only the structured shape.
+        """
+
+        raw = payload.get(key)
+        entries: Sequence[object]
+        if isinstance(raw, Mapping):
+            entries = (raw,)
+        elif isinstance(raw, (list, tuple)):
+            entries = raw
+        elif isinstance(raw, str) and raw.strip():
+            return (raw.strip(),)
+        else:
+            return ()
+        values: list[str] = []
+        for entry in entries:
+            if isinstance(entry, str) and entry.strip():
+                values.append(entry.strip())
+                continue
+            if not isinstance(entry, Mapping):
+                continue
+            body = next(
+                (
+                    value.strip()
+                    for field in ("description", "summary", "text", "condition", "value")
+                    for value in (entry.get(field),)
+                    if isinstance(value, str) and value.strip()
+                ),
+                None,
+            )
+            if body is None:
+                continue
+            window = " ".join(
+                f"{field}={entry[field]}"
+                for field in ("chapter_start", "chapter_end")
+                if isinstance(entry.get(field), int)
+            )
+            values.append(f"{body} [{window}]" if window else body)
         return tuple(dict.fromkeys(values))
 
     @staticmethod
