@@ -43,6 +43,13 @@ _HISTORY_RETRIEVAL_NEED_KINDS = frozenset(
     }
 )
 
+# Host-issued waiver identities.  A planning model may propose that history is not
+# required, but it may not approve itself: only these references are recognised, and
+# the first-chapter waiver is additionally scoped to chapter 1 with an empty
+# canonical text.  Any other NOT_REQUIRED decision needs a real approval receipt.
+FIRST_CHAPTER_WAIVER_REF = "waiver.history.first_chapter"
+HOST_ISSUED_WAIVER_REFS = frozenset({FIRST_CHAPTER_WAIVER_REF})
+
 
 class HistoryRetrievalNeed(DomainModel):
     """One explicit historical retrieval need declared by an accepted plan item."""
@@ -97,5 +104,11 @@ class HistoryRetrievalDecision(DomainModel):
             requirement=HistoryRetrievalRequirement.NOT_REQUIRED,
             reason="chapter 1 has no canonical prose history",
             reason_code=HistoryRetrievalReasonCode.FIRST_CHAPTER,
-            waiver_ref="waiver.history.first_chapter",
+            waiver_ref=FIRST_CHAPTER_WAIVER_REF,
         )
+
+    @property
+    def waiver_is_host_issued(self) -> bool:
+        """Report whether the waiver reference is one the host actually issues."""
+
+        return self.waiver_ref in HOST_ISSUED_WAIVER_REFS

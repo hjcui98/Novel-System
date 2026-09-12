@@ -10,11 +10,11 @@ from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import ObligationKind, long_range_kind_requires_not_before
+from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.obligation_contract import (
     compile_legacy_obligation_plan,
     compile_obligation_actions,
 )
-from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
     PlannerContextPackage,
     PlanReview,
@@ -25,7 +25,12 @@ from novel_agent.domain.planning import (
     ReviewTargetKind,
     missing_volume_structure_keys,
 )
-from novel_agent.domain.retrieval_decision import HistoryRetrievalDecision
+from novel_agent.domain.retrieval_decision import (
+    FIRST_CHAPTER_WAIVER_REF,
+    HOST_ISSUED_WAIVER_REFS,
+    HistoryRetrievalDecision,
+    HistoryRetrievalRequirement,
+)
 from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
@@ -382,19 +387,19 @@ def _append_obligation_contract_issues(
                 )
             )
     declarations = payload.get("obligation_declarations")
-    if declarations is not None:
-        if not isinstance(declarations, (list, tuple)) or not all(
-            isinstance(entry, dict) for entry in declarations
-        ):
-            issues.append(
-                _host_issue(
-                    ReviewIssueKind.OBLIGATION_CONTRACT,
-                    "OBLIGATION_DECLARATION_UNREADABLE: obligation_declarations must be "
-                    "a list of declaration objects",
-                    item_id,
-                    blocking=True,
-                )
+    if declarations is not None and (
+        not isinstance(declarations, (list, tuple))
+        or not all(isinstance(entry, dict) for entry in declarations)
+    ):
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.OBLIGATION_CONTRACT,
+                "OBLIGATION_DECLARATION_UNREADABLE: obligation_declarations must be "
+                "a list of declaration objects",
+                item_id,
+                blocking=True,
             )
+        )
     if payload.get("obligation_plan") is None:
         return
     legacy = compile_legacy_obligation_plan(payload["obligation_plan"])
@@ -415,6 +420,46 @@ def _append_obligation_contract_issues(
             _host_issue(
                 ReviewIssueKind.OBLIGATION_CONTRACT,
                 f"OBLIGATION_PLAN_UNREADABLE: {discrepancy}",
+                item_id,
+                blocking=True,
+            )
+        )
+
+
+def _append_history_waiver_issues(
+    issues: list[PlanReviewIssue],
+    decision: HistoryRetrievalDecision,
+    chapter: int | None,
+    item_id: str,
+) -> None:
+    """Reject a waiver reference the host never issued.
+
+    The first-chapter waiver is host-owned and only legitimate for chapter 1.  A
+    model may propose a reason, but it cannot approve itself by writing an arbitrary
+    waiver string; any other NOT_REQUIRED waiver needs a real approval receipt.
+    """
+
+    if decision.requirement is not HistoryRetrievalRequirement.NOT_REQUIRED:
+        return
+    if decision.waiver_ref == FIRST_CHAPTER_WAIVER_REF:
+        if chapter != 1:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.COVERAGE,
+                    "HISTORY_WAIVER_INAPPLICABLE: the host first-chapter history waiver "
+                    f"only applies to chapter 1, not chapter {chapter}",
+                    item_id,
+                    blocking=True,
+                )
+            )
+        return
+    if decision.waiver_ref not in HOST_ISSUED_WAIVER_REFS:
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.COVERAGE,
+                "HISTORY_WAIVER_UNVERIFIED: waiver_ref "
+                f"{decision.waiver_ref!r} was not issued by the host; NOT_REQUIRED needs a "
+                "host-generated waiver or a real approval receipt",
                 item_id,
                 blocking=True,
             )
@@ -455,7 +500,7 @@ def _append_history_need_issues(
             )
             return
         try:
-            HistoryRetrievalDecision.model_validate(raw_decision, strict=False)
+            decision = HistoryRetrievalDecision.model_validate(raw_decision, strict=False)
         except ValueError as error:
             issues.append(
                 _host_issue(
@@ -466,6 +511,7 @@ def _append_history_need_issues(
                 )
             )
             return
+        _append_history_waiver_issues(issues, decision, chapter, item_id)
     if declared is None:
         return
     if not isinstance(declared, list):

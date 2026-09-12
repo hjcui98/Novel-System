@@ -12,7 +12,10 @@ from novel_agent.domain.benchmark import (
 )
 from novel_agent.domain.generation import WritingTaskContract
 from novel_agent.domain.memory import WorldRootDocument, obligation_active_for_chapter
-from novel_agent.domain.retrieval_decision import HistoryRetrievalRequirement
+from novel_agent.domain.retrieval_decision import (
+    FIRST_CHAPTER_WAIVER_REF,
+    HistoryRetrievalRequirement,
+)
 from novel_agent.domain.writer_context import (
     ContextAssemblyStatus,
     WriterContextPackageV2,
@@ -30,6 +33,7 @@ class WriterReadinessReasonCode(StrEnum):
     PLANNING_LINEAGE_INCOMPLETE = "PLANNING_LINEAGE_INCOMPLETE"
     PROJECTION_NOT_EXACT = "PROJECTION_NOT_EXACT"
     WRITER_PACKAGE_NOT_READY = "WRITER_PACKAGE_NOT_READY"
+    HISTORY_WAIVER_NOT_APPLICABLE = "HISTORY_WAIVER_NOT_APPLICABLE"
 
 
 class WriterReadinessDecision(DomainModel):
@@ -125,8 +129,15 @@ def evaluate_writer_readiness(
     expected_plan_root_ref: ArtifactRef | None = None,
     manifest_plan_revision: str | None = None,
     projection_exact: bool | None = None,
+    canonical_prose_present: bool | None = None,
 ) -> WriterReadinessDecision:
-    """Full pre-model readiness gate for the production Writer request."""
+    """Full pre-model readiness gate for the production Writer request.
+
+    ``canonical_prose_present`` states whether the canonical Text basis already holds
+    prose.  The host first-chapter history waiver is only valid while that basis is
+    still empty; once prose exists the chapter must retrieve real history instead of
+    inheriting a waiver.
+    """
 
     codes: list[WriterReadinessReasonCode] = []
     details: list[str] = []
@@ -154,6 +165,16 @@ def evaluate_writer_readiness(
         ):
             codes.append(WriterReadinessReasonCode.HISTORY_DECISION_MISSING)
             details.append(f"goal {goal.goal_id.root} NOT_REQUIRED without waiver")
+        elif (
+            decision.requirement is HistoryRetrievalRequirement.NOT_REQUIRED
+            and decision.waiver_ref == FIRST_CHAPTER_WAIVER_REF
+            and canonical_prose_present
+        ):
+            codes.append(WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE)
+            details.append(
+                f"goal {goal.goal_id.root} claims the first-chapter history waiver while "
+                "the canonical basis already contains prose"
+            )
         elif isinstance(package, WriterContextPackageV2) and (
             package.retrieval_requirement is not decision.requirement
         ):

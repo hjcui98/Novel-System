@@ -12,6 +12,7 @@ from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument
 from novel_agent.domain.generation import WritingLengthPolicy, WritingTaskContract
 from novel_agent.domain.ids import ArtifactId, StableId
 from novel_agent.domain.retrieval_decision import (
+    FIRST_CHAPTER_WAIVER_REF,
     HistoryRetrievalReasonCode,
     HistoryRetrievalRequirement,
     RetrievalExecutionStatus,
@@ -21,6 +22,7 @@ from novel_agent.domain.writer_readiness import (
     WriterContextInputNotReady,
     WriterReadinessReasonCode,
     evaluate_package_readiness,
+    evaluate_writer_readiness,
 )
 from novel_agent.runtime.production_components import ProductionStage2MWriterContext
 from novel_agent.services.evidence_first_writer_context_assembler import (
@@ -188,10 +190,7 @@ def test_a1_legacy_empty_history_needs_is_undecided_and_blocks_before_models(
     )
     with pytest.raises(WriterContextInputNotReady) as error:
         context(invocation)
-    assert (
-        error.value.decision.primary_reason
-        is WriterReadinessReasonCode.HISTORY_DECISION_MISSING
-    )
+    assert error.value.decision.primary_reason is WriterReadinessReasonCode.HISTORY_DECISION_MISSING
 
 
 def test_a2_required_decision_with_zero_needs_blocks_as_history_need_empty() -> None:
@@ -367,3 +366,55 @@ def test_host_obligation_need_is_merged_even_with_not_required_decision() -> Non
     assert result.retrieval_requirement is HistoryRetrievalRequirement.REQUIRED
     assert result.needs
     assert result.needs[0].need_type == "setup_evidence"
+
+
+def test_first_chapter_waiver_is_not_applicable_once_canonical_prose_exists(
+    tmp_path: Path,
+) -> None:
+    """The host waiver only covers an empty canonical basis (plan section 5.3)."""
+
+    from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
+    from novel_agent.services.artifacts import ArtifactRepository
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    invocation = _invocation_with(
+        _text(),
+        chapter=1,
+        goal_payload={
+            "history_retrieval": {
+                "requirement": "NOT_REQUIRED",
+                "reason_code": "first_chapter",
+                "waiver_ref": FIRST_CHAPTER_WAIVER_REF,
+            }
+        },
+    )
+    generator = TaskPlanConditionedNeedGenerator()
+    context = ProductionStage2MWriterContext(
+        generator=generator,
+        gateway=_ForbiddenGateway(),
+        assembler=EvidenceFirstWriterContextAssembler(),
+        artifacts=artifacts,
+        schema_version=VERSION,
+    )
+    package = context(invocation).package
+
+    empty_basis = evaluate_writer_readiness(
+        plan=invocation.plan,
+        target_chapter=1,
+        writing_task=invocation.writing_task,
+        world=invocation.world,
+        package=package,
+        canonical_prose_present=False,
+    )
+    assert WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE not in (empty_basis.reason_codes)
+
+    with_prose = evaluate_writer_readiness(
+        plan=invocation.plan,
+        target_chapter=1,
+        writing_task=invocation.writing_task,
+        world=invocation.world,
+        package=package,
+        canonical_prose_present=True,
+    )
+    assert WriterReadinessReasonCode.HISTORY_WAIVER_NOT_APPLICABLE in with_prose.reason_codes
+    assert with_prose.ready is False

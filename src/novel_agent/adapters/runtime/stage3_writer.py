@@ -365,6 +365,7 @@ class ProductionWritingRequestFactory:
             package=package,
             expected_plan_root_ref=accepted_plan_ref,
             manifest_plan_revision=plan.root_hash.root,
+            canonical_prose_present=any(chapter.blocks for chapter in text.chapters),
         )
         if not readiness.ready:
             raise WriterContextInputNotReady(readiness)
