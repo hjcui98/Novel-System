@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from novel_agent.agents.runner import StructuredAgentRunner
@@ -41,6 +41,7 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
     PlanUnresolvedIssue,
+    ProjectProfileRootDocument,
     hard_unresolved_kinds,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -887,6 +888,7 @@ class PlanReviewerAgent:
         )
         execution = await self._runner.execute(prepared, PlanReviewDraft)
         draft = execution.output
+        context_package = _planner_context_package(self._artifacts, trusted_source_artifacts)
         if draft.target_kind is not target_kind:
             raise PlanReviewerInvocationError("Reviewer changed the trusted target kind")
         draft = apply_host_plan_review_constraints(
@@ -897,10 +899,10 @@ class PlanReviewerAgent:
             expected_volume_count=_expected_volume_count_from_context(review_context),
             expected_target_chapters=_expected_target_chapters_from_context(review_context),
             accepted_obligation_ids=_accepted_obligation_ids(
-                self._artifacts, trusted_source_artifacts
+                self._artifacts, trusted_source_artifacts, context_package
             ),
             author_constraints=_author_constraint_catalogue(
-                self._artifacts, trusted_source_artifacts
+                self._artifacts, trusted_source_artifacts, context_package
             ),
         )
         draft_artifact = self._artifacts.put(
@@ -961,9 +963,34 @@ class PlanReviewerAgent:
         )
 
 
+def _planner_context_package(
+    artifacts: ArtifactRepository,
+    refs: tuple[ArtifactRef, ...],
+) -> PlannerContextPackage | None:
+    """Read the trusted Planner context package the host assembled.
+
+    The package is where the host publishes the references a review needs
+    (``profile_ref`` and ``author_constraint_root_ref``).  A review that only
+    looked at the artefact list therefore never found them and silently skipped
+    both the obligation catalogue and the author-constraint denominator.
+    """
+
+    for ref in refs:
+        if ref.media_type != "application/vnd.novel-agent.planner-context-package+json":
+            continue
+        try:
+            return PlannerContextPackage.model_validate_json(
+                artifacts.read_verified(ref), strict=True
+            )
+        except (UnicodeDecodeError, ValueError):
+            return None
+    return None
+
+
 def _author_constraint_catalogue(
     artifacts: ArtifactRepository,
     refs: tuple[ArtifactRef, ...],
+    context_package: PlannerContextPackage | None,
 ) -> tuple[AuthorConstraint, ...]:
     """Read the frozen author-constraint root the host compiled for this plan.
 
@@ -974,9 +1001,15 @@ def _author_constraint_catalogue(
 
     from novel_agent.domain.author_constraints import AuthorConstraintRoot
 
-    for ref in refs:
-        if ref.media_type != "application/vnd.novel-agent.author-constraint-root+json":
-            continue
+    candidates: list[ArtifactRef] = []
+    if context_package is not None and context_package.author_constraint_root_ref is not None:
+        candidates.append(context_package.author_constraint_root_ref)
+    candidates.extend(
+        ref
+        for ref in refs
+        if ref.media_type == "application/vnd.novel-agent.author-constraint-root+json"
+    )
+    for ref in candidates:
         try:
             root = AuthorConstraintRoot.model_validate_json(
                 artifacts.read_verified(ref), strict=True
@@ -987,15 +1020,66 @@ def _author_constraint_catalogue(
     return ()
 
 
+def _declared_obligation_ids(payload: Mapping[str, object], item_id: str) -> set[str]:
+    """Reproduce the host-derived ids a plan item's own declarations will bind.
+
+    The identity convention lives in the materializer, so a review that wants to
+    recognise the accepted catalogue has to derive the same ids: one per readable
+    declaration ordinal and kind, in the order the materializer binds them.
+    """
+
+    from novel_agent.domain.ids import bounded_stable_id
+
+    declared: list[tuple[int, str]] = []
+    for key in ("obligations", "obligation_declarations", "key_obligations",
+                "obligation_declaration"):
+        values = payload.get(key)
+        if isinstance(values, Mapping):
+            values = [values]
+        if not isinstance(values, (list, tuple)):
+            continue
+        for entry in values:
+            if not isinstance(entry, Mapping):
+                continue
+            kind_raw = entry.get("obligation_kind") or entry.get("kind") or entry.get("type")
+            declared.append((0, str(kind_raw).strip().lower()))
+    nested = payload.get("obligation")
+    if isinstance(nested, Mapping):
+        kind_raw = nested.get("obligation_kind") or nested.get("kind") or nested.get("type")
+        declared.append((0, str(kind_raw).strip().lower()))
+    legacy = payload.get("obligation_plan")
+    if legacy is not None:
+        compilation = compile_legacy_obligation_plan(legacy)
+        declared.extend(
+            (declaration.source_ordinal, declaration.kind.value)
+            for declaration in compilation.declarations
+        )
+    ids: set[str] = set()
+    for ordinal, kind in enumerate(kind for _source, kind in declared):
+        ids.add(
+            bounded_stable_id(
+                f"obligation.{item_id}.{ordinal}.{kind}",
+                "obligation."
+                + content_id(
+                    {"plan_item_id": item_id, "ordinal": ordinal, "kind": kind}
+                ).root.removeprefix("sha256:")[:48],
+            ).root
+        )
+    return ids
+
+
 def _accepted_obligation_ids(
     artifacts: ArtifactRepository,
     refs: tuple[ArtifactRef, ...],
+    context_package: PlannerContextPackage | None,
 ) -> frozenset[str] | None:
-    """Read the accepted obligation catalogue a lower-level plan must reference.
+    """Read the obligation catalogue a lower-level plan must reference.
 
-    A chapter may point at an obligation the upper-level plan already declared;
-    it may not invent one.  The catalogue therefore comes from the trusted World
-    root the host passed in, never from the candidate under review.
+    A chapter may point at an obligation the upper-level plan already declared; it
+    may not invent one.  The catalogue comes from the trusted World root when the
+    host passed one, and otherwise from the declarations the trusted project
+    profile carries.  ``None`` means no trusted catalogue could be read, which the
+    review reports instead of silently skipping the check.
     """
 
     from novel_agent.domain.memory import WorldRootDocument
@@ -1010,7 +1094,26 @@ def _accepted_obligation_ids(
         except (UnicodeDecodeError, ValueError):
             continue
         return frozenset(item.obligation_id.root for item in world.obligations)
-    return None
+    profile_ref = None if context_package is None else context_package.profile_ref
+    if profile_ref is None:
+        return None
+    try:
+        profile = ProjectProfileRootDocument.model_validate_json(
+            artifacts.read_verified(profile_ref), strict=True
+        )
+    except (UnicodeDecodeError, ValueError):
+        return None
+    catalogue: set[str] = set()
+    raw_declarations = profile.capability_profile.get("obligation_declarations")
+    if isinstance(raw_declarations, (list, tuple)):
+        for item in raw_declarations:
+            if not isinstance(item, Mapping):
+                continue
+            item_id = item.get("item_id") or item.get("plan_item_id")
+            payload = item.get("payload")
+            if isinstance(item_id, str) and isinstance(payload, Mapping):
+                catalogue |= _declared_obligation_ids(payload, item_id)
+    return frozenset(catalogue)
 
 
 def _expected_target_chapters_from_context(context: str) -> int | None:
