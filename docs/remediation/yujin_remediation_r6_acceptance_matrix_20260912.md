@@ -105,7 +105,12 @@ integration 与 unit/contract 的失败身份集合在**两次独立运行之间
 | A05/A12/A15 端到端 | 需真实 v7 运行补证 |
 | ~~8003 预检补齐~~ | **已完成**，见第 5 节 |
 | ~~G0 作者锁通道~~ | **已完成**，见第 7 节 |
-| 真实 v7 运行 | 第 9 节 G0 配置与规划 → G1 两章 → G2 五章 → G3 20 章；G0 受 bootstrap 输出预算约束，见第 7 节 |
+| ~~修稿恢复崩溃~~ | **已修复**，见第 8 节（复现 + 修复 + 回归） |
+| ~~accept 通过 / commit 才拒绝~~ | **已补齐两处 host review 漏口**，见第 8 节 |
+| ~~作者锁语义~~ | **已修正**：不再替作者补 deadline；401 独立成机器边界；Writer 覆盖全部通道，见第 8 节 |
+| ~~阶段网格与 coverage 口径~~ | **已接线**：作者约束作为 coverage 分母；卷阶段网格投影到 Writer，见第 8 节 |
+| 义务 coverage 分母 | **未闭合**：分母仍来自候选自报声明；改为已接受 World 义务目录需要先决定"提案如何满足既有义务" |
+| 真实 v7 运行 | 第 9 节 G0 配置与规划 → G1 两章 → G2 五章 → G3 20 章；G0 需以冻结代码重新冻结运行身份 |
 
 
 ## 5. 8003 预检实跑证据（2026-09-12）
@@ -215,3 +220,90 @@ v6 的同类响应当初在 12 000 以内完成。结论与处置：
 取决于该模型对 800 章 brief 的真实输出长度，属于运行配置问题而非既有缺陷的回归。
 G0 未产出 `state/genesis-prepared.json` 前，G1/G2/G3 都不启动。
 
+
+## 8. 正文启动前的缺陷修复（2026-09-13）
+
+按"先补齐规划契约、作者锁与恢复链路，再推进正文验收"的顺序，复现并修复了以下缺陷。
+每条都给出复现方式、修复位置与回归证据。
+
+### 8.1 修稿恢复崩溃（已复现 → 已修复）
+
+复现：既有确定性 fixture（`tests/integration/test_writer_context_loop.py`）在较小
+`max_post_draft_model_calls` 下写检查点时，实际抛出
+
+```text
+UnboundLocalError: cannot access local variable 'major_verification'
+```
+
+根因：`_persist_workflow_checkpoint` 读取的 `major_verification` / `local_repair_attempt` /
+`rewrite_attempt` 只在 `LOCAL_REPAIR` 与 `MAJOR_REWRITE` 分支里初始化；正常 PASS 让出时这些
+名字从未绑定。修复后这三项在任何 verdict 分支之前统一落定，`RepairStage` 成为
+`domain/writing_loop.py` 中的单一类型别名，rewrite 分支进入复审时写入
+`rewrite_review` 而不是停在 `rewrite_draft`。
+
+新增回归：
+`test_ordinary_pass_reaches_candidate_ready_with_a_dispatch_repair_frontier`、
+`test_every_declared_repair_stage_round_trips_through_a_real_checkpoint`、
+`test_local_repair_slice_records_the_local_review_stage`。
+
+同时修掉测试夹具自身的缺陷：`_loop` 只注册 `skill.scene-composition`，导致 11 个既有
+`MAJOR_REWRITE` 失败全部是"缺少 mode Skill"；并且 harness 按 DRAFT 模式构造 work plan，
+而执行器会按当前模式重新规划。这一条与第 2.2 节 integration 基线清单相关，需要按"原因"
+而不是"名称集合"复核。
+
+### 8.2 accept 通过、commit 才拒绝（两处漏口已补齐）
+
+复现（直接调用 host review，`decision=ACCEPT`、无 issue）：
+
+| 输入 | 修复前 | 修复后 |
+|---|---|---|
+| 结构化 action 引用不存在的 obligation ID | ACCEPT | `OBLIGATION_ACTION_UNDECLARED` → REVISE |
+| CHAPTER_SET 用 `obligation_declarations` 新建长期义务 | ACCEPT | `OBLIGATION_DECLARATION_FORBIDDEN` → REVISE |
+
+`apply_host_plan_review_constraints` 新增 `accepted_obligation_ids`，由
+`PlanReviewer.review` 从**可信 World root 制品**读出（`_accepted_obligation_ids`），
+而不是从被审候选自报。没有目录时不判定"发明了 ID"，避免以猜测当证据。
+
+同一轮补齐了生成侧契约：`planner_chapter_set_v1.md` 现在明确写出
+`obligation_actions` 的 `{obligation_id, action, expected_delta}` 形状、`action` 的四个
+枚举值、ID 必须取自可信上下文，以及本层级禁止任何形式的长期义务声明。至此
+"生成说明 → 可信目录输入 → host 校验 → 最终物化"四处一致。
+
+### 8.3 作者锁语义（已修正）
+
+| 问题 | 处置 |
+|---|---|
+| 为"最早第二卷"自动补 `chapter_latest=200` | 改判为 `reveal` 锁，只保留作者声明的下界 101；不再替作者发明期限 |
+| "第五卷起正式推进"只有自然语言 | 独立成 `lock.long-truth.vol5-advance`（progression，not_before 401）；350 仍为"开始暗示"的 reveal 锁 |
+| 无任何边界的锁会静默编译成空 | 加载时 fail-closed：非 timeline 锁必须声明至少一个章节边界 |
+| 铜铭只进了 profile，没进 Writer | Writer 锁投影改为遍历全部五个通道（含 `equipment_locks`、`location_preconditions`） |
+| `chapter_latest` 被当成"锁到某章" | 上界现在报告为 deadline，与下界的"locked until"区分 |
+
+v7 锁文件现为 6 条：101（内府）、90-100（铜铭）、101（断星六号核心禁令）、
+201-300（第三碎片/ER-07）、350（长程真相暗示）、401（长程真相正式推进）。
+
+### 8.4 阶段网格与 coverage 口径（已接线）
+
+- **作者约束 coverage**：生产调用原先不传约束，实测 `author_constraint_coverage: 0/0`；
+  现在 `PlanReviewer.review` 从可信制品读 `AuthorConstraintRoot` 作为分母，删除全部
+  作者约束的提案不再得满分。回归：
+  `test_author_constraint_coverage_uses_the_frozen_catalogue_as_denominator`、
+  `test_author_constraint_coverage_credits_a_restated_constraint`。
+- **章节分母**：`apply_host_plan_review_constraints` 接受 `trusted_window`，可由任务
+  窗口提供，不再只能从候选自身推导。
+- **卷阶段网格**：`entry_conditions` / `exit_conditions` / `reveal_window` /
+  `capability_ceiling` / `equipment_ceiling` 现在从覆盖当前章的卷节点投影进
+  `mandatory_constraints`，并且 text / list / 结构化表三种写法都能读出。
+  回归：`test_volume_stage_slots_reach_the_writer_in_every_declared_shape`。
+- **仍未闭合**：义务 coverage 的分母仍来自候选自报声明。把它改成已接受 World 义务目录
+  需要先确定"提案如何算满足一条既有义务"，本轮不做半成品改动，明确记入未完成项。
+
+### 8.5 本轮回归结果
+
+```text
+tests/unit tests/contract  76 failed / 3038 passed / 1 skipped
+                           失败身份集合 == R0 基线（逐条 diff，IDENTICAL）
+```
+
+本轮新增通过测试：作者锁 18 项、host review 义务契约 12 项、修稿恢复与阶段前沿 3 项、
+中文门禁登记等，合计新增约 21 项确定性通过。未运行完整 `make quality`，未修改覆盖率阈值。
