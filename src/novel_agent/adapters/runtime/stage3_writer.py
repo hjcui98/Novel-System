@@ -67,12 +67,180 @@ VOLUME_STAGE_WRITER_KEYS: tuple[str, ...] = (
     "equipment_ceiling",
 )
 
+# Where a stage slot binds when the plan states it as free text.  A free-text slot
+# declares no window of its own, so the slot's meaning decides it: what a volume
+# enters with is settled at the opening, what it exits with is due by the close,
+# and a knowledge boundary or a ceiling holds for the whole volume.  A structured
+# slot always wins with the window the plan itself declared.
+VOLUME_STAGE_SLOT_SCOPE: Mapping[str, str] = {
+    "entry_conditions": "opening",
+    "exit_conditions": "closing",
+    "reveal_window": "volume",
+    "capability_ceiling": "volume",
+    "equipment_ceiling": "volume",
+}
+VOLUME_STAGE_POSITION_LABELS: Mapping[str, str] = {
+    "opening": "卷首",
+    "middle": "卷中",
+    "closing": "卷尾",
+}
+
 WRITING_TASK_MEDIA_TYPE = "application/vnd.novel-agent.writing-task+json"
 WRITER_CONTEXT_V2_MEDIA_TYPE = "application/vnd.novel-agent.writer-context-v2+json"
 EVIDENCE_LEDGER_V2_MEDIA_TYPE = "application/vnd.novel-agent.evidence-ledger-v2+json"
-AUTHOR_PLANNING_CONTEXT_MEDIA_TYPE = (
-    "application/vnd.novel-agent.author-planning-context+json"
-)
+AUTHOR_PLANNING_CONTEXT_MEDIA_TYPE = "application/vnd.novel-agent.author-planning-context+json"
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeStageSlot:
+    """One plan stage entry with the chapter window it declares, when it declares one."""
+
+    body: str
+    chapter_start: int | None = None
+    chapter_end: int | None = None
+
+    @property
+    def declares_window(self) -> bool:
+        return self.chapter_start is not None and self.chapter_end is not None
+
+    def covers(self, chapter_index: int) -> bool:
+        """Whether the declared window covers the chapter; a windowless slot never does."""
+
+        if self.chapter_start is None or self.chapter_end is None:
+            return False
+        return self.chapter_start <= chapter_index <= self.chapter_end
+
+    @property
+    def window_label(self) -> str:
+        if self.chapter_start is None or self.chapter_end is None:
+            return ""
+        return f"{self.chapter_start}-{self.chapter_end}"
+
+
+def _stage_slot_entries(payload: Mapping[str, object], key: str) -> tuple[VolumeStageSlot, ...]:
+    """Read one stage slot whether it is text, a list, or a table.
+
+    A plan may express a stage slot as a bare string, a list of strings, or
+    structured entries carrying their own chapter range and obligation.  All
+    three must reach the Writer as a constraint instead of only the structured
+    shape, and the structured shape must keep the window it declared.
+    """
+
+    raw = payload.get(key)
+    entries: Sequence[object]
+    if isinstance(raw, Mapping):
+        entries = (raw,)
+    elif isinstance(raw, (list, tuple)):
+        entries = raw
+    elif isinstance(raw, str) and raw.strip():
+        return (VolumeStageSlot(body=raw.strip()),)
+    else:
+        return ()
+    values: list[VolumeStageSlot] = []
+    for entry in entries:
+        if isinstance(entry, str) and entry.strip():
+            values.append(VolumeStageSlot(body=entry.strip()))
+            continue
+        if not isinstance(entry, Mapping):
+            continue
+        body = next(
+            (
+                value.strip()
+                for field in ("description", "summary", "text", "condition", "value")
+                for value in (entry.get(field),)
+                if isinstance(value, str) and value.strip()
+            ),
+            None,
+        )
+        if body is None:
+            continue
+        start = entry.get("chapter_start")
+        end = entry.get("chapter_end")
+        values.append(
+            VolumeStageSlot(
+                body=body,
+                chapter_start=start if isinstance(start, int) else None,
+                chapter_end=end if isinstance(end, int) else None,
+            )
+        )
+    deduped = {slot: None for slot in values}
+    return tuple(deduped)
+
+
+def _volume_stage_positions(
+    chapter_index: int, chapter_start: int, chapter_end: int
+) -> tuple[str, ...]:
+    """Where a chapter sits inside its own stage range.
+
+    The first chapter is the range's opening and the last is its close; the
+    range between them splits into contiguous thirds, so a range always has a
+    middle for its middle chapters to occupy.
+    """
+
+    if chapter_index == chapter_start and chapter_index == chapter_end:
+        return ("opening", "closing")
+    if chapter_index == chapter_start:
+        return ("opening",)
+    if chapter_index == chapter_end:
+        return ("closing",)
+    span = chapter_end - chapter_start + 1
+    opening_end = chapter_start + -(-span // 3) - 1
+    closing_start = chapter_end - span // 3 + 1
+    if chapter_index <= opening_end:
+        return ("opening",)
+    if chapter_index >= closing_start:
+        return ("closing",)
+    return ("middle",)
+
+
+def _volume_stage_constraints(nodes: Sequence[PlanNode], chapter_index: int) -> tuple[str, ...]:
+    """Project the stage grid that actually applies to this chapter.
+
+    A structured entry binds only inside the window the plan declared for it.
+    A free-text entry has no window, so the slot's own scope decides: an
+    opening slot binds at the stage's opening, a closing slot at its close, and
+    an invariant for the whole stage.  A closing slot that is not due yet stays
+    visible as a prohibition against cashing the stage's result in early,
+    because the volume's exit is the one thing a mid-volume chapter must not
+    resolve.
+    """
+
+    constraints: list[str] = []
+    for node in nodes:
+        chapter_start = node.chapter_start
+        chapter_end = node.chapter_end
+        if not isinstance(chapter_start, int) or not isinstance(chapter_end, int):
+            continue
+        if not chapter_start <= chapter_index <= chapter_end:
+            continue
+        positions = _volume_stage_positions(chapter_index, chapter_start, chapter_end)
+        label = VOLUME_STAGE_POSITION_LABELS[positions[0]]
+        for key in VOLUME_STAGE_WRITER_KEYS:
+            scope = VOLUME_STAGE_SLOT_SCOPE.get(key, "volume")
+            for slot in _stage_slot_entries(node.payload, key):
+                if slot.declares_window:
+                    if slot.covers(chapter_index):
+                        constraints.append(
+                            f"当前卷阶段[{label}·窗口{slot.window_label}:{key}]：{slot.body}"  # noqa: RUF001
+                        )
+                    continue
+                if scope == "volume":
+                    constraints.append(f"当前卷阶段[整卷:{key}]：{slot.body}")  # noqa: RUF001
+                elif scope in positions:
+                    constraints.append(
+                        f"当前卷阶段[{VOLUME_STAGE_POSITION_LABELS[scope]}:{key}]：{slot.body}"  # noqa: RUF001
+                    )
+                elif scope == "closing":
+                    constraints.append(
+                        f"当前卷阶段[{label}·出口未到期:exit_conditions]：{slot.body}"  # noqa: RUF001
+                        "（本章不得提前兑现或解决本卷出口结果）"  # noqa: RUF001
+                    )
+                else:
+                    constraints.append(
+                        f"当前卷阶段[{label}·入口已成立:entry_conditions]：{slot.body}"  # noqa: RUF001
+                        "（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
+                    )
+    return tuple(dict.fromkeys(constraints))
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,9 +383,7 @@ class ProductionWritingRequestFactory:
             for node in plan.nodes
             if node.plan_node_id in goal_ids and node.parent_id is not None
         }
-        goal_levels = {
-            node.plan_level for node in plan.nodes if node.plan_node_id in goal_ids
-        }
+        goal_levels = {node.plan_level for node in plan.nodes if node.plan_node_id in goal_ids}
         relevant_nodes = tuple(
             node
             for node in plan.nodes
@@ -236,25 +402,12 @@ class ProductionWritingRequestFactory:
             )
         )
         # The enclosing volume's stage slots are the plan's own statement of what
-        # the volume must enter with, hold to, and exit with.  Only a node directly
-        # bound to the goal reached the Writer before, so a chapter inside volume 3
-        # never saw that volume's stage grid.
-        covering_volume_nodes = tuple(
-            node
-            for node in plan.nodes
-            if node not in relevant_nodes
-            and isinstance(node.chapter_start, int)
-            and isinstance(node.chapter_end, int)
-            and node.chapter_start <= task.chapter_index <= node.chapter_end
-        )
-        volume_stage_constraints = tuple(
-            dict.fromkeys(
-                f"当前卷阶段[{key}]：{value}"
-                for node in covering_volume_nodes
-                for key in VOLUME_STAGE_WRITER_KEYS
-                for value in self._stage_slot_texts(node.payload, key)
-            )
-        )
+        # the volume must enter with, hold to, and exit with.  Every node whose own
+        # chapter range covers this chapter contributes, whatever its planning
+        # level, and each entry is projected by the window it declares (or by the
+        # slot's own scope when it is free text), so a volume's opening, middle and
+        # closing chapters no longer receive the same grid.
+        volume_stage_constraints = _volume_stage_constraints(plan.nodes, task.chapter_index)
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
         chapter_goal = "；".join(summaries)
         payload_beats = tuple(
@@ -360,9 +513,7 @@ class ProductionWritingRequestFactory:
         language_constraint = (f"正文语言：{language}",) if language else ()
         language_allowlist = self._profile_strings(profile, "language_allowlist")
         language_allow_constraint = (
-            ("允许英文代号\uff1a" + ", ".join(language_allowlist),)
-            if language_allowlist
-            else ()
+            ("允许英文代号\uff1a" + ", ".join(language_allowlist),) if language_allowlist else ()
         )
         writing_task = WritingTaskContract(
             contract_id=bounded_stable_id(
@@ -631,9 +782,7 @@ class ProductionWritingRequestFactory:
                     # A deadline is the opposite of a lock: the chapter must land
                     # the item by then.  "locked until 90" would read as the
                     # inverse of an author rule that says "obtain it by 100".
-                    forbids.append(
-                        f"Profile {key} is past its chapter {latest} deadline: {text}"
-                    )
+                    forbids.append(f"Profile {key} is past its chapter {latest} deadline: {text}")
         return tuple(dict.fromkeys(constraints)), tuple(dict.fromkeys(forbids))
 
     @staticmethod
@@ -821,52 +970,6 @@ class ProductionWritingRequestFactory:
                 values.extend(
                     item.strip() for item in raw if isinstance(item, str) and item.strip()
                 )
-        return tuple(dict.fromkeys(values))
-
-    @staticmethod
-    def _stage_slot_texts(payload: Mapping[str, object], key: str) -> tuple[str, ...]:
-        """Read one volume stage slot whether it is text, a list, or a table.
-
-        An ARC_VOLUME plan may express a stage slot as a bare string, a list of
-        strings, or structured entries carrying their own chapter range and
-        obligation.  All three must reach the Writer as a constraint instead of
-        only the structured shape.
-        """
-
-        raw = payload.get(key)
-        entries: Sequence[object]
-        if isinstance(raw, Mapping):
-            entries = (raw,)
-        elif isinstance(raw, (list, tuple)):
-            entries = raw
-        elif isinstance(raw, str) and raw.strip():
-            return (raw.strip(),)
-        else:
-            return ()
-        values: list[str] = []
-        for entry in entries:
-            if isinstance(entry, str) and entry.strip():
-                values.append(entry.strip())
-                continue
-            if not isinstance(entry, Mapping):
-                continue
-            body = next(
-                (
-                    value.strip()
-                    for field in ("description", "summary", "text", "condition", "value")
-                    for value in (entry.get(field),)
-                    if isinstance(value, str) and value.strip()
-                ),
-                None,
-            )
-            if body is None:
-                continue
-            window = " ".join(
-                f"{field}={entry[field]}"
-                for field in ("chapter_start", "chapter_end")
-                if isinstance(entry.get(field), int)
-            )
-            values.append(f"{body} [{window}]" if window else body)
         return tuple(dict.fromkeys(values))
 
     @staticmethod

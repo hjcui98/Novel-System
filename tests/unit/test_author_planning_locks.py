@@ -30,6 +30,7 @@ from novel_agent.domain.stage2 import (
     PromptContractRef,
     SkillContractRef,
 )
+from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.services.bootstrap_workflow import project_profile_root_content_id
 from novel_agent.services.content_addressing import content_id
 
@@ -452,17 +453,23 @@ def test_a_lock_deadline_is_not_reported_as_a_lock() -> None:
 def test_volume_stage_slots_reach_the_writer_in_every_declared_shape() -> None:
     """A volume's entry/exit/ceiling slots must not be lost by their JSON shape."""
 
-    from novel_agent.adapters.runtime.stage3_writer import ProductionWritingRequestFactory
+    from novel_agent.adapters.runtime.stage3_writer import (
+        VolumeStageSlot,
+        _stage_slot_entries,
+    )
 
-    reader = ProductionWritingRequestFactory._stage_slot_texts
+    reader = _stage_slot_entries
 
     assert reader({"entry_conditions": "必须已取得铜铭"}, "entry_conditions") == (
-        "必须已取得铜铭",
+        VolumeStageSlot(body="必须已取得铜铭"),
     )
     assert reader(
         {"exit_conditions": ["断星六号外围记载已取得", "内府资格尚未获得"]},
         "exit_conditions",
-    ) == ("断星六号外围记载已取得", "内府资格尚未获得")
+    ) == (
+        VolumeStageSlot(body="断星六号外围记载已取得"),
+        VolumeStageSlot(body="内府资格尚未获得"),
+    )
     assert reader(
         {
             "capability_ceiling": {
@@ -472,5 +479,90 @@ def test_volume_stage_slots_reach_the_writer_in_every_declared_shape() -> None:
             }
         },
         "capability_ceiling",
-    ) == ("本卷不得突破三阶开脉 [chapter_start=1 chapter_end=100]",)
+    ) == (VolumeStageSlot(body="本卷不得突破三阶开脉", chapter_start=1, chapter_end=100),)
     assert reader({"reveal_window": None}, "reveal_window") == ()
+
+
+def _stage_node(*, start: int, end: int, payload: dict[str, object]) -> PlanNode:
+    return PlanNode(
+        plan_node_id=StableId("node.volume.1"),
+        node_type=PlanLevel.ARC_VOLUME.value,
+        title="第一卷",
+        summary="第一卷",
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=start,
+        chapter_end=end,
+        payload=payload,  # type: ignore[arg-type]
+    )
+
+
+def test_volume_stage_grid_binds_free_text_slots_to_their_own_stage() -> None:
+    """Ten non-empty fields are not a stage grid: opening, middle and closing differ."""
+
+    from novel_agent.adapters.runtime.stage3_writer import _volume_stage_constraints
+
+    node = _stage_node(
+        start=1,
+        end=9,
+        payload={
+            "entry_conditions": "必须已取得铜铭",
+            "exit_conditions": "内府资格已获得",
+            "capability_ceiling": "不得突破三阶开脉",
+        },
+    )
+    project = _volume_stage_constraints
+
+    opening = project([node], 1)
+    middle = project([node], 5)
+    closing = project([node], 9)
+
+    assert "当前卷阶段[卷首:entry_conditions]：必须已取得铜铭" in opening  # noqa: RUF001
+    assert "当前卷阶段[整卷:capability_ceiling]：不得突破三阶开脉" in opening  # noqa: RUF001
+    assert any("出口未到期" in item for item in opening)
+
+    assert (
+        "当前卷阶段[卷中·入口已成立:entry_conditions]：必须已取得铜铭（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
+        in middle
+    )
+    assert any("出口未到期" in item for item in middle)
+
+    assert "当前卷阶段[卷尾:exit_conditions]：内府资格已获得" in closing  # noqa: RUF001
+    assert (
+        "当前卷阶段[卷尾·入口已成立:entry_conditions]：必须已取得铜铭（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
+        in closing
+    )
+    assert "当前卷阶段[整卷:capability_ceiling]：不得突破三阶开脉" in closing  # noqa: RUF001
+    assert opening != middle != closing
+
+
+def test_a_declared_stage_window_outranks_the_slot_scope() -> None:
+    """A structured entry binds exactly inside the window the plan declared for it."""
+
+    from novel_agent.adapters.runtime.stage3_writer import _volume_stage_constraints
+
+    node = _stage_node(
+        start=1,
+        end=9,
+        payload={
+            "entry_conditions": "必须已取得铜铭",
+            "exit_conditions": [
+                {
+                    "description": "前段伏笔已埋设",
+                    "chapter_start": 4,
+                    "chapter_end": 6,
+                    "obligation_ids": ["obligation.thread"],
+                },
+                "内府资格已获得",
+            ],
+        },
+    )
+    project = _volume_stage_constraints
+
+    early = project([node], 2)
+    inside = project([node], 5)
+    late = project([node], 9)
+
+    assert not any("前段伏笔已埋设" in item for item in early)
+    assert "当前卷阶段[卷中·窗口4-6:exit_conditions]：前段伏笔已埋设" in inside  # noqa: RUF001
+    assert not any("前段伏笔已埋设" in item for item in late)
+    assert "当前卷阶段[卷尾:exit_conditions]：内府资格已获得" in late  # noqa: RUF001
