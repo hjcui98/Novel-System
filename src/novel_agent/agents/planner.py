@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec
 from novel_agent.agents.runner import PreparedAgentRun, StructuredAgentRunner
@@ -346,11 +346,20 @@ class PlannerInvocationError(ValueError):
     pass
 
 
+BOOTSTRAP_UNRESOLVED_LIMIT = 24
+
+
 class _DevelopCandidatesPlannerProposalDraft(PlannerProposalDraft):
     """Expose the trusted bootstrap strategy as an exact required provider schema field."""
 
     model_config = ConfigDict(json_schema_extra={"required": ["mode", "strategy", "coverage"]})
     strategy: Literal[BootstrapStrategy.DEVELOP_CANDIDATES] = BootstrapStrategy.DEVELOP_CANDIDATES
+    # A live 800-chapter bootstrap looped on this array and never closed its JSON:
+    # the provider repeated the same "X 未明确" entries until the output budget was
+    # exhausted (100 000 tokens, 162 088 characters, 847 s).  The prompt already
+    # asks only for real gaps; the schema now states the bound as well, so a
+    # looping decoder is stopped by the grammar instead of by the token budget.
+    unresolved: tuple[str, ...] = Field(default=(), max_length=BOOTSTRAP_UNRESOLVED_LIMIT)
 
     @field_validator("strategy", mode="before")
     @classmethod

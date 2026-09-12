@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
+from novel_agent.agents.planner import (
+    BOOTSTRAP_UNRESOLVED_LIMIT,
+    _DevelopCandidatesPlannerProposalDraft,
+)
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.author_constraints import (
     AuthorConstraintCategory,
@@ -246,3 +252,48 @@ def test_compiled_channels_reach_the_author_constraint_root() -> None:
         item for item in root.constraints if item.category is AuthorConstraintCategory.TIME_LOCK
     ]
     assert [item.not_before_chapter for item in timeline] == [101, 350]
+
+
+def test_bootstrap_provider_schema_bounds_the_unresolved_array() -> None:
+    """A looping decoder must be stopped by the grammar, not by the token budget."""
+
+    schema = _DevelopCandidatesPlannerProposalDraft.model_json_schema()
+
+    unresolved = schema["properties"]["unresolved"]
+    assert unresolved["maxItems"] == BOOTSTRAP_UNRESOLVED_LIMIT
+    assert schema["required"] == ["mode", "strategy", "coverage"]
+
+
+def test_bootstrap_unresolved_limit_is_still_generous_enough_for_real_gaps() -> None:
+    assert BOOTSTRAP_UNRESOLVED_LIMIT >= 16
+
+
+def test_bootstrap_draft_rejects_more_unresolved_entries_than_the_schema_allows() -> None:
+    payload = {
+        "mode": "project_bootstrap",
+        "strategy": "develop_candidates",
+        "project_intent_items": [
+            {
+                "item_id": "intent.author-brief",
+                "kind": "author_brief",
+                "payload": {"summary": "余烬九序"},
+                "provenance": "author_supplied",
+                "source_ids": ["source.author-initial-brief"],
+            }
+        ],
+        "unresolved": [f"未明确项 {index}" for index in range(BOOTSTRAP_UNRESOLVED_LIMIT + 1)],
+        "coverage": 1.0,
+    }
+
+    with pytest.raises(ValidationError, match="at most 24 items"):
+        _DevelopCandidatesPlannerProposalDraft.model_validate_json(
+            json.dumps(payload, ensure_ascii=False)
+        )
+
+    accepted = _DevelopCandidatesPlannerProposalDraft.model_validate_json(
+        json.dumps(
+            {**payload, "unresolved": payload["unresolved"][:BOOTSTRAP_UNRESOLVED_LIMIT]},
+            ensure_ascii=False,
+        )
+    )
+    assert len(accepted.unresolved) == BOOTSTRAP_UNRESOLVED_LIMIT
