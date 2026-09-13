@@ -763,15 +763,18 @@ class CreativeRuntimeService:
                             }
                         ),
                     )
+                    # A settlement retry would read the same frozen candidate, so it
+                    # cannot change the length: fail closed and require review instead
+                    # of spending the attempt budget on an outcome that cannot move.
                     settled = self._commands.settle_attempt(
                         fence,
-                        outcome=AttemptOutcome.SUSPENDED,
-                        terminal_status=TaskStatus.WAITING_RETRY,
-                        failure_class=FailureClass.LEAF_SCHEMA_REJECTED,
+                        outcome=AttemptOutcome.FAILED,
+                        terminal_status=TaskStatus.BLOCKED,
+                        failure_class=FailureClass.VALIDATION_REJECTED,
                     )
                     return self._result(
                         settled,
-                        CreativeRunTerminal.WAITING_RETRY,
+                        CreativeRunTerminal.REVIEW_REQUIRED,
                         "chapter_settlement_length_rejected",
                     )
                 except (CandidateMaterializationError, ValueError):
@@ -873,16 +876,20 @@ class CreativeRuntimeService:
             try:
                 bundle, report = materializer.materialize(accepted)
             except DraftLengthContractError:
+                # A final accepted draft outside the trusted length policy cannot mutate
+                # the TextRoot.  Recommitting reads the same frozen candidate, so the
+                # durable outcome is a blocked task that requires review, not a retry
+                # that is guaranteed to fail the same way.
                 settled = self._commands.settle_attempt(
                     fence,
-                    outcome=AttemptOutcome.SUSPENDED,
-                    terminal_status=TaskStatus.WAITING_RETRY,
-                    failure_class=FailureClass.LEAF_SCHEMA_REJECTED,
+                    outcome=AttemptOutcome.FAILED,
+                    terminal_status=TaskStatus.BLOCKED,
+                    failure_class=FailureClass.VALIDATION_REJECTED,
                 )
                 return self._result(
                     settled,
-                    CreativeRunTerminal.WAITING_RETRY,
-                    "draft_length_contract_retry",
+                    CreativeRunTerminal.REVIEW_REQUIRED,
+                    "draft_length_contract_rejected",
                 )
             except CandidateMaterializationError as error:
                 # Name the defect.  Without it the attempt records only

@@ -609,13 +609,13 @@ integration 全量结果：
 ```text
 tests/integration（-m "not model_required and not integration"）
 修复前基线 17 failed / 93 passed
-现在        4 failed / 111 passed
-fixed: 13   new: 0
+现在        0 failed / 115 passed
+fixed: 17   new: 0
 ```
 
-剩余 4 项全部是同一处**语义冲突**，需要设计裁决而不是改夹具（见 13.6）。
+确定性 integration 基线已清零；`tests/unit tests/contract` 的 76 项既有失败身份保持不变。
 
-### 13.6 待裁决：长度契约在提交端"重试"还是"直接要人看"
+### 13.6 已裁决：长度契约在提交端 fail-closed（2026-09-13）
 
 `test_production_planning_cadence.py::test_final_draft_outside_length_policy_cannot_mutate_text_root[4 组]`
 要求：已接受但超出 `length_policy` 的正文在提交时判 `BLOCKED` / `REVIEW_REQUIRED`，
@@ -635,12 +635,17 @@ reason = draft_length_contract_retry
 已接受候选**（正文已冻结），所以重试不会产生更长/更短的正文，只会在 `failure_budget` 用尽后
 回到同样的终点，并把可诊断的 `draft_length_contract_rejected` 藏进 `LEAF_SCHEMA_REJECTED`。
 
-需要决定（本项未闭合）：
+处置（作者裁决 A）：提交端与章节结算端都改为 fail-closed，不再重试。
 
-- **A（建议）**：提交端恢复设计文档语义——`BLOCKED` / `REVIEW_REQUIRED` /
-  `draft_length_contract_rejected`，不自动重试；同步更新那条单测。
-- **B**：保留重试语义，把设计文档与集成用例一起改成"允许有界重试"，并说明重试到底改变了什么
-  （目前看不出有什么会变）。
+| 路径 | 现在 | reason |
+|---|---|---|
+| 正文提交物化 | `AttemptOutcome.FAILED` / `TaskStatus.BLOCKED` / `VALIDATION_REJECTED` / `REVIEW_REQUIRED` | `draft_length_contract_rejected` |
+| 章节结算 | 同上 | `chapter_settlement_length_rejected`（保留可诊断区分） |
+
+两条单测随之改名并断言新的失败语义：
+`test_advance_draft_commit_length_contract_error_requires_review`、
+`test_advance_chapter_settlement_length_contract_error_requires_review`。
+集成用例 `test_final_draft_outside_length_policy_cannot_mutate_text_root`（4 组）恢复通过。
 
 ### 13.7 回归（确定性）
 

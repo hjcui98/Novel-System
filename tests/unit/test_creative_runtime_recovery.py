@@ -1308,14 +1308,21 @@ def test_advance_chapter_settlement_bounds_max_length_effect_identity() -> None:
     assert len(requested.effect_identity.root) <= 128
 
 
-def test_advance_draft_commit_length_contract_error_waits_for_retry() -> None:
+def test_advance_draft_commit_length_contract_error_requires_review() -> None:
+    """A frozen candidate cannot become compliant by recommitting it.
+
+    Retrying the commit re-reads the same accepted draft, so the run must block for
+    review with the named reason instead of spending the attempt budget on an
+    outcome that cannot change.
+    """
+
     attempt, fence = _fence_pair()
     commands = Mock()
     commands.heartbeat_interval_seconds = 60.0
     commands.claim.return_value = (attempt, fence)
     commands.claim_writer_lane.return_value = fence
     commands.settle_attempt.return_value = _task(
-        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.WAITING_RETRY
+        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.BLOCKED
     )
     materializer = Mock()
     materializer.materialize.side_effect = DraftLengthContractError("too short")
@@ -1323,22 +1330,22 @@ def test_advance_draft_commit_length_contract_error_waits_for_retry() -> None:
     commands.get_task.return_value = _task(kind=TaskKind.DRAFT_COMMIT)
     cast(Any, service)._accepted_binding = Mock(return_value=Mock())
     result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
-    assert result.reason_code == "draft_length_contract_retry"
-    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    assert result.reason_code == "draft_length_contract_rejected"
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
     settle_kwargs = commands.settle_attempt.call_args.kwargs
-    assert settle_kwargs["outcome"] is AttemptOutcome.SUSPENDED
-    assert settle_kwargs["terminal_status"] is TaskStatus.WAITING_RETRY
-    assert settle_kwargs["failure_class"] is FailureClass.LEAF_SCHEMA_REJECTED
+    assert settle_kwargs["outcome"] is AttemptOutcome.FAILED
+    assert settle_kwargs["terminal_status"] is TaskStatus.BLOCKED
+    assert settle_kwargs["failure_class"] is FailureClass.VALIDATION_REJECTED
 
 
-def test_advance_chapter_settlement_length_contract_error_waits_for_retry() -> None:
+def test_advance_chapter_settlement_length_contract_error_requires_review() -> None:
     attempt, fence = _fence_pair()
     commands = Mock()
     commands.heartbeat_interval_seconds = 60.0
     commands.claim.return_value = (attempt, fence)
     commands.claim_writer_lane.return_value = fence
     commands.settle_attempt.return_value = _task(
-        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.WAITING_RETRY
+        kind=TaskKind.DRAFT_COMMIT, status=TaskStatus.BLOCKED
     )
     settlement = Mock()
     settlement.effect_identity.return_value = StableId("settlement.length")
@@ -1350,12 +1357,12 @@ def test_advance_chapter_settlement_length_contract_error_waits_for_retry() -> N
     result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="commit"))
 
     assert result.reason_code == "chapter_settlement_length_rejected"
-    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
     commands.record_effect_terminal.assert_called_once()
     settle_kwargs = commands.settle_attempt.call_args.kwargs
-    assert settle_kwargs["outcome"] is AttemptOutcome.SUSPENDED
-    assert settle_kwargs["terminal_status"] is TaskStatus.WAITING_RETRY
-    assert settle_kwargs["failure_class"] is FailureClass.LEAF_SCHEMA_REJECTED
+    assert settle_kwargs["outcome"] is AttemptOutcome.FAILED
+    assert settle_kwargs["terminal_status"] is TaskStatus.BLOCKED
+    assert settle_kwargs["failure_class"] is FailureClass.VALIDATION_REJECTED
 
 
 def test_advance_plan_commit_materializer_error_blocks() -> None:
