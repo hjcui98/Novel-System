@@ -166,7 +166,18 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
     for issue in issues:
         fields = _HOST_ISSUE_REQUIRED_FIELDS.get(issue.kind, ())
         for item_id in issue.affected_item_ids:
-            demands.extend(f"{item_id.root}.{field}" for field in fields)
+            for field in fields:
+                if issue.kind is ReviewIssueKind.UNRESOLVED_SCOPE_MISSING:
+                    # The field lives on the advisory itself, and a real candidate kept
+                    # the summary window while leaving the list empty, so the demand
+                    # names the advisory and the alternative of removing the conflict
+                    # from the draft instead of filing it as an advisory.
+                    demands.append(
+                        f"unresolved[{item_id.root}].{field} 必须列出它质疑的每一章"
+                        "（或直接在提案中修掉该冲突，不再以 advisory 形式保留）"
+                    )
+                else:
+                    demands.append(f"{item_id.root}.{field}")
     return tuple(dict.fromkeys(demands))
 
 
