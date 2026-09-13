@@ -1539,7 +1539,9 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
                 "decision": "human_required",
                 "issues": [
                     {
-                        "issue_id": "issue.long_range_payoff_without_time_window.story.reader_promise",
+                        "issue_id": (
+                            "issue.long_range_payoff_without_time_window.story.reader_promise"
+                        ),
                         "kind": "long_range_payoff_without_time_window",
                         "summary": "long-range PROMISE/FORESHADOWING requires not_before_chapter",
                         "blocking": True,

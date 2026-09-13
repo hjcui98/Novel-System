@@ -1102,7 +1102,6 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         existing = {item.obligation_id: item for item in world.obligations}
         declarations: list[PlanObligation] = []
         bindings: dict[StableId, list[StableId]] = {}
-        obligation_kinds = {kind.value for kind in ObligationKind}
         # ``obligation_plan`` is the legacy upper-layer responsibility table.  It is
         # compiled only through the legacy branch below: keeping it out of this key
         # loop prevents the same responsibility from being appended twice under
@@ -1144,7 +1143,6 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             if referenced_ids:
                 bindings[item.item_id] = list(dict.fromkeys(referenced_ids))
 
-            direct_kind = payload.get("obligation_kind") or payload.get("obligation_type")
             item_kind = item.kind.lower()
             has_direct_declaration = claims_direct_obligation(payload, item_kind)
             has_nested_declaration = any(key in payload for key in declaration_keys) or (

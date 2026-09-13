@@ -146,7 +146,9 @@ def test_non_canon_world_states_are_not_injected_as_current_truth() -> None:
     )
 
     canon = tuple(
-        state for state in (accepted, planned) if state.truth_class is TruthClass.ACCEPTED_WORLD_FACT
+        state
+        for state in (accepted, planned)
+        if state.truth_class is TruthClass.ACCEPTED_WORLD_FACT
     )
     planned_only = tuple(
         state

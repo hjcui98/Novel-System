@@ -15,6 +15,7 @@ from novel_agent.domain.benchmark import (
 )
 from novel_agent.domain.generation import (
     AcceptedPlanBinding,
+    RecentProseContext,
     WritingLengthPolicy,
     WritingLoopBudgets,
     WritingLoopRequest,
@@ -37,6 +38,8 @@ from novel_agent.domain.world import PlanLevel, PlanNode, TruthClass
 from novel_agent.domain.writer_context import (
     BenchmarkInformationProfile,
     BenchmarkTaskContract,
+    EvidenceLedgerV2,
+    WriterContextPackageV2,
 )
 from novel_agent.domain.writer_readiness import (
     WriterContextInputNotReady,
@@ -44,6 +47,7 @@ from novel_agent.domain.writer_readiness import (
 )
 from novel_agent.domain.writing_loop import (
     WRITING_LOOP_CHECKPOINT_MEDIA_TYPE,
+    WritingLoopCheckpoint,
     WritingLoopResult,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -289,6 +293,28 @@ class WritingRequestPolicy:
             raise ValueError("Writer request policy requires at least one allowed Skill")
 
 
+class WriterRecoveryRefused(RuntimeError):
+    """A durable Writer recovery checkpoint cannot be used and must not be rebuilt.
+
+    The production factory restores the frozen Memory package and evidence ledger from
+    the checkpoint's immutable references.  A checkpoint that exists but cannot be read
+    or does not match the current task basis is a refusal, never a silent second build:
+    rebuilding would re-run Memory and re-bill model calls the first attempt already
+    paid for.
+    """
+
+
+@dataclass(frozen=True)
+class _WriterRecovery:
+    """The frozen state one Writer attempt resumes from."""
+
+    checkpoint_ref: ArtifactRef
+    package: WriterContextPackageV2
+    evidence_ledger: EvidenceLedgerV2
+    recent_prose: RecentProseContext
+    recent_prose_ref: ArtifactRef
+
+
 class ProductionWritingRequestFactory:
     """Build the sole Stage 5 -> Stage 2M -> Stage 3 request from accepted Canon."""
 
@@ -330,6 +356,76 @@ class ProductionWritingRequestFactory:
             and snapshot.build_status is DerivedBuildStatus.EXACT
             and snapshot.source_commit == task.basis_commit
             and snapshot.published_at is not None
+        )
+
+    def _recover_writer_state(
+        self,
+        task: TaskRecord,
+        *,
+        writing_task_ref: ArtifactRef,
+        accepted_plan_ref: ArtifactRef,
+        project_profile_ref: ArtifactRef,
+    ) -> _WriterRecovery | None:
+        """Restore the frozen state a retried Writer attempt resumes from.
+
+        A durable checkpoint is read *before* any Stage 2M Memory work, so a restart
+        reuses the Memory package, evidence ledger and recent prose the first attempt
+        already paid for.  A checkpoint that exists but cannot be read, or that belongs
+        to another basis, is refused rather than silently rebuilt: rebuilding would run
+        Memory again and re-bill model calls.
+        """
+
+        checkpoint_ref = next(
+            (
+                ref
+                for ref in reversed(task.terminal_artifact_refs)
+                if ref.media_type == WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+            ),
+            None,
+        )
+        if checkpoint_ref is None:
+            return None
+        try:
+            checkpoint = WritingLoopCheckpoint.model_validate_json(
+                self._artifacts.read_verified(checkpoint_ref)
+            )
+        except (UnicodeDecodeError, ValueError) as error:
+            raise WriterRecoveryRefused(
+                "Writer recovery checkpoint is unreadable; refusing to rebuild Memory"
+            ) from error
+        matches = (
+            checkpoint.run_id == task.run_id,
+            checkpoint.task_id == task.task_id,
+            checkpoint.base_commit == task.basis_commit,
+            checkpoint.snapshot_id == task.basis_snapshot,
+            checkpoint.writing_task_ref == writing_task_ref,
+            checkpoint.accepted_plan_ref == accepted_plan_ref,
+            checkpoint.project_profile_ref == project_profile_ref,
+        )
+        if not all(matches):
+            raise WriterRecoveryRefused(
+                "Writer recovery checkpoint does not match the current task basis"
+            )
+        try:
+            package = WriterContextPackageV2.model_validate_json(
+                self._artifacts.read_verified(checkpoint.writer_context_ref)
+            )
+            evidence_ledger = EvidenceLedgerV2.model_validate_json(
+                self._artifacts.read_verified(package.evidence_ledger_ref)
+            )
+            recent_prose = RecentProseContext.model_validate_json(
+                self._artifacts.read_verified(checkpoint.recent_prose_ref)
+            )
+        except (UnicodeDecodeError, ValueError) as error:
+            raise WriterRecoveryRefused(
+                "Writer recovery checkpoint references unreadable frozen state"
+            ) from error
+        return _WriterRecovery(
+            checkpoint_ref=checkpoint_ref,
+            package=package,
+            evidence_ledger=evidence_ledger,
+            recent_prose=recent_prose,
+            recent_prose_ref=checkpoint.recent_prose_ref,
         )
 
     def __call__(self, task: TaskRecord) -> WritingLoopRequest:
@@ -583,30 +679,42 @@ class ProductionWritingRequestFactory:
             planning_context_hash=planning_context.source_hash,
         )
         accepted_plan_ref = _as_artifact_ref(manifest.plan_root)
-        assembly = self._writer_context(
-            Stage2MWriterContextInvocation(
-                run_id=task.run_id,
-                task=memory_task,
-                planning_context=planning_context,
-                plan=plan,
-                text=text,
-                world=world,
-                base_commit=task.basis_commit,
-                snapshot_id=task.basis_snapshot,
-                writing_task=writing_task,
-                project_id=task.project_id,
-                advisory_artifact_refs=tuple(
-                    ref
-                    for ref in task.input_artifact_refs
-                    if ref.media_type == "application/vnd.novel-agent.quarantine-package+json"
-                ),
-                plan_root_ref=accepted_plan_ref,
-                plan_revision=plan.root_hash.root,
-                chapter_goal_ids=tuple(goal.goal_id for goal in goals),
-                planning_context_ref=planning_context_artifact,
-            )
+        recovery = self._recover_writer_state(
+            task,
+            writing_task_ref=writing_task_artifact,
+            accepted_plan_ref=accepted_plan_ref,
+            project_profile_ref=_as_artifact_ref(manifest.project_profile_root),
         )
-        package = assembly.package
+        if recovery is None:
+            assembly = self._writer_context(
+                Stage2MWriterContextInvocation(
+                    run_id=task.run_id,
+                    task=memory_task,
+                    planning_context=planning_context,
+                    plan=plan,
+                    text=text,
+                    world=world,
+                    base_commit=task.basis_commit,
+                    snapshot_id=task.basis_snapshot,
+                    writing_task=writing_task,
+                    project_id=task.project_id,
+                    advisory_artifact_refs=tuple(
+                        ref
+                        for ref in task.input_artifact_refs
+                        if ref.media_type
+                        == "application/vnd.novel-agent.quarantine-package+json"
+                    ),
+                    plan_root_ref=accepted_plan_ref,
+                    plan_revision=plan.root_hash.root,
+                    chapter_goal_ids=tuple(goal.goal_id for goal in goals),
+                    planning_context_ref=planning_context_artifact,
+                )
+            )
+            package = assembly.package
+            evidence_ledger = assembly.evidence_ledger
+        else:
+            package = recovery.package
+            evidence_ledger = recovery.evidence_ledger
         readiness = evaluate_writer_readiness(
             plan=plan,
             target_chapter=task.chapter_index,
@@ -616,7 +724,9 @@ class ProductionWritingRequestFactory:
             expected_plan_root_ref=accepted_plan_ref,
             manifest_plan_revision=plan.root_hash.root,
             projection_exact=self._projection_is_exact(task),
-            canonical_prose_present=any(chapter.blocks for chapter in text.chapters),
+            canonical_prose_present=any(
+                scene.blocks for chapter in text.chapters for scene in chapter.scenes
+            ),
         )
         if not readiness.ready:
             raise WriterContextInputNotReady(readiness)
@@ -627,7 +737,7 @@ class ProductionWritingRequestFactory:
         ):
             raise ValueError("Stage 2M Writer Context changed the durable task basis")
         ledger_ref = self._artifacts.put(
-            canonical_json_bytes(assembly.evidence_ledger.model_dump(mode="json")),
+            canonical_json_bytes(evidence_ledger.model_dump(mode="json")),
             EVIDENCE_LEDGER_V2_MEDIA_TYPE,
             self._schema_version,
         )
@@ -638,12 +748,15 @@ class ProductionWritingRequestFactory:
             WRITER_CONTEXT_V2_MEDIA_TYPE,
             self._schema_version,
         )
-        recent, recent_ref = self._recent_prose.assemble(
-            text_root=text,
-            base_commit=task.basis_commit,
-            snapshot_id=task.basis_snapshot,
-            target_chapter=task.chapter_index,
-        )
+        if recovery is None:
+            recent, recent_ref = self._recent_prose.assemble(
+                text_root=text,
+                base_commit=task.basis_commit,
+                snapshot_id=task.basis_snapshot,
+                target_chapter=task.chapter_index,
+            )
+        else:
+            recent, recent_ref = recovery.recent_prose, recovery.recent_prose_ref
         attestation = FutureIsolationAttestation(
             attestation_id=bounded_stable_id(
                 f"future-isolation.{task.task_id.root}",
@@ -677,13 +790,8 @@ class ProductionWritingRequestFactory:
             writer_context_package_artifact=package_ref,
             recent_prose_context=recent,
             recent_prose_context_artifact=recent_ref,
-            resume_checkpoint_ref=next(
-                (
-                    ref
-                    for ref in reversed(task.terminal_artifact_refs)
-                    if ref.media_type == WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
-                ),
-                None,
+            resume_checkpoint_ref=(
+                None if recovery is None else recovery.checkpoint_ref
             ),
             future_isolation_attestation=attestation,
             allowed_skills=self._policy.allowed_skills,

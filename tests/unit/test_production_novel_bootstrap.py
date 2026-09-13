@@ -882,7 +882,7 @@ def test_root_document_identity_is_the_manifest_content_address() -> None:
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
-    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path := Path("/tmp")))
+    artifacts = ArtifactRepository(FilesystemObjectStore(Path("/tmp")))
     project_id = ProjectId("project.bootstrap.identity")
     plan_proposal, world_patch = proposals(project_id)
     plan_proposal = plan_proposal.model_copy(
