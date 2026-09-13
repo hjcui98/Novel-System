@@ -12,3 +12,5 @@
   不要把它们汇总成一条 `kind=obligation` 的条目。需要长期跟踪时，拆成具体义务并逐条
   给出 kind 与描述；否则不要新建该条目。
 - 不得为了让条目通过而补一个占位 kind：缺少 kind 或描述时，宿主会同时拒绝并给出具体原因。
+
+`unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。

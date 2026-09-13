@@ -10,3 +10,5 @@
 - 每个结构槽尽量说明 cause、participants、conflict、cost、state_delta 与 chapter_window。
 
 `obligation_plan` 为责任表条目列表，每条包含 `summary`、`kind`（objective/promise/foreshadowing/...）、`setup_window`、`progress_windows`、`payoff_window` 与 `not_before_chapter`。后卷的武器、地点和真相不得提前：`reveal_window` 与 `not_before_chapter` 必须与 Profile 时间锁一致。若某卷无法安全规划，返回结构化 `unresolved` 阻断项（kind 必须使用 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN 之一，`blocking=true`），不要以不完整 coverage 宣称 PLAN_READY。
+
+`unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。

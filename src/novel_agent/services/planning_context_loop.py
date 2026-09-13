@@ -489,6 +489,25 @@ _PARTIAL_MEMORY_BUDGET_GAP = (
 )
 
 
+def _blocking_signature(review: PlanReview) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The host-visible identity of a review's blocking findings.
+
+    Two revisions that produce the same blocking signature changed nothing the host
+    can check, so another revision would repeat the same outcome.
+    """
+
+    return tuple(
+        sorted(
+            (
+                issue.kind.value,
+                tuple(sorted(item.root for item in issue.affected_item_ids)),
+            )
+            for issue in review.issues
+            if issue.blocking
+        )
+    )
+
+
 class PlanningContextLoopService:
     """One bounded product loop; retrieval, projection, and review keep their owners."""
 
@@ -1147,6 +1166,7 @@ class PlanningContextLoopService:
             )
 
         plan_revisions_this_slice = 0
+        previous_blocking_signature: tuple[tuple[str, tuple[str, ...]], ...] | None = None
         reviewer_memory_this_slice = 0
         planner_memory_this_slice = 0
         if (
@@ -1286,9 +1306,7 @@ class PlanningContextLoopService:
                     record_model_call(_call)
                     if planner_memory_review.decision is not ReviewDecision.ACCEPT and not (
                         planner_memory_review.decision is ReviewDecision.REVISE
-                        and not any(
-                            issue.blocking for issue in planner_memory_review.issues
-                        )
+                        and not any(issue.blocking for issue in planner_memory_review.issues)
                     ):
                         # A REVISE without blocking issues is a bounded advisory: the
                         # reviewer judged the questions already answerable from
@@ -2197,6 +2215,28 @@ class PlanningContextLoopService:
                 handled_memory_reviews.add(plan_review.review_id)
                 reviewer_context_refs.append(gap_context_ref)
 
+            # A revision that reproduces exactly the blocking findings the host already
+            # rejected is not progress.  Requiring it again would keep spending real
+            # model calls across slices, because the per-slice revision allowance
+            # resets while the findings do not change.
+            blocking_signature = _blocking_signature(plan_review)
+            if (
+                previous_blocking_signature is not None
+                and blocking_signature == previous_blocking_signature
+            ):
+                return self._terminal(
+                    request,
+                    PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
+                    event_refs,
+                    inquiry_ref=inquiry_ref,
+                    inquiry_review_ref=inquiry_review_ref,
+                    memory_context_ref=memory_context_ref,
+                    planner_context_ref=planner_context_ref,
+                    proposal=proposal,
+                    plan_review_ref=plan_review_ref,
+                    diagnostics=("PLAN_REVISION_NO_PROGRESS",),
+                )
+            previous_blocking_signature = blocking_signature
             parent_proposal = proposal
             instruction = plan_review.revision_instruction or "bounded Plan revision"
             plan_revisions += 1
@@ -2392,10 +2432,7 @@ class PlanningContextLoopService:
             return rendered_context
         authority = "\n\n".join(author_parts)
         return (
-            f"{rendered_context}\n\n"
-            "<AUTHOR_AUTHORITY_TEXT>\n"
-            f"{authority}\n"
-            "</AUTHOR_AUTHORITY_TEXT>"
+            f"{rendered_context}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
         )
 
     def _source_parts(self, artifacts: tuple[ArtifactRef, ...]) -> tuple[str, ...]:

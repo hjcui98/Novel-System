@@ -36,3 +36,5 @@
 ## 输出前自检
 
 检查章节覆盖、父级范围、已有 Plan/World 的显式时间锁、**每个 `obligation_actions` 的 `obligation_id` 都能在可信上下文里找到、`action` 是四个枚举值之一、`expected_delta` 非空**、本层级没有出现任何 `obligation_declarations`/`obligation_plan` 声明、每项 payload 是否可被 Writer 消费，以及所有 unresolved 是否仍是候选而非 Canon。逐章核对：第 2 章以后每个 goal 都有合法 `history_retrieval`（REQUIRED 有 1—3 个合法 kind 的 Need，NOT_REQUIRED 有 reason_code 与 waiver_ref），不存在裸 `history_needs` 或空决策。保留 `source_ids` 和作者原文的引用边界；不要把 Profile 风格或外部参考升级成故事事实。
+
+`unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。

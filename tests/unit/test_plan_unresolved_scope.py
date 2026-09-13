@@ -172,3 +172,25 @@ def test_a_revision_is_told_the_structured_fields_the_host_requires() -> None:
     assert reviewed.revision_instruction is not None
     assert "HOST_REQUIRED_FIELDS:" in reviewed.revision_instruction
     assert "affected_chapters" in reviewed.revision_instruction
+
+
+def test_every_planner_contract_states_the_advisory_scope_rule() -> None:
+    """The gate demands a field, so every planning mode must be told to declare it.
+
+    A real ARC_VOLUME attempt revised four times against the same three
+    UNRESOLVED_SCOPE_MISSING findings: the prompts never mentioned
+    ``affected_chapters``, so the model could not know the host would check it.
+    """
+
+    from novel_agent.runtime.production_bootstrap import PACKAGE_ROOT
+
+    for name in (
+        "stage4_planner_arc_volume_v1.md",
+        "planner_story_v1.md",
+        "planner_chapter_set_v1.md",
+    ):
+        text = (PACKAGE_ROOT / "prompts" / name).read_text(encoding="utf-8")
+        assert "affected_chapters" in text, name
+        assert "UNRESOLVED_SCOPE_MISSING" in text, name
+    skill = (PACKAGE_ROOT / "skills" / "arc_volume_planning_v1.md").read_text(encoding="utf-8")
+    assert "affected_chapters" in skill
