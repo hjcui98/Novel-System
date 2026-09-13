@@ -25,6 +25,7 @@ from novel_agent.domain.obligation_contract import (
     parse_obligation_declarations,
 )
 from novel_agent.domain.planning import (
+    VOLUME_NARRATIVE_STAGE_KEYS,
     PlannerContextPackage,
     PlanReview,
     PlanReviewDraft,
@@ -34,6 +35,7 @@ from novel_agent.domain.planning import (
     ReviewIssueKind,
     ReviewTargetKind,
     missing_volume_structure_keys,
+    normalize_stage_handle,
     volume_stage_grid_defects,
     volume_stage_window_defects,
 )
@@ -777,7 +779,73 @@ def _host_issues_for_items(
         range_issue = _volume_range_issue(volume_ranges, expected_target_chapters)
         if range_issue is not None:
             issues.append(range_issue)
+    _append_missing_catalogue_issues(raw_items, issues, accepted_obligation_ids)
     return issues
+
+
+def _append_missing_catalogue_issues(
+    raw_items: list[object],
+    issues: list[PlanReviewIssue],
+    accepted_obligation_ids: frozenset[str] | None,
+) -> None:
+    """Report a candidate that cites obligations the host had no catalogue for.
+
+    Three states have to stay distinguishable.  A readable catalogue decides which
+    ids exist; ``None`` means no trusted World root reached this review, so the host
+    cannot say whether a cited id exists or what window it carries.  An empty
+    catalogue is a readable *statement* that there are no obligations, which is a
+    different finding and is left to the per-id check.  A candidate that cites
+    nothing needs no catalogue at all, so the gap is only reported where it actually
+    prevented a check.
+    """
+
+    if accepted_obligation_ids is not None:
+        return
+    cited = sorted(
+        {
+            handle
+            for raw in raw_items
+            if isinstance(raw, Mapping)
+            for handle in _cited_obligation_handles(raw)
+        }
+    )
+    if not cited:
+        return
+    issues.append(
+        _host_issue(
+            ReviewIssueKind.OBLIGATION_CONTRACT,
+            "OBLIGATION_CATALOGUE_UNKNOWN: this candidate references accepted obligations ("
+            + ", ".join(cited[:8])
+            + ") but no trusted World root reached the review, so their identity and time "
+            "windows could not be checked",
+            cited[0],
+            blocking=True,
+        )
+    )
+
+
+def _cited_obligation_handles(raw: Mapping[str, object]) -> tuple[str, ...]:
+    """Every accepted-obligation handle a plan item's *stage entries* serve.
+
+    Only ``serves`` is collected.  A stage that serves an accepted obligation is
+    bound by that obligation's own window, so the host needs a catalogue to check it.
+    A lower-level ``obligation_actions`` reference asks a different question -- does
+    this id exist -- and is answered by the id check the caller already runs, so it
+    does not by itself require the window catalogue.
+    """
+
+    payload = raw.get("payload")
+    if not isinstance(payload, Mapping):
+        payload = raw
+    handles: list[str] = []
+    for key in VOLUME_NARRATIVE_STAGE_KEYS:
+        entry = payload.get(key)
+        if not isinstance(entry, Mapping):
+            continue
+        served = entry.get("serves")
+        if isinstance(served, str) and served.strip():
+            handles.append(normalize_stage_handle(served))
+    return tuple(handles)
 
 
 def _volume_range_issue(

@@ -1023,6 +1023,22 @@ VOLUME_NARRATIVE_STAGE_KEYS: tuple[str, ...] = (
 # three reach information or capability the author may have locked behind a boundary.
 VOLUME_STAGE_ROLES: tuple[str, ...] = ("setup", "hint", "progression", "payoff")
 
+# Action vocabulary that names a disclosure rather than a planting, expressed as
+# narrative *actions* and never as plot content.  ``setup`` is allowed to skip the
+# boundary because planting a locked responsibility early is exactly what planting is
+# for; relabelling a reveal as ``setup`` was the way around the check that the prompt
+# already forbids in prose and the host could not see.  Only deliberate disclosure is
+# matched -- a plain "揭露" or "推进" is not evidence on its own, while the qualified
+# forms state an act no reader mistakes for planting.
+_DISCLOSURE_ACTIONS: tuple[str, ...] = (
+    "正式揭露",
+    "正式推进",
+    "实质揭露",
+    "兑现",
+    "揭晓",
+    "回收",
+)
+
 
 @dataclass(frozen=True)
 class VolumeStageWindowDefect:
@@ -1138,25 +1154,54 @@ def volume_stage_window_defects(
                 )
             )
             continue
-        handle = _stage_handle(served)
+        handle = normalize_stage_handle(served)
         constraint = catalogue.get(handle)
         if constraint is None:
             if handle in accepted_obligation_ids:
                 # An accepted obligation is a real responsibility, so its own window
-                # binds the stage too; only an obligation whose window the host does
-                # not know is accepted on identity alone.
+                # binds the stage exactly as an author lock's does -- including the
+                # planting exemption, which is decided by what the entry performs and
+                # not by which channel named the responsibility.  Two things are
+                # deliberately *not* the same: an obligation that declares no timing
+                # at all constrains nothing, and a window the host could not read is
+                # not evidence of anything.  Both are reported rather than silently
+                # passed, so "unchecked" never reads as "checked and legal".
                 declared_window: tuple[int | None, int | None] | None = (
                     obligation_windows or {}
                 ).get(handle)
                 if declared_window is None:
+                    if role != "setup":
+                        defects.append(
+                            VolumeStageWindowDefect(
+                                f"{key}.window",
+                                f"{key}.window cannot be checked against the accepted "
+                                f"obligation {handle}: it declares no chapter boundary the "
+                                "host can apply",
+                            )
+                        )
                     continue
                 earliest, latest = declared_window
+                if earliest is None and latest is None:
+                    if role != "setup":
+                        defects.append(
+                            VolumeStageWindowDefect(
+                                f"{key}.window",
+                                f"{key}.window cannot be checked against the accepted "
+                                f"obligation {handle}: it declares no not_before_chapter, "
+                                "target window or due_chapter",
+                            )
+                        )
+                    continue
+                reached = _disclosure_action(description if isinstance(description, str) else None)
+                if role == "setup" and reached is None:
+                    continue
+                disclosed = f" is declared setup but performs {reached}" if reached else ""
                 if earliest is not None and start < earliest:
                     defects.append(
                         VolumeStageWindowDefect(
                             f"{key}.window",
                             f"{key}.window starts at {start}, before the accepted obligation "
-                            f"{handle} unlocks at {earliest}",
+                            f"{handle} unlocks at {earliest}{disclosed}",
                         )
                     )
                 if latest is not None and end > latest:
@@ -1181,14 +1226,39 @@ def volume_stage_window_defects(
             # Planting may reference a locked responsibility and still happen earlier:
             # that is what planting is for.  Only the disclosure and advancement
             # actions answer to the boundary.
+            #
+            # The exemption is for planting, not for a relabelled reveal.  ``setup``
+            # is defined as planting that does not reach the locked content, so a
+            # setup entry whose own description performs a disclosure is judged by
+            # the boundary it tried to step around.
+            reached = _disclosure_action(description if isinstance(description, str) else None)
+            if reached is None:
+                continue
+            boundary = _stage_boundary(constraint)
+            if boundary is not None and start < boundary:
+                defects.append(
+                    VolumeStageWindowDefect(
+                        body,
+                        f"{body} is declared setup but performs {reached} at {start}, before "
+                        f"the not_before_chapter {boundary} of the responsibility it serves "
+                        f"({handle})",
+                    )
+                )
+            if constraint.chapter_latest is not None and end > constraint.chapter_latest:
+                defects.append(
+                    VolumeStageWindowDefect(
+                        body,
+                        f"{body} is declared setup but performs {reached} and ends at {end}, "
+                        f"after the latest_chapter {constraint.chapter_latest} of the "
+                        f"responsibility it serves ({handle})",
+                    )
+                )
             continue
         # The cited responsibility is authoritative: whatever the role label says, the
         # stage is bound by that responsibility's own boundary.  Rejecting a role and a
         # category that disagree only taught the planner to relabel; binding the stage
         # to what it actually names cannot be gamed, because the boundary still applies.
-        boundary = constraint.not_before_chapter
-        if boundary is None:
-            boundary = constraint.chapter_earliest
+        boundary = _stage_boundary(constraint)
         if boundary is not None and start < boundary:
             defects.append(
                 VolumeStageWindowDefect(
@@ -1210,7 +1280,7 @@ def volume_stage_window_defects(
     return tuple(defects)
 
 
-def _stage_handle(value: str) -> str:
+def normalize_stage_handle(value: str) -> str:
     """Normalize the handle a stage cites.
 
     The planner context renders each responsibility as ``[handle]``, so a model
@@ -1247,6 +1317,37 @@ def _parse_declared_window(value: str, *, field: str) -> tuple[int, int]:
     if end < start:
         raise ValueError(f"{field} is reversed: {value!r}")
     return start, end
+
+
+def _stage_boundary(constraint: AuthorConstraint) -> int | None:
+    """The earliest chapter a stage serving this responsibility may start at.
+
+    ``not_before_chapter`` is the explicit reveal lock; ``chapter_earliest`` is the
+    window form of the same statement.  Either may be absent, which means the
+    responsibility opens nothing early -- not that it opens at chapter one.
+    """
+
+    if constraint.not_before_chapter is not None:
+        return constraint.not_before_chapter
+    return constraint.chapter_earliest
+
+
+def _disclosure_action(description: str | None) -> str | None:
+    """The disclosure action a stage's own description performs, if any.
+
+    A ``setup`` stage is exempt from the boundary because planting reaches nothing
+    locked.  Matching the action vocabulary here keeps that exemption honest: the
+    host still does not decide whether the *content* is a reveal -- that stays with
+    the semantic review -- it only refuses to treat an entry that announces a
+    disclosure as the planting the exemption is for.
+    """
+
+    if not description:
+        return None
+    for action in _DISCLOSURE_ACTIONS:
+        if action in description:
+            return action
+    return None
 
 
 def _declared_not_before_boundaries(payload: Mapping[str, object]) -> tuple[int, ...]:

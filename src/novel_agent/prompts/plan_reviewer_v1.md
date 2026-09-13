@@ -7,8 +7,10 @@
 - LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW（长程伏笔回收缺少时间窗口）：PROMISE 或 FORESHADOWING 缺少 not_before_chapter。若必须由作者决定卷数或推进阶段，返回 HUMAN_REQUIRED；若仅缺少机械字段但窗口已有明确暗示，返回 REVISE。
 - EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION（过早解决未来锁定的剧情承诺）：在 not_before_chapter 之前出现 RESOLVE/PAYOFF。返回 REVISE；仅允许 SETUP/PROGRESS。
 - TARGET_WINDOW_OUTSIDE_PARENT_SCOPE（目标窗口超出父级范围）：子章节范围超出父级规划范围。返回 REVISE 或阻断。
-- VOLUME_STAGE_WINDOW_VIOLATION（卷叙事键越过其服务责任的时间边界）：阻断条件只有两种——(1) 某键向读者披露了被时间锁保护的信息却没有填写 `serves`；(2) 该键 `serves` 所指受信责任（作者约束或已接纳义务）的 `not_before_chapter` 晚于其 `window` 起始章。返回 REVISE 时点名具体字段路径（例如 `vol4_arc.midpoint_reversal.window`）。**若该键已 `serves` 正确责任且窗口满足该责任边界，不要仅因 `role` 标签的措辞（`setup`/`hint` 之争）而 REVISE**：宿主已按被引用责任的边界直接约束该键，标签只决定是否必须填写 `serves`，改标签不能改变任何宿主机检字段。
-  语义审查不得省略：判断 `description` 实际做了什么。若某个键向读者透露了被时间锁保护的信息（真相、身份、能力阶段、装备或地点）却**没有** `serves`，那是阻断问题（要求它填写正确责任，而不是要求改标签）；若它已经 `serves` 该责任，则按该责任的边界检查窗口，标签措辞不再构成阻断。
+- VOLUME_STAGE_WINDOW_VIOLATION（卷叙事键越过其服务责任的时间边界）：阻断条件只有两种——(1) 某键向读者披露了被时间锁保护的信息却没有填写 `serves`；(2) 该键 `serves` 所指受信责任（作者约束或已接纳义务）的 `not_before_chapter` 晚于其 `window` 起始章。返回 REVISE 时点名具体字段路径（例如 `vol4_arc.midpoint_reversal.window`）。**若该键已 `serves` 正确责任且窗口满足该责任边界，不要仅因 `role` 标签的措辞（`setup`/`hint` 之争）而 REVISE**：宿主已按被引用责任的边界直接约束该键。
+  `setup` 之所以豁免边界，是因为埋设不触及被锁内容。宿主不判断剧情，但**不会把豁免给一个自身 `description` 就宣称在做披露动作的条目**（`正式揭露`/`正式推进`/`实质揭露`/`兑现`/`揭晓`/`回收`）：这类条目按它试图绕过的边界判定。因此把实质揭露改标成 `setup` 不再能绕过边界；判断内容的是你，宿主只拒绝这个标签。
+  若某条已接纳义务的窗口宿主无法施加（该义务没有声明任何章节边界，或宿主读不到目录），宿主会把它报为"无法核验"而不是通过；你可以据原文判断实际动作，但不要把未核验当成已满足。
+  语义审查不得省略：判断 `description` 实际做了什么。若某个键向读者透露了被时间锁保护的信息（真相、身份、能力阶段、装备或地点）却**没有** `serves`，那是阻断问题（要求它填写正确责任，而不是要求改标签）；若它已经 `serves` 该责任，则按该责任的边界检查窗口，标签措辞不再构成阻断，除非该 `description` 确实在执行上面列出的披露动作却标着 `setup`。
 
 每条**阻断**意见必须写成可机检的引用，缺一不可：`affected_item_ids`（条目 ID）、`field_path`（该条目内的字段路径，例如 `midpoint_reversal.window`）、`quote`（候选里逐字存在的原文片段）、`unmet_condition`（具体不满足的条件）；若违反的是某条作者约束或已接纳义务，另填 `constraint_id`。宿主会核实 `quote` 是否真的出现在候选对应字段中：引用失实的意见会被降级为 advisory，并按审校自身缺陷记录，不会转给 Planner 重写。只给笼统文字、不带上述字段的意见无法被采纳。章节数字边界由宿主按其受信约束计算，你只需引用原文与条件，不要把合法的 `350` 要求改成 `351`。
 

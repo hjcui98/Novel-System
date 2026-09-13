@@ -225,12 +225,23 @@ def _review(
     *,
     constraints: tuple[AuthorConstraint, ...] | None = None,
 ) -> PlanReviewDraft:
+    """Run the host gate with a complete trusted catalogue for the fixture.
+
+    N2 requires the accepted-obligation catalogue to reach production review, so a
+    review that supplies one must supply its windows too.  The fixture's stage
+    entries serve author locks, so the obligation catalogue it declares is
+    deliberately empty -- a readable statement, not an unknown one.
+    """
+
+    active = _locks() if constraints is None else constraints
     return apply_host_plan_review_constraints(
         draft,
         target_kind=ReviewTargetKind.PLAN_PROPOSAL,
         target_payload=payload if payload is not None else _payload(),
         mode=AgentMode.ARC_VOLUME,
-        author_constraints=_locks() if constraints is None else constraints,
+        accepted_obligation_ids=frozenset(),
+        accepted_obligation_windows={},
+        author_constraints=active,
     )
 
 
@@ -575,6 +586,8 @@ def test_an_already_verified_review_is_not_re_verified_into_a_new_decision() -> 
         target_kind=ReviewTargetKind.PLAN_PROPOSAL,
         target_payload=_payload(),
         mode=AgentMode.ARC_VOLUME,
+        accepted_obligation_ids=frozenset(),
+        accepted_obligation_windows={},
         author_constraints=_locks(),
         verified_citations=True,
     )

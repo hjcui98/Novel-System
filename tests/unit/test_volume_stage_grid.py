@@ -310,11 +310,16 @@ def test_a_host_accepted_obligation_id_is_a_legal_handle() -> None:
         )
     )
 
-    assert (
-        volume_stage_window_defects(
+    # The id itself is accepted: the finding is about the window the host cannot
+    # apply, never about the handle being invented.
+    assert _fields(
+        payload, constraints=_LOCKS, accepted_obligation_ids=frozenset({"obligation.vol4.1"})
+    ) == ("trigger_event.window",)
+    assert not any(
+        "neither an accepted author constraint nor an accepted obligation" in message
+        for message in _messages(
             payload, constraints=_LOCKS, accepted_obligation_ids=frozenset({"obligation.vol4.1"})
         )
-        == ()
     )
 
 
@@ -520,20 +525,66 @@ def test_an_accepted_obligation_window_binds_the_stage_that_serves_it() -> None:
         trigger_event=_stage_entry("推进", "301-320", "progression", "obligation.vol4.1")
     )
 
-    assert (
-        volume_stage_window_defects(
-            payload,
-            constraints=_LOCKS,
-            accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
-        )
-        == ()
-    )
+    # A window the host cannot apply is reported, not passed.  Accepting the id on
+    # identity alone would let a stage cross a boundary nobody could check.
+    assert _fields(
+        payload,
+        constraints=_LOCKS,
+        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+    ) == ("trigger_event.window",)
+    assert "declares no chapter boundary the host can apply" in _messages(
+        payload, constraints=_LOCKS, accepted_obligation_ids=frozenset({"obligation.vol4.1"})
+    )[0]
+    # With the obligation's own window the same stage is judged against it.
     assert _fields(
         payload,
         constraints=_LOCKS,
         accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
         obligation_windows={"obligation.vol4.1": (321, 400)},
     ) == ("trigger_event.window",)
+    assert "unlocks at 321" in _messages(
+        payload,
+        constraints=_LOCKS,
+        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+        obligation_windows={"obligation.vol4.1": (321, 400)},
+    )[0]
+
+
+def test_a_stage_inside_its_accepted_obligation_window_passes() -> None:
+    payload = _volume_with_stage_windows(
+        trigger_event=_stage_entry("推进", "330-340", "progression", "obligation.vol4.1")
+    )
+
+    assert (
+        volume_stage_window_defects(
+            payload,
+            constraints=_LOCKS,
+            accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+            obligation_windows={"obligation.vol4.1": (321, 400)},
+        )
+        == ()
+    )
+
+
+def test_an_obligation_with_no_timing_is_reported_rather_than_passed() -> None:
+    """An obligation that constrains nothing is still not a checked window."""
+
+    payload = _volume_with_stage_windows(
+        trigger_event=_stage_entry("推进", "301-320", "progression", "obligation.vol4.1")
+    )
+
+    assert _fields(
+        payload,
+        constraints=_LOCKS,
+        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+        obligation_windows={"obligation.vol4.1": (None, None)},
+    ) == ("trigger_event.window",)
+    assert "declares no not_before_chapter" in _messages(
+        payload,
+        constraints=_LOCKS,
+        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+        obligation_windows={"obligation.vol4.1": (None, None)},
+    )[0]
 
 
 def test_the_host_decides_mechanical_defects_without_a_model_call() -> None:
