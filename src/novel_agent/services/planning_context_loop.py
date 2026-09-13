@@ -491,6 +491,41 @@ _PARTIAL_MEMORY_BUDGET_GAP = (
 )
 
 
+def _compose_scoped_revision(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    review: PlanReview,
+) -> PlanProposal:
+    """Keep every item the review did not name exactly as the parent had it.
+
+    The planner is asked to change only the named items, but a request is not an
+    enforcement: the host composes the candidate, so a one-field finding can no
+    longer move the rest of an eight-volume plan and every settled paragraph keeps
+    its exact bytes.
+    """
+
+    named = {item.root for issue in review.issues for item in issue.affected_item_ids}
+    if not named:
+        # A legacy REVISE names nothing, so there is no scope to enforce; clamping it
+        # would freeze the candidate and turn the advisory into a silent no-op.
+        return revised
+    parent_items = {item.item_id.root: item for item in parent.items}
+    composed = []
+    seen: set[str] = set()
+    for item in revised.items:
+        key = item.item_id.root
+        if key in named or key not in parent_items:
+            composed.append(item)
+        else:
+            composed.append(parent_items[key])
+        seen.add(key)
+    # An item the revision dropped without being asked to drop it stays.
+    for key, item in parent_items.items():
+        if key not in seen and key not in named:
+            composed.append(item)
+    return revised.model_copy(update={"items": tuple(composed)})
+
+
 def _out_of_scope_revision_items(
     parent: PlanProposal,
     revised: PlanProposal,
@@ -2403,7 +2438,8 @@ class PlanningContextLoopService:
                 allowed_skill_ids=planner_skill_allowlist(include_alternative=True),
             )
             record_model_call(_call)
-            proposal = revised.plan_proposal
+            raw_proposal = revised.plan_proposal
+            proposal = _compose_scoped_revision(parent_proposal, raw_proposal, plan_review)
             proposal_ref = self._persist_proposal(proposal)
             execution_ref = self._artifacts.put(
                 canonical_json_bytes(revised.model_dump(mode="json")),
@@ -2411,7 +2447,7 @@ class PlanningContextLoopService:
                 self._schema_version,
             )
             out_of_scope = _out_of_scope_revision_items(
-                parent_proposal, proposal, plan_review
+                parent_proposal, raw_proposal, plan_review
             )
             if out_of_scope:
                 event_refs.append(
