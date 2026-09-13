@@ -175,17 +175,27 @@ def _verified_model_issues(
     verified: list[PlanReviewIssue] = []
     for issue in issues:
         quote = issue.quote
-        if not issue.blocking or quote is None or quote in target_payload:
+        field_path = issue.field_path
+        grounded = (
+            not issue.blocking
+            or (
+                (quote is None or quote in target_payload)
+                and (field_path is None or field_path in target_payload)
+            )
+        )
+        if grounded:
             verified.append(issue)
             continue
+        detail = (
+            "the quoted text is not present in the reviewed candidate"
+            if quote is not None and quote not in target_payload
+            else f"the cited field {field_path!r} is not present in the reviewed candidate"
+        )
         verified.append(
             issue.model_copy(
                 update={
                     "blocking": False,
-                    "summary": (
-                        f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} "
-                        "(the quoted text is not present in the reviewed candidate)"
-                    ),
+                    "summary": f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} ({detail})",
                 }
             )
         )
