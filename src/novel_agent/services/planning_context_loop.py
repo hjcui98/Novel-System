@@ -491,18 +491,26 @@ _PARTIAL_MEMORY_BUDGET_GAP = (
 )
 
 
-def _blocking_signature(review: PlanReview) -> tuple[tuple[str, tuple[str, ...]], ...]:
+def _blocking_signature(review: PlanReview) -> tuple[str, ...]:
     """The host-visible identity of a review's blocking findings.
 
-    Two revisions that produce the same blocking signature changed nothing the host
-    can check, so another revision would repeat the same outcome.
+    The identity carries the finding's own normalized text next to its kind and the
+    items it names, because that text holds the field path, the constraint and the
+    unmet condition.  Comparing only ``kind + item_id`` would treat a partially
+    repaired problem as unchanged and stop a revision that is still making progress.
+
+    An empty finding set has no identity at all: a legacy ``REVISE`` with no issues
+    and a prose instruction is judged by whether the candidate content changed.
     """
 
     return tuple(
         sorted(
-            (
-                issue.kind.value,
-                tuple(sorted(item.root for item in issue.affected_item_ids)),
+            "|".join(
+                (
+                    issue.kind.value,
+                    ",".join(sorted(item.root for item in issue.affected_item_ids)),
+                    " ".join(issue.summary.split()),
+                )
             )
             for issue in review.issues
             if issue.blocking
@@ -1183,10 +1191,23 @@ class PlanningContextLoopService:
             )
 
         plan_revisions_this_slice = 0
-        # Within one slice an identical blocking finding set means the revision changed
-        # nothing the host can check, so the loop stops instead of paying for the same
-        # revision again; across slices the task's own attempt budget bounds the work.
-        previous_blocking_signature: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+        # An identical blocking finding set means the revision changed nothing the host
+        # can check, so the loop stops instead of paying for the same revision again.
+        # The basis comes from the checkpoint the last slice settled, so a resumed
+        # worker compares against the same problem instead of resetting it.
+        previous_blocking_signature: tuple[str, ...] | None = (
+            None
+            if checkpoint is None or not checkpoint.plan_blocking_signature
+            else checkpoint.plan_blocking_signature
+        )
+        # The review that raised those findings is still unanswered: the checkpoint
+        # means "a revision is pending", so its own basis must not stop the slice
+        # before that revision is attempted.
+        basis_review_id: str | None = None
+        # True only when the checkpoint's own review is the pending one; a checkpoint
+        # without a settled review re-reviews the proposal, and that fresh review is a
+        # new problem statement to compare against the recorded basis.
+        resumed_review = False
         reviewer_memory_this_slice = 0
         planner_memory_this_slice = 0
         if (
@@ -1200,6 +1221,7 @@ class PlanningContextLoopService:
             execution_ref = checkpoint.execution_ref
             proposal = self._read(proposal_ref, PlanProposal)
             plan_review = self._read(plan_review_ref, PlanReview)
+            resumed_review = True
         elif (
             checkpoint is not None
             and checkpoint.proposal_ref is not None
@@ -1900,6 +1922,70 @@ class PlanningContextLoopService:
             )
             record_model_call(_call)
 
+        if previous_blocking_signature is not None and resumed_review:
+            # Resumed from a settled review: that review is the one still awaiting an
+            # answer, so its own findings are the basis rather than a repeat of it.
+            basis_review_id = plan_review.review_id.root
+
+        def revision_repeats_pending_problem(review: PlanReview) -> bool:
+            """True when this review repeats the problem the last revision answered.
+
+            ``basis_review_id`` is the review whose findings the pending revision is
+            answering; comparing that review with itself would stop a resume before it
+            attempted the revision the checkpoint demands.
+            """
+
+            nonlocal previous_blocking_signature, basis_review_id
+            signature = _blocking_signature(review)
+            if (
+                signature
+                and previous_blocking_signature is not None
+                and review.review_id.root != basis_review_id
+                and signature == previous_blocking_signature
+            ):
+                return True
+            previous_blocking_signature = signature or None
+            basis_review_id = review.review_id.root
+            return False
+
+        def plan_revision_no_progress() -> PlanningLoopResult:
+            # Record the settlement frontier before stopping: the runtime decides where
+            # a retry resumes from the artifacts, and the rejected problem identity has
+            # to stay with the review that raised it.
+            event_refs.append(
+                self._checkpoint(
+                    request,
+                    PlanningLoopPhase.PLAN_REVIEWED,
+                    inquiry_ref=inquiry_ref,
+                    inquiry_review_ref=inquiry_review_ref,
+                    memory_context_ref=memory_context_ref,
+                    planner_context_ref=planner_context_ref,
+                    proposal_ref=proposal_ref,
+                    plan_review_ref=plan_review_ref,
+                    execution_ref=execution_ref,
+                    plan_blocking_signature=_blocking_signature(plan_review),
+                    inquiry_revisions_used=inquiry_revisions,
+                    plan_revisions_used=plan_revisions,
+                    reviewer_memory_rounds_used=reviewer_memory_rounds,
+                    reviewer_memory_review_ids=self._ordered_ids(handled_memory_reviews),
+                    reviewer_context_refs=tuple(reviewer_context_refs),
+                    problem_identity_seed=problem_identity_seed,
+                    **progress_updates(),
+                )
+            )
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
+                event_refs,
+                inquiry_ref=inquiry_ref,
+                inquiry_review_ref=inquiry_review_ref,
+                memory_context_ref=memory_context_ref,
+                planner_context_ref=planner_context_ref,
+                proposal=proposal,
+                plan_review_ref=plan_review_ref,
+                diagnostics=("PLAN_REVISION_NO_PROGRESS",),
+            )
+
         advisory_diagnostics: tuple[str, ...] = ()
         while plan_review.decision is ReviewDecision.REVISE:
             if request.budgets.plan_revisions == 0:
@@ -1927,6 +2013,7 @@ class PlanningContextLoopService:
                         proposal_ref=proposal_ref,
                         plan_review_ref=plan_review_ref,
                         execution_ref=execution_ref,
+                        plan_blocking_signature=_blocking_signature(plan_review),
                         inquiry_revisions_used=inquiry_revisions,
                         plan_revisions_used=plan_revisions,
                         reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -1979,6 +2066,7 @@ class PlanningContextLoopService:
                             proposal_ref=proposal_ref,
                             plan_review_ref=plan_review_ref,
                             execution_ref=execution_ref,
+                            plan_blocking_signature=_blocking_signature(plan_review),
                             inquiry_revisions_used=inquiry_revisions,
                             plan_revisions_used=plan_revisions,
                             reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2080,6 +2168,7 @@ class PlanningContextLoopService:
                                 proposal_ref=proposal_ref,
                                 plan_review_ref=plan_review_ref,
                                 execution_ref=execution_ref,
+                                plan_blocking_signature=_blocking_signature(plan_review),
                                 inquiry_revisions_used=inquiry_revisions,
                                 plan_revisions_used=plan_revisions,
                                 reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2239,24 +2328,8 @@ class PlanningContextLoopService:
             # rejected is not progress.  Requiring it again would keep spending real
             # model calls across slices, because the per-slice revision allowance
             # resets while the findings do not change.
-            blocking_signature = _blocking_signature(plan_review)
-            if (
-                previous_blocking_signature is not None
-                and blocking_signature == previous_blocking_signature
-            ):
-                return self._terminal(
-                    request,
-                    PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
-                    event_refs,
-                    inquiry_ref=inquiry_ref,
-                    inquiry_review_ref=inquiry_review_ref,
-                    memory_context_ref=memory_context_ref,
-                    planner_context_ref=planner_context_ref,
-                    proposal=proposal,
-                    plan_review_ref=plan_review_ref,
-                    diagnostics=("PLAN_REVISION_NO_PROGRESS",),
-                )
-            previous_blocking_signature = blocking_signature
+            if revision_repeats_pending_problem(plan_review):
+                return plan_revision_no_progress()
             parent_proposal = proposal
             instruction = plan_review.revision_instruction or "bounded Plan revision"
             plan_revisions += 1
@@ -2325,6 +2398,10 @@ class PlanningContextLoopService:
                 base_commit=request.task.base_commit,
             )
             record_model_call(_call)
+            # The slice budget is checked at the top of this loop, so a repeat has to
+            # be recognised here or the next slice would start it over.
+            if revision_repeats_pending_problem(plan_review):
+                return plan_revision_no_progress()
         event_refs.append(
             self._event(
                 request,
@@ -2344,6 +2421,7 @@ class PlanningContextLoopService:
                 proposal_ref=proposal_ref,
                 plan_review_ref=plan_review_ref,
                 execution_ref=execution_ref,
+                plan_blocking_signature=_blocking_signature(plan_review),
                 inquiry_revisions_used=inquiry_revisions,
                 plan_revisions_used=plan_revisions,
                 reviewer_memory_rounds_used=reviewer_memory_rounds,

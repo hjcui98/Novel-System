@@ -118,7 +118,12 @@
         "provenance",
         "long_range_payoff_without_time_window",
         "early_resolution_of_future_locked_obligation",
-        "target_window_outside_parent_scope"
+        "target_window_outside_parent_scope",
+        "blocking_unresolved",
+        "volume_structure_incomplete",
+        "obligation_contract",
+        "unresolved_scope_missing",
+        "volume_stage_window_violation"
       ],
       "title": "ReviewIssueKind",
       "type": "string"

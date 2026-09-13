@@ -281,6 +281,7 @@
     "PlannerContextSection": {
       "enum": [
         "author_intent",
+        "author_constraints",
         "accepted_plan",
         "current_state",
         "history_deviation",
@@ -351,6 +352,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "author_constraint_root_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "base_commit": {
       "anyOf": [
         {

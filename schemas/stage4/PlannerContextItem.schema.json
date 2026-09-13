@@ -127,6 +127,7 @@
     "PlannerContextSection": {
       "enum": [
         "author_intent",
+        "author_constraints",
         "accepted_plan",
         "current_state",
         "history_deviation",

@@ -409,6 +409,14 @@
     "phase": {
       "$ref": "#/$defs/PlanningLoopPhase"
     },
+    "plan_blocking_signature": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Plan Blocking Signature",
+      "type": "array"
+    },
     "plan_review_ref": {
       "anyOf": [
         {

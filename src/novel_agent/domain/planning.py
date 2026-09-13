@@ -754,6 +754,10 @@ class PlanningLoopCheckpoint(DomainModel):
     model_input_tokens_used: int = Field(default=0, ge=0)
     model_output_tokens_used: int = Field(default=0, ge=0)
     model_reasoning_tokens_used: int = Field(default=0, ge=0)
+    # The blocking findings the last settled plan review raised, as normalized text.
+    # A resumed slice compares the next review against them instead of starting over,
+    # or the same unresolved problem would be re-revised once per slice.
+    plan_blocking_signature: tuple[str, ...] = ()
     round_progress: LoopRoundProgress | None = None
 
     @model_validator(mode="after")
