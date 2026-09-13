@@ -65,31 +65,47 @@ must() {
     return "$status"
 }
 
-# Read one JSON payload the CLI printed on the last line of the log.  A command
-# that failed cannot leave a stale snapshot behind, because the caller checks the
-# exit status before this runs.
-last_json() { tail -n 1 "$RUN_LOG"; }
+# Read the result of a command's *own* output, given the command wrote it to a
+# temporary file.  Scraping the shared run log instead would hand back whatever
+# the previous command wrote whenever the current one printed nothing, and a
+# failed command's stale payload would then be indistinguishable from a fresh
+# one; the earlier version of this driver had that defect.
+last_json() {  # <file>
+    "$NOVEL_PYTHON" -c '
+import json, sys
+try:
+    print(json.dumps(json.loads(open(sys.argv[1], encoding="utf-8").read().strip().splitlines()[-1])))
+except (OSError, ValueError, IndexError):
+    print("")
+' "$1"
+}
+
+# A command whose result the driver consumes on its own: its stdout is captured
+# for the caller and copied into the run log, and its exit status is recorded
+# exactly once by must().
+capture() {  # <out-file> <label> <command...>
+    local out="$1" label="$2"; shift 2
+    "$@" >"$out" 2>&1
+    local status=$?
+    cat "$out" >>"$RUN_LOG"
+    if [[ $status -ne 0 ]]; then
+        log "[fail] $label exited $status"
+        FAILURES=$((FAILURES + 1))
+    fi
+    return "$status"
+}
 
 stage_roots() {
-    must "roots" "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" roots \
+    capture "$NOVEL_STATE/roots.out" "roots" \
+        "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" roots \
         --project-id "$NOVEL_PROJECT_ID" --object-store-root "$NOVEL_OBJECT_STORE"
 }
 
-commit_stage_roots() {
-    "$NOVEL_PYTHON" -c '
-import json,sys
-try:
-    payload = json.loads(sys.stdin.read().strip().splitlines()[-1])
-except (ValueError, IndexError):
-    print(""); raise SystemExit(0)
-print(payload.get("commit", ""))
-'
-}
-
 status_snapshot() {
-    must "status" "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" \
-        status --run-id "$NOVEL_RUN_ID" || return $?
-    last_json > "$NOVEL_STATE/status.json"
+    capture "$NOVEL_STATE/status.out" "status" \
+        "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" status \
+        --run-id "$NOVEL_RUN_ID" || return $?
+    last_json "$NOVEL_STATE/status.out" > "$NOVEL_STATE/status.json"
 }
 
 first_task_in_status() {  # one status per line per task; first match wins
@@ -135,11 +151,13 @@ print(payload.get("classification", {}).get(sys.argv[1], ""))
 ' "$1"
 }
 
-# The stage's own exit evidence, read from the committed roots.
+# The stage's own exit evidence, read from the committed roots.  The gate
+# messages are suppressed on the pre-flight call, which runs in the normal
+# "not there yet" case and must not log a failure that has not happened.
 stage_exit_satisfied() {
-    local json chapters volumes
+    local quiet="${1:-}" json chapters volumes
     stage_roots || return 1
-    json="$(last_json)"
+    json="$(last_json "$NOVEL_STATE/roots.out")"
     chapters="$("$NOVEL_PYTHON" -c '
 import json,sys
 try: print(int(json.loads(sys.stdin.read().strip().splitlines()[-1]).get("committed_chapters") or 0))
@@ -151,11 +169,11 @@ try: print(int(json.loads(sys.stdin.read().strip().splitlines()[-1]).get("commit
 except (ValueError, IndexError): print(-1)
 ' <<<"$json")"
     if [[ "$volumes" -lt "$VOLUME_GATE" ]]; then
-        log "[stage] ${STAGE} exit not proven: ${volumes}/${VOLUME_GATE} committed volumes"
+        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: ${volumes}/${VOLUME_GATE} committed volumes"
         return 1
     fi
     if [[ "$CHAPTER_GATE" -gt 0 && "$chapters" -lt "$CHAPTER_GATE" ]]; then
-        log "[stage] ${STAGE} exit not proven: ${chapters}/${CHAPTER_GATE} committed chapters"
+        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: ${chapters}/${CHAPTER_GATE} committed chapters"
         return 1
     fi
     return 0
@@ -163,8 +181,9 @@ except (ValueError, IndexError): print(-1)
 
 log "[stage] ${STAGE}: max ${MAX_SLICES} slices, gates ${VOLUME_GATE} volumes / ${CHAPTER_GATE} chapters"
 
-# Already at the stage's exit?  Verify it before spending a slice.
-if stage_exit_satisfied; then
+# Already at the stage's exit?  Verify it before spending a slice.  A roots call
+# that fails here is reported by stage_roots() itself and not counted twice.
+if stage_exit_satisfied quiet; then
     log "[exit] ${STAGE} exit evidence already present"
     exit 0
 fi

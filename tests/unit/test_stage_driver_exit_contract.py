@@ -169,6 +169,86 @@ def test_a_failing_roots_read_is_not_a_pass(tmp_path: Path) -> None:
     assert "complete and verified" not in result.stdout
 
 
+def test_a_failed_final_roots_read_is_counted_once(tmp_path: Path) -> None:
+    """The gate's own failed read must not be recorded twice.
+
+    stage_exit_satisfied() reports the failed read through stage_roots(); wrapping
+    that call in a second recording `must` would log one infrastructure failure as
+    two, which misstates how much went wrong.
+    """
+
+    result = _run(
+        tmp_path,
+        """
+        marker="$NOVEL_STATE/stub-advanced"
+        case "$*" in
+            *" status "*) echo "[]"; exit 0 ;;
+            *" advance "*) : > "$marker"; echo "{}"; exit 0 ;;
+            *" roots "*)
+                # Succeed while the stage still has work, then fail at the gate.
+                [[ -f "$marker" ]] && { echo "roots went away"; exit 4; }
+                echo '{"committed_chapters":0,"committed_volumes":0}'
+                exit 0 ;;
+        esac
+        exit 0
+        """,
+        slices="1",
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "[exit] 1 subcommand failure(s)" in result.stdout, result.stdout
+
+
+def test_each_command_snapshot_is_captured_from_its_own_stdout(tmp_path: Path) -> None:
+    """Snapshots come from each command's own output, not from the shared log.
+
+    The earlier version scraped `tail -n 1` of the run log.  That works only while
+    every command happens to leave its result as the log's last line, and it hides
+    the difference between "this command reported X" and "X is the most recent
+    thing anyone wrote".  The driver now captures each command's stdout separately,
+    which is what these files assert.
+    """
+
+    result = _run(
+        tmp_path,
+        """
+        marker="$NOVEL_STATE/stub-reads"
+        case "$*" in
+            *" status "*)
+                echo "status wrote nothing to stdout" >&2
+                exit 0 ;;
+            *" roots "*)
+                # The pre-flight gate must not pass, or the loop never runs.
+                reads=$(( $(cat "$marker" 2>/dev/null || echo 0) + 1 ))
+                echo "$reads" > "$marker"
+                if [[ "$reads" -ge 2 ]]; then
+                    echo '{"committed_chapters":0,"committed_volumes":8}'
+                else
+                    echo '{"committed_chapters":0,"committed_volumes":0}'
+                fi
+                exit 0 ;;
+        esac
+        exit 0
+        """,
+        slices="2",
+    )
+
+    state = tmp_path / "workspace" / "state"
+    # Each command's own capture exists and holds what that command printed.
+    roots_out = (state / "roots.out").read_text(encoding="utf-8")
+    status_out = (state / "status.out").read_text(encoding="utf-8")
+    assert "committed_volumes" in roots_out, roots_out
+    assert "committed_volumes" not in status_out, status_out
+    # The parsed snapshot is the status command's result, NOT the roots payload it
+    # would have inherited from the log.
+    status = (state / "status.json").read_text(encoding="utf-8")
+    assert "committed_volumes" not in status, status
+    # An unreadable snapshot stops the loop before it can advance on stale state:
+    # with no readable task list there is nothing to act on.
+    assert "no ready, retry or acceptance work remains" in result.stdout, result.stdout
+    assert "[stage] g0 exit not proven" not in result.stdout, result.stdout
+
+
 def test_a_stage_with_proven_evidence_exits_zero(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
