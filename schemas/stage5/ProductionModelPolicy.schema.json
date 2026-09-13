@@ -8,6 +8,33 @@
       "title": "Default Output Limit",
       "type": "integer"
     },
+    "output_budget_growth_factor": {
+      "anyOf": [
+        {
+          "minimum": 2,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Budget Growth Factor"
+    },
+    "output_budget_timeout_limit_seconds": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 900,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Budget Timeout Limit Seconds"
+    },
     "reasoning_billing_mode": {
       "default": "unknown_not_applicable",
       "minLength": 1,

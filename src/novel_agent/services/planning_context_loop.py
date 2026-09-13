@@ -63,7 +63,9 @@ from novel_agent.services.content_addressing import canonical_json_bytes, conten
 from novel_agent.services.loop_round_progress import planner_round_progress
 from novel_agent.services.memory_gateway import MemoryGateway, MemoryGatewayBlockedError
 from novel_agent.services.model_gateway import (
+    ModelCallCumulativeBudgetExceeded,
     ModelCallForbiddenError,
+    ModelOutputBudgetExhausted,
     ModelRoutingError,
     StructuredGenerationExhausted,
 )
@@ -607,6 +609,18 @@ class PlanningContextLoopService:
                 event_refs,
                 diagnostics=("PLANNER_STRUCTURED_OUTPUT_REJECTED",),
             )
+        except (ModelOutputBudgetExhausted, ModelCallCumulativeBudgetExceeded) as error:
+            return self._terminal(
+                request,
+                PlanningLoopTerminal.CONTEXT_LIMIT,
+                event_refs,
+                diagnostics=(
+                    "MODEL_OUTPUT_BUDGET_EXHAUSTED"
+                    if isinstance(error, ModelOutputBudgetExhausted)
+                    else "MODEL_CUMULATIVE_BUDGET_EXHAUSTED",
+                    str(error)[:240],
+                ),
+            )
         except (
             ModelRoutingError,
             ModelCallForbiddenError,
@@ -749,16 +763,19 @@ class PlanningContextLoopService:
             nonlocal model_output_tokens_used
             nonlocal model_reasoning_tokens_used
             nonlocal slice_model_tokens_used
-            usage = getattr(call, "usage", None)
-            if usage is None:
-                return
-            model_calls_used += 1
-            model_input_tokens_used += int(usage.input_tokens)
-            model_output_tokens_used += int(usage.output_tokens)
-            model_reasoning_tokens_used += int(usage.reasoning_tokens)
-            slice_model_tokens_used += int(
-                usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
-            )
+            records_for = getattr(self._planner, "model_calls_for", None)
+            records = records_for(call) if callable(records_for) else (call,)
+            for record in records:
+                usage = getattr(record, "usage", None)
+                if usage is None:
+                    continue
+                model_calls_used += 1
+                model_input_tokens_used += int(usage.input_tokens)
+                model_output_tokens_used += int(usage.output_tokens)
+                model_reasoning_tokens_used += int(usage.reasoning_tokens)
+                slice_model_tokens_used += int(
+                    usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
+                )
 
         def token_slice_exhausted() -> bool:
             return slice_model_tokens_used >= request.budgets.model_token_budget

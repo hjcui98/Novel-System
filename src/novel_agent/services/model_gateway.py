@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import re
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import pairwise
+from math import isfinite
 from time import monotonic
 from typing import TypeVar
 
@@ -62,6 +65,44 @@ class ModelCallForbiddenError(RuntimeError):
 
 class ModelCallUncertainError(RuntimeError):
     """A sent model request has no completion evidence and cannot be resent."""
+
+
+_RETRY_ATTEMPT_SUFFIX = re.compile(r"\.(?:schema-retry\d+|output-retry\d+)$")
+
+
+def logical_request_root(request_id_root: str) -> str:
+    """Strip this gateway's retry suffixes so every attempt resolves to one call.
+
+    The gateway names an expanded or repaired attempt ``<logical><suffix>``; billing
+    and replay both need the logical identity, including when the attempt was settled
+    by an earlier process and only the final attempt id is still in hand.
+    """
+
+    root = request_id_root
+    while (match := _RETRY_ATTEMPT_SUFFIX.search(root)) is not None:
+        root = root[: match.start()]
+    return root
+
+
+class ModelOutputBudgetExhausted(ValueError):
+    """A retained truncated response has no larger legal output allowance."""
+
+    def __init__(
+        self,
+        request_id: str,
+        attempt_request_id: str,
+        output_tokens: int,
+        context_limit: int,
+    ) -> None:
+        self.request_id = request_id
+        self.attempt_request_id = attempt_request_id
+        self.output_tokens = output_tokens
+        self.context_limit = context_limit
+        super().__init__(
+            f"MODEL_OUTPUT_BUDGET_EXHAUSTED: {attempt_request_id}: "
+            f"output_tokens={output_tokens}, context_limit={context_limit}; "
+            "split the output or change the declared resource policy"
+        )
 
 
 class ModelCallCumulativeBudgetExceeded(ModelRoutingError):
@@ -152,6 +193,8 @@ class ModelGateway:
         scheduling_timeout_seconds: float = 120.0,
         budget_profile: BudgetResolutionProfile = BudgetResolutionProfile.CANARY,
         budget_resolver: EffectiveBudgetResolver | None = None,
+        output_budget_growth_factor: float | None = None,
+        output_budget_timeout_limit_seconds: float | None = None,
     ) -> None:
         self._endpoints = {endpoint.role: endpoint for endpoint in endpoints}
         if len(self._endpoints) != len(endpoints):
@@ -172,7 +215,18 @@ class ModelGateway:
         self._scheduling_timeout_seconds = scheduling_timeout_seconds
         self._budget_profile = budget_profile
         self._budget_resolver = budget_resolver or EffectiveBudgetResolver()
+        if output_budget_growth_factor is not None and (
+            not isfinite(output_budget_growth_factor) or output_budget_growth_factor < 2
+        ):
+            raise ValueError("output budget growth factor must be finite and at least two")
+        self._output_budget_growth_factor = output_budget_growth_factor
+        if output_budget_timeout_limit_seconds is not None and not (
+            0 < output_budget_timeout_limit_seconds <= 900
+        ):
+            raise ValueError("output retry timeout limit must be between zero and 900 seconds")
+        self._output_budget_timeout_limit_seconds = output_budget_timeout_limit_seconds
         self.budget_results: dict[str, EffectiveBudgetResult] = {}
+        self._cumulative_budget_constraints: dict[str, tuple[tuple[int, ...], int]] = {}
         self._records_lock = threading.Lock()
         self._ledger_lock = threading.Lock()
 
@@ -214,14 +268,46 @@ class ModelGateway:
         if endpoint is None:
             raise ModelRoutingError(f"no endpoint configured for {role.value}")
         adapter = endpoint.adapter
-        return (
+        identity = [
             ("endpoint_name", endpoint.endpoint_name),
             ("registered_model", endpoint.model_name),
             ("adapter_model", str(getattr(adapter, "model", endpoint.model_name))),
             ("adapter_revision", str(getattr(adapter, "revision", "unknown"))),
             ("adapter_max_retries", str(getattr(adapter, "max_retries", 0))),
             ("structured_max_retries", str(self._structured_max_retries)),
+        ]
+        if self._output_budget_growth_factor is not None:
+            identity.append(
+                ("output_budget_growth_factor", str(self._output_budget_growth_factor))
+            )
+        if self._output_budget_timeout_limit_seconds is not None:
+            identity.append(
+                (
+                    "output_budget_timeout_limit_seconds",
+                    str(self._output_budget_timeout_limit_seconds),
+                )
+            )
+        return tuple(identity)
+
+    def attempts_for(self, request_id_root: str) -> tuple[ModelCallRecord, ...]:
+        """Every settled provider attempt under one logical request, oldest first.
+
+        The durable ledger is the source of truth: a truncated attempt, a schema
+        retry, a terminal failure and an attempt settled by an earlier process all
+        stay billable exactly once.  The in-memory counter only knows the calls this
+        process already returned and cannot answer for a resumed worker.
+        """
+
+        return tuple(
+            entry.call_record
+            for entry in self._call_ledger.list_for_prefix(request_id_root)
+            if entry.call_record is not None
         )
+
+    def model_calls_for(self, call: ModelCallRecord) -> tuple[ModelCallRecord, ...]:
+        """Actual provider attempts behind a logical structured call, including retries."""
+
+        return self.attempts_for(logical_request_root(call.request_id.root)) or (call,)
 
     def endpoint_runtime_identity(self, role: ModelRole) -> tuple[str, str, str]:
         """Return the explicit endpoint/model/revision identity for a frozen campaign.
@@ -344,6 +430,10 @@ class ModelGateway:
                 estimated_input_tokens=budget.estimated_input_tokens,
                 reserved_output_tokens=budget.total_output_budget,
             )
+        self._cumulative_budget_constraints[request.request_id.root] = (
+            (token_budget,),
+            tokens_used,
+        )
         return budget
 
     def preflight_elastic_cumulative_token_budget(
@@ -366,7 +456,7 @@ class ModelGateway:
             raise ValueError("elastic cumulative budget requires at least one tier")
         if any(value < 0 for value in token_budgets):
             raise ValueError("elastic cumulative budget tiers must be non-negative")
-        if any(left >= right for left, right in zip(token_budgets, token_budgets[1:])):
+        if any(left >= right for left, right in pairwise(token_budgets)):
             raise ValueError("elastic cumulative budget tiers must be strictly increasing")
         last_error: ModelCallCumulativeBudgetExceeded | None = None
         for tier, token_budget in enumerate(token_budgets):
@@ -386,6 +476,10 @@ class ModelGateway:
                 }
             )
             self.budget_results[request.request_id.root] = selected
+            self._cumulative_budget_constraints[request.request_id.root] = (
+                token_budgets,
+                tokens_used,
+            )
             return selected, tier
         assert last_error is not None
         raise last_error
@@ -879,23 +973,106 @@ class ModelGateway:
         json_object_framing: bool = False,
         allow_replay: bool = True,
     ) -> tuple[OutputModel, ModelCallRecord]:
-        # A request whose identity was already completed must not be issued again: the
-        # ledger refuses to rebind a settled entry, so a retry would surface a collision
-        # instead of the original answer.  Reuse the recorded response when its identity
-        # still matches, and fall through to a fresh call otherwise.
-        if allow_replay:
-            recorded = self._completed_structured_result(
-                request, output_type, json_object_framing=json_object_framing
-            )
-            if recorded is not None:
-                return recorded
         schema = None if json_object_framing else output_type.model_json_schema()
         retry_request = request.model_copy(update={"response_schema": schema})
-        for attempt in range(self._structured_max_retries + 1):
+        schema_attempt = 0
+        output_attempt = 0
+        calls: list[ModelCallRecord] = []
+        # Attempts recovered from the durable ledger were already billed by the
+        # caller that owned them; charging them again would double-count a resume.
+        replayed: set[str] = set()
+        endpoint = self._endpoints.get(request.model_role)
+        if endpoint is None:
+            raise ModelRoutingError(f"no endpoint configured for {request.model_role.value}")
+        while True:
             constrained_request = retry_request
-            result = await self.generate_text(constrained_request)
+            bound, budget = self._bind_budget(constrained_request, endpoint)
+            recover_attempts = allow_replay and (
+                self._raw_artifacts is not None or self._output_budget_growth_factor is not None
+            )
+            entry = self._call_ledger.load(bound.request_id) if recover_attempts else None
+            if (
+                entry is not None
+                and entry.request_hash != model_request_hash(bound)
+                and not (
+                    entry.status is ModelCallLedgerStatus.REQUESTED
+                    and entry.request_hash == model_request_hash(constrained_request)
+                )
+            ):
+                raise ModelCallLedgerCollision(f"request identity drift: {bound.request_id.root}")
+            incomplete = (
+                entry is not None and entry.status is ModelCallLedgerStatus.OUTPUT_INCOMPLETE
+            )
+            result = None
+            if entry is not None and entry.status in {
+                ModelCallLedgerStatus.COMPLETED,
+                ModelCallLedgerStatus.VALIDATION_REJECTED,
+                ModelCallLedgerStatus.OUTPUT_INCOMPLETE,
+            }:
+                result = self._retained_attempt_text(entry)
+                replayed.add(entry.request_id.root)
+            else:
+                try:
+                    result = await self.generate_text(constrained_request)
+                except Exception as error:
+                    if not self._is_output_incomplete(error):
+                        raise
+                    if self._output_budget_growth_factor is None:
+                        raise
+                    incomplete = True
+                    entry = self._call_ledger.load(bound.request_id)
+            if incomplete:
+                if entry is None or entry.call_record is None:
+                    raise RawResponsePersistenceError("truncated output has no attempt evidence")
+                calls.append(entry.call_record)
+                # A completed partial response supplies the provider's actual prompt
+                # usage.  Do not grow into space our initial estimator underestimated.
+                budget = self._budget_resolver.resolve(
+                    constrained_request.model_copy(
+                        update={
+                            "max_output_tokens": budget.body_output_budget,
+                            "budget_source": None,
+                        }
+                    ),
+                    limits=self._provider_limits(endpoint),
+                    profile=self._budget_profile,
+                    estimated_input_tokens=max(
+                        budget.estimated_input_tokens, entry.call_record.usage.input_tokens
+                    ),
+                )
+                expanded = (
+                    None
+                    if self._output_budget_growth_factor is None
+                    else self._budget_resolver.expanded_output_tokens(
+                        constrained_request,
+                        current=budget,
+                        limits=self._provider_limits(endpoint),
+                        growth_factor=self._output_budget_growth_factor,
+                    )
+                )
+                if expanded is None:
+                    raise ModelOutputBudgetExhausted(
+                        request.request_id.root,
+                        bound.request_id.root,
+                        budget.total_output_budget,
+                        budget.context_limit,
+                    )
+                output_attempt += 1
+                retry_request = self._structured_retry_request(
+                    request,
+                    constrained_request,
+                    schema_attempt=schema_attempt,
+                    output_attempt=output_attempt,
+                    output_tokens=expanded,
+                    prompt=constrained_request.prompt,
+                    calls=calls,
+                    replayed=replayed,
+                )
+                continue
+            assert result is not None
+            calls.append(result.call_record)
             try:
-                return self._parse_structured_output(output_type, result.text), result.call_record
+                output = self._parse_structured_output(output_type, result.text)
             except ValidationError as error:
                 validation_detail = json.dumps(
                     error.errors(include_url=False, include_input=False),
@@ -924,7 +1101,7 @@ class ModelGateway:
                             }
                         )
                     )
-                if attempt >= self._structured_max_retries:
+                if schema_attempt >= self._structured_max_retries:
                     # Round-19 repair: preserve the exact terminal
                     # structured-generation request identity and raw-response
                     # hash with the validation failure so the rejection audit
@@ -939,66 +1116,134 @@ class ModelGateway:
                         ledger_entry.raw_response_hash
                     )
                     raise
-                suffix = f".schema-retry{attempt + 1}"
-                try:
-                    retry_id = bounded_model_request_id(request, suffix)
-                except ValueError as error:
-                    raise ModelRoutingError(
-                        "structured retry request identity has no bounded request, attempt, "
-                        "or task scope"
-                    ) from error
-                retry_request = request.model_copy(
-                    update={
-                        "request_id": retry_id,
-                        "response_schema": schema,
-                        "prompt": (
-                            request.prompt
-                            + "\n\n<STRUCTURED_OUTPUT_RETRY>\n"
-                            + "The previous JSON violated the required domain contract. "
-                            + "Return a complete replacement JSON object, correcting this "
-                            + "validation error:\n"
-                            + validation_detail
-                            + "\n</STRUCTURED_OUTPUT_RETRY>"
-                        ),
-                    }
+                schema_attempt += 1
+                retry_request = self._structured_retry_request(
+                    request,
+                    constrained_request,
+                    schema_attempt=schema_attempt,
+                    output_attempt=output_attempt,
+                    output_tokens=budget.body_output_budget,
+                    prompt=(
+                        request.prompt
+                        + "\n\n<STRUCTURED_OUTPUT_RETRY>\n"
+                        + "The previous JSON violated the required domain contract. "
+                        + "Return a complete replacement JSON object, correcting this "
+                        + "validation error:\n"
+                        + validation_detail
+                        + "\n</STRUCTURED_OUTPUT_RETRY>"
+                    ),
+                    calls=calls,
+                    replayed=replayed,
                 )
-        raise AssertionError("structured retry loop did not terminate")  # pragma: no cover
+            else:
+                return output, result.call_record
 
-    def _completed_structured_result(
+    def _structured_retry_request(
         self,
-        request: ModelRequest,
-        output_type: type[OutputModel],
+        original: ModelRequest,
+        previous: ModelRequest,
         *,
-        json_object_framing: bool,
-    ) -> tuple[OutputModel, ModelCallRecord] | None:
-        """Return a replayed answer when the request was already completed."""
-
-        expected_endpoint = self._endpoints.get(request.model_role)
-        if expected_endpoint is None:
-            return None
-        schema = None if json_object_framing else output_type.model_json_schema()
-        bound, _budget = self._bind_budget(
-            request.model_copy(update={"response_schema": schema}), expected_endpoint
+        schema_attempt: int,
+        output_attempt: int,
+        output_tokens: int,
+        prompt: str,
+        calls: list[ModelCallRecord],
+        replayed: set[str],
+    ) -> ModelRequest:
+        suffix = (f".schema-retry{schema_attempt}" if schema_attempt else "") + (
+            f".output-retry{output_attempt}" if output_attempt else ""
         )
-        with self._ledger_lock:
-            entry = self._call_ledger.load(bound.request_id)
-        # Only a settled COMPLETED entry is reusable here.  UNCERTAIN stays an explicit
-        # reconcile-before-retry failure, and other terminal states keep their typed
-        # error paths rather than being silently converted into a replay.
+        try:
+            retry_id = bounded_model_request_id(original, suffix)
+        except ValueError as error:
+            raise ModelRoutingError(
+                "structured retry request identity has no bounded scope"
+            ) from error
+        timeout = previous.timeout_seconds
+        previous_budget = self.budget_results[previous.request_id.root]
         if (
-            entry is None
-            or entry.status is not ModelCallLedgerStatus.COMPLETED
-            or entry.request_hash != model_request_hash(bound)
+            self._output_budget_timeout_limit_seconds is not None
+            and output_tokens > previous_budget.body_output_budget
         ):
-            return None
-        outcome = self.replay_completed_structured(
-            request, output_type, json_object_framing=json_object_framing
+            timeout = max(
+                timeout,
+                min(
+                    self._output_budget_timeout_limit_seconds,
+                    timeout * output_tokens / previous_budget.body_output_budget,
+                ),
+            )
+        retry = previous.model_copy(
+            update={
+                "request_id": retry_id,
+                "prompt": prompt,
+                "max_output_tokens": output_tokens,
+                "budget_source": None,
+                "timeout_seconds": timeout,
+            }
         )
-        if not outcome.replayed:
-            return None
-        assert isinstance(outcome.output, output_type)
-        assert outcome.call_record is not None
-        return outcome.output, outcome.call_record
+        estimated_input = max(1, (len(prompt.encode("utf-8")) + 2) // 3)
+        if calls:
+            added_prompt_tokens = max(
+                0, (len(prompt.encode("utf-8")) - len(previous.prompt.encode("utf-8")) + 2) // 3
+            )
+            estimated_input = max(
+                estimated_input, calls[-1].usage.input_tokens + added_prompt_tokens
+            )
+        budget = self.resolve_effective_budget(retry, estimated_input_tokens=estimated_input)
+        retry = retry.model_copy(
+            update={
+                "max_output_tokens": budget.total_output_budget,
+                "budget_source": budget.budget_source,
+            }
+        )
+        constraint = self._cumulative_budget_constraints.get(original.request_id.root)
+        if constraint is not None:
+            tiers, tokens_used = constraint
+            endpoint = self._endpoints[retry.model_role]
+            tokens_used += sum(
+                call.usage.input_tokens
+                + call.usage.output_tokens
+                + (
+                    0
+                    if endpoint.reasoning_included_in_completion_tokens
+                    else call.usage.reasoning_tokens
+                )
+                for call in calls
+                if call.request_id.root not in replayed
+            )
+            budget, _tier = self.preflight_elastic_cumulative_token_budget(
+                retry, token_budgets=tiers, tokens_used=tokens_used
+            )
+            retry = retry.model_copy(
+                update={
+                    "max_output_tokens": budget.total_output_budget,
+                    "budget_source": budget.budget_source,
+                }
+            )
+        return retry
+
+    def _retained_attempt_text(self, entry: ModelCallLedgerEntry) -> ModelTextResult:
+        """Recover a settled attempt without resending its frozen request."""
+
+        raw_text: str | None
+        if entry.call_record is None:
+            raise RawResponsePersistenceError("settled model attempt has no call record")
+        if self._raw_artifacts is not None and entry.raw_artifact_ref is not None:
+            envelope = RawModelResponseArtifact.model_validate_json(
+                self._raw_artifacts.read_verified(entry.raw_artifact_ref), strict=True
+            )
+            if (
+                envelope.request_id != entry.request_id
+                or envelope.request_hash != entry.request_hash
+                or envelope.call_record != entry.call_record
+            ):
+                raise RawResponseReparseError("retained retry evidence identity drift")
+            raw_text = envelope.raw_response_text
+        else:
+            raw_text = self.raw_responses.get(entry.request_id.root)
+        if raw_text is None or sha256_id(raw_text.encode()) != entry.raw_response_hash:
+            raise RawResponseReparseError("retained retry response is missing or invalid")
+        return ModelTextResult(text=raw_text, call_record=entry.call_record)
 
     def replay_completed_structured(
         self,

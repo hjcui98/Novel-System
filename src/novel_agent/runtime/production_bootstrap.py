@@ -560,10 +560,10 @@ def _validate_endpoint_contracts(
         if effective_output_limit < 1:
             raise RuntimeError("registered endpoint output limit must be positive")
         if endpoint.role is ModelRole.IMPLEMENTATION and (
-            effective_output_limit < spec.model_policy.default_output_limit
+            endpoint.global_output_cap < spec.model_policy.default_output_limit
         ):
             raise RuntimeError(
-                "registered Writer output limit is below the production assembly spec"
+                "registered Writer output capacity is below the production assembly default"
             )
         if endpoint.global_output_cap < effective_output_limit:
             raise RuntimeError(
@@ -676,6 +676,7 @@ def _default_writing_policy(
         {"factory": spec.factory_locator, "kind": "writing-request-policy"}
     )
     sequence = spec.model_policy.sequence_limit
+    reserved = spec.model_policy.default_output_limit
     return WritingRequestPolicy(
         pov="third-person limited",
         narrative_person="third person limited",
@@ -693,9 +694,9 @@ def _default_writing_policy(
             max_writer_turns=3,
             max_post_draft_model_calls=6,
             context_sequence_limit=sequence,
-            reserved_output_tokens=14_048,
+            reserved_output_tokens=reserved,
             context_safety_allowance_tokens=1_000,
-            context_soft_limit_tokens=max(1, sequence - 14_048 - 1_000),
+            context_soft_limit_tokens=max(1, sequence - reserved - 1_000),
         ),
         writer_configuration_fingerprint=fingerprint,
         model_configuration_fingerprint=fingerprint,
@@ -1392,10 +1393,10 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
             if context.max_local_repairs is None
             else context.max_local_repairs
         )
-        if not 0 <= max_major_rewrites <= 2:
-            raise ValueError("max_major_rewrites override must be between zero and two")
-        if not 0 <= max_local_repairs <= 2:
-            raise ValueError("max_local_repairs override must be between zero and two")
+        if max_major_rewrites < 0:
+            raise ValueError("max_major_rewrites override must not be negative")
+        if max_local_repairs < 0:
+            raise ValueError("max_local_repairs override must not be negative")
         max_post_draft_model_calls = max(
             writing_policy.budgets.max_post_draft_model_calls,
             (2 * max_major_rewrites) + 3,
@@ -1573,6 +1574,8 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         raw_artifact_schema_version=schema_version,
         scheduling_timeout_seconds=admission.default_scheduling_timeout_seconds,
         budget_profile=BudgetResolutionProfile.STRICT,
+        output_budget_growth_factor=spec.model_policy.output_budget_growth_factor,
+        output_budget_timeout_limit_seconds=spec.model_policy.output_budget_timeout_limit_seconds,
     )
     batch_endpoint = next(
         (endpoint for endpoint in model_endpoints if endpoint.role is ModelRole.BATCH_TEST),

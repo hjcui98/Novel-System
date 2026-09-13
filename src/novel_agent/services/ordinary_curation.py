@@ -29,11 +29,59 @@ from novel_agent.domain.memory import PlanObligation, WorldRootDocument
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.services.content_addressing import content_id
 from novel_agent.services.model_call_ledger import bounded_model_request_id
-from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_gateway import ModelGateway, ModelOutputBudgetExhausted
+
+# One bounded attempt may pay for this many previously unanswered pages per source
+# batch.  Pages settled by an earlier attempt are replayed from the durable ledger for
+# free, so a retry continues past them instead of paying for the same work again.
+_DEFAULT_ORDINARY_PAGE_QUOTA = 16
+_PLAN_PROGRESS_RANK = {"not_observed": 0, "progressed": 1, "resolved": 2, "abandoned": 2}
 
 
 class OrdinaryCurationIncomplete(ValueError):
     """Source work cannot be declared complete within the current bounded attempt."""
+
+
+def _record_page_attempt(
+    record: ModelCallRecord,
+    *,
+    calls: list[ModelCallRecord],
+    billed: set[str],
+    skip: set[str],
+) -> int:
+    key = record.request_id.root
+    if key in billed or key in skip:
+        return 0
+    billed.add(key)
+    calls.append(record)
+    return record.usage.input_tokens + record.usage.output_tokens
+
+
+def _bill_page_attempts(
+    gateway: ModelGateway,
+    page_request_id: StableId,
+    *,
+    calls: list[ModelCallRecord],
+    billed: set[str],
+    skip: set[str],
+    answer: ModelCallRecord | None = None,
+) -> int:
+    """Append and charge every provider attempt of one page exactly once.
+
+    Truncated attempts, schema retries and terminal failures all carry a call record
+    in the durable ledger, so they are billed from there instead of from the final
+    successful answer.  Attempts settled before this pass (``skip``) were already
+    charged by the attempt that owned them.  The answered record is the authority for
+    the page's own identity, so it is billed even when no ledger entry was visible.
+    """
+
+    total = sum(
+        _record_page_attempt(record, calls=calls, billed=billed, skip=skip)
+        for record in gateway.attempts_for(page_request_id.root)
+    )
+    if answer is not None:
+        total += _record_page_attempt(answer, calls=calls, billed=billed, skip=skip)
+    return total
 
 
 @dataclass(frozen=True)
@@ -147,6 +195,7 @@ async def extract_source_batches(
     base_commit: CommitId,
     cumulative_token_budget: int | None,
     cumulative_tokens_used: int,
+    page_quota: int | None = None,
 ) -> tuple[
     CuratorV2EvidenceDraft, tuple[ModelCallRecord, ...], tuple[OrdinaryCurationPageReceipt, ...]
 ]:
@@ -179,15 +228,44 @@ async def extract_source_batches(
     _discarded, separator, suffix = rest.partition("</CURATOR_INPUT>")
     if not separator:
         raise OrdinaryCurationIncomplete("ordinary Curator source envelope is incomplete")
+    page_quota = _DEFAULT_ORDINARY_PAGE_QUOTA if page_quota is None else page_quota
+    if page_quota < 1:
+        raise ValueError("ordinary curation page quota must be positive")
+    # Every attempt this pass pays for is charged once.  Attempts that were already
+    # settled when the pass started belong to an earlier attempt's receipt.
+    billed: set[str] = set()
     for batch_index, batch in enumerate(batches):
         source = "\n".join(unit.text for unit in batch)
         lookups: set[str] = set()
         seen_progress: set[StableId] = set()
-        for page in range(16):
+        new_pages = 0
+        page = 0
+        while True:
             missing_progress = tuple(
                 item for item in active if item.obligation_id not in seen_progress
             )
             directory = missing_progress[:8]
+            page_request_id = (
+                request.request_id
+                if batch_index == page == 0
+                else bounded_model_request_id(request, f".ordinary.b{batch_index}.p{page}")
+            )
+            # The durable ledger is the resumable cursor: a page whose attempts are
+            # already settled is replayed by ``generate_structured`` without another
+            # provider call and without being billed twice.
+            settled_before = {
+                entry.request_id.root
+                for entry in gateway.call_ledger.list_for_prefix(page_request_id.root)
+                if entry.call_record is not None
+            }
+            if not settled_before:
+                if new_pages >= page_quota:
+                    raise OrdinaryCurationIncomplete(
+                        f"ordinary source batch {batch_index} reached its configured quota of "
+                        f"{page_quota} new pages at page {page}; every settled page stays in the "
+                        "model call ledger, so a later attempt resumes past them"
+                    )
+                new_pages += 1
             fields = {
                 "BASE_COMMIT": base_commit.root,
                 "WORLD": world_working_view(world, source, tuple(sorted(lookups))),
@@ -246,9 +324,7 @@ async def extract_source_batches(
             )
             current = request.model_copy(
                 update={
-                    "request_id": request.request_id
-                    if batch_index == page == 0
-                    else bounded_model_request_id(request, f".ordinary.b{batch_index}.p{page}"),
+                    "request_id": page_request_id,
                     "prompt": prompt,
                     "trace_id": f"{request.trace_id}:ordinary:{batch_index}:{page}",
                 }
@@ -261,12 +337,12 @@ async def extract_source_batches(
                 )
             try:
                 draft, call = await gateway.generate_structured(current, CuratorV2EvidenceDraft)
-            except OpenAIChatOutputLengthError as error:
-                used += (error.input_tokens or 0) + (error.output_tokens or 0)
-                ledger = getattr(gateway, "call_ledger", None)
-                failed = None if ledger is None else ledger.load(current.request_id)
-                if failed is not None and failed.call_record is not None:
-                    calls.append(failed.call_record)
+            except (OpenAIChatOutputLengthError, ModelOutputBudgetExhausted):
+                # The page's attempts are already retained; charge them before the
+                # compact retry so its own preflight sees the real spend.
+                used += _bill_page_attempts(
+                    gateway, page_request_id, calls=calls, billed=billed, skip=settled_before
+                )
                 compact = current.model_copy(
                     update={
                         "request_id": bounded_model_request_id(current, ".compact"),
@@ -291,11 +367,21 @@ async def extract_source_batches(
                 draft, call = await gateway.generate_structured(
                     compact, CuratorV2EvidenceDraft, json_object_framing=True
                 )
-            calls.append(call)
-            used += call.usage.input_tokens + call.usage.output_tokens
+            used += _bill_page_attempts(
+                gateway,
+                page_request_id,
+                calls=calls,
+                billed=billed,
+                skip=settled_before,
+                answer=call,
+            )
             # The requested chapter is bound by the caller's typed contract check; this
             # layer only proves that every source batch was read to the end.
             before = len(operations)
+            before_ranks = {
+                identity: _PLAN_PROGRESS_RANK[progress.status]
+                for identity, progress in plan_progress.items()
+            }
             for operation in draft.operations:
                 if (
                     operation.target_id in planned_by_id
@@ -318,7 +404,7 @@ async def extract_source_batches(
                         "plan progress quote is outside current source units"
                     )
                 old = plan_progress.get(progress.obligation_id)
-                rank = {"not_observed": 0, "progressed": 1, "resolved": 2, "abandoned": 2}
+                rank = _PLAN_PROGRESS_RANK
                 if (
                     old is not None
                     and rank[old.status] == rank[progress.status] == 2
@@ -331,6 +417,17 @@ async def extract_source_batches(
                     plan_progress[progress.obligation_id] = progress
                 seen_progress.add(progress.obligation_id)
             newly_requested = set(draft.world_lookup_terms) - lookups
+            # A repeated operation, lookup or obligation observation is not progress:
+            # only new material, a new query or a raised obligation rank continues.
+            progressed = (
+                len(operations) > before
+                or bool(newly_requested)
+                or any(
+                    _PLAN_PROGRESS_RANK[progress.status]
+                    > before_ranks.get(progress.obligation_id, -1)
+                    for progress in draft.plan_observations
+                )
+            )
             lookups.update(draft.world_lookup_terms)
             more = (
                 draft.has_more
@@ -360,10 +457,9 @@ async def extract_source_batches(
             last = draft
             if not more:
                 break
-            if len(operations) == before and not newly_requested and not draft.plan_observations:
+            if not progressed:
                 raise OrdinaryCurationIncomplete("Curator continuation made no progress")
-        else:
-            raise OrdinaryCurationIncomplete("ordinary source batch exceeded 16 continuation pages")
+            page += 1
     assert last is not None
     missing_due = [
         item.obligation_id.root

@@ -396,6 +396,9 @@ class PlannerAgent:
         self._runner = runner
         self._artifacts = artifacts
 
+    def model_calls_for(self, call: ModelCallRecord) -> tuple[ModelCallRecord, ...]:
+        return self._runner.model_calls_for(call)
+
     async def run(
         self,
         *,

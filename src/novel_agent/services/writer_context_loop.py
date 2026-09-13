@@ -82,6 +82,10 @@ from novel_agent.services.loop_round_progress import (
     writer_package_precondition,
     writer_round_progress,
 )
+from novel_agent.services.model_gateway import (
+    ModelCallCumulativeBudgetExceeded,
+    ModelOutputBudgetExhausted,
+)
 from novel_agent.services.writer_candidate import (
     WriterCandidateError,
     WriterCandidateMaterializer,
@@ -154,6 +158,8 @@ class WriterContextLoopService:
     ) -> WritingLoopResult:
         try:
             return await self._execute(request, model_request, reactive_inputs)
+        except (ModelOutputBudgetExhausted, ModelCallCumulativeBudgetExceeded) as error:
+            return self._result(request, WritingLoopTerminalStatus.CONTEXT_LIMIT, error)
         except (ModelEndpointError, TimeoutError) as error:
             return self._result(
                 request,
@@ -2029,7 +2035,9 @@ class WriterContextLoopService:
         from novel_agent.domain.agent_context import ContextCompactionReceipt, ContextDelta
         from novel_agent.domain.editorial import CuratorObservation, ReconciliationResult
 
-        if isinstance(detail, Exception) and self._is_model_runtime_unavailable(detail):
+        if isinstance(detail, (ModelOutputBudgetExhausted, ModelCallCumulativeBudgetExceeded)):
+            status = WritingLoopTerminalStatus.CONTEXT_LIMIT
+        elif isinstance(detail, Exception) and self._is_model_runtime_unavailable(detail):
             status = WritingLoopTerminalStatus.MODEL_UNAVAILABLE
         detail_text = None if detail is None else (str(detail).strip() or type(detail).__name__)
         if status is WritingLoopTerminalStatus.MODEL_UNAVAILABLE:

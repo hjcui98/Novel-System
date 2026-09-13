@@ -67,6 +67,9 @@ class StructuredAgentRunner:
         self._prompts = prompts
         self._skills = skills
 
+    def model_calls_for(self, call: ModelCallRecord) -> tuple[ModelCallRecord, ...]:
+        return self._gateway.model_calls_for(call)
+
     def bind_effective_budget(
         self, request: ModelRequest
     ) -> tuple[ModelRequest, EffectiveBudgetResult]:

@@ -86,7 +86,7 @@ class Stage4InvocationPolicy:
     model_role: ModelRole = ModelRole.IMPLEMENTATION
     model_purpose: ModelCallPurpose = ModelCallPurpose.DEVELOPMENT
     model_timeout_seconds: float = 120.0
-    model_max_output_tokens: int = 8_000
+    model_max_output_tokens: int | None = None
 
 
 class ProductionStage4InvocationFactory:

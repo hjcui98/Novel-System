@@ -56,8 +56,49 @@ from novel_agent.services.model_curation import (
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 
 
-class _FakeGateway:
+def _retained_call(request_id: StableId):
+    return type(
+        "Call",
+        (),
+        {
+            "request_id": request_id,
+            "usage": type("U", (), {"input_tokens": 100, "output_tokens": 12_000})(),
+        },
+    )()
+
+
+class _AttemptLedger:
+    """Minimal model-call ledger double, keyed by request identity like the real one."""
+
+    def __init__(self) -> None:
+        self.attempts: dict[StableId, object] = {}
+
+    def list_for_prefix(self, request_id_prefix: str):
+        return tuple(
+            type("Entry", (), {"request_id": request_id, "call_record": call})()
+            for request_id, call in self.attempts.items()
+            if request_id.root == request_id_prefix
+            or request_id.root.startswith(f"{request_id_prefix}.")
+        )
+
+
+class _LedgerRecordingGateway:
+    """Gives a gateway double the durable attempt ledger the real gateway owns."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.call_ledger = _AttemptLedger()
+
+    def attempts_for(self, request_id_root: str):
+        return tuple(
+            entry.call_record
+            for entry in self.call_ledger.list_for_prefix(request_id_root)
+        )
+
+
+class _FakeGateway(_LedgerRecordingGateway):
     def __init__(self, draft: ChapterChangeDraftV2) -> None:
+        super().__init__()
         self._draft = draft
         self.requests: list[ModelRequest] = []
 
@@ -76,6 +117,7 @@ class _FakeGateway:
                 "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
             },
         )()
+        self.call_ledger.attempts[request.request_id] = call
         return self._draft, call
 
 
@@ -89,6 +131,8 @@ class _OutputLengthThenDraftGateway(_FakeGateway):
         assert "EVIDENCE_CANDIDATES" in request.prompt
         if len(self.requests) == 1:
             assert "json_object_framing" not in kwargs
+            # The real gateway settles the truncated attempt before the compact retry.
+            self.call_ledger.attempts[request.request_id] = _retained_call(request.request_id)
             raise OpenAIChatOutputLengthError(
                 "chat completion was truncated by output length limit",
                 finish_reason="length",
@@ -104,6 +148,7 @@ class _OutputLengthThenDraftGateway(_FakeGateway):
                 "usage": type("U", (), {"input_tokens": 1, "output_tokens": 1})(),
             },
         )()
+        self.call_ledger.attempts[request.request_id] = call
         assert kwargs["json_object_framing"] is True
         return self._draft, call
 
@@ -112,6 +157,7 @@ class _OutputLengthAlwaysGateway(_FakeGateway):
     async def generate_structured(self, request, model_type, **kwargs):
         self.requests.append(request)
         assert model_type is CuratorV2EvidenceDraft
+        self.call_ledger.attempts[request.request_id] = _retained_call(request.request_id)
         raise OpenAIChatOutputLengthError(
             "chat completion was truncated by output length limit",
             finish_reason="length",
@@ -121,12 +167,13 @@ class _OutputLengthAlwaysGateway(_FakeGateway):
         )
 
 
-class _ModelVerifierGateway:
+class _ModelVerifierGateway(_LedgerRecordingGateway):
     def __init__(
         self,
         draft: ChapterChangeDraftV2,
         verification: EvidenceSemanticVerificationDraft | Exception,
     ) -> None:
+        super().__init__()
         self._draft = draft
         self._verification = verification
         self.requests: list[ModelRequest] = []
@@ -150,12 +197,13 @@ class _ModelVerifierGateway:
         return self._verification, call
 
 
-class _NoOpVerifierGateway:
+class _NoOpVerifierGateway(_LedgerRecordingGateway):
     def __init__(
         self,
         draft: ChapterChangeDraftV2,
         verification: NoOpSemanticVerificationDraft | Exception,
     ) -> None:
+        super().__init__()
         self._draft = draft
         self._verification = verification
         self.requests: list[ModelRequest] = []
@@ -518,10 +566,11 @@ def test_replay_agent_uses_candidate_v2() -> None:
     assert legacy.evidence_contract is CuratorEvidenceContract.LEGACY_OFFSET_V1
 
 
-class _RepairGateway:
+class _RepairGateway(_LedgerRecordingGateway):
     """Fake gateway for evidence_repair_v2 returning EvidenceRepairDraftArray."""
 
     def __init__(self, drafts: list[EvidenceRepairDraft]) -> None:
+        super().__init__()
         self._drafts = drafts
         self.requests: list[ModelRequest] = []
 

@@ -75,7 +75,7 @@ from novel_agent.services.curation import Stage1Curator
 from novel_agent.services.evidence_candidates import EvidenceCandidateGenerator
 from novel_agent.services.evidence_support import EvidenceSupportGate
 from novel_agent.services.model_call_ledger import bounded_model_request_id
-from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_gateway import ModelGateway, ModelOutputBudgetExhausted
 from novel_agent.services.ordinary_curation import (
     OrdinaryCurationIncomplete,
     extract_source_batches,
@@ -133,6 +133,7 @@ _QUOTE_HINT_PREFIX_CHARS = 32
 _GRAPH_PAGE_SIZE = 12
 _GRAPH_SOURCE_UNIT_TOKENS = 1_500
 _GRAPH_MAX_PAGES_PER_UNIT = 16
+_ORDINARY_MAX_PAGES_PER_BATCH = 16
 _GRAPH_MAX_CONCURRENT_UNITS = 8
 _GRAPH_SCHEMA_RETRY_SUFFIX = ".schema-retry1"
 
@@ -246,12 +247,15 @@ class ModelCurator:
         enable_model_semantic_verifier: bool = False,
         max_concurrent_graph_units: int = _GRAPH_MAX_CONCURRENT_UNITS,
         max_pages_per_graph_unit: int = _GRAPH_MAX_PAGES_PER_UNIT,
+        max_pages_per_ordinary_batch: int = _ORDINARY_MAX_PAGES_PER_BATCH,
         graph_source_unit_tokens: int = _GRAPH_SOURCE_UNIT_TOKENS,
     ) -> None:
         if max_concurrent_graph_units < 1:
             raise ValueError("max_concurrent_graph_units must be positive")
         if max_pages_per_graph_unit < 1:
             raise ValueError("max_pages_per_graph_unit must be positive")
+        if max_pages_per_ordinary_batch < 1:
+            raise ValueError("max_pages_per_ordinary_batch must be positive")
         if graph_source_unit_tokens < 1:
             raise ValueError("graph_source_unit_tokens must be positive")
         self._gateway = gateway
@@ -264,6 +268,7 @@ class ModelCurator:
         self._enable_model_semantic_verifier = enable_model_semantic_verifier
         self._max_concurrent_graph_units = max_concurrent_graph_units
         self._max_pages_per_graph_unit = max_pages_per_graph_unit
+        self._max_pages_per_ordinary_batch = max_pages_per_ordinary_batch
         self._graph_source_unit_tokens = graph_source_unit_tokens
         self.last_evidence_merge_receipts: tuple[ProposalEvidenceMergeReceipt, ...] = ()
         self.last_support_decisions: tuple[EvidenceSupportDecision, ...] = ()
@@ -720,8 +725,13 @@ class ModelCurator:
                 base_commit=base_commit,
                 cumulative_token_budget=cumulative_token_budget,
                 cumulative_tokens_used=cumulative_tokens_used,
+                page_quota=self._max_pages_per_ordinary_batch,
             )
-        except (OrdinaryCurationIncomplete, OpenAIChatOutputLengthError) as error:
+        except (
+            OrdinaryCurationIncomplete,
+            OpenAIChatOutputLengthError,
+            ModelOutputBudgetExhausted,
+        ) as error:
             # Either the bounded extraction could not finish the chapter within its
             # page/compaction budget, or the provider truncated even the compact retry.
             # Both are typed content failures for the repair corridor, never a silent

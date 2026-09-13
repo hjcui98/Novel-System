@@ -377,6 +377,14 @@ def test_settlement_timeout_override_is_campaign_local(tmp_path: Path) -> None:
     assert campaign_policy.configuration_fingerprint != default_policy.configuration_fingerprint
 
 
+@pytest.mark.parametrize("field", ["max_local_repairs", "max_major_rewrites"])
+def test_campaign_can_declare_more_than_two_repairs(tmp_path: Path, field: str) -> None:
+    assembly = build_production_assembly(_context(tmp_path, **{field: 3}))
+    budgets = assembly.writing_request_factory._policy.budgets
+    assert getattr(budgets, field) == 3
+    assert budgets.max_post_draft_model_calls >= 9
+
+
 def test_settlement_output_override_is_campaign_local(tmp_path: Path) -> None:
     from novel_agent.runtime.production_bootstrap import load_production_assembly_spec
 

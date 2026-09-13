@@ -281,9 +281,9 @@ class WritingLoopBudgets(DomainModel):
     # decides whether a later invocation is legal; the schema must not silently
     # turn the first implementation's default into a product-wide ceiling.
     max_reactive_memory_rounds: int = Field(default=1, ge=0)
-    max_memory_questions: int = Field(default=3, ge=1, le=8)
-    max_local_repairs: int = Field(default=1, ge=0, le=2)
-    max_major_rewrites: int = Field(default=1, ge=0, le=2)
+    max_memory_questions: int = Field(default=3, ge=1)
+    max_local_repairs: int = Field(default=1, ge=0)
+    max_major_rewrites: int = Field(default=1, ge=0)
     max_writer_turns: int = Field(default=2, ge=1)
     max_post_draft_model_calls: int = Field(default=5, ge=0)
     context_sequence_limit: int = Field(ge=1)

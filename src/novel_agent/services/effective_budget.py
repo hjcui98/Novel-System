@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil
 
 from novel_agent.domain.model_calls import (
     BudgetResolutionProfile,
@@ -42,6 +43,48 @@ class ProviderBudgetLimits:
 
 class EffectiveBudgetResolver:
     """Parse one request's output reserve. Retrieval/tool/wall-clock stay elsewhere."""
+
+    def expanded_output_tokens(
+        self,
+        request: ModelRequest,
+        *,
+        current: EffectiveBudgetResult,
+        limits: ProviderBudgetLimits,
+        growth_factor: float,
+    ) -> int | None:
+        """Grow a truncated body within the provider's actual remaining capacity.
+
+        ``output_limit`` is a default allowance, not a physical ceiling.  The
+        sequence window, reasoning reserve, safety allowance and global output
+        cap still bind every expanded request.  A monotone, bounded search also
+        handles the input-dependent safety allowance without another estimator.
+        """
+
+        lower = current.body_output_budget + 1
+        upper = min(
+            ceil(current.body_output_budget * growth_factor),
+            limits.global_output_cap,
+            limits.sequence_limit,
+            131_072,
+        )
+        selected = None
+        while lower <= upper:
+            body = (lower + upper) // 2
+            candidate = self.resolve(
+                request.model_copy(update={"max_output_tokens": body, "budget_source": None}),
+                limits=limits,
+                profile=BudgetResolutionProfile.STRICT,
+                estimated_input_tokens=current.estimated_input_tokens,
+            )
+            if (
+                candidate.total_output_budget <= limits.global_output_cap
+                and candidate.reserved_sequence_tokens <= limits.sequence_limit
+            ):
+                selected = body
+                lower = body + 1
+            else:
+                upper = body - 1
+        return selected
 
     def resolve(
         self,
