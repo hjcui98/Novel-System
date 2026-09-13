@@ -89,7 +89,7 @@ def _environment(tmp_path: Path, cli: Path, *, python: str) -> dict[str, str]:
 # the tests replace it with a stub so the driver can run without infrastructure.
 # The driver sources `../environment.sh` for its variables.  The tests redirect
 # only that one line, so everything else under test is the real script.
-_ENVIRONMENT_SOURCE = re.compile(r'^source "\$SCRIPT_DIR/\.\./environment\.sh"$', re.MULTILINE)
+_ENVIRONMENT_SOURCE = re.compile(r'^source "\$ENVIRONMENT_FILE"$', re.MULTILINE)
 
 
 def _driver(tmp_path: Path, environment_file: Path) -> Path:
@@ -222,7 +222,8 @@ def test_each_command_snapshot_is_captured_from_its_own_stdout(tmp_path: Path) -
                 reads=$(( $(cat "$marker" 2>/dev/null || echo 0) + 1 ))
                 echo "$reads" > "$marker"
                 if [[ "$reads" -ge 2 ]]; then
-                    echo '{"committed_chapters":0,"committed_volumes":8}'
+                    echo '{"committed_chapters":0,"committed_volumes":8,"g0_evidence_complete":'\
+'true}'
                 else
                     echo '{"committed_chapters":0,"committed_volumes":0}'
                 fi
@@ -255,7 +256,8 @@ def test_a_stage_with_proven_evidence_exits_zero(tmp_path: Path) -> None:
         """
         case "$*" in
             *" status "*) echo "[]"; exit 0 ;;
-            *" roots "*) echo '{"committed_chapters":0,"committed_volumes":8}'; exit 0 ;;
+            *" roots "*) echo '{"committed_chapters":0,"committed_volumes":8,'\
+'"g0_evidence_complete":true}'; exit 0 ;;
         esac
         exit 0
         """,
@@ -293,7 +295,8 @@ def test_a_retryable_task_is_retried_and_the_stage_still_proves_itself(
                 echo "retried"; exit 0 ;;
             *" roots "*)
                 if [[ -f "$NOVEL_STATE/stub-retried" ]]; then
-                    echo '{"committed_chapters":0,"committed_volumes":8}'
+                    echo '{"committed_chapters":0,"committed_volumes":8,"g0_evidence_complete":'\
+'true}'
                 else
                     echo '{"committed_chapters":0,"committed_volumes":0}'
                 fi
@@ -376,7 +379,8 @@ def test_a_stage_with_its_chapters_proven_exits_zero(tmp_path: Path) -> None:
         """
         case "$*" in
             *" status "*) echo "[]"; exit 0 ;;
-            *" roots "*) echo '{"committed_chapters":5,"committed_volumes":8}'; exit 0 ;;
+            *" roots "*) echo '{"committed_chapters":5,"committed_volumes":8,'\
+'"g2_evidence_complete":true}'; exit 0 ;;
         esac
         exit 0
         """,
@@ -384,6 +388,22 @@ def test_a_stage_with_its_chapters_proven_exits_zero(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stdout
+
+
+def test_counts_without_complete_evidence_do_not_release_a_stage(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        """
+        case "$*" in
+            *" status "*) echo "[]"; exit 0 ;;
+            *" roots "*) echo '{"committed_chapters":0,"committed_volumes":8}'; exit 0 ;;
+        esac
+        exit 0
+        """,
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "complete stage evidence is absent" in result.stdout
 
 
 def test_an_unknown_stage_is_refused(tmp_path: Path) -> None:
@@ -430,7 +450,8 @@ def test_each_stage_gate_is_enforced(
         case "$*" in
             *" status "*) echo "[]"; exit 0 ;;
             *" roots "*)
-                echo '{{"committed_chapters":{chapters},"committed_volumes":{volumes}}}'
+                echo '{{"committed_chapters":{chapters},"committed_volumes":{volumes},'\
+'"{stage}_evidence_complete":true}}'
                 exit 0 ;;
         esac
         exit 0

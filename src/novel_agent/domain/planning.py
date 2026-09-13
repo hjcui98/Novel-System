@@ -348,10 +348,26 @@ class PlanReviewIssue(DomainModel):
     constraint_id: str | None = Field(default=None, min_length=1)
     quote: str | None = Field(default=None, min_length=1)
     unmet_condition: str | None = Field(default=None, min_length=1)
+    # Host-owned comparison evidence.  These are observations and expected
+    # constraints, not a candidate quote; model findings must not populate them.
+    actual: str | None = Field(default=None, min_length=1)
+    expected: str | None = Field(default=None, min_length=1)
+    # Structural permissions are assigned by the host.  The model may suggest a
+    # repair in prose, but it cannot grant itself an ADD/REMOVE/CLOSE operation.
+    authorized_operations: tuple[str, ...] = ()
     # The host decided this finding itself from the candidate and the trusted
     # catalogue, so it needs no model citation and is exempt from citation
     # verification.  Defaulted so historical artifacts stay readable.
     host_issued: bool = False
+
+    @model_validator(mode="after")
+    def validate_issue_metadata(self) -> PlanReviewIssue:
+        allowed = {"modify", "add", "remove", "close"}
+        if any(operation not in allowed for operation in self.authorized_operations):
+            raise ValueError("review issue has an unsupported authorized operation")
+        if len(set(self.authorized_operations)) != len(self.authorized_operations):
+            raise ValueError("review issue authorized operations must be unique")
+        return self
 
 
 class ReviewCitationFailure(StrEnum):

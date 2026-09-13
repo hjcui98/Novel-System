@@ -25,7 +25,13 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.planning import PlanReview, PlanReviewIssue
-from novel_agent.domain.stage2 import PlanProposal, PlanUnresolvedIssue, ProposedItem
+from novel_agent.domain.stage2 import (
+    PlanProposal,
+    PlanUnresolvedIssue,
+    PlanUnresolvedOperation,
+    PlanUnresolvedOperationRecord,
+    ProposedItem,
+)
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
 # Changing what the host does to a revision changes what a proof means.  A proof
@@ -81,6 +87,9 @@ class PlanRevisionScope(DomainModel):
     # revision that refreshed its advisories could never compose, however correct its
     # volumes were.
     advisory_ids: tuple[StableId, ...] = ()
+    # Kept separate from item targets so an advisory identity can never be treated as
+    # a proposal item during composition.
+    advisory_targets: tuple[PlanRevisionTarget, ...] = ()
 
     @model_validator(mode="after")
     def validate_targets(self) -> PlanRevisionScope:
@@ -90,6 +99,14 @@ class PlanRevisionScope(DomainModel):
         for target in self.targets:
             if PlanRevisionOperation.MODIFY not in target.operations and target.field_paths:
                 raise ValueError("field paths only qualify a modify operation")
+        advisory_ids = [target.item_id for target in self.advisory_targets]
+        if len(advisory_ids) != len(set(advisory_ids)):
+            raise ValueError("a revision scope may not target one advisory twice")
+        if any(
+            not target.item_id.root.startswith(_ADVISORY_ID_PREFIX)
+            for target in self.advisory_targets
+        ):
+            raise ValueError("advisory revision targets require the plan-issue namespace")
         return self
 
     @property
@@ -99,6 +116,12 @@ class PlanRevisionScope(DomainModel):
     def target_for(self, item_id: str) -> PlanRevisionTarget | None:
         for target in self.targets:
             if target.item_id.root == item_id:
+                return target
+        return None
+
+    def advisory_target_for(self, issue_id: str) -> PlanRevisionTarget | None:
+        for target in self.advisory_targets:
+            if target.item_id.root == issue_id:
                 return target
         return None
 
@@ -151,6 +174,7 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
     removals: list[StableId] = []
     finding_ids: list[StableId] = []
     advisory_ids: list[StableId] = []
+    advisory_targets: list[PlanRevisionTarget] = []
     for issue in review.issues:
         if not issue.blocking:
             continue
@@ -163,6 +187,31 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
                 # the revision's permission to restate that advisory.  It is not an
                 # item target: the advisory is not an item of the proposal.
                 advisory_ids.append(item_id)
+                existing_advisory = next(
+                    (target for target in advisory_targets if target.item_id.root == item_id.root),
+                    None,
+                )
+                if existing_advisory is None:
+                    advisory_targets.append(
+                        PlanRevisionTarget(
+                            item_id=item_id,
+                            operations=operations,
+                            field_paths=fields,
+                        )
+                    )
+                else:
+                    advisory_targets[advisory_targets.index(existing_advisory)] = (
+                        existing_advisory.model_copy(
+                            update={
+                                "operations": tuple(
+                                    dict.fromkeys((*existing_advisory.operations, *operations))
+                                ),
+                                "field_paths": tuple(
+                                    dict.fromkeys((*existing_advisory.field_paths, *fields))
+                                ),
+                            }
+                        )
+                    )
                 continue
             if PlanRevisionOperation.ADD in operations:
                 additions.append(item_id)
@@ -191,6 +240,7 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
         additions=tuple(dict.fromkeys(additions)),
         removals=tuple(dict.fromkeys(removals)),
         advisory_ids=tuple(dict.fromkeys(advisory_ids)),
+        advisory_targets=tuple(advisory_targets),
     )
 
 
@@ -226,6 +276,19 @@ def _issue_operations(issue: PlanReviewIssue) -> tuple[PlanRevisionOperation, ..
     rejected as out of scope, deterministically, on correct output.
     """
 
+    if issue.authorized_operations:
+        parsed: list[PlanRevisionOperation] = []
+        for operation in issue.authorized_operations:
+            if operation == "close":
+                parsed.append(PlanRevisionOperation.REMOVE)
+                continue
+            try:
+                parsed.append(PlanRevisionOperation(operation))
+            except ValueError:
+                # Unknown host operations are not permission to widen a revision.
+                continue
+        if parsed:
+            return tuple(dict.fromkeys(parsed))
     summary = issue.summary
     operations = [PlanRevisionOperation.MODIFY]
     if issue.host_issued and _mentions_missing(summary) and not _is_advisory_id(issue):
@@ -310,6 +373,7 @@ def validate_composed_proposal(
     if composed.coverage != parent.coverage:
         raise PlanCompositionError("composed plan changed its coverage")
     authorised_advisories = {item.root for item in scope.advisory_ids}
+    authorised_advisories.update(target.item_id.root for target in scope.advisory_targets)
     expected_unresolved = {
         issue.issue_id.root: issue
         for issue in parent.unresolved
@@ -327,6 +391,7 @@ def validate_composed_proposal(
             "composed plan added unresolved issues no finding named: "
             + ", ".join(sorted(unauthorised_extras))
         )
+    _validate_unresolved_operation_scope(parent, composed, scope, authorised_advisories)
     if composed.strategy is not parent.strategy:
         raise PlanCompositionError("composed plan changed its strategy")
 
@@ -344,6 +409,7 @@ def compose_scoped_revision(
     item only the named fields may differ.
     """
 
+    _validate_revised_unresolved_operations(parent, revised, scope)
     composed = _compose_items(parent, revised, scope)
     validate_composed_proposal(parent, composed, scope)
     return composed
@@ -354,7 +420,13 @@ def _compose_items(
     revised: PlanProposal,
     scope: PlanRevisionScope,
 ) -> PlanProposal:
-    if not scope.targets and not scope.additions and not scope.removals and not scope.advisory_ids:
+    if (
+        not scope.targets
+        and not scope.additions
+        and not scope.removals
+        and not scope.advisory_ids
+        and not scope.advisory_targets
+    ):
         # Nothing was authorised, so nothing may change.  Returning the revision here
         # is what let a review with no usable finding rewrite the plan.
         return parent
@@ -399,6 +471,7 @@ def _compose_items(
         update={
             "items": tuple(composed),
             "unresolved": _compose_unresolved(parent, revised, scope),
+            "unresolved_operations": _compose_unresolved_operations(parent, revised, scope),
         }
     )
 
@@ -418,26 +491,232 @@ def _compose_unresolved(
     """
 
     authorised = {item.root for item in scope.advisory_ids}
+    authorised.update(target.item_id.root for target in scope.advisory_targets)
     if not authorised:
         return parent.unresolved
-    restated = {
-        issue.issue_id.root: issue
+    revised_by_id = {issue.issue_id.root: issue for issue in revised.unresolved}
+    revised_by_parent = {
+        issue.parent_issue_id.root: issue
         for issue in revised.unresolved
-        if issue.issue_id.root in authorised
+        if issue.parent_issue_id is not None
     }
     composed: list[PlanUnresolvedIssue] = []
     kept: set[str] = set()
     for issue in parent.unresolved:
         key = issue.issue_id.root
-        replacement = restated.get(key)
-        composed.append(issue if replacement is None else replacement)
+        target = scope.advisory_target_for(key)
+        if target is None and key in scope.advisory_ids:
+            target = PlanRevisionTarget(item_id=issue.issue_id)
+        replacement = revised_by_id.get(key) or revised_by_parent.get(key)
+        if target is not None and PlanRevisionOperation.REMOVE in target.operations:
+            close = _operation_for(revised, key)
+            if close is not None and close.operation is PlanUnresolvedOperation.CLOSE:
+                kept.add(key)
+                continue
+            # A permission to close is not itself a close operation.  Keep the
+            # parent's advisory until the revision supplies an explicit closure.
+            replacement = None
+        if replacement is not None and target is not None:
+            if replacement.issue_id.root != key:
+                raise PlanCompositionError(
+                    "revised unresolved issue must retain its parent host identity"
+                )
+            composed.append(replacement)
+        else:
+            composed.append(issue)
         kept.add(key)
     # An advisory the review named but the parent never carried is a new statement the
-    # host asked for, so it enters; anything else the revision invented does not.
-    for key, issue in restated.items():
+    # host asked for, so it enters only with an explicit ADD permission; anything else
+    # the revision invented does not.
+    for key, issue in revised_by_id.items():
         if key not in kept:
-            composed.append(issue)
+            target = scope.advisory_target_for(key)
+            if target is not None and PlanRevisionOperation.ADD in target.operations:
+                composed.append(issue)
     return tuple(composed)
+
+
+def _operation_for(
+    proposal: PlanProposal,
+    issue_id: str,
+) -> PlanUnresolvedOperationRecord | None:
+    for operation in proposal.unresolved_operations:
+        if operation.issue_id.root == issue_id:
+            return operation
+    return None
+
+
+def _legacy_unresolved_operation(issue: PlanUnresolvedIssue) -> PlanUnresolvedOperationRecord:
+    return PlanUnresolvedOperationRecord(
+        operation=issue.operation,
+        issue_id=issue.issue_id,
+        parent_issue_id=issue.parent_issue_id,
+        kind=issue.kind,
+        summary=issue.summary,
+        affected_chapters=issue.affected_chapters,
+        blocking=issue.blocking,
+        resolution_owner=issue.resolution_owner,
+        allowed_assumptions=issue.allowed_assumptions,
+        forbidden_assumptions=issue.forbidden_assumptions,
+        source_ids=issue.source_ids,
+        source_artifact_refs=issue.source_artifact_refs,
+    )
+
+
+def _proposal_unresolved_operations(
+    proposal: PlanProposal,
+) -> tuple[PlanUnresolvedOperationRecord, ...]:
+    if proposal.unresolved_operations:
+        return proposal.unresolved_operations
+    return tuple(_legacy_unresolved_operation(issue) for issue in proposal.unresolved)
+
+
+def _compose_unresolved_operations(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    scope: PlanRevisionScope,
+) -> tuple[PlanUnresolvedOperationRecord, ...]:
+    """Compose operation history while keeping CLOSE evidence auditable."""
+
+    if not parent.unresolved_operations and not revised.unresolved_operations:
+        return ()
+    authorised = {item.root for item in scope.advisory_ids}
+    authorised.update(target.item_id.root for target in scope.advisory_targets)
+    targets = {target.item_id.root: target for target in scope.advisory_targets}
+    for issue_id in scope.advisory_ids:
+        targets.setdefault(issue_id.root, PlanRevisionTarget(item_id=issue_id))
+    parent_records = {
+        record.issue_id.root: record for record in _proposal_unresolved_operations(parent)
+    }
+    revised_records = {
+        record.issue_id.root: record for record in _proposal_unresolved_operations(revised)
+    }
+    composed: list[PlanUnresolvedOperationRecord] = []
+    for key, record in parent_records.items():
+        target = targets.get(key)
+        replacement = revised_records.get(key)
+        if target is None or key not in authorised:
+            composed.append(record)
+            continue
+        if PlanRevisionOperation.REMOVE in target.operations:
+            if replacement is None or replacement.operation is not PlanUnresolvedOperation.CLOSE:
+                raise PlanCompositionError(
+                    f"authorized unresolved close {key} lacks a CLOSE operation"
+                )
+            composed.append(replacement)
+            continue
+        composed.append(record if replacement is None else replacement)
+    for key, record in revised_records.items():
+        if key in parent_records:
+            continue
+        target = targets.get(key)
+        if target is None or PlanRevisionOperation.ADD not in target.operations:
+            continue
+        if record.operation is not PlanUnresolvedOperation.ADD:
+            raise PlanCompositionError("new unresolved identity must use an explicit ADD")
+        composed.append(record)
+    if len({record.issue_id.root for record in composed}) != len(composed):
+        raise PlanCompositionError("composed unresolved operation history repeats an identity")
+    return tuple(composed)
+
+
+def _validate_revised_unresolved_operations(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    scope: PlanRevisionScope,
+) -> None:
+    """Reject an explicit operation that the review did not authorise.
+
+    Composition is intentionally restorative for ordinary whole-proposal output: an
+    unmentioned advisory is copied from the parent.  That containment rule must not
+    turn a structured operation into a silent no-op, though.  An unknown identity,
+    a close of a non-existent/closed issue, or a modify without the matching parent
+    permission is an invalid revision and has to stop at the host boundary.
+    """
+
+    if not revised.unresolved_operations:
+        return
+    parent_records = {
+        record.issue_id.root: record for record in _proposal_unresolved_operations(parent)
+    }
+    targets = {target.item_id.root: target for target in scope.advisory_targets}
+    targets.update(
+        {
+            issue_id.root: PlanRevisionTarget(item_id=issue_id)
+            for issue_id in scope.advisory_ids
+            if issue_id.root not in targets
+        }
+    )
+    for record in revised.unresolved_operations:
+        key = record.issue_id.root
+        target = targets.get(key)
+        if target is None:
+            raise PlanCompositionError(
+                f"revised unresolved operation names unknown or unauthorized identity: {key}"
+            )
+        parent_record = parent_records.get(key)
+        if record.operation is PlanUnresolvedOperation.ADD:
+            if parent_record is not None:
+                raise PlanCompositionError(
+                    f"revised unresolved ADD repeats an existing identity: {key}"
+                )
+            if PlanRevisionOperation.ADD not in target.operations:
+                raise PlanCompositionError(
+                    f"revised unresolved ADD is not authorized for identity: {key}"
+                )
+            continue
+        if parent_record is None:
+            raise PlanCompositionError(
+                f"revised unresolved operation names unknown parent identity: {key}"
+            )
+        if parent_record.operation is PlanUnresolvedOperation.CLOSE:
+            raise PlanCompositionError(
+                f"revised unresolved operation reopens a closed identity: {key}"
+            )
+        if record.parent_issue_id != record.issue_id:
+            raise PlanCompositionError(
+                f"revised unresolved operation must retain its host identity: {key}"
+            )
+        required = (
+            PlanRevisionOperation.REMOVE
+            if record.operation is PlanUnresolvedOperation.CLOSE
+            else PlanRevisionOperation.MODIFY
+        )
+        if required not in target.operations:
+            raise PlanCompositionError(
+                f"revised unresolved {record.operation.value} is not authorized for identity: {key}"
+            )
+
+
+def _validate_unresolved_operation_scope(
+    parent: PlanProposal,
+    composed: PlanProposal,
+    scope: PlanRevisionScope,
+    authorised_advisories: set[str],
+) -> None:
+    if not parent.unresolved_operations and not composed.unresolved_operations:
+        return
+    parent_records = {
+        record.issue_id.root: record for record in _proposal_unresolved_operations(parent)
+    }
+    composed_records = {
+        record.issue_id.root: record for record in _proposal_unresolved_operations(composed)
+    }
+    allowed_changes = {
+        target.item_id.root
+        for target in scope.advisory_targets
+        if target.item_id.root in authorised_advisories
+    }
+    allowed_changes.update(item.root for item in scope.advisory_ids)
+    for key, record in parent_records.items():
+        if key not in allowed_changes and composed_records.get(key) != record:
+            raise PlanCompositionError("composed plan changed unresolved operation history")
+    unexpected = set(composed_records) - set(parent_records) - allowed_changes
+    if unexpected:
+        raise PlanCompositionError(
+            "composed plan added unresolved operation history no finding named: "
+            + ", ".join(sorted(unexpected))
+        )
 
 
 def _compose_item(

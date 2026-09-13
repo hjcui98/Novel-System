@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -63,6 +63,8 @@ from novel_agent.domain.stage2 import (
     PlannerExecutionResult,
     PlanProposal,
     PlanUnresolvedIssue,
+    PlanUnresolvedOperation,
+    PlanUnresolvedOperationRecord,
     RequiredSnapshotPolicy,
 )
 from novel_agent.ports.model_endpoint import ModelEndpointError
@@ -232,10 +234,11 @@ def _rejected_memory_reprompt_payload(
 
 def _unsupported_memory_reprompt_payload(
     rendered_context: str,
-    unresolved_questions: tuple[tuple[str, tuple[str, ...]], ...],
+    unresolved_questions: Sequence[Sequence[object]],
 ) -> str:
     details = " | ".join(
-        f"{question} [{', '.join(facets)}]" for question, facets in unresolved_questions
+        f"{question} [{', '.join(facets)}]"
+        for _question_id, question, facets in _memory_gap_parts(unresolved_questions)
     )
     return (
         f"{rendered_context}\n\n"
@@ -252,12 +255,42 @@ def _unsupported_memory_reprompt_payload(
 
 
 def _unsupported_memory_gap_markers(
-    unresolved_questions: tuple[tuple[str, tuple[str, ...]], ...],
+    unresolved_questions: Sequence[Sequence[object]],
 ) -> tuple[str, ...]:
     return tuple(
         f"Planner Memory remains unresolved for {question} ({', '.join(facets)})."
-        for question, facets in unresolved_questions
+        for _question_id, question, facets in _memory_gap_parts(unresolved_questions)
     )
+
+
+def _memory_gap_parts(
+    unresolved_questions: Sequence[Sequence[object]],
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Normalize legacy ``(question, facets)`` and identified gap tuples."""
+
+    parts: list[tuple[str, str, tuple[str, ...]]] = []
+    for raw in unresolved_questions:
+        if len(raw) == 3 and all(isinstance(value, str) for value in raw[:2]):
+            question_id, question, facets_raw = raw
+        elif len(raw) == 2 and isinstance(raw[0], str):
+            question = raw[0]
+            facets_raw = raw[1]
+            question_id = (
+                "memory-gap."
+                + content_id({"question": question, "facets": facets_raw}).root.removeprefix(
+                    "sha256:"
+                )[:24]
+            )
+        else:
+            raise ValueError("unsupported Memory gap detail must identify a question")
+        if not isinstance(question_id, str) or not isinstance(question, str):
+            raise ValueError("unsupported Memory gap detail has invalid question identity")
+        if not isinstance(facets_raw, (tuple, list)) or not all(
+            isinstance(facet, str) for facet in facets_raw
+        ):
+            raise ValueError("unsupported Memory gap detail has invalid facets")
+        parts.append((question_id, question, tuple(facets_raw)))
+    return tuple(parts)
 
 
 def _has_evidence_bound_unsupported_gap(
@@ -290,28 +323,59 @@ def _has_evidence_bound_unsupported_gap(
 
 def _retain_unsupported_memory_gaps(
     result: PlannerExecutionResult,
-    unresolved_questions: tuple[tuple[str, tuple[str, ...]], ...],
+    unresolved_questions: Sequence[Sequence[object]],
+    *,
+    affected_chapters: tuple[int, ...] = (),
+    source_artifact_refs: tuple[ArtifactRef, ...] = (),
 ) -> PlannerExecutionResult:
     """Carry an unsupported but relevant Memory gap without treating it as a fact."""
 
+    details = _memory_gap_parts(unresolved_questions)
     markers = _unsupported_memory_gap_markers(unresolved_questions)
     if not markers:
         return result
     existing = {issue.summary for issue in result.plan_proposal.unresolved}
+    existing_sources = {
+        source.root for issue in result.plan_proposal.unresolved for source in issue.source_ids
+    }
     added = tuple(
         PlanUnresolvedIssue(
-            issue_id=bounded_stable_id(
-                f"plan-issue.memory-gap.{index}", f"plan-issue.memory-gap.{marker}"
-            ),
+            issue_id=bounded_stable_id(f"plan-issue.memory-gap.{question_id}"),
             summary=marker,
             blocking=False,
+            resolution_owner="MEMORY",
+            affected_chapters=affected_chapters,
+            source_ids=(StableId(question_id),),
+            source_artifact_refs=source_artifact_refs,
             forbidden_assumptions=("不得把该未决记忆缺口当作已证实事实",),
         )
-        for index, marker in enumerate(markers)
-        if marker not in existing
+        for (question_id, _question, _facets), marker in zip(details, markers, strict=True)
+        if marker not in existing and question_id not in existing_sources
+    )
+    operations = tuple(
+        PlanUnresolvedOperationRecord(
+            operation=PlanUnresolvedOperation.ADD,
+            issue_id=issue.issue_id,
+            kind=issue.kind,
+            summary=issue.summary,
+            affected_chapters=issue.affected_chapters,
+            blocking=issue.blocking,
+            resolution_owner=issue.resolution_owner,
+            allowed_assumptions=issue.allowed_assumptions,
+            forbidden_assumptions=issue.forbidden_assumptions,
+            source_ids=issue.source_ids,
+            source_artifact_refs=issue.source_artifact_refs,
+        )
+        for issue in added
     )
     proposal = result.plan_proposal.model_copy(
-        update={"unresolved": (*result.plan_proposal.unresolved, *added)}
+        update={
+            "unresolved": (*result.plan_proposal.unresolved, *added),
+            "unresolved_operations": (
+                *result.plan_proposal.unresolved_operations,
+                *operations,
+            ),
+        }
     )
     return result.model_copy(update={"plan_proposal": proposal})
 
@@ -742,7 +806,7 @@ class PlanningContextLoopService:
         handled_memory_reprompted = False
         unsupported_memory_reprompted = False
         rejected_memory_questions: dict[str, tuple[str, str]] = {}
-        unsupported_memory_questions: dict[str, tuple[str, tuple[str, ...]]] = {}
+        unsupported_memory_questions: dict[str, tuple[str, str, tuple[str, ...]]] = {}
 
         def planner_skill_allowlist(
             *, include_alternative: bool = False
@@ -1252,6 +1316,7 @@ class PlanningContextLoopService:
         resumed_review = False
         reviewer_memory_this_slice = 0
         planner_memory_this_slice = 0
+        planner_execution_lineage_refs: tuple[ArtifactRef, ...] = ()
         if (
             checkpoint is not None
             and checkpoint.proposal_ref is not None
@@ -1264,6 +1329,7 @@ class PlanningContextLoopService:
             proposal = self._read(proposal_ref, PlanProposal)
             plan_review = self._read(plan_review_ref, PlanReview)
             resumed_review = True
+            planner_execution_lineage_refs = (proposal_ref, plan_review_ref, execution_ref)
         elif (
             checkpoint is not None
             and checkpoint.proposal_ref is not None
@@ -1287,6 +1353,7 @@ class PlanningContextLoopService:
                 base_commit=request.task.base_commit,
             )
             record_model_call(_call)
+            planner_execution_lineage_refs = (proposal_ref, plan_review_ref, execution_ref)
         else:
             if deferred_memory_questions and not pending_planner_memory_questions:
                 by_id = {
@@ -1599,7 +1666,7 @@ class PlanningContextLoopService:
                     )
                     unsupported_memory_questions.update(
                         {
-                            question_id: (question, facets)
+                            question_id: (question_id, question, facets)
                             for question_id, question, facets in unsupported_details
                         }
                     )
@@ -1680,7 +1747,9 @@ class PlanningContextLoopService:
                             record_model_call(_call)
                             unsupported_question_texts = {
                                 _canonical_planner_memory_question(question)
-                                for question, _facets in unsupported_memory_questions.values()
+                                for _question_id, question, _facets in (
+                                    unsupported_memory_questions.values()
+                                )
                             }
                             unsupported_memory_questions.clear()
                             if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
@@ -1732,6 +1801,26 @@ class PlanningContextLoopService:
                                     result = _retain_unsupported_memory_gaps(
                                         result,
                                         unsupported_details_for_fallback,
+                                        affected_chapters=(
+                                            tuple(
+                                                range(
+                                                    request.horizon_start,
+                                                    request.horizon_end + 1,
+                                                )
+                                            )
+                                            if request.horizon_start is not None
+                                            and request.horizon_end is not None
+                                            else ()
+                                        ),
+                                        source_artifact_refs=tuple(
+                                            dict.fromkeys(
+                                                (
+                                                    planner_context_ref,
+                                                    projection.view_ref,
+                                                    *planner_memory_context_refs,
+                                                )
+                                            )
+                                        ),
                                     )
                                     break
                                 pending_planner_memory_questions = retry_turn.memory_questions
@@ -1947,6 +2036,7 @@ class PlanningContextLoopService:
                 "application/vnd.novel-agent.planner-execution-result+json",
                 self._schema_version,
             )
+            planner_execution_lineage_refs = (proposal_ref, execution_ref)
             # First review of a proposal authored this invocation is in-flight work.
             plan_review, plan_review_ref, _call = await self._reviewer.review(
                 version=self._schema_version,
@@ -1985,9 +2075,12 @@ class PlanningContextLoopService:
             """
 
             nonlocal previous_blocking_signature, basis_review_id
-            if previous_blocking_signature is not None and review.review_id.root != basis_review_id:
-                if _same_finding_identity(previous_blocking_signature, review):
-                    return True
+            if (
+                previous_blocking_signature is not None
+                and review.review_id.root != basis_review_id
+                and _same_finding_identity(previous_blocking_signature, review)
+            ):
+                return True
             previous_blocking_signature = recorded_signature(review) or None
             basis_review_id = review.review_id.root
             return False
@@ -2273,7 +2366,17 @@ class PlanningContextLoopService:
                             diagnostics=("REVIEWER_MANDATORY_MEMORY_FACETS_UNRESOLVED",),
                         )
                     unresolved_details = tuple(
-                        (question, ("reviewer_memory_gap",))
+                        (
+                            "reviewer-memory."
+                            + content_id(
+                                {
+                                    "proposal": proposal.proposal_id.root,
+                                    "question": question,
+                                }
+                            ).root.removeprefix("sha256:")[:24],
+                            question,
+                            ("reviewer_memory_gap",),
+                        )
                         for question in plan_review.memory_gap_questions
                     )
                     markers = _unsupported_memory_gap_markers(unresolved_details)
@@ -2281,6 +2384,21 @@ class PlanningContextLoopService:
                     execution = _retain_unsupported_memory_gaps(
                         self._read(execution_ref, PlannerExecutionResult),
                         unresolved_details,
+                        affected_chapters=(
+                            tuple(range(request.horizon_start, request.horizon_end + 1))
+                            if request.horizon_start is not None and request.horizon_end is not None
+                            else ()
+                        ),
+                        source_artifact_refs=tuple(
+                            dict.fromkeys(
+                                (
+                                    plan_review_ref,
+                                    proposal_ref,
+                                    planner_context_ref,
+                                    projection.view_ref,
+                                )
+                            )
+                        ),
                     )
                     proposal = execution.plan_proposal
                     proposal_ref = self._persist_proposal(proposal)
@@ -2299,6 +2417,11 @@ class PlanningContextLoopService:
                         canonical_json_bytes(plan_review.model_dump(mode="json")),
                         "application/vnd.novel-agent.plan-review+json",
                         self._schema_version,
+                    )
+                    planner_execution_lineage_refs = (
+                        proposal_ref,
+                        plan_review_ref,
+                        execution_ref,
                     )
                     advisory_diagnostics = ("REVIEWER_MEMORY_UNRESOLVED_ADVISORY",)
                     break
@@ -2464,6 +2587,14 @@ class PlanningContextLoopService:
                 "application/vnd.novel-agent.planner-execution-result+json",
                 self._schema_version,
             )
+            planner_execution_lineage_refs = (
+                parent_proposal_ref,
+                proposal_ref,
+                plan_review_ref,
+                raw_execution_ref,
+                proof_ref,
+                execution_ref,
+            )
             if out_of_scope:
                 event_refs.append(
                     self._event(
@@ -2510,7 +2641,7 @@ class PlanningContextLoopService:
                 request,
                 PlanningLoopPhase.PLAN_REVIEWED,
                 "plan.review_settled",
-                (proposal_ref, plan_review_ref, execution_ref),
+                planner_execution_lineage_refs,
             )
         )
         event_refs.append(

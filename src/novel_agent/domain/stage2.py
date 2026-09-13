@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
@@ -459,6 +460,93 @@ class PlanDeviationRecordCandidate(DomainModel):
     replacement_item_ids: tuple[StableId, ...] = ()
 
 
+class PlanUnresolvedKind(StrEnum):
+    AUTHOR_INTENT_CONFLICT = "AUTHOR_INTENT_CONFLICT"
+    CURRENT_STATE_UNKNOWN = "CURRENT_STATE_UNKNOWN"
+    POWER_LEVEL_UNKNOWN = "POWER_LEVEL_UNKNOWN"
+    KNOWLEDGE_BOUNDARY_UNKNOWN = "KNOWLEDGE_BOUNDARY_UNKNOWN"
+    OBLIGATION_WINDOW_CONFLICT = "OBLIGATION_WINDOW_CONFLICT"
+    UNSPECIFIED = "UNSPECIFIED"
+
+
+class PlanUnresolvedOperation(StrEnum):
+    """The lifecycle operation represented by one unresolved statement."""
+
+    ADD = "add"
+    MODIFY = "modify"
+    CLOSE = "close"
+
+
+_HARD_UNRESOLVED_KINDS = frozenset(
+    {
+        PlanUnresolvedKind.AUTHOR_INTENT_CONFLICT,
+        PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        PlanUnresolvedKind.POWER_LEVEL_UNKNOWN,
+        PlanUnresolvedKind.KNOWLEDGE_BOUNDARY_UNKNOWN,
+    }
+)
+
+
+class PlanUnresolvedIssueDraft(DomainModel):
+    """Untrusted structured unresolved statement emitted by the Planner.
+
+    The host, rather than the model, assigns ``issue_id``.  A revision refers to a
+    prior host identity through ``parent_issue_id``; a fresh statement is an ADD.
+    ``source_ids`` and ``affected_chapters`` are deliberately explicit because a
+    summary string is not a stable identity or a usable scope.
+    """
+
+    operation: PlanUnresolvedOperation = PlanUnresolvedOperation.ADD
+    parent_issue_id: StableId | None = None
+    # Accepted for migration diagnostics only.  Planner materialisation rejects a
+    # model-supplied identity so the model cannot impersonate a host finding.
+    issue_id: StableId | None = None
+    kind: PlanUnresolvedKind = PlanUnresolvedKind.UNSPECIFIED
+    summary: str = Field(min_length=1)
+    affected_chapters: tuple[int, ...] = ()
+    blocking: bool = False
+    resolution_owner: str = Field(default="PLANNER", min_length=1)
+    allowed_assumptions: tuple[str, ...] = ()
+    forbidden_assumptions: tuple[str, ...] = ()
+    source_ids: tuple[StableId, ...] = ()
+    source_artifact_refs: tuple[ArtifactRef, ...] = ()
+    closure_reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_draft_issue(self) -> PlanUnresolvedIssueDraft:
+        if any(chapter < 1 for chapter in self.affected_chapters):
+            raise ValueError("unresolved issue affected chapters must be positive")
+        if self.operation is PlanUnresolvedOperation.ADD and self.parent_issue_id is not None:
+            raise ValueError("an ADD unresolved issue cannot name a parent issue")
+        if (
+            self.operation
+            in {
+                PlanUnresolvedOperation.MODIFY,
+                PlanUnresolvedOperation.CLOSE,
+            }
+            and self.parent_issue_id is None
+        ):
+            raise ValueError("a MODIFY or CLOSE unresolved issue requires parent_issue_id")
+        if self.operation is PlanUnresolvedOperation.CLOSE and self.closure_reason is None:
+            raise ValueError("a CLOSE unresolved issue requires closure_reason")
+        if (
+            self.kind in _HARD_UNRESOLVED_KINDS
+            and not self.blocking
+            and not self.forbidden_assumptions
+        ):
+            raise ValueError(
+                "a non-blocking hard unresolved issue requires explicit forbidden assumptions"
+            )
+        if len(set(self.source_ids)) != len(self.source_ids):
+            raise ValueError("unresolved issue source ids must be unique")
+        return self
+
+    def affects_chapters(self, chapter_start: int, chapter_end: int) -> bool:
+        if not self.affected_chapters:
+            return False
+        return any(chapter_start <= chapter <= chapter_end for chapter in self.affected_chapters)
+
+
 def _is_post_bootstrap_plan_item(item: ProposedItem) -> bool:
     """Whether one item under the bootstrap-only field is really a plan item.
 
@@ -505,8 +593,37 @@ class PlannerProposalDraft(DomainModel):
     deviations: tuple[PlanDeviationRecordCandidate, ...] = ()
     alternatives: tuple[str, ...] = ()
     selection_rationale: str | None = None
-    unresolved: tuple[str, ...] = ()
+    unresolved: tuple[PlanUnresolvedIssueDraft, ...] = ()
     coverage: float = Field(ge=0, le=1)
+
+    @field_validator("unresolved", mode="before")
+    @classmethod
+    def lift_legacy_unresolved(cls, value: object) -> object:
+        """Read old string arrays while exposing only the structured new schema."""
+
+        if not isinstance(value, (list, tuple)):
+            return value
+        converted: list[object] = []
+        for item in value:
+            raw_item: object = {"summary": item} if isinstance(item, str) else item
+            if isinstance(raw_item, PlanUnresolvedIssueDraft):
+                converted.append(raw_item)
+            elif isinstance(raw_item, dict):
+                # The output gateway validates JSON, while this before-validator
+                # would otherwise hand nested arrays to strict Python validation.
+                # Re-enter the child contract in JSON mode so arrays and enum/id
+                # scalars receive exactly the same treatment as the top-level JSON.
+                converted.append(
+                    PlanUnresolvedIssueDraft.model_validate_json(
+                        json.dumps(
+                            raw_item,
+                            default=lambda value: value.model_dump(mode="json"),
+                        )
+                    )
+                )
+            else:
+                converted.append(raw_item)
+        return tuple(converted)
 
     @model_validator(mode="after")
     def validate_mode_output(self) -> PlannerProposalDraft:
@@ -610,29 +727,12 @@ class ProjectProfileProposal(DomainModel):
     unresolved: tuple[str, ...] = ()
 
 
-class PlanUnresolvedKind(StrEnum):
-    AUTHOR_INTENT_CONFLICT = "AUTHOR_INTENT_CONFLICT"
-    CURRENT_STATE_UNKNOWN = "CURRENT_STATE_UNKNOWN"
-    POWER_LEVEL_UNKNOWN = "POWER_LEVEL_UNKNOWN"
-    KNOWLEDGE_BOUNDARY_UNKNOWN = "KNOWLEDGE_BOUNDARY_UNKNOWN"
-    OBLIGATION_WINDOW_CONFLICT = "OBLIGATION_WINDOW_CONFLICT"
-    UNSPECIFIED = "UNSPECIFIED"
-
-
-_HARD_UNRESOLVED_KINDS = frozenset(
-    {
-        PlanUnresolvedKind.AUTHOR_INTENT_CONFLICT,
-        PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
-        PlanUnresolvedKind.POWER_LEVEL_UNKNOWN,
-        PlanUnresolvedKind.KNOWLEDGE_BOUNDARY_UNKNOWN,
-    }
-)
-
-
 class PlanUnresolvedIssue(DomainModel):
     """Structured planning unknown that can block the current window."""
 
     issue_id: StableId
+    operation: PlanUnresolvedOperation = PlanUnresolvedOperation.ADD
+    parent_issue_id: StableId | None = None
     kind: PlanUnresolvedKind = PlanUnresolvedKind.UNSPECIFIED
     summary: str = Field(min_length=1)
     affected_chapters: tuple[int, ...] = ()
@@ -640,11 +740,17 @@ class PlanUnresolvedIssue(DomainModel):
     resolution_owner: str = "PLANNER"
     allowed_assumptions: tuple[str, ...] = ()
     forbidden_assumptions: tuple[str, ...] = ()
+    source_ids: tuple[StableId, ...] = ()
+    source_artifact_refs: tuple[ArtifactRef, ...] = ()
 
     @model_validator(mode="after")
     def validate_issue(self) -> PlanUnresolvedIssue:
         if any(chapter < 1 for chapter in self.affected_chapters):
             raise ValueError("unresolved issue affected chapters must be positive")
+        if self.operation is PlanUnresolvedOperation.CLOSE:
+            raise ValueError("a closed unresolved issue cannot remain active")
+        if self.operation is PlanUnresolvedOperation.MODIFY and self.parent_issue_id is None:
+            raise ValueError("a MODIFY unresolved issue requires parent_issue_id")
         if (
             self.kind in _HARD_UNRESOLVED_KINDS
             and not self.blocking
@@ -653,12 +759,49 @@ class PlanUnresolvedIssue(DomainModel):
             raise ValueError(
                 "a non-blocking hard unresolved issue requires explicit forbidden assumptions"
             )
+        if len(set(self.source_ids)) != len(self.source_ids):
+            raise ValueError("unresolved issue source ids must be unique")
         return self
 
     def affects_chapters(self, chapter_start: int, chapter_end: int) -> bool:
         if not self.affected_chapters:
             return False
         return any(chapter_start <= chapter <= chapter_end for chapter in self.affected_chapters)
+
+
+class PlanUnresolvedOperationRecord(DomainModel):
+    """Durable operation history, including CLOSE records absent from active issues."""
+
+    operation: PlanUnresolvedOperation
+    issue_id: StableId
+    parent_issue_id: StableId | None = None
+    kind: PlanUnresolvedKind = PlanUnresolvedKind.UNSPECIFIED
+    summary: str = Field(min_length=1)
+    affected_chapters: tuple[int, ...] = ()
+    blocking: bool = False
+    resolution_owner: str = Field(default="PLANNER", min_length=1)
+    allowed_assumptions: tuple[str, ...] = ()
+    forbidden_assumptions: tuple[str, ...] = ()
+    source_ids: tuple[StableId, ...] = ()
+    source_artifact_refs: tuple[ArtifactRef, ...] = ()
+    closure_reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_operation(self) -> PlanUnresolvedOperationRecord:
+        if (
+            self.operation
+            in {
+                PlanUnresolvedOperation.MODIFY,
+                PlanUnresolvedOperation.CLOSE,
+            }
+            and self.parent_issue_id is None
+        ):
+            raise ValueError("a MODIFY or CLOSE operation requires parent_issue_id")
+        if self.operation is PlanUnresolvedOperation.CLOSE and self.closure_reason is None:
+            raise ValueError("a CLOSE operation requires closure_reason")
+        if any(chapter < 1 for chapter in self.affected_chapters):
+            raise ValueError("unresolved operation affected chapters must be positive")
+        return self
 
 
 def hard_unresolved_kinds() -> frozenset[PlanUnresolvedKind]:
@@ -673,6 +816,7 @@ class PlanProposal(DomainModel):
     base_commit: CommitId | None = None
     items: tuple[ProposedItem, ...]
     unresolved: tuple[PlanUnresolvedIssue, ...] = ()
+    unresolved_operations: tuple[PlanUnresolvedOperationRecord, ...] = ()
     coverage: float = Field(ge=0, le=1)
     receipt: AgentExecutionReceipt
     # Stage 4 lineage is optional so existing Stage 2 proposals keep identical behaviour.
@@ -682,6 +826,23 @@ class PlanProposal(DomainModel):
     graph_path_receipt_refs: tuple[ArtifactRef, ...] = ()
     parent_proposal_id: StableId | None = None
     reviewer_receipt_ref: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def validate_unresolved_operations(self) -> PlanProposal:
+        issue_ids = [issue.issue_id for issue in self.unresolved]
+        if len(issue_ids) != len(set(issue_ids)):
+            raise ValueError("PlanProposal unresolved issue ids must be unique")
+        operation_ids = [operation.issue_id for operation in self.unresolved_operations]
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("PlanProposal unresolved operation ids must be unique")
+        active_ids = set(issue_ids)
+        for operation in self.unresolved_operations:
+            if operation.operation is PlanUnresolvedOperation.CLOSE:
+                if operation.issue_id in active_ids:
+                    raise ValueError("a closed unresolved issue cannot be active")
+            elif operation.issue_id not in active_ids:
+                raise ValueError("non-close unresolved operation must have an active issue")
+        return self
 
     @field_validator("unresolved", mode="before")
     @classmethod
@@ -703,6 +864,8 @@ class PlanProposal(DomainModel):
                     "affected_chapters",
                     "allowed_assumptions",
                     "forbidden_assumptions",
+                    "source_ids",
+                    "source_artifact_refs",
                 ):
                     raw = normalized.get(key)
                     if isinstance(raw, list):

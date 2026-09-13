@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 """R1.5: an advisory that questions a window must state that window.
 
 The frozen v6 eight-volume candidate carried three ``UNSPECIFIED`` advisories that
@@ -58,19 +60,23 @@ _V6_ADVISORIES = [
 ]
 
 
-def _review(unresolved: list[dict[str, object]]) -> PlanReviewDraft:
-    payload = json.dumps(
-        {
-            "items": [
-                {
-                    "item_id": "vol_01",
-                    "kind": "arc_volume",
-                    "payload": {"plan_level": "arc_volume", "chapter_start": 1, "chapter_end": 100},
-                }
-            ],
-            "unresolved": unresolved,
-        }
-    )
+_MISSING = object()
+
+
+def _review(unresolved: object, unresolved_operations: object = _MISSING) -> PlanReviewDraft:
+    document: dict[str, object] = {
+        "items": [
+            {
+                "item_id": "vol_01",
+                "kind": "arc_volume",
+                "payload": {"plan_level": "arc_volume", "chapter_start": 1, "chapter_end": 100},
+            }
+        ],
+        "unresolved": unresolved,
+    }
+    if unresolved_operations is not _MISSING:
+        document["unresolved_operations"] = unresolved_operations
+    payload = json.dumps(document)
     return apply_host_plan_review_constraints(
         PlanReviewDraft(
             target_kind=ReviewTargetKind.PLAN_PROPOSAL,
@@ -129,6 +135,31 @@ def test_blocking_advisory_still_blocks_regardless_of_scope() -> None:
 
     assert review.decision is ReviewDecision.REVISE
     assert any(issue.kind.value == "blocking_unresolved" for issue in review.issues)
+
+
+def test_malformed_unresolved_container_and_entries_are_blocked() -> None:
+    for unresolved in (None, {"summary": "not a list"}, [None]):
+        review = _review(unresolved)
+
+        assert review.decision is ReviewDecision.REVISE
+        assert any(
+            issue.kind is ReviewIssueKind.BLOCKING_UNRESOLVED
+            and issue.constraint_id == "plan.unresolved.shape"
+            and issue.host_issued
+            for issue in review.issues
+        )
+
+
+def test_malformed_unresolved_operation_container_is_blocked() -> None:
+    review = _review([], unresolved_operations={"operation": "close"})
+
+    assert review.decision is ReviewDecision.REVISE
+    assert any(
+        issue.kind is ReviewIssueKind.BLOCKING_UNRESOLVED
+        and issue.field_path == "unresolved_operations"
+        and issue.constraint_id == "plan.unresolved.operation.shape"
+        for issue in review.issues
+    )
 
 
 def test_a_revision_is_told_the_structured_fields_the_host_requires() -> None:

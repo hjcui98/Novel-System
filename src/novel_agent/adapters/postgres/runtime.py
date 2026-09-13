@@ -9,12 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import (
+    ModelCallLedgerRow,
     ProjectRow,
     RuntimeEffectProjectionRow,
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
 from novel_agent.domain.ids import ProjectId, RunId, TaskId
+from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     EffectStatus,
     TaskAttempt,
@@ -127,22 +129,59 @@ class RuntimeTaskQueryRepository:
         """
 
         with self._session_factory() as session:
-            rows = session.execute(
+            effect_rows = session.execute(
                 select(
                     RuntimeEffectProjectionRow.effect_identity,
                     RuntimeEffectProjectionRow.status,
                 ).where(RuntimeEffectProjectionRow.task_id == task_id.root)
             ).all()
-        unsettled: list[str] = []
-        outstanding: list[str] = []
-        completed: list[str] = []
-        for effect_identity, status in rows:
+            model_rows = session.execute(
+                select(
+                    ModelCallLedgerRow.request_id,
+                    ModelCallLedgerRow.status,
+                    ModelCallLedgerRow.raw_artifact_json,
+                ).where(ModelCallLedgerRow.task_id == task_id.root)
+            ).all()
+
+        # One identity may be projected by both ledgers during recovery.  Keep the
+        # strongest unresolved state so a completed effect can never hide a later
+        # uncertain provider send.  A completed response is only a response reference;
+        # rejected/incomplete/transport-terminal rows are deliberately not replayable.
+        states: dict[str, tuple[int, str, str]] = {}
+
+        def record(identity: str, priority: int, bucket: str, reference: str) -> None:
+            current = states.get(identity)
+            if current is None or priority > current[0]:
+                states[identity] = (priority, bucket, reference)
+
+        for effect_identity, status in effect_rows:
             if status == EffectStatus.REQUESTED.value:
-                outstanding.append(effect_identity)
+                record(effect_identity, 2, "outstanding", effect_identity)
             elif status == EffectStatus.UNCERTAIN.value:
-                unsettled.append(effect_identity)
+                record(effect_identity, 3, "unsettled", effect_identity)
             elif status == EffectStatus.COMPLETED.value:
-                completed.append(effect_identity)
+                record(effect_identity, 1, "completed", effect_identity)
+        for request_id, status, raw_artifact_json in model_rows:
+            if status == ModelCallLedgerStatus.REQUESTED.value:
+                record(request_id, 2, "outstanding", request_id)
+            elif status == ModelCallLedgerStatus.UNCERTAIN.value:
+                record(request_id, 3, "unsettled", request_id)
+            elif status == ModelCallLedgerStatus.COMPLETED.value:
+                response_ref = request_id
+                if isinstance(raw_artifact_json, dict):
+                    artifact_id = raw_artifact_json.get("artifact_id")
+                    if isinstance(artifact_id, str) and artifact_id:
+                        response_ref = artifact_id
+                record(request_id, 1, "completed", response_ref)
+        unsettled = [
+            reference for _priority, bucket, reference in states.values() if bucket == "unsettled"
+        ]
+        outstanding = [
+            reference for _priority, bucket, reference in states.values() if bucket == "outstanding"
+        ]
+        completed = [
+            reference for _priority, bucket, reference in states.values() if bucket == "completed"
+        ]
         return (
             tuple(sorted(unsettled)),
             tuple(sorted(outstanding)),

@@ -529,7 +529,10 @@ class CreativeRuntimeService:
                             CreativeRunTerminal.PROGRESSED,
                             "planner_memory_gap_maintenance_created",
                         )
-            failure, status, terminal = self._planner_failure(planning_result.status)
+            failure, status, terminal = self._planner_failure(
+                planning_result.status,
+                planning_result.failure_code,
+            )
             settled = self._commands.settle_attempt(
                 fence,
                 outcome=AttemptOutcome.SUSPENDED,
@@ -2494,7 +2497,83 @@ class CreativeRuntimeService:
     @staticmethod
     def _planner_failure(
         status: PlanningTerminalStatus,
+        failure_code: str | None = None,
     ) -> tuple[FailureClass, TaskStatus, CreativeRunTerminal]:
+        code = (failure_code or "").upper()
+        if code in {
+            "POST_GENESIS_BASIS_MISMATCH",
+            "RESUME_CHECKPOINT_BASIS_MISMATCH",
+            "PROBLEM_IDENTITY_SEED_BASIS_MISMATCH",
+            "BOOTSTRAP_RECEIVED_PROJECT_MEMORY",
+        }:
+            return FailureClass.BASIS_CHANGED, TaskStatus.BLOCKED, CreativeRunTerminal.BLOCKED
+        if code in {
+            "MODEL_OUTPUT_BUDGET_EXHAUSTED",
+            "MODEL_CUMULATIVE_BUDGET_EXHAUSTED",
+            "PLANNER_MEMORY_BUDGET_EXHAUSTED",
+            "INQUIRY_MEMORY_BUDGET_EXHAUSTED",
+        }:
+            return (
+                FailureClass.BUDGET_EXHAUSTED,
+                TaskStatus.BUDGET_REVIEW,
+                CreativeRunTerminal.BUDGET_REVIEW,
+            )
+        if code in {
+            "INQUIRY_REVISION_NO_PROGRESS",
+            "PLAN_REVISION_NO_PROGRESS",
+            "PLANNER_MEMORY_NO_PROGRESS",
+        }:
+            return (
+                FailureClass.POISON_LOOP,
+                TaskStatus.BUDGET_REVIEW,
+                CreativeRunTerminal.BUDGET_REVIEW,
+            )
+        if code in {
+            "PLANNER_CONTRACT_FAILURE",
+            "PLANNER_STRUCTURED_OUTPUT_REJECTED",
+            "REVIEWER_CONTRACT_FAILURE",
+            "NO_VALID_PLANNER_MEMORY_NEEDS",
+            "NO_VALID_PLANNER_TURN_MEMORY_NEEDS",
+            "NO_VALID_REVIEWER_MEMORY_NEEDS",
+            "REVIEWER_MEMORY_REVIEW_NOT_ACCEPTED",
+        }:
+            return (
+                FailureClass.LEAF_SCHEMA_REJECTED,
+                TaskStatus.BLOCKED,
+                CreativeRunTerminal.BLOCKED,
+            )
+        if code in {"MODEL_RUNTIME_UNAVAILABLE"}:
+            return (
+                FailureClass.PROVIDER_TRANSIENT,
+                TaskStatus.WAITING_RETRY,
+                CreativeRunTerminal.WAITING_RETRY,
+            )
+        if code in {
+            "CONTEXT_RUNTIME_FAILURE",
+            "MEMORY_GATEWAY_BLOCKED",
+            "REVIEWER_CONTEXT_SUSPENDED",
+            "REVIEWER_MEMORY_BLOCKED",
+        }:
+            return (
+                FailureClass.RUNTIME_CAPABILITY_UNAVAILABLE,
+                TaskStatus.RECOVERY_PENDING,
+                CreativeRunTerminal.RECOVERY_PENDING,
+            )
+        if code in {
+            "MANDATORY_MEMORY_FACETS_UNRESOLVED",
+            "PLANNER_MEMORY_FACETS_UNRESOLVED",
+            "REVIEWER_MANDATORY_MEMORY_FACETS_UNRESOLVED",
+        }:
+            return (
+                FailureClass.CANON_EXTRACTION_GAP,
+                TaskStatus.BLOCKED,
+                CreativeRunTerminal.BLOCKED,
+            )
+        if code in {
+            "AUTHOR_AUTHORITY_NOT_VISIBLE",
+            "BOOTSTRAP_PLANNER_MEMORY_FORBIDDEN",
+        }:
+            return FailureClass.PERMISSION_DENIED, TaskStatus.BLOCKED, CreativeRunTerminal.BLOCKED
         if status is PlanningTerminalStatus.SUSPENDED:
             return (
                 FailureClass.PROVIDER_TRANSIENT,
@@ -2513,7 +2592,11 @@ class CreativeRuntimeService:
                 TaskStatus.BLOCKED,
                 CreativeRunTerminal.REVIEW_REQUIRED,
             )
-        return FailureClass.BASIS_CHANGED, TaskStatus.BLOCKED, CreativeRunTerminal.BLOCKED
+        return (
+            FailureClass.UNKNOWN,
+            TaskStatus.RECOVERY_PENDING,
+            CreativeRunTerminal.RECOVERY_PENDING,
+        )
 
     @staticmethod
     def _writer_failure(

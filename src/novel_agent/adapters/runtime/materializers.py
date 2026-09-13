@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from contextlib import suppress
 from typing import TypeVar, cast
 
 from novel_agent.domain.artifacts import (
@@ -557,6 +558,15 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         if proof_ref.media_type != PLAN_COMPOSITION_MEDIA_TYPE:
             raise CandidateMaterializationError("Plan composition proof has the wrong media type")
         proof = self._read(proof_ref, PlanCompositionProof)
+        reachable = {ref.artifact_id for ref in nested.values()}
+        if proof_ref.artifact_id not in reachable:
+            raise CandidateMaterializationError(
+                "composition proof is not reachable from the planning event lineage"
+            )
+        # The proof's content-addressed parent/raw/review refs are source evidence in
+        # their own right.  Older event receipts listed only the proof, so requiring
+        # every transitive ref to be repeated in the event would reject valid frozen
+        # chains; reading each ref below still fails closed on absence or tampering.
         parent = self._read(proof.parent_proposal_ref, PlanProposal)
         review = self._read(proof.review_ref, PlanReview)
         if review.target_artifact_ref != proof.parent_proposal_ref:
@@ -1124,6 +1134,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     "issue_id": issue.issue_id.root,
                     "kind": issue.kind.value,
                     "summary": issue.summary,
+                    "operation": issue.operation.value,
+                    "parent_issue_id": (
+                        issue.parent_issue_id.root if issue.parent_issue_id is not None else None
+                    ),
+                    "resolution_owner": issue.resolution_owner,
+                    "allowed_assumptions": list(issue.allowed_assumptions),
+                    "source_ids": [source.root for source in issue.source_ids],
+                    "source_artifact_refs": [
+                        source.model_dump(mode="json") for source in issue.source_artifact_refs
+                    ],
                     "forbidden_assumptions": list(issue.forbidden_assumptions),
                 }
                 for issue in applicable
@@ -1493,15 +1513,11 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             if isinstance(action, dict):
                 raw_id = action.get("obligation_id") or action.get("id")
                 if isinstance(raw_id, str) and raw_id.strip():
-                    try:
+                    with suppress(ValueError):
                         ids.append(StableId(raw_id.strip()))
-                    except ValueError:
-                        pass
             elif isinstance(action, str):
-                try:
+                with suppress(ValueError):
                     ids.append(StableId(action.strip()))
-                except ValueError:
-                    pass
         return tuple(dict.fromkeys(ids))
 
     @classmethod
@@ -1582,9 +1598,10 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         chapter_index = writing_task.target_chapter
         language = next(
             (
-                constraint.split("：", 1)[1].strip()
+                constraint.split("\N{FULLWIDTH COLON}", 1)[1].strip()
                 for constraint in writing_task.mandatory_constraints
-                if constraint.startswith("正文语言：") and constraint.split("：", 1)[1].strip()
+                if constraint.startswith("正文语言\N{FULLWIDTH COLON}")
+                and constraint.split("\N{FULLWIDTH COLON}", 1)[1].strip()
             ),
             None,
         )

@@ -52,6 +52,7 @@ from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
     PlanUnresolvedIssue,
+    PlanUnresolvedOperationRecord,
     hard_unresolved_kinds,
 )
 from novel_agent.services.artifacts import ArtifactRepository
@@ -383,18 +384,29 @@ def _verified_model_issues(
     verified: list[PlanReviewIssue] = []
     failures: list[str] = []
     for index, issue in enumerate(issues):
-        if not issue.blocking:
-            verified.append(issue)
+        # These fields are host observations/permissions.  A model may use the
+        # same JSON keys, but its values cannot become authoritative merely by
+        # being present in the reviewer response.
+        normalized = issue.model_copy(
+            update={
+                "host_issued": False,
+                "actual": None,
+                "expected": None,
+                "authorized_operations": (),
+            }
+        )
+        if not normalized.blocking:
+            verified.append(normalized)
             continue
-        label = f"{issue.kind.value}[{index}]"
-        reason = _citation_failure(issue, by_id, constraint_ids=constraint_ids)
+        label = f"{normalized.kind.value}[{index}]"
+        reason = _citation_failure(normalized, by_id, constraint_ids=constraint_ids)
         if reason is None:
-            verified.append(issue)
+            verified.append(normalized)
             continue
         failures.append(f"{label}: {reason}")
         detail = "the cited evidence does not resolve against this candidate"
         verified.append(
-            issue.model_copy(
+            normalized.model_copy(
                 update={
                     "blocking": False,
                     "summary": f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} ({detail})",
@@ -703,6 +715,12 @@ def _host_issues_for_items(
                             ),
                             item_id,
                             blocking=True,
+                            field_path=window_defect.field,
+                            constraint_id="host.volume_stage_window",
+                            actual=window_defect.message,
+                            expected=(
+                                "stage window and served responsibility satisfy the host catalogue"
+                            ),
                         )
                     )
         try:
@@ -947,13 +965,42 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
     """
 
     raw_issues = payload.get("unresolved")
-    if not isinstance(raw_issues, list) or not raw_issues:
-        return []
     window = _proposal_chapter_window(payload.get("items"))
     issues: list[PlanReviewIssue] = []
     hard_kinds = hard_unresolved_kinds()
-    for index, raw in enumerate(raw_issues):
+    seen_issue_ids: set[str] = set()
+    if "unresolved" in payload and not isinstance(raw_issues, list):
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.BLOCKING_UNRESOLVED,
+                "PLAN_UNRESOLVED_INVALID: unresolved must be a structured issue list",
+                "unresolved",
+                blocking=True,
+                field_path="unresolved",
+                constraint_id="plan.unresolved.shape",
+                actual=type(raw_issues).__name__,
+                expected="structured unresolved issue list",
+                authorized_operations=("modify", "close"),
+            )
+        )
+        raw_issue_entries: list[object] = []
+    else:
+        raw_issue_entries = raw_issues if isinstance(raw_issues, list) else []
+    for index, raw in enumerate(raw_issue_entries):
         if not isinstance(raw, dict):
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.BLOCKING_UNRESOLVED,
+                    "PLAN_UNRESOLVED_INVALID: unresolved entries must be objects",
+                    f"unresolved.{index}",
+                    blocking=True,
+                    field_path=f"unresolved[{index}]",
+                    constraint_id="plan.unresolved.shape",
+                    actual=type(raw).__name__,
+                    expected="structured unresolved issue object",
+                    authorized_operations=("modify", "close"),
+                )
+            )
             continue
         try:
             issue = PlanUnresolvedIssue.model_validate(raw, strict=False)
@@ -964,9 +1011,29 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
                     f"PLAN_UNRESOLVED_INVALID: {error}",
                     f"unresolved.{index}",
                     blocking=True,
+                    field_path=f"unresolved[{index}]",
+                    constraint_id="plan.unresolved.shape",
+                    actual=type(raw).__name__,
+                    expected="structured unresolved issue object",
+                    authorized_operations=("modify", "close"),
                 )
             )
             continue
+        if issue.issue_id.root in seen_issue_ids:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.BLOCKING_UNRESOLVED,
+                    f"PLAN_UNRESOLVED_DUPLICATE: {issue.issue_id.root}",
+                    issue.issue_id.root,
+                    blocking=True,
+                    field_path="unresolved.issue_id",
+                    constraint_id="plan.unresolved.unique_id",
+                    actual=issue.issue_id.root,
+                    expected="one active unresolved issue per identity",
+                    authorized_operations=("modify", "close"),
+                )
+            )
+        seen_issue_ids.add(issue.issue_id.root)
         affects_window = window is not None and issue.affects_chapters(*window)
         if issue.blocking or (issue.kind in hard_kinds and (affects_window or window is None)):
             issues.append(
@@ -975,6 +1042,11 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
                     f"BLOCKING_UNRESOLVED[{issue.kind.value}]: {issue.summary}",
                     issue.issue_id.root,
                     blocking=True,
+                    field_path="unresolved",
+                    constraint_id=f"plan.unresolved.{issue.kind.value}",
+                    actual=issue.summary,
+                    expected="no blocking unresolved issue in the requested window",
+                    authorized_operations=("modify", "close"),
                 )
             )
             continue
@@ -991,8 +1063,95 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
                 "uncertainty cannot be checked at the affected chapter",
                 issue.issue_id.root,
                 blocking=True,
+                field_path="unresolved.affected_chapters",
+                constraint_id="plan.unresolved.scope",
+                actual="[]",
+                expected=f"chapters {questioned[0]}-{questioned[1]}",
+                authorized_operations=("modify",),
             )
         )
+    raw_operations = payload.get("unresolved_operations")
+    if "unresolved_operations" in payload and not isinstance(raw_operations, list):
+        issues.append(
+            _host_issue(
+                ReviewIssueKind.BLOCKING_UNRESOLVED,
+                "PLAN_UNRESOLVED_OPERATION_INVALID: unresolved_operations must be a list",
+                "unresolved_operations",
+                blocking=True,
+                field_path="unresolved_operations",
+                constraint_id="plan.unresolved.operation.shape",
+                actual=type(raw_operations).__name__,
+                expected="unresolved operation record list",
+                authorized_operations=("modify", "close"),
+            )
+        )
+    if isinstance(raw_operations, list):
+        operation_ids: set[str] = set()
+        active_ids = set(seen_issue_ids)
+        for index, raw_operation in enumerate(raw_operations):
+            try:
+                operation = PlanUnresolvedOperationRecord.model_validate(
+                    raw_operation, strict=False
+                )
+            except ValueError as error:
+                issues.append(
+                    _host_issue(
+                        ReviewIssueKind.BLOCKING_UNRESOLVED,
+                        f"PLAN_UNRESOLVED_OPERATION_INVALID: {error}",
+                        f"unresolved-operation.{index}",
+                        blocking=True,
+                        field_path=f"unresolved_operations[{index}]",
+                        constraint_id="plan.unresolved.operation.shape",
+                        actual=type(raw_operation).__name__,
+                        expected="valid ADD/MODIFY/CLOSE operation record",
+                        authorized_operations=("modify", "close"),
+                    )
+                )
+                continue
+            if operation.issue_id.root in operation_ids:
+                issues.append(
+                    _host_issue(
+                        ReviewIssueKind.BLOCKING_UNRESOLVED,
+                        f"PLAN_UNRESOLVED_OPERATION_DUPLICATE: {operation.issue_id.root}",
+                        operation.issue_id.root,
+                        blocking=True,
+                        field_path="unresolved_operations.issue_id",
+                        constraint_id="plan.unresolved.operation.unique_id",
+                        actual=operation.issue_id.root,
+                        expected="one operation per unresolved identity",
+                        authorized_operations=("modify", "close"),
+                    )
+                )
+            operation_ids.add(operation.issue_id.root)
+            if operation.operation.value == "close" and operation.issue_id.root in active_ids:
+                issues.append(
+                    _host_issue(
+                        ReviewIssueKind.BLOCKING_UNRESOLVED,
+                        "PLAN_UNRESOLVED_CLOSE_ACTIVE: a CLOSE record must not retain "
+                        "an active issue",
+                        operation.issue_id.root,
+                        blocking=True,
+                        field_path="unresolved_operations.operation",
+                        constraint_id="plan.unresolved.close",
+                        actual="close + active issue",
+                        expected="closed issue removed from active unresolved list",
+                        authorized_operations=("close",),
+                    )
+                )
+            if operation.operation.value != "close" and operation.issue_id.root not in active_ids:
+                issues.append(
+                    _host_issue(
+                        ReviewIssueKind.BLOCKING_UNRESOLVED,
+                        "PLAN_UNRESOLVED_OPERATION_ORPHAN: non-CLOSE record has no active issue",
+                        operation.issue_id.root,
+                        blocking=True,
+                        field_path="unresolved_operations.issue_id",
+                        constraint_id="plan.unresolved.operation.active_pair",
+                        actual=operation.issue_id.root,
+                        expected="operation identity present in active unresolved list",
+                        authorized_operations=("modify",),
+                    )
+                )
     return issues
 
 
@@ -1309,13 +1468,50 @@ def _host_issue(
     item_id: str,
     *,
     blocking: bool,
+    field_path: str | None = None,
+    constraint_id: str | None = None,
+    actual: str | None = None,
+    expected: str | None = None,
+    authorized_operations: tuple[str, ...] = ("modify",),
 ) -> PlanReviewIssue:
+    # A host identity is semantic: wording and observed values may change while
+    # the same item/field/constraint remains the same finding.  Hashing this
+    # tuple also prevents two same-kind findings on one item from colliding.
+    resolved_field = field_path or {
+        ReviewIssueKind.LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW: "not_before_chapter",
+        ReviewIssueKind.EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION: "target_chapter_start",
+        ReviewIssueKind.TARGET_WINDOW_OUTSIDE_PARENT_SCOPE: "chapter_range",
+        ReviewIssueKind.OBLIGATION_CONTRACT: "obligation_contract",
+        ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: "stage.window",
+        ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE: "volume.structure",
+        ReviewIssueKind.UNRESOLVED_SCOPE_MISSING: "affected_chapters",
+        ReviewIssueKind.BLOCKING_UNRESOLVED: "unresolved",
+        ReviewIssueKind.COVERAGE: "coverage",
+    }.get(kind, "host")
+    resolved_constraint = constraint_id or f"host.{kind.value}"
+    identity = content_id(
+        {
+            "kind": kind.value,
+            "item": item_id,
+            "field": resolved_field,
+            "constraint": resolved_constraint,
+        }
+    ).root.removeprefix("sha256:")[:32]
     return PlanReviewIssue(
-        issue_id=bounded_stable_id(f"issue.{kind.value}.{item_id}", f"issue.{kind.value}"),
+        issue_id=bounded_stable_id(
+            f"issue.{kind.value}.{identity}",
+            f"issue.{kind.value}.{item_id}.{resolved_field}",
+            f"issue.{kind.value}",
+        ),
         kind=kind,
         summary=summary,
         blocking=blocking,
         affected_item_ids=(StableId(item_id),) if _is_stable_id(item_id) else (),
+        field_path=resolved_field,
+        constraint_id=resolved_constraint,
+        actual=actual or summary,
+        expected=expected or f"{resolved_constraint} satisfied",
+        authorized_operations=authorized_operations,
         host_issued=True,
     )
 

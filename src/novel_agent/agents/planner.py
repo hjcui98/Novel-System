@@ -32,6 +32,9 @@ from novel_agent.domain.stage2 import (
     PlanningTask,
     PlanProposal,
     PlanUnresolvedIssue,
+    PlanUnresolvedIssueDraft,
+    PlanUnresolvedOperation,
+    PlanUnresolvedOperationRecord,
     ProjectIntentModel,
     ProjectProfileProposal,
     PromptContractRef,
@@ -359,7 +362,9 @@ class _DevelopCandidatesPlannerProposalDraft(PlannerProposalDraft):
     # exhausted (100 000 tokens, 162 088 characters, 847 s).  The prompt already
     # asks only for real gaps; the schema now states the bound as well, so a
     # looping decoder is stopped by the grammar instead of by the token budget.
-    unresolved: tuple[str, ...] = Field(default=(), max_length=BOOTSTRAP_UNRESOLVED_LIMIT)
+    unresolved: tuple[PlanUnresolvedIssueDraft, ...] = Field(
+        default=(), max_length=BOOTSTRAP_UNRESOLVED_LIMIT
+    )
 
     @field_validator("strategy", mode="before")
     @classmethod
@@ -385,6 +390,117 @@ def _proposal_output_type(task: PlanningTask) -> type[PlannerProposalDraft]:
     if task.strategy is BootstrapStrategy.NORMALIZE_ONLY:
         return _NormalizeOnlyPlannerProposalDraft
     return PlannerProposalDraft
+
+
+def _unresolved_summaries(
+    unresolved: tuple[PlanUnresolvedIssueDraft, ...],
+) -> tuple[str, ...]:
+    return tuple(issue.summary for issue in unresolved)
+
+
+def _unresolved_issue_id(
+    issue: PlanUnresolvedIssueDraft,
+    *,
+    output_digest: str,
+    index: int,
+) -> StableId:
+    """Assign a host identity from scope/source semantics, never model text."""
+
+    if issue.issue_id is not None:
+        raise PlannerInvocationError(
+            "Planner may not assign issue_id; host must own unresolved identities"
+        )
+    if issue.parent_issue_id is not None:
+        return issue.parent_issue_id
+    semantic = {
+        "kind": issue.kind.value,
+        "affected_chapters": tuple(sorted(set(issue.affected_chapters))),
+        "resolution_owner": issue.resolution_owner,
+        "source_ids": tuple(sorted(source.root for source in issue.source_ids)),
+        "source_artifacts": tuple(
+            sorted(source.artifact_id.root for source in issue.source_artifact_refs)
+        ),
+    }
+    # Legacy string arrays are accepted by the draft validator.  Keep their old
+    # bounded migration identity so historical tests/artifacts remain readable, but
+    # every structured statement with a source or range gets an identity independent
+    # of wording and of the surrounding Planner output.
+    if (
+        not any(
+            (
+                semantic["affected_chapters"],
+                semantic["source_ids"],
+                semantic["source_artifacts"],
+            )
+        )
+        and issue.kind.value == "UNSPECIFIED"
+    ):
+        return bounded_stable_id(
+            f"plan-issue.legacy.{output_digest}.{index}",
+            f"plan-issue.legacy.{index}",
+        )
+    semantic_digest = content_id(semantic).root.removeprefix("sha256:")[:32]
+    return bounded_stable_id(
+        f"plan-issue.draft.{semantic_digest}",
+        f"plan-issue.draft.{output_digest}.{index}",
+    )
+
+
+def _materialize_unresolved(
+    unresolved: tuple[PlanUnresolvedIssueDraft, ...],
+    *,
+    output_digest: str,
+) -> tuple[tuple[PlanUnresolvedIssue, ...], tuple[PlanUnresolvedOperationRecord, ...]]:
+    issues: list[PlanUnresolvedIssue] = []
+    operations: list[PlanUnresolvedOperationRecord] = []
+    seen_operation_ids: set[StableId] = set()
+    for index, draft_issue in enumerate(unresolved):
+        issue_id = _unresolved_issue_id(
+            draft_issue,
+            output_digest=output_digest,
+            index=index,
+        )
+        if issue_id in seen_operation_ids:
+            raise PlannerInvocationError(
+                f"Planner emitted duplicate unresolved identity {issue_id.root}"
+            )
+        seen_operation_ids.add(issue_id)
+        operations.append(
+            PlanUnresolvedOperationRecord(
+                operation=draft_issue.operation,
+                issue_id=issue_id,
+                parent_issue_id=draft_issue.parent_issue_id,
+                kind=draft_issue.kind,
+                summary=draft_issue.summary,
+                affected_chapters=draft_issue.affected_chapters,
+                blocking=draft_issue.blocking,
+                resolution_owner=draft_issue.resolution_owner,
+                allowed_assumptions=draft_issue.allowed_assumptions,
+                forbidden_assumptions=draft_issue.forbidden_assumptions,
+                source_ids=draft_issue.source_ids,
+                source_artifact_refs=draft_issue.source_artifact_refs,
+                closure_reason=draft_issue.closure_reason,
+            )
+        )
+        if draft_issue.operation is PlanUnresolvedOperation.CLOSE:
+            continue
+        issues.append(
+            PlanUnresolvedIssue(
+                issue_id=issue_id,
+                operation=draft_issue.operation,
+                parent_issue_id=draft_issue.parent_issue_id,
+                kind=draft_issue.kind,
+                summary=draft_issue.summary,
+                affected_chapters=draft_issue.affected_chapters,
+                blocking=draft_issue.blocking,
+                resolution_owner=draft_issue.resolution_owner,
+                allowed_assumptions=draft_issue.allowed_assumptions,
+                forbidden_assumptions=draft_issue.forbidden_assumptions,
+                source_ids=draft_issue.source_ids,
+                source_artifact_refs=draft_issue.source_artifact_refs,
+            )
+        )
+    return tuple(issues), tuple(operations)
 
 
 class PlannerAgent:
@@ -551,7 +667,7 @@ class PlannerAgent:
                 action=PlanningTurnAction.PLAN_READY,
                 plan_proposal=result.plan_proposal,
                 assumptions=draft.assumptions,
-                unresolved=draft.unresolved,
+                unresolved=_unresolved_summaries(draft.plan_proposal_draft.unresolved),
                 selected_skill_ids=constrain_planner_selected_skills(
                     task.mode, draft.selected_skill_ids
                 ),
@@ -608,18 +724,12 @@ class PlannerAgent:
             prepared,
             model_call,
             output_artifacts=(output_artifact,),
-            unresolved=draft.unresolved,
+            unresolved=_unresolved_summaries(draft.unresolved),
         )
         digest = output_artifact.artifact_id.root.removeprefix("sha256:")[:24]
-        unresolved_issues = tuple(
-            PlanUnresolvedIssue(
-                issue_id=bounded_stable_id(
-                    f"plan-issue.draft.{digest}.{index}",
-                    f"plan-issue.draft.{index}",
-                ),
-                summary=summary,
-            )
-            for index, summary in enumerate(draft.unresolved)
+        unresolved_issues, unresolved_operations = _materialize_unresolved(
+            draft.unresolved,
+            output_digest=digest,
         )
         plan = PlanProposal(
             proposal_id=StableId(f"plan-proposal.{digest}"),
@@ -629,6 +739,7 @@ class PlannerAgent:
             base_commit=task.base_commit,
             items=draft.plan_items,
             unresolved=unresolved_issues,
+            unresolved_operations=unresolved_operations,
             coverage=draft.coverage,
             receipt=receipt,
             reviewed_inquiry_ref=reviewed_inquiry_ref,
@@ -644,7 +755,7 @@ class PlannerAgent:
                 strategy=task.strategy,
                 items=draft.project_intent_items,
                 source_ids=task.source_ids,
-                unresolved=draft.unresolved,
+                unresolved=_unresolved_summaries(draft.unresolved),
                 coverage=draft.coverage,
             )
             if task.strategy is not None
@@ -655,7 +766,7 @@ class PlannerAgent:
                 proposal_id=StableId(f"world-design.{digest}"),
                 project_id=task.project_id,
                 items=draft.world_design_items,
-                unresolved=draft.unresolved,
+                unresolved=_unresolved_summaries(draft.unresolved),
             )
             if draft.world_design_items
             else None
@@ -665,7 +776,7 @@ class PlannerAgent:
                 proposal_id=StableId(f"profile-proposal.{digest}"),
                 project_id=task.project_id,
                 items=draft.profile_items,
-                unresolved=draft.unresolved,
+                unresolved=_unresolved_summaries(draft.unresolved),
             )
             if draft.profile_items
             else None

@@ -131,7 +131,9 @@ class BootstrapAuditService:
             sources=sources,
             planner_proposal_id=candidates.plan_proposal.proposal_id,
             planner_coverage=candidates.plan_proposal.coverage,
-            planner_unresolved=candidates.plan_proposal.unresolved,
+            planner_unresolved=tuple(
+                issue.summary for issue in candidates.plan_proposal.unresolved
+            ),
             curator_proposal_id=candidates.world_patch.proposal_id,
             curator_coverage=candidates.world_patch.extraction_coverage,
             curator_unresolved=candidates.world_patch.unresolved_claims,

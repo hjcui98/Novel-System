@@ -23,14 +23,13 @@ The diagnostic budget is two reviews and one bounded revision; it does not let t
 planner regenerate eight volumes.
 
 What the revision case does and does not establish is worth stating precisely.  It
-proves that a real model revision, run through the production Planner assembly,
-produces a candidate the host can compose inside the reviewed scope and that a real
-re-review then accepts.  In the run recorded here the model moved only the single
-authorised item, so the composition's *restoration* path did not have to fire; that
-path is covered deterministically (``test_plan_composition_source_proof.py`` and the
-D0 chain's unauthorised-rewrite case).  A run in which the model does wander is
-recorded as ``out_of_scope_items`` rather than failing, because the host's job is to
-contain it, not to require good behaviour.
+requires the real Reviewer to discover the known repeated-climax defect first, then
+passes those model-owned findings to the production Planner assembly.  The host
+composes the returned proposal inside that reviewed scope and a real re-review must
+accept it.  The composition's *restoration* path is covered deterministically
+(``test_plan_composition_source_proof.py`` and the D0 chain's unauthorised-rewrite
+case); a run in which the model wanders is recorded as ``out_of_scope_items`` rather
+than trusted as extra authority.
 """
 
 from __future__ import annotations
@@ -56,21 +55,29 @@ from novel_agent.domain.ids import (
     TaskId,
     bounded_stable_id,
 )
-from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.memory import WorldRootDocument
+from novel_agent.domain.model_calls import (
+    ModelCallPurpose,
+    ModelCallRecord,
+    ModelRequest,
+    ModelRole,
+)
 from novel_agent.domain.plan_composition import revision_scope
 from novel_agent.domain.planning import (
+    PlanReview,
     PlanReviewDraft,
+    PlanReviewIssue,
     ReviewDecision,
     ReviewTargetKind,
 )
-from novel_agent.domain.stage2 import AgentMode, AgentType
+from novel_agent.domain.stage2 import AgentMode, AgentType, PlanProposal
 from novel_agent.runtime.production_bootstrap import (
     PACKAGE_ROOT,
     QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE,
     resolve_registered_model_endpoints,
 )
 from novel_agent.services.artifacts import ArtifactRepository
-from novel_agent.services.model_gateway import ModelGateway
+from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 from tests.integration.test_yujin_d0_frozen_candidate_chain import (
     FROZEN_CANDIDATE,
     FROZEN_LOCKS,
@@ -78,7 +85,6 @@ from tests.integration.test_yujin_d0_frozen_candidate_chain import (
     _proposal_from_frozen,
     author_constraint_root,
 )
-from tests.unit.test_stage4_planning_contracts import _receipt
 
 pytestmark = [
     pytest.mark.model_required,
@@ -96,9 +102,11 @@ COMMIT = CommitId("sha256:" + "d" * 64)
 # allocation, not a claim about what the model needs.
 DIAGNOSTIC_OUTPUT_TOKENS = 16_000
 DIAGNOSTIC_TIMEOUT_SECONDS = 900.0
+KNOWN_REPEATED_REVEAL_PHRASE = "正式揭露门被从对面推开"
+KNOWN_REPEATED_REVEAL_IDS = frozenset({"vol-5", "vol-7", "vol-8"})
 
 
-def _endpoint() -> object:
+def _endpoint() -> RegisteredModelEndpoint:
     endpoints = resolve_registered_model_endpoints(QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE)
     assert endpoints, "the registered profile resolved to no endpoint"
     return endpoints[0]
@@ -108,7 +116,7 @@ def _reviewer(tmp_path: Path) -> tuple[PlanReviewerAgent, ArtifactRepository]:
     repo = ArtifactRepository(FilesystemObjectStore(tmp_path / "d0-real-objects"))
     bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
     gateway = ModelGateway(
-        (_endpoint(),),  # type: ignore[arg-type]
+        (_endpoint(),),
         forbid_external_calls=True,
         structured_max_retries=0,
         raw_artifacts=repo,
@@ -117,7 +125,7 @@ def _reviewer(tmp_path: Path) -> tuple[PlanReviewerAgent, ArtifactRepository]:
     return PlanReviewerAgent(runner, repo), repo
 
 
-def _frozen_world_root() -> object:
+def _frozen_world_root() -> WorldRootDocument:
     """The committed World root the frozen run's basis binds: entities, no obligations."""
 
     from novel_agent.domain.memory import WorldRootDocument
@@ -251,7 +259,7 @@ def test_d0_a_real_review_of_the_frozen_candidate(tmp_path: Path) -> None:
         mode=AgentMode.ARC_VOLUME,
         accepted_obligation_ids=frozenset(),
         accepted_obligation_windows={},
-        author_constraints=constraints,  # type: ignore[arg-type]
+        author_constraints=constraints,
         verified_citations=True,
     )
     if not [issue for issue in overlaid.issues if issue.blocking]:
@@ -261,11 +269,11 @@ def test_d0_a_real_review_of_the_frozen_candidate(tmp_path: Path) -> None:
 
 def _run_review(
     reviewer: PlanReviewerAgent,
-    candidate: object,
+    candidate: PlanProposal,
     target_ref: ArtifactRef,
     lock_ref: ArtifactRef,
     world_ref: ArtifactRef,
-) -> tuple[object, ArtifactRef, object]:
+) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
     import asyncio
 
     return asyncio.run(
@@ -273,7 +281,7 @@ def _run_review(
             version=VERSION,
             mode=AgentMode.ARC_VOLUME,
             target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-            target_payload=candidate.model_dump_json(),  # type: ignore[attr-defined]
+            target_payload=candidate.model_dump_json(),
             target_artifact=target_ref,
             trusted_source_artifacts=(lock_ref, world_ref),
             request=_request("plan-review"),
@@ -282,7 +290,7 @@ def _run_review(
     )
 
 
-def _record(tmp_path: Path, name: str, payload: dict) -> None:
+def _record(tmp_path: Path, name: str, payload: dict[str, object]) -> None:
     """Keep the diagnostic's own result next to its object store."""
 
     path = tmp_path / f"{name}.json"
@@ -313,7 +321,7 @@ def test_d0_the_diagnostic_records_the_real_endpoint_identity(tmp_path: Path) ->
     assert identity["endpoint_name"], "the registered profile declares no endpoint name"
     assert identity["model_name"], "the registered profile declares no model name"
     assert identity["sequence_limit"] == 131_072
-    assert identity["diagnostic_timeout_seconds"] <= 900.0
+    assert DIAGNOSTIC_TIMEOUT_SECONDS <= 900.0
 
 
 def _code_commit() -> str:
@@ -348,47 +356,57 @@ def test_the_frozen_locks_are_read_not_restated() -> None:
     assert hint.not_before_chapter == 350
 
 
-# --------------------------------------------------- a real Planner revision
+def _independent_known_defect_findings(
+    candidate: PlanProposal, review: PlanReview
+) -> tuple[PlanReviewIssue, ...]:
+    """Find model findings that independently cite the frozen repeated reveal.
 
-
-def _grounded_revision_finding(candidate: object):
-    """A blocking finding whose citation is present in the candidate it names.
-
-    The frozen candidate repeats one sentence across the climaxes of volumes five
-    to eight.  Citing the field that holds it is what a review must do, and the
-    scope it authorises is only that field.
+    Host-generated structural findings are useful for the mechanical preflight, but
+    they cannot establish that the real Reviewer understood a content defect.  D0
+    therefore requires a model-owned, blocking, field-level citation over the known
+    repeated climax descriptions.
     """
 
-    from novel_agent.domain.planning import PlanReviewIssue, ReviewIssueKind
-
-    phrase = "正式揭露门被从对面推开"
-    for item in candidate.items:  # type: ignore[attr-defined]
-        climax = item.payload.get("volume_climax")
-        if not isinstance(climax, dict):
+    descriptions: dict[str, str] = {}
+    for item in candidate.items:
+        raw_climax = item.payload.get("volume_climax")
+        if not isinstance(raw_climax, dict):
             continue
-        description = str(climax.get("description") or "")
-        if phrase not in description or item.item_id.root == "vol-4":
-            continue
-        return PlanReviewIssue(
-            issue_id=StableId("issue.d0.repeated-reveal"),
-            kind=ReviewIssueKind.CONTRADICTION,
-            summary="后卷高潮与前次揭露使用同一句式，读者无法判断这是新的进展还是重复",  # noqa: RUF001
-            blocking=True,
-            affected_item_ids=(item.item_id.root,),
-            field_path="volume_climax.description",
-            quote=description,
-            unmet_condition="每次揭露必须让读者分辨这是首次、验证还是新的后果",
-        )
-    raise AssertionError("no grounded repetition finding could be built")
+        description = raw_climax.get("description")
+        if isinstance(description, str):
+            descriptions[item.item_id.root] = description
+    known_ids = KNOWN_REPEATED_REVEAL_IDS & {
+        item_id
+        for item_id, description in descriptions.items()
+        if KNOWN_REPEATED_REVEAL_PHRASE in description
+    }
+    findings: list[PlanReviewIssue] = []
+    for issue in review.issues:
+        affected = {item_id.root for item_id in issue.affected_item_ids} & known_ids
+        quote = issue.quote
+        if (
+            issue.blocking
+            and not issue.host_issued
+            and issue.field_path == "volume_climax.description"
+            and issue.unmet_condition
+            and quote
+            and len(affected) >= 2
+            and any(
+                quote == descriptions[item_id] or KNOWN_REPEATED_REVEAL_PHRASE in quote
+                for item_id in affected
+            )
+        ):
+            findings.append(issue)
+    return tuple(findings)
 
 
 def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Path) -> None:
     """The gap D0 left open: a real model revision, host-composed and re-reviewed.
 
-    The reviewer's finding authorises one field on one volume.  The model, asked to
-    revise a proposal it did not write, will almost certainly rewrite more than
-    that; the host composes the candidate from the parent plus exactly the
-    authorised field, and records the rest as out of scope.  The composed candidate
+    The real review findings authorise one field on each frozen volume carrying the
+    defect.  The model, asked to revise a proposal it did not write, may rewrite more
+    than that; the host composes the candidate from the parent plus exactly the
+    authorised fields, and records the rest as out of scope.  The composed candidate
     is then re-reviewed for real.  Passing means the candidate the *materializer
     would receive* is inside scope and accepted -- not that the model behaved.
     """
@@ -401,15 +419,15 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         out_of_scope_items,
         revision_scope,
     )
-    from novel_agent.domain.planning import PlanReview, ReviewDecision, ReviewTargetKind
+    from novel_agent.domain.planning import ReviewDecision, ReviewTargetKind
     from novel_agent.domain.stage2 import PlanningTask
 
     candidate = _proposal_from_frozen()
-    _constraints, _root, _profile_ref = author_constraint_root()
+    _constraints, root, _profile_ref = author_constraint_root()
     reviewer, repo = _reviewer(tmp_path)
     bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
     gateway = ModelGateway(
-        (_endpoint(),),  # type: ignore[arg-type]
+        (_endpoint(),),
         forbid_external_calls=True,
         structured_max_retries=0,
         raw_artifacts=repo,
@@ -418,23 +436,44 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         StructuredAgentRunner(gateway, bundle.agents, bundle.prompts, bundle.skills), repo
     )
 
-    finding = _grounded_revision_finding(candidate)
     parent_ref = repo.put(candidate.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
-    review = PlanReview(
-        review_id=StableId("plan-review.d0.real-revision"),
-        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-        target_artifact_ref=parent_ref,
-        decision=ReviewDecision.REVISE,
-        issues=(finding,),
-        revision_instruction=(
-            "只修改 REVIEW 点名条目的 volume_climax.description；"  # noqa: RUF001
-            "其余条目的 payload 必须与 PARENT_PROPOSAL 逐字一致。"
-        ),
-        receipt=_receipt(AgentMode.ARC_VOLUME, AgentType.PLAN_REVIEWER),
+    lock_ref = repo.put(
+        root.model_dump_json().encode(),
+        "application/vnd.novel-agent.author-constraint-root+json",
+        VERSION,
+    )
+    world_ref = repo.put(
+        _frozen_world_root().model_dump_json().encode(),
+        "application/vnd.novel-agent.world-root+json",
+        VERSION,
+    )
+    real_review, _review_ref, _review_call = _run_review(
+        reviewer, candidate, parent_ref, lock_ref, world_ref
+    )
+    known_findings = _independent_known_defect_findings(candidate, real_review)
+    known_ids = KNOWN_REPEATED_REVEAL_IDS & {
+        item_id.root for issue in known_findings for item_id in issue.affected_item_ids
+    }
+    assert known_findings, "the real Reviewer did not discover the known repeated climax defect"
+    assert known_ids >= KNOWN_REPEATED_REVEAL_IDS, (
+        "the real Reviewer did not cover every frozen volume carrying the known defect"
+    )
+    review = real_review.model_copy(
+        update={
+            "decision": ReviewDecision.REVISE,
+            "issues": known_findings,
+            "revision_instruction": (
+                "只修改 REVIEW 点名条目的 volume_climax.description；"  # noqa: RUF001
+                "其余条目的 payload 必须与 PARENT_PROPOSAL 逐字一致。"
+            ),
+        }
     )
     scope = revision_scope(review)
-    assert scope.targeted_item_ids == {finding.affected_item_ids[0].root}
-    assert scope.target_for(finding.affected_item_ids[0].root).field_paths == ("volume_climax",)
+    assert set(scope.targeted_item_ids) >= KNOWN_REPEATED_REVEAL_IDS
+    for item_id in KNOWN_REPEATED_REVEAL_IDS:
+        target = scope.target_for(item_id)
+        assert target is not None
+        assert target.field_paths == ("volume_climax",)
 
     brief = (FROZEN_RUN / "input/brief.md").read_bytes()
     brief_ref = repo.put(brief, "text/plain", VERSION)
@@ -485,9 +524,9 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     out_of_scope = out_of_scope_items(candidate, raw, scope)
 
     # The composed candidate carries the parent everywhere the review did not reach.
-    target = finding.affected_item_ids[0].root
+    targets = KNOWN_REPEATED_REVEAL_IDS
     for original, produced in zip(candidate.items, composed.items, strict=True):
-        if original.item_id.root == target:
+        if original.item_id.root in targets:
             continue
         assert produced.payload == original.payload, original.item_id.root
 
@@ -495,7 +534,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         tmp_path,
         "d0.revision",
         {
-            "target_item": target,
+            "target_items": sorted(targets),
             "scope_field_paths": ["volume_climax"],
             "raw_items": len(raw.items),
             "raw_changed_items": sorted(
@@ -512,7 +551,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
             "composed_target_description": next(
                 item.payload["volume_climax"]
                 for item in composed.items
-                if item.item_id.root == target
+                if item.item_id.root in targets
             ),
             "usage": None
             if getattr(execution.model_call, "usage", None) is None
@@ -522,11 +561,12 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
 
     # A revision that changed nothing is not convergence either; the diagnostic
     # reports it rather than asserting the model behaved.
-    target_item = next(item for item in composed.items if item.item_id.root == target)
-    parent_item = next(item for item in candidate.items if item.item_id.root == target)
-    assert target_item.payload["volume_climax"] != parent_item.payload["volume_climax"], (
-        "the real revision did not move the field the review named"
-    )
+    for item_id in targets:
+        target_item = next(item for item in composed.items if item.item_id.root == item_id)
+        parent_item = next(item for item in candidate.items if item.item_id.root == item_id)
+        assert target_item.payload["volume_climax"] != parent_item.payload["volume_climax"], (
+            f"the real revision did not move the field the review named: {item_id}"
+        )
 
     # Re-review the composed candidate for real.
     rereview, _ref, _call = asyncio.run(
@@ -538,18 +578,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
             target_artifact=repo.put(
                 composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
             ),
-            trusted_source_artifacts=(
-                repo.put(
-                    author_constraint_root()[1].model_dump_json().encode(),
-                    "application/vnd.novel-agent.author-constraint-root+json",
-                    VERSION,
-                ),
-                repo.put(
-                    _frozen_world_root().model_dump_json().encode(),
-                    "application/vnd.novel-agent.world-root+json",
-                    VERSION,
-                ),
-            ),
+            trusted_source_artifacts=(lock_ref, world_ref),
             request=_request("plan-rereview"),
             base_commit=COMMIT,
         )
@@ -612,6 +641,7 @@ def test_d0_the_real_reviewer_emits_findings_the_host_can_act_on(tmp_path: Path)
     # The draft the reviewer persisted, before the host overlay ran.
     draft = json.loads(repo.read_verified(review_ref).decode("utf-8"))
     blocking = [issue for issue in review.issues if issue.blocking]
+    known_defects = _independent_known_defect_findings(candidate, review)
     structured = [
         issue
         for issue in blocking
@@ -625,6 +655,7 @@ def test_d0_the_real_reviewer_emits_findings_the_host_can_act_on(tmp_path: Path)
             "decision": review.decision.value,
             "blocking_total": len(blocking),
             "blocking_structured": len(structured),
+            "known_content_defect_findings": len(known_defects),
             "blocking_citation_shape": [
                 {
                     "kind": issue.kind.value,
@@ -646,15 +677,14 @@ def test_d0_the_real_reviewer_emits_findings_the_host_can_act_on(tmp_path: Path)
     # point of the record above is how *many* the model produced, not whether the
     # host could describe them.
     for issue in structured:
+        assert issue.quote is not None
         assert issue.quote in candidate.model_dump_json()
 
-    if blocking:
-        # A review that demands work must be actionable, or the stage cannot close
-        # its problem and will stop rather than converge.
-        assert structured, (
-            "the reviewer raised blocking findings without citations; "
-            "a loop driven by this review cannot make checkable progress"
-        )
-    else:
-        # Otherwise the candidate is accepted as-is, which is also a settled state.
-        assert review.decision in {ReviewDecision.ACCEPT, ReviewDecision.HUMAN_REQUIRED}
+    # D0 is specifically a content-defect exercise.  ACCEPT/zero findings, a
+    # host-only structural finding, or a model finding with a loose citation does
+    # not prove independent discovery and must fail the real validation.
+    assert known_defects, (
+        "the real Reviewer did not independently cite the known repeated climax "
+        "defect across at least two frozen volumes"
+    )
+    assert blocking and structured

@@ -29,6 +29,36 @@
       "title": "ArtifactId",
       "type": "string"
     },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "BootstrapStrategy": {
       "enum": [
         "normalize_only",
@@ -81,6 +111,138 @@
       ],
       "title": "PlanDeviationRecordCandidate",
       "type": "object"
+    },
+    "PlanUnresolvedIssueDraft": {
+      "additionalProperties": false,
+      "description": "Untrusted structured unresolved statement emitted by the Planner.\n\nThe host, rather than the model, assigns ``issue_id``.  A revision refers to a\nprior host identity through ``parent_issue_id``; a fresh statement is an ADD.\n``source_ids`` and ``affected_chapters`` are deliberately explicit because a\nsummary string is not a stable identity or a usable scope.",
+      "properties": {
+        "affected_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Affected Chapters",
+          "type": "array"
+        },
+        "allowed_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Assumptions",
+          "type": "array"
+        },
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "closure_reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Closure Reason"
+        },
+        "forbidden_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Assumptions",
+          "type": "array"
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/PlanUnresolvedKind",
+          "default": "UNSPECIFIED"
+        },
+        "operation": {
+          "$ref": "#/$defs/PlanUnresolvedOperation",
+          "default": "add"
+        },
+        "parent_issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolution_owner": {
+          "default": "PLANNER",
+          "minLength": 1,
+          "title": "Resolution Owner",
+          "type": "string"
+        },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "PlanUnresolvedIssueDraft",
+      "type": "object"
+    },
+    "PlanUnresolvedKind": {
+      "enum": [
+        "AUTHOR_INTENT_CONFLICT",
+        "CURRENT_STATE_UNKNOWN",
+        "POWER_LEVEL_UNKNOWN",
+        "KNOWLEDGE_BOUNDARY_UNKNOWN",
+        "OBLIGATION_WINDOW_CONFLICT",
+        "UNSPECIFIED"
+      ],
+      "title": "PlanUnresolvedKind",
+      "type": "string"
+    },
+    "PlanUnresolvedOperation": {
+      "description": "The lifecycle operation represented by one unresolved statement.",
+      "enum": [
+        "add",
+        "modify",
+        "close"
+      ],
+      "title": "PlanUnresolvedOperation",
+      "type": "string"
     },
     "PlannerProposalDraft": {
       "additionalProperties": false,
@@ -160,7 +322,7 @@
         "unresolved": {
           "default": [],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/PlanUnresolvedIssueDraft"
           },
           "title": "Unresolved",
           "type": "array"
@@ -235,6 +397,11 @@
       ],
       "title": "ProposedItem",
       "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
     },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",

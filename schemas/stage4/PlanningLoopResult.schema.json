@@ -530,6 +530,14 @@
           },
           "title": "Unresolved",
           "type": "array"
+        },
+        "unresolved_operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanUnresolvedOperationRecord"
+          },
+          "title": "Unresolved Operations",
+          "type": "array"
         }
       },
       "required": [
@@ -583,10 +591,41 @@
           "$ref": "#/$defs/PlanUnresolvedKind",
           "default": "UNSPECIFIED"
         },
+        "operation": {
+          "$ref": "#/$defs/PlanUnresolvedOperation",
+          "default": "add"
+        },
+        "parent_issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "resolution_owner": {
           "default": "PLANNER",
           "title": "Resolution Owner",
           "type": "string"
+        },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
         },
         "summary": {
           "minLength": 1,
@@ -612,6 +651,119 @@
       ],
       "title": "PlanUnresolvedKind",
       "type": "string"
+    },
+    "PlanUnresolvedOperation": {
+      "description": "The lifecycle operation represented by one unresolved statement.",
+      "enum": [
+        "add",
+        "modify",
+        "close"
+      ],
+      "title": "PlanUnresolvedOperation",
+      "type": "string"
+    },
+    "PlanUnresolvedOperationRecord": {
+      "additionalProperties": false,
+      "description": "Durable operation history, including CLOSE records absent from active issues.",
+      "properties": {
+        "affected_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Affected Chapters",
+          "type": "array"
+        },
+        "allowed_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Assumptions",
+          "type": "array"
+        },
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "closure_reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Closure Reason"
+        },
+        "forbidden_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Assumptions",
+          "type": "array"
+        },
+        "issue_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/PlanUnresolvedKind",
+          "default": "UNSPECIFIED"
+        },
+        "operation": {
+          "$ref": "#/$defs/PlanUnresolvedOperation"
+        },
+        "parent_issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolution_owner": {
+          "default": "PLANNER",
+          "minLength": 1,
+          "title": "Resolution Owner",
+          "type": "string"
+        },
+        "source_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "issue_id",
+        "summary"
+      ],
+      "title": "PlanUnresolvedOperationRecord",
+      "type": "object"
     },
     "PlanningLoopTerminal": {
       "enum": [

@@ -10,8 +10,8 @@
 
 ## ChapterSet 计划要求
 
-- `plan_items` 必须且只能包含窗口内每一章一个 goal：正好 `end - start + 1` 个，不能漏章、重章或越出范围。
-- 每个 goal 必须带 `chapter_index`、非空 `summary`、可执行的 `beats`、所需 `state_changes`、参与实体以及必要的 `obligation_actions`；没有对应数据时可以为空，但不得用空总述掩盖缺口。
+- `plan_items` 必须且只能包含窗口内每一章一个 goal：每章 exactly one `plan_items` entry，正好 `end - start + 1` 个，不能漏章、重章或越出范围。
+- 每个 goal 必须带 `chapter_index` integer、non-empty `summary` string、可执行的 `beats`、所需 `state_changes`、参与实体以及必要的 `obligation_actions`；没有对应数据时可以为空，但不得用空总述掩盖缺口。
 - `obligation_actions` 只能引用已接纳的长期义务，每项必须是一个对象，三个字段都必须给出：
   - `obligation_id`：必须原样取自可信上下文里已存在的 obligation ID；**不得发明新 ID**，
     也不得写自然语言描述（例如 `"setup: 确认残星纹 (setup_window: 1-30)"` 会被宿主拒绝并阻断）；
@@ -33,8 +33,17 @@
 - 旧的 `history_needs` 数组不再被接受：裸 `[]` 或其它 kind 会被审校拒绝并阻断 Writer。
 - post-Genesis ChapterSet 不输出 `project_intent_items`，不得用整卷摘要代替逐章目标；若协议字段要求存在，填空数组或 null。
 
+`project_intent_items: []`；`strategy: null`。Put missing historical details in `unresolved`，不要把缺口写成事实。
+
 ## 输出前自检
 
 检查章节覆盖、父级范围、已有 Plan/World 的显式时间锁、**每个 `obligation_actions` 的 `obligation_id` 都能在可信上下文里找到、`action` 是四个枚举值之一、`expected_delta` 非空**、本层级没有出现任何 `obligation_declarations`/`obligation_plan` 声明、每项 payload 是否可被 Writer 消费，以及所有 unresolved 是否仍是候选而非 Canon。逐章核对：第 2 章以后每个 goal 都有合法 `history_retrieval`（REQUIRED 有 1—3 个合法 kind 的 Need，NOT_REQUIRED 有 reason_code 与 waiver_ref），不存在裸 `history_needs` 或空决策。保留 `source_ids` 和作者原文的引用边界；不要把 Profile 风格或外部参考升级成故事事实。
 
 `unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。
+
+`unresolved` 是结构化生命周期操作，不是可供宿主猜测的备注：填写
+`operation`（`ADD`/`MODIFY`/`CLOSE`）、`kind`、`summary`、`affected_chapters`、
+`resolution_owner`、`allowed_assumptions`、`forbidden_assumptions`、`source_ids` 与
+`source_artifact_refs`。`MODIFY`/`CLOSE` 必须引用宿主提供的 `parent_issue_id`，`CLOSE`
+必须有 `closure_reason`；不要输出 `issue_id`，稳定 ID 由宿主派生。未知 ID、重复操作、
+宿主字段冒充、没有依据的移除或关闭都不能作为计划事实。

@@ -17,9 +17,10 @@
 #   2. A failed subcommand fails the script.  There is no `tee`, no `|| true`
 #      around work, and bookkeeping runs before the exit status is decided while
 #      its own failures count.
-#   3. A stage stops on its verified evidence, not on "there was no READY task".
-#      G0 needs eight committed volumes; G1/G2/G3 need committed chapter text at
-#      their named chapter.  A stage that cannot prove its exit fails.
+#   3. A stage stops on its complete evidence, not on "there was no READY task".
+#      Counts are useful progress diagnostics only.  The roots command must
+#      explicitly prove the stage-specific structure, lineage, projection, and
+#      content/recovery contract before this driver can exit successfully.
 #
 # Usage: 60_run_stage.sh <g0|g1|g2|g3> [max-slices]
 set -uo pipefail
@@ -27,11 +28,12 @@ set -uo pipefail
 STAGE="${1:-g0}"
 MAX_SLICES="${2:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENVIRONMENT_FILE="${NOVEL_ENVIRONMENT_FILE:-$SCRIPT_DIR/../environment.sh}"
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/../environment.sh"
+source "$ENVIRONMENT_FILE"
 
-# The stage's verified exit.  G0 proves itself with committed volumes; the later
-# stages prove themselves with committed chapter text.
+# Counts are retained for operator diagnostics.  The actual exit predicate below
+# consumes the stage-specific complete-evidence field from the canonical roots audit.
 case "$STAGE" in
     g0) CHAPTER_GATE=0;  VOLUME_GATE=8 ;;
     g1) CHAPTER_GATE=2;  VOLUME_GATE=8 ;;
@@ -98,7 +100,8 @@ capture() {  # <out-file> <label> <command...>
 stage_roots() {
     capture "$NOVEL_STATE/roots.out" "roots" \
         "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" roots \
-        --project-id "$NOVEL_PROJECT_ID" --object-store-root "$NOVEL_OBJECT_STORE"
+        --project-id "$NOVEL_PROJECT_ID" --run-id "$NOVEL_RUN_ID" \
+        --object-store-root "$NOVEL_OBJECT_STORE"
 }
 
 status_snapshot() {
@@ -155,6 +158,7 @@ print(payload.get("classification", {}).get(sys.argv[1], ""))
 # messages are suppressed on the pre-flight call, which runs in the normal
 # "not there yet" case and must not log a failure that has not happened.
 stage_exit_satisfied() {
+    evidence=""
     local quiet="${1:-}" json chapters volumes
     stage_roots || return 1
     json="$(last_json "$NOVEL_STATE/roots.out")"
@@ -176,10 +180,22 @@ except (ValueError, IndexError): print(-1)
         [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: ${chapters}/${CHAPTER_GATE} committed chapters"
         return 1
     fi
+    evidence="$("$NOVEL_PYTHON" -c '
+import json,sys
+try:
+    payload=json.loads(sys.stdin.read().strip().splitlines()[-1])
+    print("1" if payload.get(sys.argv[1]) is True else "0")
+except (ValueError, IndexError):
+    print("0")
+' "${STAGE}_evidence_complete" <<<"$json")"
+    if [[ "$evidence" != "1" ]]; then
+        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: complete stage evidence is absent"
+        return 1
+    fi
     return 0
 }
 
-log "[stage] ${STAGE}: max ${MAX_SLICES} slices, gates ${VOLUME_GATE} volumes / ${CHAPTER_GATE} chapters"
+log "[stage] ${STAGE}: max ${MAX_SLICES} slices, count diagnostics ${VOLUME_GATE} volumes / ${CHAPTER_GATE} chapters plus complete evidence"
 
 # Already at the stage's exit?  Verify it before spending a slice.  A roots call
 # that fails here is reported by stage_roots() itself and not counted twice.

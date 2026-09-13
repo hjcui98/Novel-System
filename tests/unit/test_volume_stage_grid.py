@@ -298,8 +298,9 @@ def test_an_invented_responsibility_handle_is_refused() -> None:
     )
 
     assert _fields(payload, constraints=_LOCKS) == ("trigger_event.serves",)
-    assert "neither an accepted author constraint nor an accepted obligation" in (
-        _messages(payload, constraints=_LOCKS)[0]
+    assert (
+        "neither an accepted author constraint nor an accepted obligation"
+        in (_messages(payload, constraints=_LOCKS)[0])
     )
 
 
@@ -405,9 +406,7 @@ def test_a_disclosure_without_a_served_responsibility_is_refused() -> None:
     )
 
     assert _fields(payload, constraints=_LOCKS) == ("second_escalation.serves",)
-    assert "must name the host-accepted responsibility" in _messages(
-        payload, constraints=_LOCKS
-    )[0]
+    assert "must name the host-accepted responsibility" in _messages(payload, constraints=_LOCKS)[0]
 
 
 def test_stage_windows_must_stay_inside_their_volume() -> None:
@@ -468,6 +467,46 @@ def test_a_stage_window_violation_reaches_host_review_with_a_targeted_demand() -
     assert any(issue.kind.value == "volume_stage_window_violation" for issue in blocking)
     assert review.revision_instruction is not None
     assert "vol_04.midpoint_reversal.window" in review.revision_instruction
+
+
+def test_each_host_stage_window_finding_has_a_distinct_field_identity() -> None:
+    payload = _volume_with_stage_windows(
+        midpoint_reversal=_stage_entry(
+            "长程真相的提前推进", "301-340", "progression", "lock.long-truth.vol4-hint"
+        ),
+        next_volume_hook=_stage_entry(
+            "长程真相的提前暗示", "301-340", "hint", "lock.long-truth.vol4-hint"
+        ),
+    )
+    target = json.dumps(
+        {
+            "expected_volume_count": 1,
+            "target_chapters": 400,
+            "items": [{"item_id": "vol_04", "kind": "arc_volume", "payload": payload}],
+        }
+    )
+
+    review = apply_host_plan_review_constraints(
+        PlanReviewDraft(
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            decision=ReviewDecision.ACCEPT,
+            issues=(),
+        ),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=target,
+        mode=AgentMode.ARC_VOLUME,
+        author_constraints=_LOCKS,
+    )
+    window_findings = [
+        issue for issue in review.issues if issue.kind.value == "volume_stage_window_violation"
+    ]
+
+    assert {issue.field_path for issue in window_findings} == {
+        "midpoint_reversal.window",
+        "next_volume_hook.window",
+    }
+    assert all(issue.constraint_id for issue in window_findings)
+    assert len({issue.issue_id for issue in window_findings}) == len(window_findings)
 
 
 def test_the_arc_volume_contract_states_the_stage_window_shape() -> None:
@@ -532,9 +571,12 @@ def test_an_accepted_obligation_window_binds_the_stage_that_serves_it() -> None:
         constraints=_LOCKS,
         accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
     ) == ("trigger_event.window",)
-    assert "declares no chapter boundary the host can apply" in _messages(
-        payload, constraints=_LOCKS, accepted_obligation_ids=frozenset({"obligation.vol4.1"})
-    )[0]
+    assert (
+        "declares no chapter boundary the host can apply"
+        in _messages(
+            payload, constraints=_LOCKS, accepted_obligation_ids=frozenset({"obligation.vol4.1"})
+        )[0]
+    )
     # With the obligation's own window the same stage is judged against it.
     assert _fields(
         payload,
@@ -542,12 +584,15 @@ def test_an_accepted_obligation_window_binds_the_stage_that_serves_it() -> None:
         accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
         obligation_windows={"obligation.vol4.1": (321, 400)},
     ) == ("trigger_event.window",)
-    assert "unlocks at 321" in _messages(
-        payload,
-        constraints=_LOCKS,
-        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
-        obligation_windows={"obligation.vol4.1": (321, 400)},
-    )[0]
+    assert (
+        "unlocks at 321"
+        in _messages(
+            payload,
+            constraints=_LOCKS,
+            accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+            obligation_windows={"obligation.vol4.1": (321, 400)},
+        )[0]
+    )
 
 
 def test_a_stage_inside_its_accepted_obligation_window_passes() -> None:
@@ -579,12 +624,15 @@ def test_an_obligation_with_no_timing_is_reported_rather_than_passed() -> None:
         accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
         obligation_windows={"obligation.vol4.1": (None, None)},
     ) == ("trigger_event.window",)
-    assert "declares no not_before_chapter" in _messages(
-        payload,
-        constraints=_LOCKS,
-        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
-        obligation_windows={"obligation.vol4.1": (None, None)},
-    )[0]
+    assert (
+        "declares no not_before_chapter"
+        in _messages(
+            payload,
+            constraints=_LOCKS,
+            accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+            obligation_windows={"obligation.vol4.1": (None, None)},
+        )[0]
+    )
 
 
 def test_the_host_decides_mechanical_defects_without_a_model_call() -> None:

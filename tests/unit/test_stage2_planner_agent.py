@@ -18,6 +18,8 @@ from novel_agent.agents import (
 from novel_agent.agents.planner import (
     INQUIRY_OUTPUT_CONSTRAINTS,
     PLANNING_TURN_OUTPUT_CONSTRAINTS,
+    _materialize_unresolved,
+    _unresolved_issue_id,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import (
@@ -48,6 +50,9 @@ from novel_agent.domain.stage2 import (
     PlannerExecutionResult,
     PlannerProposalDraft,
     PlanningTask,
+    PlanUnresolvedIssueDraft,
+    PlanUnresolvedKind,
+    PlanUnresolvedOperation,
     PromptContractRef,
     ProposalProvenance,
     ProposedItem,
@@ -166,7 +171,7 @@ def draft(mode: AgentMode) -> PlannerProposalDraft:
         )
         if mode is AgentMode.REPLAN
         else (),
-        unresolved=("author choice pending",),
+        unresolved=(PlanUnresolvedIssueDraft(summary="author choice pending"),),
         coverage=0.8,
     )
 
@@ -473,6 +478,56 @@ def test_planning_contracts_reject_mode_and_provenance_contradictions() -> None:
         )
 
 
+def test_structured_unresolved_identity_ignores_wording_and_output_position() -> None:
+    base = PlanUnresolvedIssueDraft(
+        kind=PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        summary="状态资料缺失, 不能安全规划第 1 章",
+        affected_chapters=(1,),
+        blocking=True,
+        resolution_owner="MEMORY_CURATOR",
+        forbidden_assumptions=("不得把未知状态写成已知事实",),
+        source_ids=(StableId("source.brief"),),
+    )
+    revised_wording = base.model_copy(update={"summary": "当前状态仍无法核验"})
+
+    first = _unresolved_issue_id(base, output_digest="first", index=0)
+    second = _unresolved_issue_id(revised_wording, output_digest="second", index=9)
+
+    assert first == second
+
+
+def test_model_supplied_unresolved_identity_is_rejected_by_materialization() -> None:
+    issue = PlanUnresolvedIssueDraft(
+        issue_id=StableId("plan-issue.model-owned"),
+        kind=PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        summary="需要核验当前状态",
+        affected_chapters=(1,),
+        blocking=True,
+    )
+
+    with pytest.raises(PlannerInvocationError, match="may not assign issue_id"):
+        _materialize_unresolved((issue,), output_digest="output")
+
+
+def test_close_operation_keeps_auditable_history_without_an_active_issue() -> None:
+    parent = StableId("plan-issue.draft.existing")
+    close = PlanUnresolvedIssueDraft(
+        operation=PlanUnresolvedOperation.CLOSE,
+        parent_issue_id=parent,
+        kind=PlanUnresolvedKind.CURRENT_STATE_UNKNOWN,
+        summary="已由宿主核验并关闭状态缺口",
+        blocking=True,
+        closure_reason="宿主已持久化对应 Memory 证据",
+    )
+
+    issues, operations = _materialize_unresolved((close,), output_digest="output")
+
+    assert issues == ()
+    assert operations[0].issue_id == parent
+    assert operations[0].operation is PlanUnresolvedOperation.CLOSE
+    assert operations[0].closure_reason == "宿主已持久化对应 Memory 证据"
+
+
 def test_an_arc_volume_revision_lands_in_plan_items_not_bootstrap_intent() -> None:
     """The live ARC_VOLUME rejection: correct volumes filed under the wrong container.
 
@@ -563,6 +618,9 @@ def test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal() -> None:
     assert "`project_intent_items: []`" in prompt
     assert "`strategy: null`" in prompt
     assert "Put missing historical details in `unresolved`" in prompt
+    assert "`operation`" in prompt
+    assert "`parent_issue_id`" in prompt
+    assert "不要输出 `issue_id`" in prompt
 
 
 def test_planner_result_rejects_receipt_and_mode_contradictions(tmp_path: Path) -> None:
@@ -660,5 +718,3 @@ def test_proposed_item_lifts_nested_source_ids_from_payload() -> None:
     )
     assert "source_ids" not in item.payload
     assert item.payload == {"summary": "hero premise"}
-
-

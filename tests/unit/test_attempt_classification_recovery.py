@@ -19,9 +19,14 @@ from pathlib import Path
 import pytest
 
 from novel_agent.adapters.postgres.database import build_engine, build_session_factory
-from novel_agent.adapters.postgres.models import RuntimeEffectProjectionRow, RuntimeTaskAttemptRow
+from novel_agent.adapters.postgres.models import (
+    ModelCallLedgerRow,
+    RuntimeEffectProjectionRow,
+    RuntimeTaskAttemptRow,
+)
 from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.domain.ids import ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     AttemptOutcome,
     EffectStatus,
@@ -323,6 +328,43 @@ def _persist_attempt(
             )
 
 
+def _persist_model_call(
+    repository: RuntimeTaskQueryRepository,
+    *,
+    request_id: str,
+    task_id: str = "task.n4.persisted",
+    status: ModelCallLedgerStatus,
+    raw_artifact_id: str | None = None,
+) -> None:
+    with repository.session_factory() as session, session.begin():
+        session.add(
+            ModelCallLedgerRow(
+                request_id=request_id,
+                run_id=RUN.root,
+                task_id=task_id,
+                attempt_id="attempt.n4.1",
+                request_hash=HASH,
+                status=status.value,
+                logical_phase="plan",
+                effective_budget_json={},
+                reasoning_included_in_completion_tokens=False,
+                provider_request_id=f"provider.{request_id}",
+                provider_sent_at=NOW,
+                raw_response_hash=None,
+                raw_artifact_json=(
+                    None if raw_artifact_id is None else {"artifact_id": raw_artifact_id}
+                ),
+                call_record_json=None,
+                validation_error=None,
+                transport_error_type=None,
+                requested_at=NOW,
+                completed_at=(NOW + timedelta(seconds=5))
+                if status is ModelCallLedgerStatus.COMPLETED
+                else None,
+            )
+        )
+
+
 def test_the_persisted_read_path_classifies_a_waiting_task(
     repository: RuntimeTaskQueryRepository,
 ) -> None:
@@ -388,6 +430,55 @@ def test_the_read_path_surfaces_a_completed_response(
 
     assert result.action is RecoveryAction.REPLAY_COMPLETED
     assert completed == ("effect.done",)
+
+
+def test_the_persisted_model_ledger_surfaces_an_uncertain_provider_request(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    _persist_attempt(repository, _attempt(task_id="task.n4.persisted"))
+    _persist_model_call(
+        repository,
+        request_id="request.n4.uncertain",
+        status=ModelCallLedgerStatus.UNCERTAIN,
+    )
+
+    unsettled, outstanding, completed = repository.attempt_effect_ledger(
+        TaskId("task.n4.persisted")
+    )
+
+    assert unsettled == ("request.n4.uncertain",)
+    assert outstanding == ()
+    assert completed == ()
+
+
+def test_the_persisted_completed_model_ledger_returns_the_response_artifact(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    _persist_attempt(repository, _attempt(task_id="task.n4.persisted"))
+    _persist_model_call(
+        repository,
+        request_id="request.n4.completed",
+        status=ModelCallLedgerStatus.COMPLETED,
+        raw_artifact_id="artifact.response.n4",
+    )
+
+    unsettled, outstanding, completed = repository.attempt_effect_ledger(
+        TaskId("task.n4.persisted")
+    )
+    result = classify_attempt(
+        task_id=StableId("task.n4.persisted"),
+        task_status=TaskStatus.WAITING_RETRY,
+        attempt=repository.last_settled_attempt(TaskId("task.n4.persisted")),
+        unsettled_sends=unsettled,
+        outstanding_request_ids=outstanding,
+        completed_response_refs=completed,
+    )
+
+    assert unsettled == ()
+    assert outstanding == ()
+    assert completed == ("artifact.response.n4",)
+    assert result.action is RecoveryAction.REPLAY_COMPLETED
+    assert result.completed_response_refs == ("artifact.response.n4",)
 
 
 def test_only_the_latest_settled_attempt_classifies(

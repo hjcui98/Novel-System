@@ -13,6 +13,13 @@
 
 `unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。
 
+`unresolved` 使用结构化操作而非自由文本：`operation` 为 `ADD`、`MODIFY` 或
+`CLOSE`，并填写 `kind`、`summary`、`affected_chapters`、`resolution_owner`、
+`allowed_assumptions`、`forbidden_assumptions`、`source_ids` 和
+`source_artifact_refs`。修改或关闭只能引用宿主给出的 `parent_issue_id`；关闭必须有
+`closure_reason`。不要填写 `issue_id`，不要用摘要或数组下标做身份，也不要删除、关闭
+或重开未知问题；宿主负责稳定 ID、范围授权、操作历史和关闭证明。
+
 【卷阶段窗口契约】卷 item 的十个叙事键（`opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`）必须写成结构化条目：`{"description": "...", "window": "起始章-结束章"（或单个章号）, "role": "setup|hint|progression|payoff", "serves": "<受信责任句柄，可省略>"}`；窗口必须落在本卷范围内。
 - `role` 描述该键实际做的事：`setup` 埋设（只种下状态、代价或伏笔，**不描述任何指向被锁真相的异常、疑点或暗示**）、`hint` 暗示（任何让读者怀疑被锁真相的现象，即使无法解释，也属于 hint，必须标为 hint）、`progression` 正式推进、`payoff` 兑现。
 - `serves` 只在**该键确实服务于某个受信责任**时填写，取值必须逐字来自 AUTHOR_CONSTRAINTS 中列出的句柄（去掉方括号，例如 `lock.long-truth.vol4-hint`）或已接纳义务 id；不得自造 id，也不得为凑字段引用无关约束（例如语言约束）。

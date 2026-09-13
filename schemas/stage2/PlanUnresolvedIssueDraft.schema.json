@@ -69,7 +69,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Structured planning unknown that can block the current window.",
+  "description": "Untrusted structured unresolved statement emitted by the Planner.\n\nThe host, rather than the model, assigns ``issue_id``.  A revision refers to a\nprior host identity through ``parent_issue_id``; a fresh statement is an ADD.\n``source_ids`` and ``affected_chapters`` are deliberately explicit because a\nsummary string is not a stable identity or a usable scope.",
   "properties": {
     "affected_chapters": {
       "default": [],
@@ -92,6 +92,19 @@
       "title": "Blocking",
       "type": "boolean"
     },
+    "closure_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Closure Reason"
+    },
     "forbidden_assumptions": {
       "default": [],
       "items": {
@@ -101,7 +114,15 @@
       "type": "array"
     },
     "issue_id": {
-      "$ref": "#/$defs/StableId"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "kind": {
       "$ref": "#/$defs/PlanUnresolvedKind",
@@ -124,6 +145,7 @@
     },
     "resolution_owner": {
       "default": "PLANNER",
+      "minLength": 1,
       "title": "Resolution Owner",
       "type": "string"
     },
@@ -150,9 +172,8 @@
     }
   },
   "required": [
-    "issue_id",
     "summary"
   ],
-  "title": "PlanUnresolvedIssue",
+  "title": "PlanUnresolvedIssueDraft",
   "type": "object"
 }

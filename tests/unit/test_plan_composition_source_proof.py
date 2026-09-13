@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Any
 
 import pytest
 
@@ -69,6 +69,8 @@ from novel_agent.domain.stage2 import (
     PlannerExecutionResult,
     PlanProposal,
     PlanUnresolvedIssue,
+    PlanUnresolvedOperation,
+    PlanUnresolvedOperationRecord,
     ProposalProvenance,
     ProposedItem,
 )
@@ -82,7 +84,7 @@ COMMIT = CommitId("sha256:" + "a" * 64)
 HASH = ArtifactId("sha256:" + "1" * 64)
 
 
-def _item(item_id: str, **payload: object) -> ProposedItem:
+def _item(item_id: str, **payload: Any) -> ProposedItem:
     return ProposedItem(
         item_id=StableId(item_id),
         kind="arc_volume",
@@ -96,7 +98,8 @@ def _proposal(
     *,
     number: int = 1,
     coverage: float = 1.0,
-    unresolved: tuple[object, ...] = (),
+    unresolved: tuple[PlanUnresolvedIssue, ...] = (),
+    unresolved_operations: tuple[PlanUnresolvedOperationRecord, ...] = (),
 ) -> PlanProposal:
     return PlanProposal(
         proposal_id=StableId(f"plan-proposal.n3.{number}"),
@@ -104,7 +107,8 @@ def _proposal(
         mode=AgentMode.ARC_VOLUME,
         base_commit=COMMIT,
         items=items,
-        unresolved=cast(tuple, unresolved),
+        unresolved=unresolved,
+        unresolved_operations=unresolved_operations,
         coverage=coverage,
         receipt=_receipt(AgentMode.ARC_VOLUME, AgentType.PLANNER),
     )
@@ -140,6 +144,7 @@ def _finding(
     host_issued: bool = False,
     summary: str = "field finding",
     kind: ReviewIssueKind = ReviewIssueKind.CONTRADICTION,
+    authorized_operations: tuple[str, ...] = (),
 ) -> PlanReviewIssue:
     return PlanReviewIssue(
         issue_id=StableId(f"issue.{item_id}.{field_path or 'whole'}"),
@@ -150,6 +155,7 @@ def _finding(
         field_path=field_path,
         quote="x" if blocking else None,
         unmet_condition="y" if blocking else None,
+        authorized_operations=authorized_operations,
         host_issued=host_issued,
     )
 
@@ -290,9 +296,7 @@ def test_a_host_advisory_finding_never_authorises_adding_an_advisory_id() -> Non
     is not an item of the proposal.  Every retry reproduced it exactly.
     """
 
-    advisory_ids = tuple(
-        f"plan-issue.draft.e49b3ae95f21509138cd2233.{index}" for index in range(3)
-    )
+    advisory_ids = tuple(f"plan-issue.draft.e49b3ae95f21509138cd2233.{index}" for index in range(3))
     parent = _proposal(
         (_item("vol-1", midpoint_reversal="父值"), _item("vol-2", midpoint_reversal="父值")),
         number=1,
@@ -458,6 +462,75 @@ def test_a_named_advisory_may_be_restated_and_an_unnamed_one_may_not_be_dropped(
     assert restated["plan-issue.draft.a.1"] == "第二卷的某个未决事实"
 
 
+def test_an_authorised_close_removes_active_issue_but_retains_close_history() -> None:
+    issue_id = StableId("plan-issue.draft.close")
+    active = PlanUnresolvedIssue(issue_id=issue_id, summary="待核验的状态")
+    parent_record = PlanUnresolvedOperationRecord(
+        operation=PlanUnresolvedOperation.ADD,
+        issue_id=issue_id,
+        summary=active.summary,
+    )
+    close_record = parent_record.model_copy(
+        update={
+            "operation": PlanUnresolvedOperation.CLOSE,
+            "parent_issue_id": issue_id,
+            "closure_reason": "宿主已核验并持久化来源",
+        }
+    )
+    parent = _proposal(
+        (_item("vol-1", goal="父"),),
+        number=1,
+        unresolved=(active,),
+        unresolved_operations=(parent_record,),
+    )
+    revised = parent.model_copy(
+        update={
+            "proposal_id": StableId("plan-proposal.n3.close"),
+            "unresolved": (),
+            "unresolved_operations": (close_record,),
+        }
+    )
+    scope = revision_scope(
+        _review(
+            _finding(
+                issue_id.root,
+                field_path="unresolved",
+                host_issued=True,
+                kind=ReviewIssueKind.BLOCKING_UNRESOLVED,
+                authorized_operations=("close",),
+            )
+        )
+    )
+
+    composed = compose_scoped_revision(parent, revised, scope)
+
+    assert composed.unresolved == ()
+    assert len(composed.unresolved_operations) == 1
+    assert composed.unresolved_operations[0].operation is PlanUnresolvedOperation.CLOSE
+    assert composed.unresolved_operations[0].issue_id == issue_id
+    assert composed.unresolved_operations[0].closure_reason == "宿主已核验并持久化来源"
+
+
+def test_structured_unresolved_operation_cannot_name_unknown_identity() -> None:
+    parent = _proposal((_item("vol-1", goal="父"),), number=1)
+    issue_id = StableId("plan-issue.draft.unknown")
+    active = PlanUnresolvedIssue(issue_id=issue_id, summary="模型擅自新增的未决事项")
+    operation = PlanUnresolvedOperationRecord(
+        operation=PlanUnresolvedOperation.ADD,
+        issue_id=issue_id,
+        summary=active.summary,
+    )
+    revised = _proposal(
+        parent.items,
+        number=2,
+        unresolved=(active,),
+        unresolved_operations=(operation,),
+    )
+
+    with pytest.raises(PlanCompositionError, match="unknown or unauthorized identity"):
+        compose_scoped_revision(parent, revised, PlanRevisionScope(targets=()))
+
+
 def test_validate_rejects_duplicate_items_and_metadata_drift() -> None:
     parent = _proposal((_item("vol-1", goal="父"),), number=1)
     scope = PlanRevisionScope(
@@ -557,7 +630,7 @@ def _composed_case(
 
 
 def test_the_proof_verifies_the_composition_it_claims(tmp_path: Path) -> None:
-    repo, parent, revised, review, proof, _ref = _composed_case(tmp_path)
+    _repo, parent, revised, review, proof, _ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
 
     ok, reason = verify_composition(
@@ -694,7 +767,7 @@ def test_the_materializer_accepts_a_legitimately_composed_candidate(tmp_path: Pa
     composition and finds exactly the candidate it was handed.
     """
 
-    repo, parent, revised, review, proof, proof_ref = _composed_case(tmp_path)
+    repo, parent, revised, _review, proof, proof_ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
     composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
     composed_execution = PlannerExecutionResult(
@@ -715,7 +788,7 @@ def test_the_materializer_accepts_a_legitimately_composed_candidate(tmp_path: Pa
 
 
 def test_the_materializer_refuses_a_missing_proof(tmp_path: Path) -> None:
-    repo, parent, revised, review, proof, proof_ref = _composed_case(tmp_path)
+    repo, parent, revised, _review, proof, _proof_ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
     composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
     # A composed candidate whose proof reference points at nothing.
@@ -741,7 +814,7 @@ def test_the_materializer_refuses_a_missing_proof(tmp_path: Path) -> None:
 
 
 def test_the_materializer_refuses_a_tampered_proof(tmp_path: Path) -> None:
-    repo, parent, revised, review, proof, _ref = _composed_case(tmp_path)
+    repo, parent, revised, _review, proof, _ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
     composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
     # The proof claims a wider scope than the review's findings authorise.
@@ -769,7 +842,7 @@ def test_the_materializer_refuses_a_tampered_proof(tmp_path: Path) -> None:
 
 
 def test_the_materializer_refuses_two_competing_compositions(tmp_path: Path) -> None:
-    repo, parent, revised, review, proof, proof_ref = _composed_case(tmp_path)
+    repo, parent, revised, _review, proof, proof_ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
     composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
     execution = PlannerExecutionResult(
@@ -800,7 +873,7 @@ def test_the_materializer_refuses_two_competing_compositions(tmp_path: Path) -> 
 def test_a_direct_execution_still_wins_over_a_composed_one(tmp_path: Path) -> None:
     """The original direct match is not deleted to make room for composition."""
 
-    repo, parent, revised, review, proof, proof_ref = _composed_case(tmp_path)
+    repo, parent, revised, _review, proof, proof_ref = _composed_case(tmp_path)
     composed = compose_scoped_revision(parent, revised, proof.scope)
     composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
     direct = PlannerExecutionResult(
@@ -894,7 +967,7 @@ def test_the_proof_records_the_raw_output_identity_not_a_restatement() -> None:
 # ------------------------------------------------- V09: progress identity across slices
 
 
-def _issues(*specs: tuple[str, str, str | None, str]) -> tuple[PlanReviewIssue, ...]:
+def _issues(*specs: tuple[ReviewIssueKind, str, str | None, str]) -> tuple[PlanReviewIssue, ...]:
     """Build findings from ``(kind, item, field_path, unmet_condition)`` specs."""
 
     return tuple(
@@ -913,11 +986,11 @@ def _issues(*specs: tuple[str, str, str | None, str]) -> tuple[PlanReviewIssue, 
     )
 
 
-def _seed(*specs: tuple[str, str, str | None, str]) -> tuple[str, ...]:
+def _seed(*specs: tuple[ReviewIssueKind, str, str | None, str]) -> tuple[str, ...]:
     return issue_identity_seed(_review(*_issues(*specs)), ())
 
 
-def _progress(seed: tuple[str, ...], *specs: tuple[str, str, str | None, str]) -> bool:
+def _progress(seed: tuple[str, ...], *specs: tuple[ReviewIssueKind, str, str | None, str]) -> bool:
     return progress_against(seed, _review(*_issues(*specs)))
 
 

@@ -337,12 +337,33 @@
     "PlanReviewIssue": {
       "additionalProperties": false,
       "properties": {
+        "actual": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual"
+        },
         "affected_item_ids": {
           "default": [],
           "items": {
             "$ref": "#/$defs/StableId"
           },
           "title": "Affected Item Ids",
+          "type": "array"
+        },
+        "authorized_operations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Authorized Operations",
           "type": "array"
         },
         "blocking": {
@@ -369,6 +390,19 @@
           },
           "title": "Evidence Refs",
           "type": "array"
+        },
+        "expected": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected"
         },
         "field_path": {
           "anyOf": [

@@ -15,7 +15,7 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import CreativeRunPolicy
 from novel_agent.domain.ids import CommitId, ProjectId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
-from novel_agent.domain.runtime import FailureClass
+from novel_agent.domain.runtime import FailureClass, RunEvent, TaskRecord
 from novel_agent.ports.model_endpoint import ModelEndpointError
 from novel_agent.runtime.creative_assembly import DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
 from novel_agent.runtime.production_bootstrap import resolve_registered_model_endpoints
@@ -249,10 +249,14 @@ def build_parser() -> argparse.ArgumentParser:
     classify.add_argument("--task-id", required=True)
     roots = runtime_commands.add_parser(
         "roots",
-        help="the current committed root identities and committed chapter count",
+        help="the current committed roots and fail-closed stage evidence",
     )
     roots.add_argument("--project-id", required=True)
     roots.add_argument("--object-store-root", type=Path)
+    roots.add_argument(
+        "--run-id",
+        help="optional run whose durable task/event stream proves acceptance and projection",
+    )
     advance = runtime_commands.add_parser("advance")
     advance.add_argument("--project-id", required=True)
     advance.add_argument("--run-id", required=True)
@@ -529,19 +533,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             # A stage's exit is proven from committed artifacts, not from the
             # absence of a READY task, so the driver needs to read the canonical
             # roots rather than infer progress from the task list.
-            manifest = commits.load_manifest(commits.current_commit(ProjectId(args.project_id)))
+            from novel_agent.adapters.runtime.materializers import PLAN_REVIEW_MEDIA_TYPE
+            from novel_agent.domain.creative_runtime import CandidateBinding
+            from novel_agent.services.projection import DerivedSnapshotRepository
+            from novel_agent.services.stage_exit_audit import (
+                StageRuntimeEvidence,
+                audit_stage_roots,
+                plan_review_is_reachable,
+                runtime_evidence_from_tasks,
+            )
+
+            project_id = ProjectId(args.project_id)
+            current_commit = commits.current_commit(project_id)
+            manifest = commits.load_manifest(current_commit)
             roots_payload: dict[str, object] = {
-                "commit": commits.current_commit(ProjectId(args.project_id)).root,
+                "commit": current_commit.root,
                 "plan_root": manifest.plan_root.artifact_id.root,
                 "world_root": manifest.world_root.artifact_id.root,
                 "text_root": manifest.text_root.artifact_id.root,
                 "project_profile_root": manifest.project_profile_root.artifact_id.root,
                 "committed_chapters": 0,
                 "committed_volumes": 0,
+                "g0_evidence_complete": False,
+                "g1_evidence_complete": False,
+                "g2_evidence_complete": False,
+                "g3_evidence_complete": False,
             }
             if args.object_store_root is not None:
-                from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
-                from novel_agent.domain.world import PlanLevel
+                from novel_agent.domain.benchmark import (
+                    PlanRootDocument,
+                    TextRootDocument,
+                )
+                from novel_agent.domain.memory import WorldRootDocument
                 from novel_agent.services.artifacts import ArtifactRepository
 
                 store = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
@@ -551,9 +574,61 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan_root = PlanRootDocument.model_validate_json(
                     store.read_verified(manifest.plan_root), strict=True
                 )
+                world_root = WorldRootDocument.model_validate_json(
+                    store.read_verified(manifest.world_root), strict=True
+                )
                 roots_payload["committed_chapters"] = len(text_root.chapters)
                 roots_payload["committed_volumes"] = sum(
-                    1 for node in plan_root.nodes if node.plan_level is PlanLevel.ARC_VOLUME
+                    1
+                    for node in plan_root.nodes
+                    if node.plan_level is not None and node.plan_level.value == "arc_volume"
+                )
+                run_tasks: tuple[TaskRecord, ...] = ()
+                run_events: tuple[RunEvent, ...] = ()
+                plan_reviewed = False
+                if args.run_id:
+                    run_id = RunId(args.run_id)
+                    run_tasks = RuntimeTaskQueryRepository(factory).list_run(run_id)
+                    run_events = events.replay(run_id)
+                    for task in run_tasks:
+                        if (
+                            task.kind.value != "plan_acceptance"
+                            or task.status.value != "succeeded"
+                            or task.candidate_binding_ref is None
+                        ):
+                            continue
+                        try:
+                            binding = CandidateBinding.model_validate_json(
+                                store.read_verified(task.candidate_binding_ref)
+                            )
+                        except (ValueError, RuntimeError):
+                            continue
+                        if plan_review_is_reachable(
+                            binding, review_media_type=PLAN_REVIEW_MEDIA_TYPE
+                        ):
+                            plan_reviewed = True
+                            break
+                runtime_evidence = (
+                    runtime_evidence_from_tasks(
+                        tuple(run_tasks),
+                        tuple(run_events),
+                        plan_reviewed=plan_reviewed,
+                    )
+                    if args.run_id
+                    else StageRuntimeEvidence()
+                )
+                snapshot = DerivedSnapshotRepository(factory).get_for_commit(current_commit)
+                roots_payload.update(
+                    audit_stage_roots(
+                        commit_id=current_commit,
+                        plan=plan_root,
+                        world=world_root,
+                        text=text_root,
+                        snapshot=snapshot,
+                        tasks=tuple(run_tasks),
+                        events=tuple(run_events),
+                        runtime=runtime_evidence,
+                    )
                 )
             print(json.dumps(roots_payload, ensure_ascii=False, sort_keys=True))
             return 0

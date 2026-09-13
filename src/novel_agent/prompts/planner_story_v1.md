@@ -14,3 +14,10 @@
 - 不得为了让条目通过而补一个占位 kind：缺少 kind 或描述时，宿主会同时拒绝并给出具体原因。
 
 `unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。
+
+`unresolved` 不是自由文本备注，而是结构化生命周期操作：每项填写
+`operation`（`ADD`/`MODIFY`/`CLOSE`）、`kind`、`summary`、`affected_chapters`、
+`resolution_owner`、`allowed_assumptions`、`forbidden_assumptions`、`source_ids` 与
+`source_artifact_refs`。`MODIFY`/`CLOSE` 必须使用宿主已给出的 `parent_issue_id`，
+`CLOSE` 必须有 `closure_reason`。不要填写 `issue_id`；宿主从 kind、范围、责任人和来源
+派生稳定身份。模型不得伪造宿主字段、凭摘要或下标匹配问题，也不得关闭未知问题。

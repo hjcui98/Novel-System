@@ -77,6 +77,7 @@ from novel_agent.domain.stage2 import (
     PlannerProposalDraft,
     PlanningTask,
     PlanProposal,
+    PlanUnresolvedIssue,
     ProjectIntentModel,
     ProposalProvenance,
     ProposedItem,
@@ -418,7 +419,7 @@ class _ModePlanner(_BootstrapPlanner):
         artifacts: ArtifactRepository,
         mode: AgentMode,
         *,
-        unresolved: tuple[str, ...] = (),
+        unresolved: tuple[PlanUnresolvedIssue, ...] = (),
     ) -> None:
         super().__init__(artifacts)
         self._mode = mode
@@ -2630,7 +2631,12 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
         (
             "plan-degraded",
             [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT],
-            ("unresolved author choice",),
+            (
+                PlanUnresolvedIssue(
+                    issue_id=StableId("plan-issue.test.author-choice"),
+                    summary="unresolved author choice",
+                ),
+            ),
             1,
             PlanningLoopTerminal.PLAN_CANDIDATE_READY,
         ),

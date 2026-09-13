@@ -69,7 +69,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Structured planning unknown that can block the current window.",
+  "description": "Durable operation history, including CLOSE records absent from active issues.",
   "properties": {
     "affected_chapters": {
       "default": [],
@@ -92,6 +92,19 @@
       "title": "Blocking",
       "type": "boolean"
     },
+    "closure_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Closure Reason"
+    },
     "forbidden_assumptions": {
       "default": [],
       "items": {
@@ -108,8 +121,7 @@
       "default": "UNSPECIFIED"
     },
     "operation": {
-      "$ref": "#/$defs/PlanUnresolvedOperation",
-      "default": "add"
+      "$ref": "#/$defs/PlanUnresolvedOperation"
     },
     "parent_issue_id": {
       "anyOf": [
@@ -124,6 +136,7 @@
     },
     "resolution_owner": {
       "default": "PLANNER",
+      "minLength": 1,
       "title": "Resolution Owner",
       "type": "string"
     },
@@ -150,9 +163,10 @@
     }
   },
   "required": [
+    "operation",
     "issue_id",
     "summary"
   ],
-  "title": "PlanUnresolvedIssue",
+  "title": "PlanUnresolvedOperationRecord",
   "type": "object"
 }

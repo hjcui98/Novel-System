@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -41,6 +41,7 @@ from novel_agent.adapters.runtime.materializers import (
 )
 from novel_agent.agents.plan_reviewer import apply_host_plan_review_constraints
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.author_constraints import AuthorConstraint, AuthorConstraintRoot
 from novel_agent.domain.creative_runtime import (
     AcceptedCandidateBinding,
     ActorKind,
@@ -57,6 +58,8 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.plan_composition import (
+    PlanCompositionProof,
+    PlanRevisionScope,
     PlanRevisionTarget,
     assess_composition,
     build_composition_proof,
@@ -86,6 +89,7 @@ from novel_agent.domain.stage2 import (
     ProposedItem,
 )
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.commits import CommitService
 from tests.unit.test_stage4_planning_contracts import _receipt
 
 VERSION = SchemaVersion("1.0.0")
@@ -126,8 +130,11 @@ _STAGE_KEYS = (
 )
 
 
-def _frozen_candidate() -> dict:
-    return json.loads(FROZEN_CANDIDATE.read_text(encoding="utf-8"))
+def _frozen_candidate() -> dict[str, Any]:
+    document = json.loads(FROZEN_CANDIDATE.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise AssertionError("the frozen candidate must be a JSON object")
+    return cast(dict[str, Any], document)
 
 
 def _proposal_from_frozen(*, proposal_id: str = "plan-proposal.d0.frozen") -> PlanProposal:
@@ -154,7 +161,7 @@ def _proposal_from_frozen(*, proposal_id: str = "plan-proposal.d0.frozen") -> Pl
     )
 
 
-def _author_constraints() -> tuple[object, ...]:
+def _author_constraints() -> tuple[AuthorConstraint, ...]:
     """The frozen author locks as the reviewer's catalogue.
 
     The locks do not reach a review as a raw file: they are projected onto the
@@ -166,21 +173,19 @@ def _author_constraints() -> tuple[object, ...]:
     return author_constraint_root()[0]
 
 
-def author_constraint_root() -> tuple[tuple[object, ...], object, ArtifactRef]:
+def author_constraint_root(
+    lock_path: Path = FROZEN_LOCKS,
+) -> tuple[tuple[AuthorConstraint, ...], AuthorConstraintRoot, ArtifactRef]:
     """``(constraints, root_document, profile_ref)`` from the frozen lock file."""
 
-    from novel_agent.domain.author_constraints import (
-        AuthorConstraint,
-        AuthorConstraintCategory,
-        AuthorConstraintRoot,
-    )
+    from novel_agent.domain.author_constraints import AuthorConstraintCategory
     from novel_agent.domain.planning_locks import (
         compile_planning_lock_channels,
         load_author_planning_locks,
     )
     from novel_agent.services.content_addressing import content_id
 
-    document = load_author_planning_locks(FROZEN_LOCKS.read_bytes())
+    document = load_author_planning_locks(lock_path.read_bytes())
     channels = compile_planning_lock_channels(document)
     profile_ref = ArtifactRef(
         artifact_id=content_id({"profile": document.root_hash.root}),
@@ -251,8 +256,11 @@ def _frozen_review(proposal: PlanProposal, target: ArtifactRef | None = None) ->
 
 
 def _stages_for(
-    payload: dict, chapter_start: int, chapter_end: int, locks: tuple[object, ...]
-) -> dict:
+    payload: dict[str, Any],
+    chapter_start: int,
+    chapter_end: int,
+    locks: tuple[AuthorConstraint, ...],
+) -> dict[str, Any]:
     """The repaired stage grid: every narrative slot a structured entry.
 
     Each stage sits inside its own volume.  A stage that reaches a responsibility
@@ -262,7 +270,7 @@ def _stages_for(
     finding demanded; it touches no other field.
     """
 
-    repaired: dict[str, object] = {}
+    repaired: dict[str, Any] = {}
     span = max(1, (chapter_end - chapter_start + 1) // 10)
     for index, key in enumerate(_STAGE_KEYS):
         low = chapter_start + index * span
@@ -289,7 +297,7 @@ def _stages_for(
     return repaired
 
 
-def _lock_open_at(locks: tuple[object, ...], low: int, high: int) -> str | None:
+def _lock_open_at(locks: tuple[AuthorConstraint, ...], low: int, high: int) -> str | None:
     """The lock whose boundary this window respects, if any claims the chapter.
 
     Only a lock that is already open at ``low`` and still open at ``high`` qualifies;
@@ -309,6 +317,14 @@ def _lock_open_at(locks: tuple[object, ...], low: int, high: int) -> str | None:
     return str(getattr(claiming[-1], "constraint_key", "") or "") or None
 
 
+def _climax_description(item: ProposedItem) -> str:
+    raw_climax = item.payload.get("volume_climax")
+    if not isinstance(raw_climax, dict):
+        return ""
+    description = raw_climax.get("description")
+    return description if isinstance(description, str) else ""
+
+
 def verified_findings(proposal: PlanProposal) -> tuple[PlanReviewIssue, ...]:
     """A review whose findings are grounded in the candidate it names.
 
@@ -318,11 +334,7 @@ def verified_findings(proposal: PlanProposal) -> tuple[PlanReviewIssue, ...]:
     by reading; deriving them here keeps the diagnostic deterministic.
     """
 
-    climaxes = {
-        item.item_id.root: str((item.payload.get("volume_climax") or {}).get("description") or "")
-        for item in proposal.items
-        if isinstance(item.payload.get("volume_climax"), dict)
-    }
+    climaxes = {item.item_id.root: _climax_description(item) for item in proposal.items}
     repeated = "正式揭露门被从对面推开"
     findings: list[PlanReviewIssue] = []
     for item in proposal.items:
@@ -339,7 +351,7 @@ def verified_findings(proposal: PlanProposal) -> tuple[PlanReviewIssue, ...]:
                     "再次验证还是新的后果"
                 ),
                 blocking=True,
-                affected_item_ids=(item.item_id.root and StableId(item.item_id.root),),
+                affected_item_ids=(item.item_id,),
                 field_path="volume_climax.description",
                 quote=description,
                 unmet_condition="每一次揭露必须说明它与前次是首次、验证还是新后果",
@@ -373,7 +385,7 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
         mode=AgentMode.ARC_VOLUME,
         accepted_obligation_ids=frozenset(),
         accepted_obligation_windows={},
-        author_constraints=locks,  # type: ignore[arg-type]
+        author_constraints=locks,
     )
     assert overlaid.verification_failures == ()
     assert not [item for item in overlaid.issues if item.blocking and not item.host_issued]
@@ -403,7 +415,7 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
         mode=AgentMode.ARC_VOLUME,
         accepted_obligation_ids=frozenset(),
         accepted_obligation_windows={},
-        author_constraints=locks,  # type: ignore[arg-type]
+        author_constraints=locks,
     )
     assert accurate.verification_failures == ()
     assert accurate.decision is ReviewDecision.REVISE
@@ -436,9 +448,7 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
     repeating = {
         item.item_id.root
         for item in candidate.items
-        if "正式揭露门被从对面推开"
-        in str((item.payload.get("volume_climax") or {}).get("description") or "")
-        and item.item_id.root != "vol-4"
+        if "正式揭露门被从对面推开" in _climax_description(item) and item.item_id.root != "vol-4"
     }
     assert repeating
     assert scope.targeted_item_ids == repeating
@@ -450,7 +460,7 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
     revised_items: list[ProposedItem] = []
     for item in candidate.items:
         payload = dict(item.payload)
-        climax = dict(cast(dict, payload.get("volume_climax") or {}))
+        climax = dict(cast(dict[str, Any], payload.get("volume_climax") or {}))
         if item.item_id.root in scope.targeted_item_ids:
             climax["description"] = (
                 f"{item.item_id.root} 的高潮给出与前卷不同的后果："  # noqa: RUF001
@@ -495,7 +505,7 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
         mode=AgentMode.ARC_VOLUME,
         accepted_obligation_ids=frozenset(),
         accepted_obligation_windows={},
-        author_constraints=locks,  # type: ignore[arg-type]
+        author_constraints=locks,
     )
     assert rereview.decision is ReviewDecision.ACCEPT, [
         issue.summary for issue in rereview.issues if issue.blocking
@@ -597,23 +607,21 @@ def _read_review(repo: ArtifactRepository, refs: tuple[ArtifactRef, ...]) -> Pla
     raise AssertionError("the diagnostic event carries no plan review")
 
 
-def _read_proof(repo: ArtifactRepository, ref: ArtifactRef):
-    from novel_agent.domain.plan_composition import PlanCompositionProof
-
+def _read_proof(repo: ArtifactRepository, ref: ArtifactRef) -> PlanCompositionProof:
     return PlanCompositionProof.model_validate_json(repo.read_verified(ref), strict=True)
 
 
-def _commits() -> object:
-    commits = Mock()
+def _commits() -> CommitService:
+    commits = Mock(spec=CommitService)
     commits.current_commit.return_value = COMMIT
-    return commits
+    return cast(CommitService, commits)
 
 
 def _diagnostic_binding(
     tmp_path: Path,
     parent: PlanProposal,
     revised: PlanProposal,
-    scope: object,
+    scope: PlanRevisionScope,
     review: PlanReview,
     composed: PlanProposal,
 ) -> tuple[ArtifactRepository, AcceptedCandidateBinding]:
@@ -647,9 +655,9 @@ def _diagnostic_binding(
         parent_ref=parent_ref,
         raw_execution_ref=raw_ref,
         review_ref=review_ref,
-        scope=scope,  # type: ignore[arg-type]
+        scope=scope,
         composed=composed,
-        out_of_scope=out_of_scope_items(parent, revised, scope),  # type: ignore[arg-type]
+        out_of_scope=out_of_scope_items(parent, revised, scope),
     )
     proof_ref = repo.put(proof.model_dump_json().encode(), PLAN_COMPOSITION_MEDIA_TYPE, VERSION)
     execution = PlannerExecutionResult(

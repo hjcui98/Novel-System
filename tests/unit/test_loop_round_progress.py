@@ -105,9 +105,66 @@ def test_planner_human_required_and_not_promotable_are_typed() -> None:
     blocked_failure, blocked_status, blocked_terminal = CreativeRuntimeService._planner_failure(
         PlanningTerminalStatus.BLOCKED
     )
-    assert blocked_failure is FailureClass.BASIS_CHANGED
-    assert blocked_status is TaskStatus.BLOCKED
-    assert blocked_terminal is CreativeRunTerminal.BLOCKED
+    assert blocked_failure is FailureClass.UNKNOWN
+    assert blocked_status is TaskStatus.RECOVERY_PENDING
+    assert blocked_terminal is CreativeRunTerminal.RECOVERY_PENDING
+
+
+def test_planner_failure_code_preserves_failure_semantics() -> None:
+    basis = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.BLOCKED,
+        "POST_GENESIS_BASIS_MISMATCH",
+    )
+    assert basis == (
+        FailureClass.BASIS_CHANGED,
+        TaskStatus.BLOCKED,
+        CreativeRunTerminal.BLOCKED,
+    )
+    contract = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.BLOCKED,
+        "PLANNER_STRUCTURED_OUTPUT_REJECTED",
+    )
+    assert contract == (
+        FailureClass.LEAF_SCHEMA_REJECTED,
+        TaskStatus.BLOCKED,
+        CreativeRunTerminal.BLOCKED,
+    )
+    recovery = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.SUSPENDED,
+        "CONTEXT_RUNTIME_FAILURE",
+    )
+    assert recovery == (
+        FailureClass.RUNTIME_CAPABILITY_UNAVAILABLE,
+        TaskStatus.RECOVERY_PENDING,
+        CreativeRunTerminal.RECOVERY_PENDING,
+    )
+    inquiry_stall = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.REVIEW_REQUIRED,
+        "INQUIRY_REVISION_NO_PROGRESS",
+    )
+    assert inquiry_stall == (
+        FailureClass.POISON_LOOP,
+        TaskStatus.BUDGET_REVIEW,
+        CreativeRunTerminal.BUDGET_REVIEW,
+    )
+    memory_gap = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.REVIEW_REQUIRED,
+        "MANDATORY_MEMORY_FACETS_UNRESOLVED",
+    )
+    assert memory_gap == (
+        FailureClass.CANON_EXTRACTION_GAP,
+        TaskStatus.BLOCKED,
+        CreativeRunTerminal.BLOCKED,
+    )
+    permission = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.REVIEW_REQUIRED,
+        "AUTHOR_AUTHORITY_NOT_VISIBLE",
+    )
+    assert permission == (
+        FailureClass.PERMISSION_DENIED,
+        TaskStatus.BLOCKED,
+        CreativeRunTerminal.BLOCKED,
+    )
 
 
 def test_not_ready_package_is_input_not_ready_not_an_exception() -> None:
