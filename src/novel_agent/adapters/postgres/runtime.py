@@ -8,9 +8,19 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from novel_agent.adapters.postgres.models import ProjectRow, RuntimeTaskProjectionRow
+from novel_agent.adapters.postgres.models import (
+    ProjectRow,
+    RuntimeEffectProjectionRow,
+    RuntimeTaskAttemptRow,
+    RuntimeTaskProjectionRow,
+)
 from novel_agent.domain.ids import ProjectId, RunId, TaskId
-from novel_agent.domain.runtime import TaskRecord, TaskStatus
+from novel_agent.domain.runtime import (
+    EffectStatus,
+    TaskAttempt,
+    TaskRecord,
+    TaskStatus,
+)
 
 
 class RuntimeTaskQueryRepository:
@@ -74,6 +84,70 @@ class RuntimeTaskQueryRepository:
                 .order_by(RuntimeTaskProjectionRow.updated_at, RuntimeTaskProjectionRow.task_id)
             )
             return tuple(TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows)
+
+    def get_task(self, task_id: TaskId) -> TaskRecord:
+        """One task by id, read from the projection the runtime already keeps."""
+
+        with self._session_factory() as session:
+            row = session.get(RuntimeTaskProjectionRow, task_id.root)
+        if row is None:
+            raise KeyError(f"unknown task {task_id.root}")
+        return TaskRecord.model_validate_json(json.dumps(row.task_json))
+
+    def last_settled_attempt(self, task_id: TaskId) -> TaskAttempt | None:
+        """The most recent attempt that has settled, or ``None`` if none has.
+
+        This is where a failure's canonical classification lives.  ``block_cause`` is
+        only populated for a ``BLOCKED`` task, so a task waiting for a retry reports
+        no cause at all while its own attempt row holds the real answer.
+        """
+
+        with self._session_factory() as session:
+            row = session.scalars(
+                select(RuntimeTaskAttemptRow)
+                .where(
+                    RuntimeTaskAttemptRow.task_id == task_id.root,
+                    RuntimeTaskAttemptRow.ended_at.is_not(None),
+                )
+                .order_by(RuntimeTaskAttemptRow.attempt_no.desc())
+                .limit(1)
+            ).first()
+        if row is None:
+            return None
+        return TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
+
+    def attempt_effect_ledger(
+        self, task_id: TaskId
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Provider sends for one task: unsettled, still outstanding, and answered.
+
+        A send that happened and whose result is unknown is why a blind retry is
+        unsafe, so a driver has to be able to see it.  The three groups are returned
+        separately because they call for three different handlings.
+        """
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(
+                    RuntimeEffectProjectionRow.effect_identity,
+                    RuntimeEffectProjectionRow.status,
+                ).where(RuntimeEffectProjectionRow.task_id == task_id.root)
+            ).all()
+        unsettled: list[str] = []
+        outstanding: list[str] = []
+        completed: list[str] = []
+        for effect_identity, status in rows:
+            if status == EffectStatus.REQUESTED.value:
+                outstanding.append(effect_identity)
+            elif status == EffectStatus.UNCERTAIN.value:
+                unsettled.append(effect_identity)
+            elif status == EffectStatus.COMPLETED.value:
+                completed.append(effect_identity)
+        return (
+            tuple(sorted(unsettled)),
+            tuple(sorted(outstanding)),
+            tuple(sorted(completed)),
+        )
 
     def next_scheduled_at(
         self,

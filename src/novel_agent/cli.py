@@ -74,7 +74,6 @@ def _load_artifact_refs(path: Path | None) -> tuple[ArtifactRef, ...]:
         raise ValueError("artifact refs file contains an invalid ArtifactRef") from error
 
 
-
 def _resolve_retrieval_options(
     args: argparse.Namespace,
     descriptors: tuple[ProductionRunDescriptor, ...],
@@ -115,9 +114,7 @@ def _resolve_retrieval_options(
         if explicit is not None:
             resolved[name] = explicit
             continue
-        from_descriptor = {
-            getattr(d, name) for d in descriptors if getattr(d, name) is not None
-        }
+        from_descriptor = {getattr(d, name) for d in descriptors if getattr(d, name) is not None}
         if len(from_descriptor) > 1:
             raise RuntimeError(
                 f"run descriptors were frozen against different {name} values: "
@@ -125,6 +122,7 @@ def _resolve_retrieval_options(
             )
         resolved[name] = next(iter(from_descriptor), None)
     return resolved
+
 
 def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runtime-parallelism", type=int, choices=(1, 2))
@@ -231,8 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--timeout-seconds", type=float, default=120.0)
     preflight.add_argument(
         "--embedding-url",
-        help="also probe this embedding endpoint (for example "
-        "http://127.0.0.1:8081/v1/embeddings)",
+        help="also probe this embedding endpoint (for example http://127.0.0.1:8081/v1/embeddings)",
     )
     preflight.add_argument(
         "--reranker-url",
@@ -245,6 +242,17 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--request", type=Path, required=True)
     status = runtime_commands.add_parser("status")
     status.add_argument("--run-id", required=True)
+    classify = runtime_commands.add_parser(
+        "classify",
+        help="the canonical recovery position of one task, read from its attempt ledger",
+    )
+    classify.add_argument("--task-id", required=True)
+    roots = runtime_commands.add_parser(
+        "roots",
+        help="the current committed root identities and committed chapter count",
+    )
+    roots.add_argument("--project-id", required=True)
+    roots.add_argument("--object-store-root", type=Path)
     advance = runtime_commands.add_parser("advance")
     advance.add_argument("--project-id", required=True)
     advance.add_argument("--run-id", required=True)
@@ -457,6 +465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from novel_agent.services.runtime_reporting import RuntimeReportService
 
         factory = build_session_factory(build_engine(args.database_url))
+        commits = CommitService(factory)
         events = RunEventLogRepository(factory)
         commands = RuntimeCommandService(
             factory,
@@ -515,6 +524,66 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.runtime_command == "status":
             tasks = RuntimeTaskQueryRepository(factory).list_run(RunId(args.run_id))
             print(json.dumps([item.model_dump(mode="json") for item in tasks], sort_keys=True))
+            return 0
+        if args.runtime_command == "roots":
+            # A stage's exit is proven from committed artifacts, not from the
+            # absence of a READY task, so the driver needs to read the canonical
+            # roots rather than infer progress from the task list.
+            manifest = commits.load_manifest(commits.current_commit(ProjectId(args.project_id)))
+            roots_payload: dict[str, object] = {
+                "commit": commits.current_commit(ProjectId(args.project_id)).root,
+                "plan_root": manifest.plan_root.artifact_id.root,
+                "world_root": manifest.world_root.artifact_id.root,
+                "text_root": manifest.text_root.artifact_id.root,
+                "project_profile_root": manifest.project_profile_root.artifact_id.root,
+                "committed_chapters": 0,
+                "committed_volumes": 0,
+            }
+            if args.object_store_root is not None:
+                from novel_agent.domain.benchmark import PlanRootDocument, TextRootDocument
+                from novel_agent.domain.world import PlanLevel
+                from novel_agent.services.artifacts import ArtifactRepository
+
+                store = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
+                text_root = TextRootDocument.model_validate_json(
+                    store.read_verified(manifest.text_root), strict=True
+                )
+                plan_root = PlanRootDocument.model_validate_json(
+                    store.read_verified(manifest.plan_root), strict=True
+                )
+                roots_payload["committed_chapters"] = len(text_root.chapters)
+                roots_payload["committed_volumes"] = sum(
+                    1 for node in plan_root.nodes if node.plan_level is PlanLevel.ARC_VOLUME
+                )
+            print(json.dumps(roots_payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.runtime_command == "classify":
+            from novel_agent.services.attempt_classification import classify_attempt
+
+            repository = RuntimeTaskQueryRepository(factory)
+            task_id = TaskId(args.task_id)
+            task = repository.get_task(task_id)
+            attempt = repository.last_settled_attempt(task_id)
+            unsettled, outstanding, completed = repository.attempt_effect_ledger(task_id)
+            classification = classify_attempt(
+                task_id=StableId(task_id.root),
+                task_status=task.status,
+                attempt=attempt,
+                unsettled_sends=unsettled,
+                outstanding_request_ids=outstanding,
+                completed_response_refs=completed,
+                block_cause=task.block_cause,
+            )
+            print(
+                json.dumps(
+                    {
+                        "classification": classification.model_dump(mode="json"),
+                        "safe_to_retry": classification.safe_to_retry,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
             return 0
         if args.runtime_command == "bootstrap-prepare":
             from novel_agent.domain.planning_locks import load_author_planning_locks
