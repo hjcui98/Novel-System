@@ -2344,6 +2344,9 @@ class PlanningContextLoopService:
                         visible_author_artifacts,
                     )
                     + f"\nREVIEW_REVISION={instruction}\n"
+                    "REVISION_SCOPE=只修改 REVIEW 点名条目/字段；其余条目的 payload 必须与 "  # noqa: RUF001
+                    "PARENT_PROPOSAL 逐字一致，不得重写整份计划。\n"  # noqa: RUF001
+                    f"PARENT_CANDIDATE_HASH={parent_proposal.proposal_id.root}\n"
                     f"REVIEW={plan_review.model_dump_json()}\n"
                     f"PARENT_PROPOSAL={parent_proposal.model_dump_json()}"
                 ),
