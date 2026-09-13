@@ -415,7 +415,14 @@ class CreativeRuntimeService:
                     CreativeRunTerminal.WAITING_RETRY,
                     str(error),
                 )
-            if planning_result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY:
+            escalated_review = (
+                planning_result.status is PlanningTerminalStatus.WAITING_INPUT
+                and planning_result.candidate is not None
+            )
+            if (
+                planning_result.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY
+                or escalated_review
+            ):
                 assert planning_result.candidate is not None
                 candidate = planning_result.candidate.model_copy(
                     update={
@@ -425,7 +432,20 @@ class CreativeRuntimeService:
                         "protected_chapter_index": task.protected_chapter_index,
                     }
                 )
-                waiting = self._acceptance_task(task, candidate)
+                # An escalated review still needs an author ruling, so the acceptance
+                # task is created with the escalation recorded on it.  Accepting it is
+                # then an explicit, durable author decision instead of a silent
+                # approval of a review that asked for a human.
+                waiting = self._acceptance_task(
+                    task,
+                    candidate,
+                    block_cause=(
+                        "plan_review_human_required: "
+                        + (planning_result.failure_code or "independent review escalated")
+                        if escalated_review
+                        else None
+                    ),
+                )
                 self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.SUCCEEDED,
@@ -443,7 +463,7 @@ class CreativeRuntimeService:
                 return self._result(
                     waiting,
                     CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE,
-                    "plan_candidate_ready",
+                    "plan_review_escalated" if escalated_review else "plan_candidate_ready",
                 )
             if attempt.attempt_no >= 2 and planner_failure_is_no_progress(
                 planning_result.failure_code
@@ -907,9 +927,7 @@ class CreativeRuntimeService:
                     f"candidate_materialization_rejected: {error}",
                 )
             if report.status is not ValidationStatus.PASSED:
-                failing = tuple(
-                    f"{finding.code}: {finding.message}" for finding in report.findings
-                )
+                failing = tuple(f"{finding.code}: {finding.message}" for finding in report.findings)
                 settled = self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.FAILED,
@@ -1601,7 +1619,13 @@ class CreativeRuntimeService:
             self._artifacts.read_verified(task.candidate_binding_ref)
         )
 
-    def _acceptance_task(self, previous: TaskRecord, candidate: CandidateBinding) -> TaskRecord:
+    def _acceptance_task(
+        self,
+        previous: TaskRecord,
+        candidate: CandidateBinding,
+        *,
+        block_cause: str | None = None,
+    ) -> TaskRecord:
         kind = (
             TaskKind.PLAN_ACCEPTANCE
             if candidate.kind is CandidateKind.PLAN
@@ -1643,6 +1667,7 @@ class CreativeRuntimeService:
             planning_generation=previous.planning_generation,
             protected_chapter_index=previous.protected_chapter_index,
             affects_future_plan=candidate.affects_future_plan,
+            block_cause=block_cause,
         )
 
     @staticmethod

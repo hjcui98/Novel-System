@@ -239,11 +239,21 @@ class PlanningLoopResult(DomainModel):
     @model_validator(mode="after")
     def validate_terminal(self) -> PlanningLoopResult:
         ready = self.status is PlanningTerminalStatus.PLAN_CANDIDATE_READY
-        if ready != (self.candidate is not None):
-            raise ValueError("only PLAN_CANDIDATE_READY carries a candidate")
+        # An independent review may escalate a settled proposal to the author instead
+        # of accepting it.  That proposal is still an immutable candidate the author
+        # rules on, so WAITING_INPUT may carry one; every other terminal may not.
+        escalated = self.status is PlanningTerminalStatus.WAITING_INPUT
+        if not (ready or escalated) and self.candidate is not None:
+            raise ValueError("only a settled plan candidate carries a candidate binding")
+        if ready and self.candidate is None:
+            raise ValueError("PLAN_CANDIDATE_READY requires a candidate binding")
         if ready and self.failure_code is not None:
             raise ValueError("ready Planner result cannot carry a failure")
-        if not ready and (self.failure_code is None or self.failure_detail is None):
+        if (
+            not ready
+            and not escalated
+            and (self.failure_code is None or self.failure_detail is None)
+        ):
             raise ValueError("non-ready Planner result requires typed failure detail")
         return self
 

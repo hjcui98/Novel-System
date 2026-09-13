@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from pydantic import ValidationError
 
 from novel_agent.domain.agent_context import LoopRoundProgress, LoopRoundProgressKind
 from novel_agent.domain.artifacts import ArtifactRef
@@ -1021,15 +1022,139 @@ def _planning_result(
     status: PlanningTerminalStatus,
     *,
     failure_code: str,
+    candidate: CandidateBinding | None = None,
 ) -> PlanningLoopResult:
     return PlanningLoopResult(
         result_id=StableId("planner.result"),
         run_id=RunId("run.recovery"),
         task_id=TaskId("task.recovery"),
         status=status,
+        candidate=candidate,
         failure_code=failure_code,
         failure_detail="injected planner terminal",
     )
+
+
+def _plan_candidate_binding(**overrides: object) -> CandidateBinding:
+    proposal_ref = _ref()
+    payload: dict[str, object] = {
+        "candidate_id": StableId("plan-candidate.escalated"),
+        "kind": CandidateKind.PLAN,
+        "artifact_ref": proposal_ref,
+        "candidate_hash": proposal_ref.artifact_id.root,
+        "basis_commit": CommitId("sha256:" + "1" * 64),
+        "basis_snapshot": StableId("snapshot.recovery"),
+    }
+    payload.update(overrides)
+    return CandidateBinding(**payload)  # type: ignore[arg-type]
+
+
+def test_only_a_settled_proposal_may_carry_a_candidate_binding() -> None:
+    """The escalated terminal joins the ready terminal as a candidate carrier."""
+
+    candidate = _plan_candidate_binding()
+    escalated = PlanningLoopResult(
+        result_id=StableId("planner.result.escalated"),
+        run_id=RunId("run.recovery"),
+        task_id=TaskId("task.recovery"),
+        status=PlanningTerminalStatus.WAITING_INPUT,
+        candidate=candidate,
+        failure_code="PLAN_REVIEW_HUMAN_REQUIRED",
+        failure_detail="independent review escalated to the author",
+    )
+    assert escalated.candidate is not None
+
+    with pytest.raises(ValidationError, match="only a settled plan candidate"):
+        PlanningLoopResult(
+            result_id=StableId("planner.result.suspended"),
+            run_id=RunId("run.recovery"),
+            task_id=TaskId("task.recovery"),
+            status=PlanningTerminalStatus.SUSPENDED,
+            candidate=candidate,
+            failure_code="PLANNER_MEMORY_SLICE_EXHAUSTED",
+            failure_detail="injected",
+        )
+    with pytest.raises(ValidationError, match="requires a candidate binding"):
+        PlanningLoopResult(
+            result_id=StableId("planner.result.ready"),
+            run_id=RunId("run.recovery"),
+            task_id=TaskId("task.recovery"),
+            status=PlanningTerminalStatus.PLAN_CANDIDATE_READY,
+        )
+
+
+def test_an_escalated_plan_review_creates_the_author_acceptance_front() -> None:
+    """A review that asks for a human must still reach a task the author can rule on.
+
+    The proposal of a human_required review used to be dropped, leaving the planning
+    task itself in WAITING_INPUT with accept/reject advertised and no command able to
+    resolve it.  The escalated proposal now becomes a real plan-acceptance task whose
+    block cause records that the review escalated instead of approving.
+    """
+
+    attempt, fence = _fence_pair()
+    commands = Mock()
+    commands.heartbeat_interval_seconds = 60.0
+    commands.claim.return_value = (attempt, fence)
+    commands.settle_attempt.return_value = _task(status=TaskStatus.SUCCEEDED)
+    artifacts = Mock()
+    artifacts.put.return_value = _ref("b")
+    planner = Mock()
+    planner.run = AsyncMock(
+        return_value=_planning_result(
+            PlanningTerminalStatus.WAITING_INPUT,
+            failure_code="PLAN_REVIEW_HUMAN_REQUIRED",
+            candidate=_plan_candidate_binding(),
+        )
+    )
+    service = _service(commands=commands, planner=planner, artifacts=artifacts)
+    # The pinned policy does not auto-accept, so the author's ruling is required.
+    cast(Any, service)._policy_resolver.return_value = CreativeRunPolicy(
+        automation_mode=AutomationMode.AUTO,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        auto_accept_plan=False,
+        auto_accept_draft=False,
+    )
+    commands.get_task.return_value = _task()
+
+    result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="worker"))
+
+    assert result.terminal is CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE
+    assert result.reason_code == "plan_review_escalated"
+    successor = commands.settle_attempt.call_args.kwargs["successor_tasks"][0]
+    assert successor.kind is TaskKind.PLAN_ACCEPTANCE
+    assert successor.status is TaskStatus.WAITING_INPUT
+    assert successor.candidate_binding_ref is not None
+    assert successor.block_cause is not None
+    assert "plan_review_human_required" in successor.block_cause
+    assert successor.dependency_task_ids == (TaskId("task.recovery"),)
+
+
+def test_an_escalated_review_without_a_proposal_keeps_the_planning_front() -> None:
+    """No proposal means there is nothing to accept, so the planning front stays."""
+
+    attempt, fence = _fence_pair()
+    commands = Mock()
+    commands.heartbeat_interval_seconds = 60.0
+    commands.claim.return_value = (attempt, fence)
+    commands.settle_attempt.return_value = _task(status=TaskStatus.WAITING_INPUT)
+    planner = Mock()
+    planner.run = AsyncMock(
+        return_value=_planning_result(
+            PlanningTerminalStatus.WAITING_INPUT,
+            failure_code="PLAN_REVIEW_HUMAN_REQUIRED",
+        )
+    )
+    service = _service(commands=commands, planner=planner)
+    commands.get_task.return_value = _task()
+
+    result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="worker"))
+
+    assert result.terminal is CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE
+    settle_kwargs = commands.settle_attempt.call_args.kwargs
+    assert settle_kwargs.get("successor_tasks", ()) == ()
+    assert settle_kwargs["terminal_status"] is TaskStatus.WAITING_INPUT
 
 
 def test_legal_commands_cover_waiting_retry_blocked_and_lookahead() -> None:

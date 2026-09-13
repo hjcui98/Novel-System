@@ -655,3 +655,60 @@ new: []   fixed: []   identical vs R0 baseline: True
 ```
 
 未运行完整 `make quality`，未修改覆盖率阈值。
+
+## 14. 审校升级为人裁决时的作者出口（2026-09-13）
+
+### 14.1 真实运行暴露的缺口
+
+v14（全新 8003 真实运行）第一次把 STORY 规划跑到验收边界，host review 给出：
+
+```text
+decision = human_required
+issue.long_range_payoff_without_time_window.story.reader_promise
+long-range PROMISE/FORESHADOWING requires not_before_chapter
+```
+
+这是**有意**的宿主策略（`plan_reviewer.py`：长程 PROMISE/FORESHADOWING 缺窗口时
+`decision=HUMAN_REQUIRED`、`revision_instruction=None`——不许 Planner 替作者发明期限）。
+但升级之后没有任何裁决出口：
+
+| 层 | 现状 |
+|---|---|
+| 状态机 | `_legal_commands(WAITING_INPUT)` 报 `accept / reject / cancel` |
+| 任务 | 停在 `plan_candidate` 任务本身（`WAITING_INPUT`，`failure_class=leaf_review_required`），**没有** `plan_acceptance` 任务 |
+| CLI | 只有 `accept-plan / reject-plan`，而 `RuntimeAcceptanceService.submit` 要求任务类型是 `PLAN_ACCEPTANCE` 且带 `candidate_binding_ref` |
+| 适配器 | 非 `PLAN_CANDIDATE_READY` 的终态**不构造** `CandidateBinding`（`stage4_planner.py`） |
+
+于是升级路径是一条死路：作者被告知可以 accept/reject，但没有任何命令能把它落盘。
+
+### 14.2 实现
+
+- `adapters/runtime/stage4_planner.py`：`HUMAN_REQUIRED` 也构造并持久化提案候选
+  （`plan-proposal` 制品 + 血缘），返回 `WAITING_INPUT` + `candidate` +
+  `failure_code=PLAN_REVIEW_HUMAN_REQUIRED`；
+- `domain/creative_runtime.PlanningLoopResult`：契约放宽为"仅已结算提案可携带候选"——
+  `PLAN_CANDIDATE_READY` 必须携带，`WAITING_INPUT` 可以携带，其余终态不得携带；
+- `services/creative_runtime.py`：`WAITING_INPUT` 且带候选时按 ready 路径创建
+  `PLAN_ACCEPTANCE` 任务并结算候选任务，理由码 `plan_review_escalated`；
+  验收任务带 `block_cause = plan_review_human_required: <failure_code>`，
+  使"作者在升级状态下裁决"成为**可审计的显式决定**，而不是静默通过一次要求人审的复审；
+- 无候选的 `WAITING_INPUT`（例如规划器明确要求人给输入但没有可接受提案）保持原语义。
+
+### 14.3 证据
+
+```text
+tests/unit/test_creative_runtime_recovery.py
+  test_only_a_settled_proposal_may_carry_a_candidate_binding
+  test_an_escalated_plan_review_creates_the_author_acceptance_front
+  test_an_escalated_review_without_a_proposal_keeps_the_planning_front
+  45 passed
+tests/unit/test_stage5_runtime_domain.py::test_candidate_acceptance_and_planner_terminals_are_strict
+  更新为新的候选携带契约（非 ready 终态仍拒绝携带候选）
+```
+
+### 14.4 作者裁决（人审由执行方代行）
+
+升级项 `story.reader_promise` 的裁决：**接受**，理由随验收命令落盘——
+该条是长期兑现承诺，其窗口由作者自己的长程真相锁界定（最早 350 章开始暗示、
+401 章起正式推进，见 `lock.long-truth.vol4-hint` / `lock.long-truth.vol5-advance`），
+因此不需要 Planner 发明新期限；作者接受该提案并保留"不得早于 350/401 兑现"的既有约束。

@@ -253,7 +253,7 @@ def test_candidate_acceptance_and_planner_terminals_are_strict() -> None:
             task_id=TaskId("task.plan"),
             status=PlanningTerminalStatus.BLOCKED,
         )
-    with pytest.raises(ValidationError, match="only PLAN_CANDIDATE_READY"):
+    with pytest.raises(ValidationError, match="only a settled plan candidate"):
         PlanningLoopResult(
             result_id=StableId("planner.blocked-with-candidate"),
             run_id=RunId("run.stage5"),
@@ -262,6 +262,28 @@ def test_candidate_acceptance_and_planner_terminals_are_strict() -> None:
             candidate=candidate,
             failure_code="blocked",
             failure_detail="blocked",
+        )
+    # An escalated review is still a settled proposal the author rules on, so the
+    # WAITING_INPUT terminal is the one non-ready terminal allowed to carry it.
+    escalated = PlanningLoopResult(
+        result_id=StableId("planner.escalated"),
+        run_id=RunId("run.stage5"),
+        task_id=TaskId("task.plan"),
+        status=PlanningTerminalStatus.WAITING_INPUT,
+        candidate=candidate,
+        failure_code="PLAN_REVIEW_HUMAN_REQUIRED",
+        failure_detail="independent review escalated to the author",
+    )
+    assert escalated.candidate == candidate
+    with pytest.raises(ValidationError, match="only a settled plan candidate"):
+        PlanningLoopResult(
+            result_id=StableId("planner.suspended-with-candidate"),
+            run_id=RunId("run.stage5"),
+            task_id=TaskId("task.plan"),
+            status=PlanningTerminalStatus.SUSPENDED,
+            candidate=candidate,
+            failure_code="PLANNER_MEMORY_SLICE_EXHAUSTED",
+            failure_detail="slice exhausted",
         )
     with pytest.raises(ValidationError, match="cannot carry a failure"):
         PlanningLoopResult(

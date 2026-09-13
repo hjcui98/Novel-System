@@ -365,7 +365,14 @@ class Stage4PlanningLeafAdapter:
         )
         if result.request_id != detailed.request_id:
             raise RuntimeError("Stage 4 Planner returned cross-request lineage")
-        if result.terminal is Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY:
+        # An escalated review ("human_required") is still a settled proposal: the
+        # author has to rule on it, and that ruling needs the same immutable candidate
+        # binding a ready proposal gets.  Without it the only front the author could
+        # touch was the planning task, which no author command can resolve.
+        if result.terminal in {
+            Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY,
+            Stage4PlanningLoopTerminal.HUMAN_REQUIRED,
+        }:
             assert result.proposal is not None
             proposal_ref = self._artifacts.put(
                 canonical_json_bytes(result.proposal.model_dump(mode="json")),
@@ -386,6 +393,7 @@ class Stage4PlanningLeafAdapter:
                 basis_snapshot=request.basis_snapshot,
                 lineage_artifact_refs=lineage,
             )
+            escalated = result.terminal is Stage4PlanningLoopTerminal.HUMAN_REQUIRED
             return PlanningLoopResult(
                 result_id=bounded_stable_id(
                     f"{request.task_id.root}.planner-result",
@@ -393,9 +401,17 @@ class Stage4PlanningLeafAdapter:
                 ),
                 run_id=request.run_id,
                 task_id=request.task_id,
-                status=PlanningTerminalStatus.PLAN_CANDIDATE_READY,
+                status=(
+                    PlanningTerminalStatus.WAITING_INPUT
+                    if escalated
+                    else PlanningTerminalStatus.PLAN_CANDIDATE_READY
+                ),
                 candidate=candidate,
                 artifact_refs=lineage,
+                failure_code="PLAN_REVIEW_HUMAN_REQUIRED" if escalated else None,
+                failure_detail=(
+                    "independent review escalated to the author" if escalated else None
+                ),
             )
 
         status = self._terminal(result.terminal)
