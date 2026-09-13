@@ -13,5 +13,7 @@ Fail closed on long-range timing.
   `not_before_chapter`, whatever its role label says, and another responsibility's boundary
   never blocks it. Planting (`setup`) may reference a lock and still happen earlier. An unknown
   `serves` handle is a blocking fabrication.
-- Judge the stage by what its description does, not by its label: a stage that discloses
-  locked information is a hint/payoff even when it is labelled `setup`.
+- Judge the stage by what its description does. A stage that discloses locked information
+  without a `serves` handle is blocking: ask for the right responsibility there, not for a
+  different label. Once the stage serves that responsibility, the host checks the boundary
+  itself and a `setup`/`hint` wording dispute is not a blocking finding.

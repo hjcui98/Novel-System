@@ -483,4 +483,7 @@ def test_the_reviewer_prompt_keeps_the_prose_semantic_rule() -> None:
     text = (PACKAGE_ROOT / "prompts" / "plan_reviewer_v1.md").read_text(encoding="utf-8")
 
     assert "VOLUME_STAGE_WINDOW_VIOLATION" in text
-    assert "把实质揭露改标为 `setup`" in text
+    # The blocking rule is about a missing responsibility handle and a crossed
+    # boundary, not about the wording of a label the host no longer relies on.
+    assert "没有** `serves`" in text
+    assert "不要仅因 `role` 标签的措辞" in text
