@@ -28,6 +28,7 @@ from novel_agent.domain.planning import (
     ReviewTargetKind,
     missing_volume_structure_keys,
     volume_stage_grid_defects,
+    volume_stage_window_defects,
 )
 from novel_agent.domain.planning_coverage import (
     compile_planning_coverage_report,
@@ -66,6 +67,7 @@ _HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
     ReviewIssueKind.UNRESOLVED_SCOPE_MISSING: ("affected_chapters",),
     ReviewIssueKind.EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION: ("target_chapter_start",),
     ReviewIssueKind.OBLIGATION_CONTRACT: ("kind",),
+    ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: ("stage_windows",),
 }
 
 
@@ -174,7 +176,7 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
                     # from the draft instead of filing it as an advisory.
                     demands.append(
                         f"unresolved[{item_id.root}].{field} 必须列出它质疑的每一章"
-                        "（或直接在提案中修掉该冲突，不再以 advisory 形式保留）"
+                        "（或直接在提案中修掉该冲突，不再以 advisory 形式保留）"  # noqa: RUF001
                     )
                 else:
                     demands.append(f"{item_id.root}.{field}")
@@ -275,6 +277,15 @@ def _host_issues_for_items(
                         _host_issue(
                             ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
                             f"VOLUME_STAGE_UNUSABLE: {defect}",
+                            item_id,
+                            blocking=True,
+                        )
+                    )
+                for defect in volume_stage_window_defects(item_payload):
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION,
+                            f"VOLUME_STAGE_WINDOW: {defect}",
                             item_id,
                             blocking=True,
                         )

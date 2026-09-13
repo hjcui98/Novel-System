@@ -1166,6 +1166,9 @@ class PlanningContextLoopService:
             )
 
         plan_revisions_this_slice = 0
+        # Within one slice an identical blocking finding set means the revision changed
+        # nothing the host can check, so the loop stops instead of paying for the same
+        # revision again; across slices the task's own attempt budget bounds the work.
         previous_blocking_signature: tuple[tuple[str, tuple[str, ...]], ...] | None = None
         reviewer_memory_this_slice = 0
         planner_memory_this_slice = 0

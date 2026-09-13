@@ -61,6 +61,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.model_calls import ModelRole
 from novel_agent.domain.planning import (
+    VOLUME_NARRATIVE_STAGE_KEYS,
     VOLUME_STRUCTURE_REQUIRED_KEYS,
     PlanningBudgets,
     PlanningLoopEventReceipt,
@@ -647,6 +648,11 @@ def _volume_slots(index: int, *, slots: bool = True) -> dict[str, object]:
     payload: dict[str, object] = {
         key: f"{key}.{index}" for key in VOLUME_STRUCTURE_REQUIRED_KEYS
     }
+    # The narrative slots carry a window and a role now, so a fixture that wants a
+    # reviewable volume declares them like the production planner must.
+    start = index * 100 + 1
+    for key in VOLUME_NARRATIVE_STAGE_KEYS:
+        payload[key] = {"description": f"{key}.{index}", "window": start, "role": "setup"}
     if slots:
         payload["obligation_plan"] = [
             {
