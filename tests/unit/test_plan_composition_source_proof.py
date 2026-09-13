@@ -68,6 +68,7 @@ from novel_agent.domain.stage2 import (
     AgentType,
     PlannerExecutionResult,
     PlanProposal,
+    PlanUnresolvedIssue,
     ProposalProvenance,
     ProposedItem,
 )
@@ -273,6 +274,66 @@ def test_an_authorised_structural_repair_still_works() -> None:
     assert PlanRevisionOperation.ADD in scope.target_for("vol-2").operations  # type: ignore[union-attr]
     composed = compose_scoped_revision(parent, revised, scope)
     assert [item.item_id.root for item in composed.items] == ["vol-1", "vol-2"]
+
+
+def test_a_host_advisory_finding_never_authorises_adding_an_advisory_id() -> None:
+    """A blocking advisory must not put ``plan-issue.`` ids into the authorised scope.
+
+    Live ARC_VOLUME run ``run.yujin-jiuxu.v24.plan.arc-volume.g0`` failed with
+    ``validation_rejected`` on a *correct* candidate.  The host files its advisory
+    findings as ``ReviewIssueKind.UNRESOLVED_SCOPE_MISSING``, and the English text of
+    that host finding ("this advisory questions chapters 1-100 but declares no
+    affected_chapters") contains the word "missing".  The wording heuristic in
+    ``_issue_operations`` therefore read a blocking advisory as "an item is missing",
+    authorised ADD for the advisory's ``plan-issue.`` id, and
+    ``validate_composed_proposal`` then demanded the composed plan contain an id that
+    is not an item of the proposal.  Every retry reproduced it exactly.
+    """
+
+    advisory_ids = tuple(
+        f"plan-issue.draft.e49b3ae95f21509138cd2233.{index}" for index in range(3)
+    )
+    parent = _proposal(
+        (_item("vol-1", midpoint_reversal="父值"), _item("vol-2", midpoint_reversal="父值")),
+        number=1,
+        unresolved=tuple(
+            PlanUnresolvedIssue(
+                issue_id=StableId(issue_id),
+                summary=f"第 {index + 1} 卷的某个未决事实 [relation_state]",
+            )
+            for index, issue_id in enumerate(advisory_ids)
+        ),
+    )
+    # The host's own finding, exactly as the live run recorded it.
+    findings = tuple(
+        _finding(
+            issue_id,
+            field_path=None,
+            host_issued=True,
+            kind=ReviewIssueKind.UNRESOLVED_SCOPE_MISSING,
+            summary=(
+                "UNRESOLVED_SCOPE_MISSING: this advisory questions chapters "
+                f"{(index + 1) * 100 - 99}-{(index + 1) * 100} but declares no "
+                "affected_chapters, so the uncertainty cannot be checked at the "
+                "affected chapter"
+            ),
+        )
+        for index, issue_id in enumerate(advisory_ids)
+    )
+    review = _review(*findings)
+
+    scope = revision_scope(review)
+
+    # No wording may turn an advisory id into an addable plan item.  A target entry
+    # for the advisory is harmless -- a target only bounds writes *inside* an item the
+    # parent already has, and `_compose_items` ignores one whose id is not a parent
+    # item -- so the property that matters is precisely `additions`.
+    assert scope.additions == (), scope.additions
+
+    # The composition of correct output therefore validates instead of raising the
+    # out-of-scope error the live run hit.
+    composed = compose_scoped_revision(parent, parent, scope)
+    assert {item.item_id.root for item in composed.items} == {"vol-1", "vol-2"}
 
 
 def test_a_named_item_that_disappeared_is_restored_unless_removal_was_authorised() -> None:

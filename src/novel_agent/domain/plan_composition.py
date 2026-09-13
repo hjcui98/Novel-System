@@ -198,15 +198,34 @@ def _issue_operations(issue: PlanReviewIssue) -> tuple[PlanRevisionOperation, ..
     Structural repair has to be asked for.  A host finding that says an item is
     missing or duplicated authorises the matching add or remove; nothing else does,
     and a model finding never authorises deleting an item the host did not name.
+
+    ADD is additionally restricted to ids that can *be* plan items.  The host files
+    its advisory findings against ``plan-issue.`` ids, and those are not items of the
+    proposal, so no wording may ever authorise adding one.  The wording heuristic
+    alone did exactly that: ``UNRESOLVED_SCOPE_MISSING`` is a host finding whose
+    English summary contains the word "missing", so a blocking advisory was read as
+    "an item is missing", the advisory id entered the authorised scope, and the
+    composed plan could never contain it.  The whole composed candidate was then
+    rejected as out of scope, deterministically, on correct output.
     """
 
     summary = issue.summary
     operations = [PlanRevisionOperation.MODIFY]
-    if issue.host_issued and _mentions_missing(summary):
+    if issue.host_issued and _mentions_missing(summary) and not _is_advisory_id(issue):
         operations.append(PlanRevisionOperation.ADD)
     if issue.host_issued and _mentions_duplicate(summary):
         operations.append(PlanRevisionOperation.REMOVE)
     return tuple(operations)
+
+
+# The reserved namespace for unresolved-advisory identities.  A proposal item never
+# carries it, so it is the reliable way to tell "this finding names an item" from
+# "this finding names an advisory".
+_ADVISORY_ID_PREFIX = "plan-issue."
+
+
+def _is_advisory_id(issue: PlanReviewIssue) -> bool:
+    return any(item_id.root.startswith(_ADVISORY_ID_PREFIX) for item_id in issue.affected_item_ids)
 
 
 _MISSING_MARKERS = ("missing", "MISSING", "缺少", "缺卷", "未提供")
@@ -538,9 +557,7 @@ def seed_details(seed: Sequence[str]) -> frozenset[str]:
 def seed_attempted(seed: Sequence[str]) -> frozenset[str]:
     """The problem identities an earlier revision has already been spent on."""
 
-    return frozenset(
-        entry[len("attempted:") :] for entry in seed if entry.startswith("attempted:")
-    )
+    return frozenset(entry[len("attempted:") :] for entry in seed if entry.startswith("attempted:"))
 
 
 def progress_against(seed: Sequence[str], review: PlanReview) -> bool:
