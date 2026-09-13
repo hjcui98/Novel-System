@@ -3,6 +3,9 @@
 对应指导：`docs/yujin_jiuxu_next_stage_execution_guidance_20260913.md` 第 12.1 节（整合与冻结）、
 第 12.2 节（八卷状态变化）、第 12.3 节（各阶段出口）。
 
+> 后续进展见第 9 节：v24 已跑完 G0 的 STORY 层并提交，ARC_VOLUME 层暴露了一个
+> 审校器可自填宿主判定字段的真实缺陷，已修复（`70ad5ff`）。
+
 ## 1. 本轮到达的位置
 
 G0 已完成**身份选择、现场冻结、preflight、Genesis prepare 与 Genesis commit**，
@@ -261,3 +264,62 @@ bash commands/60_run_stage.sh g0 60    # 受版本管理的 G0 驱动（证据�
 | `docs/remediation/v24_g0_start_and_blocker_20260913.md` | 补记 Genesis 已落库、精确停止点、两处再入修复 |
 
 v24 的 `objects/`、`state/`、`logs/`、`receipts/` 等运行产物按仓库 `.gitignore` 不入库。
+
+## 9. v24 实际跑进 G0 之后（2026-09-13 22:4x–23:0x）
+
+宿主侧解除阻塞后，v24 一路跑到了指导要的层级，并在这条路上暴露了第二个真实代码缺陷。
+
+### 9.1 已完成的部分
+
+| 步骤 | 证据 |
+|---|---|
+| 描述符冻结 | `state/policy.json` / `request.json` / `runs.json` 于 22:42 写入；`request.basis_commit = sha256:ae7e86a8…` 与 preview 一致；检索部署 `real_hybrid` @ 8081/8082 |
+| 输入工件 | 2 份都能按内容地址读回（20405 / 392 字节） |
+| STORY 计划 | 4 个 slice、4 次真实模型调用后产出候选；`plan-proposal` `sha256:dc3f8639…`（15808 字节，6 个条目），独立审校 `decision=accept`、`issues=[]`、`verification_failures=[]` |
+| 作者裁决 | 接受（`accept-plan`），随后 `plan.commit` 与 `projection` 均 succeeded |
+| 计划承诺与锁一致 | `plan.story.reveal_obligation` 逐字写入作者的 `not_before_chapter` 350 / 401 边界 |
+
+这一层回答了指导里最要紧的问题：ARC_VOLUME 路径上计划与审校都能给出**可结算**的判定，
+不是 v23 那种无法核验的自由文本要求。
+
+### 9.2 ARC_VOLUME 暴露的缺陷（已修复 `70ad5ff`）
+
+接受 STORY 后生成 ARC_VOLUME 任务
+`run.yujin-jiuxu.v24.plan.arc-volume.g0`，首次尝试 **21 秒、0 次模型调用**即
+`outcome=suspended`、`failure_class=leaf_review_required`，任务停在
+`blocked / leaf_review_required`；`runtime classify` 给出
+`repair_owning_module`（"确定性，重试无法改变结果"）——分类是正确的。
+
+宿主合成的终态事件 `terminal.review_required` 的 `payload` 是空的，
+所以诊断码（`REVIEWER_CONTRACT_FAILURE` 等）在产物里看不到。
+改从对象库找到审校器留下的 draft（`sha256:d6171b21…`）才看到真因：
+
+```
+issues=0, decision=accept, memory_gap_questions=[]
+verification_failures=[ 3 条 ]   ← 全是模型自己写的自然语言
+  a1 问题 '每卷是否严格对应100章' 在大纲中已明确 … 无需作为未决事实询问
+  a2 问题 '第四卷前半（201-350章）是否仅允许埋设…' 存在事实错误 …
+  a3 问题 '第三碎片获取是否严格限定在第三卷（201-300章）内完成' …
+```
+
+根因链条：
+
+1. `PlanReviewDraft` 的结构化输出 schema 由模型生成，因此
+   `verification_failures` 字段**暴露给了审校器**；而 `plan_reviewer_v1.md`
+   从未要求该字段，它按注释是**宿主**对自己核验结论的记录。
+2. `apply_host_plan_review_constraints` 在 `target_kind is not PLAN_PROPOSAL`
+   时于第一个守卫直接 `return draft`（INQUIRY 审校就走这条）。
+3. 于是模型自填的值原样存活，而 `PlanReviewer.invoke` 只看
+   `if draft.verification_failures:` 就抛 `PlanReviewerInvocationError`。
+
+即**被审方可以自己填"宿主判定"字段，并据此把整条 run 停成 blocked**。
+修复：在任何目标类型上，宿主合成/核验前先清空该字段，
+使"宿主尚未核验"成为唯一可达的核验前状态。
+
+验证：新增 2 条回归
+（`tests/unit/test_plan_review_citation_verification.py::test_a_reviewer_cannot_author_the_hosts_own_verdict`、
+`::test_a_plan_proposal_citation_failure_is_still_the_hosts_to_report`），
+**无修复时第一条失败**（模型文本存活），修复后 26 条全过；
+全量确定性套件 **74 failed / 3385 passed**，与 N0 基线逐节点 diff 只少
+`test_checked_in_stage2_schemas_match_models`，无新增失败。
+
