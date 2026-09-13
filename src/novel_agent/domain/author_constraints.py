@@ -29,6 +29,10 @@ class AuthorConstraintCategory(StrEnum):
 
 class AuthorConstraint(DomainModel):
     constraint_id: StableId
+    # The channel entry's own id (for example an author planning lock id).  A plan
+    # stage binds to the responsibility it serves through this key, so the key must
+    # travel with the constraint instead of only living in the compiled profile.
+    constraint_key: str | None = Field(default=None, min_length=1)
     category: AuthorConstraintCategory
     text: str = Field(min_length=1)
     source_ref: ArtifactRef
@@ -79,11 +83,13 @@ def compile_author_constraint_root(
         not_before: int | None = None,
         earliest: int | None = None,
         latest: int | None = None,
+        constraint_key: str | None = None,
     ) -> None:
         key = f"{category.value}.{len(constraints)}"
         constraints.append(
             AuthorConstraint(
                 constraint_id=StableId(f"author-constraint.{key}"),
+                constraint_key=constraint_key,
                 category=category,
                 text=text,
                 source_ref=profile_ref,
@@ -125,6 +131,12 @@ def compile_author_constraint_root(
             continue
         for raw in raw_items:
             if isinstance(raw, dict):
+                raw_key = raw.get("lock_id") or raw.get("id") or raw.get("constraint_id")
+                constraint_key = (
+                    str(raw_key).strip()
+                    if isinstance(raw_key, str) and str(raw_key).strip()
+                    else None
+                )
                 text = next(
                     (
                         str(raw[field]).strip()
@@ -157,7 +169,13 @@ def compile_author_constraint_root(
                 continue
             if text is None:
                 continue
-            add(category, f"{key}: {text}", not_before=not_before, latest=latest)
+            add(
+                category,
+                f"{key}: {text}",
+                not_before=not_before,
+                latest=latest,
+                constraint_key=constraint_key,
+            )
 
     from novel_agent.services.content_addressing import content_id
 
@@ -192,5 +210,6 @@ def render_author_constraint_context(
             scope = f" [not_before_chapter={constraint.not_before_chapter}]"
         if constraint.chapter_latest is not None:
             scope += f" [latest_chapter={constraint.chapter_latest}]"
-        lines.append(f"- {constraint.category.value}: {constraint.text}{scope}")
+        handle = constraint.constraint_key or constraint.constraint_id.root
+        lines.append(f"- [{handle}] {constraint.category.value}: {constraint.text}{scope}")
     return "\n".join(lines)

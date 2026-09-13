@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import Field, JsonValue, model_validator
 
 from novel_agent.domain.agent_context import LoopRoundProgress
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.author_constraints import AuthorConstraint, AuthorConstraintCategory
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import NeedFacetKind
@@ -961,9 +963,10 @@ class PlanningEvaluationReport(DomainModel):
 # author lock expressed as a chapter window ("nothing before 350") could not be
 # checked against them: a real candidate wrote a reveal into trigger_event and
 # midpoint_reversal of a volume whose own reveal_window said 350+.  Each of these
-# keys must therefore declare the window it happens in and the role it plays, so the
-# lock becomes a field-level constraint the host can verify and the planner can be
-# told exactly which key to move.
+# keys must therefore declare the window it happens in, the action it performs and
+# the host-accepted responsibility it serves, so the lock becomes a field-level
+# constraint the host can verify and the planner can be told exactly which key to
+# move.
 VOLUME_NARRATIVE_STAGE_KEYS: tuple[str, ...] = (
     "opening_state",
     "trigger_event",
@@ -976,69 +979,192 @@ VOLUME_NARRATIVE_STAGE_KEYS: tuple[str, ...] = (
     "ending_state",
     "next_volume_hook",
 )
-# ``setup``/``progress`` may sit anywhere in the volume; ``hint`` and ``payoff``
-# carry information the author may have locked behind a not_before boundary.
-VOLUME_STAGE_ROLES: tuple[str, ...] = ("setup", "progress", "hint", "payoff", "forbidden_reveal")
-_REVEALING_STAGE_ROLES = frozenset({"hint", "payoff"})
+# 埋设 / 暗示 / 正式推进 / 兑现.  ``setup`` may sit anywhere in the volume; the other
+# three reach information or capability the author may have locked behind a boundary.
+VOLUME_STAGE_ROLES: tuple[str, ...] = ("setup", "hint", "progression", "payoff")
+_STAGE_ROLE_CATEGORIES: dict[str, frozenset[AuthorConstraintCategory]] = {
+    "hint": frozenset({AuthorConstraintCategory.REVEAL_WINDOW}),
+    "progression": frozenset(
+        {
+            AuthorConstraintCategory.TIME_LOCK,
+            AuthorConstraintCategory.ABILITY_MILESTONE,
+            AuthorConstraintCategory.EQUIPMENT_MILESTONE,
+            AuthorConstraintCategory.LOCATION_PRECONDITION,
+        }
+    ),
+    "payoff": frozenset(
+        {
+            AuthorConstraintCategory.REVEAL_WINDOW,
+            AuthorConstraintCategory.TIME_LOCK,
+            AuthorConstraintCategory.ABILITY_MILESTONE,
+            AuthorConstraintCategory.EQUIPMENT_MILESTONE,
+            AuthorConstraintCategory.LOCATION_PRECONDITION,
+        }
+    ),
+}
 
 
-def volume_stage_window_defects(payload: Mapping[str, object]) -> tuple[str, ...]:
-    """Return narrative stage slots that cannot be checked against a time lock.
+@dataclass(frozen=True)
+class VolumeStageWindowDefect:
+    """One field-level stage-window violation inside a volume item.
 
-    A volume's narrative key must declare ``window`` (a chapter number or range
-    inside the volume) and ``role`` taken from :data:`VOLUME_STAGE_ROLES`.  A
-    revealing role may not begin before any ``not_before_chapter`` the volume itself
-    declares, which is how an author lock reaches the prose slots.
+    ``field`` is the path inside the volume item (``midpoint_reversal.window``), so
+    the review demand can name the exact slot the planner has to change instead of a
+    generic request to fix "stage windows".
     """
 
-    defects: list[str] = []
+    field: str
+    message: str
+
+
+def volume_stage_window_defects(
+    payload: Mapping[str, object],
+    *,
+    constraints: Sequence[AuthorConstraint] = (),
+    accepted_obligation_ids: Container[str] = (),
+) -> tuple[VolumeStageWindowDefect, ...]:
+    """Return stage slots whose declared window violates the responsibility it serves.
+
+    The authority is the frozen author-constraint catalogue, never the candidate's own
+    ``not_before_chapter``: a stage declares which responsibility it serves through
+    ``serves`` and the host resolves that handle itself.  An unknown handle is a
+    defect, so a proposal cannot invent an accepted obligation identity, and a
+    boundary only constrains the stages that actually serve it -- an unrelated lock
+    never blocks a legal hint for another responsibility.
+    """
+
+    defects: list[VolumeStageWindowDefect] = []
     chapter_start = payload.get("chapter_start")
     chapter_end = payload.get("chapter_end")
-    locks = _declared_not_before_boundaries(payload)
+    catalogue = _stage_constraint_catalogue(constraints)
     for key in VOLUME_NARRATIVE_STAGE_KEYS:
         value = payload.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             continue
         if isinstance(value, str):
-            defects.append(f"{key} must declare the chapter window and role it happens in")
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.description",
+                    f"{key} must declare the chapter window, role and served "
+                    "responsibility it happens in",
+                )
+            )
             continue
         if not isinstance(value, Mapping):
-            defects.append(f"{key} must be a stage entry with a window and a role")
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.description",
+                    f"{key} must be a stage entry with a window and a role",
+                )
+            )
             continue
-        raw_window = value.get("window")
-        role = value.get("role")
         description = value.get("description") or value.get("summary") or value.get("text")
         if not isinstance(description, str) or not description.strip():
-            defects.append(f"{key} requires a non-empty description")
-        body = f"{key} window"
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.description", f"{key} requires a non-empty description"
+                )
+            )
+        body = f"{key}.window"
+        raw_window = value.get("window")
         if isinstance(raw_window, int) and not isinstance(raw_window, bool):
             window = (raw_window, raw_window)
         elif isinstance(raw_window, str):
             try:
                 window = _parse_declared_window(raw_window, field=body)
             except ValueError as error:
-                defects.append(str(error))
+                defects.append(VolumeStageWindowDefect(body, str(error)))
                 continue
         else:
-            defects.append(f"{body} must be a chapter number or range")
+            defects.append(
+                VolumeStageWindowDefect(body, f"{body} must be a chapter number or range")
+            )
             continue
         start, end = window
         if isinstance(chapter_start, int) and start < chapter_start:
-            defects.append(f"{body} starts before its volume scope")
+            defects.append(VolumeStageWindowDefect(body, f"{body} starts before its volume scope"))
         if isinstance(chapter_end, int) and end > chapter_end:
-            defects.append(f"{body} ends after its volume scope")
+            defects.append(VolumeStageWindowDefect(body, f"{body} ends after its volume scope"))
+        role = value.get("role")
         if not isinstance(role, str) or role.strip().lower() not in VOLUME_STAGE_ROLES:
-            defects.append(f"{key} role must be one of " + ", ".join(VOLUME_STAGE_ROLES))
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.role",
+                    f"{key}.role must be one of " + ", ".join(VOLUME_STAGE_ROLES),
+                )
+            )
             continue
-        if role.strip().lower() in _REVEALING_STAGE_ROLES:
-            for boundary in locks:
-                if start < boundary:
-                    defects.append(
-                        f"{key} is a {role.strip().lower()} stage starting at {start}, "
-                        f"before the declared not_before_chapter {boundary} of the "
-                        "responsibility it serves"
-                    )
+        role = role.strip().lower()
+        served = value.get("serves")
+        if role == "setup" and served is None:
+            continue
+        if not isinstance(served, str) or not served.strip():
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.serves",
+                    f"{key}.serves must name the host-accepted responsibility a "
+                    f"{role} stage serves",
+                )
+            )
+            continue
+        handle = served.strip()
+        constraint = catalogue.get(handle)
+        if constraint is None:
+            if handle in accepted_obligation_ids:
+                continue
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.serves",
+                    f"{key}.serves names {handle!r}, which is neither an accepted author "
+                    "constraint nor an accepted obligation; reference only the handles "
+                    "the host listed",
+                )
+            )
+            continue
+        if role not in _STAGE_ROLE_CATEGORIES:
+            continue
+        if constraint.category not in _STAGE_ROLE_CATEGORIES[role]:
+            defects.append(
+                VolumeStageWindowDefect(
+                    f"{key}.serves",
+                    f"{key}.serves names a {constraint.category.value} responsibility but a "
+                    f"{role} stage only serves "
+                    + ", ".join(sorted(item.value for item in _STAGE_ROLE_CATEGORIES[role])),
+                )
+            )
+            continue
+        boundary = constraint.not_before_chapter
+        if boundary is None:
+            boundary = constraint.chapter_earliest
+        if boundary is None:
+            continue
+        if start < boundary:
+            defects.append(
+                VolumeStageWindowDefect(
+                    body,
+                    f"{body} starts at {start}, before the not_before_chapter {boundary} of "
+                    f"the {role} responsibility it serves ({handle})",
+                )
+            )
     return tuple(defects)
+
+
+def _stage_constraint_catalogue(
+    constraints: Sequence[AuthorConstraint],
+) -> dict[str, AuthorConstraint]:
+    """Resolve a stage's ``serves`` handle to the frozen author constraint.
+
+    Both the compiled constraint id and the channel's own key (an author planning
+    lock id) are accepted, so the handle the planner was shown is the handle it can
+    cite.
+    """
+
+    catalogue: dict[str, AuthorConstraint] = {}
+    for constraint in constraints:
+        catalogue[constraint.constraint_id.root] = constraint
+        if constraint.constraint_key:
+            catalogue.setdefault(constraint.constraint_key, constraint)
+    return catalogue
 
 
 def _parse_declared_window(value: str, *, field: str) -> tuple[int, int]:

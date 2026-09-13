@@ -67,7 +67,7 @@ _HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
     ReviewIssueKind.UNRESOLVED_SCOPE_MISSING: ("affected_chapters",),
     ReviewIssueKind.EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION: ("target_chapter_start",),
     ReviewIssueKind.OBLIGATION_CONTRACT: ("kind",),
-    ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: ("stage_windows",),
+    ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: (),
 }
 
 
@@ -113,6 +113,7 @@ def apply_host_plan_review_constraints(
                 else _expected_target_chapters(payload)
             ),
             accepted_obligation_ids=accepted_obligation_ids,
+            author_constraints=author_constraints,
         ),
         *_unresolved_host_issues(payload),
     )
@@ -166,6 +167,9 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
 
     demands: list[str] = []
     for issue in issues:
+        if issue.kind is ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION:
+            demands.extend(_volume_window_field_paths(issue))
+            continue
         fields = _HOST_ISSUE_REQUIRED_FIELDS.get(issue.kind, ())
         for item_id in issue.affected_item_ids:
             for field in fields:
@@ -181,6 +185,28 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
                 else:
                     demands.append(f"{item_id.root}.{field}")
     return tuple(dict.fromkeys(demands))
+
+
+_VOLUME_WINDOW_SUMMARY = re.compile(
+    r"^VOLUME_STAGE_WINDOW: (?P<path>[A-Za-z0-9_.\-]+): "
+)
+
+
+def _volume_window_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
+    """The exact volume field paths a window violation requires the planner to fix.
+
+    The gate records ``<item_id>.<stage_key>.<field>`` as the head of its summary, so
+    the revision demand points at ``vol4_arc.midpoint_reversal.window`` instead of a
+    generic instruction that the planner cannot map back to a slot.
+    """
+
+    match = _VOLUME_WINDOW_SUMMARY.match(issue.summary)
+    if match is None:
+        return tuple(f"{item.root}.role|window|serves" for item in issue.affected_item_ids)
+    path = match.group("path")
+    if issue.affected_item_ids and not path.startswith(issue.affected_item_ids[0].root):
+        path = f"{issue.affected_item_ids[0].root}.{path}"
+    return (path,)
 
 
 def _coverage_evidence(
@@ -231,6 +257,7 @@ def _host_issues_for_items(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    author_constraints: Sequence[AuthorConstraint] = (),
 ) -> list[PlanReviewIssue]:
     issues: list[PlanReviewIssue] = []
     by_id: dict[str, dict[str, Any]] = {}
@@ -281,11 +308,18 @@ def _host_issues_for_items(
                             blocking=True,
                         )
                     )
-                for defect in volume_stage_window_defects(item_payload):
+                for window_defect in volume_stage_window_defects(
+                    item_payload,
+                    constraints=author_constraints,
+                    accepted_obligation_ids=accepted_obligation_ids or frozenset(),
+                ):
                     issues.append(
                         _host_issue(
                             ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION,
-                            f"VOLUME_STAGE_WINDOW: {defect}",
+                            (
+                                f"VOLUME_STAGE_WINDOW: {item_id}."
+                                f"{window_defect.field}: {window_defect.message}"
+                            ),
                             item_id,
                             blocking=True,
                         )
