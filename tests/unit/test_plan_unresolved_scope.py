@@ -194,3 +194,16 @@ def test_every_planner_contract_states_the_advisory_scope_rule() -> None:
         assert "UNRESOLVED_SCOPE_MISSING" in text, name
     skill = (PACKAGE_ROOT / "skills" / "arc_volume_planning_v1.md").read_text(encoding="utf-8")
     assert "affected_chapters" in skill
+
+
+def test_the_planner_output_budget_covers_the_mandated_volume_grid() -> None:
+    """Eight volumes with 19 non-empty keys each must fit one planner response.
+
+    A real ARC_VOLUME attempt was truncated at exactly the 8 000-token cap with a
+    complete-but-unfinished eight-volume proposal, so the run could not commit G0.
+    """
+
+    from novel_agent.runtime.production_bootstrap import load_production_assembly_spec
+
+    spec = load_production_assembly_spec()
+    assert spec.model_policy.default_output_limit >= 12_000

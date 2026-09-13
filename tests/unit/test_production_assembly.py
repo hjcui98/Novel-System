@@ -378,10 +378,16 @@ def test_settlement_timeout_override_is_campaign_local(tmp_path: Path) -> None:
 
 
 def test_settlement_output_override_is_campaign_local(tmp_path: Path) -> None:
+    from novel_agent.runtime.production_bootstrap import load_production_assembly_spec
+
+    default_limit = load_production_assembly_spec().model_policy.default_output_limit
+    campaign_limit = default_limit + 4_000
     default = build_production_assembly(_context(tmp_path))
     campaign_root = tmp_path / "campaign-output"
     campaign_root.mkdir()
-    campaign = build_production_assembly(_context(campaign_root, settlement_output_tokens=12_000))
+    campaign = build_production_assembly(
+        _context(campaign_root, settlement_output_tokens=campaign_limit)
+    )
 
     default_policy = default.chapter_settlement._policy
     campaign_policy = campaign.chapter_settlement._policy
@@ -391,8 +397,8 @@ def test_settlement_output_override_is_campaign_local(tmp_path: Path) -> None:
     assert campaign_curator is not None
     default_factory = default_curator._request_factory
     campaign_factory = campaign_curator._request_factory
-    assert default_factory._max_output_tokens == 8_000
-    assert campaign_factory._max_output_tokens == 12_000
+    assert default_factory._max_output_tokens == default_limit
+    assert campaign_factory._max_output_tokens == campaign_limit
     assert campaign_policy.configuration_fingerprint != default_policy.configuration_fingerprint
     assert campaign.attestation is not None
     assert default.attestation is not None
