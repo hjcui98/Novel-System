@@ -459,6 +459,42 @@ class PlanDeviationRecordCandidate(DomainModel):
     replacement_item_ids: tuple[StableId, ...] = ()
 
 
+def _is_post_bootstrap_plan_item(item: ProposedItem) -> bool:
+    """Whether one item under the bootstrap-only field is really a plan item.
+
+    Two shapes are accepted, both taken from production responses that were correct
+    apart from the container they arrived in:
+
+    * a chapter-set goal (``kind: "goal"`` with an integer ``chapter_index`` and a
+      non-empty ``summary``), the shape the original CHAPTER_SET alias covered; and
+    * a plan item that declares the level it plans at, with its ``kind`` agreeing
+      with that level.
+
+    Genesis intent satisfies neither.  The frozen bootstrap proposal's items are
+    ``kind: "plan"`` with no ``plan_level``, so bootstrap content cannot be smuggled
+    past the mode check by either shape.
+    """
+
+    if item.provenance is not ProposalProvenance.PLANNER_PROPOSED:
+        return False
+    if (
+        item.kind == "goal"
+        and type(item.payload.get("chapter_index")) is int
+        and isinstance(item.payload.get("summary"), str)
+        and bool(str(item.payload["summary"]).strip())
+    ):
+        return True
+    level = item.payload.get("plan_level")
+    return isinstance(level, str) and bool(level.strip()) and item.kind == level
+
+
+# The modes that plan by emitting items, and whose drafts therefore mean `plan_items`
+# when the model reaches for the bootstrap-only field.  PROJECT_BOOTSTRAP is absent
+# on purpose: bootstrap intent *does* belong there, and a draft in a non-planning
+# mode has no plan items to relocate.
+_PLAN_ITEM_MODES = frozenset({AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET})
+
+
 class PlannerProposalDraft(DomainModel):
     mode: AgentMode
     strategy: BootstrapStrategy | None = None
@@ -475,22 +511,23 @@ class PlannerProposalDraft(DomainModel):
     @model_validator(mode="after")
     def validate_mode_output(self) -> PlannerProposalDraft:
         if (
-            self.mode is AgentMode.CHAPTER_SET
+            self.mode in _PLAN_ITEM_MODES
             and self.strategy is None
             and not self.plan_items
             and self.project_intent_items
-            and all(
-                item.provenance is ProposalProvenance.PLANNER_PROPOSED
-                and item.kind == "goal"
-                and type(item.payload.get("chapter_index")) is int
-                and isinstance(item.payload.get("summary"), str)
-                and bool(str(item.payload["summary"]).strip())
-                for item in self.project_intent_items
-            )
+            and all(_is_post_bootstrap_plan_item(item) for item in self.project_intent_items)
         ):
-            # Some production responses place post-Genesis chapter goals under
-            # the bootstrap-only field. Keep this alias bounded to the exact
-            # CHAPTER_SET goal shape; malformed or bootstrap items still fail.
+            # Production responses repeatedly place a post-Genesis plan under the
+            # bootstrap-only field.  The CHAPTER_SET goal alias covered one shape of
+            # this; the ARC_VOLUME revision of run.yujin-jiuxu.v24 emitted all eight
+            # well-formed volumes there, was read as "bootstrap intent", and every
+            # retry reproduced the same rejection on output that was correct apart
+            # from the container it arrived in.
+            #
+            # The alias stays bounded twice over: only the modes that plan with items,
+            # and only items that declare their own plan level.  Bootstrap intent has
+            # no level -- the frozen Genesis proposal's items are `kind: "plan"` with
+            # no `plan_level` -- so a genuine bootstrap draft is still refused.
             self = self.model_copy(
                 update={
                     "project_intent_items": (),
@@ -705,10 +742,7 @@ class PlannerExecutionResult(DomainModel):
             )
         if self.plan_proposal.receipt != self.receipt:
             raise ValueError("PlanProposal must carry the enclosing Planner receipt")
-        if (
-            self.raw_plan_proposal is not None
-            and self.raw_plan_proposal.receipt != self.receipt
-        ):
+        if self.raw_plan_proposal is not None and self.raw_plan_proposal.receipt != self.receipt:
             raise ValueError("raw PlanProposal must carry the enclosing Planner receipt")
         if self.mode is AgentMode.PROJECT_BOOTSTRAP and self.project_intent is None:
             raise ValueError("PROJECT_BOOTSTRAP result requires ProjectIntentModel")

@@ -473,6 +473,84 @@ def test_planning_contracts_reject_mode_and_provenance_contradictions() -> None:
         )
 
 
+def test_an_arc_volume_revision_lands_in_plan_items_not_bootstrap_intent() -> None:
+    """The live ARC_VOLUME rejection: correct volumes filed under the wrong container.
+
+    run.yujin-jiuxu.v24 attempt 7 settled ``validation_rejected`` with
+    "only PROJECT_BOOTSTRAP may emit bootstrap intent/strategy".  The response held
+    eight well-formed ``arc_volume`` items, each declaring ``plan_level: arc_volume``
+    and its chapter range, under ``project_intent_items``; every retry reproduced it.
+    The alias that repairs this shape existed but was gated to CHAPTER_SET only.
+    """
+
+    volumes = tuple(
+        ProposedItem(
+            item_id=StableId(f"vol-{index}"),
+            kind="arc_volume",
+            payload={
+                "plan_level": "arc_volume",
+                "chapter_start": (index - 1) * 100 + 1,
+                "chapter_end": index * 100,
+            },
+            provenance=ProposalProvenance.PLANNER_PROPOSED,
+        )
+        for index in range(1, 9)
+    )
+    aliased = PlannerProposalDraft.model_validate(
+        {
+            "mode": AgentMode.ARC_VOLUME,
+            "project_intent_items": volumes,
+            "unresolved": ("an open historical detail",),
+            "coverage": 1.0,
+        }
+    )
+
+    assert aliased.project_intent_items == ()
+    assert aliased.plan_items == volumes
+    assert [item.item_id.root for item in aliased.plan_items] == [
+        f"vol-{index}" for index in range(1, 9)
+    ]
+
+
+def test_genuine_bootstrap_intent_is_still_refused_outside_bootstrap() -> None:
+    """The alias must not become a way to smuggle bootstrap content past the mode check."""
+
+    genesis_shaped = ProposedItem(
+        item_id=StableId("plan.bootstrap.001"),
+        kind="plan",
+        payload={"title": "黑月坠世三百年后", "description": "故事世界基线"},
+        provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+        source_ids=(StableId("source.author-intent"),),
+    )
+    for mode in (AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET):
+        with pytest.raises(ValidationError, match="bootstrap intent"):
+            PlannerProposalDraft.model_validate(
+                {
+                    "mode": mode,
+                    "project_intent_items": (genesis_shaped,),
+                    "unresolved": ("an open historical detail",),
+                    "coverage": 1.0,
+                }
+            )
+    # A planner-proposed item that declares no plan level is not a plan item either,
+    # so the alias cannot be reached by provenance alone.
+    levelless = ProposedItem(
+        item_id=StableId("plan.levelless"),
+        kind="plan",
+        payload={"title": "no declared level"},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+    with pytest.raises(ValidationError, match="bootstrap intent"):
+        PlannerProposalDraft.model_validate(
+            {
+                "mode": AgentMode.ARC_VOLUME,
+                "project_intent_items": (levelless,),
+                "unresolved": ("an open historical detail",),
+                "coverage": 1.0,
+            }
+        )
+
+
 def test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal() -> None:
     prompt = (ROOT / "src/novel_agent/prompts/planner_chapter_set_v1.md").read_text(
         encoding="utf-8"
