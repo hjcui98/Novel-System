@@ -358,3 +358,67 @@ composed plan item set does not match the authorised scope:
 `tests/unit/test_plan_composition_source_proof.py` 37 条全过；
 全量确定性套件 **74 failed / 3386 passed**，与 N0 基线逐节点 diff 只少
 `test_checked_in_stage2_schemas_match_models`，无新增失败。
+
+### 9.4 ARC_VOLUME 暴露的第三个缺陷：模型把八卷放进只属于 bootstrap 的字段（已修复 `a306b25`）
+
+修掉 9.3 之后重试，attempt 6 是 `provider_transient`，attempt 7 的新结局是
+`PLANNER_STRUCTURED_OUTPUT_REJECTED`（日志 reason code），而任务被结算成
+`blocked / basis_changed`。**这个失败类映射本身也是错的**（见下），真正的证据在
+`model_call_ledger` 里：
+
+```
+model-request.…attempt-3412927ede153537.plan_revision.2   status=validation_rejected
+validation_error: [{"type":"value_error","loc":[],
+  "msg":"Value error, only PROJECT_BOOTSTRAP may emit bootstrap intent/strategy"}]
+```
+
+把该次调用的原始响应读出来核对，模型的输出**几乎完全正确**：
+
+```
+mode = arc_volume        project_intent_items = 8 个      plan_items = 0
+每个条目：kind=arc_volume, payload.plan_level=arc_volume, 带 chapter_start/chapter_end
+          （vol-1 … vol-8，8 卷，正是 G0 要的八卷）
+```
+
+即模型把合法的八卷计划放进了 `project_intent_items`（只允许 PROJECT_BOOTSTRAP 使用的
+容器），而 `PlannerProposalDraft.validate_mode_output` 因此判它为
+"bootstrap intent/strategy"，**对正确的输出判错**，每次重试精确复现。
+
+这个模型行为**早已被承认并修过一次**：同一处验证器里就有一段把
+`project_intent_items` 迁回 `plan_items` 的有界别名修复，但它被写死为
+`self.mode is AgentMode.CHAPTER_SET`，于是 ARC_VOLUME 上的同一类错误没有被覆盖。
+
+修复：把该别名从"仅 CHAPTER_SET"推广到**以条目规划的模式**
+（`STORY` / `ARC_VOLUME` / `CHAPTER_SET`），并保留两种已承认的形状：
+
+| 形状 | 来源 |
+|---|---|
+| `kind="goal"` + 整数 `chapter_index` + 非空 `summary` | 原有的 CHAPTER_SET 目标形状 |
+| 条目自带 `plan_level` 且与 `kind` 一致 | 本次 v24 八卷形状 |
+
+边界仍然收紧：`PROJECT_BOOTSTRAP` 明确不在允许集合内；真正的 Genesis 条目是
+`kind="plan"` 且**没有** `plan_level`（已从冻结的 `genesis-prepared.json` 核对），
+两种形状都满足不了，所以 bootstrap 内容无法借此绕过模式检查。
+
+验证：
+
+- 用**真实被拒响应**逐一核对：修复后 `plan_items=8`、`project_intent_items=0`、
+  levels 全为 `arc_volume`；
+- 新增两条回归
+  （`test_an_arc_volume_revision_lands_in_plan_items_not_bootstrap_intent`、
+  `test_genuine_bootstrap_intent_is_still_refused_outside_bootstrap`），
+  **无修复时第一条失败**；同时保住了原有的 CHAPTER_SET 别名测试与
+  "bootstrap intent 仍被拒"的负例；
+- 全量确定性套件 **74 failed / 3388 passed**，与 N0 基线逐节点 diff 只少
+  `test_checked_in_stage2_schemas_match_models`，无新增失败。
+
+#### 附带发现：失败类映射与事实不符（**未修**）
+
+`planning_context_loop` 把 `StructuredGenerationExhausted` 映射成
+`PlanningLoopTerminal.BLOCKED`，而 `_planner_failure` 只有
+`WAITING_INPUT` / `REVIEW_REQUIRED` / `SUSPENDED` 三个分支，其余全部落到
+`BASIS_CHANGED`——于是"模型结构化输出被拒"被记成"基线漂移"，
+分类器据此给出 `stop_dependent_work`，方向完全相反（实际应当重试）。
+`domain/runtime.py` 里本来就有更贴切的 `LEAF_SCHEMA_REJECTED`
+（`retryable=True`、`resume_from=LATEST_SETTLED`）。这属于 N4「重试分类」的
+同类问题，但**改动失败类映射会影响面更广**，本轮不动，记录在此待评估。
