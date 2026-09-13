@@ -93,11 +93,11 @@ def test_real_qwen38_8003_profile_declares_the_served_model_identity() -> None:
     assert registration.revision == "qwen38-27b-nvfp4"
     assert adapter.base_url == "http://127.0.0.1:8003/v1"
     assert adapter.model == "qwen38-27b-nvfp4"
-    assert adapter.max_output_tokens == 12_000
+    assert adapter.max_output_tokens == 16_000
     assert adapter.max_retries == 0
     assert adapter.is_external is False
     assert registration.sequence_limit == 131_072
-    assert registration.output_limit == 12_000
+    assert registration.output_limit == 16_000
     assert registration.safety_allowance_tokens == 1_000
     assert registration.estimated_reasoning_reserve == 2_048
     assert registration.default_thinking is False
