@@ -491,6 +491,34 @@ _PARTIAL_MEMORY_BUDGET_GAP = (
 )
 
 
+def _out_of_scope_revision_items(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    review: PlanReview,
+) -> tuple[str, ...]:
+    """Item ids a revision moved without the review naming them.
+
+    A finding that names one field must not move the rest of the plan; the ids are
+    reported so the next revision restores them instead of paying for a fresh
+    eight-volume rewrite.
+    """
+
+    named = {item.root for issue in review.issues for item in issue.affected_item_ids}
+
+    def body(item: object) -> bytes:
+        document = item.model_dump(mode="json")  # type: ignore[attr-defined]
+        document.pop("item_id", None)
+        return canonical_json_bytes(document)
+
+    parent_bodies = {item.item_id.root: body(item) for item in parent.items}
+    moved = [
+        item.item_id.root
+        for item in revised.items
+        if parent_bodies.get(item.item_id.root) != body(item)
+    ]
+    return tuple(sorted(set(moved) - named))
+
+
 def _blocking_signature(review: PlanReview) -> tuple[str, ...]:
     """The host-visible identity of a review's blocking findings.
 
@@ -2373,6 +2401,18 @@ class PlanningContextLoopService:
                 "application/vnd.novel-agent.planner-execution-result+json",
                 self._schema_version,
             )
+            out_of_scope = _out_of_scope_revision_items(
+                parent_proposal, proposal, plan_review
+            )
+            if out_of_scope:
+                event_refs.append(
+                    self._event(
+                        request,
+                        PlanningLoopPhase.PLAN_REVIEWED,
+                        "plan.revision_out_of_scope: " + ", ".join(out_of_scope),
+                        (proposal_ref,),
+                    )
+                )
             if self._same_proposal_content(parent_proposal, proposal):
                 return self._terminal(
                     request,
