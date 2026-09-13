@@ -5,7 +5,7 @@
 
 ## 1. 本轮到达的位置
 
-G0 已完成**身份选择、现场冻结、preflight 与 Genesis prepare**，
+G0 已完成**身份选择、现场冻结、preflight、Genesis prepare 与 Genesis commit**，
 在"检索装配后的运行描述符冻结"这一步被环境条件阻断。
 
 | 步骤 | 结果 |
@@ -21,6 +21,29 @@ G0 已完成**身份选择、现场冻结、preflight 与 Genesis prepare**，
 Genesis prepare 的输出本身值得记录：它把"长程真相属于后期主线"写进了
 `plan.bootstrap.005`，并把 6 条后续卷次内容降级为 `unresolved_world`，
 与作者锁的 350 / 401 边界一致。
+
+### 1.1 Genesis commit 已真实落库（核对结果）
+
+失败点在 `bootstrap-commit` 内部**很靠后**：`ProductionNovelBootstrap.commit()`
+先完成作者批准与 Genesis commit，之后才为 `real_hybrid` 装配检索、再写
+policy/request/runs 三个描述符。因此报错时数据库侧已经提交。
+
+用只读查询核对（表名以 `src/novel_agent/adapters/postgres/models.py` 为准，
+commit 表是 `project_commit` 而非 `commit`）：
+
+| 表 / 列 | 值 |
+|---|---|
+| `project.current_commit_id` | `sha256:ae7e86a8304941edb08476ec37727a4349d7efbe55536cb248aa1266f1a7d22e` |
+| `project.created_at` | 2026-09-13 13:53:16.697589 GMT |
+| `project_commit` 行数 | 1（该项目的 Genesis，`base_commit_id` 为 NULL，manifest 1168 字节） |
+| `author_approval` | `bootstrap-approval.55536cb248aa1266f1a7d22e`，`status=approved`，作者 `author.hjcui98`（Genesis commit 内部走 `GenesisCoordinator.commit`，不写 `commit_receipt`，该表为空属正常） |
+| `runtime_task_projection` | `run.yujin-jiuxu.v24` 任务数 **0**（未创建任何任务，未派发任何模型调用） |
+
+`project.current_commit_id` 与候选 manifest 哈希相等，即
+`state/genesis-preview.json` 里审阅过的那份 Genesis 就是已提交的那份。
+
+**因此精确的停止点是**：Genesis 已提交且持久；`state/` 缺
+`policy.json` / `request.json` / `runs.json`，检索部署未记录。
 
 ## 2. 阻塞点（环境，非代码）
 
@@ -111,14 +134,39 @@ v24 复用 v23 的作者输入，但锁文档自身携带 `project_id`，与该 
 
 两者都需要**在沙箱之外**执行；沙箱内无法完成第 2 步（见 2.2）。
 
+### 4.1 半初始化状态的再入修复（本轮已改）
+
+Genesis commit 与描述符冻结**不在同一个事务**里：先初始化项目，再装配检索，
+最后才写 policy/request/runs。旧脚本用三条 `test ! -e` 挡住重复提交，
+于是"项目已提交、描述符缺失"这个中间态**无法再入**——重跑被脚本自己拒绝，
+只能手工改数据库。这正是本轮 v24 卡住后暴露出来的真实缺陷。
+
+`yujin-jiuxu-v24/commands/12_commit_genesis.sh` 已改为按描述符完整性分支：
+
+| `policy`/`request`/`runs` 状态 | 行为 |
+|---|---|
+| 三者都不存在 | 正常首次提交 |
+| 三者都存在且非空 | 允许重入，Genesis 由 `GenesisCoordinator.commit` 幂等重放；装配成功后再覆写描述符 |
+| 部分存在，或存在但为空 | 报错退出（exit 2），不猜测、不修补 |
+
+分支逻辑已用四种状态（none / all / partial / empty）逐一实测，
+结果分别为 0 / 0 / 2 / 2。Genesis 的幂等性来自
+`src/novel_agent/services/bootstrap_workflow.py::GenesisCoordinator.commit`：
+`initialize_project` 抛 `ProjectAlreadyExistsError` 时改为比对当前
+manifest 是否逐字相同，相同则返回既有 `commit_id` 并把
+`idempotent_replay` 置为真；不同则 fail closed。
+
 ## 5. 解除后可直接续跑的命令
 
 ```bash
 cd /home/cuihengjia/agent/novel/NS/yujin-jiuxu-v24
-bash commands/20_bootstrap.sh          # genesis prepare + commit + 描述符冻结
+bash commands/20_bootstrap.sh          # 再入：Genesis 幂等重放 + 检索装配 + 描述符冻结
 bash commands/13_start_run.sh          # 创建初始任务，不派发模型请求
 bash commands/60_run_stage.sh g0 60    # 受版本管理的 G0 驱动（证据化停止点）
 ```
+
+不需要先清理数据库：v24 的 Genesis 已经提交且与 preview 一致，
+`20_bootstrap.sh` 会走 4.1 的幂等重放分支。
 
 `60_run_stage.sh` 已复制到 v24 的 `commands/`，与
 `.worktrees/yujin-unified-remediation/scripts/60_run_stage.sh` 同一份实现
@@ -137,7 +185,18 @@ bash commands/60_run_stage.sh g0 60    # 受版本管理的 G0 驱动（证据�
 ## 7. 限制与边界
 
 - **G0 未完成**：没有八卷节点、没有正式义务、没有章节计划提交。
-  本轮只完成到 Genesis prepare；Genesis commit 与运行描述符冻结尚未发生。
-- 本轮**没有**产生 v24 的规范提交（commit / projection）。
+  本轮完成到 **Genesis commit 已落库**；运行描述符冻结与检索部署记录尚未发生，
+  因此还没有可派发的 run（`runtime_task_projection` 中 v24 任务数为 0）。
+- 本轮**没有**产生 v24 的后续规范提交（commit / projection）——
+  只有 Genesis 那一笔，它就是当前 `project.current_commit_id`。
 - 上述阻塞是**工具环境**限制，不改变指导中的任何验收门槛；
   也没有以此为由跳过 G0 的任何一步。
+
+## 8. 本轮改动的文件
+
+| 文件 | 改动 |
+|---|---|
+| `yujin-jiuxu-v24/commands/12_commit_genesis.sh` | 三条 `test ! -e` 守卫改为按描述符完整性分支，使半初始化状态可再入（见 4.1） |
+| `docs/remediation/v24_g0_start_and_blocker_20260913.md` | 补记 Genesis 已落库的核对结果、精确停止点、再入修复 |
+
+v24 的 `objects/`、`state/`、`logs/`、`receipts/` 等运行产物按仓库 `.gitignore` 不入库。
