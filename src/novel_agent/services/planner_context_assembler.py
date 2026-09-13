@@ -225,9 +225,7 @@ class PlannerContextAssembler:
             PlannerContextSection.HISTORY_DEVIATION,
             PlannerContextSection.RELATION_CAUSAL,
         }
-        evidence_items = [
-            item for item in diverse_optional if item.section in evidence_sections
-        ]
+        evidence_items = [item for item in diverse_optional if item.section in evidence_sections]
         other_items = [item for item in diverse_optional if item.section not in evidence_sections]
         # Reserve a minimum share for retrieved history evidence so author text
         # cannot consume the whole optional budget (2026-09-10 remediation P1-3).
@@ -256,6 +254,7 @@ class PlannerContextAssembler:
             else:
                 dropped.append(item.context_item_id)
                 drop_reasons[item.context_item_id.root] = "optional_token_budget"
+        selected = list(self._contiguous_atomic_groups(tuple(selected)))
         rendered = self._render(tuple(selected), inquiry)
         package_identity = content_id(
             {
@@ -734,6 +733,45 @@ class PlannerContextAssembler:
                     next_keys.append(key)
             keys = next_keys
         return tuple(ordered)
+
+    @staticmethod
+    def _contiguous_atomic_groups(
+        items: tuple[PlannerContextItem, ...],
+    ) -> tuple[PlannerContextItem, ...]:
+        """Keep one compact handle contiguous in the projected Context View.
+
+        The Context Runtime validates atomic groups after converting compact
+        handles into runtime group ids.  Diversity ordering may otherwise place
+        an expanded evidence span away from its anchor, making an otherwise
+        valid provider context fail closed as ``PROVIDER_CONTEXT_INVALID``.
+        Reordering selected items by their first appearance preserves the
+        diversity policy while making each selected group a single contiguous
+        block.  Items without a compact handle remain individual blocks.
+        """
+
+        grouped: dict[StableId, list[PlannerContextItem]] = {}
+        order: list[StableId | None] = []
+        standalone: list[PlannerContextItem] = []
+        for item in items:
+            if item.compact_handle is None:
+                order.append(None)
+                standalone.append(item)
+                continue
+            handle = item.compact_handle
+            if handle not in grouped:
+                grouped[handle] = []
+                order.append(handle)
+            grouped[handle].append(item)
+
+        result: list[PlannerContextItem] = []
+        standalone_index = 0
+        for key in order:
+            if key is None:
+                result.append(standalone[standalone_index])
+                standalone_index += 1
+            else:
+                result.extend(grouped[key])
+        return tuple(result)
 
     @staticmethod
     def _render(items: tuple[PlannerContextItem, ...], inquiry: PlanningInquiry) -> str:

@@ -43,6 +43,7 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.domain.world import GraphCandidatePageDraft, GraphCandidatePageStatus
 from novel_agent.services.model_curation import NoOpSemanticVerificationDraft
+from novel_agent.services.need_evidence_semantic_judgment import SemanticJudgmentBatchOutput
 
 _HASH = ArtifactId("sha256:" + "1" * 64)
 _DRAFT_TEXT = (
@@ -64,8 +65,7 @@ def _artifact_ref(payload: object) -> ArtifactRef:
 def _catalog_quote(prompt: str) -> str:
     marker = "EVIDENCE_CANDIDATES="
     start = prompt.index(marker) + len(marker)
-    end = prompt.index("\n</CURATOR_INPUT>", start)
-    raw_views = json.loads(prompt[start:end])
+    raw_views = json.loads(prompt[start:].splitlines()[0])
     if not isinstance(raw_views, list):
         raise AssertionError("curator evidence catalog is not a list")
     quotes: list[str] = []
@@ -90,6 +90,40 @@ def _no_op_verification(prompt: str) -> NoOpSemanticVerificationDraft:
         selected_candidate_ids=selected,
         verified_no_durable_delta=True,
         reason_code="no_new_durable_world_records",
+    )
+
+
+def _semantic_judgment(prompt: str) -> SemanticJudgmentBatchOutput:
+    """Close the one supported history facet in the deterministic smoke path."""
+
+    need_match = re.search(r"^Need ([^:]+):", prompt, re.MULTILINE)
+    facets_match = re.search(r"^Facets: (.+)$", prompt, re.MULTILINE)
+    slice_ids = tuple(
+        StableId(match.group(1)) for match in re.finditer(r"^SLICE ([^:]+):", prompt, re.MULTILINE)
+    )
+    if need_match is None or facets_match is None or not slice_ids:
+        raise AssertionError("semantic judge prompt is missing a Need, facet, or slice")
+    facet_ids = tuple(
+        StableId(match.group(1))
+        for match in re.finditer(r"([^; ]+) \([^)]*\)", facets_match.group(1))
+    )
+    if not facet_ids:
+        raise AssertionError("semantic judge prompt has no facet")
+    return SemanticJudgmentBatchOutput.model_validate(
+        {
+            "decisions": tuple(
+                {
+                    "need_id": need_match.group(1),
+                    "need_facet_id": facet_id.root,
+                    "status": "SUPPORTED",
+                    "supporting_slice_ids": (slice_ids[0].root,),
+                    "unsupported_slice_ids": tuple(item.root for item in slice_ids[1:]),
+                    "reason": "deterministic smoke evidence directly answers the requested facet",
+                }
+                for facet_id in facet_ids
+            )
+        },
+        strict=True,
     )
 
 
@@ -158,6 +192,8 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
             ).model_dump_json()
         if title == "NoOpSemanticVerificationDraft":
             return _no_op_verification(prompt).model_dump_json()
+        if title == "SemanticJudgmentBatchOutput":
+            return _semantic_judgment(prompt).model_dump_json()
         if title == "GraphCandidatePageDraft":
             # The deterministic production smoke has no graph fact to add.
             # Return the typed empty-page terminal so the graph owner records
@@ -230,6 +266,17 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                         "title": "Enter the tower",
                         "summary": _CHAPTER_GOAL,
                         "chapter_index": chapter,
+                        "obligation_ids": ["obligation.synthetic.north-tower"],
+                        "history_retrieval": {
+                            "requirement": "REQUIRED",
+                            "needs": [
+                                {
+                                    "kind": "causal_history",
+                                    "query": "林澈受伤仍未痊愈",
+                                    "entity_ids": ["entity.synthetic.lin-che"],
+                                }
+                            ],
+                        },
                     },
                     provenance=ProposalProvenance.PLANNER_PROPOSED,
                 ),

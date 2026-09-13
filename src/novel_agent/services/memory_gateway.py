@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from novel_agent.domain.artifacts import ArtifactRef
@@ -366,7 +368,29 @@ class MemoryGateway:
         if self._semantic_judge is None or not selections:
             return None, None
         try:
-            return self._semantic_judge.judge(selections), None
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return self._semantic_judge.judge(selections), None
+
+            # The production Writer request factory is intentionally synchronous
+            # because it also owns deterministic root reads.  Its caller may
+            # nevertheless be the async Creative Runtime.  Run the async-only
+            # semantic boundary on a short-lived worker loop instead of letting
+            # the judge fail closed merely because the caller already owns a
+            # loop.  The same ModelGateway, request ids, ledger, and artifacts
+            # are reused; this is not a second attempt or a budget extension.
+            semantic_judge = self._semantic_judge
+
+            def run_async_judge() -> NeedEvidenceSemanticResult:
+                return asyncio.run(semantic_judge.judge_async(selections))
+
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="memory-semantic-judge",
+            ) as executor:
+                future = executor.submit(run_async_judge)
+                return future.result(), None
         except Exception as error:  # fail closed; keep structured receipts
             return None, type(error).__name__
 

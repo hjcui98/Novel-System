@@ -591,6 +591,30 @@ def test_gateway_resolve_async_awaits_judge_on_the_running_loop(tmp_path: Path) 
     assert result.context.retrieval_traces[0].semantic_fallback_reason == "gateway_live_exact_l0"
 
 
+def test_gateway_sync_resolve_bridges_async_judge_from_running_loop(tmp_path: Path) -> None:
+    need = _need()
+    text_root, block = _text_root()
+
+    class _AsyncOnlyJudge(_Judge):
+        def judge(self, selections: tuple[Any, ...]) -> NeedEvidenceSemanticResult:
+            raise AssertionError("sync judge must not run inside Stage 4 loop")
+
+        async def judge_async(self, selections: tuple[Any, ...]) -> NeedEvidenceSemanticResult:
+            self.calls += 1
+            return _Judge(supported=True).judge(selections)
+
+    judge = _AsyncOnlyJudge(supported=True)
+    gateway = _gateway(tmp_path, _context(need, block, _evidence(block)), judge)
+
+    async def invoke_sync_gateway() -> Any:
+        return gateway.resolve(_request(need), text_root, thread_id="r1-sync-bridge")
+
+    result = asyncio.run(invoke_sync_gateway())
+    assert judge.calls == 1
+    assert result.context.retrieval_traces[0].l0_fallback_slice_ids
+    assert result.context.retrieval_traces[0].semantic_fallback_reason == "gateway_live_exact_l0"
+
+
 def test_gateway_does_not_drop_live_l0_beyond_anchor_expansion_cap(tmp_path: Path) -> None:
     need = _need()
     filler = tuple(f"无关风景描写{index}。" for index in range(4))

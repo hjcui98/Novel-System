@@ -1721,6 +1721,33 @@ def test_planner_compact_excerpt_identity_includes_content(tmp_path: Path) -> No
     assert first_item.context_item_id.root.startswith("planner-context.unit.compact.")
 
 
+def test_planner_context_rejoins_items_with_the_same_compact_handle() -> None:
+    first_group = StableId("compact.group.first")
+    second_group = StableId("compact.group.second")
+    items = tuple(
+        PlannerContextItem(
+            context_item_id=StableId(f"planner-context.atomic.{index}"),
+            section=PlannerContextSection.CURRENT_STATE,
+            text=f"item {index}",
+            token_count=1,
+            compact_handle=handle,
+        )
+        for index, handle in (
+            (1, first_group),
+            (2, second_group),
+            (3, first_group),
+        )
+    )
+
+    ordered = PlannerContextAssembler._contiguous_atomic_groups(items)
+
+    assert tuple(item.context_item_id.root for item in ordered) == (
+        "planner-context.atomic.1",
+        "planner-context.atomic.3",
+        "planner-context.atomic.2",
+    )
+
+
 def test_shared_runtime_soft_pressure_hard_limit_and_provider_gate(tmp_path: Path) -> None:
     def bootstrap_package(
         name: str,

@@ -50,6 +50,7 @@ from novel_agent.domain.stage2 import (
     WorldPatchCandidate,
 )
 from novel_agent.domain.stage5_evaluation import VerticalRunStatus
+from novel_agent.domain.world import PlanLevel, PlanNode
 from novel_agent.runtime.creative_assembly import (
     DEFAULT_PRODUCTION_ASSEMBLY_FACTORY,
     build_production_assembly,
@@ -123,9 +124,33 @@ def _bootstrap_canon(
     bundle = make_synthetic_bundle()
     text = next(item for item in bundle.text_roots if len(item.chapters) == 20)
     plan = next(item for item in bundle.plan_roots if item.chapter_goals)
+    story_id = StableId("plan.synthetic.story")
+    story = PlanNode(
+        plan_node_id=story_id,
+        node_type="story",
+        title="北塔故事",
+        summary="林澈前往北塔并完成当前长线目标。",
+        plan_level=PlanLevel.STORY,
+        chapter_start=1,
+        chapter_end=800,
+    )
     plan = plan.model_copy(
         update={
             "root_hash": ArtifactId("sha256:" + "0" * 64),
+            "nodes": (
+                story,
+                *tuple(
+                    node.model_copy(
+                        update={
+                            "parent_id": story_id,
+                            "plan_level": PlanLevel.ARC_VOLUME,
+                            "chapter_start": 1,
+                            "chapter_end": 800,
+                        }
+                    )
+                    for node in plan.nodes
+                ),
+            ),
             "chapter_goals": tuple(goal for goal in plan.chapter_goals if goal.chapter_index != 21),
         }
     )
@@ -302,6 +327,8 @@ def test_production_factory_runs_one_chapter_with_fake_endpoint(tmp_path: Path) 
             auto_accept_draft=True,
         ),
         model_endpoints=endpoints,
+        retrieval_backend=None,
+        settlement_output_tokens=11_000,
     )
     assembly = build_production_assembly(context)
     assert assembly.attestation is not None
@@ -366,12 +393,20 @@ def test_production_cli_and_runner_execute_one_chapter_with_receipts(tmp_path: P
         ),
         model_endpoints=endpoints,
     )
+    assembly = build_production_assembly(context)
+    assert assembly.attestation is not None
+    policy = context.policy.model_copy(
+        update={
+            "policy_hash": assembly.attestation.configuration_fingerprint.root,
+            "permission_hash": assembly.attestation.configuration_fingerprint.root,
+        }
+    )
     request = CreativeRunRequest(
         run_id=context.run_id,
         project_id=context.project_id,
         basis_commit=base,
         basis_snapshot=snapshot_id_for_commit(base),
-        policy=context.policy,
+        policy=policy,
         current_chapter=20,
         target_chapters=21,
         input_artifact_refs=(bootstrap_receipt, author),
@@ -382,7 +417,7 @@ def test_production_cli_and_runner_execute_one_chapter_with_receipts(tmp_path: P
         repo_root / "src" / "novel_agent" / "runtime" / "stage5_development_manifest.json"
     )
     request_path.write_text(request.model_dump_json(), encoding="utf-8")
-    policy_path.write_text(context.policy.model_dump_json(), encoding="utf-8")
+    policy_path.write_text(policy.model_dump_json(), encoding="utf-8")
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(
         item for item in (str(repo_root / "src"), environment.get("PYTHONPATH")) if item
@@ -428,6 +463,8 @@ def test_production_cli_and_runner_execute_one_chapter_with_receipts(tmp_path: P
             str(object_root),
             "--endpoint-profile",
             "deterministic_fake",
+            "--scheduling-timeout-seconds",
+            "120",
             "--max-tasks",
             "1",
             "--receipt",
@@ -458,7 +495,7 @@ def test_production_cli_and_runner_execute_one_chapter_with_receipts(tmp_path: P
             "--endpoint-profile",
             "deterministic_fake",
             "--settlement-output-tokens",
-            "12000",
+            "11000",
             "--max-tasks",
             "1",
             "--max-slices",
@@ -498,7 +535,7 @@ def test_production_cli_and_runner_execute_one_chapter_with_receipts(tmp_path: P
     assert attestation["endpoints"][0]["endpoint_name"] == "deterministic-fake-production"
     assert invocation["spec_locator"] == DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
     assert invocation["endpoint_profile"] == "deterministic_fake"
-    assert invocation["settlement_output_tokens"] == 12000
+    assert invocation["settlement_output_tokens"] == 11000
     assert invocation["session_factory_identity"]
     assert cli_receipt_payload["receipt_type"] == "runtime_cli_advance"
     assert cli_receipt_payload["spec_locator"] == DEFAULT_PRODUCTION_ASSEMBLY_FACTORY
