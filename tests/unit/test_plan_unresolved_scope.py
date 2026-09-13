@@ -206,4 +206,7 @@ def test_the_planner_output_budget_covers_the_mandated_volume_grid() -> None:
     from novel_agent.runtime.production_bootstrap import load_production_assembly_spec
 
     spec = load_production_assembly_spec()
-    assert spec.model_policy.default_output_limit >= 12_000
+    # A volume now declares a window and a role for each of its ten narrative
+    # slots, so the eight-volume grid needs headroom beyond the ~9.5k tokens a free
+    # text grid measured.
+    assert spec.model_policy.default_output_limit >= 16_000

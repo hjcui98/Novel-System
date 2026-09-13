@@ -12,7 +12,7 @@
   "model_policy": {
     "require_admission": true,
     "sequence_limit": 131072,
-    "default_output_limit": 12000,
+    "default_output_limit": 16000,
     "reasoning_billing_mode": "unknown_not_applicable"
   },
   "expected_prompt_ids": [
