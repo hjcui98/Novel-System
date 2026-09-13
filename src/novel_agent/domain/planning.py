@@ -1100,18 +1100,28 @@ def volume_stage_window_defects(
             continue
         role = role.strip().lower()
         served = value.get("serves")
-        if role == "setup" and served is None:
+        if served is None or (isinstance(served, str) and not served.strip()):
+            # Planting may reach nothing locked.  A disclosure action has to say which
+            # responsibility it discloses; a progression that names nothing is checked
+            # by the prose semantic review and by the obligation time locks instead.
+            if role in {"hint", "payoff"}:
+                defects.append(
+                    VolumeStageWindowDefect(
+                        f"{key}.serves",
+                        f"{key}.serves must name the host-accepted responsibility a "
+                        f"{role} stage discloses",
+                    )
+                )
             continue
-        if not isinstance(served, str) or not served.strip():
+        if not isinstance(served, str):
             defects.append(
                 VolumeStageWindowDefect(
                     f"{key}.serves",
-                    f"{key}.serves must name the host-accepted responsibility a "
-                    f"{role} stage serves",
+                    f"{key}.serves must be a host-accepted responsibility handle",
                 )
             )
             continue
-        handle = served.strip()
+        handle = _stage_handle(served)
         constraint = catalogue.get(handle)
         if constraint is None:
             if handle in accepted_obligation_ids:
@@ -1151,6 +1161,16 @@ def volume_stage_window_defects(
                 )
             )
     return tuple(defects)
+
+
+def _stage_handle(value: str) -> str:
+    """Normalize the handle a stage cites.
+
+    The planner context renders each responsibility as ``[handle]``, so a model
+    naturally copies the brackets; they are formatting, not part of the identity.
+    """
+
+    return value.strip().strip("[]").strip().strip('"').strip("'").strip()
 
 
 def _stage_constraint_catalogue(

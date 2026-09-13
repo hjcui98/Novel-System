@@ -366,6 +366,39 @@ def test_a_setup_stage_may_name_the_responsibility_without_a_boundary_check() ->
     assert volume_stage_window_defects(payload, constraints=_LOCKS) == ()
 
 
+def test_the_rendered_bracket_form_of_a_handle_resolves() -> None:
+    """The planner context prints ``[handle]``; brackets are formatting, not identity."""
+
+    payload = _volume_with_stage_windows(
+        midpoint_reversal=_stage_entry(
+            "陆远旧日行迹的暗示", "350-370", "hint", "[lock.long-truth.vol4-hint]"
+        )
+    )
+
+    assert volume_stage_window_defects(payload, constraints=_LOCKS) == ()
+
+
+def test_a_progression_without_a_served_responsibility_is_allowed() -> None:
+    """A stage that reaches nothing locked must not be forced to cite a constraint."""
+
+    payload = _volume_with_stage_windows(
+        first_escalation=_stage_entry("常规推进", "320-340", "progression")
+    )
+
+    assert volume_stage_window_defects(payload, constraints=_LOCKS) == ()
+
+
+def test_a_disclosure_without_a_served_responsibility_is_refused() -> None:
+    payload = _volume_with_stage_windows(
+        second_escalation=_stage_entry("暗示长程真相", "350-360", "hint")
+    )
+
+    assert _fields(payload, constraints=_LOCKS) == ("second_escalation.serves",)
+    assert "must name the host-accepted responsibility" in _messages(
+        payload, constraints=_LOCKS
+    )[0]
+
+
 def test_stage_windows_must_stay_inside_their_volume() -> None:
     payload = _volume_with_stage_windows(
         volume_climax=_stage_entry("卷高潮", "380-420", "payoff", "lock.long-truth.vol4-hint")
