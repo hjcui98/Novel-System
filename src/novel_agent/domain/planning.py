@@ -16,7 +16,7 @@ from pydantic import Field, JsonValue, model_validator
 
 from novel_agent.domain.agent_context import LoopRoundProgress
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.author_constraints import AuthorConstraint, AuthorConstraintCategory
+from novel_agent.domain.author_constraints import AuthorConstraint
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import NeedFacetKind
@@ -986,26 +986,6 @@ VOLUME_NARRATIVE_STAGE_KEYS: tuple[str, ...] = (
 # 埋设 / 暗示 / 正式推进 / 兑现.  ``setup`` may sit anywhere in the volume; the other
 # three reach information or capability the author may have locked behind a boundary.
 VOLUME_STAGE_ROLES: tuple[str, ...] = ("setup", "hint", "progression", "payoff")
-_STAGE_ROLE_CATEGORIES: dict[str, frozenset[AuthorConstraintCategory]] = {
-    "hint": frozenset({AuthorConstraintCategory.REVEAL_WINDOW}),
-    "progression": frozenset(
-        {
-            AuthorConstraintCategory.TIME_LOCK,
-            AuthorConstraintCategory.ABILITY_MILESTONE,
-            AuthorConstraintCategory.EQUIPMENT_MILESTONE,
-            AuthorConstraintCategory.LOCATION_PRECONDITION,
-        }
-    ),
-    "payoff": frozenset(
-        {
-            AuthorConstraintCategory.REVEAL_WINDOW,
-            AuthorConstraintCategory.TIME_LOCK,
-            AuthorConstraintCategory.ABILITY_MILESTONE,
-            AuthorConstraintCategory.EQUIPMENT_MILESTONE,
-            AuthorConstraintCategory.LOCATION_PRECONDITION,
-        }
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -1135,18 +1115,15 @@ def volume_stage_window_defects(
                 )
             )
             continue
-        if role not in _STAGE_ROLE_CATEGORIES:
+        if role == "setup":
+            # Planting may reference a locked responsibility and still happen earlier:
+            # that is what planting is for.  Only the disclosure and advancement
+            # actions answer to the boundary.
             continue
-        if constraint.category not in _STAGE_ROLE_CATEGORIES[role]:
-            defects.append(
-                VolumeStageWindowDefect(
-                    f"{key}.serves",
-                    f"{key}.serves names a {constraint.category.value} responsibility but a "
-                    f"{role} stage only serves "
-                    + ", ".join(sorted(item.value for item in _STAGE_ROLE_CATEGORIES[role])),
-                )
-            )
-            continue
+        # The cited responsibility is authoritative: whatever the role label says, the
+        # stage is bound by that responsibility's own boundary.  Rejecting a role and a
+        # category that disagree only taught the planner to relabel; binding the stage
+        # to what it actually names cannot be gamed, because the boundary still applies.
         boundary = constraint.not_before_chapter
         if boundary is None:
             boundary = constraint.chapter_earliest

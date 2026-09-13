@@ -316,15 +316,19 @@ def test_a_host_accepted_obligation_id_is_a_legal_handle() -> None:
     )
 
 
-def test_a_role_that_does_not_serve_that_constraint_kind_is_refused() -> None:
-    payload = _volume_with_stage_windows(
-        first_cost=_stage_entry("推进", "301-320", "progression", "lock.long-truth.vol4-hint")
+def test_the_cited_responsibility_governs_the_boundary_whatever_the_role_says() -> None:
+    """Relabelling must not escape a boundary: what the stage names is authoritative."""
+
+    early = _volume_with_stage_windows(
+        first_cost=_stage_entry("提前推进", "340-360", "progression", "lock.long-truth.vol4-hint")
+    )
+    legal = _volume_with_stage_windows(
+        first_cost=_stage_entry("推进", "350-360", "progression", "lock.long-truth.vol4-hint")
     )
 
-    assert _fields(payload, constraints=_LOCKS) == ("first_cost.serves",)
-    assert "reveal_window responsibility but a progression stage" in (
-        _messages(payload, constraints=_LOCKS)[0]
-    )
+    assert _fields(early, constraints=_LOCKS) == ("first_cost.window",)
+    assert "not_before_chapter 350" in _messages(early, constraints=_LOCKS)[0]
+    assert volume_stage_window_defects(legal, constraints=_LOCKS) == ()
 
 
 def test_the_candidates_own_declaration_is_not_the_authority() -> None:
