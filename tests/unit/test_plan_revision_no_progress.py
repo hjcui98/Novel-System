@@ -63,9 +63,12 @@ class _FindingsReviewer(_AcceptingReviewer):
         self,
         artifacts: ArtifactRepository,
         findings: list[tuple[PlanReviewIssue, ...]],
+        *,
+        revise_without_issues: bool = False,
     ) -> None:
         super().__init__(artifacts)
         self._findings = findings
+        self._revise_without_issues = revise_without_issues
         self.plan_reviews = 0
 
     async def review(self, **kwargs: object) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
@@ -77,7 +80,14 @@ class _FindingsReviewer(_AcceptingReviewer):
             index = self.plan_reviews
             issues = self._findings[index] if index < len(self._findings) else ()
             self.plan_reviews += 1
-        decision = ReviewDecision.REVISE if issues else ReviewDecision.ACCEPT
+        empty_plan_revise = self._revise_without_issues and (
+            target_kind is ReviewTargetKind.PLAN_PROPOSAL
+        )
+        decision = (
+            ReviewDecision.REVISE
+            if issues or empty_plan_revise
+            else ReviewDecision.ACCEPT
+        )
         review = PlanReview(
             review_id=StableId(f"review.findings.{target_kind.value}.{self.plan_reviews}"),
             target_kind=target_kind,
@@ -129,6 +139,7 @@ def _service(
     findings: list[tuple[PlanReviewIssue, ...]],
     *,
     planner: type[_ModePlanner] = _ModePlanner,
+    revise_without_issues: bool = False,
 ) -> tuple[PlanningContextLoopService, ArtifactRepository, object, object, object, _ModePlanner]:
     bundle = make_synthetic_bundle()
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / name))
@@ -138,7 +149,9 @@ def _service(
     selected = planner(artifacts, AgentMode.CHAPTER_SET)
     service, _planner, _memory = _post_genesis_service(
         artifacts,
-        reviewer=_FindingsReviewer(artifacts, findings),
+        reviewer=_FindingsReviewer(
+            artifacts, findings, revise_without_issues=revise_without_issues
+        ),
         planner=selected,
     )
     return (
