@@ -126,7 +126,7 @@ def apply_host_plan_review_constraints(
     )
     if not extra and not coverage:
         return draft
-    issues = (*draft.issues, *extra)
+    issues = (*_verified_model_issues(draft.issues, target_payload), *extra)
     missing_window = any(
         issue.kind is ReviewIssueKind.LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW for issue in extra
     )
@@ -160,6 +160,36 @@ def apply_host_plan_review_constraints(
             "revision_instruction": instruction,
         }
     )
+
+
+def _verified_model_issues(
+    issues: Sequence[PlanReviewIssue], target_payload: str
+) -> tuple[PlanReviewIssue, ...]:
+    """Keep a model finding blocking only while its own citation is grounded.
+
+    A reviewer that quotes text the candidate does not contain is describing a
+    different artifact, so the finding is demoted to an advisory instead of being
+    forwarded to the planner as a rewrite demand.
+    """
+
+    verified: list[PlanReviewIssue] = []
+    for issue in issues:
+        quote = issue.quote
+        if not issue.blocking or quote is None or quote in target_payload:
+            verified.append(issue)
+            continue
+        verified.append(
+            issue.model_copy(
+                update={
+                    "blocking": False,
+                    "summary": (
+                        f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} "
+                        "(the quoted text is not present in the reviewed candidate)"
+                    ),
+                }
+            )
+        )
+    return tuple(verified)
 
 
 def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
