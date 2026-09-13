@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
+from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.domain.benchmark import ChapterGoal, PlanRootDocument, TextRootDocument
-from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion, StableId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
 from novel_agent.domain.memory import (
     DerivedBuildStatus,
     DerivedSnapshotLite,
@@ -14,8 +25,15 @@ from novel_agent.domain.memory import (
     PlanObligation,
     WorldRootDocument,
 )
+from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
 from novel_agent.domain.world import Entity, PlanLevel, PlanNode
-from novel_agent.services.stage_exit_audit import StageRuntimeEvidence, audit_stage_roots
+from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.content_addressing import canonical_json_bytes
+from novel_agent.services.stage_exit_audit import (
+    StageRuntimeEvidence,
+    audit_stage_roots,
+    runtime_evidence_from_tasks,
+)
 
 VERSION = SchemaVersion("1.0.0")
 HASH = ArtifactId("sha256:" + "a" * 64)
@@ -89,7 +107,15 @@ def _roots() -> tuple[PlanRootDocument, WorldRootDocument, TextRootDocument]:
             obligation_ids=(OBLIGATION,) if index == 1 else (),
             source_ids=(StableId("source.author"),),
             payload=(
-                {}
+                {
+                    "obligation_actions": [
+                        {
+                            "obligation_id": OBLIGATION.root,
+                            "action": "SETUP",
+                            "expected_delta": "the first threshold is established",
+                        }
+                    ]
+                }
                 if index == 1
                 else {
                     "history_retrieval": {
@@ -200,3 +226,271 @@ def test_g1_needs_history_consumption_and_recovery_proof() -> None:
     )
 
     assert evidence["g1_evidence_complete"] is False
+
+
+def test_successful_commit_task_without_typed_settlement_is_not_atomic() -> None:
+    plan, world, text = _roots()
+    task = TaskRecord(
+        task_id=TaskId("task.chapter.1.commit"),
+        run_id=RunId("run.audit"),
+        project_id=ProjectId("project.audit"),
+        kind=TaskKind.DRAFT_COMMIT,
+        task_revision=0,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=COMMIT,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        chapter_index=1,
+    )
+
+    runtime = runtime_evidence_from_tasks(
+        (task,),
+        (),
+        plan_reviewed=True,
+        plan=plan,
+        text=text,
+        world=world,
+    )
+
+    assert runtime.atomic_chapter_writes == frozenset()
+    assert runtime.content_reviewed_chapters == frozenset()
+
+
+def test_atomic_write_requires_typed_workflow_and_matching_projection() -> None:
+    from novel_agent.services.memory_write_workflow import (
+        ImmediateProjectionReadinessPort,
+        InMemoryArtifactRepository,
+        InMemoryCandidateLineageRepository,
+        InMemoryCheckpointRepository,
+        InMemoryCommitPort,
+    )
+    from tests.contract.test_memory_write_workflow_contract import BASE, PROJECT
+    from tests.unit.test_memory_write_resume import _ready_data, _workflow
+
+    artifacts = InMemoryArtifactRepository()
+    commit = InMemoryCommitPort(current_commit=BASE)
+    workflow = _workflow(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+        checkpoint=InMemoryCheckpointRepository(artifacts),
+        commit=commit,
+        projection=ImmediateProjectionReadinessPort(artifacts=artifacts),
+    )
+    data = _ready_data(
+        artifacts=artifacts,
+        lineage=InMemoryCandidateLineageRepository(),
+    )
+    assert data.bundle is not None
+    assert data.materialization is not None
+    data.bundle = data.bundle.model_copy(update={"run_id": data.request.run_id})
+    data.materialization = data.materialization.model_copy(update={"bundle": data.bundle})
+    assert workflow._prepare_commit(data) is None
+    assert workflow._commit(data) is None
+    assert workflow._project(data) is None
+    result = workflow._freshness(data)
+    assert result is not None
+    assert result.terminal_result_ref is not None
+    assert result.checkpoint_ref is not None
+    assert result.resulting_commit is not None
+
+    candidate_task = TaskRecord(
+        task_id=TaskId("task.chapter.1.candidate"),
+        run_id=data.request.run_id,
+        project_id=PROJECT,
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=1,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=data.request.base_commit,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        chapter_index=1,
+    )
+    acceptance_task = candidate_task.model_copy(
+        update={
+            "task_id": TaskId("task.chapter.1.acceptance"),
+            "kind": TaskKind.DRAFT_ACCEPTANCE,
+            "dependency_task_ids": (candidate_task.task_id,),
+        }
+    )
+    commit_task = TaskRecord(
+        task_id=data.request.task_id,
+        run_id=data.request.run_id,
+        project_id=PROJECT,
+        kind=TaskKind.DRAFT_COMMIT,
+        task_revision=1,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=data.request.base_commit,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        dependency_task_ids=(acceptance_task.task_id,),
+        terminal_artifact_refs=(result.terminal_result_ref, result.checkpoint_ref),
+        chapter_index=1,
+    )
+    projection_task = TaskRecord(
+        task_id=TaskId("task.chapter.1.projection"),
+        run_id=data.request.run_id,
+        project_id=PROJECT,
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        task_revision=1,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=result.resulting_commit,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        dependency_task_ids=(commit_task.task_id,),
+        chapter_index=1,
+        projection_after="draft",
+    )
+
+    runtime = runtime_evidence_from_tasks(
+        (candidate_task, acceptance_task, commit_task, projection_task),
+        (),
+        plan_reviewed=False,
+        artifact_reader=artifacts.read_verified,
+    )
+
+    assert runtime.atomic_chapter_writes == frozenset({1})
+
+
+def test_writer_result_proves_history_and_independent_observation(tmp_path: Path) -> None:
+    from sqlalchemy import create_engine
+
+    from novel_agent.adapters.postgres.database import Base, build_session_factory
+    from novel_agent.domain.editorial import EditorialVerdict
+    from novel_agent.domain.model_calls import (
+        BudgetSource,
+        EffectiveBudgetResult,
+        ModelCallLedgerEntry,
+        ModelCallLedgerStatus,
+    )
+    from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
+    from tests.fixtures.stage1_synthetic import make_synthetic_bundle
+    from tests.integration.test_writer_context_loop import _loop, _request
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    request = _request(artifacts, "audit-runtime")
+    loop, model_request, _ = _loop(
+        tmp_path,
+        (RunEventLogRepository(factory), RunCheckpointRepository(factory)),
+        request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+    )
+    result = asyncio.run(loop.execute(request, model_request, object()))
+    result_ref = artifacts.put(
+        canonical_json_bytes(result.model_dump(mode="json")),
+        "application/vnd.novel-agent.writing-loop-result+json",
+        VERSION,
+    )
+    candidate_task = TaskRecord(
+        task_id=TaskId(request.task_id.root),
+        run_id=request.run_id,
+        project_id=request.project_id,
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=request.base_commit,
+        basis_snapshot=request.snapshot_id,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        terminal_artifact_refs=(result_ref,),
+        chapter_index=request.writing_task.target_chapter,
+        target_chapters=request.writing_task.target_chapter,
+    )
+    acceptance_task = candidate_task.model_copy(
+        update={
+            "task_id": TaskId(f"{request.task_id.root}.accept"),
+            "kind": TaskKind.DRAFT_ACCEPTANCE,
+            "status": TaskStatus.SUCCEEDED,
+            "candidate_binding_ref": None,
+            "dependency_task_ids": (candidate_task.task_id,),
+            "terminal_artifact_refs": (),
+        }
+    )
+    task = TaskRecord(
+        task_id=TaskId(f"{request.task_id.root}.commit"),
+        run_id=request.run_id,
+        project_id=request.project_id,
+        kind=TaskKind.DRAFT_COMMIT,
+        task_revision=0,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=request.base_commit,
+        basis_snapshot=request.snapshot_id,
+        policy_hash="sha256:" + "c" * 64,
+        permission_hash="sha256:" + "d" * 64,
+        dependency_task_ids=(acceptance_task.task_id,),
+        terminal_artifact_refs=(),
+        chapter_index=request.writing_task.target_chapter,
+        target_chapters=request.writing_task.target_chapter,
+    )
+    projection_task = task.model_copy(
+        update={
+            "task_id": TaskId(f"{request.task_id.root}.projection"),
+            "kind": TaskKind.PROJECTION_FRESHNESS,
+            "basis_commit": request.base_commit,
+            "dependency_task_ids": (task.task_id,),
+            "terminal_artifact_refs": (),
+            "projection_after": "draft",
+        }
+    )
+    text = next(item for item in make_synthetic_bundle().text_roots if len(item.chapters) == 20)
+    events = RunEventLogRepository(factory).replay(request.run_id)
+    budget = EffectiveBudgetResult(
+        budget_source=BudgetSource.ENDPOINT_DEFAULT,
+        context_limit=100_000,
+        estimated_input_tokens=1,
+        body_output_budget=1,
+        thinking_budget=0,
+        total_output_budget=1,
+        safety_allowance_tokens=1,
+        reserved_sequence_tokens=3,
+        available_input_tokens=99_998,
+    )
+    model_calls = tuple(
+        ModelCallLedgerEntry(
+            request_id=record.request_id,
+            run_id=record.run_id,
+            task_id=record.task_id,
+            request_hash=ArtifactId("sha256:" + "c" * 64),
+            effective_budget=budget,
+            reasoning_included_in_completion_tokens=False,
+            status=ModelCallLedgerStatus.COMPLETED,
+            logical_phase="writer-test",
+            raw_response_hash=ArtifactId("sha256:" + "d" * 64),
+            call_record=record,
+            requested_at=record.started_at,
+            completed_at=record.completed_at,
+        )
+        for record in result.model_call_records
+    )
+
+    runtime = runtime_evidence_from_tasks(
+        (candidate_task, acceptance_task, task, projection_task),
+        events,
+        plan_reviewed=False,
+        text=text,
+        artifact_reader=artifacts.read_verified,
+        model_calls=model_calls,
+    )
+
+    assert result.status.value == "DRAFT_CANDIDATE_READY"
+    assert runtime.content_reviewed_chapters == frozenset({21})
+    assert runtime.curator_observed_chapters == frozenset({21})
+    assert runtime.history_consumed_pairs == frozenset({(20, 21)})
+    assert runtime.budget_continuity_verified is True
+
+    uncertain_runtime = runtime_evidence_from_tasks(
+        (candidate_task, acceptance_task, task, projection_task),
+        events,
+        plan_reviewed=False,
+        text=text,
+        artifact_reader=artifacts.read_verified,
+        model_calls=(
+            model_calls[0].model_copy(update={"status": ModelCallLedgerStatus.UNCERTAIN}),
+            *model_calls[1:],
+        ),
+    )
+    assert uncertain_runtime.budget_continuity_verified is False
+    engine.dispose()

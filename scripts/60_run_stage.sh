@@ -46,6 +46,9 @@ RUN_LOG="${NOVEL_LOGS}/${STAGE}-driver.log"
 FAILURES=0
 slice=0
 STAGE_OK=1
+STAGE_EXIT_CACHE_VALID=0
+STAGE_EXIT_CACHE_RESULT=1
+STAGE_EXIT_CACHE_MESSAGE=""
 
 # Progress goes to the operator and to the log without a pipeline, because a
 # pipeline's exit status is the last member's and this function must not be able
@@ -125,6 +128,31 @@ for task in tasks:
 PY
 }
 
+first_writer_past_stage_gate() {
+    "$NOVEL_PYTHON" - "$NOVEL_STATE/status.json" "$CHAPTER_GATE" <<'PY'
+import json, sys
+
+path, chapter_gate = sys.argv[1], int(sys.argv[2])
+try:
+    tasks = json.load(open(path, encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    raise SystemExit(0)
+
+for task in tasks:
+    if task.get("status") not in {"ready", "pending"}:
+        continue
+    if task.get("kind") != "draft_candidate":
+        continue
+    try:
+        chapter = int(task.get("chapter_index") or 0)
+    except (TypeError, ValueError):
+        continue
+    if chapter_gate == 0 or chapter > chapter_gate:
+        print(task.get("task_id") or "")
+        break
+PY
+}
+
 task_field() {
     "$NOVEL_PYTHON" - "$NOVEL_STATE/status.json" "$1" "$2" <<'PY'
 import json, sys
@@ -154,13 +182,31 @@ print(payload.get("classification", {}).get(sys.argv[1], ""))
 ' "$1"
 }
 
+invalidate_stage_exit_cache() {
+    STAGE_EXIT_CACHE_VALID=0
+}
+
 # The stage's own exit evidence, read from the committed roots.  The gate
 # messages are suppressed on the pre-flight call, which runs in the normal
 # "not there yet" case and must not log a failure that has not happened.
 stage_exit_satisfied() {
     evidence=""
     local quiet="${1:-}" json chapters volumes
-    stage_roots || return 1
+    if [[ "$STAGE_EXIT_CACHE_VALID" -eq 1 ]]; then
+        if [[ -z "$quiet" && -n "$STAGE_EXIT_CACHE_MESSAGE" ]]; then
+            log "$STAGE_EXIT_CACHE_MESSAGE"
+        fi
+        return "$STAGE_EXIT_CACHE_RESULT"
+    fi
+    if ! stage_roots; then
+        # Keep one failed read as the result of this gate check.  The final
+        # bookkeeping call can reuse it when no state-changing command followed;
+        # otherwise invalidate_stage_exit_cache() forces a fresh read.
+        STAGE_EXIT_CACHE_VALID=1
+        STAGE_EXIT_CACHE_RESULT=1
+        STAGE_EXIT_CACHE_MESSAGE=""
+        return 1
+    fi
     json="$(last_json "$NOVEL_STATE/roots.out")"
     chapters="$("$NOVEL_PYTHON" -c '
 import json,sys
@@ -173,11 +219,17 @@ try: print(int(json.loads(sys.stdin.read().strip().splitlines()[-1]).get("commit
 except (ValueError, IndexError): print(-1)
 ' <<<"$json")"
     if [[ "$volumes" -lt "$VOLUME_GATE" ]]; then
-        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: ${volumes}/${VOLUME_GATE} committed volumes"
+        STAGE_EXIT_CACHE_VALID=1
+        STAGE_EXIT_CACHE_RESULT=1
+        STAGE_EXIT_CACHE_MESSAGE="[stage] ${STAGE} exit not proven: ${volumes}/${VOLUME_GATE} committed volumes"
+        [[ -n "$quiet" ]] || log "$STAGE_EXIT_CACHE_MESSAGE"
         return 1
     fi
     if [[ "$CHAPTER_GATE" -gt 0 && "$chapters" -lt "$CHAPTER_GATE" ]]; then
-        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: ${chapters}/${CHAPTER_GATE} committed chapters"
+        STAGE_EXIT_CACHE_VALID=1
+        STAGE_EXIT_CACHE_RESULT=1
+        STAGE_EXIT_CACHE_MESSAGE="[stage] ${STAGE} exit not proven: ${chapters}/${CHAPTER_GATE} committed chapters"
+        [[ -n "$quiet" ]] || log "$STAGE_EXIT_CACHE_MESSAGE"
         return 1
     fi
     evidence="$("$NOVEL_PYTHON" -c '
@@ -189,9 +241,15 @@ except (ValueError, IndexError):
     print("0")
 ' "${STAGE}_evidence_complete" <<<"$json")"
     if [[ "$evidence" != "1" ]]; then
-        [[ -n "$quiet" ]] || log "[stage] ${STAGE} exit not proven: complete stage evidence is absent"
+        STAGE_EXIT_CACHE_VALID=1
+        STAGE_EXIT_CACHE_RESULT=1
+        STAGE_EXIT_CACHE_MESSAGE="[stage] ${STAGE} exit not proven: complete stage evidence is absent"
+        [[ -n "$quiet" ]] || log "$STAGE_EXIT_CACHE_MESSAGE"
         return 1
     fi
+    STAGE_EXIT_CACHE_VALID=1
+    STAGE_EXIT_CACHE_RESULT=0
+    STAGE_EXIT_CACHE_MESSAGE=""
     return 0
 }
 
@@ -209,6 +267,13 @@ while [[ $slice -lt $MAX_SLICES ]]; do
     slice=$((slice + 1))
     label="$(printf '%s-%02d' "$STAGE" "$slice")"
 
+    writer_past_gate="$(first_writer_past_stage_gate)"
+    if [[ -n "$writer_past_gate" ]]; then
+        log "[stop] $writer_past_gate is a Writer task beyond the ${STAGE} boundary; complete stage evidence before dispatch"
+        break
+    fi
+
+    invalidate_stage_exit_cache
     if ! must "advance $label" "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" \
         advance \
         --project-id "$NOVEL_PROJECT_ID" --run-id "$NOVEL_RUN_ID" \
@@ -226,6 +291,19 @@ while [[ $slice -lt $MAX_SLICES ]]; do
 
     status_snapshot || break
 
+    # The slice may have produced the final accepted/projection evidence.  Stop
+    # before the next task selection even if the status projection already shows
+    # another READY task.
+    if stage_exit_satisfied quiet; then
+        log "[exit] ${STAGE} exit evidence reached after slice ${slice}"
+        break
+    fi
+    writer_past_gate="$(first_writer_past_stage_gate)"
+    if [[ -n "$writer_past_gate" ]]; then
+        log "[stop] $writer_past_gate is a Writer task beyond the ${STAGE} boundary; complete stage evidence before dispatch"
+        break
+    fi
+
     waiting="$(first_task_in_status waiting_retry blocked)"
     if [[ -n "$waiting" ]]; then
         verdict="$(classify_task "$waiting")"
@@ -236,6 +314,7 @@ while [[ $slice -lt $MAX_SLICES ]]; do
             retry_under_policy)
                 revision="$(task_field "$waiting" task_revision)"
                 [[ -n "$revision" ]] || revision=1
+                invalidate_stage_exit_cache
                 must "retry $waiting" "$NOVEL_AGENT" runtime --database-url "$NOVEL_DATABASE_URL" \
                     retry --project-id "$NOVEL_PROJECT_ID" --run-id "$NOVEL_RUN_ID" \
                     --task-id "$waiting" --observed-revision "$revision" \

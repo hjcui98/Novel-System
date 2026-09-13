@@ -221,7 +221,7 @@ def test_each_command_snapshot_is_captured_from_its_own_stdout(tmp_path: Path) -
                 # The pre-flight gate must not pass, or the loop never runs.
                 reads=$(( $(cat "$marker" 2>/dev/null || echo 0) + 1 ))
                 echo "$reads" > "$marker"
-                if [[ "$reads" -ge 2 ]]; then
+                if [[ "$reads" -ge 4 ]]; then
                     echo '{"committed_chapters":0,"committed_volumes":8,"g0_evidence_complete":'\
 'true}'
                 else
@@ -247,7 +247,7 @@ def test_each_command_snapshot_is_captured_from_its_own_stdout(tmp_path: Path) -
     # An unreadable snapshot stops the loop before it can advance on stale state:
     # with no readable task list there is nothing to act on.
     assert "no ready, retry or acceptance work remains" in result.stdout, result.stdout
-    assert "[stage] g0 exit not proven" not in result.stdout, result.stdout
+    assert result.returncode == 1, result.stdout
 
 
 def test_a_stage_with_proven_evidence_exits_zero(tmp_path: Path) -> None:
@@ -404,6 +404,43 @@ def test_counts_without_complete_evidence_do_not_release_a_stage(tmp_path: Path)
 
     assert result.returncode == 1, result.stdout
     assert "complete stage evidence is absent" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("stage", "chapter", "message"),
+    [
+        ("g0", 1, "g0 boundary"),
+        ("g1", 3, "g1 boundary"),
+    ],
+)
+def test_writer_beyond_stage_boundary_is_not_dispatched(
+    tmp_path: Path, stage: str, chapter: int, message: str
+) -> None:
+    """READY Writer work cannot outrun an unproven G0/G1 stop point."""
+
+    result = _run(
+        tmp_path,
+        f"""
+        case "$*" in
+            *" status "*)
+                echo '[{{"task_id":"writer.{chapter}","status":"ready",'\
+'"kind":"draft_candidate","chapter_index":{chapter}}}]'
+                exit 0 ;;
+            *" roots "*)
+                echo '{{"committed_chapters":{2 if stage == "g1" else 0},'\
+'"committed_volumes":8,"{stage}_evidence_complete":false}}'
+                exit 0 ;;
+            *" advance "*) echo "SHOULD NOT DISPATCH"; exit 9 ;;
+        esac
+        exit 0
+        """,
+        stage=stage,
+        slices="1",
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "SHOULD NOT DISPATCH" not in result.stdout
+    assert message in result.stdout
 
 
 def test_an_unknown_stage_is_refused(tmp_path: Path) -> None:

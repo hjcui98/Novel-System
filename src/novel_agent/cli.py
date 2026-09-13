@@ -613,6 +613,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         tuple(run_tasks),
                         tuple(run_events),
                         plan_reviewed=plan_reviewed,
+                        artifact_reader=store.read_verified,
+                        plan=plan_root,
+                        text=text_root,
+                        world=world_root,
+                        model_calls=SqlModelCallLedger(factory).list_for_run(run_id),
                     )
                     if args.run_id
                     else StageRuntimeEvidence()
@@ -628,6 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         tasks=tuple(run_tasks),
                         events=tuple(run_events),
                         runtime=runtime_evidence,
+                        artifact_reader=store.read_verified,
                     )
                 )
             print(json.dumps(roots_payload, ensure_ascii=False, sort_keys=True))
