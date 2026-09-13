@@ -162,6 +162,42 @@ def apply_host_plan_review_constraints(
     )
 
 
+def host_only_plan_review(
+    *,
+    target_payload: str,
+    mode: AgentMode,
+    expected_volume_count: int | None = None,
+    expected_target_chapters: int | None = None,
+    accepted_obligation_ids: frozenset[str] | None = None,
+    author_constraints: Sequence[AuthorConstraint] = (),
+    trusted_window: tuple[int, int] | None = None,
+) -> PlanReviewDraft | None:
+    """The host gate's own verdict, computed without a model call.
+
+    Mechanical defects (missing structure, an unusable stage entry, a window outside
+    its scope) are decidable from the payload alone, so they must not cost a review
+    call.  ``None`` means the host alone cannot decide and the model review runs.
+    """
+
+    probe = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+        issues=(),
+    )
+    overlaid = apply_host_plan_review_constraints(
+        probe,
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=target_payload,
+        mode=mode,
+        expected_volume_count=expected_volume_count,
+        expected_target_chapters=expected_target_chapters,
+        accepted_obligation_ids=accepted_obligation_ids,
+        author_constraints=author_constraints,
+        trusted_window=trusted_window,
+    )
+    return None if overlaid.decision is ReviewDecision.ACCEPT else overlaid
+
+
 def _verified_model_issues(
     issues: Sequence[PlanReviewIssue], target_payload: str
 ) -> tuple[PlanReviewIssue, ...]:

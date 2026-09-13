@@ -534,3 +534,25 @@ def test_an_accepted_obligation_window_binds_the_stage_that_serves_it() -> None:
         accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
         obligation_windows={"obligation.vol4.1": (321, 400)},
     ) == ("trigger_event.window",)
+
+
+def test_the_host_decides_mechanical_defects_without_a_model_call() -> None:
+    """A missing volume slot is decided from the payload, before any review call."""
+
+    from novel_agent.agents.plan_reviewer import host_only_plan_review
+
+    broken = _volume_payload(opening_state="")
+    verdict = host_only_plan_review(
+        target_payload=json.dumps(
+            {
+                "expected_volume_count": 1,
+                "target_chapters": 100,
+                "items": [{"item_id": "vol_01", "kind": "arc_volume", "payload": broken}],
+            }
+        ),
+        mode=AgentMode.ARC_VOLUME,
+    )
+
+    assert verdict is not None
+    assert verdict.decision is ReviewDecision.REVISE
+    assert any(issue.blocking for issue in verdict.issues)
