@@ -117,3 +117,43 @@ revision_instruction = "修正 vol-4 中 midpoint_reversal 与 volume_climax 的
 - `failure_budget` 由 6 减为 5 是 reconcile 的既有语义（该失败消耗任务预算），
   未手工调整。
 - 未清理 v20/v21；未对 v23 的 blocked 任务做任何后续推进。
+
+## 7. v20 / v21 残留处置（同轮完成）
+
+按同一流程以运行时入口核对与结算，未直接写库：
+
+| run | task | 核对时状态 | 未结算 attempt | lease 到期 | failure_class | 处置 |
+|---|---|---|---|---|---|---|
+| v20 | `…v20.plan.arc-volume.g0` | `running` rev 34 | no=15 | 08:33:04Z（已过期约 5 小时） | **无**（最后已结算 attempt 未记录分类） | `blocked` / `worker_lease_expired`，rev → 35，budget 1 |
+| v21 | `…v21.plan.arc-volume.g0` | `running` rev 41 | no=19 | 09:10:23Z（已过期约 4.5 小时） | `poison_loop` | `blocked` / `poison_loop`，rev → 42，budget 5 |
+
+两者的 effect ledger 均为 **0 条**（无 `REQUESTED`、无 `UNCERTAIN`、无 `COMPLETED`），
+因此不需要先对账，也不存在"结果不确定的发送"。核对时 `ps` 无任何 `novel-agent` 进程。
+
+v20 的处理依据值得单列：它的最后已结算 attempt **没有** `failure_class`，
+所以 `runtime classify` 如实报告 `undetermined` 而不是猜一个确定性类别。
+它被结算为 `worker_lease_expired`，因为那正是可核验的原因——worker 消失、lease 过期——
+而不是把未知分类伪装成已知分类。
+
+处置后全库复核：
+
+```
+unsettled attempts (ended_at IS NULL): 0
+tasks with status = 'running': 0
+```
+
+即指导第 2.1 节记载的"残留 `RUNNING`"已全部处置完毕，
+每一条都保留了终态与原因，没有删除任务、没有改写数据库状态、没有盲重发调用。
+
+## 8. 处置后的总体状态（截至本轮）
+
+| run | 阶段 | 状态 | 说明 |
+|---|---|---|---|
+| v20 | ARC_VOLUME | `blocked` / `worker_lease_expired` | 未分类失败 + 放弃的 lease |
+| v21 | ARC_VOLUME | `blocked` / `poison_loop` | ARC_VOLUME 阶段收敛失败 |
+| v22 | ARC_VOLUME | `ready`（无 attempt） | 未开始，保留 |
+| v23 | ARC_VOLUME | `blocked` / `poison_loop` | STORY 已提交；ARC_VOLUME 收敛失败 |
+
+这四条都停在**同一个阶段**：ARC_VOLUME。它们的共同失败形态是无结构化意见的
+`REVISE` 驱动整份重写（见第 3 节），正是本轮 N1/N3 修复的对象。
+因此下一阶段的 G0 必须在新代码与新冻结身份上重新验证收敛，而不能复用这些运行。
