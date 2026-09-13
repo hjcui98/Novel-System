@@ -144,6 +144,27 @@ v24 复用 v23 的作者输入，但锁文档自身携带 `project_id`，与该 
 
 两者都需要**在沙箱之外**执行；沙箱内无法完成第 2 步（见 2.2）。
 
+### 4.0 宿主侧已解除（2026-09-13 22:1x）
+
+宿主 shell 上 `native_models.py health` 返回 **exit=0**（`make models-up` 重建了 PID 记录），
+`20_bootstrap.sh` 因此通过了检索装配前的全部检查：preflight 全 ok、
+`bootstrap-prepare` 完成 2 次真实模型调用（`prompt_chars=21751 / 19432`，`max_tokens=48000`）。
+
+随后在**同一个脚本的下一行**撞上第二个、属于编排自身的缺陷：
+
+```
+File ".../cli.py", line 625, in main
+    _write_json_once(
+RuntimeError: runtime CLI refuses to overwrite receipt:
+    .../yujin-jiuxu-v24/state/genesis-prepared.json
+```
+
+`_write_json_once` 是刻意的写一次保护（防止覆盖已冻结的回执），
+但 `20_bootstrap.sh` 每次无条件下调 `bootstrap-prepare`，于是
+**prepare 成功之后、描述符冻结之前**的任何失败都会让 bootstrap 无法再入：
+第二次执行必死在回执守卫上，而绕开它只能删冻结工件或再花两次模型调用重算一份已经正确的文档。
+这与 4.1 是同一类缺陷（编排没有为自身的半完成状态留再入路径），只是位置更靠前。
+
 ### 4.1 半初始化状态的再入修复（本轮已改）
 
 Genesis commit 与描述符冻结**不在同一个事务**里：先初始化项目，再装配检索，
@@ -165,6 +186,31 @@ Genesis commit 与描述符冻结**不在同一个事务**里：先初始化项�
 `initialize_project` 抛 `ProjectAlreadyExistsError` 时改为比对当前
 manifest 是否逐字相同，相同则返回既有 `commit_id` 并把
 `idempotent_replay` 置为真；不同则 fail closed。
+
+### 4.2 prepare 半完成状态的再入修复（本轮已改）
+
+`20_bootstrap.sh` 在 `state/genesis-prepared.json` 已存在时不再重跑 prepare，
+改为调用 `commands/verify_prepared.py` 证明那份冻结准备仍然可复用：
+
+| 检查 | 不通过时 |
+|---|---|
+| 回执可读、`artifact` 字段可解析 | 拒绝复用 |
+| `validation_status == passed` | 拒绝复用 |
+| `artifact.media_type` 等于 prepared 契约 | 拒绝复用 |
+| `approval_request.project_id` 等于本 run 的 project | 拒绝复用 |
+| 工件能按内容地址从对象库读回并校验 | 拒绝复用 |
+
+五条任一不满足即 exit 1，bootstrap 停止，**不删除也不改写**任何冻结工件。
+对当前 v24 的准备件实测通过：
+
+```json
+{"artifact_id": "sha256:ead3e04d3b2ecdaaaab008150d6d0f32d34a81a852fed3e05203943faf26ed38",
+ "byte_length": 111576, "project_id": "project.yujin-jiuxu.v24",
+ "reusable": true, "validation_status": "passed"}
+```
+
+拒绝路径也逐条实测（错 project / validation_status=failed / 工件缺失 / 回执不可读），
+四条都是 exit 1。
 
 ## 5. 解除后可直接续跑的命令
 
@@ -207,6 +253,11 @@ bash commands/60_run_stage.sh g0 60    # 受版本管理的 G0 驱动（证据�
 | 文件 | 改动 |
 |---|---|
 | `yujin-jiuxu-v24/commands/12_commit_genesis.sh` | 三条 `test ! -e` 守卫改为按描述符完整性分支，使半初始化状态可再入（见 4.1） |
-| `docs/remediation/v24_g0_start_and_blocker_20260913.md` | 补记 Genesis 已落库的核对结果、精确停止点、再入修复 |
+| `yujin-jiuxu-v24/commands/20_bootstrap.sh` | prepare 回执已存在时改为校验后复用，不再无条件下调（见 4.2） |
+| `yujin-jiuxu-v24/commands/verify_prepared.py` | 新增：证明冻结准备件仍按内容地址可解析，五条检查任一不过即拒绝复用 |
+| `yujin-jiuxu-v24/commands/60_run_stage.sh` | 同步 `495e553` 的阶段驱动修复 |
+| `scripts/60_run_stage.sh` | 每条命令的结果改从自身 stdout 捕获；`roots` 读失败只记一次；预检不再误报失败 |
+| `tests/unit/test_stage_driver_exit_contract.py` | 16 → 18 条；新增「失败只记一次」与「快照来自命令自身输出」两条回归 |
+| `docs/remediation/v24_g0_start_and_blocker_20260913.md` | 补记 Genesis 已落库、精确停止点、两处再入修复 |
 
 v24 的 `objects/`、`state/`、`logs/`、`receipts/` 等运行产物按仓库 `.gitignore` 不入库。
