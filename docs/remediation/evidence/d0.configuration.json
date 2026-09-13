@@ -1,0 +1,14 @@
+{
+  "artifact_id": "root='sha256:0000000000000000000000000000000000000000000000000000000000000000'",
+  "candidate": "f542293743e518e05b1665e4e8f48c3a7a9bb091c653ba09b52906c96913e2ae",
+  "code_commit": "90f1533da8766bfea2784ecda03afd3245a2802e",
+  "diagnostic_output_tokens": 16000,
+  "diagnostic_timeout_seconds": 900.0,
+  "endpoint_name": "qwen38-27b-nvfp4@8003",
+  "locks": "yujin-jiuxu-v23/input/planning-locks.json",
+  "model_name": "qwen38-27b-nvfp4",
+  "output_limit": 16000,
+  "profile": "qwen38_27b_nvfp4_8003",
+  "revision": "qwen38-27b-nvfp4",
+  "sequence_limit": 131072
+}

@@ -1,0 +1,17 @@
+{
+  "candidate": "f542293743e518e05b1665e4e8f48c3a7a9bb091c653ba09b52906c96913e2ae",
+  "decision": "accept",
+  "findings": [],
+  "model_call": {
+    "usage": {
+      "cost_availability": "unknown",
+      "cost_usd": "0",
+      "input_tokens": 10094,
+      "output_tokens": 449,
+      "reasoning_tokens": 0
+    }
+  },
+  "review_artifact": "sha256:bb2e1453c7a2a1ad1fe82b32a70ecd26d124d8410aff3825eaea9470008708e0",
+  "scope_targets": [],
+  "verification_failures": []
+}

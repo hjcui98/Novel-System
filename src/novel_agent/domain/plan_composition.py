@@ -598,3 +598,22 @@ def _narrower_condition(current: Sequence[str], previous: frozenset[str]) -> boo
         else:
             return False
     return True
+
+
+def assess_composition(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    scope: PlanRevisionScope,
+) -> tuple[bool, str]:
+    """Whether a composition is even attemptable, and why not if it is not.
+
+    A caller that wants a reason rather than an exception uses this; the composing
+    path itself raises, because a rejected composition must not be silently
+    downgraded into a different candidate.
+    """
+
+    try:
+        compose_scoped_revision(parent, revised, scope)
+    except PlanCompositionError as error:
+        return False, str(error)
+    return True, ""
