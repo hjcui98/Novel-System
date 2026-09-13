@@ -874,7 +874,14 @@ ruff check src tests scripts  67 findings（基线 49，几乎全为中文全角
 
 ### 16.8 下一步设计（供续做，按用户 2026-09-13 的 ①→⑤ 顺序）
 
-1. **超范围修订检测（② 未完成项）**：在 `planning_context_loop.py` 修订分支中以**独立语句**计算
+1. **定点修订（② 已基本完成，2026-09-13 更新）**：`971737e`（修订范围＋父候选哈希）、
+   `79aa6d1`（`_out_of_scope_revision_items` 检测 + `plan.revision_out_of_scope` 事件）、
+   `2015751`（回灌要求恢复被点名外的条目）、`e00482e`（**宿主 `_compose_scoped_revision` 强制合成**：
+   审校点名了条目时，未点名条目与被误删条目一律取父候选；legacy `issues=[]` 不收窄，避免把 advisory
+   变成静默 no-op）。验证：75 failed / 3118 passed，与 R0 基线相比新增 0 项。
+   仅剩"前置确定性检查"未做（见第 2 条）。
+
+   历史记录（原第 1 条，供参考）——**超范围修订检测**：在 `planning_context_loop.py` 修订分支中以**独立语句**计算
    `_out_of_scope_revision_items(parent_proposal, proposal, plan_review)` —— 被改动/新增且未被
    `review.issues[*].affected_item_ids` 点名的 `item_id`；写入事件
    `plan.revision_out_of_scope`，并把条目名回灌到下一轮修订载荷
