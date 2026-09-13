@@ -25,7 +25,7 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.planning import PlanReview, PlanReviewIssue
-from novel_agent.domain.stage2 import PlanProposal, ProposedItem
+from novel_agent.domain.stage2 import PlanProposal, PlanUnresolvedIssue, ProposedItem
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
 # Changing what the host does to a revision changes what a proof means.  A proof
@@ -72,6 +72,15 @@ class PlanRevisionScope(DomainModel):
     additions: tuple[StableId, ...] = ()
     # Item ids the review explicitly authorised removing.
     removals: tuple[StableId, ...] = ()
+    # Advisory ids (``plan-issue.``) the review explicitly authorised restating.  The
+    # host files its advisory findings against these ids, so they are the only way a
+    # revision may touch ``unresolved``.  Without this the scope carried no advisory
+    # information at all, the composed plan inherited the revision's own advisory list
+    # while every other unauthorised field was frozen to the parent, and the invariant
+    # check saw that leak as "the composed plan changed its unresolved issues" -- so a
+    # revision that refreshed its advisories could never compose, however correct its
+    # volumes were.
+    advisory_ids: tuple[StableId, ...] = ()
 
     @model_validator(mode="after")
     def validate_targets(self) -> PlanRevisionScope:
@@ -141,6 +150,7 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
     additions: list[StableId] = []
     removals: list[StableId] = []
     finding_ids: list[StableId] = []
+    advisory_ids: list[StableId] = []
     for issue in review.issues:
         if not issue.blocking:
             continue
@@ -148,6 +158,12 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
         fields = _issue_field_paths(issue)
         operations = _issue_operations(issue)
         for item_id in issue.affected_item_ids:
+            if item_id.root.startswith(_ADVISORY_ID_PREFIX):
+                # The host files advisory findings against these ids, so naming one is
+                # the revision's permission to restate that advisory.  It is not an
+                # item target: the advisory is not an item of the proposal.
+                advisory_ids.append(item_id)
+                continue
             if PlanRevisionOperation.ADD in operations:
                 additions.append(item_id)
             if PlanRevisionOperation.REMOVE in operations:
@@ -174,6 +190,7 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
         finding_ids=tuple(dict.fromkeys(finding_ids)),
         additions=tuple(dict.fromkeys(additions)),
         removals=tuple(dict.fromkeys(removals)),
+        advisory_ids=tuple(dict.fromkeys(advisory_ids)),
     )
 
 
@@ -292,10 +309,24 @@ def validate_composed_proposal(
         raise PlanCompositionError("composed plan changed its basis commit")
     if composed.coverage != parent.coverage:
         raise PlanCompositionError("composed plan changed its coverage")
-    if composed.unresolved != parent.unresolved:
-        # An advisory or unresolved conflict is not something a scoped revision is
-        # allowed to edit away; no authorised finding names it.
-        raise PlanCompositionError("composed plan changed its unresolved issues")
+    authorised_advisories = {item.root for item in scope.advisory_ids}
+    expected_unresolved = {
+        issue.issue_id.root: issue
+        for issue in parent.unresolved
+        if issue.issue_id.root not in authorised_advisories
+    }
+    seen_unresolved = {issue.issue_id.root: issue for issue in composed.unresolved}
+    for key, issue in expected_unresolved.items():
+        if seen_unresolved.get(key) != issue:
+            # An advisory or unresolved conflict is not something a scoped revision is
+            # allowed to edit away; no authorised finding named it.
+            raise PlanCompositionError("composed plan changed its unresolved issues")
+    unauthorised_extras = set(seen_unresolved) - set(expected_unresolved) - authorised_advisories
+    if unauthorised_extras:
+        raise PlanCompositionError(
+            "composed plan added unresolved issues no finding named: "
+            + ", ".join(sorted(unauthorised_extras))
+        )
     if composed.strategy is not parent.strategy:
         raise PlanCompositionError("composed plan changed its strategy")
 
@@ -323,7 +354,7 @@ def _compose_items(
     revised: PlanProposal,
     scope: PlanRevisionScope,
 ) -> PlanProposal:
-    if not scope.targets and not scope.additions and not scope.removals:
+    if not scope.targets and not scope.additions and not scope.removals and not scope.advisory_ids:
         # Nothing was authorised, so nothing may change.  Returning the revision here
         # is what let a review with no usable finding rewrite the plan.
         return parent
@@ -364,7 +395,49 @@ def _compose_items(
         if target is not None and PlanRevisionOperation.REMOVE in target.operations:
             continue
         composed.append(item)
-    return revised.model_copy(update={"items": tuple(composed)})
+    return revised.model_copy(
+        update={
+            "items": tuple(composed),
+            "unresolved": _compose_unresolved(parent, revised, scope),
+        }
+    )
+
+
+def _compose_unresolved(
+    parent: PlanProposal,
+    revised: PlanProposal,
+    scope: PlanRevisionScope,
+) -> tuple[PlanUnresolvedIssue, ...]:
+    """The parent's advisories with only the restatements the review authorised.
+
+    Advisories are part of the plan, so they follow the same rule as item fields: what
+    the review did not name keeps the parent's bytes.  A revision that refreshes its
+    advisory list therefore no longer changes the composed plan by itself; only an
+    advisory the review actually named can be restated, and an advisory the revision
+    dropped without being asked to stays.
+    """
+
+    authorised = {item.root for item in scope.advisory_ids}
+    if not authorised:
+        return parent.unresolved
+    restated = {
+        issue.issue_id.root: issue
+        for issue in revised.unresolved
+        if issue.issue_id.root in authorised
+    }
+    composed: list[PlanUnresolvedIssue] = []
+    kept: set[str] = set()
+    for issue in parent.unresolved:
+        key = issue.issue_id.root
+        replacement = restated.get(key)
+        composed.append(issue if replacement is None else replacement)
+        kept.add(key)
+    # An advisory the review named but the parent never carried is a new statement the
+    # host asked for, so it enters; anything else the revision invented does not.
+    for key, issue in restated.items():
+        if key not in kept:
+            composed.append(issue)
+    return tuple(composed)
 
 
 def _compose_item(

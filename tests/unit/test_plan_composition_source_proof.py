@@ -380,6 +380,84 @@ def test_out_of_scope_items_are_reported_not_silently_fixed() -> None:
 # ------------------------------------------------ the composed proposal as a whole
 
 
+def _advisory(issue_id: str, summary: str) -> PlanUnresolvedIssue:
+    return PlanUnresolvedIssue(issue_id=StableId(issue_id), summary=summary)
+
+
+def test_a_revised_advisory_list_cannot_change_the_composed_plan_by_itself() -> None:
+    """Live ARC_VOLUME attempt 8: ``composed plan changed its unresolved issues``.
+
+    The revision refreshed its advisories while every other unauthorised field was
+    frozen to the parent, so the leak made the invariant check reject a composition
+    whose volumes were correct -- and no revision that refreshes advisories could
+    ever compose.  The rule for advisories is now the rule for item fields: what the
+    review did not name keeps the parent's bytes.
+    """
+
+    parent = _proposal(
+        (_item("vol-1", midpoint_reversal="父值"), _item("vol-2", midpoint_reversal="父值")),
+        number=1,
+        unresolved=(
+            _advisory("plan-issue.draft.a.0", "第一卷的某个未决事实"),
+            _advisory("plan-issue.draft.a.1", "第二卷的某个未决事实"),
+        ),
+    )
+    # The revision restates one advisory, drops the other, and writes a fresh one.
+    revised = _proposal(
+        (_item("vol-1", midpoint_reversal="改后"), _item("vol-2", midpoint_reversal="父值")),
+        number=2,
+        unresolved=(
+            _advisory("plan-issue.draft.a.0", "第一卷的未决事实已被重新表述"),
+            _advisory("plan-issue.draft.b.0", "第三卷新提出的未决事实"),
+        ),
+    )
+    scope = revision_scope(_review(_finding("vol-1")))
+
+    composed = compose_scoped_revision(parent, revised, scope)
+
+    # The named item was written; the advisory list was not, so it is the parent's.
+    assert composed.unresolved == parent.unresolved
+    assert composed.items[0].payload["midpoint_reversal"] == "改后"
+
+
+def test_a_named_advisory_may_be_restated_and_an_unnamed_one_may_not_be_dropped() -> None:
+    """Naming an advisory is the only permission to touch the advisory list."""
+
+    parent = _proposal(
+        (_item("vol-1", midpoint_reversal="父值"),),
+        number=1,
+        unresolved=(
+            _advisory("plan-issue.draft.a.0", "第一卷的某个未决事实"),
+            _advisory("plan-issue.draft.a.1", "第二卷的某个未决事实"),
+        ),
+    )
+    revised = _proposal(
+        (_item("vol-1", midpoint_reversal="父值"),),
+        number=2,
+        unresolved=(_advisory("plan-issue.draft.a.0", "重新表述后的未决事实"),),
+    )
+    # The host files its advisory finding against the advisory id it wants restated.
+    scope = revision_scope(
+        _review(
+            _finding(
+                "plan-issue.draft.a.0",
+                field_path=None,
+                host_issued=True,
+                kind=ReviewIssueKind.BLOCKING_UNRESOLVED,
+                summary="BLOCKING_UNRESOLVED[relation_state]: 该未决事项必须重新表述",
+            )
+        )
+    )
+    assert {item.root for item in scope.advisory_ids} == {"plan-issue.draft.a.0"}
+
+    composed = compose_scoped_revision(parent, revised, scope)
+
+    restated = {issue.issue_id.root: issue.summary for issue in composed.unresolved}
+    assert restated["plan-issue.draft.a.0"] == "重新表述后的未决事实"
+    # The advisory the review did not name survives even though the revision dropped it.
+    assert restated["plan-issue.draft.a.1"] == "第二卷的某个未决事实"
+
+
 def test_validate_rejects_duplicate_items_and_metadata_drift() -> None:
     parent = _proposal((_item("vol-1", goal="父"),), number=1)
     scope = PlanRevisionScope(

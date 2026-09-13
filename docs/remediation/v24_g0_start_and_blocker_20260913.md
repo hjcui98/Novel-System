@@ -422,3 +422,42 @@ mode = arc_volume        project_intent_items = 8 个      plan_items = 0
 `domain/runtime.py` 里本来就有更贴切的 `LEAF_SCHEMA_REJECTED`
 （`retryable=True`、`resume_from=LATEST_SETTLED`）。这属于 N4「重试分类」的
 同类问题，但**改动失败类映射会影响面更广**，本轮不动，记录在此待评估。
+
+### 9.5 ARC_VOLUME 暴露的第四个缺陷：advisory 列表没有归属（已修复本轮）
+
+修掉 9.4 后 attempt 8 真正跑完了规划循环（6 次模型调用，含一次 `plan_revision.2`），
+但 `compose_scoped_revision` 判它越界：
+
+```
+reason_code: "composed plan changed its unresolved issues"
+```
+
+这次不是模型的问题，是**范围控制自身的不一致**：
+
+- `_compose_items` 对**条目内未授权字段**的处理是"冻结为父提案的字节"（正确）；
+- 但它返回的是 `revised.model_copy(update={"items": ...})`，**`unresolved` 直接跟着修订版走**；
+- 而 `validate_composed_proposal` 又要求 `composed.unresolved == parent.unresolved`。
+
+于是只要规划器刷新了 advisory 列表（它在每次修订里都会），合成结果必然"改变了
+unresolved"，**任何刷新 advisory 的修订都永远无法合成**——即使八卷本身完全正确。
+而 `PlanRevisionScope` 里根本没有承载 advisory 的字段：宿主明明把
+`BLOCKING_UNRESOLVED[...]` 之类的发现挂在 `plan-issue.` id 上，这份信息却被丢掉了。
+
+修复：把 advisory 纳入与条目字段相同的规则，并让范围显式承载它。
+
+| 改动 | 内容 |
+|---|---|
+| `PlanRevisionScope.advisory_ids` | 新增。`revision_scope` 把以 `plan-issue.` 开头、被阻断发现点名的 id 收进这里，不再误当条目 |
+| `_compose_unresolved` | 未被点名的 advisory 保留父提案字节；被点名的可被重新表述；父提案没有、但被点名的新 advisory 可以进入 |
+| `validate_composed_proposal` | 由"必须逐字等于父提案"改为"未被点名的必须在场且逐字相同；无权新增" |
+
+验证：
+
+- 用**真实的一对提案**核对（父 8 卷/6 advisory、修订 8 卷/4 advisory）：修复前合成被拒，
+  修复后合成成功且 `unresolved` 逐字冻结为父提案；
+- 新增两条回归
+  （`test_a_revised_advisory_list_cannot_change_the_composed_plan_by_itself`、
+  `test_a_named_advisory_may_be_restated_and_an_unnamed_one_may_not_be_dropped`），
+  **无修复时两条都失败**；
+- 全量确定性套件 **74 failed / 3390 passed**，与 N0 基线逐节点 diff 只少
+  `test_checked_in_stage2_schemas_match_models`，无新增失败。
