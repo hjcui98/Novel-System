@@ -323,3 +323,38 @@ verification_failures=[ 3 条 ]   ← 全是模型自己写的自然语言
 全量确定性套件 **74 failed / 3385 passed**，与 N0 基线逐节点 diff 只少
 `test_checked_in_stage2_schemas_match_models`，无新增失败。
 
+
+### 9.3 ARC_VOLUME 暴露的第二个缺陷：宿主 advisory 被当成"缺条目"（已修复 `613f55c`）
+
+修掉 9.2 之后，ARC_VOLUME 继续推进，attempt 1–4 分别是
+`leaf_review_required`（9.2 那个）、一次无失败类、两次 `provider_transient`；
+attempt 5 失败为 `validation_rejected`，`runtime classify` 给出
+`repair_owning_module`（确定性）。驱动日志里的 `reason_code` 就是缺陷自述：
+
+```
+composed plan item set does not match the authorised scope:
+  missing ['plan-issue.draft.e49b3ae95f21509138cd2233.0', ...]
+```
+
+根因链条（**N3 自己的代码**）：
+
+1. 宿主把它的 advisory 发现登记为
+   `ReviewIssueKind.UNRESOLVED_SCOPE_MISSING`，`affected_item_ids` 用的是
+   **未决事项的 id**（`plan-issue.draft.…`），不是提案条目的 id。
+2. 该发现的英文摘要里含有 "missing"（`…declares no affected_chapters…`），
+   于是 `_issue_operations` 的措辞启发式把这条**阻断性 advisory** 读成了
+   "有条目缺失"，为它授权 `ADD`。
+3. `revision_scope` 因此把 `plan-issue.…` 放进 `scope.additions`；
+   而 `plan-issue.…` 永远不可能成为提案条目，`validate_composed_proposal`
+   于是要求合成结果包含一个不存在的 id，**对正确输出判为越界**。
+4. 每次重试都精确复现（确定性），`validation_rejected` 记入任务预算。
+
+修复：`ADD` 只对**能成为条目**的 id 生效——`plan-issue.` 是未决事项的保留命名空间，
+任何措辞都不再能把 advisory id 变成可新增条目。`REMOVE` 的对称风险不成立
+（它要求 "duplicate" 标记，而该宿主发现的文案里没有），已在测试中说明。
+
+验证：新增 `test_a_host_advisory_finding_never_authorises_adding_an_advisory_id`，
+**无修复时失败**（`additions` 里多出 3 个 `plan-issue.` id），修复后
+`tests/unit/test_plan_composition_source_proof.py` 37 条全过；
+全量确定性套件 **74 failed / 3386 passed**，与 N0 基线逐节点 diff 只少
+`test_checked_in_stage2_schemas_match_models`，无新增失败。
