@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from novel_agent.agents.runner import StructuredAgentRunner
@@ -215,7 +215,9 @@ def _host_issues_for_items(
                 volume_ranges.append(
                     (
                         item_id,
-                        _optional_int(item_payload.get("chapter_start") or raw.get("chapter_start")),
+                        _optional_int(
+                            item_payload.get("chapter_start") or raw.get("chapter_start")
+                        ),
                         _optional_int(item_payload.get("chapter_end") or raw.get("chapter_end")),
                     )
                 )
@@ -802,6 +804,7 @@ class PlanReviewerAgent:
         artifacts: ArtifactRepository,
         *,
         accepted_world_ref: ArtifactRef | None = None,
+        world_root_for_commit: Callable[[CommitId], ArtifactRef | None] | None = None,
     ) -> None:
         self._runner = runner
         self._artifacts = artifacts
@@ -810,6 +813,24 @@ class PlanReviewerAgent:
         # reviewer never has to guess it from the candidate or rebuild the ids
         # from a second source.
         self._accepted_world_ref = accepted_world_ref
+        # A long-running run commits new World roots (an STORY or ARC_VOLUME commit
+        # adds obligations).  A reference frozen when the run was assembled would
+        # keep reviewing lower levels against the startup catalogue and refuse a
+        # legitimately declared id, so the World is resolved per review from the
+        # task's own basis commit.
+        self._world_root_for_commit = world_root_for_commit
+
+    def _world_ref_for(self, base_commit: CommitId | None) -> ArtifactRef | None:
+        """The World root the reviewed task's basis commit binds."""
+
+        if base_commit is not None and self._world_root_for_commit is not None:
+            try:
+                resolved = self._world_root_for_commit(base_commit)
+            except (KeyError, RuntimeError, ValueError):
+                resolved = None
+            if resolved is not None:
+                return resolved
+        return self._accepted_world_ref
 
     async def review(
         self,
@@ -860,7 +881,7 @@ class PlanReviewerAgent:
             accepted_obligation_ids=_accepted_obligation_ids(
                 self._artifacts,
                 trusted_source_artifacts,
-                accepted_world_ref=self._accepted_world_ref,
+                accepted_world_ref=self._world_ref_for(base_commit),
             ),
             author_constraints=_author_constraint_catalogue(
                 self._artifacts, trusted_source_artifacts, context_package
@@ -916,11 +937,7 @@ class PlanReviewerAgent:
             except (UnicodeDecodeError, ValueError) as error:
                 raise PlanReviewerInvocationError("Reviewer context artifact is invalid") from error
         return "\n\n".join(
-            dict.fromkeys(
-                part
-                for part in (*rendered, *source_text)
-                if part.strip()
-            )
+            dict.fromkeys(part for part in (*rendered, *source_text) if part.strip())
         )
 
 
@@ -992,8 +1009,12 @@ def _declared_obligation_ids(payload: Mapping[str, object], item_id: str) -> set
     from novel_agent.domain.ids import bounded_stable_id
 
     declared: list[tuple[int, str]] = []
-    for key in ("obligations", "obligation_declarations", "key_obligations",
-                "obligation_declaration"):
+    for key in (
+        "obligations",
+        "obligation_declarations",
+        "key_obligations",
+        "obligation_declaration",
+    ):
         values = payload.get(key)
         if isinstance(values, Mapping):
             values = [values]
@@ -1060,9 +1081,7 @@ def _accepted_obligation_ids(
     ]
     for ref in candidates:
         try:
-            world = WorldRootDocument.model_validate_json(
-                artifacts.read_verified(ref), strict=True
-            )
+            world = WorldRootDocument.model_validate_json(artifacts.read_verified(ref), strict=True)
         except (UnicodeDecodeError, ValueError):
             continue
         return frozenset(item.obligation_id.root for item in world.obligations)

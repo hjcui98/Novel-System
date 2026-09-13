@@ -330,13 +330,24 @@ _DECLARATION_DESCRIPTION_KEYS: tuple[str, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class ParsedObligationDeclaration:
-    """One declaration in the order the identity convention binds it."""
+    """One declaration in the order the identity convention binds it.
+
+    Every legal field the declaration states travels with it: an earlier parser
+    kept only kind/description/not_before, so an owner, target window or deadline
+    that the candidate declared was silently materialized as empty and a wrong
+    ``obligation_id`` or ``status=resolved`` never reached its rejection check.
+    """
 
     ordinal: int
     kind: ObligationKind
     description: str
     source_form: str
     not_before_chapter: int | None = None
+    owner_ids: tuple[str, ...] = ()
+    target_chapter_start: int | None = None
+    target_chapter_end: int | None = None
+    due_chapter: int | None = None
+    supplied_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +384,53 @@ def _declaration_description(entry: Mapping[str, object]) -> str | None:
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
     return None
+
+
+def _declaration_chapter(entry: Mapping[str, object], key: str, *, label: str) -> int | None:
+    """Read one declared chapter boundary, refusing a value that is not one."""
+
+    raw = entry.get(key)
+    if raw is None:
+        return None
+    if type(raw) is not int or raw < 1:
+        raise ObligationContractError(
+            f"{label}.{key} must be a positive chapter number, not {raw!r}"
+        )
+    return raw
+
+
+def _declaration_owners(entry: Mapping[str, object], *, label: str) -> tuple[str, ...]:
+    raw = entry.get("owner_ids")
+    if raw is None:
+        return ()
+    values = raw if isinstance(raw, (list, tuple)) else (raw,)
+    owners: list[str] = []
+    for item in values:
+        if not isinstance(item, str) or not item.strip():
+            raise ObligationContractError(
+                f"{label}.owner_ids must be a list of non-empty obligation owner ids"
+            )
+        owners.append(item.strip())
+    return tuple(dict.fromkeys(owners))
+
+
+def _declaration_resolution(entry: Mapping[str, object], *, label: str) -> None:
+    """Refuse a declaration that claims its own obligation is already settled."""
+
+    status = entry.get("status")
+    if isinstance(status, str) and status.strip().lower() in {"resolved", "abandoned", "closed"}:
+        raise ObligationContractError(
+            f"{label} declares status={status.strip().lower()}: a plan declares new work, "
+            "so it cannot resolve or abandon an obligation"
+        )
+    resolved = entry.get("resolved")
+    if resolved is True:
+        raise ObligationContractError(
+            f"{label} declares resolved=true: a plan declares new work, so it cannot "
+            "resolve an obligation"
+        )
+    if resolved is not None and not isinstance(resolved, bool):
+        raise ObligationContractError(f"{label}.resolved must be a boolean")
 
 
 def parse_obligation_declarations(
@@ -418,12 +476,27 @@ def parse_obligation_declarations(
                 f"{label} requires a non-empty description, summary, goal, text or objective"
             )
             return
-        not_before_raw = entry.get("not_before_chapter")
-        not_before = (
-            not_before_raw
-            if type(not_before_raw) is int and not_before_raw >= 1
-            else None
-        )
+        supplied_id = entry.get("obligation_id") or entry.get("id")
+        if supplied_id is not None and (
+            not isinstance(supplied_id, str) or not supplied_id.strip()
+        ):
+            discrepancies.append(f"{label}.obligation_id must be a non-empty string")
+            return
+        try:
+            not_before = _declaration_chapter(entry, "not_before_chapter", label=label)
+            target_start = _declaration_chapter(entry, "target_chapter_start", label=label)
+            target_end = _declaration_chapter(entry, "target_chapter_end", label=label)
+            due_chapter = _declaration_chapter(entry, "due_chapter", label=label)
+            owners = _declaration_owners(entry, label=label)
+            _declaration_resolution(entry, label=label)
+        except ObligationContractError as error:
+            discrepancies.append(str(error))
+            return
+        if target_start is not None and target_end is not None and target_end < target_start:
+            discrepancies.append(
+                f"{label} target chapter window is reversed: {target_start}-{target_end}"
+            )
+            return
         declarations.append(
             ParsedObligationDeclaration(
                 ordinal=len(declarations),
@@ -431,6 +504,11 @@ def parse_obligation_declarations(
                 description=description,
                 source_form=form,
                 not_before_chapter=not_before,
+                owner_ids=owners,
+                target_chapter_start=target_start,
+                target_chapter_end=target_end,
+                due_chapter=due_chapter,
+                supplied_id=supplied_id.strip() if isinstance(supplied_id, str) else None,
             )
         )
 
@@ -469,6 +547,9 @@ def parse_obligation_declarations(
         compilation = compile_legacy_obligation_plan(legacy)
         discrepancies.extend(compilation.discrepancies)
         for declaration in compilation.declarations:
+            # A legacy responsibility's setup/progress/payoff windows are its own
+            # stage grid, not a target window or a deadline: they stay source records
+            # (see ``as_source_record``) instead of being relabelled as due chapters.
             declarations.append(
                 ParsedObligationDeclaration(
                     ordinal=len(declarations),

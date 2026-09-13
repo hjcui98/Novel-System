@@ -12,6 +12,7 @@ The shapes used here are the real frozen v6 ones.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import Mock
 
@@ -154,6 +155,111 @@ def _materializer() -> PlanCandidateMaterializer:
         schema_version=VERSION,
     )
     return PlanCandidateMaterializer(artifacts, Mock(), schema_version=VERSION)
+
+
+def test_a_declaration_keeps_its_owner_window_and_deadline() -> None:
+    """Every legal field a declaration states must reach the World root.
+
+    The shared parser kept only kind/description/not_before, so a candidate that
+    named an owner, a target window and a deadline materialized with all three
+    empty - a silent field loss that downstream coverage and readiness read as
+    "no scope".
+    """
+
+    planner = _materializer()
+    proposal = _proposal(
+        (
+            _item(
+                "vol_02",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "description": "内府资格推进",
+                            "owner_ids": ["entity.bootstrap.1"],
+                            "target_chapter_start": 201,
+                            "target_chapter_end": 250,
+                            "due_chapter": 260,
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+
+    world, _ref, _bindings = planner._bind_obligation_declarations(_world(), proposal)
+
+    assert len(world.obligations) == 1
+    obligation = world.obligations[0]
+    assert obligation.owner_ids == (StableId("entity.bootstrap.1"),)
+    assert (obligation.target_chapter_start, obligation.target_chapter_end) == (201, 250)
+    assert obligation.due_chapter == 260
+
+
+def test_a_declaration_that_resolves_or_renames_itself_is_refused() -> None:
+    """A wrong id or a self-resolved status must be refused, not ignored."""
+
+    planner = _materializer()
+    resolved = _proposal(
+        (
+            _item(
+                "vol_02",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "description": "内府资格推进",
+                            "status": "resolved",
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+    with pytest.raises(CandidateMaterializationError, match="cannot resolve or abandon"):
+        planner._bind_obligation_declarations(_world(), resolved)
+
+    wrong_id = _proposal(
+        (
+            _item(
+                "vol_02",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "description": "内府资格推进",
+                            "obligation_id": "obligation.someone.else.0.objective",
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+    with pytest.raises(CandidateMaterializationError, match="does not match host-derived identity"):
+        planner._bind_obligation_declarations(_world(), wrong_id)
+
+    malformed_window = _proposal(
+        (
+            _item(
+                "vol_02",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "description": "内府资格推进",
+                            "target_chapter_start": "201",
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+    with pytest.raises(CandidateMaterializationError, match="positive chapter number"):
+        planner._bind_obligation_declarations(_world(), malformed_window)
 
 
 def test_current_and_legacy_forms_on_one_item_keep_distinct_identities() -> None:
@@ -377,3 +483,100 @@ def test_chapter_set_may_not_declare_new_durable_obligations() -> None:
 
     with pytest.raises(CandidateMaterializationError, match="may not declare new obligations"):
         planner._bind_obligation_declarations(_world(), proposal)
+
+
+def test_review_and_materialization_agree_on_a_real_declaration_payload() -> None:
+    """One candidate payload: host review accepts it, the binder keeps every field.
+
+    Review and materialization each grew their own reader once, so a declaration
+    could pass review and be refused at commit (or lose its owner/window/deadline).
+    This walks a real volume payload through both surfaces and reads the committed
+    obligation back.
+    """
+
+    from novel_agent.agents.plan_reviewer import apply_host_plan_review_constraints
+    from novel_agent.domain.planning import (
+        PlanReviewDraft,
+        ReviewDecision,
+        ReviewIssueKind,
+        ReviewTargetKind,
+    )
+    from novel_agent.domain.stage2 import AgentMode
+
+    payload = {
+        "items": [
+            {
+                "item_id": "vol_04",
+                "kind": "arc_volume",
+                "payload": {
+                    "obligation_declarations": [
+                        {
+                            "kind": "foreshadowing",
+                            "description": "长程真相首次暗示",
+                            "owner_ids": ["entity.bootstrap.1"],
+                            "not_before_chapter": 350,
+                            "target_chapter_start": 351,
+                            "target_chapter_end": 400,
+                            "due_chapter": 400,
+                        }
+                    ]
+                },
+            }
+        ],
+        "unresolved": [],
+        "coverage": 1.0,
+    }
+    draft = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+        issues=(),
+    )
+
+    reviewed = apply_host_plan_review_constraints(
+        draft,
+        mode=AgentMode.ARC_VOLUME,
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=json.dumps(payload, ensure_ascii=False),
+        expected_volume_count=None,
+        expected_target_chapters=None,
+        accepted_obligation_ids=frozenset(),
+        author_constraints=(),
+    )
+    # This payload is deliberately a minimal volume: what matters here is that the
+    # review reads its declaration exactly as the binder will.  Any obligation-contract
+    # or declaration-identity issue would mean the two surfaces disagree again.
+    obligation_issues = [
+        issue
+        for issue in reviewed.issues
+        if issue.kind
+        in {
+            ReviewIssueKind.OBLIGATION_CONTRACT,
+            ReviewIssueKind.OBLIGATION,
+            ReviewIssueKind.PROVENANCE,
+        }
+    ]
+    assert obligation_issues == [], [issue.summary for issue in obligation_issues]
+
+    planner = _materializer()
+    proposal = _proposal(
+        (
+            _item(
+                "vol_04",
+                {
+                    "plan_level": "arc_volume",
+                    **payload["items"][0]["payload"],
+                },
+            ),
+        )
+    )
+    world, ref, bindings = planner._bind_obligation_declarations(_world(), proposal)
+
+    assert ref is not None
+    assert len(world.obligations) == 1
+    obligation = world.obligations[0]
+    assert obligation.kind is ObligationKind.FORESHADOWING
+    assert obligation.owner_ids == (StableId("entity.bootstrap.1"),)
+    assert obligation.not_before_chapter == 350
+    assert (obligation.target_chapter_start, obligation.target_chapter_end) == (351, 400)
+    assert obligation.due_chapter == 400
+    assert bindings[StableId("vol_04")] == (obligation.obligation_id,)

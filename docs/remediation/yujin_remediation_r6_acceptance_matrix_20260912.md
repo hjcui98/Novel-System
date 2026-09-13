@@ -712,3 +712,86 @@ tests/unit/test_stage5_runtime_domain.py::test_candidate_acceptance_and_planner_
 该条是长期兑现承诺，其窗口由作者自己的长程真相锁界定（最早 350 章开始暗示、
 401 章起正式推进，见 `lock.long-truth.vol4-hint` / `lock.long-truth.vol5-advance`），
 因此不需要 Planner 发明新期限；作者接受该提案并保留"不得早于 350/401 兑现"的既有约束。
+
+## 15. 跨模块契约缺口（2026-09-13，按审计顺序修复）
+
+审计（v15 真实运行 + 离线复现）给出四个缺口，本轮全部落地。
+
+### 15.1 统一义务解析器不再丢字段（最高优先级）
+
+`parse_obligation_declarations` 只保留 `kind/description/not_before_chapter`，物化端随后从
+**被改写的字典**里读 `owner_ids`/`target_chapter_*`/`due_chapter`/`obligation_id`/`status`：
+负责人、目标窗口、截止章因此全部落成空值，而"义务 ID 必须等于宿主派生身份"与
+"计划不得把义务标成 resolved/abandoned"两处拒绝检查成了死代码。
+
+修复（`domain/obligation_contract.py` + `adapters/runtime/materializers.py`）：
+
+- `ParsedObligationDeclaration` 完整携带 `owner_ids`、`target_chapter_start/end`、
+  `due_chapter`、`supplied_id`；
+- 解析器显式拒绝：非正整数章节字段、非字符串 owner、`status=resolved/abandoned/closed`、
+  `resolved=true`、非字符串义务 ID、反向目标窗口；
+- 物化端直接消费解析结果（不再二次读字典），并保留"supplied id 必须等于宿主派生身份"检查；
+- 旧 `obligation_plan` 的 setup/progress/payoff 窗口仍按原先语义保持为**来源记录**，
+  不重标成 target/due（既有的 `test_legacy_responsibility_windows_do_not_collapse_into_due_chapters`
+  继续成立）。
+
+### 15.2 审校按任务的 basis_commit 读 World
+
+`PlanReviewerAgent` 的 `accepted_world_ref` 在运行装配时固定，dispatch 复用同一组件；
+STORY/ARC 提交新增义务后，下层审校仍拿启动时的空目录，把合法引用判成"未声明"。
+
+修复：`PlanReviewerAgent` 新增 `world_root_for_commit` 解析器，`production_bootstrap` 用
+`CommitService.load_manifest(commit).world_root` 注入；每次 `review` 按被审任务的
+`base_commit` 解析，装配时的引用只作为读不到清单时的回退（不发明空目录）。
+
+### 15.3 人工裁决→结构化修订→重新审校
+
+拒绝升级候选原先不产生任何后继任务（计划分支静默结束），而接纳一条缺字段的候选照样会被
+提交端拒绝（"必须有一次独立审校 ACCEPT" + 缺 `not_before_chapter`）——接纳理由里的文字
+不会补齐候选字段。
+
+修复（`services/runtime_acceptance.py`）：对 `plan_acceptance` 的 REJECT 产生**下一代
+PLAN_CANDIDATE 任务**，其输入追加一份 `author-revision-directive` 制品：
+
+```text
+author_reason           作者裁决原文
+required_fields         [{item_id, field}]（由升级问题的 kind 决定：
+                        long_range_payoff_without_time_window → not_before_chapter，
+                        unresolved_scope_missing → affected_chapters，
+                        early_resolution_of_future_locked_obligation → target_chapter_start）
+escalated_issues        升级问题的 id/kind/summary/affected_item_ids
+```
+
+该制品经 `input_artifact_refs` 进入 Planner 的作者意图通道，下一轮提案必须真正带上这些
+结构化字段，否则同一宿主门禁会再次拒绝——修订是结构化的，不依赖文案。
+
+### 15.4 无提案的人工升级不再断言
+
+询问审校或审校记忆轮可以在提案生成前返回 HUMAN_REQUIRED。适配器现在只在
+`result.proposal is not None` 时才构造候选绑定；无提案时按普通终态映射为
+`WAITING_INPUT`（保持等待），不再 `assert`。
+
+### 15.5 验证
+
+```text
+tests/unit/test_obligation_declaration_binding.py        11 passed
+  test_a_declaration_keeps_its_owner_window_and_deadline
+  test_a_declaration_that_resolves_or_renames_itself_is_refused
+  test_review_and_materialization_agree_on_a_real_declaration_payload（审校→物化同一载荷）
+tests/unit/test_plan_review_obligation_contract.py       16 passed
+  test_review_reads_the_world_of_the_reviewed_commit_not_assembly_time（同一运行跨两次 World）
+tests/unit/test_stage5_leaf_adapters.py                  14 passed
+  test_stage4_adapter_keeps_a_proposalless_escalation_waiting
+tests/unit/test_stage5_runtime_edges.py                  25 passed
+  test_rejecting_an_escalated_plan_creates_a_structured_revision_task
+tests/unit tests/contract  76 failed / 3056 passed / 1 skipped（失败身份 == R0 基线）
+tests/integration          115 passed / 0 failed
+```
+
+### 15.6 仍未闭合
+
+- Writer 恢复的生产入口：请求工厂仍先重建 Memory 再查恢复检查点，需要"生产入口重启"
+  的覆盖（不重复检索、上下文引用变化不拒绝恢复）。
+- G0 的正式义务回读：v15 STORY 已提交，ARC_VOLUME 仍需产出八卷与逐条责任绑定；
+  CHAPTER_SET 首批五章与投影随后。
+

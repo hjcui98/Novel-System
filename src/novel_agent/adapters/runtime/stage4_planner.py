@@ -369,10 +369,18 @@ class Stage4PlanningLeafAdapter:
         # author has to rule on it, and that ruling needs the same immutable candidate
         # binding a ready proposal gets.  Without it the only front the author could
         # touch was the planning task, which no author command can resolve.
-        if result.terminal in {
-            Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY,
-            Stage4PlanningLoopTerminal.HUMAN_REQUIRED,
-        }:
+        # An inquiry review or a reviewer-memory review may escalate to a human
+        # before any proposal exists.  That is still a wait on the planning front:
+        # there is nothing to accept, so it must not assert a proposal into being.
+        candidate_terminals = (
+            {Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY}
+            if result.proposal is None
+            else {
+                Stage4PlanningLoopTerminal.PLAN_CANDIDATE_READY,
+                Stage4PlanningLoopTerminal.HUMAN_REQUIRED,
+            }
+        )
+        if result.terminal in candidate_terminals:
             assert result.proposal is not None
             proposal_ref = self._artifacts.put(
                 canonical_json_bytes(result.proposal.model_dump(mode="json")),

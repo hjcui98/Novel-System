@@ -58,7 +58,7 @@ from novel_agent.agents.plan_reviewer import PlanReviewerAgent
 from novel_agent.agents.planner import PlannerAgent, build_planner_contract_bundle
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec, seal_tool_policy
 from novel_agent.agents.runner import StructuredAgentRunner
-from novel_agent.domain.artifacts import RootManifest
+from novel_agent.domain.artifacts import ArtifactRef, RootManifest
 from novel_agent.domain.generation import WritingLengthPolicy, WritingLoopBudgets
 from novel_agent.domain.ids import (
     ArtifactId,
@@ -587,6 +587,19 @@ def _validate_prompt_skill_contracts(
         raise RuntimeError(f"production prompt identity is not registered: {missing_prompts}")
     if missing_skills:
         raise RuntimeError(f"production skill identity is not registered: {missing_skills}")
+
+
+def _world_root_for_commit(commits: CommitService, commit: CommitId) -> ArtifactRef | None:
+    """The World root a commit binds, or None when the commit cannot be read.
+
+    ``None`` keeps the caller's fallback instead of inventing an empty catalogue:
+    an unreadable commit must not turn into "this plan declares no obligations".
+    """
+
+    try:
+        return commits.load_manifest(commit).world_root
+    except (KeyError, RuntimeError, ValueError):
+        return None
 
 
 def load_production_assembly_spec(path: Path | None = None) -> ProductionAssemblySpec:
@@ -1641,6 +1654,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
                 planner_runner,
                 artifacts,
                 accepted_world_ref=None if manifest is None else manifest.world_root,
+                world_root_for_commit=lambda commit: _world_root_for_commit(commits, commit),
             ),
             need_generator=PlanningInquiryConditionedNeedGenerator(),
             memory_gateway=memory_gateway,

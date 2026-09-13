@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -55,6 +56,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.ports.creative_runtime import EffectStatusResolver
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -549,10 +551,13 @@ def test_recovery_rejects_drifted_task_identity_and_stale_basis(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    assert recovery.select_safe_checkpoint(
-        task.task_id,
-        current_configuration_fingerprint=ArtifactId(task.policy_hash),
-    ) == safe
+    assert (
+        recovery.select_safe_checkpoint(
+            task.task_id,
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
+        == safe
+    )
 
     # Basis is no longer current after a commit advances the project.
     basis_moved = commands.create_run_and_initial_task(
@@ -750,10 +755,13 @@ def test_recovery_rejects_missing_task_in_rebuild_and_drifted_identity(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    assert recovery.select_safe_checkpoint(
-        task.task_id,
-        current_configuration_fingerprint=ArtifactId(task.policy_hash),
-    ) == safe
+    assert (
+        recovery.select_safe_checkpoint(
+            task.task_id,
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
+        == safe
+    )
     # Advance the project commit behind the task basis, triggering the
     # "basis is no longer current" guard.
     advance = make_commit_request(base, project_id=task.project_id, root_offset=9)
@@ -1496,3 +1504,115 @@ def test_expired_attempt_requires_suspicion_and_settled_effect_frontier(
     assert reclaimed.failure_budget == task.failure_budget
     with pytest.raises(StaleAttemptFenceError):
         commands.heartbeat(fence)
+
+
+def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    """A rejection must come back as one revised generation, not a dead end.
+
+    An escalated review (human_required) could only be answered with accept/reject,
+    and a rejection produced no successor at all, so the run stopped with the
+    planning branch closed.  The rejection now mints the next planning generation
+    whose inputs carry the author's ruling as a structured revision directive.
+    """
+
+    _, commits, artifacts, _, commands, base = edge_kernel
+    task = commands.create_run_and_initial_task(_request("run.reject-revision", base))
+    _, fence = commands.claim(task.task_id, worker_id="planner")
+    commands.mark_started(fence)
+    proposal_ref = artifacts.put(
+        b'{"plan":"escalated"}',
+        "application/vnd.novel-agent.plan-proposal+json",
+        SchemaVersion("1.0.0"),
+    )
+    review_ref = artifacts.put(
+        json.dumps(
+            {
+                "decision": "human_required",
+                "issues": [
+                    {
+                        "issue_id": "issue.long_range_payoff_without_time_window.story.reader_promise",
+                        "kind": "long_range_payoff_without_time_window",
+                        "summary": "long-range PROMISE/FORESHADOWING requires not_before_chapter",
+                        "blocking": True,
+                        "affected_item_ids": ["story.reader_promise"],
+                    }
+                ],
+            }
+        ).encode("utf-8"),
+        "application/vnd.novel-agent.plan-review+json",
+        SchemaVersion("1.0.0"),
+    )
+    candidate = CandidateBinding(
+        candidate_id=StableId("candidate.reject-revision"),
+        kind=CandidateKind.PLAN,
+        artifact_ref=proposal_ref,
+        candidate_hash=proposal_ref.artifact_id.root,
+        basis_commit=base,
+        lineage_artifact_refs=(proposal_ref, review_ref),
+    )
+    waiting = TaskRecord(
+        task_id=TaskId("run.reject-revision.plan.accept"),
+        run_id=task.run_id,
+        project_id=task.project_id,
+        kind=TaskKind.PLAN_ACCEPTANCE,
+        task_revision=0,
+        status=TaskStatus.WAITING_INPUT,
+        basis_commit=base,
+        policy_hash=HASH,
+        permission_hash=PERMISSION_HASH,
+        input_artifact_refs=(proposal_ref,),
+        dependency_task_ids=(task.task_id,),
+        candidate_binding_ref=_binding_ref(artifacts, candidate),
+        block_cause="plan_review_human_required: PLAN_REVIEW_HUMAN_REQUIRED",
+        plan_level=PlanLevel.STORY,
+    )
+    commands.create_task(waiting)
+    command = AcceptanceCommand(
+        command_id=StableId("reject.revision.command"),
+        project_id=task.project_id,
+        run_id=task.run_id,
+        task_id=waiting.task_id,
+        candidate=candidate,
+        acceptance_policy_hash=HASH,
+        actor_kind=ActorKind.AUTHOR,
+        actor_id="author.test",
+        decision=AcceptanceDecision.REJECT,
+        reason="作者裁决：按既有时间锁补 not_before_chapter 后重审",
+        expected_project_commit=base,
+        idempotency_identity=StableId("reject.revision.identity"),
+        issued_at=NOW,
+    )
+    policy = CreativeRunPolicy(
+        automation_mode=AutomationMode.MANUAL,
+        policy_hash=HASH,
+        permission_hash=PERMISSION_HASH,
+    )
+
+    receipt = RuntimeAcceptanceService(commands, commits, artifacts).submit(command, policy=policy)
+
+    assert receipt.accepted_binding is None
+    revised = commands.get_task(TaskId(f"{task.run_id.root}.plan.story.g1"))
+    assert revised.kind is TaskKind.PLAN_CANDIDATE
+    assert revised.status is TaskStatus.READY
+    assert revised.planning_generation == 1
+    assert revised.dependency_task_ids == (waiting.task_id,)
+    directive_ref = next(
+        ref
+        for ref in revised.input_artifact_refs
+        if ref.media_type == "application/vnd.novel-agent.author-revision-directive+json"
+    )
+    directive = json.loads(artifacts.read_verified(directive_ref))
+    assert directive["author_reason"].startswith("作者裁决")
+    assert directive["required_fields"] == [
+        {"item_id": "story.reader_promise", "field": "not_before_chapter"}
+    ]
+    assert directive["escalated_issues"][0]["kind"] == "long_range_payoff_without_time_window"

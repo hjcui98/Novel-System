@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Mapping
 
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
     AcceptanceDecision,
@@ -16,18 +19,39 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunPolicy,
     commit_task_from_acceptance,
 )
-from novel_agent.domain.ids import SchemaVersion, StableId
-from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
+from novel_agent.domain.ids import SchemaVersion, StableId, TaskId
+from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.runtime_commands import (
     RuntimeCommandConflictError,
     RuntimeCommandService,
+    bounded_runtime_identity,
 )
 
 ACCEPTANCE_MEDIA_TYPE = "application/vnd.novel-agent.stage5-acceptance-receipt+json"
 ACCEPTANCE_SCHEMA_VERSION = SchemaVersion("1.0.0")
+AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE = "application/vnd.novel-agent.author-revision-directive+json"
+PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
+
+# A rejected escalated review has to come back as a *structured* revision: prose in
+# the author's reason never fills a candidate field, so the directive names the
+# exact field each affected item must declare before the next review.
+_ISSUE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "long_range_payoff_without_time_window": ("not_before_chapter",),
+    "unresolved_scope_missing": ("affected_chapters",),
+    "early_resolution_of_future_locked_obligation": ("target_chapter_start",),
+}
+
+
+def _issue_item_ids(issue: Mapping[str, object]) -> tuple[str, ...]:
+    """The plan items an escalated review issue is bound to."""
+
+    affected = issue.get("affected_item_ids")
+    if not isinstance(affected, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in affected)
 
 
 class RuntimeAcceptanceService:
@@ -126,6 +150,7 @@ class RuntimeAcceptanceService:
             self._schema_version,
         )
         successors: tuple[TaskRecord, ...] = ()
+        revised: TaskRecord | None = None
         if receipt.accepted_binding is not None:
             settled = task.model_copy(
                 update={
@@ -135,13 +160,132 @@ class RuntimeAcceptanceService:
                 }
             )
             successors = (commit_task_from_acceptance(settled, receipt),)
+        elif (
+            command.decision is AcceptanceDecision.REJECT and task.kind is TaskKind.PLAN_ACCEPTANCE
+        ):
+            # The author refused the candidate.  A rejection that produced no
+            # successor used to end the plan branch silently, so an escalated review
+            # could never become a revised, re-reviewed candidate.  The rejected
+            # acceptance task settles as CANCELLED and only a succeeded task may
+            # create successors, so the revised generation is created explicitly
+            # afterwards with its dependency on the rejected candidate recorded.
+            directive_ref = self._record_author_revision(task, command)
+            revised = self._revised_plan_task(task, directive_ref)
         self._commands.complete_waiting_task(
             command.task_id,
             receipt=receipt,
             receipt_ref=receipt_ref,
             successor_tasks=successors,
         )
+        if revised is not None:
+            self._commands.create_task(revised)
         return receipt
+
+    def _record_author_revision(self, task: TaskRecord, command: AcceptanceCommand) -> ArtifactRef:
+        """Turn one author ruling into the structured revision the planner must make."""
+
+        issues = self._escalated_issues(task)
+        required: list[dict[str, str]] = []
+        for issue in issues:
+            fields = _ISSUE_REQUIRED_FIELDS.get(str(issue.get("kind")))
+            if fields is None:
+                continue
+            required.extend(
+                {"item_id": item_id, "field": field}
+                for item_id in _issue_item_ids(issue)
+                for field in fields
+            )
+        directive = {
+            "directive_id": bounded_runtime_identity(
+                f"author-revision.{task.task_id.root}",
+                f"author-revision.{command.command_id.root}",
+                f"author-revision.{task.run_id.root}.{task.task_revision}",
+            ).root,
+            "kind": "author_revision",
+            "run_id": task.run_id.root,
+            "project_id": task.project_id.root,
+            "rejected_task_id": task.task_id.root,
+            "plan_level": None if task.plan_level is None else task.plan_level.value,
+            "horizon_start": task.horizon_start,
+            "horizon_end": task.horizon_end,
+            "author_reason": command.reason,
+            "required_fields": required,
+            "escalated_issues": [
+                {
+                    "issue_id": str(issue.get("issue_id")),
+                    "kind": str(issue.get("kind")),
+                    "summary": str(issue.get("summary")),
+                    "affected_item_ids": list(_issue_item_ids(issue)),
+                }
+                for issue in issues
+            ],
+        }
+        return self._artifacts.put(
+            canonical_json_bytes(directive),
+            AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE,
+            self._schema_version,
+        )
+
+    def _escalated_issues(self, task: TaskRecord) -> tuple[dict[str, object], ...]:
+        """Read the blocking issues of the review that escalated this candidate."""
+
+        if task.candidate_binding_ref is None:
+            return ()
+        try:
+            candidate = CandidateBinding.model_validate_json(
+                self._artifacts.read_verified(task.candidate_binding_ref)
+            )
+        except (UnicodeDecodeError, ValueError):
+            return ()
+        collected: list[dict[str, object]] = []
+        for ref in candidate.lineage_artifact_refs:
+            if ref.media_type != PLAN_REVIEW_MEDIA_TYPE:
+                continue
+            try:
+                review = json.loads(self._artifacts.read_verified(ref).decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(review, dict):
+                continue
+            for issue in review.get("issues") or ():
+                if isinstance(issue, dict):
+                    collected.append(issue)
+        return tuple(collected)
+
+    def _revised_plan_task(self, task: TaskRecord, directive_ref: ArtifactRef) -> TaskRecord:
+        """One new planning generation that carries the author's revision directive."""
+
+        generation = task.planning_generation + 1
+        level = (
+            "chapter-set" if task.plan_level is None else task.plan_level.value.replace("_", "-")
+        )
+        if task.horizon_start is not None and task.horizon_end is not None:
+            suffix = f"plan.{level}.{task.horizon_start}-{task.horizon_end}.g{generation}"
+        else:
+            suffix = f"plan.{level}.g{generation}"
+        return task.model_copy(
+            update={
+                "task_id": TaskId(
+                    bounded_runtime_identity(
+                        f"{task.run_id.root}.{suffix}",
+                        suffix,
+                        f"plan.{task.run_id.root}.{generation}",
+                    ).root
+                ),
+                "kind": TaskKind.PLAN_CANDIDATE,
+                "purpose": TaskPurpose.NORMAL,
+                "task_revision": 0,
+                "status": TaskStatus.READY,
+                "candidate_binding_ref": None,
+                "terminal_artifact_refs": (),
+                "block_cause": None,
+                "dependency_task_ids": (task.task_id,),
+                "input_artifact_refs": (*task.input_artifact_refs, directive_ref),
+                "planning_generation": generation,
+                "projection_after": None,
+                "affects_future_plan": None,
+            }
+        )
 
 
 __all__ = ["RuntimeAcceptanceService"]

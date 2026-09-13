@@ -972,9 +972,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 if chapter_parent is None:
                     raise CandidateMaterializationError("CHAPTER parent does not exist")
                 if chapter_parent.plan_level is not PlanLevel.CHAPTER_SET:
-                    raise CandidateMaterializationError(
-                        "CHAPTER parent must be a CHAPTER_SET node"
-                    )
+                    raise CandidateMaterializationError("CHAPTER parent must be a CHAPTER_SET node")
             if node.parent_id is None:
                 continue
             parent = by_id.get(node.parent_id)
@@ -1118,7 +1116,6 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         }
         for item in proposal.items:
             payload = item.payload
-            raw_declarations: list[Mapping[str, object]] = []
             referenced_ids: list[StableId] = []
             raw_references = payload.get("obligation_ids")
             if raw_references is not None:
@@ -1138,9 +1135,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     )
                 for action in action_compilation.actions:
                     candidate_id = StableId(action.obligation_id)
-                    if not any(
-                        item.obligation_id == candidate_id for item in world.obligations
-                    ):
+                    if not any(item.obligation_id == candidate_id for item in world.obligations):
                         raise CandidateMaterializationError(
                             "obligation action references an undeclared obligation: "
                             f"{candidate_id.root}"
@@ -1171,51 +1166,28 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             )
             if not parse.complete:
                 raise CandidateMaterializationError(
-                    "obligation declaration is not readable: "
-                    + "; ".join(parse.discrepancies)
+                    "obligation declaration is not readable: " + "; ".join(parse.discrepancies)
                 )
-            raw_declarations.extend(
-                {
-                    "kind": declaration.kind.value,
-                    "summary": declaration.description,
-                    "not_before_chapter": declaration.not_before_chapter,
-                }
-                for declaration in parse.declarations
-            )
-            for ordinal, raw in enumerate(raw_declarations):
-                kind_raw = (
-                    raw.get("obligation_kind") or raw.get("kind") or raw.get("obligation_type")
-                )
-                try:
-                    kind = ObligationKind(str(kind_raw))
-                except ValueError as error:
-                    raise CandidateMaterializationError(
-                        "obligation declaration has an unknown kind"
-                    ) from error
-                description = self._payload_text(raw, "description", "summary", "goal", "text")
-                if not description:
-                    raise CandidateMaterializationError(
-                        "obligation declaration requires a description"
-                    )
+            # The shared parser is the single reader of every declaration surface:
+            # it keeps every legal field it read and reports every illegal one, so
+            # this binder no longer re-reads a rewritten dict (which dropped owners,
+            # target windows, deadlines, a supplied id and a resolved status).
+            for declaration in parse.declarations:
                 expected_id = bounded_stable_id(
-                    f"obligation.{item.item_id.root}.{ordinal}.{kind.value}",
+                    f"obligation.{item.item_id.root}.{declaration.ordinal}."
+                    f"{declaration.kind.value}",
                     "obligation."
                     + content_id(
                         {
                             "plan_item_id": item.item_id.root,
-                            "ordinal": ordinal,
-                            "kind": kind.value,
+                            "ordinal": declaration.ordinal,
+                            "kind": declaration.kind.value,
                         }
                     ).root.removeprefix("sha256:")[:48],
                 )
-                raw_id = raw.get("obligation_id") or raw.get("id")
-                if raw_id is not None:
-                    if not isinstance(raw_id, str):
-                        raise CandidateMaterializationError(
-                            "obligation declaration id must be a string"
-                        )
+                if declaration.supplied_id is not None:
                     try:
-                        supplied_id = StableId(raw_id)
+                        supplied_id = StableId(declaration.supplied_id)
                     except ValueError as error:
                         raise CandidateMaterializationError(
                             "obligation declaration id is invalid"
@@ -1224,31 +1196,18 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         raise CandidateMaterializationError(
                             "obligation declaration id does not match host-derived identity"
                         )
-                status_raw = str(raw.get("status") or "open").lower()
-                if status_raw in {
-                    ObligationStatus.RESOLVED.value,
-                    ObligationStatus.ABANDONED.value,
-                }:
-                    raise CandidateMaterializationError(
-                        "Plan actions cannot directly resolve or abandon a World obligation"
-                    )
-                not_before = self._optional_positive_int(raw.get("not_before_chapter"))
                 try:
-                    require_not_before_for_kind(kind, not_before)
-                    declaration = PlanObligation(
+                    require_not_before_for_kind(declaration.kind, declaration.not_before_chapter)
+                    planned = PlanObligation(
                         obligation_id=expected_id,
-                        kind=kind,
-                        description=description,
+                        kind=declaration.kind,
+                        description=declaration.description,
                         status=ObligationStatus.OPEN,
-                        owner_ids=self._ids(raw.get("owner_ids"), "obligation owner_ids"),
-                        not_before_chapter=not_before,
-                        target_chapter_start=self._optional_positive_int(
-                            raw.get("target_chapter_start")
-                        ),
-                        target_chapter_end=self._optional_positive_int(
-                            raw.get("target_chapter_end")
-                        ),
-                        due_chapter=self._optional_positive_int(raw.get("due_chapter")),
+                        owner_ids=tuple(StableId(item) for item in declaration.owner_ids),
+                        not_before_chapter=declaration.not_before_chapter,
+                        target_chapter_start=declaration.target_chapter_start,
+                        target_chapter_end=declaration.target_chapter_end,
+                        due_chapter=declaration.due_chapter,
                     )
                 except (TemporalObligationError, ValueError) as error:
                     raise CandidateMaterializationError(str(error)) from error
@@ -1256,7 +1215,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 bindings[item.item_id] = list(dict.fromkeys(bindings[item.item_id]))
                 prior = existing.get(expected_id)
                 if prior is not None:
-                    if prior != declaration:
+                    if prior != planned:
                         raise CandidateMaterializationError(
                             f"obligation declaration conflicts with existing {expected_id.root}"
                         )
@@ -1265,7 +1224,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     existing_item.obligation_id == expected_id for existing_item in declarations
                 ):
                     continue
-                declarations.append(declaration)
+                declarations.append(planned)
         if not declarations:
             return (
                 world,
@@ -1577,9 +1536,7 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         surface_error = draft_surface_error(
             text,
             target_language=language,
-            allowed_language_tokens=language_allowlist_tokens(
-                writing_task.mandatory_constraints
-            ),
+            allowed_language_tokens=language_allowlist_tokens(writing_task.mandatory_constraints),
             forbidden_reveals=writing_task.forbidden_reveals,
             recent_prose=tuple(recent_prose),
         )

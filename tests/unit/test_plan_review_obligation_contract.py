@@ -352,9 +352,7 @@ def test_author_constraint_coverage_uses_the_frozen_catalogue_as_denominator() -
 
 
 def test_author_constraint_coverage_credits_a_restated_constraint() -> None:
-    constraints = (
-        _constraint("author-constraint.time_lock.1", "斩星府内府资格不得早于第二卷"),
-    )
+    constraints = (_constraint("author-constraint.time_lock.1", "斩星府内府资格不得早于第二卷"),)
     review = apply_host_plan_review_constraints(
         _draft(),
         target_kind=ReviewTargetKind.PLAN_PROPOSAL,
@@ -405,7 +403,8 @@ def test_a_declaration_without_an_obligation_kind_is_revise() -> None:
 
     assert review.decision is ReviewDecision.REVISE
     assert any(
-        "OBLIGATION_DECLARATION_UNREADABLE" in issue.summary and issue.blocking for issue in review.issues
+        "OBLIGATION_DECLARATION_UNREADABLE" in issue.summary and issue.blocking
+        for issue in review.issues
     )
 
 
@@ -444,3 +443,46 @@ def test_a_legacy_responsibility_table_is_not_treated_as_a_direct_declaration() 
     )
 
     assert not any("OBLIGATION_KIND" in issue.summary for issue in review.issues)
+
+
+def test_review_reads_the_world_of_the_reviewed_commit_not_assembly_time() -> None:
+    """A run that committed new obligations must be reviewed against them.
+
+    The reviewer component is built once per run, so a World reference frozen at
+    assembly time keeps pointing at the startup catalogue.  An STORY or ARC_VOLUME
+    commit adds obligations; a lower-level review against the stale catalogue would
+    then refuse a legitimately declared id.  The World is therefore resolved from
+    the reviewed task's own basis commit, with the assembled root only as fallback.
+    """
+
+    from unittest.mock import Mock
+
+    from novel_agent.agents.plan_reviewer import PlanReviewerAgent
+    from novel_agent.domain.artifacts import ArtifactRef
+    from novel_agent.domain.ids import ArtifactId, CommitId, SchemaVersion
+
+    version = SchemaVersion("1.0.0")
+
+    def _ref(digest: str) -> ArtifactRef:
+        return ArtifactRef(
+            artifact_id=ArtifactId("sha256:" + digest * 64),
+            media_type="application/vnd.novel-agent.world-root+json",
+            byte_length=1,
+            schema_version=version,
+        )
+
+    genesis = _ref("a")
+    committed = _ref("b")
+    reviewed_commit = CommitId("sha256:" + "2" * 64)
+
+    reviewer = PlanReviewerAgent(
+        Mock(),
+        Mock(),
+        accepted_world_ref=genesis,
+        world_root_for_commit=lambda commit: committed if commit == reviewed_commit else None,
+    )
+
+    assert reviewer._world_ref_for(reviewed_commit) == committed
+    # An unrelated or unknown commit keeps the assembled root instead of guessing.
+    assert reviewer._world_ref_for(CommitId("sha256:" + "3" * 64)) == genesis
+    assert reviewer._world_ref_for(None) == genesis

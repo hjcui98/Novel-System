@@ -311,6 +311,75 @@ def test_real_stage4_adapter_preserves_candidate_and_review_lineage(tmp_path: Pa
     assert yielded.artifact_refs == (checkpoint_ref,)
 
 
+def test_stage4_adapter_keeps_a_proposalless_escalation_waiting(tmp_path: Path) -> None:
+    """An escalation before any proposal must wait, not assert a proposal into being.
+
+    An inquiry review or a reviewer-memory review can return HUMAN_REQUIRED before
+    the planner produced a proposal.  There is nothing to accept at that point, so
+    the adapter keeps the planning front waiting instead of raising.
+    """
+
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stage4-escalated"))
+    author_ref = artifacts.put(b"author intent", "text/plain", SchemaVersion("1.0.0"))
+    review_ref = artifacts.put(b"{}", "application/json", SchemaVersion("1.0.0"))
+    simple = PlanningLoopRequest(
+        run_id=RunId("run.stage4-escalated"),
+        task_id=TaskId("task.stage4-escalated"),
+        project_id=ProjectId("project.test"),
+        basis_commit=CommitId("sha256:" + "2" * 64),
+        basis_snapshot=StableId("snapshot.stage4-escalated"),
+        input_artifact_refs=(author_ref,),
+    )
+    task = PlanningTask.model_construct(
+        planning_task_id=StableId(simple.task_id.root),
+        project_id=simple.project_id,
+        mode=AgentMode.CHAPTER,
+        base_commit=simple.basis_commit,
+        source_ids=(StableId("source.author"),),
+    )
+    detailed = Stage4PlanningLoopRequest.model_construct(
+        request_id=StableId("request.stage4-escalated"),
+        run_id=simple.run_id,
+        task_id=simple.task_id,
+        project_id=simple.project_id,
+        task=task,
+        author_intent_artifacts=(author_ref,),
+        snapshot_id=simple.basis_snapshot,
+        budgets=_STAGE4_BUDGETS,
+        configuration_fingerprint=_STAGE4_FINGERPRINT,
+        model_fingerprint=_STAGE4_FINGERPRINT,
+    )
+    escalated_result = Stage4PlanningLoopResult.model_construct(
+        request_id=detailed.request_id,
+        terminal=Stage4PlanningLoopTerminal.HUMAN_REQUIRED,
+        proposal=None,
+        inquiry_review_ref=review_ref,
+        event_artifacts=(review_ref,),
+        diagnostic_codes=("INQUIRY_REVIEW_HUMAN_REQUIRED",),
+        degraded=False,
+    )
+
+    class _EscalatedStage4Loop:
+        async def run(self, **_: object) -> Stage4PlanningLoopResult:
+            return escalated_result
+
+    adapter = Stage4PlanningLeafAdapter(
+        cast(PlanningContextLoopService, _EscalatedStage4Loop()),
+        artifacts,
+        lambda _: Stage4PlanningInvocation(
+            request=detailed,
+            model_request=lambda _phase, _mode, _attempt: cast(ModelRequest, object()),
+        ),
+        schema_version=SchemaVersion("1.0.0"),
+    )
+
+    result = asyncio.run(adapter.run(simple))
+
+    assert result.status is PlanningTerminalStatus.WAITING_INPUT
+    assert result.candidate is None
+    assert result.failure_code == "INQUIRY_REVIEW_HUMAN_REQUIRED"
+
+
 def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stage4-gap"))
     author_ref = artifacts.put(b"author intent", "text/plain", SchemaVersion("1.0.0"))
