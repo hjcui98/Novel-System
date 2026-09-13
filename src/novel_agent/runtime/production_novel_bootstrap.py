@@ -485,7 +485,10 @@ class ProductionNovelBootstrap:
                 ),
                 adapter=ProductionChapterEndpoint(),
                 sequence_limit=spec.model_policy.sequence_limit,
-                output_limit=12_000,
+                # A fabricated fallback froze a fingerprint that disagreed with the
+                # registered profile, so the allowance follows the spec instead of a
+                # constant that drifts from it.
+                output_limit=spec.model_policy.default_output_limit,
                 safety_allowance_tokens=(
                     256 if endpoint_name == "deterministic-fake-production" else 1_000
                 ),

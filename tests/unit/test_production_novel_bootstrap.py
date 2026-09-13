@@ -63,6 +63,7 @@ from novel_agent.runtime.production_novel_bootstrap import (
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.bootstrap_workflow import BootstrapRootBuilder
 from novel_agent.services.model_gateway import RegisteredModelEndpoint
+from tests.unit.test_production_assembly import _stamp_sqlite
 from tests.unit.test_stage2_bootstrap_workflow import proposals
 
 VERSION = SchemaVersion("1.0.0")
@@ -168,6 +169,135 @@ def test_bootstrap_budget_and_timeout_defaults_stay_within_the_domain_ceiling(
             session_factory=build_session_factory(engine),
             bootstrap_request_timeout_seconds=0.0,
         )
+
+
+def test_the_frozen_policy_hash_matches_the_runtime_assembly_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """The freeze and the dispatch must hash the same endpoints.
+
+    ``bootstrap-commit`` used to build the fingerprint from a fabricated endpoint
+    list while the dispatcher used the registered profile, so every run frozen
+    against a profile whose output allowance differed from the constant failed
+    closed with RUN_CONFIGURATION_CHANGED before its first task.
+    """
+
+    from novel_agent.domain.stage5_manifest import load_stage5_manifest
+    from novel_agent.runtime.creative_assembly import (
+        ProductionAssemblyContext,
+        build_production_assembly,
+    )
+    from novel_agent.runtime.production_bootstrap import (
+        QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE,
+        load_production_assembly_spec,
+        resolve_registered_model_endpoints,
+    )
+
+    # One stamped database holds both the frozen project and the runtime assembly.
+    database_url = _stamp_sqlite(tmp_path / "runtime.db")
+    sessions = build_session_factory(create_engine(database_url))
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    project_id = ProjectId("project.bootstrap.novel")
+    plan_proposal, world_patch = proposals(project_id)
+    plan_proposal = plan_proposal.model_copy(
+        update={"strategy": BootstrapStrategy.DEVELOP_CANDIDATES}
+    )
+    planner_result = PlannerExecutionResult(
+        mode=AgentMode.PROJECT_BOOTSTRAP,
+        project_intent=ProjectIntentModel(
+            intent_id=StableId("intent.bootstrap"),
+            project_id=project_id,
+            strategy=BootstrapStrategy.DEVELOP_CANDIDATES,
+            items=(
+                ProposedItem(
+                    item_id=StableId("intent.item"),
+                    kind="premise",
+                    payload={"summary": "story"},
+                    provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                    source_ids=(StableId("source.author-initial-brief"),),
+                ),
+            ),
+            source_ids=(StableId("source.author-initial-brief"),),
+            coverage=1,
+        ),
+        plan_proposal=plan_proposal.model_copy(
+            update={
+                "items": (
+                    ProposedItem(
+                        item_id=StableId("plan.item"),
+                        kind="premise",
+                        payload={"summary": "story"},
+                        provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                        source_ids=(StableId("source.author-initial-brief"),),
+                    ),
+                ),
+                "strategy": BootstrapStrategy.DEVELOP_CANDIDATES,
+            }
+        ),
+        output_artifact=artifacts.put(b"planner", "application/json", VERSION),
+        receipt=plan_proposal.receipt,
+    )
+    world_patch = world_patch.model_copy(
+        update={
+            "origin_source_ids": (StableId("source.author-initial-brief"),),
+            "items": (
+                ProposedItem(
+                    item_id=StableId("world.item"),
+                    kind="baseline_state",
+                    payload={"fact": "known", "label": "Lin"},
+                    provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+                    source_ids=(StableId("source.author-initial-brief"),),
+                ),
+            ),
+        }
+    )
+
+    async def planner() -> PlannerExecutionResult:
+        return planner_result
+
+    async def curator() -> object:
+        return world_patch
+
+    endpoints = resolve_registered_model_endpoints(QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE)
+    service = ProductionNovelBootstrap(
+        artifacts=artifacts,
+        session_factory=sessions,
+        planner=planner,
+        curator=curator,  # type: ignore[arg-type]
+        endpoints=endpoints,
+    )
+    prepared = asyncio.run(
+        service.prepare(project_id=project_id, brief_text="A wounded heir enters the tower.")
+    )
+    policy, _request, descriptor = service.commit(
+        prepared=prepared.document,
+        author_id=StableId("author.1"),
+        reason="reviewed Plan/World/Profile",
+        target_chapters=10,
+        run_id=RunId("run.bootstrap.novel"),
+        object_store_root=tmp_path / "objects",
+        retrieval_backend_profile="memory",
+    )
+
+    assembly = build_production_assembly(
+        ProductionAssemblyContext(
+            database_url=database_url,
+            object_store_root=tmp_path / "objects",
+            project_id=descriptor.project_id,
+            run_id=descriptor.run_id,
+            policy=policy,
+            manifest=load_stage5_manifest(
+                Path(__file__).parents[2]
+                / "src/novel_agent/runtime/stage5_development_manifest.json"
+            ),
+            model_endpoints=endpoints,
+            retrieval_backend_profile="memory",
+            spec=load_production_assembly_spec(),
+        )
+    )
+
+    assert assembly.attestation is not None
+    assert assembly.attestation.configuration_fingerprint.root == policy.policy_hash
 
 
 def test_bootstrap_prepare_then_commit_emits_auto_dispatch_descriptor(tmp_path: Path) -> None:

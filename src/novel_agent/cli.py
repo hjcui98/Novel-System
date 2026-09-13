@@ -371,6 +371,14 @@ def build_parser() -> argparse.ArgumentParser:
     commit.add_argument("--reason", required=True)
     commit.add_argument("--target-chapters", type=int, required=True)
     commit.add_argument("--object-store-root", type=Path, required=True)
+    commit.add_argument(
+        "--endpoint-profile",
+        required=True,
+        help=(
+            "the registered endpoint profile this run is frozen against; the "
+            "configuration fingerprint must name the endpoints the run will use"
+        ),
+    )
     commit.add_argument("--run-id", required=True)
     commit.add_argument("--policy", type=Path, required=True)
     commit.add_argument("--request", type=Path, required=True)
@@ -572,9 +580,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = json.loads(args.prepared.read_text(encoding="utf-8"))
             reference = ArtifactRef.model_validate(payload["artifact"], strict=True)
             document = load_prepared_bootstrap(artifacts, reference)
+            frozen_endpoints = resolve_registered_model_endpoints(args.endpoint_profile)
             policy, request, descriptor = ProductionNovelBootstrap(
                 artifacts=artifacts,
                 session_factory=factory,
+                endpoints=frozen_endpoints,
             ).commit(
                 prepared=document,
                 author_id=StableId(args.author_id),
