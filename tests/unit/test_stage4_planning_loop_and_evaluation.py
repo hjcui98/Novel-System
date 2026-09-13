@@ -4033,6 +4033,13 @@ def test_unsupported_planner_memory_gets_content_status_without_being_handled(
     assert "current_state" in planner.turn_source_payloads[-1]
     assert "final bounded content-recovery turn" in planner.turn_source_payloads[-1]
     assert "do not issue new memory_questions" in planner.turn_source_payloads[-1]
+    assert len(result.proposal.unresolved) == 1
+    gap = result.proposal.unresolved[0]
+    assert gap.issue_id.root.startswith("plan-issue.memory-gap.")
+    assert gap.affected_chapters == (21, 22, 23)
+    assert gap.resolution_owner == "MEMORY"
+    assert gap.source_ids
+    assert gap.source_artifact_refs
 
 
 def test_evidence_bound_unsupported_planner_memory_enters_gap_terminal(

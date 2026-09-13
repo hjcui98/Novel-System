@@ -1826,6 +1826,31 @@ class PlanningContextLoopService:
                                 pending_planner_memory_questions = retry_turn.memory_questions
                                 continue
                             assert result is not None
+                            # A PLAN_READY response after an unsupported mandatory
+                            # facet is still not evidence that the facet was resolved.
+                            # Retain the host-owned gap on this direct-ready branch as
+                            # well as on the repeated-request fallback; otherwise a
+                            # compliant Planner can silently drop the gap simply by
+                            # returning PLAN_READY on the first bounded reprompt.
+                            result = _retain_unsupported_memory_gaps(
+                                result,
+                                unsupported_details_for_fallback,
+                                affected_chapters=(
+                                    tuple(range(request.horizon_start, request.horizon_end + 1))
+                                    if request.horizon_start is not None
+                                    and request.horizon_end is not None
+                                    else ()
+                                ),
+                                source_artifact_refs=tuple(
+                                    dict.fromkeys(
+                                        (
+                                            planner_context_ref,
+                                            projection.view_ref,
+                                            *planner_memory_context_refs,
+                                        )
+                                    )
+                                ),
+                            )
                             break
                     # Slice yield is a resume boundary, not a post-memory abort of plan_turn.
                 if run_turn is None:
