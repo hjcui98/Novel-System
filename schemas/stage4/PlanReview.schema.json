@@ -349,6 +349,19 @@
           "title": "Blocking",
           "type": "boolean"
         },
+        "constraint_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Constraint Id"
+        },
         "evidence_refs": {
           "default": [],
           "items": {
@@ -357,16 +370,55 @@
           "title": "Evidence Refs",
           "type": "array"
         },
+        "field_path": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field Path"
+        },
         "issue_id": {
           "$ref": "#/$defs/StableId"
         },
         "kind": {
           "$ref": "#/$defs/ReviewIssueKind"
         },
+        "quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote"
+        },
         "summary": {
           "minLength": 1,
           "title": "Summary",
           "type": "string"
+        },
+        "unmet_condition": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unmet Condition"
         }
       },
       "required": [

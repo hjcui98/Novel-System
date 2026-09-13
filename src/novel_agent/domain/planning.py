@@ -341,6 +341,13 @@ class PlanReviewIssue(DomainModel):
     blocking: bool
     evidence_refs: tuple[EvidenceRef, ...] = ()
     affected_item_ids: tuple[StableId, ...] = ()
+    # Machine-checkable citation: which field of the named item violates which
+    # constraint, with the candidate text that proves it.  Optional so historical
+    # artifacts stay readable, required of newly generated blocking findings.
+    field_path: str | None = Field(default=None, min_length=1)
+    constraint_id: str | None = Field(default=None, min_length=1)
+    quote: str | None = Field(default=None, min_length=1)
+    unmet_condition: str | None = Field(default=None, min_length=1)
 
 
 class PlanReviewDraft(DomainModel):

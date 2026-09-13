@@ -170,6 +170,10 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
         if issue.kind is ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION:
             demands.extend(_volume_window_field_paths(issue))
             continue
+        if issue.field_path is not None:
+            for item_id in issue.affected_item_ids:
+                demands.append(f"{item_id.root}.{issue.field_path}")
+            continue
         fields = _HOST_ISSUE_REQUIRED_FIELDS.get(issue.kind, ())
         for item_id in issue.affected_item_ids:
             for field in fields:
