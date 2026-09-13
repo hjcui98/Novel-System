@@ -19,8 +19,18 @@ What the run establishes, recorded in the delivery note:
 * whether the legitimate early-planting rule survives, so a legal `setup` is not
   pushed past a boundary it never crossed.
 
-The diagnostic budget is one review and one bounded revision; it does not let the
+The diagnostic budget is two reviews and one bounded revision; it does not let the
 planner regenerate eight volumes.
+
+What the revision case does and does not establish is worth stating precisely.  It
+proves that a real model revision, run through the production Planner assembly,
+produces a candidate the host can compose inside the reviewed scope and that a real
+re-review then accepts.  In the run recorded here the model moved only the single
+authorised item, so the composition's *restoration* path did not have to fire; that
+path is covered deterministically (``test_plan_composition_source_proof.py`` and the
+D0 chain's unauthorised-rewrite case).  A run in which the model does wander is
+recorded as ``out_of_scope_items`` rather than failing, because the host's job is to
+contain it, not to require good behaviour.
 """
 
 from __future__ import annotations
@@ -31,8 +41,9 @@ from pathlib import Path
 import pytest
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
+from novel_agent.adapters.runtime.materializers import PLAN_PROPOSAL_MEDIA_TYPE
 from novel_agent.agents.plan_reviewer import PlanReviewerAgent
-from novel_agent.agents.planner import build_planner_contract_bundle
+from novel_agent.agents.planner import build_planner_contract_bundle, planner_skill_ids_for_mode
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import (
@@ -52,7 +63,7 @@ from novel_agent.domain.planning import (
     ReviewDecision,
     ReviewTargetKind,
 )
-from novel_agent.domain.stage2 import AgentMode
+from novel_agent.domain.stage2 import AgentMode, AgentType
 from novel_agent.runtime.production_bootstrap import (
     PACKAGE_ROOT,
     QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE,
@@ -63,9 +74,11 @@ from novel_agent.services.model_gateway import ModelGateway
 from tests.integration.test_yujin_d0_frozen_candidate_chain import (
     FROZEN_CANDIDATE,
     FROZEN_LOCKS,
+    FROZEN_RUN,
     _proposal_from_frozen,
     author_constraint_root,
 )
+from tests.unit.test_stage4_planning_contracts import _receipt
 
 pytestmark = [
     pytest.mark.model_required,
@@ -333,3 +346,231 @@ def test_the_frozen_locks_are_read_not_restated() -> None:
         lock for lock in locks if getattr(lock, "constraint_key", "") == "lock.long-truth.vol4-hint"
     )
     assert hint.not_before_chapter == 350
+
+
+# --------------------------------------------------- a real Planner revision
+
+
+def _grounded_revision_finding(candidate: object):
+    """A blocking finding whose citation is present in the candidate it names.
+
+    The frozen candidate repeats one sentence across the climaxes of volumes five
+    to eight.  Citing the field that holds it is what a review must do, and the
+    scope it authorises is only that field.
+    """
+
+    from novel_agent.domain.planning import PlanReviewIssue, ReviewIssueKind
+
+    phrase = "正式揭露门被从对面推开"
+    for item in candidate.items:  # type: ignore[attr-defined]
+        climax = item.payload.get("volume_climax")
+        if not isinstance(climax, dict):
+            continue
+        description = str(climax.get("description") or "")
+        if phrase not in description or item.item_id.root == "vol-4":
+            continue
+        return PlanReviewIssue(
+            issue_id=StableId("issue.d0.repeated-reveal"),
+            kind=ReviewIssueKind.CONTRADICTION,
+            summary="后卷高潮与前次揭露使用同一句式，读者无法判断这是新的进展还是重复",  # noqa: RUF001
+            blocking=True,
+            affected_item_ids=(item.item_id.root,),
+            field_path="volume_climax.description",
+            quote=description,
+            unmet_condition="每次揭露必须让读者分辨这是首次、验证还是新的后果",
+        )
+    raise AssertionError("no grounded repetition finding could be built")
+
+
+def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Path) -> None:
+    """The gap D0 left open: a real model revision, host-composed and re-reviewed.
+
+    The reviewer's finding authorises one field on one volume.  The model, asked to
+    revise a proposal it did not write, will almost certainly rewrite more than
+    that; the host composes the candidate from the parent plus exactly the
+    authorised field, and records the rest as out of scope.  The composed candidate
+    is then re-reviewed for real.  Passing means the candidate the *materializer
+    would receive* is inside scope and accepted -- not that the model behaved.
+    """
+
+    import asyncio
+
+    from novel_agent.agents.planner import PlannerAgent, _proposal_output_type
+    from novel_agent.domain.plan_composition import (
+        compose_scoped_revision,
+        out_of_scope_items,
+        revision_scope,
+    )
+    from novel_agent.domain.planning import PlanReview, ReviewDecision, ReviewTargetKind
+    from novel_agent.domain.stage2 import PlanningTask
+
+    candidate = _proposal_from_frozen()
+    _constraints, _root, _profile_ref = author_constraint_root()
+    reviewer, repo = _reviewer(tmp_path)
+    bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
+    gateway = ModelGateway(
+        (_endpoint(),),  # type: ignore[arg-type]
+        forbid_external_calls=True,
+        structured_max_retries=0,
+        raw_artifacts=repo,
+    )
+    planner = PlannerAgent(
+        StructuredAgentRunner(gateway, bundle.agents, bundle.prompts, bundle.skills), repo
+    )
+
+    finding = _grounded_revision_finding(candidate)
+    parent_ref = repo.put(candidate.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
+    review = PlanReview(
+        review_id=StableId("plan-review.d0.real-revision"),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_artifact_ref=parent_ref,
+        decision=ReviewDecision.REVISE,
+        issues=(finding,),
+        revision_instruction=(
+            "只修改 REVIEW 点名条目的 volume_climax.description；"  # noqa: RUF001
+            "其余条目的 payload 必须与 PARENT_PROPOSAL 逐字一致。"
+        ),
+        receipt=_receipt(AgentMode.ARC_VOLUME, AgentType.PLAN_REVIEWER),
+    )
+    scope = revision_scope(review)
+    assert scope.targeted_item_ids == {finding.affected_item_ids[0].root}
+    assert scope.target_for(finding.affected_item_ids[0].root).field_paths == ("volume_climax",)
+
+    brief = (FROZEN_RUN / "input/brief.md").read_bytes()
+    brief_ref = repo.put(brief, "text/plain", VERSION)
+    task = PlanningTask(
+        planning_task_id=StableId("task.d0.revision"),
+        project_id=PROJECT,
+        mode=AgentMode.ARC_VOLUME,
+        base_commit=COMMIT,
+        source_ids=(StableId("source.d0.brief"),),
+        strategy=None,
+    )
+    source_payload = (
+        f"<AUTHOR_BRIEF>\n{brief.decode('utf-8')}\n</AUTHOR_BRIEF>\n"
+        f"REVIEW_REVISION={review.revision_instruction}\n"
+        "REVISION_SCOPE=只修改 REVIEW 点名条目/字段；其余条目的 payload 必须与 "  # noqa: RUF001
+        "PARENT_PROPOSAL 逐字一致。\n"
+        f"PARENT_CANDIDATE_HASH={candidate.proposal_id.root}\n"
+        f"REVIEW={review.model_dump_json()}\n"
+        f"PARENT_PROPOSAL={candidate.model_dump_json()}"
+    )
+    prepared = planner._runner.prepare(
+        AgentType.PLANNER,
+        AgentMode.ARC_VOLUME,
+        VERSION.root,
+        _request("plan-revision"),
+        f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\nSOURCE_DATA={source_payload}",
+        source_hashes=(brief_ref.artifact_id,),
+        input_artifacts=(brief_ref, parent_ref),
+        base_commit=COMMIT,
+        allowed_skill_ids=planner_skill_ids_for_mode(AgentMode.ARC_VOLUME),
+    )
+    execution = asyncio.run(planner._runner.execute(prepared, _proposal_output_type(task)))
+    result = planner._materialize_plan(
+        version=VERSION,
+        task=task,
+        draft=execution.output,
+        prepared=prepared,
+        model_call=execution.model_call,
+        reviewed_inquiry_ref=None,
+        memory_need_ids=(),
+        evidence_refs=(),
+        graph_path_receipt_refs=(),
+        parent_proposal_id=candidate.proposal_id,
+    )
+    raw = result.plan_proposal
+
+    composed = compose_scoped_revision(candidate, raw, scope)
+    out_of_scope = out_of_scope_items(candidate, raw, scope)
+
+    # The composed candidate carries the parent everywhere the review did not reach.
+    target = finding.affected_item_ids[0].root
+    for original, produced in zip(candidate.items, composed.items, strict=True):
+        if original.item_id.root == target:
+            continue
+        assert produced.payload == original.payload, original.item_id.root
+
+    _record(
+        tmp_path,
+        "d0.revision",
+        {
+            "target_item": target,
+            "scope_field_paths": ["volume_climax"],
+            "raw_items": len(raw.items),
+            "raw_changed_items": sorted(
+                item.item_id.root
+                for item in raw.items
+                if item.payload
+                != next(
+                    parent.payload
+                    for parent in candidate.items
+                    if parent.item_id.root == item.item_id.root
+                )
+            ),
+            "out_of_scope_items": list(out_of_scope),
+            "composed_target_description": next(
+                item.payload["volume_climax"]
+                for item in composed.items
+                if item.item_id.root == target
+            ),
+            "usage": None
+            if getattr(execution.model_call, "usage", None) is None
+            else execution.model_call.usage.model_dump(mode="json"),
+        },
+    )
+
+    # A revision that changed nothing is not convergence either; the diagnostic
+    # reports it rather than asserting the model behaved.
+    target_item = next(item for item in composed.items if item.item_id.root == target)
+    parent_item = next(item for item in candidate.items if item.item_id.root == target)
+    assert target_item.payload["volume_climax"] != parent_item.payload["volume_climax"], (
+        "the real revision did not move the field the review named"
+    )
+
+    # Re-review the composed candidate for real.
+    rereview, _ref, _call = asyncio.run(
+        reviewer.review(
+            version=VERSION,
+            mode=AgentMode.ARC_VOLUME,
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            target_payload=composed.model_dump_json(),
+            target_artifact=repo.put(
+                composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
+            ),
+            trusted_source_artifacts=(
+                repo.put(
+                    author_constraint_root()[1].model_dump_json().encode(),
+                    "application/vnd.novel-agent.author-constraint-root+json",
+                    VERSION,
+                ),
+                repo.put(
+                    _frozen_world_root().model_dump_json().encode(),
+                    "application/vnd.novel-agent.world-root+json",
+                    VERSION,
+                ),
+            ),
+            request=_request("plan-rereview"),
+            base_commit=COMMIT,
+        )
+    )
+    _record(
+        tmp_path,
+        "d0.rereview",
+        {
+            "decision": rereview.decision.value,
+            "verification_failures": list(rereview.verification_failures),
+            "blocking": [
+                {
+                    "kind": issue.kind.value,
+                    "host_issued": issue.host_issued,
+                    "summary": issue.summary[:300],
+                }
+                for issue in rereview.issues
+                if issue.blocking
+            ],
+        },
+    )
+    assert rereview.decision is ReviewDecision.ACCEPT, [
+        issue.summary for issue in rereview.issues if issue.blocking
+    ]

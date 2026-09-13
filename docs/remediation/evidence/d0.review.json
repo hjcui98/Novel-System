@@ -7,11 +7,11 @@
       "cost_availability": "unknown",
       "cost_usd": "0",
       "input_tokens": 10094,
-      "output_tokens": 449,
+      "output_tokens": 367,
       "reasoning_tokens": 0
     }
   },
-  "review_artifact": "sha256:bb2e1453c7a2a1ad1fe82b32a70ecd26d124d8410aff3825eaea9470008708e0",
+  "review_artifact": "sha256:249cc2230e9bbbda0b857feb40434864a6e3dcd6d12cb5aac6d72969d380192a",
   "scope_targets": [],
   "verification_failures": []
 }

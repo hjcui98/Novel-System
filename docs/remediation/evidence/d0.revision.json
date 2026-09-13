@@ -1,0 +1,24 @@
+{
+  "composed_target_description": {
+    "description": "陆沉舟在零号站点核心区域击败降灾派首领，成功获取关键记录水晶。他通过水晶中的观测日志验证了第四卷遗留的星门信号，确认黑月坠世并非实验失控，而是来自墟渊另一侧的意志主动入侵，这一新后果迫使九序盟重新评估对墟渊的防御策略。",
+    "role": "payoff",
+    "serves": "lock.long-truth.vol5-advance",
+    "window": "481-490"
+  },
+  "out_of_scope_items": [],
+  "raw_changed_items": [
+    "vol-5"
+  ],
+  "raw_items": 8,
+  "scope_field_paths": [
+    "volume_climax"
+  ],
+  "target_item": "vol-5",
+  "usage": {
+    "cost_availability": "unknown",
+    "cost_usd": "0",
+    "input_tokens": 18842,
+    "output_tokens": 10409,
+    "reasoning_tokens": 0
+  }
+}
