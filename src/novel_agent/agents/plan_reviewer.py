@@ -109,6 +109,17 @@ def apply_host_plan_review_constraints(
     decision when it is replayed.
     """
 
+    # `verification_failures` is a host verdict, not a reviewer field: the schema
+    # is generated from the draft model, so it is offered to the model, but the
+    # prompt never asks for it and no model value may stand as the host's own
+    # finding about the review.  A model that self-reports an unrelated note there
+    # used to decide the run: for a non-proposal target every guard below returns
+    # early, so the value survived and `raise PlanReviewerInvocationError` parked
+    # the task as blocked/leaf_review_required off text the host never verified.
+    # Clearing it first makes "the host has not verified this draft yet" the only
+    # reachable pre-verification state.
+    draft = draft.model_copy(update={"verification_failures": ()})
+
     if target_kind is not ReviewTargetKind.PLAN_PROPOSAL:
         return draft
     try:

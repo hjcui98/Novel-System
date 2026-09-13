@@ -710,3 +710,65 @@ def test_the_frozen_review_is_unverifiable_because_it_carries_no_citation() -> N
     assert reviewed.decision is ReviewDecision.REVISE
     assert any(item.host_issued and item.blocking for item in reviewed.issues)
     assert "正式揭露" not in (reviewed.revision_instruction or "")
+
+
+def test_a_reviewer_cannot_author_the_hosts_own_verdict() -> None:
+    """A model-supplied ``verification_failures`` must not survive the host pass.
+
+    The draft schema is generated from the draft model, so ``verification_failures``
+    is offered to the model even though the prompt never asks for it.  A live
+    ARC_VOLUME review put three notes about the planner's *questions* there, and
+    because the target was an inquiry -- not a plan proposal -- every host guard
+    returned early and the value survived.  ``PlanReviewer.invoke`` then raised
+    ``PlanReviewerInvocationError``, parking the task as
+    ``blocked / leaf_review_required`` on text the host had never verified and no
+    retry could clear.  The field is a host verdict, so the host clears it first.
+    """
+
+    # The shape of the live value: the reviewer's own answer ids and prose.  The
+    # original used fullwidth punctuation, which the project's lint refuses, so the
+    # fixture keeps the structure and its key property -- text the host never
+    # verified -- without the ambiguous characters.
+    model_authored = (
+        "a2 问题 '第四卷前半 201-350 章 是否仅允许埋设' 存在事实错误: "
+        "第四卷前半应为 301-350 章, 而非 201-350 章.",
+    )
+    draft = PlanReviewDraft(
+        target_kind=ReviewTargetKind.INQUIRY,
+        decision=ReviewDecision.ACCEPT,
+        issues=(),
+        verification_failures=model_authored,
+    )
+    assert draft.verification_failures == model_authored
+
+    for target_kind in (ReviewTargetKind.INQUIRY, ReviewTargetKind.PLAN_PROPOSAL):
+        reviewed = apply_host_plan_review_constraints(
+            draft,
+            target_kind=target_kind,
+            # An inquiry payload is not a plan proposal: the proposal guards must
+            # not be what saves this, because the live failure took the early exit.
+            target_payload='{"questions": [], "assumptions": []}',
+            mode=AgentMode.ARC_VOLUME,
+        )
+        assert reviewed.verification_failures == (), target_kind
+        # The reviewer's own decision is untouched: only the host's verdict is
+        # cleared, so an ACCEPT is still an ACCEPT.
+        assert reviewed.decision is ReviewDecision.ACCEPT
+
+
+def test_a_plan_proposal_citation_failure_is_still_the_hosts_to_report() -> None:
+    """Clearing the model's value must not clear the host's own finding."""
+
+    ungrounded = _draft(_issue(quote="这段文字不在候选里")).model_copy(
+        update={"verification_failures": ("model supplied: ignore me",)}
+    )
+    reviewed = apply_host_plan_review_constraints(
+        ungrounded,
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=_FROZEN_CANDIDATE.read_text(encoding="utf-8"),
+        mode=AgentMode.ARC_VOLUME,
+    )
+
+    assert reviewed.verification_failures, reviewed.verification_failures
+    assert ReviewCitationFailure.VALUE_NOT_IN_FIELD in reviewed.verification_failures[0]
+    assert "model supplied: ignore me" not in reviewed.verification_failures
