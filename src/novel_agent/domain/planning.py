@@ -1006,6 +1006,7 @@ def volume_stage_window_defects(
     *,
     constraints: Sequence[AuthorConstraint] = (),
     accepted_obligation_ids: Container[str] = (),
+    obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
 ) -> tuple[VolumeStageWindowDefect, ...]:
     """Return stage slots whose declared window violates the responsibility it serves.
 
@@ -1105,6 +1106,29 @@ def volume_stage_window_defects(
         constraint = catalogue.get(handle)
         if constraint is None:
             if handle in accepted_obligation_ids:
+                # An accepted obligation is a real responsibility, so its own window
+                # binds the stage too; only an obligation whose window the host does
+                # not know is accepted on identity alone.
+                window = (obligation_windows or {}).get(handle)
+                if window is None:
+                    continue
+                earliest, latest = window
+                if earliest is not None and start < earliest:
+                    defects.append(
+                        VolumeStageWindowDefect(
+                            f"{key}.window",
+                            f"{key}.window starts at {start}, before the accepted obligation "
+                            f"{handle} unlocks at {earliest}",
+                        )
+                    )
+                if latest is not None and end > latest:
+                    defects.append(
+                        VolumeStageWindowDefect(
+                            f"{key}.window",
+                            f"{key}.window ends at {end}, after the accepted obligation "
+                            f"{handle} closes at {latest}",
+                        )
+                    )
                 continue
             defects.append(
                 VolumeStageWindowDefect(
@@ -1127,14 +1151,22 @@ def volume_stage_window_defects(
         boundary = constraint.not_before_chapter
         if boundary is None:
             boundary = constraint.chapter_earliest
-        if boundary is None:
-            continue
-        if start < boundary:
+        if boundary is not None and start < boundary:
             defects.append(
                 VolumeStageWindowDefect(
                     body,
                     f"{body} starts at {start}, before the not_before_chapter {boundary} of "
                     f"the {role} responsibility it serves ({handle})",
+                )
+            )
+        if constraint.chapter_latest is not None and end > constraint.chapter_latest:
+            # A lock may also close: a responsibility declared latest at 420 cannot be
+            # served by a stage that runs past it.
+            defects.append(
+                VolumeStageWindowDefect(
+                    body,
+                    f"{body} ends at {end}, after the latest_chapter "
+                    f"{constraint.chapter_latest} of the responsibility it serves ({handle})",
                 )
             )
     return tuple(defects)

@@ -156,6 +156,7 @@ def _constraint(
     not_before: int,
     *,
     constraint_id: str,
+    latest: int | None = None,
 ) -> AuthorConstraint:
     source = ArtifactRef(
         artifact_id=ArtifactId("sha256:" + "b" * 64),
@@ -171,6 +172,7 @@ def _constraint(
         source_ref=source,
         source_hash=ArtifactId("sha256:" + "b" * 64),
         not_before_chapter=not_before,
+        chapter_latest=latest,
     )
 
 
@@ -487,3 +489,48 @@ def test_the_reviewer_prompt_keeps_the_prose_semantic_rule() -> None:
     # boundary, not about the wording of a label the host no longer relies on.
     assert "没有** `serves`" in text
     assert "不要仅因 `role` 标签的措辞" in text
+
+
+def test_a_responsibility_that_closes_late_is_also_enforced() -> None:
+    """A lock declares when it opens and when it closes; both bound the stage."""
+
+    closing = _constraint(
+        "lock.vol1-win",
+        AuthorConstraintCategory.ABILITY_MILESTONE,
+        301,
+        constraint_id="author-constraint.ability_milestone.9",
+        latest=340,
+    )
+    inside = _volume_with_stage_windows(
+        volume_climax=_stage_entry("推进", "310-340", "progression", "lock.vol1-win")
+    )
+    past = _volume_with_stage_windows(
+        volume_climax=_stage_entry("推进", "310-360", "progression", "lock.vol1-win")
+    )
+
+    assert volume_stage_window_defects(inside, constraints=(closing, *_LOCKS)) == ()
+    assert _fields(past, constraints=(closing, *_LOCKS)) == ("volume_climax.window",)
+    assert "latest_chapter 340" in _messages(past, constraints=(closing, *_LOCKS))[0]
+
+
+def test_an_accepted_obligation_window_binds_the_stage_that_serves_it() -> None:
+    """Serving an accepted obligation without knowing its window was a blind spot."""
+
+    payload = _volume_with_stage_windows(
+        trigger_event=_stage_entry("推进", "301-320", "progression", "obligation.vol4.1")
+    )
+
+    assert (
+        volume_stage_window_defects(
+            payload,
+            constraints=_LOCKS,
+            accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+        )
+        == ()
+    )
+    assert _fields(
+        payload,
+        constraints=_LOCKS,
+        accepted_obligation_ids=frozenset({"obligation.vol4.1"}),
+        obligation_windows={"obligation.vol4.1": (321, 400)},
+    ) == ("trigger_event.window",)
