@@ -574,3 +574,87 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     assert rereview.decision is ReviewDecision.ACCEPT, [
         issue.summary for issue in rereview.issues if issue.blocking
     ]
+
+
+# ------------------------------------- does the reviewer emit structured findings?
+
+
+def test_d0_the_real_reviewer_emits_findings_the_host_can_act_on(tmp_path: Path) -> None:
+    """The question that decides whether a planning stage can converge at all.
+
+    A review is only actionable if its blocking findings carry the four citation
+    fields.  Prose naming the right fields is not enough: the host cannot verify or
+    enforce it, so a loop driven by such a review cannot close its problem, which is
+    what the frozen v23 run recorded before it was stopped by force.
+
+    This inspects the *raw provider response* as well as the draft the host built
+    from it, so "the host refused everything" and "the model emitted nothing usable"
+    are distinguishable.
+    """
+
+    candidate = _proposal_from_frozen()
+    _constraints, root, _profile_ref = author_constraint_root()
+    reviewer, repo = _reviewer(tmp_path)
+    target_ref = repo.put(candidate.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
+    root_ref = repo.put(
+        root.model_dump_json().encode(),
+        "application/vnd.novel-agent.author-constraint-root+json",
+        VERSION,
+    )
+    world_ref = repo.put(
+        _frozen_world_root().model_dump_json().encode(),
+        "application/vnd.novel-agent.world-root+json",
+        VERSION,
+    )
+
+    review, review_ref, _call = _run_review(reviewer, candidate, target_ref, root_ref, world_ref)
+
+    # The draft the reviewer persisted, before the host overlay ran.
+    draft = json.loads(repo.read_verified(review_ref).decode("utf-8"))
+    blocking = [issue for issue in review.issues if issue.blocking]
+    structured = [
+        issue
+        for issue in blocking
+        if issue.affected_item_ids and issue.field_path and issue.quote and issue.unmet_condition
+    ]
+
+    _record(
+        tmp_path,
+        "d0.review_structure",
+        {
+            "decision": review.decision.value,
+            "blocking_total": len(blocking),
+            "blocking_structured": len(structured),
+            "blocking_citation_shape": [
+                {
+                    "kind": issue.kind.value,
+                    "items": [item.root for item in issue.affected_item_ids],
+                    "field_path": issue.field_path,
+                    "has_quote": issue.quote is not None,
+                    "has_unmet_condition": issue.unmet_condition is not None,
+                    "constraint_id": issue.constraint_id,
+                    "host_issued": issue.host_issued,
+                }
+                for issue in blocking
+            ],
+            "verification_failures": list(review.verification_failures),
+            "draft_revision_instruction_chars": len(draft.get("revision_instruction") or ""),
+        },
+    )
+
+    # Every blocking finding the host kept must be actionable by construction; the
+    # point of the record above is how *many* the model produced, not whether the
+    # host could describe them.
+    for issue in structured:
+        assert issue.quote in candidate.model_dump_json()
+
+    if blocking:
+        # A review that demands work must be actionable, or the stage cannot close
+        # its problem and will stop rather than converge.
+        assert structured, (
+            "the reviewer raised blocking findings without citations; "
+            "a loop driven by this review cannot make checkable progress"
+        )
+    else:
+        # Otherwise the candidate is accepted as-is, which is also a settled state.
+        assert review.decision in {ReviewDecision.ACCEPT, ReviewDecision.HUMAN_REQUIRED}
