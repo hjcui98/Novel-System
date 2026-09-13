@@ -871,3 +871,20 @@ tests/integration          146 passed / 2 failed（缺少私有基准包，历�
 mypy --strict src          52 errors / 10 files（基线 41；差额为整改分支早先引入，本次修复 1 项）
 ruff check src tests scripts  67 findings（基线 49，几乎全为中文全角标点 RUF001；本次修复 5 项非 RUF001）
 ```
+
+### 16.8 下一步设计（供续做，按用户 2026-09-13 的 ①→⑤ 顺序）
+
+1. **超范围修订检测（② 未完成项）**：在 `planning_context_loop.py` 修订分支中以**独立语句**计算
+   `_out_of_scope_revision_items(parent_proposal, proposal, plan_review)` —— 被改动/新增且未被
+   `review.issues[*].affected_item_ids` 点名的 `item_id`；写入事件
+   `plan.revision_out_of_scope`，并把条目名回灌到下一轮修订载荷
+   `REVISION_SCOPE_VIOLATION=...`（不要塞进已有的多行字符串表达式，上一轮因此产生语法错误并已回退）。
+   先写纯函数单测（改动项 ⊆ 点名项时不产生违规；未点名项被改写时逐个列出），再接入分支。
+2. **前置确定性检查**：为 `PlanReview` 增加"宿主拒绝"终态/工件路径（`receipt` 不得伪造），
+   使格式/范围类机械错误不再消耗一次审校调用。
+3. **冻结**：整合后冻结单一代码 SHA + 配置 + 8003 profile；清理 v20/v21 残留 `RUNNING`（保留证据）。
+4. **G0**：八卷 + 正式义务逐条回读 + 首批五章计划提交并投影。
+5. **G1/G2**：两章（第二章真实消费第一章历史、恢复不重跑 Memory）→ 五章。
+
+运行侧已就绪：v23 驱动失败即停、按 `block_cause` 分类重试、`budget_review` 不再自动追加预算；
+v23 现场冻结在 ARC_VOLUME `ready rev=51`，审校/候选/检查点证据完整。
