@@ -59,6 +59,16 @@ _HISTORY_NEED_KINDS = frozenset(
 )
 
 
+# The structured field each host gate checks, so a revision can be told exactly what
+# to declare instead of inferring it from the reviewer's prose.
+_HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
+    ReviewIssueKind.LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW: ("not_before_chapter",),
+    ReviewIssueKind.UNRESOLVED_SCOPE_MISSING: ("affected_chapters",),
+    ReviewIssueKind.EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION: ("target_chapter_start",),
+    ReviewIssueKind.OBLIGATION_CONTRACT: ("kind",),
+}
+
+
 class PlanReviewerInvocationError(ValueError):
     pass
 
@@ -133,6 +143,12 @@ def apply_host_plan_review_constraints(
         or "Revise blocking unresolved conflicts, incomplete volume structure, "
         "future-locked payoff, and parent-scope violations; keep SETUP/PROGRESS only."
     )
+    # A host gate can only be answered by a structured field, so the host names the
+    # exact item/field pairs it will check again.  Without this annex a revision that
+    # answers the reviewer's prose keeps re-triggering the same host rejection.
+    demands = _host_required_fields(extra)
+    if demands:
+        instruction = f"{instruction} HOST_REQUIRED_FIELDS: {'; '.join(demands)}"
     return draft.model_copy(
         update={
             "issues": issues,
@@ -141,6 +157,17 @@ def apply_host_plan_review_constraints(
             "revision_instruction": instruction,
         }
     )
+
+
+def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
+    """The structured fields the host gates require for these issues."""
+
+    demands: list[str] = []
+    for issue in issues:
+        fields = _HOST_ISSUE_REQUIRED_FIELDS.get(issue.kind, ())
+        for item_id in issue.affected_item_ids:
+            demands.extend(f"{item_id.root}.{field}" for field in fields)
+    return tuple(dict.fromkeys(demands))
 
 
 def _coverage_evidence(

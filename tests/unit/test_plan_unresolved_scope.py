@@ -15,6 +15,7 @@ from novel_agent.agents.plan_reviewer import apply_host_plan_review_constraints
 from novel_agent.domain.planning import (
     PlanReviewDraft,
     ReviewDecision,
+    ReviewIssueKind,
     ReviewTargetKind,
 )
 from novel_agent.domain.stage2 import AgentMode
@@ -86,9 +87,7 @@ def test_frozen_v6_advisories_without_scope_are_revise() -> None:
     review = _review([dict(item) for item in _V6_ADVISORIES])
 
     assert review.decision is ReviewDecision.REVISE
-    scoped = [
-        issue for issue in review.issues if issue.kind.value == "unresolved_scope_missing"
-    ]
+    scoped = [issue for issue in review.issues if issue.kind.value == "unresolved_scope_missing"]
     assert len(scoped) == 3
     assert all("questions chapters" in issue.summary for issue in scoped)
     assert {issue.affected_item_ids[0].root for issue in scoped} == {
@@ -103,9 +102,7 @@ def test_advisory_with_precise_scope_stays_advisory() -> None:
     scoped["affected_chapters"] = [301, 350, 351, 400]
     review = _review([scoped])
 
-    assert not any(
-        issue.kind.value == "unresolved_scope_missing" for issue in review.issues
-    )
+    assert not any(issue.kind.value == "unresolved_scope_missing" for issue in review.issues)
 
 
 def test_advisory_without_any_chapter_question_needs_no_scope() -> None:
@@ -122,9 +119,7 @@ def test_advisory_without_any_chapter_question_needs_no_scope() -> None:
         ]
     )
 
-    assert not any(
-        issue.kind.value == "unresolved_scope_missing" for issue in review.issues
-    )
+    assert not any(issue.kind.value == "unresolved_scope_missing" for issue in review.issues)
 
 
 def test_blocking_advisory_still_blocks_regardless_of_scope() -> None:
@@ -134,3 +129,46 @@ def test_blocking_advisory_still_blocks_regardless_of_scope() -> None:
 
     assert review.decision is ReviewDecision.REVISE
     assert any(issue.kind.value == "blocking_unresolved" for issue in review.issues)
+
+
+def test_a_revision_is_told_the_structured_fields_the_host_requires() -> None:
+    """Prose cannot fill a field: the revision instruction names the exact fields."""
+
+    payload = json.dumps(
+        {
+            "items": [],
+            "unresolved": [
+                {
+                    "issue_id": "plan-issue.draft.scope.0",
+                    "kind": "UNSPECIFIED",
+                    "blocking": False,
+                    "affected_chapters": [],
+                    "summary": "第四卷（第301-400章）的伏笔窗口是否合规？",
+                }
+            ],
+            "coverage": 1.0,
+        },
+        ensure_ascii=False,
+    )
+    draft = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+        issues=(),
+    )
+
+    reviewed = apply_host_plan_review_constraints(
+        draft,
+        mode=AgentMode.ARC_VOLUME,
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload,
+        expected_volume_count=None,
+        expected_target_chapters=None,
+        accepted_obligation_ids=frozenset(),
+        author_constraints=(),
+    )
+
+    assert reviewed.decision is ReviewDecision.REVISE
+    assert any(issue.kind is ReviewIssueKind.UNRESOLVED_SCOPE_MISSING for issue in reviewed.issues)
+    assert reviewed.revision_instruction is not None
+    assert "HOST_REQUIRED_FIELDS:" in reviewed.revision_instruction
+    assert "affected_chapters" in reviewed.revision_instruction
