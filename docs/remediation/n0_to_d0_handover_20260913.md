@@ -79,7 +79,8 @@ N0 基线记录见 `n0_baseline_20260913.md`；基线失败节点清单见
 | 冻结候选真实审校（`d0.review.json`） | `ACCEPT`，0 阻断，0 核验失败，usage 10094/449/0，费用可得性 unknown |
 | 确定性全量 `tests/{unit,contract,integration}`（排除 model/integration 标记） | **74 failed / 3354 passed** |
 | 与 N0 基线逐节点 diff | 只消除 `test_checked_in_stage2_schemas_match_models` 一项，**无新增失败** |
-| 本阶段新增确定性用例 | N1 24 项、N2 19 项、N3 36 项、N4 35 项、D0 2 项 |
+| 本阶段新增确定性用例 | N1 24 项、N2 19 项、N3 36 项、N4 35 项、D0 2 项、poison-loop 回归 6 项 |
+| 真实模型调用 | 4 次：v23 冻结候选 review ×1（ACCEPT）、真实修订 ×1、修订后复审 ×1（ACCEPT），以及一次目录缺陷导致的重复 review |
 | Ruff | 本阶段触及文件全部通过 |
 | MyPy | 本阶段新增源文件无错误；`materializers.py`/`cli.py` 的其余报告为基线既有（`git stash` 对照确认） |
 | `make quality` / `make integration` | **未运行**（仓库仍有 74 项历史失败） |
@@ -100,10 +101,13 @@ N0 基线记录见 `n0_baseline_20260913.md`；基线失败节点清单见
    "工程修复完成"不等于任何 G0/G1/G2 通过。
 2. **真实义务目录仍为空**：v23 全部 World 快照 `obligations` 为空，
    依赖义务窗口的 `serves` 检查尚未被真实数据驱动过。
-3. **真实链只跑了一次 review**：没有真实 Planner 修订。
-   "真实模型完成一次限定修订"只有确定性证据。
+3. **真实模型越界时的恢复路径未被真实触发**：真实链已补齐
+   （2 次 review + 1 次 Planner 修订，见 `d0_delivery_20260913.md` 第 4.1 节），
+   但那一次模型守规，`out_of_scope_items` 为空；恢复路径目前只有确定性证据。
 4. **驱动未在断点数据库上实跑**：只验证了控制流、退出码与门限。
-5. **v20/v21 残留 `RUNNING`/旧 `REQUESTED` 未处置**；N4 会阻止盲重试，但清理需运行时入口。
+5. **v23 已处置，v20/v21 未处置**：v23 的 stale lease 已用运行时恢复入口结算为
+   `blocked / poison_loop`（见 `v23_poison_loop_forensics_20260913.md`）；
+   v20/v21 的历史残留仍需按同样流程逐个核对。
 6. **阶段门限只证明根与章节数**，不替代指导第 12.3 节的逐项 G0 证据核验
    （逐条义务映射、时间锁回读、独立 review/accept/commit/projection）。
 7. `make quality` 与 `make integration` 未运行；历史 74 项失败未处理，
@@ -113,10 +117,10 @@ N0 基线记录见 `n0_baseline_20260913.md`；基线失败节点清单见
 
 按指导顺序，进入 G0 前建议先补两件**未验证项**，再做单次冻结：
 
-1. 用真实模型补一次限定修订（真实 Planner 修订 + 真实复审），
-   使 D0 的"真实链路"完整，而不只有确定性证据。
-2. 在断点数据库上按 N4 的 `runtime classify` 核对 v20/v21/v23 的
-   `RUNNING`/`REQUESTED` 残留，用运行时核对/取消/恢复入口处置，保留终态原因。
+1. ~~用真实模型补一次限定修订~~ **已完成**（`d0_delivery_20260913.md` 第 4.1 节）。
+   仍建议补的是：一次真实模型**越界**修订，用来真实触发合成的恢复路径。
+2. ~~核对 v23 残留~~ **已完成**（`v23_poison_loop_forensics_20260913.md`）。
+   仍需按同样流程核对 v20/v21。
 
 随后按指导第 12 节执行单次冻结与 G0：新 project/run 选未占用身份、独立目录、
 记录源码 SHA 与 prompt/skill 指纹、`bootstrap` 与 `advance` 从同一受信配置读取 endpoint，

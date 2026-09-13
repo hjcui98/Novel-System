@@ -16,7 +16,7 @@ novel-agent runtime classify --task-id run.yujin-jiuxu.v23.plan.arc-volume.g0
 |---|---|
 | run | `run.yujin-jiuxu.v23`，5 个任务 |
 | 已完成 | `…plan` / `…plan.accept` / `…plan.accept.commit` / `…plan.accept.commit.projection` 均 `succeeded` |
-| 未完成 | `run.yujin-jiuxu.v23.plan.arc-volume.g0`（`plan_candidate`，`plan_level=arc_volume`）核对时 `running`，revision 52 |
+| 未完成 | `run.yujin-jiuxu.v23.plan.arc-volume.g0`（`plan_candidate`，`plan_level=arc_volume`）核对时 `running`，revision 52；处置后 `blocked`，revision 53 |
 | 当前 attempt | `attempt.96b5e2354797153e85b1d41ea1f005557eca445470f37f8e`（no=24） |
 | lease | `10:49:40Z` 到期；核对时 `13:34:55Z`，**已过期约 2 小时 45 分** |
 | 进程 | `ps` 无任何 `novel-agent` / `production.dispatcher` 进程 |
