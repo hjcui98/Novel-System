@@ -67,6 +67,16 @@ scripts/native_models.py:487                NativeInfraError:
 
 即：服务本身健康且身份正确，**只有 PID 记录过期**。
 
+两个检查严格区分，不要混用（`scripts/native_models.py::main`）：
+
+| 命令 | 检查内容 | 本沙箱结果 |
+|---|---|---|
+| `verify` | 只读锁文件与模型目录 | exit **0** |
+| `health` | `assert_model_service`：PID/start_time/命令 + health payload | exit **2**，`embedding model process identity does not match its PID record` |
+| `status` | 同样按 PID 记录判定 | `"running": false`（两项都是） |
+
+也就是说：**HTTP 健康检查全部通过，身份检查失败**。
+
 ### 2.2 根因
 
 DSH 的 bash 工具把每次调用放进独立 PID 命名空间：
