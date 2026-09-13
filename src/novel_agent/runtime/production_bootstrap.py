@@ -295,13 +295,17 @@ def resolve_registered_model_endpoints(
             ),
         )
     if profile in {QWEN38_27B_NVFP4_8003_ENDPOINT_PROFILE, "qwen38-27b-nvfp4@8003"}:
+        # The planner must emit the whole eight-volume stage grid (19 required slots
+        # plus a window and role per narrative slot), and the assembly spec's default
+        # output budget may not exceed the endpoint's declared limit, so the two move
+        # together.
         return (
             _qwen_nvfp4_endpoint(
                 base_url=QWEN38_27B_NVFP4_8003_BASE_URL,
                 model=QWEN38_27B_NVFP4_MODEL,
                 endpoint_name="qwen38-27b-nvfp4@8003",
                 sequence_limit=131_072,
-                output_limit=12_000,
+                output_limit=16_000,
                 safety_allowance_tokens=1_000,
                 estimated_reasoning_reserve=2_048,
             ),
