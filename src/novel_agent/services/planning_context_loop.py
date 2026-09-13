@@ -1232,6 +1232,7 @@ class PlanningContextLoopService:
         # means "a revision is pending", so its own basis must not stop the slice
         # before that revision is attempted.
         basis_review_id: str | None = None
+        out_of_scope: tuple[str, ...] = ()
         # True only when the checkpoint's own review is the pending one; a checkpoint
         # without a settled review re-reviews the proposal, and that fresh review is a
         # new problem statement to compare against the recorded basis.
@@ -2360,6 +2361,14 @@ class PlanningContextLoopService:
                 return plan_revision_no_progress()
             parent_proposal = proposal
             instruction = plan_review.revision_instruction or "bounded Plan revision"
+            if out_of_scope:
+                # The previous revision moved items nobody asked about; name them so
+                # this revision restores them instead of rewriting the whole plan.
+                instruction = (
+                    instruction
+                    + " 上一轮修订改动了未被点名的条目，必须恢复原样: "  # noqa: RUF001
+                    + ", ".join(out_of_scope)
+                )
             plan_revisions += 1
             plan_revisions_this_slice += 1
             attempt = plan_revisions + 1
