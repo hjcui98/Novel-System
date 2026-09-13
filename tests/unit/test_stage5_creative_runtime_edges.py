@@ -534,6 +534,7 @@ def test_planner_and_writer_failure_branches_are_audited(
             CreativeRunTerminal.WAITING_RETRY,
             CreativeRunTerminal.REVIEW_REQUIRED,
             CreativeRunTerminal.BLOCKED,
+            CreativeRunTerminal.RECOVERY_PENDING,
         }
     for writer_status in (
         WritingLoopTerminalStatus.MODEL_UNAVAILABLE,

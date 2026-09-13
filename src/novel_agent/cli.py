@@ -883,7 +883,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             if args.scheduling_timeout_seconds is not None
                             else DEFAULT_SCHEDULING_TIMEOUT_SECONDS
                         ),
-                        retrieval_backend_profile=args.retrieval_backend_profile,
+                        retrieval_backend_profile=args.retrieval_backend_profile or "memory",
                         opensearch_url=args.opensearch_url,
                         embedding_url=args.embedding_url,
                         reranker_url=args.reranker_url,
@@ -893,9 +893,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if "requires registered model endpoints" in str(error):
                     return _resource_blocked(error)
                 raise
+            attestation = getattr(assembly, "attestation", None)
             if (
-                assembly.attestation is not None
-                and policy.policy_hash != assembly.attestation.configuration_fingerprint.root
+                attestation is not None
+                and policy.policy_hash != attestation.configuration_fingerprint.root
             ):
                 output = {
                     "status": "failed",
@@ -916,7 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if admission is not None:
                 output["admission"] = admission
             if args.receipt is not None:
-                if assembly.attestation is None:
+                if attestation is None:
                     raise RuntimeError("production assembly did not provide a CLI attestation")
                 _write_json_once(
                     args.receipt,
@@ -925,11 +926,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "status": "succeeded",
                         "assembly_factory": args.assembly_factory,
                         "endpoint_profile": args.endpoint_profile,
-                        "spec_locator": assembly.attestation.factory_locator,
-                        "session_factory_identity": assembly.attestation.session_factory_identity,
-                        "model_gateway": assembly.attestation.model_gateway,
+                        "spec_locator": attestation.factory_locator,
+                        "session_factory_identity": attestation.session_factory_identity,
+                        "model_gateway": attestation.model_gateway,
                         "endpoints": [
-                            item.model_dump(mode="json") for item in assembly.attestation.endpoints
+                            item.model_dump(mode="json") for item in attestation.endpoints
                         ],
                         **output,
                     },
