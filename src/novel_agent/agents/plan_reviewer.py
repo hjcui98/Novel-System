@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from typing import Any
 
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.author_constraints import AuthorConstraint
 from novel_agent.domain.ids import CommitId, SchemaVersion, StableId, bounded_stable_id
-from novel_agent.domain.memory import ObligationKind, long_range_kind_requires_not_before
+from novel_agent.domain.memory import (
+    ObligationKind,
+    ObligationStatus,
+    PlanObligation,
+    WorldRootDocument,
+    long_range_kind_requires_not_before,
+)
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.obligation_contract import (
     compile_legacy_obligation_plan,
@@ -23,6 +29,7 @@ from novel_agent.domain.planning import (
     PlanReview,
     PlanReviewDraft,
     PlanReviewIssue,
+    ReviewCitationFailure,
     ReviewDecision,
     ReviewIssueKind,
     ReviewTargetKind,
@@ -49,17 +56,6 @@ from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 
 _RESOLVE_MARKERS = {"resolved", "payoff", "resolve"}
-_HISTORY_NEED_KINDS = frozenset(
-    {
-        "causal_history",
-        "knowledge_origin",
-        "relationship_origin",
-        "setup_evidence",
-        "object_origin",
-    }
-)
-
-
 # The structured field each host gate checks, so a revision can be told exactly what
 # to declare instead of inferring it from the reviewer's prose.
 _HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
@@ -69,6 +65,15 @@ _HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
     ReviewIssueKind.OBLIGATION_CONTRACT: ("kind",),
     ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: (),
 }
+_HISTORY_NEED_KINDS = frozenset(
+    {
+        "causal_history",
+        "knowledge_origin",
+        "relationship_origin",
+        "setup_evidence",
+        "object_origin",
+    }
+)
 
 
 class PlanReviewerInvocationError(ValueError):
@@ -84,10 +89,23 @@ def apply_host_plan_review_constraints(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
     author_constraints: Sequence[AuthorConstraint] = (),
     trusted_window: tuple[int, int] | None = None,
+    verified_citations: bool = False,
 ) -> PlanReviewDraft:
-    """Overlay trusted temporal/parent-scope issues onto a model Plan review."""
+    """Overlay trusted temporal/parent-scope issues onto a model Plan review.
+
+    Every return path goes through the same verified issue set: a finding the host
+    cannot ground in the candidate never drives a revision, whether or not the host
+    happened to add a finding of its own.  Previously the no-extra branch returned
+    the raw draft, so an unverified citation survived exactly when the host had
+    nothing else to say.
+
+    ``verified_citations`` marks a draft whose citations the host has already
+    checked, so an already-verified review is not re-verified into a different
+    decision when it is replayed.
+    """
 
     if target_kind is not ReviewTargetKind.PLAN_PROPOSAL:
         return draft
@@ -95,9 +113,33 @@ def apply_host_plan_review_constraints(
         payload = json.loads(target_payload)
     except json.JSONDecodeError:
         return draft
-    raw_items = payload.get("items")
+    if not isinstance(payload, Mapping):
+        return draft
+    document: dict[str, Any] = dict(payload)
+    raw_items = document.get("items")
     if not isinstance(raw_items, list):
         return draft
+    items = _item_payloads(document)
+    constraint_ids = (
+        frozenset(
+            handle
+            for constraint in author_constraints
+            for handle in (constraint.constraint_id.root, constraint.constraint_key)
+            if handle
+        )
+        if author_constraints
+        else None
+    )
+    if verified_citations:
+        issues = tuple(draft.issues)
+        citation_failures: tuple[str, ...] = ()
+    else:
+        issues, citation_failures = _verified_model_issues(
+            draft.issues,
+            target_payload,
+            items=items,
+            constraint_ids=constraint_ids,
+        )
     extra = (
         *_host_issues_for_items(
             raw_items,
@@ -105,141 +147,84 @@ def apply_host_plan_review_constraints(
             expected_volume_count=(
                 expected_volume_count
                 if expected_volume_count is not None
-                else _expected_volume_count(payload)
+                else _expected_volume_count(document)
             ),
             expected_target_chapters=(
                 expected_target_chapters
                 if expected_target_chapters is not None
-                else _expected_target_chapters(payload)
+                else _expected_target_chapters(document)
             ),
             accepted_obligation_ids=accepted_obligation_ids,
+            accepted_obligation_windows=accepted_obligation_windows,
             author_constraints=author_constraints,
         ),
-        *_unresolved_host_issues(payload),
+        *_unresolved_host_issues(document),
     )
     coverage = _coverage_evidence(
-        payload,
+        document,
         raw_items,
         mode=mode,
         constraints=author_constraints,
         trusted_window=trusted_window,
     )
-    if not extra and not coverage:
-        return draft
-    issues = (*_verified_model_issues(draft.issues, target_payload), *extra)
+    blocking = tuple(issue for issue in (*issues, *extra) if issue.blocking)
     missing_window = any(
         issue.kind is ReviewIssueKind.LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW for issue in extra
     )
     if missing_window:
         return draft.model_copy(
             update={
-                "issues": issues,
+                "issues": (*issues, *extra),
                 "coverage_evidence": coverage,
                 "decision": ReviewDecision.HUMAN_REQUIRED,
                 "revision_instruction": None,
+                "verification_failures": citation_failures,
             }
         )
-    if not extra:
-        return draft.model_copy(update={"coverage_evidence": coverage})
-    instruction = (
-        draft.revision_instruction
-        or "Revise blocking unresolved conflicts, incomplete volume structure, "
-        "future-locked payoff, and parent-scope violations; keep SETUP/PROGRESS only."
+    if not blocking:
+        # Nothing verified blocks this candidate.  An advisory-only review (including
+        # a model REVISE whose every citation the host refused) may not authorize a
+        # rewrite, so it settles as ACCEPT with the refused findings kept as
+        # advisories and their reasons recorded for the next review.
+        return draft.model_copy(
+            update={
+                "issues": (*issues, *extra),
+                "coverage_evidence": coverage,
+                "decision": ReviewDecision.ACCEPT,
+                "revision_instruction": None,
+                "verification_failures": citation_failures,
+            }
+        )
+    instruction = _bounded_revision_instruction(
+        blocking, tuple(issue for issue in extra if issue.blocking)
     )
-    # A host gate can only be answered by a structured field, so the host names the
-    # exact item/field pairs it will check again.  Without this annex a revision that
-    # answers the reviewer's prose keeps re-triggering the same host rejection.
-    demands = _host_required_fields(extra)
-    if demands:
-        instruction = f"{instruction} HOST_REQUIRED_FIELDS: {'; '.join(demands)}"
     return draft.model_copy(
         update={
-            "issues": issues,
+            "issues": (*issues, *extra),
             "coverage_evidence": coverage,
             "decision": ReviewDecision.REVISE,
             "revision_instruction": instruction,
+            "verification_failures": citation_failures,
         }
     )
 
 
-def host_only_plan_review(
-    *,
-    target_payload: str,
-    mode: AgentMode,
-    expected_volume_count: int | None = None,
-    expected_target_chapters: int | None = None,
-    accepted_obligation_ids: frozenset[str] | None = None,
-    author_constraints: Sequence[AuthorConstraint] = (),
-    trusted_window: tuple[int, int] | None = None,
-) -> PlanReviewDraft | None:
-    """The host gate's own verdict, computed without a model call.
+def _model_blocking_findings(issues: Sequence[PlanReviewIssue]) -> tuple[PlanReviewIssue, ...]:
+    """The blocking findings that came from the reviewer's model call."""
 
-    Mechanical defects (missing structure, an unusable stage entry, a window outside
-    its scope) are decidable from the payload alone, so they must not cost a review
-    call.  ``None`` means the host alone cannot decide and the model review runs.
-    """
-
-    probe = PlanReviewDraft(
-        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-        decision=ReviewDecision.ACCEPT,
-        issues=(),
-    )
-    overlaid = apply_host_plan_review_constraints(
-        probe,
-        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-        target_payload=target_payload,
-        mode=mode,
-        expected_volume_count=expected_volume_count,
-        expected_target_chapters=expected_target_chapters,
-        accepted_obligation_ids=accepted_obligation_ids,
-        author_constraints=author_constraints,
-        trusted_window=trusted_window,
-    )
-    return None if overlaid.decision is ReviewDecision.ACCEPT else overlaid
+    return tuple(issue for issue in issues if issue.blocking and not issue.host_issued)
 
 
-def _verified_model_issues(
-    issues: Sequence[PlanReviewIssue], target_payload: str
-) -> tuple[PlanReviewIssue, ...]:
-    """Keep a model finding blocking only while its own citation is grounded.
-
-    A reviewer that quotes text the candidate does not contain is describing a
-    different artifact, so the finding is demoted to an advisory instead of being
-    forwarded to the planner as a rewrite demand.
-    """
-
-    verified: list[PlanReviewIssue] = []
-    for issue in issues:
-        quote = issue.quote
-        field_path = issue.field_path
-        grounded = (
-            not issue.blocking
-            or (
-                (quote is None or quote in target_payload)
-                and (field_path is None or field_path in target_payload)
-            )
-        )
-        if grounded:
-            verified.append(issue)
-            continue
-        detail = (
-            "the quoted text is not present in the reviewed candidate"
-            if quote is not None and quote not in target_payload
-            else f"the cited field {field_path!r} is not present in the reviewed candidate"
-        )
-        verified.append(
-            issue.model_copy(
-                update={
-                    "blocking": False,
-                    "summary": f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} ({detail})",
-                }
-            )
-        )
-    return tuple(verified)
+_REVISION_DEMAND_LIMIT = 12
 
 
 def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
-    """The structured fields the host gates require for these issues."""
+    """The structured fields the host gates require for these issues.
+
+    A host gate can only be answered by a structured field, so the host names the
+    exact item/field pairs it will check again.  Without this annex a revision that
+    answers the reviewer's prose keeps re-triggering the same host rejection.
+    """
 
     demands: list[str] = []
     for issue in issues:
@@ -267,9 +252,7 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(demands))
 
 
-_VOLUME_WINDOW_SUMMARY = re.compile(
-    r"^VOLUME_STAGE_WINDOW: (?P<path>[A-Za-z0-9_.\-]+): "
-)
+_VOLUME_WINDOW_SUMMARY = re.compile(r"^VOLUME_STAGE_WINDOW: (?P<path>[A-Za-z0-9_.\-]+): ")
 
 
 def _volume_window_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
@@ -287,6 +270,309 @@ def _volume_window_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
     if issue.affected_item_ids and not path.startswith(issue.affected_item_ids[0].root):
         path = f"{issue.affected_item_ids[0].root}.{path}"
     return (path,)
+
+
+def _bounded_revision_instruction(
+    blocking: Sequence[PlanReviewIssue],
+    host_findings: Sequence[PlanReviewIssue] = (),
+) -> str:
+    """Name the exact item/field pairs a verified blocking set requires fixing.
+
+    The instruction is derived from the verified findings themselves rather than
+    forwarded from the reviewer's free prose, because that prose is exactly where a
+    refuted demand used to reach the planner.  A host finding already carries its
+    own precise demand text; a verified model finding carries the field path, the
+    constraint it violates and the condition it fails.
+    """
+
+    demands: list[str] = []
+    for issue in blocking:
+        if issue.host_issued:
+            demands.append(" ".join(issue.summary.split()))
+            continue
+        named = ", ".join(item.root for item in issue.affected_item_ids)
+        located = f"{named}.{issue.field_path}" if issue.field_path else named
+        condition = " ".join((issue.unmet_condition or issue.summary).split())
+        constraint = f" (constraint {issue.constraint_id})" if issue.constraint_id else ""
+        demands.append(f"{located}: {condition}{constraint}")
+    unique = tuple(dict.fromkeys(demand for demand in demands if demand))
+    shown = unique[:_REVISION_DEMAND_LIMIT]
+    instruction = "; ".join(shown)
+    if len(unique) > len(shown):
+        instruction = f"{instruction} (+{len(unique) - len(shown)} more verified findings)"
+    required = _host_required_fields(host_findings)
+    if required:
+        instruction = f"{instruction} HOST_REQUIRED_FIELDS: {'; '.join(required)}"
+    return instruction
+
+
+def host_only_plan_review(
+    *,
+    target_payload: str,
+    mode: AgentMode,
+    expected_volume_count: int | None = None,
+    expected_target_chapters: int | None = None,
+    accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
+    author_constraints: Sequence[AuthorConstraint] = (),
+    trusted_window: tuple[int, int] | None = None,
+) -> PlanReviewDraft | None:
+    """The host gate's own verdict, computed without a model call.
+
+    Mechanical defects (missing structure, an unusable stage entry, a window outside
+    its scope) are decidable from the payload alone, so they must not cost a review
+    call.  ``None`` means the host alone cannot decide and the model review runs.
+    """
+
+    probe = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+        issues=(),
+    )
+    overlaid = apply_host_plan_review_constraints(
+        probe,
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=target_payload,
+        mode=mode,
+        expected_volume_count=expected_volume_count,
+        expected_target_chapters=expected_target_chapters,
+        accepted_obligation_ids=accepted_obligation_ids,
+        accepted_obligation_windows=accepted_obligation_windows,
+        author_constraints=author_constraints,
+        trusted_window=trusted_window,
+    )
+    return None if overlaid.decision is ReviewDecision.ACCEPT else overlaid
+
+
+def _verified_model_issues(
+    issues: Sequence[PlanReviewIssue],
+    target_payload: str,
+    *,
+    items: Mapping[str, Mapping[str, object]] | None = None,
+    constraint_ids: Container[str] | None = None,
+) -> tuple[tuple[PlanReviewIssue, ...], tuple[str, ...]]:
+    """Keep a model finding blocking only while its own citation is grounded.
+
+    A reviewer that quotes text the candidate does not contain is describing a
+    different artifact, so the finding is demoted to an advisory instead of being
+    forwarded to the planner as a rewrite demand.  The citation must resolve the
+    same way a reader would: the named item is located first, the declared field
+    path is resolved *inside that item's payload*, and the quoted value is then
+    matched against that one field.  Searching the whole payload let a quote from
+    another volume justify a finding about this one, and a bare
+    ``"350" in target_payload`` accepted a boundary the candidate never declared
+    at the cited field.
+
+    Returns the rewritten findings plus one reason per finding the host refused.
+    """
+
+    by_id = items if items is not None else _items_by_id(target_payload)
+    verified: list[PlanReviewIssue] = []
+    failures: list[str] = []
+    for index, issue in enumerate(issues):
+        if not issue.blocking:
+            verified.append(issue)
+            continue
+        label = f"{issue.kind.value}[{index}]"
+        reason = _citation_failure(issue, by_id, constraint_ids=constraint_ids)
+        if reason is None:
+            verified.append(issue)
+            continue
+        failures.append(f"{label}: {reason}")
+        detail = "the cited evidence does not resolve against this candidate"
+        verified.append(
+            issue.model_copy(
+                update={
+                    "blocking": False,
+                    "summary": f"REVIEW_EVIDENCE_UNVERIFIED: {issue.summary} ({detail})",
+                }
+            )
+        )
+    return tuple(verified), tuple(failures)
+
+
+def _citation_failure(
+    issue: PlanReviewIssue,
+    by_id: Mapping[str, Mapping[str, object]],
+    *,
+    constraint_ids: Container[str] | None,
+) -> str | None:
+    """The reason this blocking finding's citation does not resolve, if any."""
+
+    if not issue.affected_item_ids:
+        return f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding names no item"
+    if not issue.field_path:
+        return (
+            f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding declares no field path"
+        )
+    if not issue.quote:
+        return f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding quotes nothing"
+    if not issue.unmet_condition:
+        return (
+            f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding states no "
+            "unmet condition"
+        )
+    if (
+        constraint_ids is not None
+        and issue.constraint_id is not None
+        and issue.constraint_id not in constraint_ids
+    ):
+        return (
+            f"{ReviewCitationFailure.CONSTRAINT_NOT_APPLICABLE}: {issue.constraint_id!r} is not "
+            "part of the frozen catalogue this candidate was planned against"
+        )
+    resolved: list[tuple[str, object, object]] = []
+    for item_id in issue.affected_item_ids:
+        payload = by_id.get(item_id.root)
+        if payload is None:
+            return (
+                f"{ReviewCitationFailure.ITEM_NOT_FOUND}: {item_id.root} is not an item of the "
+                "reviewed candidate"
+            )
+        resolution = _resolve_field_path(payload, issue.field_path)
+        if isinstance(resolution, str):
+            return resolution
+        resolved.append((item_id.root, resolution[0], resolution[1]))
+    if not any(_quote_matches(issue.quote, field_value) for _id, _parent, field_value in resolved):
+        located = ", ".join(
+            f"{item_id}.{issue.field_path}" for item_id, _parent, _value in resolved
+        )
+        return (
+            f"{ReviewCitationFailure.VALUE_NOT_IN_FIELD}: {issue.quote!r} does not appear in "
+            f"{located}"
+        )
+    return None
+
+
+def _quote_matches(quote: str, field_value: object) -> bool:
+    """Whether the quoted evidence is really present in the cited field's value.
+
+    Text is matched verbatim.  Numbers, windows and collections are matched by
+    their own representation, because a field the candidate declared as ``350`` or
+    ``"351-360"`` is legitimate evidence for the value the review reports; the
+    candidate is not asked to word a structured field as prose first.
+    """
+
+    if isinstance(field_value, str):
+        return quote in field_value
+    if isinstance(field_value, bool) or field_value is None:
+        return False
+    if isinstance(field_value, (int, float)):
+        return quote.strip() == str(field_value)
+    if isinstance(field_value, Mapping):
+        return any(
+            _quote_matches(quote, item) for _key, item in field_value.items()
+        ) or quote in json.dumps(field_value, ensure_ascii=False)
+    if isinstance(field_value, (list, tuple)):
+        return any(_quote_matches(quote, item) for item in field_value) or quote in json.dumps(
+            list(field_value), ensure_ascii=False
+        )
+    return False
+
+
+def _resolve_field_path(
+    payload: Mapping[str, object], field_path: str
+) -> tuple[object, object] | str:
+    """Resolve a dotted field path inside one item payload.
+
+    Returns ``(containing_value, field_value)`` or a failure string.  The grammar
+    is deliberately small and explicit -- dotted keys with optional ``[n]`` list
+    indices -- so a citation is checked the same way a reader would follow it and
+    no expression from the model is ever evaluated.
+    """
+
+    segments = _field_path_segments(field_path)
+    if segments is None:
+        return (
+            f"{ReviewCitationFailure.FIELD_PATH_INVALID}: {field_path!r} is not a dotted field "
+            "path with optional [index] segments"
+        )
+    current: object = payload
+    parent: object = payload
+    for key, index in segments:
+        if not isinstance(current, Mapping):
+            return (
+                f"{ReviewCitationFailure.FIELD_PATH_INVALID}: {field_path!r} descends into "
+                f"{type(current).__name__}, which has no field {key!r}"
+            )
+        if key not in current:
+            return (
+                f"{ReviewCitationFailure.FIELD_NOT_FOUND}: {field_path!r} names no field in the "
+                "reviewed item"
+            )
+        parent = current
+        current = current[key]
+        if index is None:
+            continue
+        if not isinstance(current, (list, tuple)):
+            return (
+                f"{ReviewCitationFailure.FIELD_PATH_INVALID}: {field_path!r} indexes a value "
+                "that is not a list"
+            )
+        if index >= len(current):
+            return (
+                f"{ReviewCitationFailure.FIELD_NOT_FOUND}: {field_path!r} indexes element "
+                f"{index} of a list with {len(current)} entries"
+            )
+        parent = current
+        current = current[index]
+    return parent, current
+
+
+_FIELD_PATH_SEGMENT = re.compile(r"^(?P<key>[^\[\]]+)(?:\[(?P<index>\d+)\])?$")
+
+
+def _field_path_segments(field_path: str) -> tuple[tuple[str, int | None], ...] | None:
+    """Parse the small citation grammar: dotted keys with optional list indices.
+
+    A private or dunder segment is refused outright.  Payload keys never start with
+    an underscore, so such a path is a defect of the review rather than a lookup the
+    host should attempt, and keeping the grammar narrow means no model-supplied
+    string can steer the walk anywhere but into the candidate's own JSON.
+    """
+
+    stripped = field_path.strip()
+    if not stripped:
+        return None
+    segments: list[tuple[str, int | None]] = []
+    for raw in stripped.split("."):
+        match = _FIELD_PATH_SEGMENT.match(raw)
+        if match is None:
+            return None
+        key = match.group("key")
+        if key.startswith("_") or any(character.isspace() for character in key):
+            return None
+        index_raw = match.group("index")
+        segments.append((key, int(index_raw) if index_raw is not None else None))
+    return tuple(segments)
+
+
+def _items_by_id(target_payload: str) -> dict[str, Mapping[str, object]]:
+    """Index a candidate's items by item id so citations resolve inside one item."""
+
+    try:
+        payload = json.loads(target_payload)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return _item_payloads(payload)
+
+
+def _item_payloads(payload: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return {}
+    by_id: dict[str, Mapping[str, object]] = {}
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            continue
+        item_id = raw.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            continue
+        item_payload = raw.get("payload")
+        by_id[item_id] = item_payload if isinstance(item_payload, Mapping) else raw
+    return by_id
 
 
 def _coverage_evidence(
@@ -337,6 +623,7 @@ def _host_issues_for_items(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
     author_constraints: Sequence[AuthorConstraint] = (),
 ) -> list[PlanReviewIssue]:
     issues: list[PlanReviewIssue] = []
@@ -392,6 +679,7 @@ def _host_issues_for_items(
                     item_payload,
                     constraints=author_constraints,
                     accepted_obligation_ids=accepted_obligation_ids or frozenset(),
+                    obligation_windows=accepted_obligation_windows,
                 ):
                     issues.append(
                         _host_issue(
@@ -949,6 +1237,7 @@ def _host_issue(
         summary=summary,
         blocking=blocking,
         affected_item_ids=(StableId(item_id),) if _is_stable_id(item_id) else (),
+        host_issued=True,
     )
 
 
@@ -1034,6 +1323,11 @@ class PlanReviewerAgent:
         context_package = _planner_context_package(self._artifacts, trusted_source_artifacts)
         if draft.target_kind is not target_kind:
             raise PlanReviewerInvocationError("Reviewer changed the trusted target kind")
+        world = _accepted_obligations(
+            self._artifacts,
+            trusted_source_artifacts,
+            accepted_world_ref=self._world_ref_for(base_commit),
+        )
         draft = apply_host_plan_review_constraints(
             draft,
             mode=mode,
@@ -1041,10 +1335,13 @@ class PlanReviewerAgent:
             target_payload=target_payload,
             expected_volume_count=_expected_volume_count_from_context(review_context),
             expected_target_chapters=_expected_target_chapters_from_context(review_context),
-            accepted_obligation_ids=_accepted_obligation_ids(
-                self._artifacts,
-                trusted_source_artifacts,
-                accepted_world_ref=self._world_ref_for(base_commit),
+            accepted_obligation_ids=(
+                None
+                if world is None
+                else frozenset(item.obligation_id.root for item in world.obligations)
+            ),
+            accepted_obligation_windows=(
+                None if world is None else obligation_stage_windows(world.obligations)
             ),
             author_constraints=_author_constraint_catalogue(
                 self._artifacts, trusted_source_artifacts, context_package
@@ -1055,6 +1352,16 @@ class PlanReviewerAgent:
             "application/vnd.novel-agent.plan-review-draft+json",
             version,
         )
+        if draft.verification_failures:
+            # The review is not usable evidence about the candidate: at least one
+            # blocking finding did not resolve against it.  The original response and
+            # the draft that records the failed citations are already durable, so the
+            # run stops at "a review is required" instead of forwarding a refuted
+            # demand to the planner.  Re-reviewing the *same* candidate is the repair.
+            raise PlanReviewerInvocationError(
+                "Plan review citations did not resolve against the reviewed candidate: "
+                + "; ".join(draft.verification_failures[:4])
+            )
         receipt = self._runner.receipt(
             prepared,
             execution.model_call,
@@ -1077,6 +1384,7 @@ class PlanReviewerAgent:
             preserve_item_ids=draft.preserve_item_ids,
             revision_instruction=draft.revision_instruction,
             memory_gap_questions=draft.memory_gap_questions,
+            verification_failures=draft.verification_failures,
             receipt=receipt,
         )
         review_artifact = self._artifacts.put(
@@ -1213,19 +1521,18 @@ def _declared_obligation_ids(payload: Mapping[str, object], item_id: str) -> set
     return ids
 
 
-def _accepted_obligation_ids(
+def _accepted_obligations(
     artifacts: ArtifactRepository,
     refs: tuple[ArtifactRef, ...],
     *,
     accepted_world_ref: ArtifactRef | None,
-) -> frozenset[str] | None:
-    """Read the obligation catalogue a lower-level plan must reference.
+) -> WorldRootDocument | None:
+    """Read the accepted World root a lower-level plan must reference.
 
-    A chapter may point at an obligation the upper-level plan already declared; it
-    may not invent one.  The catalogue comes from the trusted World root when the
-    host passed one, and otherwise from the declarations the trusted project
-    profile carries.  ``None`` means no trusted catalogue could be read, which the
-    review reports instead of silently skipping the check.
+    One reader, one truth source: the same catalogue decides which obligation ids a
+    candidate may cite and which time window each of those obligations imposes on a
+    stage that serves it.  ``None`` means no trusted World root reached this review,
+    which the callers report instead of silently skipping the check.
     """
 
     from novel_agent.domain.memory import WorldRootDocument
@@ -1244,14 +1551,56 @@ def _accepted_obligation_ids(
     ]
     for ref in candidates:
         try:
-            world = WorldRootDocument.model_validate_json(artifacts.read_verified(ref), strict=True)
+            return WorldRootDocument.model_validate_json(artifacts.read_verified(ref), strict=True)
         except (UnicodeDecodeError, ValueError):
             continue
-        return frozenset(item.obligation_id.root for item in world.obligations)
-    # No World root reached this review, so the catalogue is unknown.  ``None``
-    # means "cannot verify" and the callers report it; an empty frozenset would
-    # mean "there are no obligations", which is a different statement.
     return None
+
+
+def _accepted_obligation_ids(
+    artifacts: ArtifactRepository,
+    refs: tuple[ArtifactRef, ...],
+    *,
+    accepted_world_ref: ArtifactRef | None,
+) -> frozenset[str] | None:
+    """Read the obligation catalogue a lower-level plan must reference.
+
+    A chapter may point at an obligation the upper-level plan already declared; it
+    may not invent one.  ``None`` means no trusted catalogue could be read, which the
+    review reports instead of silently skipping the check.
+    """
+
+    world = _accepted_obligations(artifacts, refs, accepted_world_ref=accepted_world_ref)
+    if world is None:
+        return None
+    return frozenset(item.obligation_id.root for item in world.obligations)
+
+
+def obligation_stage_windows(
+    obligations: Sequence[PlanObligation],
+) -> dict[str, tuple[int | None, int | None]]:
+    """Map each accepted obligation to the window its own timing declares.
+
+    ``not_before_chapter`` is a *reveal* lock: it says when the responsibility's
+    content may start reaching the reader, so it bounds the early edge of a stage
+    that serves it.  ``due_chapter`` is the other end of the same commitment.  A
+    ``target_chapter_start`` is the payoff's own slot, not an unlock, so it does not
+    replace the early edge and is deliberately not folded into one shared pair of
+    numbers for every action.  An obligation that declares no window at all is
+    reported as an unknown window rather than an unbounded one, so an unchecked
+    stage is never written up as passing.
+    """
+
+    windows: dict[str, tuple[int | None, int | None]] = {}
+    for obligation in obligations:
+        if obligation.status in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}:
+            continue
+        earliest = obligation.not_before_chapter
+        latest = obligation.due_chapter
+        if earliest is None and obligation.target_chapter_end is not None:
+            earliest = obligation.target_chapter_start
+        windows[obligation.obligation_id.root] = (earliest, latest)
+    return windows
 
 
 def _expected_target_chapters_from_context(context: str) -> int | None:

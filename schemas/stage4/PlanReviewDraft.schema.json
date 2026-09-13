@@ -143,6 +143,11 @@
           "default": null,
           "title": "Field Path"
         },
+        "host_issued": {
+          "default": false,
+          "title": "Host Issued",
+          "type": "boolean"
+        },
         "issue_id": {
           "$ref": "#/$defs/StableId"
         },
@@ -328,6 +333,14 @@
     },
     "target_kind": {
       "$ref": "#/$defs/ReviewTargetKind"
+    },
+    "verification_failures": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Verification Failures",
+      "type": "array"
     }
   },
   "required": [

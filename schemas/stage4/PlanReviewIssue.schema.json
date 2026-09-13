@@ -211,6 +211,11 @@
       "default": null,
       "title": "Field Path"
     },
+    "host_issued": {
+      "default": false,
+      "title": "Host Issued",
+      "type": "boolean"
+    },
     "issue_id": {
       "$ref": "#/$defs/StableId"
     },

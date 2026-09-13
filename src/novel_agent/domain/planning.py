@@ -348,6 +348,27 @@ class PlanReviewIssue(DomainModel):
     constraint_id: str | None = Field(default=None, min_length=1)
     quote: str | None = Field(default=None, min_length=1)
     unmet_condition: str | None = Field(default=None, min_length=1)
+    # The host decided this finding itself from the candidate and the trusted
+    # catalogue, so it needs no model citation and is exempt from citation
+    # verification.  Defaulted so historical artifacts stay readable.
+    host_issued: bool = False
+
+
+class ReviewCitationFailure(StrEnum):
+    """Why a blocking finding could not be grounded in the reviewed candidate.
+
+    A finding whose citation does not resolve is not evidence about the candidate;
+    it is a defect of the review.  The reason is kept so a re-review can be told
+    what was wrong with the previous one instead of guessing.
+    """
+
+    TARGET_UNREADABLE = "target_unreadable"
+    ITEM_NOT_FOUND = "item_not_found"
+    FIELD_PATH_INVALID = "field_path_invalid"
+    FIELD_NOT_FOUND = "field_not_found"
+    VALUE_NOT_IN_FIELD = "value_not_in_field"
+    EVIDENCE_FIELDS_MISSING = "evidence_fields_missing"
+    CONSTRAINT_NOT_APPLICABLE = "constraint_not_applicable"
 
 
 class PlanReviewDraft(DomainModel):
@@ -361,6 +382,11 @@ class PlanReviewDraft(DomainModel):
     # own trusted denominator and missing items.  Kept as text so a long-standing
     # review artifact stays schema-compatible while the numbers remain auditable.
     coverage_evidence: tuple[str, ...] = ()
+    # Host verification of this review's own citations.  Empty means every blocking
+    # finding resolved against the candidate; a non-empty tuple means the review is
+    # not yet usable evidence and must be redone for the same candidate instead of
+    # being forwarded to the planner.  Defaulted so historical drafts stay readable.
+    verification_failures: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_decision(self) -> PlanReviewDraft:
@@ -383,6 +409,9 @@ class PlanReview(DomainModel):
     preserve_item_ids: tuple[StableId, ...] = ()
     revision_instruction: str | None = None
     memory_gap_questions: tuple[str, ...] = ()
+    # Carried from the draft so a settled review can still be recognised as one whose
+    # own citations the host refused.  Defaulted for historical artifacts.
+    verification_failures: tuple[str, ...] = ()
     receipt: AgentExecutionReceipt
 
 
@@ -1116,10 +1145,12 @@ def volume_stage_window_defects(
                 # An accepted obligation is a real responsibility, so its own window
                 # binds the stage too; only an obligation whose window the host does
                 # not know is accepted on identity alone.
-                window = (obligation_windows or {}).get(handle)
-                if window is None:
+                declared_window: tuple[int | None, int | None] | None = (
+                    obligation_windows or {}
+                ).get(handle)
+                if declared_window is None:
                     continue
-                earliest, latest = window
+                earliest, latest = declared_window
                 if earliest is not None and start < earliest:
                     defects.append(
                         VolumeStageWindowDefect(
