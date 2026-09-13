@@ -59,6 +59,8 @@ def _install_production_loader(
     monkeypatch: pytest.MonkeyPatch,
     *,
     progressed: bool,
+    terminal: CreativeRunTerminal = CreativeRunTerminal.PROGRESSED,
+    attested: bool = False,
 ) -> list[Any]:
     contexts: list[Any] = []
 
@@ -75,14 +77,23 @@ def _install_production_loader(
                     CreativeRunResult(
                         run_id=context.run_id,
                         project_id=context.project_id,
-                        terminal=CreativeRunTerminal.PROGRESSED,
+                        terminal=terminal,
                         basis_commit=CommitId("sha256:" + "3" * 64),
                         current_commit=CommitId("sha256:" + "4" * 64),
                         reason_code="test_progress",
                     ),
                 )
 
-        return SimpleNamespace(dispatcher=_Dispatcher())
+        assembly: dict[str, Any] = {"dispatcher": _Dispatcher()}
+        if attested:
+            assembly["attestation"] = SimpleNamespace(
+                configuration_fingerprint=SimpleNamespace(root=context.policy.policy_hash),
+                factory_locator="tests.production_assembly:build",
+                session_factory_identity="test-session-factory",
+                model_gateway="test-model-gateway",
+                endpoints=(),
+            )
+        return SimpleNamespace(**assembly)
 
     monkeypatch.setattr(
         "novel_agent.runtime.creative_assembly.load_production_runtime_assembly",
@@ -799,6 +810,101 @@ def test_runtime_advance_no_ready_task_reports_progressed_zero(
         == 0
     )
     assert len(contexts) == 1
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected_status", "expected_exit"),
+    [
+        (CreativeRunTerminal.WAITING_RETRY, "waiting_retry", 0),
+        (CreativeRunTerminal.BLOCKED, "blocked", 2),
+        (CreativeRunTerminal.RECOVERY_PENDING, "recovery_pending", 3),
+    ],
+)
+def test_runtime_advance_propagates_terminal_failure_status(
+    cli_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    terminal: CreativeRunTerminal,
+    expected_status: str,
+    expected_exit: int,
+) -> None:
+    url = f"sqlite+pysqlite:///{cli_db}"
+    manifest_path = (
+        Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
+    )
+    _install_production_loader(monkeypatch, progressed=True, terminal=terminal)
+    exit_code = main(
+        [
+            "runtime",
+            "--database-url",
+            url,
+            "advance",
+            "--project-id",
+            "project.test",
+            "--run-id",
+            "run.cli",
+            "--policy",
+            str(cli_db.parent / "policy.json"),
+            "--manifest",
+            str(manifest_path),
+            "--object-store-root",
+            str(cli_db.parent / "objects"),
+            "--assembly-factory",
+            "tests.production_assembly:build",
+            "--max-tasks",
+            "2",
+        ]
+    )
+
+    assert exit_code == expected_exit
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == expected_status
+    assert output["status"] != "succeeded"
+
+
+def test_runtime_advance_receipt_preserves_blocked_status(
+    cli_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = f"sqlite+pysqlite:///{cli_db}"
+    manifest_path = (
+        Path(__file__).parents[2] / "src/novel_agent/runtime/stage5_development_manifest.json"
+    )
+    _install_production_loader(
+        monkeypatch,
+        progressed=True,
+        terminal=CreativeRunTerminal.BLOCKED,
+        attested=True,
+    )
+    receipt = cli_db.parent / "advance-receipt.json"
+    assert (
+        main(
+            [
+                "runtime",
+                "--database-url",
+                url,
+                "advance",
+                "--project-id",
+                "project.test",
+                "--run-id",
+                "run.cli",
+                "--policy",
+                str(cli_db.parent / "policy.json"),
+                "--manifest",
+                str(manifest_path),
+                "--object-store-root",
+                str(cli_db.parent / "objects"),
+                "--assembly-factory",
+                "tests.production_assembly:build",
+                "--max-tasks",
+                "2",
+                "--receipt",
+                str(receipt),
+            ]
+        )
+        == 2
+    )
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "blocked"
 
 
 def test_runtime_advance_defaults_to_repo_production_factory(

@@ -12,7 +12,11 @@ from typing import Any
 
 from novel_agent.config import AppSettings
 from novel_agent.domain.artifacts import ArtifactRef
-from novel_agent.domain.creative_runtime import CreativeRunPolicy
+from novel_agent.domain.creative_runtime import (
+    CreativeRunPolicy,
+    CreativeRunResult,
+    CreativeRunTerminal,
+)
 from novel_agent.domain.ids import CommitId, ProjectId
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
 from novel_agent.domain.runtime import FailureClass, RunEvent, TaskRecord
@@ -45,6 +49,36 @@ def _resource_blocked(error: BaseException) -> int:
         )
     )
     return 2
+
+
+def _advance_outcome(results: Sequence[CreativeRunResult]) -> tuple[str, int]:
+    """Map durable runtime terminals to an honest CLI status and exit code.
+
+    ``WAITING_RETRY`` is a settled, recoverable frontier: the stage driver must
+    be able to classify it before deciding whether a retry is safe.  The other
+    non-progress terminals require an operator or an owning module and therefore
+    must not be emitted as a successful advance.
+    """
+
+    terminals = {item.terminal for item in results}
+    if CreativeRunTerminal.RECOVERY_PENDING in terminals:
+        return "recovery_pending", 3
+    if CreativeRunTerminal.BLOCKED in terminals:
+        return "blocked", 2
+    if CreativeRunTerminal.REVIEW_REQUIRED in terminals:
+        return "review_required", 2
+    if CreativeRunTerminal.BUDGET_REVIEW in terminals:
+        return "budget_review", 2
+    if CreativeRunTerminal.CANCELLED in terminals:
+        return "cancelled", 2
+    if CreativeRunTerminal.WAITING_RETRY in terminals:
+        return "waiting_retry", 0
+    if terminals & {
+        CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE,
+        CreativeRunTerminal.WAITING_DRAFT_ACCEPTANCE,
+    }:
+        return "waiting_input", 0
+    return "succeeded", 0
 
 
 def _write_json_once(path: Path, payload: object) -> None:
@@ -915,7 +949,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 results = _run_async(assembly.dispatcher.run_bounded(max_tasks=args.max_tasks))
             except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
                 return _resource_blocked(error)
+            advance_status, advance_exit_code = _advance_outcome(results)
             output = {
+                "status": advance_status,
                 "progressed": len(results),
                 "results": [item.model_dump(mode="json") for item in results],
             }
@@ -929,7 +965,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.receipt,
                     {
                         "receipt_type": "runtime_cli_advance",
-                        "status": "succeeded",
+                        "status": advance_status,
                         "assembly_factory": args.assembly_factory,
                         "endpoint_profile": args.endpoint_profile,
                         "spec_locator": attestation.factory_locator,
@@ -942,7 +978,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     },
                 )
             print(json.dumps(output, sort_keys=True))
-            return 0
+            return advance_exit_code
         if args.runtime_command in {
             "accept-plan",
             "reject-plan",
