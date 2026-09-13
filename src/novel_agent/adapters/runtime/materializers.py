@@ -50,6 +50,10 @@ from novel_agent.domain.obligation_contract import (
     compile_obligation_actions,
     parse_obligation_declarations,
 )
+from novel_agent.domain.plan_composition import (
+    PlanCompositionProof,
+    verify_composition,
+)
 from novel_agent.domain.planning import (
     PlanningLoopEventReceipt,
     PlanReview,
@@ -87,6 +91,7 @@ PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
 PLANNING_EVENT_MEDIA_TYPE = "application/vnd.novel-agent.planning-loop-event+json"
 PLANNER_EXECUTION_MEDIA_TYPE = "application/vnd.novel-agent.planner-execution-result+json"
+PLAN_COMPOSITION_MEDIA_TYPE = "application/vnd.novel-agent.plan-composition-proof+json"
 PLAN_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.plan-root+json"
 WORLD_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.world-root+json"
 TEXT_ROOT_MEDIA_TYPE = "application/vnd.novel-agent.text-root+json"
@@ -487,6 +492,17 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
     def _planner_execution(
         self, refs: tuple[ArtifactRef, ...], proposal: PlanProposal
     ) -> tuple[ArtifactRef, PlannerExecutionResult]:
+        """The one planner execution this candidate is the output of.
+
+        Two origins are legitimate and they are not interchangeable.  A direct
+        planner result *is* the proposal.  A host-composed revision is not: the model
+        returned something else and the host restored the parts the review did not
+        authorise, so the composed candidate carries a proof and the raw output stays
+        in the same record.  The proof is verified by re-deriving the composition and
+        comparing it with the candidate, which is why a candidate that merely claims
+        to have been composed does not pass.
+        """
+
         nested: dict[object, ArtifactRef] = {}
         for ref in refs:
             if ref.media_type != PLANNING_EVENT_MEDIA_TYPE:
@@ -494,18 +510,70 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             event = self._read(ref, PlanningLoopEventReceipt)
             for artifact in event.artifact_refs:
                 nested[artifact.artifact_id] = artifact
-        matches: list[tuple[ArtifactRef, PlannerExecutionResult]] = []
+        direct: list[tuple[ArtifactRef, PlannerExecutionResult]] = []
+        composed: list[tuple[ArtifactRef, PlannerExecutionResult]] = []
         for ref in nested.values():
             if ref.media_type != PLANNER_EXECUTION_MEDIA_TYPE:
                 continue
             execution = self._read(ref, PlannerExecutionResult)
-            if execution.plan_proposal == proposal:
-                matches.append((ref, execution))
-        if len(matches) != 1:
+            if execution.plan_proposal != proposal:
+                continue
+            if execution.composition_proof is None:
+                direct.append((ref, execution))
+            else:
+                composed.append((ref, execution))
+        if len(direct) == 1:
+            return direct[0]
+        if len(direct) > 1 or len(composed) > 1:
             raise CandidateMaterializationError(
                 "Plan candidate requires one matching Planner execution receipt"
             )
-        return matches[0]
+        if composed:
+            self._verify_composition(composed[0][1], proposal, nested)
+            return composed[0]
+        raise CandidateMaterializationError(
+            "Plan candidate requires one matching Planner execution receipt"
+        )
+
+    def _verify_composition(
+        self,
+        execution: PlannerExecutionResult,
+        proposal: PlanProposal,
+        nested: Mapping[object, ArtifactRef],
+    ) -> None:
+        """Re-derive a composed candidate from its proof, or refuse it.
+
+        Nothing here trusts the stored candidate: the proof names the parent, the raw
+        planner output and the review, the scope is re-derived from that review's own
+        verified findings, and the composition is recomputed and compared.  A missing
+        artifact, a tampered scope, a mismatched digest or an unknown rule all fail
+        closed, and the direct match above is never relaxed to compensate.
+        """
+
+        proof_ref = execution.composition_proof
+        raw = execution.raw_plan_proposal
+        if proof_ref is None or raw is None:
+            raise CandidateMaterializationError("composed Plan candidate lacks its proof")
+        if proof_ref.media_type != PLAN_COMPOSITION_MEDIA_TYPE:
+            raise CandidateMaterializationError("Plan composition proof has the wrong media type")
+        proof = self._read(proof_ref, PlanCompositionProof)
+        parent = self._read(proof.parent_proposal_ref, PlanProposal)
+        review = self._read(proof.review_ref, PlanReview)
+        if review.target_artifact_ref != proof.parent_proposal_ref:
+            raise CandidateMaterializationError(
+                "Plan composition proof names a review of a different candidate"
+            )
+        if raw != execution.raw_plan_proposal:
+            raise CandidateMaterializationError("composed Plan candidate carries two raw outputs")
+        ok, reason = verify_composition(
+            proof,
+            parent=parent,
+            revised=raw,
+            review=review,
+            composed=proposal,
+        )
+        if not ok:
+            raise CandidateMaterializationError(f"Plan composition proof rejected: {reason}")
 
     @staticmethod
     def _ids(value: object, field: str) -> tuple[StableId, ...]:

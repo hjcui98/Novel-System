@@ -11,16 +11,16 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
-        },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
         },
         "schema_version": {
           "$ref": "#/$defs/SchemaVersion"
@@ -66,17 +66,9 @@
       "additionalProperties": false,
       "description": "One resolved output budget shared by API payload, admission, and ledger.",
       "properties": {
-        "budget_source": {
-          "$ref": "#/$defs/BudgetSource"
-        },
-        "context_limit": {
-          "minimum": 1,
-          "title": "Context Limit",
-          "type": "integer"
-        },
-        "estimated_input_tokens": {
+        "available_input_tokens": {
           "minimum": 0,
-          "title": "Estimated Input Tokens",
+          "title": "Available Input Tokens",
           "type": "integer"
         },
         "body_output_budget": {
@@ -84,30 +76,21 @@
           "title": "Body Output Budget",
           "type": "integer"
         },
-        "thinking_budget": {
-          "minimum": 0,
-          "title": "Thinking Budget",
-          "type": "integer"
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
         },
-        "total_output_budget": {
-          "minimum": 1,
-          "title": "Total Output Budget",
-          "type": "integer"
-        },
-        "safety_allowance_tokens": {
-          "minimum": 0,
-          "title": "Safety Allowance Tokens",
-          "type": "integer"
-        },
-        "reserved_sequence_tokens": {
-          "minimum": 1,
-          "title": "Reserved Sequence Tokens",
-          "type": "integer"
-        },
-        "available_input_tokens": {
-          "minimum": 0,
-          "title": "Available Input Tokens",
-          "type": "integer"
+        "caller_budget_tier": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller Budget Tier"
         },
         "caller_token_budget": {
           "anyOf": [
@@ -122,18 +105,35 @@
           "default": null,
           "title": "Caller Token Budget"
         },
-        "caller_budget_tier": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Caller Budget Tier"
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "estimated_input_tokens": {
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "reserved_sequence_tokens": {
+          "minimum": 1,
+          "title": "Reserved Sequence Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_budget": {
+          "minimum": 0,
+          "title": "Thinking Budget",
+          "type": "integer"
+        },
+        "total_output_budget": {
+          "minimum": 1,
+          "title": "Total Output Budget",
+          "type": "integer"
         }
       },
       "required": [
@@ -167,6 +167,12 @@
         "budget_profile": {
           "$ref": "#/$defs/BudgetResolutionProfile"
         },
+        "c3_admission": {
+          "const": "NOT_ADMITTED",
+          "default": "NOT_ADMITTED",
+          "title": "C3 Admission",
+          "type": "string"
+        },
         "controller_context_level": {
           "enum": [
             "C0",
@@ -186,12 +192,6 @@
         "thinking_enabled": {
           "title": "Thinking Enabled",
           "type": "boolean"
-        },
-        "c3_admission": {
-          "const": "NOT_ADMITTED",
-          "default": "NOT_ADMITTED",
-          "title": "C3 Admission",
-          "type": "string"
         }
       },
       "required": [
@@ -207,10 +207,10 @@
       "additionalProperties": false,
       "description": "Repetition, resource, namespace, and stop policy fixed before run.",
       "properties": {
-        "repetitions": {
-          "minimum": 1,
-          "title": "Repetitions",
-          "type": "integer"
+        "database_namespace": {
+          "minLength": 1,
+          "title": "Database Namespace",
+          "type": "string"
         },
         "max_model_calls": {
           "minimum": 1,
@@ -222,20 +222,20 @@
           "title": "Max Wall Time Seconds",
           "type": "integer"
         },
-        "output_namespace": {
-          "minLength": 1,
-          "title": "Output Namespace",
-          "type": "string"
-        },
         "object_namespace": {
           "minLength": 1,
           "title": "Object Namespace",
           "type": "string"
         },
-        "database_namespace": {
+        "output_namespace": {
           "minLength": 1,
-          "title": "Database Namespace",
+          "title": "Output Namespace",
           "type": "string"
+        },
+        "repetitions": {
+          "minimum": 1,
+          "title": "Repetitions",
+          "type": "integer"
         },
         "stop_conditions": {
           "items": {
@@ -271,6 +271,17 @@
       "additionalProperties": false,
       "description": "Report dimensions and any thresholds registered before candidate runs.",
       "properties": {
+        "canary_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/U4L0CanaryVariableLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "dimensions": {
           "items": {
             "type": "string"
@@ -294,17 +305,6 @@
           },
           "title": "Thresholds",
           "type": "array"
-        },
-        "canary_lock": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/U4L0CanaryVariableLock"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         }
       },
       "required": [
@@ -318,6 +318,12 @@
       "additionalProperties": false,
       "description": "Source and readiness facts frozen before a Writer-readout campaign.",
       "properties": {
+        "assembly_attestation_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "build_report_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
         "bundle_id": {
           "minLength": 1,
           "title": "Bundle Id",
@@ -328,22 +334,13 @@
           "title": "Bundle Version",
           "type": "string"
         },
-        "build_report_ref": {
-          "$ref": "#/$defs/ArtifactRef"
-        },
-        "assembly_attestation_ref": {
-          "$ref": "#/$defs/ArtifactRef"
-        },
         "effective_budget_ref": {
           "$ref": "#/$defs/ArtifactRef"
         },
-        "source_identity": {
-          "$ref": "#/$defs/ArtifactId"
-        },
-        "r_bundle": {
+        "r_annotation": {
           "$ref": "#/$defs/V05ReadinessStatus"
         },
-        "r_annotation": {
+        "r_bundle": {
           "$ref": "#/$defs/V05ReadinessStatus"
         },
         "r_judge": {
@@ -351,6 +348,9 @@
         },
         "r_runner": {
           "$ref": "#/$defs/V05ReadinessStatus"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/ArtifactId"
         }
       },
       "required": [
@@ -419,9 +419,9 @@
       "additionalProperties": false,
       "description": "Independent scorer and judge contracts, including unavailable behavior.",
       "properties": {
-        "request_role": {
+        "answer_judge_version": {
           "minLength": 1,
-          "title": "Request Role",
+          "title": "Answer Judge Version",
           "type": "string"
         },
         "deterministic_scorer_version": {
@@ -429,14 +429,14 @@
           "title": "Deterministic Scorer Version",
           "type": "string"
         },
-        "answer_judge_version": {
-          "minLength": 1,
-          "title": "Answer Judge Version",
-          "type": "string"
-        },
         "evidence_support_judge_version": {
           "minLength": 1,
           "title": "Evidence Support Judge Version",
+          "type": "string"
+        },
+        "request_role": {
+          "minLength": 1,
+          "title": "Request Role",
           "type": "string"
         },
         "unavailable_policy": {
@@ -477,18 +477,6 @@
           "title": "Benchmark Id",
           "type": "string"
         },
-        "version": {
-          "minLength": 1,
-          "title": "Version",
-          "type": "string"
-        },
-        "tasks": {
-          "items": {
-            "$ref": "#/$defs/V05ReadoutTaskIdentity"
-          },
-          "title": "Tasks",
-          "type": "array"
-        },
         "canary_lock": {
           "anyOf": [
             {
@@ -499,6 +487,18 @@
             }
           ],
           "default": null
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/V05ReadoutTaskIdentity"
+          },
+          "title": "Tasks",
+          "type": "array"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
         }
       },
       "required": [
@@ -513,19 +513,13 @@
       "additionalProperties": false,
       "description": "One unique V0.5 Writer readout identity. Public fields only.",
       "properties": {
-        "task_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "track": {
-          "$ref": "#/$defs/V05ReadoutTrack"
-        },
-        "checkpoint_id": {
-          "$ref": "#/$defs/StableId"
-        },
         "checkpoint_chapter": {
           "minimum": 0,
           "title": "Checkpoint Chapter",
           "type": "integer"
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/StableId"
         },
         "history_access": {
           "$ref": "#/$defs/V05HistoryAccess"
@@ -538,6 +532,17 @@
           "default": "after_checkpoint_freeze",
           "title": "Plan Release",
           "type": "string"
+        },
+        "question_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "question_release": {
           "anyOf": [
@@ -552,16 +557,18 @@
           "default": null,
           "title": "Question Release"
         },
-        "question_id": {
+        "target_chapter_end": {
           "anyOf": [
             {
-              "$ref": "#/$defs/StableId"
+              "minimum": 1,
+              "type": "integer"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Target Chapter End"
         },
         "target_chapter_start": {
           "anyOf": [
@@ -576,18 +583,11 @@
           "default": null,
           "title": "Target Chapter Start"
         },
-        "target_chapter_end": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Target Chapter End"
+        "task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "track": {
+          "$ref": "#/$defs/V05ReadoutTrack"
         }
       },
       "required": [
@@ -616,22 +616,22 @@
         "early_checkpoint_task_id": {
           "$ref": "#/$defs/StableId"
         },
-        "mid_checkpoint_task_id": {
-          "$ref": "#/$defs/StableId"
-        },
         "late_checkpoint_task_id": {
           "$ref": "#/$defs/StableId"
         },
         "legacy_five_chapter_window_task_id": {
           "$ref": "#/$defs/StableId"
         },
+        "mid_checkpoint_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "multi_hop_qa_task_id": {
+          "$ref": "#/$defs/StableId"
+        },
         "twenty_chapter_window_task_id": {
           "$ref": "#/$defs/StableId"
         },
         "unanswerable_qa_task_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "multi_hop_qa_task_id": {
           "$ref": "#/$defs/StableId"
         }
       },
@@ -651,31 +651,21 @@
       "additionalProperties": false,
       "description": "U4-L0 variables held constant while a readout campaign runs.",
       "properties": {
-        "budget_source": {
-          "$ref": "#/$defs/BudgetSource"
-        },
-        "budget_profile": {
-          "$ref": "#/$defs/BudgetResolutionProfile",
-          "default": "canary"
-        },
-        "context_limit": {
-          "minimum": 1,
-          "title": "Context Limit",
-          "type": "integer"
-        },
         "body_output_tokens": {
           "minimum": 1,
           "title": "Body Output Tokens",
           "type": "integer"
         },
-        "reasoning_reserve_tokens": {
-          "minimum": 0,
-          "title": "Reasoning Reserve Tokens",
-          "type": "integer"
+        "budget_profile": {
+          "$ref": "#/$defs/BudgetResolutionProfile",
+          "default": "canary"
         },
-        "safety_allowance_tokens": {
-          "minimum": 0,
-          "title": "Safety Allowance Tokens",
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
           "type": "integer"
         },
         "controller_level": {
@@ -685,18 +675,6 @@
           ],
           "title": "Controller Level",
           "type": "string"
-        },
-        "planner_level": {
-          "enum": [
-            "P0",
-            "P0+P1"
-          ],
-          "title": "Planner Level",
-          "type": "string"
-        },
-        "thinking_enabled": {
-          "title": "Thinking Enabled",
-          "type": "boolean"
         },
         "effective_budget": {
           "anyOf": [
@@ -708,6 +686,26 @@
             }
           ],
           "default": null
+        },
+        "planner_level": {
+          "enum": [
+            "P0",
+            "P0+P1"
+          ],
+          "title": "Planner Level",
+          "type": "string"
+        },
+        "provider_reasoning_included_in_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Reasoning Included In Completion Tokens"
         },
         "provider_total_output_tokens": {
           "anyOf": [
@@ -722,17 +720,19 @@
           "default": null,
           "title": "Provider Total Output Tokens"
         },
-        "provider_reasoning_included_in_completion_tokens": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider Reasoning Included In Completion Tokens"
+        "reasoning_reserve_tokens": {
+          "minimum": 0,
+          "title": "Reasoning Reserve Tokens",
+          "type": "integer"
+        },
+        "safety_allowance_tokens": {
+          "minimum": 0,
+          "title": "Safety Allowance Tokens",
+          "type": "integer"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
         }
       },
       "required": [
@@ -752,37 +752,59 @@
       "additionalProperties": false,
       "description": "Writer request identity and fixed transport budgets.",
       "properties": {
+        "concurrency": {
+          "minimum": 1,
+          "title": "Concurrency",
+          "type": "integer"
+        },
         "endpoint": {
           "minLength": 1,
           "title": "Endpoint",
           "type": "string"
+        },
+        "evidence_token_budget": {
+          "minimum": 0,
+          "title": "Evidence Token Budget",
+          "type": "integer"
         },
         "model": {
           "minLength": 1,
           "title": "Model",
           "type": "string"
         },
-        "revision": {
-          "minLength": 1,
-          "title": "Revision",
-          "type": "string"
+        "output_token_budget": {
+          "minimum": 1,
+          "title": "Output Token Budget",
+          "type": "integer"
         },
         "prompt_ref": {
           "$ref": "#/$defs/ArtifactRef"
         },
-        "response_schema_ref": {
-          "$ref": "#/$defs/ArtifactRef"
+        "provider_total_output_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Total Output Budget"
         },
         "request_role": {
           "minLength": 1,
           "title": "Request Role",
           "type": "string"
         },
-        "temperature": {
-          "maximum": 2.0,
-          "minimum": 0.0,
-          "title": "Temperature",
-          "type": "number"
+        "response_schema_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
         },
         "seed": {
           "anyOf": [
@@ -805,33 +827,11 @@
           "title": "Seed Capability",
           "type": "string"
         },
-        "evidence_token_budget": {
-          "minimum": 0,
-          "title": "Evidence Token Budget",
-          "type": "integer"
-        },
-        "output_token_budget": {
-          "minimum": 1,
-          "title": "Output Token Budget",
-          "type": "integer"
-        },
-        "provider_total_output_budget": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider Total Output Budget"
-        },
-        "concurrency": {
-          "minimum": 1,
-          "title": "Concurrency",
-          "type": "integer"
+        "temperature": {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Temperature",
+          "type": "number"
         }
       },
       "required": [
@@ -854,15 +854,6 @@
   "additionalProperties": false,
   "description": "Immutable U4-S0 campaign contract wrapping the public readout identities.",
   "properties": {
-    "manifest_version": {
-      "const": "v05_readout_campaign_manifest.v1",
-      "default": "v05_readout_campaign_manifest.v1",
-      "title": "Manifest Version",
-      "type": "string"
-    },
-    "campaign_id": {
-      "$ref": "#/$defs/StableId"
-    },
     "benchmark_id": {
       "minLength": 1,
       "title": "Benchmark Id",
@@ -873,37 +864,51 @@
       "title": "Benchmark Version",
       "type": "string"
     },
-    "phase": {
-      "$ref": "#/$defs/V05CampaignPhase"
-    },
-    "status": {
-      "$ref": "#/$defs/V05CampaignStatus"
-    },
-    "readout_manifest": {
-      "$ref": "#/$defs/V05ReadoutManifest"
-    },
-    "source": {
-      "$ref": "#/$defs/V05CampaignSourceIdentity"
-    },
-    "writer": {
-      "$ref": "#/$defs/V05WriterRuntimeFreeze"
-    },
-    "judges": {
-      "$ref": "#/$defs/V05JudgeRuntimeFreeze"
-    },
-    "runtime": {
-      "$ref": "#/$defs/V05RuntimeVariableFreeze"
-    },
-    "execution": {
-      "$ref": "#/$defs/V05CampaignExecutionFreeze"
-    },
-    "report": {
-      "$ref": "#/$defs/V05CampaignReportFreeze"
+    "campaign_id": {
+      "$ref": "#/$defs/StableId"
     },
     "canary_lock": {
       "anyOf": [
         {
           "$ref": "#/$defs/U4L0CanaryVariableLock"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "execution": {
+      "$ref": "#/$defs/V05CampaignExecutionFreeze"
+    },
+    "frozen_before_run": {
+      "const": true,
+      "default": true,
+      "title": "Frozen Before Run",
+      "type": "boolean"
+    },
+    "judges": {
+      "$ref": "#/$defs/V05JudgeRuntimeFreeze"
+    },
+    "manifest_version": {
+      "const": "v05_readout_campaign_manifest.v1",
+      "default": "v05_readout_campaign_manifest.v1",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "phase": {
+      "$ref": "#/$defs/V05CampaignPhase"
+    },
+    "readout_manifest": {
+      "$ref": "#/$defs/V05ReadoutManifest"
+    },
+    "report": {
+      "$ref": "#/$defs/V05CampaignReportFreeze"
+    },
+    "representative_task_coverage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V05RepresentativeTaskCoverage"
         },
         {
           "type": "null"
@@ -919,22 +924,17 @@
       "title": "Representative Task Ids",
       "type": "array"
     },
-    "representative_task_coverage": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/V05RepresentativeTaskCoverage"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+    "runtime": {
+      "$ref": "#/$defs/V05RuntimeVariableFreeze"
     },
-    "frozen_before_run": {
-      "const": true,
-      "default": true,
-      "title": "Frozen Before Run",
-      "type": "boolean"
+    "source": {
+      "$ref": "#/$defs/V05CampaignSourceIdentity"
+    },
+    "status": {
+      "$ref": "#/$defs/V05CampaignStatus"
+    },
+    "writer": {
+      "$ref": "#/$defs/V05WriterRuntimeFreeze"
     }
   },
   "required": [

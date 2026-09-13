@@ -20,16 +20,16 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
-        },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
         },
         "schema_version": {
           "$ref": "#/$defs/SchemaVersion"
@@ -52,14 +52,14 @@
     "ContractRef": {
       "additionalProperties": false,
       "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
         "contract_id": {
           "$ref": "#/$defs/StableId"
         },
         "version": {
           "$ref": "#/$defs/SchemaVersion"
-        },
-        "content_hash": {
-          "$ref": "#/$defs/ArtifactId"
         }
       },
       "required": [
@@ -73,22 +73,15 @@
     "InformationBoundary": {
       "additionalProperties": false,
       "properties": {
-        "boundary_id": {
-          "$ref": "#/$defs/StableId"
-        },
         "base_commit": {
           "$ref": "#/$defs/CommitId"
         },
-        "reveal_position": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NarrativePosition"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evaluator_sources_forbidden": {
+          "title": "Evaluator Sources Forbidden",
+          "type": "boolean"
         },
         "maximum_visible_position": {
           "anyOf": [
@@ -101,12 +94,19 @@
           ],
           "default": null
         },
-        "evaluator_sources_forbidden": {
-          "title": "Evaluator Sources Forbidden",
-          "type": "boolean"
-        },
         "policy_ref": {
           "$ref": "#/$defs/ContractRef"
+        },
+        "reveal_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -145,6 +145,12 @@
       "additionalProperties": false,
       "description": "The model transport budget is intentionally separate from repair budget.",
       "properties": {
+        "backoff_profile": {
+          "default": "exponential-v1",
+          "minLength": 1,
+          "title": "Backoff Profile",
+          "type": "string"
+        },
         "max_attempts": {
           "default": 3,
           "minimum": 1,
@@ -156,12 +162,6 @@
           "exclusiveMinimum": 0,
           "title": "Timeout Seconds",
           "type": "number"
-        },
-        "backoff_profile": {
-          "default": "exponential-v1",
-          "minLength": 1,
-          "title": "Backoff Profile",
-          "type": "string"
         }
       },
       "title": "MemoryTransportBudget",
@@ -170,6 +170,18 @@
     "MemoryWriteBudget": {
       "additionalProperties": false,
       "properties": {
+        "max_candidate_revisions": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Candidate Revisions",
+          "type": "integer"
+        },
+        "max_context_refreshes": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Max Context Refreshes",
+          "type": "integer"
+        },
         "max_curator_proposal_attempts": {
           "default": 3,
           "minimum": 1,
@@ -182,22 +194,10 @@
           "title": "Max Curator Proposal Rejections",
           "type": "integer"
         },
-        "max_candidate_revisions": {
-          "default": 3,
-          "minimum": 1,
-          "title": "Max Candidate Revisions",
-          "type": "integer"
-        },
         "max_curator_repairs": {
           "default": 2,
           "minimum": 0,
           "title": "Max Curator Repairs",
-          "type": "integer"
-        },
-        "max_normalization_passes": {
-          "default": 3,
-          "minimum": 0,
-          "title": "Max Normalization Passes",
           "type": "integer"
         },
         "max_guardian_reviews": {
@@ -206,16 +206,49 @@
           "title": "Max Guardian Reviews",
           "type": "integer"
         },
-        "max_context_refreshes": {
-          "default": 1,
+        "max_normalization_passes": {
+          "default": 3,
           "minimum": 0,
-          "title": "Max Context Refreshes",
+          "title": "Max Normalization Passes",
           "type": "integer"
         },
         "max_total_model_calls": {
           "default": 4,
           "minimum": 0,
           "title": "Max Total Model Calls",
+          "type": "integer"
+        },
+        "model_transport": {
+          "$ref": "#/$defs/MemoryTransportBudget"
+        },
+        "on_budget_exhausted": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Budget Exhausted",
+          "type": "string"
+        },
+        "on_guardian_reject": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Guardian Reject",
+          "type": "string"
+        },
+        "same_content_hash_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Content Hash Limit",
+          "type": "integer"
+        },
+        "same_finding_signature_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Finding Signature Limit",
           "type": "integer"
         },
         "token_budget": {
@@ -244,39 +277,6 @@
           "minimum": 1,
           "title": "Wall Clock Budget Ms",
           "type": "integer"
-        },
-        "same_content_hash_limit": {
-          "default": 2,
-          "minimum": 1,
-          "title": "Same Content Hash Limit",
-          "type": "integer"
-        },
-        "same_finding_signature_limit": {
-          "default": 2,
-          "minimum": 1,
-          "title": "Same Finding Signature Limit",
-          "type": "integer"
-        },
-        "on_budget_exhausted": {
-          "default": "quarantine",
-          "enum": [
-            "quarantine",
-            "stop"
-          ],
-          "title": "On Budget Exhausted",
-          "type": "string"
-        },
-        "on_guardian_reject": {
-          "default": "quarantine",
-          "enum": [
-            "quarantine",
-            "stop"
-          ],
-          "title": "On Guardian Reject",
-          "type": "string"
-        },
-        "model_transport": {
-          "$ref": "#/$defs/MemoryTransportBudget"
         }
       },
       "title": "MemoryWriteBudget",
@@ -286,6 +286,19 @@
       "additionalProperties": false,
       "description": "A monotonic position used by information-boundary checks.",
       "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
         "chapter_index": {
           "minimum": 0,
           "title": "Chapter Index",
@@ -303,19 +316,6 @@
           ],
           "default": null,
           "title": "Scene Index"
-        },
-        "block_index": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Block Index"
         }
       },
       "required": [
@@ -339,22 +339,6 @@
     "RepairScope": {
       "additionalProperties": false,
       "properties": {
-        "operation_ids": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/StableId"
-          },
-          "title": "Operation Ids",
-          "type": "array"
-        },
-        "field_paths": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Field Paths",
-          "type": "array"
-        },
         "allow_identity_rebind": {
           "default": false,
           "title": "Allow Identity Rebind",
@@ -369,6 +353,22 @@
           "default": false,
           "title": "Allow Successor Creation",
           "type": "boolean"
+        },
+        "field_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "operation_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Operation Ids",
+          "type": "array"
         }
       },
       "title": "RepairScope",
@@ -399,20 +399,6 @@
       "additionalProperties": false,
       "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
       "properties": {
-        "source_artifact_id": {
-          "$ref": "#/$defs/ArtifactId"
-        },
-        "source_chapter_index": {
-          "minimum": 0,
-          "title": "Source Chapter Index",
-          "type": "integer"
-        },
-        "source_chapter_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "required_span": {
-          "$ref": "#/$defs/TextSpanRef"
-        },
         "required_consequence_markers": {
           "items": {
             "type": "string"
@@ -420,6 +406,20 @@
           "minItems": 1,
           "title": "Required Consequence Markers",
           "type": "array"
+        },
+        "required_span": {
+          "$ref": "#/$defs/TextSpanRef"
+        },
+        "source_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "source_chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_chapter_index": {
+          "minimum": 0,
+          "title": "Source Chapter Index",
+          "type": "integer"
         }
       },
       "required": [
@@ -448,6 +448,11 @@
         "block_id": {
           "$ref": "#/$defs/StableId"
         },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
         "range_unit": {
           "$ref": "#/$defs/RangeUnit",
           "default": "unicode_codepoint"
@@ -455,11 +460,6 @@
         "start": {
           "minimum": 0,
           "title": "Start",
-          "type": "integer"
-        },
-        "end": {
-          "minimum": 0,
-          "title": "End",
           "type": "integer"
         }
       },
@@ -475,32 +475,16 @@
   "additionalProperties": false,
   "description": "Immutable, evidence-only handoff from a Planner gap to one repair owner.",
   "properties": {
-    "finding_id": {
-      "$ref": "#/$defs/StableId"
+    "access_scope": {
+      "$ref": "#/$defs/AccessScope"
     },
-    "incident_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "planner_run_id": {
-      "$ref": "#/$defs/RunId"
-    },
-    "planner_task_id": {
-      "$ref": "#/$defs/TaskId"
-    },
-    "planner_attempt_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "planner_request_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "planner_intent_ref": {
-      "$ref": "#/$defs/ArtifactRef"
-    },
-    "planner_checkpoint_ref": {
-      "$ref": "#/$defs/ArtifactRef"
-    },
-    "project_id": {
-      "$ref": "#/$defs/ProjectId"
+    "anchor_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Anchor Receipt Refs",
+      "type": "array"
     },
     "base_commit": {
       "$ref": "#/$defs/CommitId"
@@ -516,6 +500,89 @@
       ],
       "default": null
     },
+    "budget": {
+      "$ref": "#/$defs/MemoryWriteBudget"
+    },
+    "classification": {
+      "$ref": "#/$defs/MemoryGapClassification"
+    },
+    "cutoff": {
+      "$ref": "#/$defs/NarrativePosition"
+    },
+    "entity_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Entity Ids",
+      "type": "array"
+    },
+    "finding_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "graph_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Graph Receipt Refs",
+      "type": "array"
+    },
+    "incident_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "information_boundary": {
+      "$ref": "#/$defs/InformationBoundary"
+    },
+    "l0_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "L0 Receipt Refs",
+      "type": "array"
+    },
+    "mandatory_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Mandatory Facet Ids",
+      "type": "array"
+    },
+    "need_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "need_query": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "title": "Need Query",
+      "type": "string"
+    },
+    "no_progress_key": {
+      "$ref": "#/$defs/StableId"
+    },
+    "planner_attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "planner_checkpoint_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "planner_intent_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "planner_request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "planner_run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "planner_task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
     "projection_snapshot_id": {
       "anyOf": [
         {
@@ -527,14 +594,25 @@
       ],
       "default": null
     },
-    "information_boundary": {
-      "$ref": "#/$defs/InformationBoundary"
+    "repair_owner": {
+      "$ref": "#/$defs/MemoryRepairOwner"
     },
-    "cutoff": {
-      "$ref": "#/$defs/NarrativePosition"
+    "repair_scope": {
+      "$ref": "#/$defs/RepairScope"
     },
-    "access_scope": {
-      "$ref": "#/$defs/AccessScope"
+    "semantic_judge_receipt_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Semantic Judge Receipt Refs",
+      "type": "array"
+    },
+    "semantic_question": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "title": "Semantic Question",
+      "type": "string"
     },
     "source_artifact_refs": {
       "default": [],
@@ -542,14 +620,6 @@
         "$ref": "#/$defs/ArtifactRef"
       },
       "title": "Source Artifact Refs",
-      "type": "array"
-    },
-    "source_visibility_receipt_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Source Visibility Receipt Refs",
       "type": "array"
     },
     "source_chapter_indices": {
@@ -571,86 +641,16 @@
       ],
       "default": null
     },
-    "need_id": {
-      "$ref": "#/$defs/StableId"
-    },
-    "need_query": {
-      "maxLength": 2048,
-      "minLength": 1,
-      "title": "Need Query",
-      "type": "string"
-    },
-    "semantic_question": {
-      "maxLength": 2048,
-      "minLength": 1,
-      "title": "Semantic Question",
-      "type": "string"
-    },
-    "entity_ids": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/StableId"
-      },
-      "title": "Entity Ids",
-      "type": "array"
-    },
-    "mandatory_facet_ids": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/StableId"
-      },
-      "title": "Mandatory Facet Ids",
-      "type": "array"
-    },
-    "graph_receipt_refs": {
+    "source_visibility_receipt_refs": {
       "default": [],
       "items": {
         "$ref": "#/$defs/ArtifactRef"
       },
-      "title": "Graph Receipt Refs",
+      "title": "Source Visibility Receipt Refs",
       "type": "array"
-    },
-    "anchor_receipt_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Anchor Receipt Refs",
-      "type": "array"
-    },
-    "l0_receipt_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "L0 Receipt Refs",
-      "type": "array"
-    },
-    "semantic_judge_receipt_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Semantic Judge Receipt Refs",
-      "type": "array"
-    },
-    "classification": {
-      "$ref": "#/$defs/MemoryGapClassification"
-    },
-    "repair_owner": {
-      "$ref": "#/$defs/MemoryRepairOwner"
     },
     "target_root_kind": {
       "$ref": "#/$defs/RootKind"
-    },
-    "repair_scope": {
-      "$ref": "#/$defs/RepairScope"
-    },
-    "budget": {
-      "$ref": "#/$defs/MemoryWriteBudget"
-    },
-    "no_progress_key": {
-      "$ref": "#/$defs/StableId"
     }
   },
   "required": [

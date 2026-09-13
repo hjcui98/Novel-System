@@ -496,7 +496,7 @@
         "unresolved": {
           "default": [],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/PlanUnresolvedIssue"
           },
           "title": "Unresolved",
           "type": "array"
@@ -512,6 +512,76 @@
       ],
       "title": "PlanProposal",
       "type": "object"
+    },
+    "PlanUnresolvedIssue": {
+      "additionalProperties": false,
+      "description": "Structured planning unknown that can block the current window.",
+      "properties": {
+        "affected_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Affected Chapters",
+          "type": "array"
+        },
+        "allowed_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Assumptions",
+          "type": "array"
+        },
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "forbidden_assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Assumptions",
+          "type": "array"
+        },
+        "issue_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "$ref": "#/$defs/PlanUnresolvedKind",
+          "default": "UNSPECIFIED"
+        },
+        "resolution_owner": {
+          "default": "PLANNER",
+          "title": "Resolution Owner",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id",
+        "summary"
+      ],
+      "title": "PlanUnresolvedIssue",
+      "type": "object"
+    },
+    "PlanUnresolvedKind": {
+      "enum": [
+        "AUTHOR_INTENT_CONFLICT",
+        "CURRENT_STATE_UNKNOWN",
+        "POWER_LEVEL_UNKNOWN",
+        "KNOWLEDGE_BOUNDARY_UNKNOWN",
+        "OBLIGATION_WINDOW_CONFLICT",
+        "UNSPECIFIED"
+      ],
+      "title": "PlanUnresolvedKind",
+      "type": "string"
     },
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -905,6 +975,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "composition_proof": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "deviations": {
       "default": [],
       "items": {
@@ -937,6 +1018,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/ProjectProfileProposal"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "raw_plan_proposal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanProposal"
         },
         {
           "type": "null"

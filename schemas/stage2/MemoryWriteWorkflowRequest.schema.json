@@ -20,16 +20,16 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
-        },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
         },
         "schema_version": {
           "$ref": "#/$defs/SchemaVersion"
@@ -47,14 +47,14 @@
     "BootstrapTrigger": {
       "additionalProperties": false,
       "properties": {
+        "bootstrap_bundle_id": {
+          "$ref": "#/$defs/StableId"
+        },
         "kind": {
           "const": "bootstrap",
           "default": "bootstrap",
           "title": "Kind",
           "type": "string"
-        },
-        "bootstrap_bundle_id": {
-          "$ref": "#/$defs/StableId"
         }
       },
       "required": [
@@ -66,12 +66,6 @@
     "ChapterRevealTrigger": {
       "additionalProperties": false,
       "properties": {
-        "kind": {
-          "const": "chapter_reveal",
-          "default": "chapter_reveal",
-          "title": "Kind",
-          "type": "string"
-        },
         "chapter_id": {
           "$ref": "#/$defs/StableId"
         },
@@ -79,6 +73,12 @@
           "minimum": 0,
           "title": "Chapter Index",
           "type": "integer"
+        },
+        "kind": {
+          "const": "chapter_reveal",
+          "default": "chapter_reveal",
+          "title": "Kind",
+          "type": "string"
         },
         "reveal_position": {
           "$ref": "#/$defs/NarrativePosition"
@@ -100,14 +100,14 @@
     "ContractRef": {
       "additionalProperties": false,
       "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
         "contract_id": {
           "$ref": "#/$defs/StableId"
         },
         "version": {
           "$ref": "#/$defs/SchemaVersion"
-        },
-        "content_hash": {
-          "$ref": "#/$defs/ArtifactId"
         }
       },
       "required": [
@@ -121,14 +121,14 @@
     "CuratorWorldProposalInput": {
       "additionalProperties": false,
       "properties": {
+        "curator_agent_spec": {
+          "$ref": "#/$defs/ContractRef"
+        },
         "mode": {
           "const": "curator_proposal",
           "default": "curator_proposal",
           "title": "Mode",
           "type": "string"
-        },
-        "curator_agent_spec": {
-          "$ref": "#/$defs/ContractRef"
         }
       },
       "required": [
@@ -140,14 +140,14 @@
     "HumanCorrectionTrigger": {
       "additionalProperties": false,
       "properties": {
+        "correction_request_id": {
+          "$ref": "#/$defs/StableId"
+        },
         "kind": {
           "const": "human_correction",
           "default": "human_correction",
           "title": "Kind",
           "type": "string"
-        },
-        "correction_request_id": {
-          "$ref": "#/$defs/StableId"
         }
       },
       "required": [
@@ -159,22 +159,15 @@
     "InformationBoundary": {
       "additionalProperties": false,
       "properties": {
-        "boundary_id": {
-          "$ref": "#/$defs/StableId"
-        },
         "base_commit": {
           "$ref": "#/$defs/CommitId"
         },
-        "reveal_position": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NarrativePosition"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "evaluator_sources_forbidden": {
+          "title": "Evaluator Sources Forbidden",
+          "type": "boolean"
         },
         "maximum_visible_position": {
           "anyOf": [
@@ -187,12 +180,19 @@
           ],
           "default": null
         },
-        "evaluator_sources_forbidden": {
-          "title": "Evaluator Sources Forbidden",
-          "type": "boolean"
-        },
         "policy_ref": {
           "$ref": "#/$defs/ContractRef"
+        },
+        "reveal_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NarrativePosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -207,6 +207,14 @@
     "MaintenanceTrigger": {
       "additionalProperties": false,
       "properties": {
+        "chapter_indices": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Chapter Indices",
+          "type": "array"
+        },
         "kind": {
           "const": "maintenance",
           "default": "maintenance",
@@ -215,14 +223,6 @@
         },
         "maintenance_task_id": {
           "$ref": "#/$defs/StableId"
-        },
-        "chapter_indices": {
-          "default": [],
-          "items": {
-            "type": "integer"
-          },
-          "title": "Chapter Indices",
-          "type": "array"
         }
       },
       "required": [
@@ -246,6 +246,12 @@
       "additionalProperties": false,
       "description": "The model transport budget is intentionally separate from repair budget.",
       "properties": {
+        "backoff_profile": {
+          "default": "exponential-v1",
+          "minLength": 1,
+          "title": "Backoff Profile",
+          "type": "string"
+        },
         "max_attempts": {
           "default": 3,
           "minimum": 1,
@@ -257,12 +263,6 @@
           "exclusiveMinimum": 0,
           "title": "Timeout Seconds",
           "type": "number"
-        },
-        "backoff_profile": {
-          "default": "exponential-v1",
-          "minLength": 1,
-          "title": "Backoff Profile",
-          "type": "string"
         }
       },
       "title": "MemoryTransportBudget",
@@ -271,6 +271,18 @@
     "MemoryWriteBudget": {
       "additionalProperties": false,
       "properties": {
+        "max_candidate_revisions": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Max Candidate Revisions",
+          "type": "integer"
+        },
+        "max_context_refreshes": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Max Context Refreshes",
+          "type": "integer"
+        },
         "max_curator_proposal_attempts": {
           "default": 3,
           "minimum": 1,
@@ -283,22 +295,10 @@
           "title": "Max Curator Proposal Rejections",
           "type": "integer"
         },
-        "max_candidate_revisions": {
-          "default": 3,
-          "minimum": 1,
-          "title": "Max Candidate Revisions",
-          "type": "integer"
-        },
         "max_curator_repairs": {
           "default": 2,
           "minimum": 0,
           "title": "Max Curator Repairs",
-          "type": "integer"
-        },
-        "max_normalization_passes": {
-          "default": 3,
-          "minimum": 0,
-          "title": "Max Normalization Passes",
           "type": "integer"
         },
         "max_guardian_reviews": {
@@ -307,16 +307,49 @@
           "title": "Max Guardian Reviews",
           "type": "integer"
         },
-        "max_context_refreshes": {
-          "default": 1,
+        "max_normalization_passes": {
+          "default": 3,
           "minimum": 0,
-          "title": "Max Context Refreshes",
+          "title": "Max Normalization Passes",
           "type": "integer"
         },
         "max_total_model_calls": {
           "default": 4,
           "minimum": 0,
           "title": "Max Total Model Calls",
+          "type": "integer"
+        },
+        "model_transport": {
+          "$ref": "#/$defs/MemoryTransportBudget"
+        },
+        "on_budget_exhausted": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Budget Exhausted",
+          "type": "string"
+        },
+        "on_guardian_reject": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "stop"
+          ],
+          "title": "On Guardian Reject",
+          "type": "string"
+        },
+        "same_content_hash_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Content Hash Limit",
+          "type": "integer"
+        },
+        "same_finding_signature_limit": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Same Finding Signature Limit",
           "type": "integer"
         },
         "token_budget": {
@@ -345,39 +378,6 @@
           "minimum": 1,
           "title": "Wall Clock Budget Ms",
           "type": "integer"
-        },
-        "same_content_hash_limit": {
-          "default": 2,
-          "minimum": 1,
-          "title": "Same Content Hash Limit",
-          "type": "integer"
-        },
-        "same_finding_signature_limit": {
-          "default": 2,
-          "minimum": 1,
-          "title": "Same Finding Signature Limit",
-          "type": "integer"
-        },
-        "on_budget_exhausted": {
-          "default": "quarantine",
-          "enum": [
-            "quarantine",
-            "stop"
-          ],
-          "title": "On Budget Exhausted",
-          "type": "string"
-        },
-        "on_guardian_reject": {
-          "default": "quarantine",
-          "enum": [
-            "quarantine",
-            "stop"
-          ],
-          "title": "On Guardian Reject",
-          "type": "string"
-        },
-        "model_transport": {
-          "$ref": "#/$defs/MemoryTransportBudget"
         }
       },
       "title": "MemoryWriteBudget",
@@ -396,6 +396,19 @@
       "additionalProperties": false,
       "description": "A monotonic position used by information-boundary checks.",
       "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
         "chapter_index": {
           "minimum": 0,
           "title": "Chapter Index",
@@ -413,19 +426,6 @@
           ],
           "default": null,
           "title": "Scene Index"
-        },
-        "block_index": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Block Index"
         }
       },
       "required": [
@@ -472,25 +472,25 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
         "root_kind": {
           "const": "plan",
           "default": "plan",
           "title": "Root Kind",
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
         }
       },
       "required": [
@@ -513,25 +513,25 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
         "root_kind": {
           "const": "project_profile",
           "default": "project_profile",
           "title": "Root Kind",
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
         }
       },
       "required": [
@@ -556,25 +556,25 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
         "root_kind": {
           "const": "reference",
           "default": "reference",
           "title": "Root Kind",
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
         }
       },
       "required": [
@@ -600,27 +600,6 @@
     "RootManifest": {
       "additionalProperties": false,
       "properties": {
-        "project_id": {
-          "$ref": "#/$defs/ProjectId"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
-        "text_root": {
-          "$ref": "#/$defs/TextRootRef"
-        },
-        "plan_root": {
-          "$ref": "#/$defs/PlanRootRef"
-        },
-        "world_root": {
-          "$ref": "#/$defs/WorldRootRef"
-        },
-        "reference_root": {
-          "$ref": "#/$defs/ReferenceRootRef"
-        },
-        "project_profile_root": {
-          "$ref": "#/$defs/ProjectProfileRootRef"
-        },
         "parent_commit_ids": {
           "default": [],
           "items": {
@@ -628,6 +607,27 @@
           },
           "title": "Parent Commit Ids",
           "type": "array"
+        },
+        "plan_root": {
+          "$ref": "#/$defs/PlanRootRef"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "project_profile_root": {
+          "$ref": "#/$defs/ProjectProfileRootRef"
+        },
+        "reference_root": {
+          "$ref": "#/$defs/ReferenceRootRef"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "text_root": {
+          "$ref": "#/$defs/TextRootRef"
+        },
+        "world_root": {
+          "$ref": "#/$defs/WorldRootRef"
         }
       },
       "required": [
@@ -645,26 +645,26 @@
     "RootUpdateIntent": {
       "additionalProperties": false,
       "properties": {
-        "intent_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "root_kind": {
-          "$ref": "#/$defs/RootKind"
-        },
-        "update_kind": {
-          "$ref": "#/$defs/RootUpdateKind"
+        "builder_policy_ref": {
+          "$ref": "#/$defs/ContractRef"
         },
         "expected_base_root": {
           "$ref": "#/$defs/ArtifactRef"
         },
-        "update_artifact": {
-          "$ref": "#/$defs/ArtifactRef"
+        "intent_id": {
+          "$ref": "#/$defs/StableId"
         },
         "producer_receipt": {
           "$ref": "#/$defs/ArtifactRef"
         },
-        "builder_policy_ref": {
-          "$ref": "#/$defs/ContractRef"
+        "root_kind": {
+          "$ref": "#/$defs/RootKind"
+        },
+        "update_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "update_kind": {
+          "$ref": "#/$defs/RootUpdateKind"
         }
       },
       "required": [
@@ -702,20 +702,6 @@
       "additionalProperties": false,
       "description": "Immutable source span that a source-bound repair must actually cover.\n\nPlanner preflight may establish that a typed graph/anchor is missing while\nthe frozen TextRoot contains a causal answer.  This contract carries the\nexact source identity, chapter/block span, and consequence markers into\nthe write side.  It is deliberately optional at every downstream legacy\nboundary; when present, validation is fail-closed.",
       "properties": {
-        "source_artifact_id": {
-          "$ref": "#/$defs/ArtifactId"
-        },
-        "source_chapter_index": {
-          "minimum": 0,
-          "title": "Source Chapter Index",
-          "type": "integer"
-        },
-        "source_chapter_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "required_span": {
-          "$ref": "#/$defs/TextSpanRef"
-        },
         "required_consequence_markers": {
           "items": {
             "type": "string"
@@ -723,6 +709,20 @@
           "minItems": 1,
           "title": "Required Consequence Markers",
           "type": "array"
+        },
+        "required_span": {
+          "$ref": "#/$defs/TextSpanRef"
+        },
+        "source_artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "source_chapter_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_chapter_index": {
+          "minimum": 0,
+          "title": "Source Chapter Index",
+          "type": "integer"
         }
       },
       "required": [
@@ -749,14 +749,26 @@
     "SourceVisibilityReceipt": {
       "additionalProperties": false,
       "properties": {
+        "access_scope": {
+          "$ref": "#/$defs/AccessScope"
+        },
+        "boundary_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "issuer": {
+          "$ref": "#/$defs/StableId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/SourceProvenance"
+        },
+        "receipt_hash": {
+          "$ref": "#/$defs/ArtifactId"
+        },
         "receipt_id": {
           "$ref": "#/$defs/StableId"
         },
         "source_artifact": {
           "$ref": "#/$defs/ArtifactRef"
-        },
-        "boundary_id": {
-          "$ref": "#/$defs/StableId"
         },
         "visible_through": {
           "anyOf": [
@@ -767,18 +779,6 @@
               "type": "null"
             }
           ]
-        },
-        "access_scope": {
-          "$ref": "#/$defs/AccessScope"
-        },
-        "provenance": {
-          "$ref": "#/$defs/SourceProvenance"
-        },
-        "issuer": {
-          "$ref": "#/$defs/StableId"
-        },
-        "receipt_hash": {
-          "$ref": "#/$defs/ArtifactId"
         }
       },
       "required": [
@@ -810,25 +810,25 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
         "root_kind": {
           "const": "text",
           "default": "text",
           "title": "Root Kind",
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
         }
       },
       "required": [
@@ -846,6 +846,11 @@
         "block_id": {
           "$ref": "#/$defs/StableId"
         },
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
         "range_unit": {
           "$ref": "#/$defs/RangeUnit",
           "default": "unicode_codepoint"
@@ -853,11 +858,6 @@
         "start": {
           "minimum": 0,
           "title": "Start",
-          "type": "integer"
-        },
-        "end": {
-          "minimum": 0,
-          "title": "End",
           "type": "integer"
         }
       },
@@ -872,14 +872,14 @@
     "TrustedWorldCandidateInput": {
       "additionalProperties": false,
       "properties": {
+        "candidate_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
         "mode": {
           "const": "trusted_candidate",
           "default": "trusted_candidate",
           "title": "Mode",
           "type": "string"
-        },
-        "candidate_artifact": {
-          "$ref": "#/$defs/ArtifactRef"
         },
         "producer_receipt": {
           "$ref": "#/$defs/ArtifactRef"
@@ -898,25 +898,25 @@
         "artifact_id": {
           "$ref": "#/$defs/ArtifactId"
         },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
         "media_type": {
           "maxLength": 255,
           "minLength": 1,
           "title": "Media Type",
           "type": "string"
         },
-        "byte_length": {
-          "minimum": 0,
-          "title": "Byte Length",
-          "type": "integer"
-        },
-        "schema_version": {
-          "$ref": "#/$defs/SchemaVersion"
-        },
         "root_kind": {
           "const": "world",
           "default": "world",
           "title": "Root Kind",
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
         }
       },
       "required": [
@@ -931,17 +931,142 @@
   },
   "additionalProperties": false,
   "properties": {
+    "access_scope": {
+      "$ref": "#/$defs/AccessScope"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "budget": {
+      "$ref": "#/$defs/MemoryWriteBudget"
+    },
+    "canonical_root_refs": {
+      "$ref": "#/$defs/RootManifest"
+    },
+    "commit_profile": {
+      "$ref": "#/$defs/MemoryWriteCommitProfile"
+    },
+    "configuration_fingerprint": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/StableId"
+    },
+    "information_boundary": {
+      "$ref": "#/$defs/InformationBoundary"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId"
+    },
+    "prompt_contract_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Prompt Contract Refs",
+      "type": "array"
+    },
+    "repair_owner": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryRepairOwner"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repair_policy_ref": {
+      "$ref": "#/$defs/ContractRef"
+    },
+    "repair_query": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repair Query"
+    },
     "request_id": {
       "$ref": "#/$defs/StableId"
+    },
+    "resume_checkpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "root_update_intents": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RootUpdateIntent"
+      },
+      "title": "Root Update Intents",
+      "type": "array"
     },
     "run_id": {
       "$ref": "#/$defs/RunId"
     },
+    "skill_contract_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContractRef"
+      },
+      "title": "Skill Contract Refs",
+      "type": "array"
+    },
+    "source_artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Source Artifacts",
+      "type": "array"
+    },
+    "source_evidence_requirement": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SourceBoundEvidenceRequirement"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "source_provenance": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceProvenance"
+      },
+      "title": "Source Provenance",
+      "type": "array"
+    },
+    "source_visibility_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceVisibilityReceipt"
+      },
+      "title": "Source Visibility Receipts",
+      "type": "array"
+    },
     "task_id": {
       "$ref": "#/$defs/TaskId"
     },
-    "project_id": {
-      "$ref": "#/$defs/ProjectId"
+    "tool_policy_ref": {
+      "$ref": "#/$defs/ContractRef"
     },
     "trigger": {
       "discriminator": {
@@ -973,32 +1098,10 @@
       ],
       "title": "Trigger"
     },
-    "commit_profile": {
-      "$ref": "#/$defs/MemoryWriteCommitProfile"
-    },
     "validation_only": {
       "default": false,
       "title": "Validation Only",
       "type": "boolean"
-    },
-    "base_commit": {
-      "$ref": "#/$defs/CommitId"
-    },
-    "source_artifacts": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "title": "Source Artifacts",
-      "type": "array"
-    },
-    "root_update_intents": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/RootUpdateIntent"
-      },
-      "title": "Root Update Intents",
-      "type": "array"
     },
     "world_mutation": {
       "discriminator": {
@@ -1021,109 +1124,6 @@
         }
       ],
       "title": "World Mutation"
-    },
-    "canonical_root_refs": {
-      "$ref": "#/$defs/RootManifest"
-    },
-    "information_boundary": {
-      "$ref": "#/$defs/InformationBoundary"
-    },
-    "source_visibility_receipts": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/SourceVisibilityReceipt"
-      },
-      "title": "Source Visibility Receipts",
-      "type": "array"
-    },
-    "access_scope": {
-      "$ref": "#/$defs/AccessScope"
-    },
-    "source_provenance": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/SourceProvenance"
-      },
-      "title": "Source Provenance",
-      "type": "array"
-    },
-    "configuration_fingerprint": {
-      "$ref": "#/$defs/ArtifactId"
-    },
-    "prompt_contract_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ContractRef"
-      },
-      "title": "Prompt Contract Refs",
-      "type": "array"
-    },
-    "skill_contract_refs": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ContractRef"
-      },
-      "title": "Skill Contract Refs",
-      "type": "array"
-    },
-    "tool_policy_ref": {
-      "$ref": "#/$defs/ContractRef"
-    },
-    "repair_policy_ref": {
-      "$ref": "#/$defs/ContractRef"
-    },
-    "repair_owner": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/MemoryRepairOwner"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "repair_query": {
-      "anyOf": [
-        {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Repair Query"
-    },
-    "source_evidence_requirement": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/SourceBoundEvidenceRequirement"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "budget": {
-      "$ref": "#/$defs/MemoryWriteBudget"
-    },
-    "idempotency_key": {
-      "$ref": "#/$defs/StableId"
-    },
-    "resume_checkpoint": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ArtifactRef"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
     }
   },
   "required": [

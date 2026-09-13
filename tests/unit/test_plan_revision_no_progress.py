@@ -46,13 +46,25 @@ from tests.unit.test_stage4_planning_loop_and_evaluation import (
 )
 
 
+# Fields the scripted planner's item genuinely carries.  Identity is (kind, item,
+# field, constraint), so two findings that name the same field *are* the same
+# problem however differently they are worded -- the property these tests exist to
+# pin.  A scoped revision may only write a field the candidate has, so the fixture
+# cites fields that exist: a citation of a field the candidate never declares
+# authorises nothing, which is a different (and separately tested) rule.
+_FIELDS = ("goal", "ending_state")
+
+
 def _issue(index: int, summary: str) -> PlanReviewIssue:
     return PlanReviewIssue(
         issue_id=StableId(f"review-issue.{index}.{abs(hash(summary)) % 10_000}"),
         kind=ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
         summary=summary,
         blocking=True,
-        affected_item_ids=(StableId("plan-item.chapter_set.1"),),
+        # The finding has to name an item the candidate actually contains; host
+        # composition only lets a revision touch what the review named.
+        affected_item_ids=(StableId("plan-item.chapter_set"),),
+        field_path=_FIELDS[index % len(_FIELDS)],
     )
 
 
@@ -164,23 +176,33 @@ def _service(
     )
 
 
-def test_an_empty_finding_set_never_stops_the_revision(tmp_path: Path) -> None:
-    """A legacy REVISE with no structured findings is judged by content change."""
+def test_an_empty_finding_set_cannot_authorise_a_revision(tmp_path: Path) -> None:
+    """N3: a legacy REVISE with no structured findings is readable, not obeyed.
 
-    service, artifacts, request, world, text_root, _planner = _service(
+    Such a review stays readable and the loop still handles it, but it grants no
+    revision scope: the host has nothing it verified, so it will not turn the
+    reviewer's prose into a whole-plan rewrite.  The run stops and asks for a review
+    that carries citations, which is the honest answer.
+    """
+
+    service, artifacts, request, world, text_root, planner = _service(
         tmp_path,
         "empty-signature",
         [(), ()],
+        revise_without_issues=True,
     )
 
     terminal = _run_to_terminal(service, artifacts, request, world=world, text_root=text_root)
 
-    assert terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert terminal is PlanningLoopTerminal.REVIEW_REVISION_REQUIRED
+    # No revision was bought: one initial proposal, then the resumed slice re-proposes
+    # from its checkpoint, and nothing more.  A revision would have added a third call.
+    assert planner.plan_calls == 2
 
 
 def test_a_partially_repaired_finding_set_keeps_revising(tmp_path: Path) -> None:
-    first = _issue(1, "vol_04.midpoint_reversal.window 越过 350")
-    second = _issue(2, "vol_04.ending_state.role 缺失")
+    first = _issue(0, "第一章目标与约束冲突")
+    second = _issue(1, "第一章结束状态缺少代价")
     service, artifacts, request, world, text_root, _planner = _service(
         tmp_path,
         "partial-repair",
@@ -195,7 +217,7 @@ def test_a_partially_repaired_finding_set_keeps_revising(tmp_path: Path) -> None
 def test_identical_findings_stop_the_revision(tmp_path: Path) -> None:
     """The candidate changed, but the host-visible problem did not."""
 
-    finding = _issue(1, "vol_04.midpoint_reversal.window 越过 350")
+    finding = _issue(0, "第一章目标与约束冲突")
     service, artifacts, request, world, text_root, _planner = _service(
         tmp_path,
         "repeated-findings",
@@ -210,7 +232,7 @@ def test_identical_findings_stop_the_revision(tmp_path: Path) -> None:
 def test_an_unchanged_candidate_stops_the_revision(tmp_path: Path) -> None:
     """Only the proposal id changed, which is not progress on its own."""
 
-    finding = _issue(1, "vol_04.midpoint_reversal.window 越过 350")
+    finding = _issue(0, "第一章目标与约束冲突")
     service, artifacts, request, world, text_root, _planner = _service(
         tmp_path,
         "unchanged-candidate",
@@ -231,7 +253,7 @@ def test_the_progress_basis_survives_a_work_slice_boundary(tmp_path: Path) -> No
     loop revises the same rejected problem one more time.
     """
 
-    finding = _issue(1, "vol_04.midpoint_reversal.window 越过 350")
+    finding = _issue(0, "第一章目标与约束冲突")
     service, artifacts, request, world, text_root, planner = _service(
         tmp_path,
         "slice-basis",

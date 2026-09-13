@@ -21,6 +21,18 @@ from novel_agent.domain.memory import (
     WorldRootDocument,
 )
 from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.plan_composition import (
+    blocking_issue_identity,
+    build_composition_proof,
+    compose_scoped_revision,
+    issue_identity_seed,
+    out_of_scope_items,
+    progress_against,
+    revision_scope,
+)
+from novel_agent.domain.plan_composition import (
+    seed_identity as _seed_identity,
+)
 from novel_agent.domain.planning import (
     PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE,
     PlannerContextPackage,
@@ -491,94 +503,32 @@ _PARTIAL_MEMORY_BUDGET_GAP = (
 )
 
 
-def _compose_scoped_revision(
-    parent: PlanProposal,
-    revised: PlanProposal,
+def _blocking_signature(
     review: PlanReview,
-) -> PlanProposal:
-    """Keep every item the review did not name exactly as the parent had it.
-
-    The planner is asked to change only the named items, but a request is not an
-    enforcement: the host composes the candidate, so a one-field finding can no
-    longer move the rest of an eight-volume plan and every settled paragraph keeps
-    its exact bytes.
-    """
-
-    named = {item.root for issue in review.issues for item in issue.affected_item_ids}
-    if not named:
-        # A legacy REVISE names nothing, so there is no scope to enforce; clamping it
-        # would freeze the candidate and turn the advisory into a silent no-op.
-        return revised
-    parent_items = {item.item_id.root: item for item in parent.items}
-    composed = []
-    seen: set[str] = set()
-    for item in revised.items:
-        key = item.item_id.root
-        if key in named or key not in parent_items:
-            composed.append(item)
-        else:
-            composed.append(parent_items[key])
-        seen.add(key)
-    # An item the revision dropped without being asked to drop it stays.
-    for key, item in parent_items.items():
-        if key not in seen and key not in named:
-            composed.append(item)
-    return revised.model_copy(update={"items": tuple(composed)})
-
-
-def _out_of_scope_revision_items(
-    parent: PlanProposal,
-    revised: PlanProposal,
-    review: PlanReview,
+    attempted_identity_history: tuple[tuple[str, ...], ...] = (),
 ) -> tuple[str, ...]:
-    """Item ids a revision moved without the review naming them.
+    """The recorded frontier of a review's blocking findings.
 
-    A finding that names one field must not move the rest of the plan; the ids are
-    reported so the next revision restores them instead of paying for a fresh
-    eight-volume rewrite.
+    The frontier keeps identity and value apart, because the two comparisons need
+    different data: a partial repair has to look like the *same* problem narrowed,
+    and a rephrase has to look like *no* progress.  An empty finding set has no
+    frontier at all -- a legacy ``REVISE`` with no issues and a prose instruction is
+    judged by whether the candidate content changed.
     """
 
-    named = {item.root for issue in review.issues for item in issue.affected_item_ids}
-
-    def body(item: object) -> bytes:
-        document = item.model_dump(mode="json")  # type: ignore[attr-defined]
-        document.pop("item_id", None)
-        return canonical_json_bytes(document)
-
-    parent_bodies = {item.item_id.root: body(item) for item in parent.items}
-    moved = [
-        item.item_id.root
-        for item in revised.items
-        if parent_bodies.get(item.item_id.root) != body(item)
-    ]
-    return tuple(sorted(set(moved) - named))
+    return issue_identity_seed(review, attempted_identity_history)
 
 
-def _blocking_signature(review: PlanReview) -> tuple[str, ...]:
-    """The host-visible identity of a review's blocking findings.
+def _same_finding_identity(previous: tuple[str, ...], review: PlanReview) -> bool:
+    """Whether this review answers the recorded frontier with no progress at all.
 
-    The identity carries the finding's own normalized text next to its kind and the
-    items it names, because that text holds the field path, the constraint and the
-    unmet condition.  Comparing only ``kind + item_id`` would treat a partially
-    repaired problem as unchanged and stop a revision that is still making progress.
-
-    An empty finding set has no identity at all: a legacy ``REVISE`` with no issues
-    and a prose instruction is judged by whether the candidate content changed.
+    The same problem stated the same way is not progress; the same problem with a
+    genuinely narrowed condition is.  Both questions are answered against the
+    recorded frontier, which is why identity and value are stored together.
     """
 
-    return tuple(
-        sorted(
-            "|".join(
-                (
-                    issue.kind.value,
-                    ",".join(sorted(item.root for item in issue.affected_item_ids)),
-                    " ".join(issue.summary.split()),
-                )
-            )
-            for issue in review.issues
-            if issue.blocking
-        )
-    )
+    made_progress = progress_against(previous, review)
+    return not made_progress
 
 
 class PlanningContextLoopService:
@@ -1263,6 +1213,34 @@ class PlanningContextLoopService:
             if checkpoint is None or not checkpoint.plan_blocking_signature
             else checkpoint.plan_blocking_signature
         )
+        # Which problems this run has already spent a revision on.  Without it a
+        # revision that swings between two states looks like progress on every lap,
+        # because each lap presents a problem the previous frontier does not name.
+        attempted_identity: tuple[tuple[str, ...], ...] = (
+            ()
+            if previous_blocking_signature is None
+            else (tuple(sorted(_seed_identity(previous_blocking_signature))),)
+        )
+
+        def recorded_signature(review: PlanReview) -> tuple[str, ...]:
+            """The frontier to persist after this review settles.
+
+            A review that made progress is added to the attempted history, because
+            the revision it asks for is about to be paid for; a review that made none
+            leaves the history alone, since nothing new was attempted.
+            """
+
+            nonlocal attempted_identity
+            if progress_against(previous_blocking_signature or (), review):
+                # Monotone: what the new frontier replaces stays in the history, or a
+                # later return to it would look like a problem nobody had tried.
+                attempted_identity = (
+                    *attempted_identity,
+                    tuple(sorted(blocking_issue_identity(review))),
+                    tuple(sorted(_seed_identity(previous_blocking_signature or ()))),
+                )
+            return _blocking_signature(review, attempted_identity)
+
         # The review that raised those findings is still unanswered: the checkpoint
         # means "a revision is pending", so its own basis must not stop the slice
         # before that revision is attempted.
@@ -1992,7 +1970,14 @@ class PlanningContextLoopService:
             basis_review_id = plan_review.review_id.root
 
         def revision_repeats_pending_problem(review: PlanReview) -> bool:
-            """True when this review repeats the problem the last revision answered.
+            """True when this review answers the last revision with the same problem.
+
+            The identity is what decides, not the wording: an identical identity with
+            an unchanged unmet condition is the same problem coming back, while a
+            *narrowed* statement of that same identity is real progress and must not
+            be stopped.  Identity is also what makes oscillation visible -- returning
+            to an earlier mistake restores an earlier identity rather than buying a
+            new attempt under a new description.
 
             ``basis_review_id`` is the review whose findings the pending revision is
             answering; comparing that review with itself would stop a resume before it
@@ -2000,15 +1985,10 @@ class PlanningContextLoopService:
             """
 
             nonlocal previous_blocking_signature, basis_review_id
-            signature = _blocking_signature(review)
-            if (
-                signature
-                and previous_blocking_signature is not None
-                and review.review_id.root != basis_review_id
-                and signature == previous_blocking_signature
-            ):
-                return True
-            previous_blocking_signature = signature or None
+            if previous_blocking_signature is not None and review.review_id.root != basis_review_id:
+                if _same_finding_identity(previous_blocking_signature, review):
+                    return True
+            previous_blocking_signature = recorded_signature(review) or None
             basis_review_id = review.review_id.root
             return False
 
@@ -2027,7 +2007,7 @@ class PlanningContextLoopService:
                     proposal_ref=proposal_ref,
                     plan_review_ref=plan_review_ref,
                     execution_ref=execution_ref,
-                    plan_blocking_signature=_blocking_signature(plan_review),
+                    plan_blocking_signature=recorded_signature(plan_review),
                     inquiry_revisions_used=inquiry_revisions,
                     plan_revisions_used=plan_revisions,
                     reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2077,7 +2057,7 @@ class PlanningContextLoopService:
                         proposal_ref=proposal_ref,
                         plan_review_ref=plan_review_ref,
                         execution_ref=execution_ref,
-                        plan_blocking_signature=_blocking_signature(plan_review),
+                        plan_blocking_signature=recorded_signature(plan_review),
                         inquiry_revisions_used=inquiry_revisions,
                         plan_revisions_used=plan_revisions,
                         reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2130,7 +2110,7 @@ class PlanningContextLoopService:
                             proposal_ref=proposal_ref,
                             plan_review_ref=plan_review_ref,
                             execution_ref=execution_ref,
-                            plan_blocking_signature=_blocking_signature(plan_review),
+                            plan_blocking_signature=recorded_signature(plan_review),
                             inquiry_revisions_used=inquiry_revisions,
                             plan_revisions_used=plan_revisions,
                             reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2232,7 +2212,7 @@ class PlanningContextLoopService:
                                 proposal_ref=proposal_ref,
                                 plan_review_ref=plan_review_ref,
                                 execution_ref=execution_ref,
-                                plan_blocking_signature=_blocking_signature(plan_review),
+                                plan_blocking_signature=recorded_signature(plan_review),
                                 inquiry_revisions_used=inquiry_revisions,
                                 plan_revisions_used=plan_revisions,
                                 reviewer_memory_rounds_used=reviewer_memory_rounds,
@@ -2395,6 +2375,7 @@ class PlanningContextLoopService:
             if revision_repeats_pending_problem(plan_review):
                 return plan_revision_no_progress()
             parent_proposal = proposal
+            parent_proposal_ref = proposal_ref
             instruction = plan_review.revision_instruction or "bounded Plan revision"
             if out_of_scope:
                 # The previous revision moved items nobody asked about; name them so
@@ -2439,15 +2420,49 @@ class PlanningContextLoopService:
             )
             record_model_call(_call)
             raw_proposal = revised.plan_proposal
-            proposal = _compose_scoped_revision(parent_proposal, raw_proposal, plan_review)
+            # The scope comes from the verified blocking findings and nothing else.
+            # A review with no usable finding authorises no change at all, which is
+            # why the composition returns the parent unchanged instead of the model's
+            # whole-plan rewrite.
+            scope = revision_scope(plan_review)
+            proposal = compose_scoped_revision(parent_proposal, raw_proposal, scope)
             proposal_ref = self._persist_proposal(proposal)
-            execution_ref = self._artifacts.put(
+            raw_execution_ref = self._artifacts.put(
                 canonical_json_bytes(revised.model_dump(mode="json")),
                 "application/vnd.novel-agent.planner-execution-result+json",
                 self._schema_version,
             )
-            out_of_scope = _out_of_scope_revision_items(
-                parent_proposal, raw_proposal, plan_review
+            out_of_scope = out_of_scope_items(parent_proposal, raw_proposal, scope)
+            # The composed candidate is not the model's output, so it gets its own
+            # execution record and a proof tying it to the parent, the raw execution
+            # and the review.  Without this the formal materializer finds no execution
+            # whose proposal matches the composed candidate and refuses a candidate
+            # that review has already accepted.
+            proof = build_composition_proof(
+                parent_ref=parent_proposal_ref,
+                raw_execution_ref=raw_execution_ref,
+                review_ref=plan_review_ref,
+                scope=scope,
+                composed=proposal,
+                out_of_scope=out_of_scope,
+            )
+            proof_ref = self._artifacts.put(
+                canonical_json_bytes(proof.model_dump(mode="json")),
+                "application/vnd.novel-agent.plan-composition-proof+json",
+                self._schema_version,
+            )
+            execution_ref = self._artifacts.put(
+                canonical_json_bytes(
+                    revised.model_copy(
+                        update={
+                            "plan_proposal": proposal,
+                            "composition_proof": proof_ref,
+                            "raw_plan_proposal": raw_proposal,
+                        }
+                    ).model_dump(mode="json")
+                ),
+                "application/vnd.novel-agent.planner-execution-result+json",
+                self._schema_version,
             )
             if out_of_scope:
                 event_refs.append(
@@ -2509,7 +2524,7 @@ class PlanningContextLoopService:
                 proposal_ref=proposal_ref,
                 plan_review_ref=plan_review_ref,
                 execution_ref=execution_ref,
-                plan_blocking_signature=_blocking_signature(plan_review),
+                plan_blocking_signature=recorded_signature(plan_review),
                 inquiry_revisions_used=inquiry_revisions,
                 plan_revisions_used=plan_revisions,
                 reviewer_memory_rounds_used=reviewer_memory_rounds,

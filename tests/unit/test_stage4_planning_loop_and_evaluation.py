@@ -249,27 +249,124 @@ class _AcceptingReviewer:
 
 
 class _ScriptedReviewer(_AcceptingReviewer):
+    """Return a scripted decision, with a real finding behind every REVISE.
+
+    A ``REVISE`` that carries no structured finding authorises no change: the host
+    derives the revision scope from the findings it verified, so an empty one cannot
+    be turned into a whole-plan rewrite.  These tests are about the loop's terminals,
+    so the finding here is a genuine one the host can ground in the candidate.
+    """
+
     def __init__(
         self,
         artifacts: ArtifactRepository,
         decisions: list[ReviewDecision],
         *,
         memory_gap: bool = False,
+        finding_blocking: bool = True,
+        distinct_problems: bool = False,
     ) -> None:
         super().__init__(artifacts)
         self._decisions = decisions
         self._memory_gap = memory_gap
+        self._finding_blocking = finding_blocking
+        self._distinct_problems = distinct_problems
+        self._problems = 0
+
+    @staticmethod
+    def _finding(target_payload: str) -> tuple[PlanReviewIssue, ...]:
+        """One verified blocking finding naming the item the planner offered."""
+
+        try:
+            payload = json.loads(target_payload)
+        except json.JSONDecodeError:
+            return ()
+        item = next(
+            (
+                entry
+                for entry in payload.get("items", [])
+                if isinstance(entry, dict) and isinstance(entry.get("item_id"), str)
+            ),
+            None,
+        )
+        if item is None:
+            return ()
+        body = item.get("payload")
+        quote = (
+            str(body.get("revision"))
+            if isinstance(body, dict) and isinstance(body.get("revision"), int)
+            else None
+        )
+        if quote is None:
+            return ()
+        return (
+            PlanReviewIssue(
+                issue_id=StableId("review-issue.scripted.revision"),
+                kind=ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE,
+                # The summary carries the value the demand is about, so a review of a
+                # genuinely moved candidate is a *new* problem rather than a repeat of
+                # the one the previous revision already answered.
+                summary=f"scripted revision demand at revision {quote}",
+                blocking=True,
+                affected_item_ids=(StableId(item["item_id"]),),
+                field_path="revision",
+                quote=quote,
+                unmet_condition=f"the scripted revision has to move revision {quote}",
+            ),
+        )
+
+    def _issues_for(
+        self, decision: ReviewDecision, target_payload: str
+    ) -> tuple[PlanReviewIssue, ...]:
+        """The findings a scripted decision carries.
+
+        An advisory memory gap is a real review shape: the reviewer wants Memory and
+        has no rewrite demand, so it must reach the advisory settlement rather than
+        stop the loop for a re-review.
+        """
+
+        findings = list(self._finding(target_payload)) if decision is ReviewDecision.REVISE else []
+        if findings and self._distinct_problems:
+            # Each REVISE names a different field, so it is a new problem rather than
+            # a restatement of the one the previous revision answered.
+            locations = ("revision", "goal", "ending_state")
+            location = locations[self._problems % len(locations)]
+            self._problems += 1
+            findings = [
+                issue.model_copy(
+                    update={
+                        "field_path": location,
+                        "summary": f"scripted revision demand on {location}",
+                        "unmet_condition": f"the scripted revision has to move {location}",
+                    }
+                )
+                for issue in findings
+            ]
+        if not self._finding_blocking:
+            findings = [
+                issue.model_copy(update={"blocking": False, "field_path": None, "quote": None})
+                for issue in findings
+            ]
+        return tuple(findings)
 
     async def review(self, **kwargs: object) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
         decision = self._decisions.pop(0)
         mode = cast(AgentMode, kwargs["mode"])
         target_kind = cast(ReviewTargetKind, kwargs["target_kind"])
         target = cast(ArtifactRef, kwargs["target_artifact"])
+        # The candidate under review is read from the target artifact, which is the
+        # same source the real reviewer uses; a stub that guesses the payload would
+        # cite text the host cannot find.
+        try:
+            target_payload = self._artifacts.read_verified(target).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            target_payload = ""
         review = PlanReview(
             review_id=StableId(f"review.scripted.{target_kind.value}.{len(self._decisions)}"),
             target_kind=target_kind,
             target_artifact_ref=target,
             decision=decision,
+            issues=self._issues_for(decision, target_payload),
             revision_instruction="bounded repair" if decision is ReviewDecision.REVISE else None,
             memory_gap_questions=("relation between 林澈 and 北塔",)
             if self._memory_gap and target_kind is ReviewTargetKind.PLAN_PROPOSAL
@@ -278,6 +375,41 @@ class _ScriptedReviewer(_AcceptingReviewer):
         )
         ref = self._artifacts.put(review.model_dump_json().encode(), "application/json", VERSION)
         return review, ref, cast(ModelCallRecord, object())
+
+
+class _TwoProblemReviewer(_ScriptedReviewer):
+    """Two successive REVISEs that name *different* problems.
+
+    The no-progress guard stops a revision that answers the same problem the same
+    way, so a test about the per-slice revision allowance needs a second problem
+    rather than a restatement of the first.
+    """
+
+    def __init__(self, artifacts: ArtifactRepository, decisions: list[ReviewDecision], **kwargs):
+        super().__init__(artifacts, decisions, **kwargs)
+        self._problems = 0
+
+    # Locations the planner's item genuinely carries, so every problem names a field
+    # this revision actually moves.  Restating one location is the no-progress case,
+    # which its own test covers; this one is about the per-slice revision allowance.
+    _LOCATIONS = ("revision", "goal", "ending_state")
+
+    def _finding(self, target_payload: str):  # type: ignore[override]
+        findings = super()._finding(target_payload)
+        if not findings:
+            return findings
+        location = self._LOCATIONS[self._problems % len(self._LOCATIONS)]
+        self._problems += 1
+        return tuple(
+            issue.model_copy(
+                update={
+                    "field_path": location,
+                    "summary": f"scripted revision demand on {location}",
+                    "unmet_condition": f"the scripted revision has to move {location}",
+                }
+            )
+            for issue in findings
+        )
 
 
 class _ModePlanner(_BootstrapPlanner):
@@ -335,11 +467,19 @@ class _ModePlanner(_BootstrapPlanner):
             mode=self._mode,
             strategy=task.strategy,
             base_commit=task.base_commit,
+            # The item id is stable across revisions and only the payload moves.
+            # A revision that returns a *new* item id has not revised anything the
+            # review named, so host composition would (correctly) refuse to let it
+            # replace the item it claims to be fixing.
             items=(
                 ProposedItem(
-                    item_id=StableId(f"plan-item.{self._mode.value}.{self.plan_calls}"),
+                    item_id=StableId(f"plan-item.{self._mode.value}"),
                     kind="chapter_goal",
-                    payload={"revision": self.plan_calls},
+                    payload={
+                        "revision": self.plan_calls,
+                        "goal": f"goal-{self.plan_calls}",
+                        "ending_state": f"end-{self.plan_calls}",
+                    },
                     provenance=ProposalProvenance.PLANNER_PROPOSED,
                 ),
             ),
@@ -839,10 +979,20 @@ class _NoProgressPlanner(_ModePlanner):
         result, call = await super().run(**kwargs)
         if self.plan_calls == 1:
             return result, call
+        # Re-emit the exact first proposal: the planner produced a new proposal id
+        # but nothing the host can check actually moved.
         proposal = result.plan_proposal.model_copy(
             update={
                 "items": tuple(
-                    item.model_copy(update={"payload": {"revision": 1}})
+                    item.model_copy(
+                        update={
+                            "payload": {
+                                "revision": 1,
+                                "goal": "goal-1",
+                                "ending_state": "end-1",
+                            }
+                        }
+                    )
                     for item in result.plan_proposal.items
                 )
             }
@@ -2501,7 +2651,7 @@ def test_loop_typed_terminals_revision_memory_pressure_and_resume(tmp_path: Path
         )
         case_service, _, _ = _post_genesis_service(
             case_artifacts,
-            reviewer=_ScriptedReviewer(case_artifacts, decisions),
+            reviewer=_ScriptedReviewer(case_artifacts, decisions, distinct_problems=True),
             planner=case_planner,
         )
         result = asyncio.run(
@@ -2690,7 +2840,7 @@ def test_planning_work_slices_resume_progress_and_stop_identity_only_revisions(
     assert inquiry_memory.calls == 1
 
     plan_artifacts, plan_request = setup("plan-slices")
-    plan_reviewer = _ScriptedReviewer(
+    plan_reviewer = _TwoProblemReviewer(
         plan_artifacts,
         [
             ReviewDecision.ACCEPT,
@@ -2865,12 +3015,16 @@ def test_planning_memory_budget_yields_checkpoint_and_incomplete_facets_never_re
     # Memory gap directly.  A turn planner would consume the scripted reviewer
     # decision as a planner-memory review before reaching the reviewer gap.
     advisory_planner = _ModePlanner(advisory_artifacts, AgentMode.CHAPTER_SET)
+    # The advisory path is the review that *asks* for Memory and carries no other
+    # blocking finding.  A second REVISE here would not reach it: unresolved mandatory
+    # Memory next to a real blocking finding is a stop-and-re-review, not an advisory.
     advisory_service, _, _ = _post_genesis_service(
         advisory_artifacts,
         reviewer=_ScriptedReviewer(
             advisory_artifacts,
             [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
             memory_gap=True,
+            finding_blocking=False,
         ),
         planner=advisory_planner,
         memory=advisory_memory,
@@ -2910,6 +3064,10 @@ def test_planning_memory_budget_yields_checkpoint_and_incomplete_facets_never_re
             no_evidence_artifacts,
             [ReviewDecision.ACCEPT, ReviewDecision.REVISE],
             memory_gap=True,
+            # The advisory settlement is for the review whose *only* remaining concern
+            # is the Memory it could not obtain.  A blocking finding next to the same
+            # gap is a stop-and-re-review, which is a different terminal.
+            finding_blocking=False,
         ),
         planner=_ModePlanner(no_evidence_artifacts, AgentMode.CHAPTER_SET),
         memory=no_evidence_memory,

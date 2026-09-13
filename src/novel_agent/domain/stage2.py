@@ -685,6 +685,12 @@ class PlannerExecutionResult(DomainModel):
     deviations: tuple[PlanDeviationRecordCandidate, ...] = ()
     output_artifact: ArtifactRef
     receipt: AgentExecutionReceipt
+    # A host-composed revision is not the model's output, so it carries the proof of
+    # how it was composed and a copy of what the model actually returned.  Both stay
+    # unset for a direct planner result, which keeps every historical artifact and
+    # every direct path byte-identical.
+    composition_proof: ArtifactRef | None = None
+    raw_plan_proposal: PlanProposal | None = None
 
     @model_validator(mode="after")
     def validate_planner_result(self) -> PlannerExecutionResult:
@@ -692,8 +698,18 @@ class PlannerExecutionResult(DomainModel):
             raise ValueError("Planner result requires a Planner receipt")
         if self.receipt.agent_mode is not self.mode or self.plan_proposal.mode is not self.mode:
             raise ValueError("Planner result mode must match proposal and receipt")
+        if (self.composition_proof is None) != (self.raw_plan_proposal is None):
+            raise ValueError(
+                "a composed planner result requires both the composition proof and the "
+                "raw proposal it was composed from"
+            )
         if self.plan_proposal.receipt != self.receipt:
             raise ValueError("PlanProposal must carry the enclosing Planner receipt")
+        if (
+            self.raw_plan_proposal is not None
+            and self.raw_plan_proposal.receipt != self.receipt
+        ):
+            raise ValueError("raw PlanProposal must carry the enclosing Planner receipt")
         if self.mode is AgentMode.PROJECT_BOOTSTRAP and self.project_intent is None:
             raise ValueError("PROJECT_BOOTSTRAP result requires ProjectIntentModel")
         if self.mode is not AgentMode.PROJECT_BOOTSTRAP and self.project_intent is not None:
