@@ -795,3 +795,79 @@ tests/integration          115 passed / 0 failed
 - G0 的正式义务回读：v15 STORY 已提交，ARC_VOLUME 仍需产出八卷与逐条责任绑定；
   CHAPTER_SET 首批五章与投影随后。
 
+
+## 16. 预算、门禁与 Writer 入口的整合修复（2026-09-13）
+
+本节记录按用户 2026-09-13 指示完成的整合顺序：预算补丁完善并提交 → 分别修复时间门禁、
+无进展判断、Writer 入口/恢复 → 冻结配置。
+
+### 16.1 提交
+
+| 提交 | 内容 |
+|---|---|
+| `e22433a` | `fix(runtime): make model output budgets elastic and recoverable`（预算工作树提交后 ff-only 合入） |
+| `4387bdf` | `fix(plan-review): bind each volume stage to the responsibility it serves` |
+| `0a8d31e` | `fix(planner): judge revision progress by the problem, not by an empty finding set` |
+| `cd84175` | `fix(writer): read prose from scenes and restore frozen Memory before rebuilding` |
+| `0cebe54` | `fix(bootstrap): freeze the registered endpoints in the configuration fingerprint` |
+
+### 16.2 预算与计费
+
+- 截断后按 `finish_reason=length` 扩容，受 provider 上限、序列窗口、reasoning 预留与调用方累计
+  梯队共同约束；超时随额度同比例放大并受 `output_budget_timeout_limit_seconds` 封顶。
+- 计费改为从持久 ledger 按逻辑请求前缀展开（成功、截断、schema 重试、失败终态），重放不再重复收费。
+- 普通 Curator：消费全部尝试记录、兼容 `ModelOutputBudgetExhausted`、保留压缩分页路径；
+  `range(16)` 改为 `max_pages_per_ordinary_batch`（默认 16）可配置额度，已结算页由 ledger 作为
+  可恢复游标免费重放；重复操作、重复查询与同一义务的重复观察不计为新进展。
+- 跨进程恢复：`scripts/run_model_call_reparse_recovery.py` 新增 `truncate`/`resume` 两阶段，
+  集成测试证明第二个进程只对更大的额度付费（provider 计数 2，重放 0 次重发）。
+- 配置一致性：`output_budget_growth_factor`/`output_budget_timeout_limit_seconds` 进入 spec、
+  schema、端点策略身份与配置指纹；新增"改动增长策略必须改变指纹"的回归测试。
+
+### 16.3 时间门禁（卷阶段窗口）
+
+- 阶段条目结构：`{"description", "window", "role", "serves"}`，`role ∈ setup|hint|progression|payoff`。
+- 边界只来自 `serves` 指向的受信责任（作者约束 key/编译 id 或已接纳义务 id）；候选自述的
+  `not_before_chapter` 不再是权威，未知句柄被拒绝。
+- 删除 skill 中"不得早于本卷任何 not_before"的错误规则；审校器仍按正文语义判断，把实质揭露
+  改标为 `setup` 属于阻断问题。
+- Review 返回真实字段路径（`vol_04.midpoint_reversal.window`），宿主 `HOST_REQUIRED_FIELDS`
+  直接点名该路径。
+- 验收：349 暗示拒绝、350 合法暗示通过、400 正式推进拒绝、401 通过、无关义务的 401 不阻断
+  合法 350 暗示；`tests/unit/test_volume_stage_grid.py` 22 passed。
+
+### 16.4 无进展判断
+
+- 问题身份 = kind + 受影响条目 + 规范化文本（含字段路径、约束与未满足条件）；部分修复继续修订。
+- 空 issues 不再单独触发止损（旧 `REVISE` + 文字指令按候选内容变化判断）。
+- 判断依据写入 `PlanningLoopCheckpoint.plan_blocking_signature` 并在续跑时恢复；重复在重审后
+  立即识别，不再每切片重置。
+- 验收：`tests/unit/test_plan_revision_no_progress.py` 5 passed（空签名不误停、部分修复继续、
+  完全不变停止、换 ID 不算进展、重启一致）。
+
+### 16.5 Writer 入口与恢复
+
+- `canonical_prose_present` 改读 `chapter.scenes[*].blocks`（原 `chapter.blocks` 会抛
+  `AttributeError`，生产请求无法到达 readiness）。
+- 生产请求工厂顺序改为：校验任务/basis/计划 → 若有恢复检查点则从不可变引用恢复冻结请求、
+  Memory 包、证据 ledger 与近期正文 → 重新执行 readiness → 仅首次运行新建 Memory。
+  检查点不可读或 basis/config 不符时以 `WriterRecoveryRefused` 明确拒绝。
+- 验收：`tests/unit/test_production_writer_recovery.py` 7 passed（空正文首章、第二十一章仍要求
+  历史检索、有章节但场景为空仍被拒、损坏检查点拒绝且不重建 Memory、异 basis 拒绝、恢复后
+  冻结契约不变）。
+
+### 16.6 冻结路径与派发路径的指纹一致性
+
+- `bootstrap-commit` 过去未传端点，指纹由伪造端点列表（`output_limit` 硬编码 12 000）计算，
+  与派发使用的注册 8003 profile（16 000）不一致，导致 `RUN_CONFIGURATION_CHANGED`。
+- 现在 `bootstrap-commit --endpoint-profile` 必填并冻结注册端点；回退列表跟随
+  `spec.model_policy.default_output_limit`；新增"冻结哈希 == 装配指纹"回归测试。
+
+### 16.7 验证
+
+```text
+tests/unit tests/contract  75 failed / 3113 passed / 1 skipped（无新增失败；修复 stage4 schema 契约）
+tests/integration          146 passed / 2 failed（缺少私有基准包，历史 fixture 缺口）
+mypy --strict src          52 errors / 10 files（基线 41；差额为整改分支早先引入，本次修复 1 项）
+ruff check src tests scripts  67 findings（基线 49，几乎全为中文全角标点 RUF001；本次修复 5 项非 RUF001）
+```
