@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -9,11 +10,14 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
+from novel_agent.adapters.model.fake import FakeModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.postgres.model_call_ledger import SqlModelCallLedger
 from novel_agent.adapters.postgres.models import (
     ProjectWriterClaimRow,
     RuntimeTaskAttemptRow,
@@ -44,6 +48,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
+from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.runtime import (
     AttemptFence,
     AttemptOutcome,
@@ -59,9 +64,11 @@ from novel_agent.domain.runtime import (
 from novel_agent.domain.world import PlanLevel
 from novel_agent.ports.creative_runtime import EffectStatusResolver
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.attempt_classification import RecoveryAction, classify_attempt
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes
 from novel_agent.services.event_log import RunCheckpointRepository, RunEventLogRepository
+from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
 from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import (
     RuntimeCommandConflictError,
@@ -85,6 +92,10 @@ from tests.factories import make_commit_request, make_manifest
 HASH = "sha256:" + "1" * 64
 PERMISSION_HASH = "sha256:" + "2" * 64
 NOW = datetime(2026, 8, 10, tzinfo=UTC)
+
+
+class _ReplayPayload(BaseModel):
+    value: str
 
 
 @pytest.fixture
@@ -319,6 +330,182 @@ def test_save_checkpoint_rejects_unresolved_frontier_and_identity_collision(
     )
     with pytest.raises(RuntimeCommandConflictError, match="identity collision"):
         commands.save_checkpoint(fence, collision)
+
+
+def test_runtime_settlement_marks_only_persisted_model_output_consumed(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, commits, artifacts, events, _, base = edge_kernel
+    commands = RuntimeCommandService(
+        factory, events, lambda _project_id: PERMISSION_HASH, artifacts=artifacts
+    )
+    task = commands.create_run_and_initial_task(_request("run.sql-consumption", base))
+    _, fence = commands.claim(task.task_id, worker_id="planner")
+    commands.mark_started(fence)
+    request = ModelRequest(
+        request_id=StableId("model.sql-consumption.plan"),
+        run_id=task.run_id,
+        task_id=task.task_id,
+        attempt_id=fence.attempt_id,
+        model_role=ModelRole.BATCH_TEST,
+        purpose=ModelCallPurpose.BATCH_TEST,
+        trace_id="trace.sql-consumption",
+        prompt="plan",
+    )
+    endpoint = FakeModelEndpoint('{"value":"durable response"}')
+    gateway = ModelGateway(
+        (
+            RegisteredModelEndpoint(
+                role=ModelRole.BATCH_TEST,
+                endpoint_name="test",
+                model_name="test",
+                adapter=endpoint,
+            ),
+        ),
+        call_ledger=SqlModelCallLedger(factory),
+        raw_artifacts=artifacts,
+    )
+    asyncio.run(gateway.generate_structured(request, _ReplayPayload))
+    interrupted = SqlModelCallLedger(factory).load(request.request_id)
+    assert interrupted is not None and interrupted.response_consumed_at is None
+    output_ref = artifacts.put(b"persisted plan result", "application/json", SchemaVersion("1.0.0"))
+    commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        artifact_refs=(output_ref,),
+    )
+    restored = SqlModelCallLedger(factory).load(request.request_id)
+    assert restored is not None and restored.response_consumed_at is not None
+
+    interrupted_task = commands.create_run_and_initial_task(
+        _request("run.sql-consumption-interrupted", base)
+    )
+    _, interrupted_fence = commands.claim(interrupted_task.task_id, worker_id="planner")
+    commands.mark_started(interrupted_fence)
+    state_ref = artifacts.put(b"{}", "application/json", SchemaVersion("1.0.0"))
+    commands.save_checkpoint(
+        interrupted_fence,
+        RunCheckpoint(
+            checkpoint_id=StableId("checkpoint.sql-consumption-interrupted"),
+            run_id=interrupted_task.run_id,
+            event_position=events.replay(interrupted_task.run_id)[-1].sequence_no,
+            logical_stage="before-model-response",
+            state_artifact_ref=state_ref,
+            resumability_status=ResumabilityStatus.RESUMABLE,
+        ),
+    )
+    interrupted_request = request.model_copy(
+        update={
+            "request_id": StableId("model.sql-consumption.interrupted"),
+            "run_id": interrupted_task.run_id,
+            "task_id": interrupted_task.task_id,
+            "attempt_id": interrupted_fence.attempt_id,
+        }
+    )
+    asyncio.run(gateway.generate_structured(interrupted_request, _ReplayPayload))
+    commands.settle_attempt(
+        interrupted_fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.WAITING_RETRY,
+        failure_class=FailureClass.WORKER_STARTUP,
+    )
+    query = RuntimeTaskQueryRepository(factory)
+    evidence = query.attempt_effect_evidence(interrupted_task.task_id)
+    classification = classify_attempt(
+        task_id=StableId(interrupted_task.task_id.root),
+        task_status=TaskStatus.WAITING_RETRY,
+        attempt=query.last_settled_attempt(interrupted_task.task_id),
+        completed_response_refs=evidence.completed_response_refs,
+        frontier_attempt_id=evidence.frontier_attempt_id,
+    )
+    assert classification.action is RecoveryAction.REPLAY_COMPLETED
+    assert len(evidence.completed_response_refs) == 1
+    with pytest.raises(RuntimeCommandConflictError, match="settled failure classification"):
+        commands.control(
+            interrupted_task.task_id,
+            command_id=StableId("control.retry.with-raw"),
+            action="retry",
+            actor_id="operator",
+            reason="must replay the durable response first",
+        )
+    recovery = RuntimeRecoveryService(
+        factory,
+        commands,
+        RunCheckpointRepository(factory),
+        artifacts,
+        commits,
+        cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
+    )
+    checkpoint, replay_attempt, replay_fence = recovery.resume(
+        interrupted_task.task_id,
+        worker_id="planner.recovery",
+        actor_id="operator",
+        current_configuration_fingerprint=ArtifactId(interrupted_task.policy_hash),
+    )
+    assert checkpoint.checkpoint_id.root == "checkpoint.sql-consumption-interrupted"
+    assert replay_attempt.attempt_no == 2
+    replay_task = commands.get_task(interrupted_task.task_id)
+    replay_evidence_refs = tuple(
+        ref
+        for ref in replay_task.terminal_artifact_refs
+        if ref.media_type == "application/vnd.novel-agent.runtime-model-replay-evidence+json"
+    )
+    assert len(replay_evidence_refs) == 1
+    commands.mark_started(replay_fence)
+    calls_before_replay = len(endpoint.requests)
+    replayed, _ = asyncio.run(gateway.generate_structured(interrupted_request, _ReplayPayload))
+    assert replayed.value == "durable response"
+    assert len(endpoint.requests) == calls_before_replay
+    replay_output_ref = artifacts.put(
+        b"replayed plan result", "application/json", SchemaVersion("1.0.0")
+    )
+    commands.settle_attempt(
+        replay_fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        artifact_refs=(replay_output_ref,),
+    )
+    restored = SqlModelCallLedger(factory).load(interrupted_request.request_id)
+    assert restored is not None and restored.response_consumed_at is not None
+
+
+def test_retry_control_refuses_a_deterministic_settled_failure(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _, _, _, _, commands, base = edge_kernel
+    task = commands.create_run_and_initial_task(_request("run.deterministic-retry", base))
+    _, fence = commands.claim(task.task_id, worker_id="worker")
+    commands.mark_started(fence)
+    settled = commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.WAITING_RETRY,
+        failure_class=FailureClass.LEAF_SCHEMA_REJECTED,
+    )
+    assert settled.status is TaskStatus.WAITING_RETRY
+    with pytest.raises(RuntimeCommandConflictError, match="settled failure classification"):
+        commands.control(
+            task.task_id,
+            command_id=StableId("control.retry.deterministic"),
+            action="retry",
+            actor_id="operator",
+            reason="generic retry pump",
+        )
 
 
 def test_control_retry_requires_waiting_retry_and_observed_revision(
@@ -1525,13 +1712,24 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
     """
 
     _, commits, artifacts, _, commands, base = edge_kernel
-    task = commands.create_run_and_initial_task(_request("run.reject-revision", base))
+    author_ref = artifacts.put(b"author brief", "text/plain", SchemaVersion("1.0.0"))
+    task = commands.create_run_and_initial_task(
+        _request("run.reject-revision", base).model_copy(
+            update={"input_artifact_refs": (author_ref,)}
+        )
+    )
     _, fence = commands.claim(task.task_id, worker_id="planner")
     commands.mark_started(fence)
     proposal_ref = artifacts.put(
         b'{"plan":"escalated"}',
         "application/vnd.novel-agent.plan-proposal+json",
         SchemaVersion("1.0.0"),
+    )
+    commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        artifact_refs=(proposal_ref,),
     )
     review_ref = artifacts.put(
         json.dumps(
@@ -1546,6 +1744,17 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
                         "summary": "long-range PROMISE/FORESHADOWING requires not_before_chapter",
                         "blocking": True,
                         "affected_item_ids": ["story.reader_promise"],
+                        "field_path": "obligation_plan.0.not_before_chapter",
+                        "constraint_id": "author-constraint.reader-promise-window",
+                        "quote": "后续章节必须明确兑现窗口",
+                        "citations": [
+                            {
+                                "item_id": "story.reader_promise",
+                                "field_path": "obligation_plan.0.not_before_chapter",
+                                "quote": "后续章节必须明确兑现窗口",
+                            }
+                        ],
+                        "unmet_condition": "not_before_chapter is missing",
                     }
                 ],
             }
@@ -1606,7 +1815,7 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
     assert revised.kind is TaskKind.PLAN_CANDIDATE
     assert revised.status is TaskStatus.READY
     assert revised.planning_generation == 1
-    assert revised.dependency_task_ids == (waiting.task_id,)
+    assert revised.dependency_task_ids == (task.task_id,)
     directive_ref = next(
         ref
         for ref in revised.input_artifact_refs
@@ -1618,6 +1827,19 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
         {"item_id": "story.reader_promise", "field": "not_before_chapter"}
     ]
     assert directive["escalated_issues"][0]["kind"] == "long_range_payoff_without_time_window"
+    assert directive["escalated_issues"][0]["field_path"] == (
+        "obligation_plan.0.not_before_chapter"
+    )
+    assert directive["escalated_issues"][0]["constraint_id"] == (
+        "author-constraint.reader-promise-window"
+    )
+    assert directive["escalated_issues"][0]["citations"] == [
+        {
+            "item_id": "story.reader_promise",
+            "field_path": "obligation_plan.0.not_before_chapter",
+            "quote": "后续章节必须明确兑现窗口",
+        }
+    ]
 
 
 def test_operator_rejection_requires_and_preserves_independent_review_source(
@@ -1631,11 +1853,24 @@ def test_operator_rejection_requires_and_preserves_independent_review_source(
     ],
 ) -> None:
     _, commits, artifacts, _, commands, base = edge_kernel
-    task = commands.create_run_and_initial_task(_request("run.operator-revision", base))
+    author_ref = artifacts.put(b"author brief", "text/plain", SchemaVersion("1.0.0"))
+    task = commands.create_run_and_initial_task(
+        _request("run.operator-revision", base).model_copy(
+            update={"input_artifact_refs": (author_ref,)}
+        )
+    )
     proposal_ref = artifacts.put(
         b'{"plan":"operator-review"}',
         "application/vnd.novel-agent.plan-proposal+json",
         SchemaVersion("1.0.0"),
+    )
+    _, fence = commands.claim(task.task_id, worker_id="planner")
+    commands.mark_started(fence)
+    commands.settle_attempt(
+        fence,
+        outcome=AttemptOutcome.SUCCEEDED,
+        terminal_status=TaskStatus.SUCCEEDED,
+        artifact_refs=(proposal_ref,),
     )
     candidate = CandidateBinding(
         candidate_id=StableId("candidate.operator-revision"),
@@ -1659,6 +1894,10 @@ def test_operator_rejection_requires_and_preserves_independent_review_source(
                         "summary": "unresolved item must declare affected chapters",
                         "blocking": True,
                         "affected_item_ids": ["plan-issue.operator-gap"],
+                        "field_path": "unresolved.affected_chapters",
+                        "constraint_id": "unresolved.scope.chapter-set",
+                        "actual": "[]",
+                        "expected": "[1, 10]",
                     }
                 ],
             }
@@ -1719,3 +1958,7 @@ def test_operator_rejection_requires_and_preserves_independent_review_source(
     assert directive["required_fields"] == [
         {"item_id": "plan-issue.operator-gap", "field": "affected_chapters"}
     ]
+    assert directive["escalated_issues"][0]["field_path"] == ("unresolved.affected_chapters")
+    assert directive["escalated_issues"][0]["constraint_id"] == "unresolved.scope.chapter-set"
+    assert directive["escalated_issues"][0]["actual"] == "[]"
+    assert directive["escalated_issues"][0]["expected"] == "[1, 10]"

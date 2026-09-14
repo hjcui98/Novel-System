@@ -59,6 +59,43 @@ def _issue_item_ids(issue: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(str(item) for item in affected)
 
 
+_DIRECTIVE_ISSUE_FIELDS = (
+    "issue_id",
+    "kind",
+    "summary",
+    "blocking",
+    "host_issued",
+    "affected_item_ids",
+    "proposed_target_item_ids",
+    "authorized_target_item_ids",
+    "authorized_operations",
+    "field_path",
+    "constraint_id",
+    "actual",
+    "expected",
+    "quote",
+    "citations",
+    "unmet_condition",
+    "evidence_refs",
+    "memory_gap_questions",
+)
+
+
+def _directive_issue(issue: Mapping[str, object]) -> dict[str, object]:
+    """Carry the immutable structured finding into the revision handoff.
+
+    The directive is a control artifact, not a second review receipt.  It must
+    nevertheless preserve the finding's field/constraint identity and its
+    comparison evidence so the next Stage 4 invocation can audit why a field is
+    required.  Only JSON-shaped values arrive here: model reviews are decoded
+    from JSON and operator findings use ``model_dump(mode="json")``.
+    """
+
+    projected = {key: issue[key] for key in _DIRECTIVE_ISSUE_FIELDS if key in issue}
+    projected["affected_item_ids"] = list(_issue_item_ids(issue))
+    return projected
+
+
 class RuntimeAcceptanceService:
     def __init__(
         self,
@@ -191,7 +228,9 @@ class RuntimeAcceptanceService:
             # create successors, so the revised generation is created explicitly
             # afterwards with its dependency on the rejected candidate recorded.
             directive_ref = self._record_revision(task, command)
-            revised = self._revised_plan_task(task, directive_ref)
+            revised = self._revised_plan_task(
+                task, command.candidate.artifact_ref, command.review_artifact_refs, directive_ref
+            )
         self._commands.complete_waiting_task(
             command.task_id,
             receipt=receipt,
@@ -242,15 +281,7 @@ class RuntimeAcceptanceService:
             "source_review_artifact_refs": [
                 ref.artifact_id.root for ref in command.review_artifact_refs
             ],
-            "escalated_issues": [
-                {
-                    "issue_id": str(issue.get("issue_id")),
-                    "kind": str(issue.get("kind")),
-                    "summary": str(issue.get("summary")),
-                    "affected_item_ids": list(_issue_item_ids(issue)),
-                }
-                for issue in issues
-            ],
+            "escalated_issues": [_directive_issue(issue) for issue in issues],
         }
         return self._artifacts.put(
             canonical_json_bytes(directive),
@@ -277,7 +308,11 @@ class RuntimeAcceptanceService:
             )
         except (UnicodeDecodeError, ValueError):
             return ()
-        refs: list[ArtifactRef] = list(candidate.lineage_artifact_refs)
+        refs: list[ArtifactRef] = [
+            ref
+            for ref in candidate.lineage_artifact_refs
+            if ref.media_type == PLAN_REVIEW_MEDIA_TYPE
+        ]
         refs.extend(review_artifact_refs)
         collected: list[dict[str, object]] = []
         seen_refs: set[str] = set()
@@ -323,8 +358,69 @@ class RuntimeAcceptanceService:
                     collected.append(issue)
         return tuple(collected)
 
-    def _revised_plan_task(self, task: TaskRecord, directive_ref: ArtifactRef) -> TaskRecord:
+    def _revised_plan_task(
+        self,
+        task: TaskRecord,
+        parent_ref: ArtifactRef,
+        review_refs: tuple[ArtifactRef, ...],
+        directive_ref: ArtifactRef,
+    ) -> TaskRecord:
         """One new planning generation that carries the author's revision directive."""
+
+        control_media = {
+            PLAN_REVIEW_MEDIA_TYPE,
+            OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+            AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE,
+            OPERATOR_REVISION_DIRECTIVE_MEDIA_TYPE,
+            "application/vnd.novel-agent.plan-proposal+json",
+            "application/vnd.novel-agent.stage5-candidate-binding+json",
+            "application/vnd.novel-agent.runtime-rebind-evidence+json",
+            "application/vnd.novel-agent.planning-inquiry+json",
+            "application/vnd.novel-agent.context-package+json",
+            "application/vnd.novel-agent.planner-context-package+json",
+            "application/vnd.novel-agent.planning-loop-event+json",
+            "application/vnd.novel-agent.planning-loop-checkpoint+json",
+            ACCEPTANCE_MEDIA_TYPE,
+        }
+        author_refs = tuple(
+            ref for ref in task.input_artifact_refs if ref.media_type not in control_media
+        )
+        pending = list(task.dependency_task_ids)
+        seen: set[TaskId] = set()
+        while not author_refs and pending:
+            dependency_id = pending.pop(0)
+            if dependency_id in seen:
+                continue
+            seen.add(dependency_id)
+            ancestor = self._commands.get_task(dependency_id)
+            if ancestor.run_id == task.run_id and ancestor.project_id == task.project_id:
+                author_refs = tuple(
+                    ref
+                    for ref in ancestor.input_artifact_refs
+                    if ref.media_type not in control_media
+                )
+                pending.extend(ancestor.dependency_task_ids)
+        if not author_refs:
+            raise RuntimeCommandConflictError(
+                "rejected plan has no verifiable upstream author-intent artifact"
+            )
+        if len(review_refs) > 1:
+            raise RuntimeCommandConflictError("a revision requires one current operator review")
+        producing_tasks = tuple(
+            self._commands.get_task(dependency_id) for dependency_id in task.dependency_task_ids
+        )
+        producer = next(
+            (
+                item
+                for item in producing_tasks
+                if item.kind is TaskKind.PLAN_CANDIDATE and item.status is TaskStatus.SUCCEEDED
+            ),
+            None,
+        )
+        if producer is None:
+            raise RuntimeCommandConflictError(
+                "rejected acceptance has no succeeded planning producer"
+            )
 
         generation = task.planning_generation + 1
         level = (
@@ -350,8 +446,8 @@ class RuntimeAcceptanceService:
                 "candidate_binding_ref": None,
                 "terminal_artifact_refs": (),
                 "block_cause": None,
-                "dependency_task_ids": (task.task_id,),
-                "input_artifact_refs": (*task.input_artifact_refs, directive_ref),
+                "dependency_task_ids": (producer.task_id,),
+                "input_artifact_refs": (*author_refs, parent_ref, *review_refs, directive_ref),
                 "planning_generation": generation,
                 "projection_after": None,
                 "affects_future_plan": None,

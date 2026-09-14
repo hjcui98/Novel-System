@@ -919,7 +919,7 @@ def test_runtime_maintenance_human_required_can_resume_from_bound_checkpoint(
     _, maintenance = _create_runtime_maintenance(
         factory, artifacts, commands, base, "run.u8b.runtime-human"
     )
-    checkpoint_ref = _ref("b")
+    checkpoint_ref = artifacts.put(b"checkpoint", "application/json", VERSION)
     port = _MaintenancePort(
         MemoryWriteWorkflowResult(
             request_id=StableId("request.u8b.runtime-human"),

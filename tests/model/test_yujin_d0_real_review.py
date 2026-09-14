@@ -36,6 +36,7 @@ than trusted as extra authority.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,11 @@ from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvo
 from novel_agent.agents.planner import build_planner_contract_bundle, planner_skill_ids_for_mode
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+    OperatorReviewEvidence,
+    OperatorReviewFinding,
+)
 from novel_agent.domain.ids import (
     ArtifactId,
     CommitId,
@@ -63,7 +69,12 @@ from novel_agent.domain.model_calls import (
     ModelRequest,
     ModelRole,
 )
-from novel_agent.domain.plan_composition import revision_scope
+from novel_agent.domain.plan_composition import (
+    compose_scoped_revision,
+    operator_revision_scope,
+    out_of_scope_items,
+    revision_scope,
+)
 from novel_agent.domain.planning import (
     PlanReview,
     PlanReviewDraft,
@@ -122,15 +133,37 @@ D0_CONTENT_REVIEW_FOCUS = (
     "他槽位的模板重复。字段名只是审查范围, 不是预置问题; 只有候选原文逐字证据成立才报告。"
     "每个重复观察都要遍历比较投影的全部条目, 把该 quote 在同一 field_path 中逐字命中的"
     "每个条目都列入 affected_item_ids, 不能在找到一对后停止而漏掉其他匹配条目。"
-    "对每个槽位先扫描全部条目并求逐字共同片段的完整命中集合, 再决定是否 blocking;"
-    "不能只采用较长句子而漏掉包含较短共同片段的第三个条目。"
-    "若多个条目只共享一个短语而整句因地点或阶段不同, quote 必须缩短为所有 affected "
-    "字段都逐字包含的共同子串, 不得拿某一个条目的整句代表另一条目。修复某条失实引用时, "
+    "对每个槽位先扫描全部条目并比较各自完整字段的因果、代价、信息和状态变化。"
+    "跨条目措辞不同则逐条提供 citations, 每条引用必须来自对应条目的同一字段。"
+    "修复某条失实引用时, "
     "保留其他已经核验成立的 blocking finding, 不要用空 issues 覆盖它们。"
     "affected_item_ids 只是逐条引用和比较证据; 必须另填 proposed_target_item_ids, "
     "只列出你建议实际修改的条目。比较用的基准条目不因被引用而自动获得写权限, "
     "不要用 revision_instruction 的自然语言替代这个结构化目标列表。"
 )
+
+PRESERVED_D0_ROOT = (
+    Path(__file__).parents[2]
+    / "tmp/yujin-evidence-preserved/d0-20260914/test_d0_a_real_planner_revisio0"
+)
+PRESERVED_D0_OBJECTS = PRESERVED_D0_ROOT / "d0-real-objects"
+PRESERVED_E16_DIGEST = "e16d6d1d3cea681972a2342afb9af5dc728fc4a17399fd6179faa0126a271f13"
+PRESERVED_ORIGINAL_REVIEW_DIGEST = (
+    "0ad3d8b6ff128394f35283676e2771c8954189a02a4c7c57c1277b8a89861378"
+)
+PRESERVED_FINAL_REVIEW_DIGEST = (
+    "74f4d5e6b08b84b8c8fed864f57c0e731e1ffc23d3c4a6b8d76f7ec7ded6db4e"
+)
+PRESERVED_R2_OPERATOR_REVIEW_DIGEST = (
+    "000f43ea1e69cf89b4c967311430568cd8eccdba34940f43efcfd7b1ccd5c0cb"
+)
+PRESERVED_R2_REPAIR_RAW_DIGEST = (
+    "05151881b9122e7595c9ad782c28d386ba20a1da417d3d4f7b5e5a5f6afa4393"
+)
+
+
+def _preserved_object(digest: str) -> Path:
+    return PRESERVED_D0_OBJECTS / "sha256" / digest[:2] / digest
 
 
 def _endpoint() -> RegisteredModelEndpoint:
@@ -139,8 +172,12 @@ def _endpoint() -> RegisteredModelEndpoint:
     return endpoints[0]
 
 
-def _reviewer(tmp_path: Path) -> tuple[PlanReviewerAgent, ArtifactRepository]:
-    repo = ArtifactRepository(FilesystemObjectStore(tmp_path / "d0-real-objects"))
+def _reviewer(
+    tmp_path: Path, *, object_root: Path | None = None
+) -> tuple[PlanReviewerAgent, ArtifactRepository]:
+    repo = ArtifactRepository(
+        FilesystemObjectStore(object_root or tmp_path / "d0-real-objects")
+    )
     bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
     gateway = ModelGateway(
         (_endpoint(),),
@@ -525,30 +562,29 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     assert volume_ids >= KNOWN_REPEATED_REVEAL_IDS, (
         "the real Reviewer did not cover both later frozen volumes carrying the repeated climax"
     )
+    effective_findings = tuple(issue for issue in real_review.issues if issue.blocking)
+    assert len(effective_findings) >= len(known_findings)
     expected_fields: dict[str, set[str]] = {}
-    for issue in known_findings:
+    for issue in effective_findings:
         assert issue.field_path is not None
-        top_level_field = issue.field_path.split(".", maxsplit=1)[0]
         assert issue.authorized_target_item_ids, issue.issue_id
         for item_id in issue.authorized_target_item_ids:
-            expected_fields.setdefault(item_id.root, set()).add(top_level_field)
-    reviewed_fields = sorted({field for fields in expected_fields.values() for field in fields})
-    review = real_review.model_copy(
-        update={
-            "decision": ReviewDecision.REVISE,
-            "issues": known_findings,
-            "revision_instruction": (
-                "只修改 REVIEW 点名条目的 " + "、".join(reviewed_fields) + "；"  # noqa: RUF001
-                "其余条目的 payload 必须与 PARENT_PROPOSAL 逐字一致。"
-            ),
-        }
-    )
+            expected_fields.setdefault(item_id.root, set()).add(issue.field_path)
+    review = real_review
     scope = revision_scope(review)
     assert set(scope.targeted_item_ids) == set(expected_fields)
     for item_id, fields in expected_fields.items():
         target = scope.target_for(item_id)
         assert target is not None
         assert set(target.field_paths) == fields
+
+    def field_value(payload: dict[str, object], path: str) -> object:
+        current: object = payload
+        for segment in path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(segment)
+        return current
 
     brief = (FROZEN_RUN / "input/brief.md").read_bytes()
     brief_ref = repo.put(brief, "text/plain", VERSION)
@@ -598,6 +634,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
 
     def missing_revision_fields(proposal: PlanProposal) -> tuple[str, ...]:
         produced = {item.item_id.root: item.payload for item in proposal.items}
+
         missing: list[str] = []
         for item_id, fields in expected_fields.items():
             payload = produced.get(item_id)
@@ -606,7 +643,9 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
                 missing.extend(f"{item_id}.{field}" for field in fields)
                 continue
             missing.extend(
-                f"{item_id}.{field}" for field in fields if payload.get(field) == parent.get(field)
+                f"{item_id}.{field}"
+                for field in fields
+                if field_value(payload, field) == field_value(parent, field)
             )
         return tuple(missing)
 
@@ -703,8 +742,11 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         target_item = next(item for item in composed.items if item.item_id.root == item_id)
         parent_item = next(item for item in candidate.items if item.item_id.root == item_id)
         for field in fields:
-            assert target_item.payload[field] != parent_item.payload[field], (
-                f"the real revision did not move the field the review named: {item_id}.{field}"
+            actual = field_value(target_item.payload, field)
+            expected = field_value(parent_item.payload, field)
+            assert actual != expected, (
+                "the real revision did not move the field the review named: "
+                f"{item_id}.{field}"
             )
 
     # Re-review the composed candidate for real.  The same bounded citation-repair
@@ -738,6 +780,590 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     assert rereview.decision is ReviewDecision.ACCEPT, [
         issue.summary for issue in rereview.issues if issue.blocking
     ]
+
+
+def test_d0_b_real_continuation_from_preserved_e16_once(tmp_path: Path) -> None:
+    """Apply one host-bound revision to preserved e16, then perform one real rereview.
+
+    The previous D0 test intentionally starts from the original frozen candidate.
+    This continuation is a separate diagnostic entry: its scope is built from the
+    preserved fourth-volume omission and eighth-volume duplicate finding, so it does
+    not spend a second initial review on an already-reviewed parent.  The operator
+    evidence below is not a model ``PlanReview`` receipt and is never presented as
+    one; it is the host's explicit binding of the two preserved findings.
+    """
+
+    import asyncio
+
+    from novel_agent.agents.planner import PlannerAgent, _proposal_output_type
+    from novel_agent.domain.stage2 import PlanningTask
+
+    default_root = Path(__file__).parents[2] / "tmp/yujin-d0-continuation-20260914"
+    diagnostic_root = Path(os.environ.get("YUJIN_D0_CONTINUATION_ROOT", str(default_root)))
+    lock_path = diagnostic_root / "continuation.lock"
+    if lock_path.exists():
+        pytest.fail(
+            "D0 continuation diagnostic already has a lock; refusing a second model sample"
+        )
+    diagnostic_root.mkdir(parents=True, exist_ok=False)
+    lock_path.write_text(
+        "one local revision + one real rereview; do not rerun\n", encoding="utf-8"
+    )
+
+    candidate_bytes = _preserved_object(PRESERVED_E16_DIGEST).read_bytes()
+    candidate = PlanProposal.model_validate_json(candidate_bytes, strict=True)
+    original_review_bytes = _preserved_object(PRESERVED_ORIGINAL_REVIEW_DIGEST).read_bytes()
+    final_review_bytes = _preserved_object(PRESERVED_FINAL_REVIEW_DIGEST).read_bytes()
+    original_review = PlanReview.model_validate_json(original_review_bytes, strict=True)
+    final_review = PlanReview.model_validate_json(final_review_bytes, strict=True)
+    reviewer, repo = _reviewer(
+        tmp_path,
+        object_root=diagnostic_root / "d0-real-objects",
+    )
+    parent_ref = repo.put(candidate_bytes, PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
+    original_review_ref = repo.put(
+        original_review_bytes,
+        "application/vnd.novel-agent.plan-review+json",
+        VERSION,
+    )
+    final_review_ref = repo.put(
+        final_review_bytes,
+        "application/vnd.novel-agent.plan-review+json",
+        VERSION,
+    )
+
+    def field_value(item_id: str, slot: str) -> str:
+        item = next(item for item in candidate.items if item.item_id.root == item_id)
+        value = item.payload.get(slot)
+        if not isinstance(value, dict) or not isinstance(value.get("description"), str):
+            raise AssertionError(f"preserved candidate lacks {item_id}.{slot}.description")
+        return value["description"]
+
+    operator_review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.d0-continuation"),
+        target_artifact_ref=parent_ref,
+        reviewer_id="codex.operator",
+        reason="保全复核绑定第四卷遗漏意见和第八卷事件重复; 仅授权两个明确字段。",
+        supporting_review_artifact_refs=(original_review_ref, final_review_ref),
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-issue.d0.vol4-midpoint"),
+                kind="preserved_review_omission",
+                summary="第四卷 midpoint reversal 的原始 blocking finding 在 e16 中没有处置。",
+                affected_item_ids=(StableId("vol-4"),),
+                field_path="midpoint_reversal.description",
+                constraint_id="d0.vol4.midpoint_reversal.causal_progression",
+                actual=field_value("vol-4", "midpoint_reversal"),
+                expected="必须明确反转的因果/代价推进, 不得只保留后续探索线索。",
+            ),
+            OperatorReviewFinding(
+                issue_id=StableId("operator-issue.d0.vol8-climax"),
+                kind="preserved_event_duplicate",
+                summary="第八卷 climax 仍重复击败同一首领并取得最终秘密的事件结果。",
+                affected_item_ids=(StableId("vol-8"),),
+                field_path="volume_climax.description",
+                constraint_id="d0.vol8.volume_climax.event_progression",
+                actual=field_value("vol-8", "volume_climax"),
+                expected="必须给出新的事件身份、代价或因果后果, 不得复写既有终局事件。",
+            ),
+        ),
+    )
+    operator_review_ref = repo.put(
+        operator_review.model_dump_json().encode(),
+        OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+        VERSION,
+    )
+    scope = operator_revision_scope(operator_review)
+    _record(
+        diagnostic_root,
+        "d0.continuation.binding",
+        {
+            "actor_kind": "operator_diagnostic",
+            "actor_id": operator_review.reviewer_id,
+            "target_candidate": parent_ref.artifact_id.root,
+            "source_candidate": f"sha256:{PRESERVED_E16_DIGEST}",
+            "source_reviews": [
+                original_review_ref.artifact_id.root,
+                final_review_ref.artifact_id.root,
+            ],
+            "source_review_decisions": [
+                original_review.decision.value,
+                final_review.decision.value,
+            ],
+            "operator_review_ref": operator_review_ref.artifact_id.root,
+            "target_items": sorted(scope.targeted_item_ids),
+            "target_fields": sorted(
+                f"{target.item_id.root}.{field}"
+                for target in scope.targets
+                for field in target.field_paths
+            ),
+            "is_model_plan_review_receipt": False,
+        },
+    )
+
+    _constraints, root, _profile_ref = author_constraint_root()
+    lock_ref = repo.put(
+        root.model_dump_json().encode(),
+        "application/vnd.novel-agent.author-constraint-root+json",
+        VERSION,
+    )
+    world_ref = repo.put(
+        _frozen_world_root().model_dump_json().encode(),
+        "application/vnd.novel-agent.world-root+json",
+        VERSION,
+    )
+    brief = (FROZEN_RUN / "input/brief.md").read_bytes()
+    brief_ref = repo.put(brief, "text/plain", VERSION)
+    task = PlanningTask(
+        planning_task_id=StableId("task.d0.continuation.revision"),
+        project_id=PROJECT,
+        mode=AgentMode.ARC_VOLUME,
+        base_commit=COMMIT,
+        source_ids=(StableId("source.d0.brief"),),
+        strategy=None,
+    )
+    source_payload = (
+        f"<AUTHOR_BRIEF>\n{brief.decode('utf-8')}\n</AUTHOR_BRIEF>\n"
+        "OPERATOR_REVIEW_KIND=host_scope_binding\n"
+        f"OPERATOR_REVIEW={operator_review.model_dump_json()}\n"
+        f"REVISION_SCOPE={scope.model_dump_json()}\n"
+        "REVISION_SCOPE_RULE=只修改宿主绑定的 vol-4.midpoint_reversal 和 "
+        "vol-8.volume_climax; 其余 payload 必须逐字继承父候选。\n"
+        f"PARENT_CANDIDATE_HASH={candidate.proposal_id.root}\n"
+        f"PARENT_PROPOSAL={candidate.model_dump_json()}"
+    )
+
+    bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
+    planner_gateway = ModelGateway(
+        (_endpoint(),),
+        forbid_external_calls=True,
+        structured_max_retries=0,
+        raw_artifacts=repo,
+    )
+    planner = PlannerAgent(
+        StructuredAgentRunner(
+            planner_gateway,
+            bundle.agents,
+            bundle.prompts,
+            bundle.skills,
+        ),
+        repo,
+    )
+
+    def run_planner(phase: str, payload: str):
+        prepared = planner._runner.prepare(
+            AgentType.PLANNER,
+            AgentMode.ARC_VOLUME,
+            VERSION.root,
+            _request(phase),
+            f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\n"
+            f"SOURCE_DATA={payload}",
+            source_hashes=(
+                brief_ref.artifact_id,
+                parent_ref.artifact_id,
+                operator_review_ref.artifact_id,
+            ),
+            input_artifacts=(brief_ref, parent_ref, operator_review_ref),
+            base_commit=COMMIT,
+            allowed_skill_ids=planner_skill_ids_for_mode(AgentMode.ARC_VOLUME),
+        )
+        execution = asyncio.run(planner._runner.execute(prepared, _proposal_output_type(task)))
+        result = planner._materialize_plan(
+            version=VERSION,
+            task=task,
+            draft=execution.output,
+            prepared=prepared,
+            model_call=execution.model_call,
+            reviewed_inquiry_ref=None,
+            memory_need_ids=(),
+            evidence_refs=(),
+            graph_path_receipt_refs=(),
+            parent_proposal_id=candidate.proposal_id,
+        )
+        return result.plan_proposal, execution
+
+    try:
+        raw, execution = run_planner("continuation-plan-revision", source_payload)
+    except Exception as error:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {"stage": "planner_revision", "error": f"{type(error).__name__}: {error}"},
+        )
+        pytest.fail(f"D0 continuation Planner revision blocked: {type(error).__name__}: {error}")
+
+    def missing_revision_fields(proposal: PlanProposal) -> tuple[str, ...]:
+        def field_value(payload: dict[str, object], path: str) -> object:
+            current: object = payload
+            for segment in path.split("."):
+                if not isinstance(current, dict):
+                    return None
+                current = current.get(segment)
+            return current
+
+        missing: list[str] = []
+        for target in scope.targets:
+            produced = next(
+                (item for item in proposal.items if item.item_id == target.item_id),
+                None,
+            )
+            parent = next(item for item in candidate.items if item.item_id == target.item_id)
+            if produced is None:
+                missing.extend(f"{target.item_id.root}.{field}" for field in target.field_paths)
+                continue
+            for field in target.field_paths:
+                if field_value(produced.payload, field) == field_value(parent.payload, field):
+                    missing.append(f"{target.item_id.root}.{field}")
+        return tuple(missing)
+
+    planner_repair: dict[str, object] | None = None
+    missing = missing_revision_fields(raw)
+    if missing:
+        planner_repair = {
+            "request_phase": "continuation-plan-repair",
+            "missing_fields_after_first_revision": list(missing),
+        }
+        try:
+            raw, execution = run_planner(
+                "continuation-plan-repair",
+                source_payload
+                + "\nPLANNER_REPAIR_FEEDBACK=这是唯一一次格式/约束修复; 必须实际改变宿主点名字段: "
+                + ", ".join(missing),
+            )
+        except Exception as error:
+            _record(
+                diagnostic_root,
+                "d0.continuation.blocked",
+                {
+                    "stage": "planner_repair",
+                    "error": f"{type(error).__name__}: {error}",
+                    "previous_missing": list(missing),
+                },
+            )
+            pytest.fail(f"D0 continuation Planner repair blocked: {type(error).__name__}: {error}")
+        planner_repair["missing_fields_after_repair"] = list(missing_revision_fields(raw))
+
+    remaining = missing_revision_fields(raw)
+    if remaining:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {
+                "stage": "planner_revision",
+                "reason": "bounded local revision did not repair every host target",
+                "missing_fields": list(remaining),
+            },
+        )
+        pytest.fail("D0 continuation remains blocked after its single bounded repair")
+
+    composed = compose_scoped_revision(candidate, raw, scope)
+    out_of_scope = out_of_scope_items(candidate, raw, scope)
+    for original, produced in zip(candidate.items, composed.items, strict=True):
+        if original.item_id.root not in scope.targeted_item_ids:
+            assert produced.payload == original.payload, original.item_id
+    composed_ref = repo.put(
+        composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
+    )
+    _record(
+        diagnostic_root,
+        "d0.continuation.revision",
+        {
+            "parent_candidate": parent_ref.artifact_id.root,
+            "composed_candidate": composed_ref.artifact_id.root,
+            "target_items": sorted(scope.targeted_item_ids),
+            "target_fields": sorted(
+                f"{target.item_id.root}.{field}"
+                for target in scope.targets
+                for field in target.field_paths
+            ),
+            "out_of_scope_items": list(out_of_scope),
+            "planner_repair": planner_repair,
+            "usage": None
+            if execution.model_call.usage is None
+            else execution.model_call.usage.model_dump(mode="json"),
+        },
+    )
+
+    try:
+        rereview, rereview_ref, rereview_call = _run_review(
+            reviewer,
+            composed,
+            composed_ref,
+            lock_ref,
+            world_ref,
+            phase="continuation-plan-rereview",
+            review_focus=D0_CONTENT_REVIEW_FOCUS,
+        )
+    except Exception as error:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {"stage": "real_rereview", "error": f"{type(error).__name__}: {error}"},
+        )
+        pytest.fail(f"D0 real rereview blocked: {type(error).__name__}: {error}")
+
+    blocking = [issue.summary for issue in rereview.issues if issue.blocking]
+    _record(
+        diagnostic_root,
+        "d0.continuation.rereview",
+        {
+            "candidate": composed_ref.artifact_id.root,
+            "review_artifact": rereview_ref.artifact_id.root,
+            "decision": rereview.decision.value,
+            "verification_failures": list(rereview.verification_failures),
+            "blocking": blocking,
+            "usage": None
+            if rereview_call.usage is None
+            else rereview_call.usage.model_dump(mode="json"),
+            "one_real_rereview": True,
+        },
+    )
+    if blocking or rereview.decision is not ReviewDecision.ACCEPT:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {"stage": "real_rereview", "decision": rereview.decision.value, "blocking": blocking},
+        )
+        pytest.fail("D0 continuation real rereview retained a blocking finding")
+
+
+def test_d0_c_real_rereview_from_persisted_revision_once(tmp_path: Path) -> None:
+    """Reuse the completed r2 revision and spend only the missing real rereview call.
+
+    The r2 diagnostic already persisted the Planner's final raw response and its
+    bounded repair draft.  This entry point deliberately does not execute a
+    Planner: it reconstructs the trusted proposal from that response, verifies
+    the host scope, and gives that exact proposal to one real Reviewer call.
+    """
+
+    from novel_agent.agents.planner import PlannerAgent
+    from novel_agent.domain.stage2 import PlannerProposalDraft, PlanningTask
+
+    diagnostic_root = Path(
+        os.environ.get(
+            "YUJIN_D0_REREVIEW_ROOT",
+            str(Path(__file__).parents[2] / "tmp/yujin-d0-rereview-20260914-r6"),
+        )
+    )
+    lock_path = diagnostic_root / "rereview.lock"
+    if lock_path.exists():
+        pytest.fail("D0 rereview diagnostic already has a lock; refusing a second model sample")
+    diagnostic_root.mkdir(parents=True, exist_ok=False)
+    lock_path.write_text(
+        "reuse persisted r2 revision + one real rereview; do not rerun Planner\n",
+        encoding="utf-8",
+    )
+
+    candidate_bytes = _preserved_object(PRESERVED_E16_DIGEST).read_bytes()
+    candidate = PlanProposal.model_validate_json(candidate_bytes, strict=True)
+    r2_objects = (
+        Path(__file__).parents[2]
+        / "tmp/yujin-d0-continuation-20260914-r2/d0-real-objects/sha256"
+    )
+
+    def r2_object(digest: str) -> Path:
+        return r2_objects / digest[:2] / digest
+
+    operator_review_bytes = r2_object(PRESERVED_R2_OPERATOR_REVIEW_DIGEST).read_bytes()
+    operator_review = OperatorReviewEvidence.model_validate_json(
+        operator_review_bytes, strict=True
+    )
+    repair_raw = json.loads(r2_object(PRESERVED_R2_REPAIR_RAW_DIGEST).read_bytes())
+    repair_draft = PlannerProposalDraft.model_validate_json(
+        repair_raw["raw_response_text"], strict=True
+    )
+    reviewer, repo = _reviewer(
+        tmp_path,
+        object_root=diagnostic_root / "d0-real-objects",
+    )
+
+    parent_ref = repo.put(candidate_bytes, PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
+    original_review_ref = repo.put(
+        _preserved_object(PRESERVED_ORIGINAL_REVIEW_DIGEST).read_bytes(),
+        "application/vnd.novel-agent.plan-review+json",
+        VERSION,
+    )
+    final_review_ref = repo.put(
+        _preserved_object(PRESERVED_FINAL_REVIEW_DIGEST).read_bytes(),
+        "application/vnd.novel-agent.plan-review+json",
+        VERSION,
+    )
+    operator_review_ref = repo.put(
+        operator_review_bytes,
+        OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+        VERSION,
+    )
+    assert operator_review.target_artifact_ref == parent_ref
+    assert operator_review.supporting_review_artifact_refs == (
+        original_review_ref,
+        final_review_ref,
+    )
+    scope = operator_revision_scope(operator_review)
+
+    _constraints, root, _profile_ref = author_constraint_root()
+    lock_ref = repo.put(
+        root.model_dump_json().encode(),
+        "application/vnd.novel-agent.author-constraint-root+json",
+        VERSION,
+    )
+    world_ref = repo.put(
+        _frozen_world_root().model_dump_json().encode(),
+        "application/vnd.novel-agent.world-root+json",
+        VERSION,
+    )
+    brief = (FROZEN_RUN / "input/brief.md").read_bytes()
+    brief_ref = repo.put(brief, "text/plain", VERSION)
+    task = PlanningTask(
+        planning_task_id=StableId("task.d0.continuation.revision"),
+        project_id=PROJECT,
+        mode=AgentMode.ARC_VOLUME,
+        base_commit=COMMIT,
+        source_ids=(StableId("source.d0.brief"),),
+        strategy=None,
+    )
+    source_payload = (
+        f"<AUTHOR_BRIEF>\n{brief.decode('utf-8')}\n</AUTHOR_BRIEF>\n"
+        "OPERATOR_REVIEW_KIND=host_scope_binding\n"
+        f"OPERATOR_REVIEW={operator_review.model_dump_json()}\n"
+        f"REVISION_SCOPE={scope.model_dump_json()}\n"
+        "REVISION_SCOPE_RULE=只修改宿主绑定的 vol-4.midpoint_reversal 和 "
+        "vol-8.volume_climax; 其余 payload 必须逐字继承父候选。\n"
+        f"PARENT_CANDIDATE_HASH={candidate.proposal_id.root}\n"
+        f"PARENT_PROPOSAL={candidate.model_dump_json()}"
+    )
+
+    bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
+    planner_gateway = ModelGateway(
+        (_endpoint(),),
+        forbid_external_calls=True,
+        structured_max_retries=0,
+        raw_artifacts=repo,
+    )
+    planner = PlannerAgent(
+        StructuredAgentRunner(
+            planner_gateway,
+            bundle.agents,
+            bundle.prompts,
+            bundle.skills,
+        ),
+        repo,
+    )
+    prepared = planner._runner.prepare(
+        AgentType.PLANNER,
+        AgentMode.ARC_VOLUME,
+        VERSION.root,
+        _request("continuation-plan-repair"),
+        "PLANNING_PHASE=plan\n"
+        f"PLANNING_TASK={task.model_dump_json()}\n"
+        f"SOURCE_DATA={source_payload}\n"
+        "PLANNER_REPAIR_FEEDBACK=这是已完成的有界修订; 复用已持久化响应, 不重新调用 Planner。",
+        source_hashes=(
+            brief_ref.artifact_id,
+            parent_ref.artifact_id,
+            operator_review_ref.artifact_id,
+        ),
+        input_artifacts=(brief_ref, parent_ref, operator_review_ref),
+        base_commit=COMMIT,
+        allowed_skill_ids=planner_skill_ids_for_mode(AgentMode.ARC_VOLUME),
+    )
+    repair_call = ModelCallRecord.model_validate_json(
+        json.dumps(repair_raw["call_record"]), strict=True
+    )
+    materialized = planner._materialize_plan(
+        version=VERSION,
+        task=task,
+        draft=repair_draft,
+        prepared=prepared,
+        model_call=repair_call,
+        reviewed_inquiry_ref=None,
+        memory_need_ids=(),
+        evidence_refs=(),
+        graph_path_receipt_refs=(),
+        parent_proposal_id=candidate.proposal_id,
+    )
+    revised = materialized.plan_proposal
+
+    def nested_value(payload: dict[str, object], path: str) -> object:
+        current: object = payload
+        for segment in path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(segment)
+        return current
+
+    changed_fields: list[str] = []
+    for target in scope.targets:
+        produced = next(item for item in revised.items if item.item_id == target.item_id)
+        parent = next(item for item in candidate.items if item.item_id == target.item_id)
+        for field in target.field_paths:
+            assert nested_value(produced.payload, field) != nested_value(parent.payload, field)
+            changed_fields.append(f"{target.item_id.root}.{field}")
+
+    composed = compose_scoped_revision(candidate, revised, scope)
+    out_of_scope = out_of_scope_items(candidate, revised, scope)
+    for original, produced in zip(candidate.items, composed.items, strict=True):
+        if original.item_id.root not in scope.targeted_item_ids:
+            assert produced.payload == original.payload, original.item_id
+    composed_ref = repo.put(
+        composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
+    )
+    _record(
+        diagnostic_root,
+        "d0.continuation.revision-reused",
+        {
+            "parent_candidate": parent_ref.artifact_id.root,
+            "composed_candidate": composed_ref.artifact_id.root,
+            "reused_raw_response": f"sha256:{PRESERVED_R2_REPAIR_RAW_DIGEST}",
+            "reused_model_request_id": repair_call.request_id.root,
+            "planner_calls_in_this_entry": 0,
+            "changed_fields": changed_fields,
+            "out_of_scope_items_from_reused_draft": list(out_of_scope),
+            "operator_review_ref": operator_review_ref.artifact_id.root,
+        },
+    )
+
+    try:
+        rereview, rereview_ref, rereview_call = _run_review(
+            reviewer,
+            composed,
+            composed_ref,
+            lock_ref,
+            world_ref,
+            phase="continuation-plan-rereview-reused",
+            review_focus=D0_CONTENT_REVIEW_FOCUS,
+        )
+    except Exception as error:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {"stage": "real_rereview", "error": f"{type(error).__name__}: {error}"},
+        )
+        pytest.fail(f"D0 real rereview blocked: {type(error).__name__}: {error}")
+
+    blocking = [issue.summary for issue in rereview.issues if issue.blocking]
+    _record(
+        diagnostic_root,
+        "d0.continuation.rereview-reused",
+        {
+            "candidate": composed_ref.artifact_id.root,
+            "review_artifact": rereview_ref.artifact_id.root,
+            "decision": rereview.decision.value,
+            "verification_failures": list(rereview.verification_failures),
+            "blocking": blocking,
+            "usage": None
+            if rereview_call.usage is None
+            else rereview_call.usage.model_dump(mode="json"),
+            "planner_calls_in_this_entry": 0,
+            "one_real_rereview": True,
+        },
+    )
+    if blocking or rereview.decision is not ReviewDecision.ACCEPT:
+        _record(
+            diagnostic_root,
+            "d0.continuation.blocked",
+            {"stage": "real_rereview", "decision": rereview.decision.value, "blocking": blocking},
+        )
+        pytest.fail("D0 continuation real rereview retained a blocking finding")
 
 
 # ------------------------------------- does the reviewer emit structured findings?

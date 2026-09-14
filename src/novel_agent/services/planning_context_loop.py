@@ -793,6 +793,8 @@ class PlanningContextLoopService:
                 event_refs=event_refs,
             )
         except PlanReviewerInvocationError as error:
+            if error.review_draft_ref is not None:
+                event_refs.append(error.review_draft_ref)
             return self._terminal(
                 request,
                 PlanningLoopTerminal.REVIEW_REQUIRED,

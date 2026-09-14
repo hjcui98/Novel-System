@@ -11,11 +11,13 @@ from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.creative_runtime import (
     OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+    RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE,
     CandidateBinding,
     CandidateKind,
     PlanningLoopRequest,
     PlanningLoopResult,
     PlanningTerminalStatus,
+    RuntimeModelReplayEvidence,
 )
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
@@ -93,6 +95,7 @@ _NON_AUTHOR_PLANNING_MEDIA_TYPES = frozenset(
         "application/vnd.novel-agent.planner-context-package+json",
         "application/vnd.novel-agent.planning-loop-event+json",
         PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE,
+        RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE,
         "application/vnd.novel-agent.stage5-acceptance-receipt+json",
     }
 )
@@ -105,6 +108,7 @@ class Stage4PlanningInvocation:
     world: WorldRootDocument | None = None
     text_root: TextRootDocument | None = None
     resume_checkpoint_ref: ArtifactRef | None = None
+    replay_completion_check: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +313,25 @@ class ProductionStage4InvocationFactory:
             ),
             None,
         )
+        replay_evidence_refs = tuple(
+            ref
+            for ref in request.continuation_artifact_refs
+            if ref.media_type == RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE
+        )
+        if len(replay_evidence_refs) > 1:
+            raise ValueError("Stage 4 recovery may bind only one model replay evidence artifact")
+        replay_responses = []
+        if replay_evidence_refs:
+            replay_evidence = RuntimeModelReplayEvidence.model_validate_json(
+                self._artifacts.read_verified(replay_evidence_refs[0]),
+                strict=True,
+            )
+            if (
+                replay_evidence.run_id != request.run_id
+                or replay_evidence.task_id != request.task_id
+            ):
+                raise ValueError("Stage 4 model replay evidence is not task-bound")
+            replay_responses = list(replay_evidence.responses)
 
         def model_request(phase: str, mode: AgentMode, attempt: int) -> ModelRequest:
             suffix = f"{phase}.{attempt}"
@@ -339,7 +362,7 @@ class ProductionStage4InvocationFactory:
                     f"model-request.{request.run_id.root}.{suffix}",
                 )
             )
-            return ModelRequest(
+            candidate = ModelRequest(
                 request_id=bounded_stable_id(
                     *candidates,
                 ),
@@ -351,10 +374,43 @@ class ProductionStage4InvocationFactory:
                 trace_id=f"trace.{request.run_id.root}.{request.task_id.root}",
                 prompt="",
                 agent_mode=mode.value,
+                scheduling_stage=phase,
                 max_output_tokens=self._policy.model_max_output_tokens,
                 timeout_seconds=self._policy.model_timeout_seconds,
                 enable_thinking=False,
             )
+            if not replay_responses:
+                return candidate
+            matching_index = next(
+                (
+                    index
+                    for index, response in enumerate(replay_responses)
+                    if response.logical_phase == phase
+                ),
+                None,
+            )
+            if matching_index is None:
+                raise ValueError(
+                    "model replay evidence has no response for Stage 4 logical phase "
+                    f"{phase}"
+                )
+            response = replay_responses.pop(matching_index)
+            return candidate.model_copy(
+                update={
+                    "request_id": response.request_id,
+                    "attempt_id": response.source_attempt_id,
+                }
+            )
+
+        def replay_completion_check() -> None:
+            if replay_responses:
+                remaining = ", ".join(
+                    f"{response.logical_phase}:{response.request_id.root}"
+                    for response in replay_responses
+                )
+                raise ValueError(
+                    "Stage 4 replay completed with unconsumed response(s): " + remaining
+                )
 
         return Stage4PlanningInvocation(
             request=detailed,
@@ -362,6 +418,7 @@ class ProductionStage4InvocationFactory:
             world=world,
             text_root=text,
             resume_checkpoint_ref=resume_checkpoint_ref,
+            replay_completion_check=(replay_completion_check if replay_responses else None),
         )
 
 
@@ -446,6 +503,8 @@ class Stage4PlanningLeafAdapter:
             }
         )
         if result.terminal in candidate_terminals:
+            if invocation.replay_completion_check is not None:
+                invocation.replay_completion_check()
             assert result.proposal is not None
             proposal_ref = self._artifacts.put(
                 canonical_json_bytes(result.proposal.model_dump(mode="json")),

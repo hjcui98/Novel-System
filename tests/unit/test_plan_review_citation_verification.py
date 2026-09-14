@@ -24,8 +24,10 @@ from novel_agent.agents.plan_reviewer import (
     _field_path_segments,
     _host_materialize_provider_review,
     _items_by_id,
+    _merge_preserved_review_findings,
     _quote_matches,
     _resolve_field_path,
+    _unresolved_host_issues,
     apply_host_plan_review_constraints,
 )
 from novel_agent.domain.artifacts import ArtifactRef
@@ -415,6 +417,106 @@ def test_differently_worded_cross_item_finding_uses_per_item_citations() -> None
     blocking = _model_blocking(reviewed)
     assert len(blocking) == 1
     assert blocking[0].authorized_target_item_ids == (StableId("vol-5"),)
+
+
+def test_a_cited_item_does_not_authorize_an_uncited_write_target() -> None:
+    issue = _issue(
+        item_ids=("vol-4",),
+        target_item_ids=("vol-5",),
+        field_path="volume_climax.description",
+        quote="线索",
+    )
+    reviewed = _review(_draft(issue))
+    assert ReviewCitationFailure.TARGET_ITEM_NOT_FOUND in reviewed.verification_failures[0]
+    assert _model_blocking(reviewed) == []
+
+
+def test_a_citation_of_one_field_cannot_authorize_another_field() -> None:
+    issue = _issue(
+        item_ids=("vol-5",),
+        target_item_ids=("vol-5",),
+        field_path="ending_state.description",
+        quote=None,
+    ).model_copy(
+        update={
+            "citations": (
+                PlanReviewCitation(
+                    item_id=StableId("vol-5"),
+                    field_path="volume_climax.description",
+                    quote="激活水晶",
+                ),
+            )
+        }
+    )
+    reviewed = _review(_draft(issue))
+    assert ReviewCitationFailure.TARGET_FIELD_NOT_FOUND in reviewed.verification_failures[0]
+    assert _model_blocking(reviewed) == []
+
+
+def test_nonempty_endpoints_do_not_cover_the_middle_of_an_unresolved_window() -> None:
+    payload = {
+        "items": [],
+        "unresolved": [
+            {
+                "issue_id": "plan-issue.scope.middle",
+                "summary": "questions chapters 201-300",
+                "affected_chapters": [201, 300],
+            }
+        ],
+    }
+    findings = _unresolved_host_issues(payload)
+    assert any(
+        finding.kind is ReviewIssueKind.UNRESOLVED_SCOPE_MISSING and "202" in finding.summary
+        for finding in findings
+    )
+    payload["unresolved"][0]["affected_chapters"] = list(range(201, 301))
+    assert not any(
+        finding.kind is ReviewIssueKind.UNRESOLVED_SCOPE_MISSING
+        for finding in _unresolved_host_issues(payload)
+    )
+
+
+def test_a_valid_per_item_finding_survives_another_citation_repair() -> None:
+    valid = _issue(
+        item_ids=("vol-4", "vol-5"),
+        target_item_ids=("vol-5",),
+        field_path="volume_climax.description",
+        quote=None,
+    ).model_copy(
+        update={
+            "citations": (
+                PlanReviewCitation(
+                    item_id=StableId("vol-4"),
+                    field_path="volume_climax.description",
+                    quote="第四碎片",
+                ),
+                PlanReviewCitation(
+                    item_id=StableId("vol-5"),
+                    field_path="volume_climax.description",
+                    quote="激活水晶",
+                ),
+            )
+        }
+    )
+    invalid = _issue(item_ids=("vol-4",), quote="候选中不存在的引文").model_copy(
+        update={"issue_id": StableId("issue.bad-citation")}
+    )
+    first = _review(_draft(valid, invalid))
+    surviving = _model_blocking(first)
+    assert len(surviving) == 1 and first.verification_failures
+    feedback = (
+        "VERIFIED_MODEL_FINDINGS_TO_PRESERVE="
+        + json.dumps([surviving[0].model_dump(mode="json")], ensure_ascii=False)
+        + "; MODEL_FINDINGS_TO_RECHECK=[]"
+    )
+    empty_repair = PlanReviewDraft(
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        decision=ReviewDecision.ACCEPT,
+    )
+    merged = _merge_preserved_review_findings(empty_repair, feedback)
+    assert merged.decision is ReviewDecision.REVISE
+    assert merged.issues[0].citations == surviving[0].citations
+    assert merged.issues[0].proposed_target_item_ids == (StableId("vol-5"),)
 
 
 def test_comparison_items_do_not_implicitly_become_write_targets() -> None:

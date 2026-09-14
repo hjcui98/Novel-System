@@ -159,6 +159,21 @@ def cli_db(tmp_path: Path) -> Path:
         "application/vnd.novel-agent.stage5-candidate-binding+json",
         SchemaVersion("1.0.0"),
     )
+    producer = TaskRecord(
+        task_id=TaskId("run.cli.plan.producer"),
+        run_id=request.run_id,
+        project_id=request.project_id,
+        kind=TaskKind.PLAN_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=file_base,
+        policy_hash=HASH,
+        permission_hash=PERMISSION_HASH,
+        input_artifact_refs=(candidate_ref,),
+        candidate_binding_ref=candidate_binding_ref,
+        terminal_artifact_refs=(candidate_ref,),
+    )
+    commands.create_task(producer)
     waiting = TaskRecord(
         task_id=TaskId("run.cli.plan.accept"),
         run_id=request.run_id,
@@ -171,7 +186,7 @@ def cli_db(tmp_path: Path) -> Path:
         permission_hash=PERMISSION_HASH,
         input_artifact_refs=(candidate_ref,),
         candidate_binding_ref=candidate_binding_ref,
-        dependency_task_ids=(TaskId("run.cli.plan"),),
+        dependency_task_ids=(producer.task_id,),
     )
     commands.create_task(waiting)
     # Claim the plan task and record an effect for the reconcile subcommands.

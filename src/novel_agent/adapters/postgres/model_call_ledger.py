@@ -118,6 +118,15 @@ class SqlModelCallLedger(ModelCallLedgerPort):
                 )
             ):
                 raise ModelCallLedgerCollision("terminal model call cannot be overwritten")
+            if existing.response_consumed_at is not None:
+                if (
+                    entry.response_consumed_at is not None
+                    and entry.response_consumed_at != existing.response_consumed_at
+                ):
+                    raise ModelCallLedgerCollision("consumed response timestamp cannot change")
+                entry = entry.model_copy(
+                    update={"response_consumed_at": existing.response_consumed_at}
+                )
             self._update_row(row, entry)
             return entry
 
@@ -190,6 +199,7 @@ class SqlModelCallLedger(ModelCallLedgerPort):
             transport_error_type=entry.transport_error_type,
             requested_at=entry.requested_at,
             completed_at=entry.completed_at,
+            response_consumed_at=entry.response_consumed_at,
         )
 
     @classmethod

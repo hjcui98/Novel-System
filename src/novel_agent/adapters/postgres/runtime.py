@@ -16,8 +16,8 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
-from novel_agent.domain.artifacts import MODEL_RAW_RESPONSE_MEDIA_TYPE
-from novel_agent.domain.ids import ProjectId, RunId, StableId, TaskId
+from novel_agent.domain.artifacts import MODEL_RAW_RESPONSE_MEDIA_TYPE, ArtifactRef
+from novel_agent.domain.ids import ArtifactId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     EffectStatus,
@@ -25,6 +25,35 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+
+_STAGE4_LOGICAL_PHASES = frozenset(
+    {
+        "inquiry",
+        "inquiry_review",
+        "inquiry_revision",
+        "inquiry_rereview",
+        "planner_memory_review",
+        "plan",
+        "plan_review",
+        "plan_revision",
+        "plan_rereview",
+        "plan_turn",
+        "plan_turn_rejected_reprompt",
+        "plan_turn_supported_reprompt",
+        "plan_turn_unsupported_reprompt",
+        "plan_after_supported_memory_no_progress",
+        "plan_after_unsupported_memory_no_progress",
+    }
+)
+
+
+def _logical_phase_from_request_id(request_id: str, fallback: str) -> str:
+    if fallback not in {"development", "unknown"}:
+        return fallback
+    for token in reversed(request_id.split(".")):
+        if token in _STAGE4_LOGICAL_PHASES:
+            return token
+    return fallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +74,17 @@ class AttemptEffectLedgerEvidence:
     completed_response_refs: tuple[str, ...] = ()
     consumed_response_ids: tuple[str, ...] = ()
     unavailable_response_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayableModelResponse:
+    """A completed raw response that a recovery attempt may hand back to Stage 4."""
+
+    request_id: StableId
+    source_attempt_id: StableId
+    request_hash: ArtifactId
+    logical_phase: str
+    raw_artifact_ref: ArtifactRef
 
 
 def _raw_response_artifact_id(raw_artifact_json: object) -> str | None:
@@ -292,6 +332,73 @@ class RuntimeTaskQueryRepository:
             evidence.completed_response_refs,
         )
 
+    def replayable_model_responses(
+        self,
+        task_id: TaskId,
+        *,
+        attempt_id: StableId | None = None,
+    ) -> tuple[ReplayableModelResponse, ...]:
+        """Return only the current settled attempt's unconsumed raw responses.
+
+        This is intentionally narrower than ``attempt_effect_evidence``: the
+        classifier decides whether replay is legal, while this method supplies the
+        immutable request identities needed to re-enter the exact logical phase.
+        Historical completed rows and responses already consumed by a successful
+        phase are never promoted into a new recovery input.
+        """
+
+        evidence = self.attempt_effect_evidence(task_id, attempt_id=attempt_id)
+        frontier = evidence.frontier_attempt_id
+        if frontier is None or not evidence.completed_response_refs:
+            return ()
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(
+                    ModelCallLedgerRow.request_id,
+                    ModelCallLedgerRow.attempt_id,
+                    ModelCallLedgerRow.request_hash,
+                    ModelCallLedgerRow.logical_phase,
+                    ModelCallLedgerRow.status,
+                    ModelCallLedgerRow.raw_artifact_json,
+                    ModelCallLedgerRow.response_consumed_at,
+                    ModelCallLedgerRow.requested_at,
+                ).where(
+                    ModelCallLedgerRow.task_id == task_id.root,
+                    ModelCallLedgerRow.attempt_id == frontier.root,
+                    ModelCallLedgerRow.status == ModelCallLedgerStatus.COMPLETED.value,
+                    ModelCallLedgerRow.response_consumed_at.is_(None),
+                )
+            ).all()
+        responses: list[ReplayableModelResponse] = []
+        for (
+            request_id,
+            row_attempt_id,
+            request_hash,
+            logical_phase,
+            _status,
+            raw_artifact_json,
+            _consumed_at,
+            _requested_at,
+        ) in sorted(rows, key=lambda row: (row[7], row[0])):
+            try:
+                raw_ref = ArtifactRef.model_validate(raw_artifact_json, strict=True)
+            except (TypeError, ValueError):
+                continue
+            if raw_ref.media_type != MODEL_RAW_RESPONSE_MEDIA_TYPE:
+                continue
+            if raw_ref.artifact_id.root not in evidence.completed_response_refs:
+                continue
+            responses.append(
+                ReplayableModelResponse(
+                    request_id=StableId(request_id),
+                    source_attempt_id=StableId(row_attempt_id),
+                    request_hash=ArtifactId(request_hash),
+                    logical_phase=_logical_phase_from_request_id(request_id, logical_phase),
+                    raw_artifact_ref=raw_ref,
+                )
+            )
+        return tuple(responses)
+
     def next_scheduled_at(
         self,
         *,
@@ -358,4 +465,8 @@ class RuntimeTaskQueryRepository:
             return tuple(sorted(scheduled))
 
 
-__all__ = ["RuntimeTaskQueryRepository"]
+__all__ = [
+    "AttemptEffectLedgerEvidence",
+    "ReplayableModelResponse",
+    "RuntimeTaskQueryRepository",
+]

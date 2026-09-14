@@ -84,6 +84,96 @@ VERSION = SchemaVersion("1.0.0")
 PROJECT = ProjectId("project.n3")
 COMMIT = CommitId("sha256:" + "a" * 64)
 HASH = ArtifactId("sha256:" + "1" * 64)
+FORMAL4_OBJECTS = (
+    Path(__file__).parents[2] / "tmp/yujin-evidence-preserved/formal4-v25-objects/sha256"
+)
+
+
+@pytest.mark.skipif(not FORMAL4_OBJECTS.exists(), reason="formal4 source objects are absent")
+def test_formal4_scope_repair_preserves_parent_memory_evidence(tmp_path: Path) -> None:
+    def object_bytes(digest: str) -> bytes:
+        return (FORMAL4_OBJECTS / digest[:2] / digest).read_bytes()
+
+    parent = PlanProposal.model_validate_json(
+        object_bytes("9f8bd9d7c3c957e3dcb8a0697ca0b05de340edd268d2469ea537312307dbddf6")
+    )
+    review = OperatorReviewEvidence.model_validate_json(
+        object_bytes("6d8a21dd1dfd49c56a8c58ac3e2989f47fdf2cf34981875d4e1f4597183f6c54")
+    )
+    revised = PlanProposal.model_validate_json(
+        object_bytes("86bce418bb93b3bf7c5c1ad1393997dcbf7e72c144a26de289f505f4e8e21a57")
+    )
+    composed = compose_scoped_revision(parent, revised, operator_revision_scope(review))
+    expected_lengths = (800, 100, 151, 800, 100, 151)
+    for before, after, length in zip(
+        parent.unresolved, composed.unresolved, expected_lengths, strict=True
+    ):
+        assert len(after.affected_chapters) == length
+        assert after.affected_chapters == tuple(
+            range(after.affected_chapters[0], after.affected_chapters[-1] + 1)
+        )
+        assert after.blocking == before.blocking
+        assert after.resolution_owner == before.resolution_owner
+        assert after.source_ids == before.source_ids
+        assert after.source_artifact_refs == before.source_artifact_refs
+        assert after.forbidden_assumptions == before.forbidden_assumptions
+        assert after.summary == before.summary
+    for before, after in zip(
+        parent.unresolved_operations, composed.unresolved_operations, strict=True
+    ):
+        assert after.affected_chapters == next(
+            issue.affected_chapters
+            for issue in composed.unresolved
+            if issue.issue_id == after.issue_id
+        )
+        assert after.resolution_owner == before.resolution_owner
+        assert after.source_ids == before.source_ids
+        assert after.source_artifact_refs == before.source_artifact_refs
+
+    repo = _artifacts(tmp_path)
+    parent_ref = repo.put(
+        object_bytes("9f8bd9d7c3c957e3dcb8a0697ca0b05de340edd268d2469ea537312307dbddf6"),
+        PLAN_PROPOSAL_MEDIA_TYPE,
+        VERSION,
+    )
+    review_ref = repo.put(
+        object_bytes("6d8a21dd1dfd49c56a8c58ac3e2989f47fdf2cf34981875d4e1f4597183f6c54"),
+        "application/vnd.novel-agent.operator-plan-review+json",
+        VERSION,
+    )
+    raw_execution = PlannerExecutionResult(
+        mode=revised.mode,
+        plan_proposal=revised,
+        output_artifact=repo.put(b"{}", "application/json", VERSION),
+        receipt=revised.receipt,
+    )
+    raw_ref = _put(repo, raw_execution, PLANNER_EXECUTION_MEDIA_TYPE)
+    scope = operator_revision_scope(review)
+    proof = build_composition_proof(
+        parent_ref=parent_ref,
+        raw_execution_ref=raw_ref,
+        review_ref=review_ref,
+        scope=scope,
+        composed=composed,
+        out_of_scope=out_of_scope_items(parent, revised, scope),
+    )
+    proof_ref = _put(repo, proof, PLAN_COMPOSITION_MEDIA_TYPE)
+    composed_ref = _put(repo, composed, PLAN_PROPOSAL_MEDIA_TYPE)
+    composed_execution = PlannerExecutionResult(
+        mode=revised.mode,
+        plan_proposal=composed,
+        output_artifact=raw_execution.output_artifact,
+        receipt=composed.receipt,
+        composition_proof=proof_ref,
+        raw_plan_proposal=revised,
+    )
+    composed_execution_ref = _put(repo, composed_execution, PLANNER_EXECUTION_MEDIA_TYPE)
+    event_ref = _event_ref(repo, (composed_ref, proof_ref, composed_execution_ref))
+    materialized_ref, materialized = _materializer(repo)._planner_execution(
+        (event_ref,), composed
+    )
+    assert materialized_ref == composed_execution_ref
+    assert materialized.plan_proposal == composed
 
 
 def _item(item_id: str, **payload: Any) -> ProposedItem:
@@ -184,6 +274,52 @@ def test_an_item_nobody_named_keeps_its_parent_bytes() -> None:
     assert composed.items[0].payload["ending_state"] == "父末"
 
 
+def test_nested_finding_preserves_sibling_stage_metadata() -> None:
+    parent = _proposal(
+        (
+            _item(
+                "vol-1",
+                midpoint_reversal={
+                    "description": "父描述",
+                    "window": "101-110",
+                    "role": "progression",
+                    "serves": "lock.parent",
+                },
+            ),
+        ),
+        number=1,
+    )
+    revised = parent.model_copy(
+        update={
+            "items": (
+                _item(
+                    "vol-1",
+                    midpoint_reversal={
+                        "description": "子描述",
+                        "window": "201-210",
+                        "role": "payoff",
+                        "serves": "lock.unrelated",
+                    },
+                ),
+            ),
+            "proposal_id": StableId("plan-proposal.n3.2"),
+        }
+    )
+    scope = revision_scope(_review(_finding("vol-1", field_path="midpoint_reversal.description")))
+
+    assert scope.target_for("vol-1").field_paths == (  # type: ignore[union-attr]
+        "midpoint_reversal.description",
+    )
+    composed = compose_scoped_revision(parent, revised, scope)
+
+    assert composed.items[0].payload["midpoint_reversal"] == {
+        "description": "子描述",
+        "window": "101-110",
+        "role": "progression",
+        "serves": "lock.parent",
+    }
+
+
 def test_an_unnamed_item_is_restored_byte_for_byte() -> None:
     parent = _proposal((_item("vol-1", goal="父"), _item("vol-2", goal="父二")), number=1)
     revised = parent.model_copy(
@@ -249,18 +385,24 @@ def test_operator_review_is_a_direct_scope_source_without_a_model_receipt() -> N
     parent = _proposal(
         (_item("vol-1", goal="父"),),
         unresolved=(
-            PlanUnresolvedIssue(
-                issue_id=issue_id,
-                summary="待补范围",
-                affected_chapters=(1, 800),
-            ),
+                PlanUnresolvedIssue(
+                    issue_id=issue_id,
+                    summary="待补范围",
+                    affected_chapters=(1, 800),
+                    resolution_owner="MEMORY",
+                    source_ids=(StableId("source.memory.parent"),),
+                    forbidden_assumptions=("不得把缺口当作事实",),
+                ),
         ),
         unresolved_operations=(
             PlanUnresolvedOperationRecord(
                 operation=PlanUnresolvedOperation.ADD,
                 issue_id=issue_id,
-                summary="待补范围",
-                affected_chapters=(1, 800),
+                    summary="待补范围",
+                    affected_chapters=(1, 800),
+                    resolution_owner="MEMORY",
+                    source_ids=(StableId("source.memory.parent"),),
+                    forbidden_assumptions=("不得把缺口当作事实",),
             ),
         ),
     )
@@ -314,7 +456,13 @@ def test_operator_review_is_a_direct_scope_source_without_a_model_receipt() -> N
     scope = operator_revision_scope(operator_review)
     assert scope.advisory_ids == (issue_id,)
     composed = compose_scoped_revision(parent, revised, scope)
-    assert composed.unresolved[0].affected_chapters == (350, 500)
+    assert composed.unresolved[0].affected_chapters == tuple(range(350, 501))
+    assert composed.unresolved_operations[0].affected_chapters == tuple(range(350, 501))
+    for issue in (composed.unresolved[0], composed.unresolved_operations[0]):
+        assert issue.summary == "待补范围"
+        assert issue.resolution_owner == "MEMORY"
+        assert issue.source_ids == (StableId("source.memory.parent"),)
+        assert issue.forbidden_assumptions == ("不得把缺口当作事实",)
 
     proof = build_composition_proof(
         parent_ref=parent_ref,
@@ -857,6 +1005,19 @@ def test_an_unknown_composition_rule_is_refused(tmp_path: Path) -> None:
 
     ok, reason = verify_composition(
         tampered, parent=parent, revised=revised, review=review, composed=composed
+    )
+
+    assert not ok
+    assert "unsupported composition rule" in reason
+
+
+def test_a_previous_composition_rule_is_not_a_current_proof(tmp_path: Path) -> None:
+    _, parent, revised, review, proof, _ref = _composed_case(tmp_path)
+    composed = compose_scoped_revision(parent, revised, proof.scope)
+    previous = proof.model_copy(update={"rule_version": "scoped-revision.v2"})
+
+    ok, reason = verify_composition(
+        previous, parent=parent, revised=revised, review=review, composed=composed
     )
 
     assert not ok

@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.models import (
+    ModelCallLedgerRow,
     ProjectRow,
     ProjectWriterClaimRow,
     RunCheckpointRow,
@@ -21,9 +22,18 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
-from novel_agent.domain.artifacts import ArtifactRef, RootManifest
+from novel_agent.domain.artifacts import (
+    MODEL_RAW_RESPONSE_MEDIA_TYPE,
+    ArtifactRef,
+    RootManifest,
+)
 from novel_agent.domain.changes import CommitRequest, CommitResult, CommitStatus
-from novel_agent.domain.creative_runtime import AcceptanceReceipt, CreativeRunRequest
+from novel_agent.domain.creative_runtime import (
+    RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE,
+    AcceptanceReceipt,
+    CreativeRunRequest,
+    RuntimeModelReplayEvidence,
+)
 from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory_write import (
     MemoryGapClassification,
@@ -31,6 +41,7 @@ from novel_agent.domain.memory_write import (
     MemoryWriteWorkflowResult,
     MemoryWriteWorkflowStatus,
 )
+from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     STAGE5_EVENT_SCHEMA_VERSION,
     AcceptanceRecordedPayload,
@@ -64,6 +75,7 @@ from novel_agent.domain.runtime import (
 )
 from novel_agent.domain.world import PlanLevel
 from novel_agent.services.artifacts import ArtifactRepository
+from novel_agent.services.attempt_classification import RecoveryAction, classify_attempt
 from novel_agent.services.commits import CommitService
 from novel_agent.services.event_log import RunEventLogRepository
 
@@ -645,12 +657,18 @@ class RuntimeCommandService:
                 and remaining <= 0
                 else terminal_status
             )
+            replay_evidence_refs = tuple(
+                ref
+                for ref in task.terminal_artifact_refs
+                if ref.media_type == RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE
+            )
+            settlement_refs = tuple(dict.fromkeys((*replay_evidence_refs, *artifact_refs)))
             settled_task = task.model_copy(
                 update={
                     "task_revision": task.task_revision + 1,
                     "status": settled_status,
                     "current_attempt_id": None,
-                    "terminal_artifact_refs": artifact_refs,
+                    "terminal_artifact_refs": settlement_refs,
                     "failure_budget": max(0, remaining),
                     "block_cause": (
                         failure_class.value
@@ -661,6 +679,42 @@ class RuntimeCommandService:
             )
             self._update_attempt(session, settled_attempt)
             self._update_task(session, settled_task, now)
+            # Parsing alone is not consumption. Only a durable terminal output
+            # settles the logical phase, and this SQL update commits with the
+            # attempt/task projection. An interrupted phase keeps its raw replay
+            # frontier even when its provider response parsed successfully.
+            if (
+                settled_status in {TaskStatus.SUCCEEDED, TaskStatus.WAITING_INPUT}
+                and artifact_refs
+                and self._artifacts is not None
+            ):
+                try:
+                    for ref in artifact_refs:
+                        self._artifacts.read_verified(ref)
+                except (KeyError, ValueError):
+                    pass
+                else:
+                    for row in session.scalars(
+                        select(ModelCallLedgerRow).where(
+                            ModelCallLedgerRow.task_id == task.task_id.root,
+                            ModelCallLedgerRow.attempt_id == attempt.attempt_id.root,
+                            ModelCallLedgerRow.status == ModelCallLedgerStatus.COMPLETED.value,
+                            ModelCallLedgerRow.response_consumed_at.is_(None),
+                        )
+                    ):
+                        row.response_consumed_at = now
+                    for request_id in self._replay_request_ids(replay_evidence_refs):
+                        replay_row = session.get(ModelCallLedgerRow, request_id)
+                        if replay_row is None or replay_row.task_id != task.task_id.root:
+                            raise RuntimeCommandConflictError(
+                                "model replay response disappeared before settlement"
+                            )
+                        if replay_row.status != ModelCallLedgerStatus.COMPLETED.value:
+                            raise RuntimeCommandConflictError(
+                                "model replay response is not completed at settlement"
+                            )
+                        if replay_row.response_consumed_at is None:
+                            replay_row.response_consumed_at = now
             if settled_status is TaskStatus.BLOCKED and settled_task.block_cause is not None:
                 self._append(
                     session,
@@ -689,11 +743,11 @@ class RuntimeCommandService:
                         if settled_status is TaskStatus.BLOCKED and failure_class is not None
                         else None
                     ),
-                    terminal_artifact_refs=artifact_refs,
+                    terminal_artifact_refs=settlement_refs,
                     ended_at=now,
                 ).model_dump(mode="json"),
                 StableId(f"{attempt.attempt_id.root}.settled"),
-                artifact_refs=artifact_refs,
+                artifact_refs=settlement_refs,
             )
             self._insert_successor_tasks(session, settled_task, successor_tasks, now)
             return settled_task
@@ -1414,6 +1468,112 @@ class RuntimeCommandService:
             )
             return updated
 
+    def requeue_model_replay(
+        self,
+        task_id: TaskId,
+        *,
+        replay_evidence_ref: ArtifactRef,
+        command_id: StableId,
+        actor_id: str,
+        reason: str,
+        observed_revision: int | None = None,
+    ) -> TaskRecord:
+        """Make a waiting task ready with a durable, non-billable model replay.
+
+        This is a separate transition from ``control(retry)``.  It never creates
+        budget, never allocates a new model request identity, and binds the
+        selected raw responses to the settled source attempt before a worker can
+        claim the task.
+        """
+
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError(
+                "model replay requires the runtime artifact repository"
+            )
+        if replay_evidence_ref.media_type != RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE:
+            raise RuntimeCommandConflictError("invalid model replay evidence media type")
+        evidence = RuntimeModelReplayEvidence.model_validate_json(
+            self._artifacts.read_verified(replay_evidence_ref),
+            strict=True,
+        )
+        if evidence.task_id != task_id:
+            raise RuntimeCommandConflictError("model replay evidence belongs to another task")
+
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if evidence.run_id != task.run_id:
+                raise RuntimeCommandConflictError("model replay evidence belongs to another run")
+            if replay_evidence_ref in task.terminal_artifact_refs:
+                if task.status is TaskStatus.READY and task.current_attempt_id is None:
+                    return task
+                raise RuntimeCommandConflictError("model replay evidence is already attached")
+            if task.status is not TaskStatus.WAITING_RETRY or task.current_attempt_id is not None:
+                raise RuntimeCommandConflictError(
+                    "model replay requires an inactive WAITING_RETRY task"
+                )
+            latest = session.scalars(
+                select(RuntimeTaskAttemptRow)
+                .where(
+                    RuntimeTaskAttemptRow.task_id == task_id.root,
+                    RuntimeTaskAttemptRow.ended_at.is_not(None),
+                )
+                .order_by(RuntimeTaskAttemptRow.attempt_no.desc())
+                .limit(1)
+            ).first()
+            if latest is None or latest.attempt_id != evidence.source_attempt_id.root:
+                raise RuntimeCommandConflictError(
+                    "model replay evidence does not bind the latest settled attempt"
+                )
+            for response in evidence.responses:
+                row = session.get(ModelCallLedgerRow, response.request_id.root)
+                if row is None or row.task_id != task_id.root:
+                    raise RuntimeCommandConflictError(
+                        "model replay response is missing from the task ledger"
+                    )
+                if (
+                    row.attempt_id != evidence.source_attempt_id.root
+                    or row.status != ModelCallLedgerStatus.COMPLETED.value
+                    or row.response_consumed_at is not None
+                    or row.request_hash != response.request_hash
+                    or not isinstance(row.raw_artifact_json, dict)
+                    or row.raw_artifact_json.get("artifact_id")
+                    != response.raw_artifact_ref.artifact_id.root
+                    or row.raw_artifact_json.get("media_type") != MODEL_RAW_RESPONSE_MEDIA_TYPE
+                ):
+                    raise RuntimeCommandConflictError(
+                        "model replay response does not match its settled ledger row"
+                    )
+
+            updated = task.model_copy(
+                update={
+                    "task_revision": task.task_revision + 1,
+                    "status": TaskStatus.READY,
+                    "current_attempt_id": None,
+                    "terminal_artifact_refs": (
+                        *task.terminal_artifact_refs,
+                        replay_evidence_ref,
+                    ),
+                }
+            )
+            self._update_task(session, updated, now)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                ControlIntentPayload(
+                    command_id=command_id,
+                    action="replay_completed_model_response",
+                    actor_id=actor_id,
+                    reason=reason,
+                ).model_dump(mode="json"),
+                command_id,
+                artifact_refs=(replay_evidence_ref,),
+            )
+            return updated
+
     def save_checkpoint(self, fence: AttemptFence, checkpoint: RunCheckpoint) -> RunCheckpoint:
         with self._session_factory() as session, session.begin():
             task, attempt = self._require_fence(session, fence)
@@ -1504,6 +1664,99 @@ class RuntimeCommandService:
                 raise RuntimeCommandConflictError("cannot replace an active attempt")
             if action == "retry" and task.status is not TaskStatus.WAITING_RETRY:
                 raise RuntimeCommandConflictError("retry requires WAITING_RETRY")
+            if action == "retry":
+                latest = session.scalars(
+                    select(RuntimeTaskAttemptRow)
+                    .where(RuntimeTaskAttemptRow.task_id == task_id.root)
+                    .order_by(RuntimeTaskAttemptRow.attempt_no.desc())
+                    .limit(1)
+                ).first()
+                settled = (
+                    None
+                    if latest is None
+                    else TaskAttempt.model_validate_json(json.dumps(latest.attempt_json))
+                )
+                model_ledger_rows = session.scalars(
+                    select(ModelCallLedgerRow).where(
+                        ModelCallLedgerRow.task_id == task_id.root
+                    )
+                ).all()
+                completed_statement = select(ModelCallLedgerRow).where(
+                    ModelCallLedgerRow.task_id == task_id.root,
+                    ModelCallLedgerRow.status == ModelCallLedgerStatus.COMPLETED.value,
+                )
+                if settled is not None:
+                    completed_statement = completed_statement.where(
+                        ModelCallLedgerRow.attempt_id == settled.attempt_id.root
+                    )
+                completed_rows = session.scalars(completed_statement).all()
+                replay_refs = tuple(
+                    str(row.raw_artifact_json["artifact_id"])
+                    for row in completed_rows
+                    if row.response_consumed_at is None
+                    and isinstance(row.raw_artifact_json, dict)
+                    and isinstance(row.raw_artifact_json.get("artifact_id"), str)
+                )
+                unavailable_ids = tuple(
+                    row.request_id
+                    for row in completed_rows
+                    if row.raw_artifact_json is None
+                )
+                unsettled_sends = tuple(
+                    session.scalars(
+                        select(RuntimeEffectProjectionRow.effect_identity).where(
+                            RuntimeEffectProjectionRow.task_id == task_id.root,
+                            RuntimeEffectProjectionRow.status == EffectStatus.UNCERTAIN.value,
+                        )
+                    ).all()
+                ) + tuple(
+                    session.scalars(
+                        select(ModelCallLedgerRow.request_id).where(
+                            ModelCallLedgerRow.task_id == task_id.root,
+                            ModelCallLedgerRow.status == ModelCallLedgerStatus.UNCERTAIN.value,
+                        )
+                    ).all()
+                )
+                outstanding_request_ids = tuple(
+                    session.scalars(
+                        select(ModelCallLedgerRow.request_id).where(
+                            ModelCallLedgerRow.task_id == task_id.root,
+                            ModelCallLedgerRow.status == ModelCallLedgerStatus.REQUESTED.value,
+                        )
+                    ).all()
+                ) + tuple(
+                    session.scalars(
+                        select(RuntimeEffectProjectionRow.effect_identity).where(
+                            RuntimeEffectProjectionRow.task_id == task_id.root,
+                            RuntimeEffectProjectionRow.status == EffectStatus.REQUESTED.value,
+                        )
+                    ).all()
+                )
+                classification = classify_attempt(
+                    task_id=StableId(task_id.root),
+                    task_status=task.status,
+                    attempt=settled,
+                    completed_response_refs=replay_refs,
+                    unavailable_response_ids=unavailable_ids,
+                    unsettled_sends=unsettled_sends,
+                    outstanding_request_ids=outstanding_request_ids,
+                    block_cause=task.block_cause,
+                )
+                budget_review_without_attempt = (
+                    settled is None
+                    and task.failure_budget <= 0
+                    and not model_ledger_rows
+                    and not unavailable_ids
+                    and not unsettled_sends
+                    and not outstanding_request_ids
+                )
+                if (
+                    classification.action is not RecoveryAction.RETRY_UNDER_POLICY
+                    and not budget_review_without_attempt
+                ):
+                    raise RuntimeCommandConflictError(
+                        "retry is not allowed for the settled failure classification"
+                    )
             status = transitions.get(action, task.status)
             if action == "retry" and task.failure_budget <= 0:
                 status = TaskStatus.BUDGET_REVIEW
@@ -2435,6 +2688,22 @@ class RuntimeCommandService:
     def _require_observed_revision(task: TaskRecord, observed_revision: int | None) -> None:
         if observed_revision is not None and task.task_revision != observed_revision:
             raise RuntimeCommandConflictError("observed task revision is stale")
+
+    def _replay_request_ids(self, refs: tuple[ArtifactRef, ...]) -> tuple[str, ...]:
+        if not refs:
+            return ()
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError(
+                "model replay settlement requires the runtime artifact repository"
+            )
+        request_ids: list[str] = []
+        for ref in refs:
+            evidence = RuntimeModelReplayEvidence.model_validate_json(
+                self._artifacts.read_verified(ref),
+                strict=True,
+            )
+            request_ids.extend(response.request_id.root for response in evidence.responses)
+        return tuple(dict.fromkeys(request_ids))
 
     def _append(
         self,

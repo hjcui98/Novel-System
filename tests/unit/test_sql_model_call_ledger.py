@@ -13,6 +13,7 @@ from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.model.fake import FakeModelEndpoint
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.adapters.postgres.model_call_ledger import SqlModelCallLedger
+from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.ids import RunId, StableId, TaskId
 from novel_agent.domain.model_calls import (
     EffectiveBudgetResult,
@@ -21,9 +22,11 @@ from novel_agent.domain.model_calls import (
     ModelRequest,
     ModelRole,
 )
+from novel_agent.domain.stage2 import AgentMode, AgentType
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.model_call_ledger import ModelCallLedgerCollision
 from novel_agent.services.model_gateway import ModelGateway, RegisteredModelEndpoint
+from tests.unit.test_stage2_agent_runner import harness
 
 
 def _request() -> ModelRequest:
@@ -90,6 +93,66 @@ def test_sql_ledger_survives_gateway_reconstruction_and_raw_reparse(tmp_path: Pa
     assert record.request_id == request.request_id
     assert fake.requests[0].request_id == request.request_id
     assert fake.requests[0].prompt == request.prompt
+
+
+def test_sql_consumption_survives_new_session_and_stale_settlement(tmp_path: Path) -> None:
+    database = create_engine(f"sqlite+pysqlite:///{tmp_path / 'consumed.db'}")
+    Base.metadata.create_all(database)
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    ledger = SqlModelCallLedger(build_session_factory(database))
+    request = _request()
+    gateway = ModelGateway(
+        (_endpoint(FakeModelEndpoint('{"answer":"durable"}')),),
+        call_ledger=ledger,
+        raw_artifacts=artifacts,
+    )
+    asyncio.run(gateway.generate_text(request))
+    before = ledger.load(request.request_id)
+    assert before is not None and before.response_consumed_at is None
+
+    consumed = ledger.mark_response_consumed(request.request_id)
+    assert consumed.response_consumed_at is not None
+    assert ledger.mark_response_consumed(request.request_id) == consumed
+    assert ledger.settle(before).response_consumed_at == consumed.response_consumed_at
+
+    reopened = SqlModelCallLedger(build_session_factory(database)).load(request.request_id)
+    assert reopened is not None
+    assert reopened.response_consumed_at == consumed.response_consumed_at
+
+
+def test_parsed_agent_response_remains_replayable_before_runtime_checkpoint(
+    tmp_path: Path,
+) -> None:
+    database = create_engine(f"sqlite+pysqlite:///{tmp_path / 'pre-checkpoint.db'}")
+    Base.metadata.create_all(database)
+    factory = build_session_factory(database)
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
+    registry_root = tmp_path / "registry"
+    registry_root.mkdir()
+    seed_runner, _, _ = harness(registry_root)
+    gateway = ModelGateway(
+        (_endpoint(FakeModelEndpoint('{"answer":"durable"}')),),
+        call_ledger=SqlModelCallLedger(factory),
+        raw_artifacts=artifacts,
+    )
+    runner = StructuredAgentRunner(
+        gateway, seed_runner._agents, seed_runner._prompts, seed_runner._skills
+    )
+    result = asyncio.run(
+        runner.run(
+            AgentType.PLANNER,
+            AgentMode.PROJECT_BOOTSTRAP,
+            "1.0.0",
+            _request(),
+            "uncommitted stage output",
+            _Output,
+        )
+    )
+    assert result.output.answer == "durable"
+    reopened = SqlModelCallLedger(build_session_factory(database)).load(_request().request_id)
+    assert reopened is not None
+    assert reopened.response_consumed_at is None
+    assert reopened.raw_artifact_ref is not None
 
 
 def test_sql_ledger_reconstructs_attempt_and_logical_phase(tmp_path: Path) -> None:

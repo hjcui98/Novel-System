@@ -15,7 +15,9 @@ and the materializer that has to verify it share exactly one implementation.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from enum import StrEnum
 from typing import Any
 
@@ -38,7 +40,7 @@ from novel_agent.services.content_addressing import canonical_json_bytes, conten
 # Changing what the host does to a revision changes what a proof means.  A proof
 # names the rule that produced it, so a candidate composed under one rule is never
 # silently re-verified under another.
-COMPOSITION_RULE_VERSION = "scoped-revision.v1"
+COMPOSITION_RULE_VERSION = "scoped-revision.v3"
 
 
 class PlanRevisionOperation(StrEnum):
@@ -62,9 +64,12 @@ class PlanRevisionTarget(DomainModel):
     # top of that, never instead of it.
     operations: tuple[PlanRevisionOperation, ...] = (PlanRevisionOperation.MODIFY,)
     # Empty means the whole item is in scope, which is what a finding with no field
-    # path authorises.  Otherwise only these payload fields may differ from the
-    # parent, so naming one field cannot move the others.
+    # path authorises.  Otherwise these are exact dotted payload paths; naming a
+    # nested description cannot move its sibling window, role, or serves metadata.
     field_paths: tuple[str, ...] = ()
+    # An operator review may explicitly authorize converting one cited chapter
+    # window into the existing chapter-number set contract.
+    chapter_window: tuple[int, int] | None = None
 
 
 class PlanRevisionScope(DomainModel):
@@ -151,7 +156,11 @@ class PlanCompositionProof(DomainModel):
 
     @model_validator(mode="after")
     def validate_rule(self) -> PlanCompositionProof:
-        if self.rule_version != COMPOSITION_RULE_VERSION:
+        if self.rule_version not in {
+            "scoped-revision.v1",
+            "scoped-revision.v2",
+            COMPOSITION_RULE_VERSION,
+        }:
             raise ValueError(f"unknown composition rule {self.rule_version!r}")
         return self
 
@@ -272,12 +281,23 @@ def operator_revision_scope(review: OperatorReviewEvidence) -> PlanRevisionScope
         if not finding.blocking or not finding.affected_item_ids:
             continue
         finding_ids.append(finding.issue_id)
-        fields = () if not finding.field_path else (_top_level_key(finding.field_path),)
+        fields = () if not finding.field_path else (finding.field_path,)
+        chapter_window = None
+        if finding.field_path in {"affected_chapters", "unresolved.affected_chapters"}:
+            match = re.fullmatch(
+                r"\s*(?:chapters\s+)?(\d{1,4})\s*[-~\uff5e]\s*(\d{1,4})\s*",
+                finding.expected or "",
+            )
+            if match is not None:
+                start, end = int(match.group(1)), int(match.group(2))
+                if 1 <= start <= end:
+                    chapter_window = (start, end)
         for item_id in finding.affected_item_ids:
             target = PlanRevisionTarget(
                 item_id=item_id,
                 operations=(PlanRevisionOperation.MODIFY,),
                 field_paths=fields,
+                chapter_window=chapter_window,
             )
             destination = (
                 advisory_targets if item_id.root.startswith(_ADVISORY_ID_PREFIX) else targets
@@ -290,7 +310,8 @@ def operator_revision_scope(review: OperatorReviewEvidence) -> PlanRevisionScope
             else:
                 destination[destination.index(existing)] = existing.model_copy(
                     update={
-                        "field_paths": tuple(dict.fromkeys((*existing.field_paths, *fields)))
+                        "field_paths": tuple(dict.fromkeys((*existing.field_paths, *fields))),
+                        "chapter_window": chapter_window or existing.chapter_window,
                     }
                 )
     return PlanRevisionScope(
@@ -310,16 +331,13 @@ def _scope_for_review(review: PlanReview | OperatorReviewEvidence) -> PlanRevisi
 def _issue_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
     """The payload keys one finding authorises writing.
 
-    A citation names a value (``midpoint_reversal.window``); the unit of authorised
-    change is the payload entry that value lives in, because a stage entry is edited
-    as a whole and splitting it would leave a half-written entry.  Anything outside
-    that entry stays the parent's.
+    A citation names the exact value the reviewer verified.  Keep the dotted path
+    intact so the composer can preserve sibling metadata inside a structured stage
+    entry.  A finding with no field path remains item-scoped for backwards-compatible
+    host findings that intentionally authorise the complete item.
     """
 
-    if not issue.field_path:
-        return ()
-    key = _top_level_key(issue.field_path)
-    return (key,) if key else ()
+    return () if not issue.field_path else (issue.field_path,)
 
 
 def _issue_operations(issue: PlanReviewIssue) -> tuple[PlanRevisionOperation, ...]:
@@ -606,7 +624,7 @@ def _compose_unresolved(
                 raise PlanCompositionError(
                     "revised unresolved issue must retain its parent host identity"
                 )
-            composed.append(replacement)
+            composed.append(_compose_unresolved_fields(issue, replacement, target))
         else:
             composed.append(issue)
         kept.add(key)
@@ -619,6 +637,42 @@ def _compose_unresolved(
             if target is not None and PlanRevisionOperation.ADD in target.operations:
                 composed.append(issue)
     return tuple(composed)
+
+
+def _compose_unresolved_fields(
+    parent: PlanUnresolvedIssue,
+    revised: PlanUnresolvedIssue,
+    target: PlanRevisionTarget,
+) -> PlanUnresolvedIssue:
+    """A field finding changes only that advisory field and its operation identity."""
+
+    if not target.field_paths or "unresolved" in target.field_paths:
+        return revised
+    allowed = {
+        field.removeprefix("unresolved.")
+        for field in target.field_paths
+        if field.startswith("unresolved.") or field in type(parent).model_fields
+    }
+    if not allowed:
+        return parent
+    values = {field: getattr(revised, field) for field in allowed}
+    if "affected_chapters" in values and target.chapter_window is not None:
+        values["affected_chapters"] = _normalize_cited_window(
+            revised.affected_chapters, target.chapter_window
+        )
+    values.update(operation=revised.operation, parent_issue_id=revised.parent_issue_id)
+    return parent.model_copy(update=values)
+
+
+def _normalize_cited_window(
+    chapters: tuple[int, ...], window: tuple[int, int]
+) -> tuple[int, ...]:
+    full = tuple(range(window[0], window[1] + 1))
+    if chapters == full:
+        return chapters
+    if chapters == window:
+        return full
+    raise PlanCompositionError("revised unresolved range does not match the cited window")
 
 
 def _operation_for(
@@ -704,7 +758,27 @@ def _compose_unresolved_operations(
             raise PlanCompositionError(
                 f"authorized unresolved {key} does not permit the {expected} operation"
             )
-        composed.append(replacement)
+        if replacement.operation is PlanUnresolvedOperation.CLOSE:
+            composed.append(replacement)
+        else:
+            allowed = {
+                field.removeprefix("unresolved.")
+                for field in target.field_paths
+                if field.startswith("unresolved.") or field in type(record).model_fields
+            }
+            if not target.field_paths or "unresolved" in target.field_paths:
+                composed.append(replacement)
+            else:
+                values = {field: getattr(replacement, field) for field in allowed}
+                if "affected_chapters" in values and target.chapter_window is not None:
+                    values["affected_chapters"] = _normalize_cited_window(
+                        replacement.affected_chapters, target.chapter_window
+                    )
+                values.update(
+                    operation=replacement.operation,
+                    parent_issue_id=replacement.parent_issue_id,
+                )
+                composed.append(record.model_copy(update=values))
     for key, record in revised_records.items():
         if key in parent_records:
             continue
@@ -823,29 +897,100 @@ def _compose_item(
     revised_item: ProposedItem,
     target: PlanRevisionTarget,
 ) -> ProposedItem:
-    """One authorised item: identity from the parent, only named fields free."""
+    """One authorised item: identity from the parent, only named paths free."""
 
     if not target.field_paths:
         return revised_item
-    payload: dict[str, Any] = dict(parent_item.payload)
+    payload: dict[str, Any] = deepcopy(parent_item.payload)
     for field_path in target.field_paths:
-        key = _top_level_key(field_path)
-        if key in revised_item.payload:
-            payload[key] = revised_item.payload[key]
-        else:
-            payload.pop(key, None)
+        segments = _field_path_segments(field_path)
+        if segments is None:
+            raise PlanCompositionError(f"invalid authorised field path: {field_path!r}")
+        present, value = _read_field_path(revised_item.payload, segments)
+        _write_field_path(payload, segments, value, present=present)
     return revised_item.model_copy(update={"payload": payload})
 
 
-def _top_level_key(field_path: str) -> str:
-    """The payload key a dotted citation writes to.
+_FIELD_PATH_SEGMENT = re.compile(r"^(?P<key>[^\[\]]+)(?:\[(?P<index>\d+)\])?$")
 
-    A citation names ``midpoint_reversal.window``; the unit of authorised change is
-    that entry, so the whole entry is taken from the revision once any part of it was
-    named.  Anything outside it stays the parent's.
-    """
 
-    return field_path.split(".", 1)[0].split("[", 1)[0].strip()
+def _field_path_segments(field_path: str) -> tuple[tuple[str, int | None], ...] | None:
+    """Parse the same small dotted-path grammar used by review citation checks."""
+
+    stripped = field_path.strip()
+    if not stripped:
+        return None
+    segments: list[tuple[str, int | None]] = []
+    for raw in stripped.split("."):
+        match = _FIELD_PATH_SEGMENT.match(raw)
+        if match is None:
+            return None
+        key = match.group("key")
+        if key.startswith("_") or any(character.isspace() for character in key):
+            return None
+        index_raw = match.group("index")
+        segments.append((key, int(index_raw) if index_raw is not None else None))
+    return tuple(segments)
+
+
+def _read_field_path(
+    payload: Mapping[str, object], segments: Sequence[tuple[str, int | None]]
+) -> tuple[bool, object]:
+    """Read one parsed path without evaluating any model-supplied expression."""
+
+    current: object = payload
+    for key, index in segments:
+        if not isinstance(current, Mapping) or key not in current:
+            return False, None
+        current = current[key]
+        if index is not None:
+            if not isinstance(current, (list, tuple)) or index >= len(current):
+                return False, None
+            current = current[index]
+    return True, current
+
+
+def _write_field_path(
+    payload: dict[str, Any],
+    segments: Sequence[tuple[str, int | None]],
+    value: object,
+    *,
+    present: bool,
+) -> None:
+    """Copy or remove exactly one path while retaining all sibling values."""
+
+    current: object = payload
+    for position, (key, index) in enumerate(segments):
+        last = position == len(segments) - 1
+        if not isinstance(current, dict):
+            raise PlanCompositionError("authorised field path descends into a non-object")
+        if key not in current:
+            if not present:
+                return
+            current[key] = [] if index is not None else {}
+        if index is None:
+            if last:
+                if present:
+                    current[key] = deepcopy(value)
+                else:
+                    current.pop(key, None)
+                return
+            current = current[key]
+            continue
+        sequence = current[key]
+        if not isinstance(sequence, list):
+            raise PlanCompositionError("authorised field path indexes a non-list value")
+        if index >= len(sequence):
+            if not present:
+                return
+            sequence.extend({} for _ in range(index + 1 - len(sequence)))
+        if last:
+            if present:
+                sequence[index] = deepcopy(value)
+            else:
+                del sequence[index]
+            return
+        current = sequence[index]
 
 
 def out_of_scope_items(

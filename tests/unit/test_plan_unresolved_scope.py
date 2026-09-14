@@ -105,7 +105,10 @@ def test_frozen_v6_advisories_without_scope_are_revise() -> None:
 
 def test_advisory_with_precise_scope_stays_advisory() -> None:
     scoped = dict(_V6_ADVISORIES[0])
-    scoped["affected_chapters"] = [301, 350, 351, 400]
+    # ``affected_chapters`` is a chapter-number set, not a pair of interval
+    # endpoints.  Explicit interval input is normalised by the authorised
+    # revision composer before it reaches this host check.
+    scoped["affected_chapters"] = list(range(301, 401))
     review = _review([scoped])
 
     assert not any(issue.kind.value == "unresolved_scope_missing" for issue in review.issues)

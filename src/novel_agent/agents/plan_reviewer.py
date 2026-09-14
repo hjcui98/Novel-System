@@ -86,7 +86,9 @@ _ARC_VOLUME_COMPARISON_KEYS = (
 
 
 class PlanReviewerInvocationError(ValueError):
-    pass
+    def __init__(self, message: str, *, review_draft_ref: ArtifactRef | None = None) -> None:
+        super().__init__(message)
+        self.review_draft_ref = review_draft_ref
 
 
 def apply_host_plan_review_constraints(
@@ -503,6 +505,25 @@ def _target_authorization_failure(
                 f"{ReviewCitationFailure.TARGET_ITEM_NOT_FOUND}: {target_id.root} is not an "
                 "item of the reviewed candidate"
             )
+        if target_id not in issue.affected_item_ids:
+            return (
+                f"{ReviewCitationFailure.TARGET_ITEM_NOT_FOUND}: {target_id.root} has no "
+                "candidate-local evidence in this finding"
+            )
+        if issue.citations:
+            target_citation = next(
+                (citation for citation in issue.citations if citation.item_id == target_id),
+                None,
+            )
+            if (
+                target_citation is None
+                or issue.field_path is None
+                or target_citation.field_path != issue.field_path
+            ):
+                return (
+                    f"{ReviewCitationFailure.TARGET_FIELD_NOT_FOUND}: {target_id.root} "
+                    "requires a citation of the proposed write field"
+                )
         target_field_path = issue.field_path
         if target_field_path is None and issue.citations:
             target_citation = next(
@@ -589,7 +610,7 @@ def _merge_preserved_review_findings(
             "verification_failures": (),
         }
     )
-    return PlanReviewDraft.model_validate(payload)
+    return PlanReviewDraft.model_validate_json(canonical_json_bytes(payload))
 
 
 def _citation_failure(
@@ -1259,10 +1280,15 @@ def _chapter_window_value(value: object) -> tuple[int, int] | None:
         values = tuple(value)
         return min(values), max(values)
     if isinstance(value, Mapping):
-        start = value.get("chapter_start")
-        end = value.get("chapter_end")
-        if type(start) is int and type(end) is int and start >= 1 and end >= start:
-            return start, end
+        mapping_start = value.get("chapter_start")
+        mapping_end = value.get("chapter_end")
+        if (
+            type(mapping_start) is int
+            and type(mapping_end) is int
+            and mapping_start >= 1
+            and mapping_end >= mapping_start
+        ):
+            return mapping_start, mapping_end
     return None
 
 
@@ -1303,7 +1329,7 @@ def _unresolved_scope_hint(issue: PlanUnresolvedIssue, raw_items: object) -> tup
         item_payload = raw.get("payload")
         if not isinstance(item_payload, Mapping):
             item_payload = raw
-        source_values = frozenset()
+        source_values: frozenset[str] = frozenset()
         for key in ("source_ids", "source_references", "source_artifact_refs"):
             source_values |= _source_handles(item_payload.get(key))
         source_match = bool(issue_sources & source_values)
@@ -1428,11 +1454,14 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
                 )
             )
             continue
-        if issue.affected_chapters:
-            continue
         summary_window = _summary_chapter_window(issue.summary)
         questioned = summary_window or _unresolved_scope_hint(issue, payload.get("items"))
         if questioned is None:
+            continue
+        missing_chapters = set(range(questioned[0], questioned[1] + 1)) - set(
+            issue.affected_chapters
+        )
+        if not missing_chapters:
             continue
         source_hint = (
             "the related candidate item questions chapters"
@@ -1442,15 +1471,14 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
         issues.append(
             _host_issue(
                 ReviewIssueKind.UNRESOLVED_SCOPE_MISSING,
-                "UNRESOLVED_SCOPE_MISSING: "
-                f"{source_hint} {questioned[0]}-{questioned[1]} but declares no "
-                "affected_chapters, so the uncertainty cannot be checked at the affected "
-                "chapter",
+            "UNRESOLVED_SCOPE_MISSING: "
+            f"{source_hint} {questioned[0]}-{questioned[1]} but omits "
+            f"chapter {min(missing_chapters)} from affected_chapters",
                 issue.issue_id.root,
                 blocking=True,
                 field_path="unresolved.affected_chapters",
                 constraint_id="plan.unresolved.scope",
-                actual="[]",
+                actual=str(list(issue.affected_chapters)[:8]),
                 expected=f"chapters {questioned[0]}-{questioned[1]}",
                 authorized_operations=("modify",),
             )
@@ -2077,6 +2105,7 @@ class PlanReviewerAgent:
                     "field_path": issue.field_path,
                     "constraint_id": issue.constraint_id,
                     "quote": issue.quote,
+                    "citations": [citation.model_dump(mode="json") for citation in issue.citations],
                     "unmet_condition": issue.unmet_condition,
                 }
                 for issue in draft.issues
@@ -2108,9 +2137,10 @@ class PlanReviewerAgent:
                 "Plan review citations did not resolve against the reviewed candidate: "
                 + "; ".join(draft.verification_failures[:4])
                 + "; VERIFIED_MODEL_FINDINGS_TO_PRESERVE="
-                + preserved[:12000]
+                + preserved
                 + "; MODEL_FINDINGS_TO_RECHECK="
-                + recheck[:6000]
+                + recheck,
+                review_draft_ref=draft_artifact,
             )
 
         receipt = self._runner.receipt(

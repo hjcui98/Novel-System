@@ -454,7 +454,9 @@ def test_d0_frozen_candidate_through_the_whole_chain(tmp_path: Path) -> None:
     assert repeating
     assert scope.targeted_item_ids == repeating
     assert scope.targeted_item_ids < {item.item_id.root for item in candidate.items}
-    assert {target.field_paths for target in scope.targets} == {("volume_climax",)}
+    assert {target.field_paths for target in scope.targets} == {
+        ("volume_climax.description",)
+    }
 
     # 4. One bounded revision.  The model rewrites the four named climaxes and, as a
     #    real model does, moves something nobody asked about.

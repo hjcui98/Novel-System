@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, model_validator
 
-from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.artifacts import MODEL_RAW_RESPONSE_MEDIA_TYPE, ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import (
     CommitId,
@@ -156,6 +156,10 @@ RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE = (
     "application/vnd.novel-agent.runtime-continuation-evidence+json"
 )
 
+RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.runtime-model-replay-evidence+json"
+)
+
 OPERATOR_PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.operator-plan-review+json"
 
 
@@ -212,6 +216,41 @@ class RuntimeContinuationEvidence(DomainModel):
             != self.settlement_token_budget_tiers
         ):
             raise ValueError("continuation settlement budget tiers must be strictly ascending")
+        return self
+
+
+class RuntimeModelReplayResponse(DomainModel):
+    """One provider response handed back to its original logical request."""
+
+    request_id: StableId
+    source_attempt_id: StableId
+    request_hash: Hash
+    logical_phase: str = Field(min_length=1, max_length=256)
+    raw_artifact_ref: ArtifactRef
+
+    @model_validator(mode="after")
+    def validate_raw_response(self) -> RuntimeModelReplayResponse:
+        if self.raw_artifact_ref.media_type != MODEL_RAW_RESPONSE_MEDIA_TYPE:
+            raise ValueError("model replay evidence must point to a raw model response")
+        return self
+
+
+class RuntimeModelReplayEvidence(DomainModel):
+    """Durable recovery binding for provider output that must not be re-billed."""
+
+    recovery_kind: Literal["model_response_replay"] = "model_response_replay"
+    run_id: RunId
+    task_id: TaskId
+    source_attempt_id: StableId
+    responses: tuple[RuntimeModelReplayResponse, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_response_attempts(self) -> RuntimeModelReplayEvidence:
+        if any(item.source_attempt_id != self.source_attempt_id for item in self.responses):
+            raise ValueError("all replay responses must belong to the settled source attempt")
+        request_ids = tuple(item.request_id for item in self.responses)
+        if len(set(request_ids)) != len(request_ids):
+            raise ValueError("model replay evidence cannot repeat a request identity")
         return self
 
 
@@ -506,6 +545,7 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
 __all__ = [
     "OPERATOR_PLAN_REVIEW_MEDIA_TYPE",
     "RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE",
+    "RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE",
     "AcceptanceCommand",
     "AcceptanceDecision",
     "AcceptanceReceipt",
@@ -528,6 +568,8 @@ __all__ = [
     "PlanningLoopResult",
     "PlanningTerminalStatus",
     "RuntimeContinuationEvidence",
+    "RuntimeModelReplayEvidence",
+    "RuntimeModelReplayResponse",
     "commit_task_from_acceptance",
     "next_task_kind",
     "validate_successor",

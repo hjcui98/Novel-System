@@ -236,7 +236,7 @@ def test_the_model_could_have_expressed_the_same_demand_and_been_understood() ->
 
     assert scope.targeted_item_ids == {"vol-4"}
     assert scope.target_for("vol-4") is not None
-    assert scope.target_for("vol-4").field_paths == ("volume_climax",)  # type: ignore[union-attr]
+    assert scope.target_for("vol-4").field_paths == ("volume_climax.description",)  # type: ignore[union-attr]
     assert blocking_issue_identity(review) == (
         "contradiction|vol-4|volume_climax.description|lock.long-truth.vol4-hint",
     )

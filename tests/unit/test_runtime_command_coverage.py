@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.database import Base, build_session_factory
-from novel_agent.adapters.postgres.models import RuntimeTaskAttemptRow
+from novel_agent.adapters.postgres.models import ModelCallLedgerRow, RuntimeTaskAttemptRow
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AutomationMode,
@@ -28,6 +28,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
+from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     AttemptOutcome,
     EffectReceipt,
@@ -358,6 +359,51 @@ def test_retry_with_exhausted_budget_enters_budget_review(
         reason="retry with no remaining budget",
     )
     assert reviewed.status is TaskStatus.BUDGET_REVIEW
+
+
+def test_retry_with_exhausted_budget_rejects_orphan_model_ledger(
+    kernel: tuple[sessionmaker[Session], RuntimeCommandService, CommitId],
+) -> None:
+    factory, commands, base = kernel
+    task = commands.create_task(
+        TaskRecord(
+            task_id=TaskId("task.retry-exhausted-orphan-ledger"),
+            run_id=RunId("run.retry-exhausted-orphan-ledger"),
+            project_id=ProjectId("project.test"),
+            kind=TaskKind.PLAN_CANDIDATE,
+            task_revision=0,
+            status=TaskStatus.WAITING_RETRY,
+            basis_commit=base,
+            policy_hash=HASH,
+            permission_hash=PERMISSION_HASH,
+            failure_budget=0,
+        )
+    )
+    with factory() as session, session.begin():
+        session.add(
+            ModelCallLedgerRow(
+                request_id="model.orphan.completed",
+                run_id=task.run_id.root,
+                task_id=task.task_id.root,
+                attempt_id="attempt.orphan",
+                request_hash=HASH,
+                status=ModelCallLedgerStatus.VALIDATION_REJECTED.value,
+                logical_phase="plan_revision",
+                effective_budget_json={},
+                reasoning_included_in_completion_tokens=False,
+                validation_error="schema rejected",
+                requested_at=datetime.now(UTC),
+            )
+        )
+
+    with pytest.raises(RuntimeCommandConflictError, match="settled failure classification"):
+        commands.control(
+            task.task_id,
+            command_id=StableId("control.retry-exhausted-orphan-ledger"),
+            action="retry",
+            actor_id="operator",
+            reason="orphan completed ledger must not be hidden by budget review",
+        )
 
 
 def test_create_task_accepts_max_length_task_identity(

@@ -19,14 +19,20 @@ from novel_agent.adapters.runtime.isolated import (
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
     ActorKind,
     AutomationMode,
+    CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
     CreativeRunRequest,
     CreativeRunTerminal,
+    OperatorReviewEvidence,
+    OperatorReviewFinding,
+    PlanningLoopRequest,
+    PlanningLoopResult,
 )
 from novel_agent.domain.generation import WritingLoopRequest
 from novel_agent.domain.ids import (
@@ -39,8 +45,9 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
 from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
+from novel_agent.domain.world import PlanLevel
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
-from novel_agent.ports.creative_runtime import WritingLeafPort
+from novel_agent.ports.creative_runtime import PlanningLeafPort, WritingLeafPort
 from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -149,6 +156,134 @@ def creative_kernel(
     )
     yield runtime, commands, policy, base
     engine.dispose()
+
+
+def test_two_real_acceptance_rejections_keep_only_current_control_inputs(
+    creative_kernel: tuple[
+        CreativeRuntimeService,
+        RuntimeCommandService,
+        CreativeRunPolicy,
+        CommitId,
+    ],
+) -> None:
+    runtime, commands, policy, base = creative_kernel
+    artifacts = runtime._artifacts
+
+    class _PlanProposalLeaf(StrictFakePlanningLeaf):
+        async def run(self, request: PlanningLoopRequest) -> PlanningLoopResult:
+            result = await super().run(request)
+            assert result.candidate is not None
+            proposal_ref = artifacts.put(
+                artifacts.read_verified(result.candidate.artifact_ref) + b"\n",
+                "application/vnd.novel-agent.plan-proposal+json",
+                SchemaVersion("1.0.0"),
+            )
+            candidate = result.candidate.model_copy(
+                update={
+                    "artifact_ref": proposal_ref,
+                    "candidate_hash": proposal_ref.artifact_id.root,
+                }
+            )
+            return result.model_copy(
+                update={"candidate": candidate, "artifact_refs": (proposal_ref,)}
+            )
+
+    runtime._planner = cast(PlanningLeafPort, _PlanProposalLeaf(artifacts))
+    author_ref = artifacts.put(b"original author brief", "text/plain", SchemaVersion("1.0.0"))
+    start = runtime.start(
+        CreativeRunRequest(
+            run_id=RunId("run.two-rejections"),
+            project_id=ProjectId("project.test"),
+            basis_commit=base,
+            policy=policy,
+            target_chapters=1,
+            plan_level=PlanLevel.STORY,
+            input_artifact_refs=(author_ref,),
+        )
+    )
+    assert start.current_task_id is not None
+    first_waiting = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))
+    assert first_waiting.current_task_id is not None
+    first_task = commands.get_task(first_waiting.current_task_id)
+    assert first_task.candidate_binding_ref is not None
+    first_candidate = CandidateBinding.model_validate_json(
+        artifacts.read_verified(first_task.candidate_binding_ref)
+    )
+    review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.two-rejections"),
+        target_artifact_ref=first_candidate.artifact_ref,
+        reviewer_id="operator.test",
+        reason="first candidate needs a bounded revision",
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-finding.two-rejections"),
+                kind="unresolved_scope_missing",
+                summary="scope is missing",
+                affected_item_ids=(StableId("plan-issue.test"),),
+                field_path="unresolved.affected_chapters",
+                expected="chapters 1-10",
+            ),
+        ),
+    )
+    review_ref = artifacts.put(
+        review.model_dump_json().encode(), OPERATOR_PLAN_REVIEW_MEDIA_TYPE, SchemaVersion("1.0.0")
+    )
+    runtime.submit_acceptance(
+        AcceptanceCommand(
+            command_id=StableId("reject.first"),
+            project_id=first_task.project_id,
+            run_id=first_task.run_id,
+            task_id=first_task.task_id,
+            candidate=first_candidate,
+            acceptance_policy_hash=policy.policy_hash,
+            actor_kind=ActorKind.OPERATOR,
+            actor_id="operator.test",
+            decision=AcceptanceDecision.REJECT,
+            reason="scope needs revision",
+            expected_project_commit=base,
+            idempotency_identity=StableId("reject.first.identity"),
+            issued_at=NOW,
+            review_artifact_refs=(review_ref,),
+        ),
+        policy=policy,
+    )
+    first_revision = commands.get_task(TaskId("run.two-rejections.plan.story.g1"))
+    assert first_revision.input_artifact_refs[:3] == (
+        author_ref,
+        first_candidate.artifact_ref,
+        review_ref,
+    )
+    second_waiting = asyncio.run(runtime.advance(first_revision.task_id, worker_id="planner"))
+    assert second_waiting.current_task_id is not None
+    second_task = commands.get_task(second_waiting.current_task_id)
+    assert second_task.candidate_binding_ref is not None
+    second_candidate = CandidateBinding.model_validate_json(
+        artifacts.read_verified(second_task.candidate_binding_ref)
+    )
+    runtime.submit_acceptance(
+        AcceptanceCommand(
+            command_id=StableId("reject.second"),
+            project_id=second_task.project_id,
+            run_id=second_task.run_id,
+            task_id=second_task.task_id,
+            candidate=second_candidate,
+            acceptance_policy_hash=policy.policy_hash,
+            actor_kind=ActorKind.AUTHOR,
+            actor_id="author.test",
+            decision=AcceptanceDecision.REJECT,
+            reason="author requests a further revision",
+            expected_project_commit=base,
+            idempotency_identity=StableId("reject.second.identity"),
+            issued_at=NOW,
+        ),
+        policy=policy,
+    )
+    second_revision = commands.get_task(TaskId("run.two-rejections.plan.story.g2"))
+    assert second_revision.input_artifact_refs[0] == author_ref
+    assert second_revision.input_artifact_refs[1] == second_candidate.artifact_ref
+    assert len(second_revision.input_artifact_refs) == 3
+    assert review_ref not in second_revision.input_artifact_refs
+    assert first_candidate.artifact_ref not in second_revision.input_artifact_refs
 
 
 def _accept(
