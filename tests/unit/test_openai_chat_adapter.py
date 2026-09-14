@@ -21,6 +21,7 @@ from novel_agent.domain.model_calls import (
     ModelRequest,
     ModelRole,
 )
+from novel_agent.services.model_call_ledger import model_request_hash
 
 
 def _request(
@@ -175,6 +176,52 @@ def test_generate_records_request() -> None:
     asyncio.run(endpoint.generate(_request()))
     assert len(endpoint.requests) == 1
     assert endpoint.requests[0].request_id.root == "request.test"
+
+
+def test_generate_sends_reconciliation_identity_headers() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(
+            {
+                "request_id": request.headers["X-Novel-Agent-Request-ID"],
+                "request_hash": request.headers["X-Novel-Agent-Request-Hash"],
+            }
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    request = _request()
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(request))
+
+    assert captured == {
+        "request_id": request.request_id.root,
+        "request_hash": model_request_hash(request).root,
+    }
+
+
+def test_generate_sends_attempt_identity_header_when_present() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["attempt_id"] = request.headers["X-Novel-Agent-Attempt-ID"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    request = _request().model_copy(update={"attempt_id": StableId("attempt.test")})
+    endpoint = _endpoint(handler)
+    asyncio.run(endpoint.generate(request))
+
+    assert captured == {"attempt_id": "attempt.test"}
 
 
 # --- HTTP failures ---

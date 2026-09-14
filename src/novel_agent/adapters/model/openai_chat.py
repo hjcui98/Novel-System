@@ -21,6 +21,7 @@ from novel_agent.ports.model_endpoint import ModelEndpointError
 from novel_agent.services.effective_budget import (
     ModelBudgetResolutionError,
 )
+from novel_agent.services.model_call_ledger import model_request_hash
 
 
 class OpenAIChatEndpointError(ModelEndpointError):
@@ -161,9 +162,14 @@ class OpenAICompatibleChatEndpoint:
         payload = self._build_payload(request)
         started_clock = monotonic()
         try:
+            request_headers = dict(self._headers)
+            request_headers["X-Novel-Agent-Request-ID"] = request.request_id.root
+            request_headers["X-Novel-Agent-Request-Hash"] = model_request_hash(request).root
+            if request.attempt_id is not None:
+                request_headers["X-Novel-Agent-Attempt-ID"] = request.attempt_id.root
             response = await client.post(
                 f"{self.base_url}/chat/completions",
-                headers=self._headers,
+                headers=request_headers,
                 json=payload,
                 timeout=request.timeout_seconds,
             )
