@@ -35,6 +35,7 @@ from novel_agent.domain.author_constraints import (
 )
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.planning import (
+    PlanReviewCitation,
     PlanReviewDraft,
     PlanReviewIssue,
     PlanReviewProviderDraft,
@@ -383,6 +384,37 @@ def test_a_cross_item_quote_must_resolve_in_every_named_item() -> None:
     assert reviewed.verification_failures
     assert ReviewCitationFailure.VALUE_NOT_IN_FIELD in reviewed.verification_failures[0]
     assert _model_blocking(reviewed) == []
+
+
+def test_differently_worded_cross_item_finding_uses_per_item_citations() -> None:
+    issue = _issue(
+        item_ids=("vol-4", "vol-5"),
+        target_item_ids=("vol-5",),
+        field_path="volume_climax.description",
+        quote=None,
+        unmet_condition="同一揭示不得在不同卷中重复",
+    ).model_copy(
+        update={
+            "citations": (
+                PlanReviewCitation(
+                    item_id=StableId("vol-4"),
+                    field_path="volume_climax.description",
+                    quote="获取第四碎片",
+                ),
+                PlanReviewCitation(
+                    item_id=StableId("vol-5"),
+                    field_path="volume_climax.description",
+                    quote="激活水晶",
+                ),
+            )
+        }
+    )
+
+    reviewed = _review(_draft(issue))
+
+    blocking = _model_blocking(reviewed)
+    assert len(blocking) == 1
+    assert blocking[0].authorized_target_item_ids == (StableId("vol-5"),)
 
 
 def test_comparison_items_do_not_implicitly_become_write_targets() -> None:

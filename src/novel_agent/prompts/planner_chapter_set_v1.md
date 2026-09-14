@@ -47,3 +47,5 @@
 `source_artifact_refs`。`MODIFY`/`CLOSE` 必须引用宿主提供的 `parent_issue_id`，`CLOSE`
 必须有 `closure_reason`；不要输出 `issue_id`，稳定 ID 由宿主派生。未知 ID、重复操作、
 宿主字段冒充、没有依据的移除或关闭都不能作为计划事实。
+当审校只要求补齐范围、来源或责任等字段时，使用 `MODIFY` 并保留原问题的开放状态；
+只有审校明确授权且已有可核验关闭依据时才使用 `CLOSE`。

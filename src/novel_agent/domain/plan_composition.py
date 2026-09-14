@@ -572,12 +572,33 @@ def _compose_unresolved(
         if target is None and key in scope.advisory_ids:
             target = PlanRevisionTarget(item_id=issue.issue_id)
         replacement = revised_by_id.get(key) or revised_by_parent.get(key)
-        if target is not None and PlanRevisionOperation.REMOVE in target.operations:
-            close = _operation_for(revised, key)
-            if close is not None and close.operation is PlanUnresolvedOperation.CLOSE:
-                kept.add(key)
-                continue
-            # A permission to close is not itself a close operation.  Keep the
+        revised_operation = _operation_for(revised, key)
+        if (
+            target is not None
+            and revised_operation is not None
+            and revised_operation.operation is PlanUnresolvedOperation.CLOSE
+        ):
+            if PlanRevisionOperation.REMOVE not in target.operations:
+                raise PlanCompositionError(
+                    f"authorized unresolved {key} does not permit the CLOSE operation"
+                )
+            kept.add(key)
+            continue
+        if replacement is not None and target is not None:
+            required = (
+                PlanRevisionOperation.REMOVE
+                if revised_operation is not None
+                and revised_operation.operation is PlanUnresolvedOperation.CLOSE
+                else PlanRevisionOperation.MODIFY
+            )
+            if required not in target.operations:
+                replacement = None
+        elif (
+            replacement is None
+            and target is not None
+            and PlanRevisionOperation.REMOVE in target.operations
+        ):
+            # A permission to close is not itself a close operation. Keep the
             # parent's advisory until the revision supplies an explicit closure.
             replacement = None
         if replacement is not None and target is not None:
@@ -662,14 +683,28 @@ def _compose_unresolved_operations(
         if target is None or key not in authorised:
             composed.append(record)
             continue
-        if PlanRevisionOperation.REMOVE in target.operations:
-            if replacement is None or replacement.operation is not PlanUnresolvedOperation.CLOSE:
-                raise PlanCompositionError(
-                    f"authorized unresolved close {key} lacks a CLOSE operation"
-                )
-            composed.append(replacement)
+        if replacement is None:
+            composed.append(record)
             continue
-        composed.append(record if replacement is None else replacement)
+        # ``authorized_operations`` is a set of alternatives, not a priority
+        # ordering.  A host finding may permit either a field repair (MODIFY) or
+        # an explicit resolution (CLOSE); the presence of REMOVE must not turn a
+        # valid MODIFY response into a false "lacks CLOSE" rejection.
+        required = (
+            PlanRevisionOperation.REMOVE
+            if replacement.operation is PlanUnresolvedOperation.CLOSE
+            else PlanRevisionOperation.MODIFY
+        )
+        if required not in target.operations:
+            expected = (
+                "CLOSE"
+                if replacement.operation is PlanUnresolvedOperation.CLOSE
+                else replacement.operation.value.upper()
+            )
+            raise PlanCompositionError(
+                f"authorized unresolved {key} does not permit the {expected} operation"
+            )
+        composed.append(replacement)
     for key, record in revised_records.items():
         if key in parent_records:
             continue

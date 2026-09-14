@@ -334,6 +334,19 @@ def volume_stage_grid_defects(payload: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(defects)
 
 
+class PlanReviewCitation(DomainModel):
+    """One candidate-local citation for a cross-item review finding.
+
+    ``quote`` on :class:`PlanReviewIssue` remains the legacy compact form for a
+    literal shared substring. These rows let differently worded fields be
+    compared without weakening the host's exact field/value verification.
+    """
+
+    item_id: StableId
+    field_path: str = Field(min_length=1)
+    quote: str = Field(min_length=1)
+
+
 class PlanReviewIssue(DomainModel):
     issue_id: StableId
     kind: ReviewIssueKind
@@ -355,6 +368,9 @@ class PlanReviewIssue(DomainModel):
     field_path: str | None = Field(default=None, min_length=1)
     constraint_id: str | None = Field(default=None, min_length=1)
     quote: str | None = Field(default=None, min_length=1)
+    # Per-item exact citations for cross-item comparisons whose wording differs.
+    # The legacy ``quote`` remains valid when it occurs in every affected field.
+    citations: tuple[PlanReviewCitation, ...] = ()
     unmet_condition: str | None = Field(default=None, min_length=1)
     # Host-owned comparison evidence.  These are observations and expected
     # constraints, not a candidate quote; model findings must not populate them.
@@ -384,6 +400,9 @@ class PlanReviewIssue(DomainModel):
             raise ValueError("review issue proposed target ids must be unique")
         if len(set(self.authorized_target_item_ids)) != len(self.authorized_target_item_ids):
             raise ValueError("review issue authorized target ids must be unique")
+        citation_ids = [citation.item_id for citation in self.citations]
+        if len(citation_ids) != len(set(citation_ids)):
+            raise ValueError("review issue citation item ids must be unique")
         return self
 
 
@@ -406,6 +425,7 @@ class PlanReviewProviderIssue(DomainModel):
     field_path: str | None = Field(default=None, min_length=1)
     constraint_id: str | None = Field(default=None, min_length=1)
     quote: str | None = Field(default=None, min_length=1)
+    citations: tuple[PlanReviewCitation, ...] = ()
     unmet_condition: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")

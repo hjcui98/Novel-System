@@ -18,17 +18,16 @@ new state; do not accept merely because each volume is locally coherent. Each
  modification in `proposed_target_item_ids`; a comparison/baseline item is not
  automatically a write target.
 If the same repetition appears in more than one narrative slot, emit a separate issue
-for each slot, with one exact quote from that slot and only the item ids where that
-quote occurs. Do not mention an unquoted slot only in `unmet_condition`. Every named
-item must contain the quote in its cited field. A quote must be copied verbatim from
-the cited candidate field: never paraphrase it, normalize place names, or insert
-placeholders such as `[地点]` or `[目标]`. If full sentences differ, cite only a
-short exact substring shared by every named field. If you cannot copy and verify the
-exact text in every named field, omit the blocking issue or make it advisory. Before
-finalizing each issue, compare its quote literally against the cited field for every
-affected item, remove any non-matching item id, and omit a cross-item blocking issue if
-fewer than two exact matches remain. Semantic similarity is not a substitute for this
-check. Those are citations and model proposals, not permissions: omit or leave empty
+for each slot. Every comparison row must carry the exact field path and an exact quote
+from its own cited candidate field; use the structured per-item citation rows when
+the wording differs across items. The legacy single `quote` remains valid only when
+the same literal quote occurs in every named field. Do not mention an unquoted slot
+only in `unmet_condition`. Never paraphrase a quote, normalize place names, or insert
+placeholders such as `[地点]` or `[目标]`. Semantic equivalence is a review claim
+that the host must inspect; it is not proved by forcing all fields to share one
+substring. Before finalizing each issue, compare every per-item quote literally
+against its cited field and remove any unmatched item. Those are citations and model
+proposals, not permissions: omit or leave empty
 the host-owned `authorized_operations`, `authorized_target_item_ids`, `actual`,
 `expected`, `host_issued`, and `verification_failures` fields. Never put strings such
 as `MODIFY vol-x.field` in `authorized_operations`; the host verifies the proposed
@@ -41,8 +40,11 @@ non-empty bounded instruction that names only the verified blocking findings and
 proposed targets. When `decision` is `ACCEPT` or `HUMAN_REQUIRED`, set
 `revision_instruction` explicitly to `null`. Do not omit this key or rely on `issues` to
 imply the instruction; if no bounded revision can be stated, return `HUMAN_REQUIRED`.
-For a blocking content issue, the minimum shape is
-`{"affected_item_ids":["comparison-id","target-id"],"proposed_target_item_ids":["target-id"],"field_path":"slot.description","quote":"exact candidate text","unmet_condition":"specific unmet condition"}`. Replace every example value with actual values from the full candidate; never copy the example IDs or prose.
+For a blocking content issue, the minimum legacy shape is
+`{"affected_item_ids":["comparison-id","target-id"],"proposed_target_item_ids":["target-id"],"field_path":"slot.description","quote":"exact candidate text","unmet_condition":"specific unmet condition"}`.
+For differently worded comparisons, add
+`"citations":[{"item_id":"comparison-id","field_path":"slot.description","quote":"exact text from this item"}, {"item_id":"target-id","field_path":"slot.description","quote":"exact text from that item"}]`
+and keep `affected_item_ids` as the comparison set. Replace every example value with actual values from the full candidate; never copy the example IDs or prose.
 
 A narrative stage window only has to fall inside its volume's declared
 `chapter_start`/`chapter_end`. A volume may contain intentional gaps, transitions, or
@@ -55,7 +57,7 @@ The comparison projection is a read-only extraction of the same candidate, not a
 second candidate. Never report an apparent projection/candidate mismatch as a
 finding; use the full candidate as the only authority for item IDs and field values.
 
-Treat `field_path`, `constraint_id`, `quote`, `unmet_condition`, and the two item-id
+Treat `field_path`, `constraint_id`, `quote`, `citations`, `unmet_condition`, and the two item-id
 lists as the model's proposed citation/target data. The host must re-resolve every
 comparison row and target against the reviewed candidate; it owns the resulting
 `actual`, `expected`, `authorized_operations`, `authorized_target_item_ids`, and

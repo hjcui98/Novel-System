@@ -459,6 +459,7 @@ def _host_materialize_provider_review(draft: PlanReviewProviderDraft) -> PlanRev
                 field_path=issue.field_path,
                 constraint_id=issue.constraint_id,
                 quote=issue.quote,
+                citations=issue.citations,
                 unmet_condition=issue.unmet_condition,
             )
         )
@@ -502,13 +503,24 @@ def _target_authorization_failure(
                 f"{ReviewCitationFailure.TARGET_ITEM_NOT_FOUND}: {target_id.root} is not an "
                 "item of the reviewed candidate"
             )
-        resolved = _resolve_field_path(payload, issue.field_path) if issue.field_path else None
-        if issue.field_path and isinstance(resolved, str):
+        target_field_path = issue.field_path
+        if target_field_path is None and issue.citations:
+            target_citation = next(
+                (citation for citation in issue.citations if citation.item_id == target_id),
+                None,
+            )
+            target_field_path = None if target_citation is None else target_citation.field_path
+        resolved = (
+            _resolve_field_path(payload, target_field_path)
+            if target_field_path
+            else None
+        )
+        if target_field_path and isinstance(resolved, str):
             # A string result is the resolver's error marker.  Existing fields
             # return ``(parent, value)`` so a valid target must pass this branch.
             return (
                 f"{ReviewCitationFailure.TARGET_FIELD_NOT_FOUND}: {target_id.root}."
-                f"{issue.field_path} is not a writable field of the reviewed item"
+                f"{target_field_path} is not a writable field of the reviewed item"
             )
     return None
 
@@ -590,11 +602,11 @@ def _citation_failure(
 
     if not issue.affected_item_ids:
         return f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding names no item"
-    if not issue.field_path:
+    if not issue.citations and not issue.field_path:
         return (
             f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding declares no field path"
         )
-    if not issue.quote:
+    if not issue.citations and not issue.quote:
         return f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: the finding quotes nothing"
     if not issue.unmet_condition:
         return (
@@ -610,6 +622,33 @@ def _citation_failure(
             f"{ReviewCitationFailure.CONSTRAINT_NOT_APPLICABLE}: {issue.constraint_id!r} is not "
             "part of the frozen catalogue this candidate was planned against"
         )
+    if issue.citations:
+        cited_ids = tuple(citation.item_id for citation in issue.citations)
+        expected_ids = set(issue.affected_item_ids)
+        if set(cited_ids) != expected_ids or len(cited_ids) != len(expected_ids):
+            return (
+                f"{ReviewCitationFailure.EVIDENCE_FIELDS_MISSING}: per-item citations must cover "
+                "each affected item exactly once"
+            )
+        for citation in issue.citations:
+            payload = by_id.get(citation.item_id.root)
+            if payload is None:
+                return (
+                    f"{ReviewCitationFailure.ITEM_NOT_FOUND}: {citation.item_id.root} is not an "
+                    "item of the reviewed candidate"
+                )
+            resolution = _resolve_field_path(payload, citation.field_path)
+            if isinstance(resolution, str):
+                return resolution
+            if not _quote_matches(citation.quote, resolution[1]):
+                return (
+                    f"{ReviewCitationFailure.VALUE_NOT_IN_FIELD}: {citation.quote!r} does not "
+                    f"appear in {citation.item_id.root}.{citation.field_path}"
+                )
+        return None
+
+    assert issue.field_path is not None
+    assert issue.quote is not None
     resolved: list[tuple[str, object, object]] = []
     for item_id in issue.affected_item_ids:
         payload = by_id.get(item_id.root)
@@ -752,10 +791,22 @@ def _candidate_field_values_for_issue(
     only in the failure message that asks a reviewer to repair a rejected citation.
     """
 
-    if not issue.field_path:
-        return {}
     items = _items_by_id(target_payload)
     values: dict[str, object] = {}
+    if issue.citations:
+        for citation in issue.citations:
+            payload = items.get(citation.item_id.root)
+            if payload is None:
+                continue
+            resolved = _resolve_field_path(payload, citation.field_path)
+            if isinstance(resolved, tuple):
+                values[citation.item_id.root] = {
+                    "field_path": citation.field_path,
+                    "value": resolved[1],
+                }
+        return values
+    if not issue.field_path:
+        return values
     for item_id in issue.affected_item_ids:
         payload = items.get(item_id.root)
         if payload is None:
@@ -1947,9 +1998,10 @@ class PlanReviewerAgent:
             review_payload += (
                 '\n<REVIEW_REPAIR_FEEDBACK trusted="true">\n'
                 "上一份同候选审校未通过宿主证据核验。仅按下面的宿主反馈修正审校输出; 对列出的"
-                "model finding 逐个回到候选字段重查。跨条目问题应把 quote 缩短为每个列出字段"
-                "都逐字包含的共同片段, 并删除不命中的条目和占位符引用; 如果没有至少两个共同"
-                "命中则删除该 blocking 观察。不要因为宿主拒绝旧 quote 就无条件删除其语义观察。"
+                "model finding 逐个回到候选字段重查。跨条目问题应为每个 affected item 填写自己的"
+                "citations 行（item_id、field_path、quote）；只有确实存在共同字面片段时才使用旧的"  # noqa: RUF001
+                "单 quote 形式。删除不命中的条目和占位符引用，不要把不同措辞强行改写成共同子串。"  # noqa: RUF001
+                "不要因为宿主拒绝旧 quote 就无条件删除其语义观察。"
                 "宿主反馈中的 targets_missing 是硬性契约失败: 每一条你保留为 blocking 的 model"
                 "finding 都必须填写非空 proposed_target_item_ids, 只列 REVIEW_TARGET_DATA 中真实"
                 "存在且建议修改的 item_id; affected_item_ids 仍只表示比较证据。不得填写或复制"

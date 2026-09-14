@@ -21,3 +21,5 @@
 `source_artifact_refs`。`MODIFY`/`CLOSE` 必须使用宿主已给出的 `parent_issue_id`，
 `CLOSE` 必须有 `closure_reason`。不要填写 `issue_id`；宿主从 kind、范围、责任人和来源
 派生稳定身份。模型不得伪造宿主字段、凭摘要或下标匹配问题，也不得关闭未知问题。
+当宿主只要求补齐 `affected_chapters`、来源或责任等字段时，使用 `MODIFY` 并保留
+原问题的开放状态；只有审校明确授权且你已经有可核验关闭依据时才使用 `CLOSE`。

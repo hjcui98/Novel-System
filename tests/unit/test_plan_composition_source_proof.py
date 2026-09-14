@@ -612,6 +612,66 @@ def test_an_authorised_close_removes_active_issue_but_retains_close_history() ->
     assert composed.unresolved_operations[0].closure_reason == "宿主已核验并持久化来源"
 
 
+def test_modify_is_valid_when_review_allows_modify_or_close() -> None:
+    """An alternative CLOSE permission must not force every repair to close."""
+
+    issue_id = StableId("plan-issue.draft.modify-or-close")
+    active = PlanUnresolvedIssue(
+        issue_id=issue_id,
+        summary="待补范围",
+        affected_chapters=(),
+        blocking=True,
+    )
+    parent_record = PlanUnresolvedOperationRecord(
+        operation=PlanUnresolvedOperation.ADD,
+        issue_id=issue_id,
+        summary=active.summary,
+        blocking=True,
+    )
+    modified = active.model_copy(
+        update={
+            "operation": PlanUnresolvedOperation.MODIFY,
+            "parent_issue_id": issue_id,
+            "affected_chapters": (1, 800),
+        }
+    )
+    modify_record = parent_record.model_copy(
+        update={
+            "operation": PlanUnresolvedOperation.MODIFY,
+            "parent_issue_id": issue_id,
+            "affected_chapters": (1, 800),
+        }
+    )
+    parent = _proposal(
+        (_item("vol-1", goal="父"),),
+        unresolved=(active,),
+        unresolved_operations=(parent_record,),
+    )
+    revised = parent.model_copy(
+        update={
+            "proposal_id": StableId("plan-proposal.n3.modify-or-close"),
+            "unresolved": (modified,),
+            "unresolved_operations": (modify_record,),
+        }
+    )
+    scope = revision_scope(
+        _review(
+            _finding(
+                issue_id.root,
+                field_path="unresolved",
+                host_issued=True,
+                kind=ReviewIssueKind.BLOCKING_UNRESOLVED,
+                authorized_operations=("modify", "close"),
+            )
+        )
+    )
+
+    composed = compose_scoped_revision(parent, revised, scope)
+
+    assert composed.unresolved[0].affected_chapters == (1, 800)
+    assert composed.unresolved_operations[0].operation is PlanUnresolvedOperation.MODIFY
+
+
 def test_structured_unresolved_operation_cannot_name_unknown_identity() -> None:
     parent = _proposal((_item("vol-1", goal="父"),), number=1)
     issue_id = StableId("plan-issue.draft.unknown")
