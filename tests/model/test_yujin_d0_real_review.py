@@ -6,7 +6,7 @@ against the registered ``qwen38_27b_nvfp4_8003`` profile, reviewing the frozen
 candidate, with the frozen author locks as the trusted catalogue.
 
 It is marked ``model_required`` and is off the deterministic path.  It spends at
-most two provider calls (a review, and a re-review of the composed candidate) and
+most one initial call plus one bounded citation repair per logical review and
 writes only into the diagnostic's own object store.  Nothing here advances the
 frozen v23 run, writes its Canon, or calls a production CommitService.
 
@@ -19,7 +19,8 @@ What the run establishes, recorded in the delivery note:
 * whether the legitimate early-planting rule survives, so a legal `setup` is not
   pushed past a boundary it never crossed.
 
-The diagnostic budget is two reviews and one bounded revision; it does not let the
+The diagnostic budget is two logical reviews, one bounded planner revision, and at
+most one citation repair for each review or planner revision; it does not let the
 planner regenerate eight volumes.
 
 What the revision case does and does not establish is worth stating precisely.  It
@@ -41,7 +42,7 @@ import pytest
 
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.adapters.runtime.materializers import PLAN_PROPOSAL_MEDIA_TYPE
-from novel_agent.agents.plan_reviewer import PlanReviewerAgent
+from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
 from novel_agent.agents.planner import build_planner_contract_bundle, planner_skill_ids_for_mode
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.artifacts import ArtifactRef
@@ -104,6 +105,19 @@ DIAGNOSTIC_OUTPUT_TOKENS = 16_000
 DIAGNOSTIC_TIMEOUT_SECONDS = 900.0
 KNOWN_REPEATED_REVEAL_PHRASE = "正式揭露门被从对面推开"
 KNOWN_REPEATED_REVEAL_IDS = frozenset({"vol-5", "vol-7", "vol-8"})
+KNOWN_REPEATED_CONTENT = {
+    "midpoint_reversal.description": "意识到门被从对面推开",
+    "volume_climax.description": KNOWN_REPEATED_REVEAL_PHRASE,
+    "ending_state.description": "但对其具体状态仍存疑问",
+}
+D0_CONTENT_REVIEW_FOCUS = (
+    "仅审查 ARC_VOLUME 的 midpoint_reversal.description、volume_climax.description 和 "
+    "ending_state.description 三个同名槽位的跨卷重复。先比较这些字段是否复现同一揭示、"
+    "事件结果或叙事后果且没有新进展, 再决定是否报告 blocking; 不要在本次诊断中报告其"
+    "他槽位的模板重复。字段名只是审查范围, 不是预置问题; 只有候选原文逐字证据成立才报告。"
+    "每个重复观察都要遍历比较投影的全部条目, 把该 quote 在同一 field_path 中逐字命中的"
+    "每个条目都列入 affected_item_ids, 不能只停在一对而漏掉第三个匹配条目。"
+)
 
 
 def _endpoint() -> RegisteredModelEndpoint:
@@ -273,21 +287,43 @@ def _run_review(
     target_ref: ArtifactRef,
     lock_ref: ArtifactRef,
     world_ref: ArtifactRef,
+    *,
+    phase: str = "plan-review",
+    review_focus: str | None = None,
 ) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
     import asyncio
 
-    return asyncio.run(
-        reviewer.review(
-            version=VERSION,
-            mode=AgentMode.ARC_VOLUME,
-            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-            target_payload=candidate.model_dump_json(),
-            target_artifact=target_ref,
-            trusted_source_artifacts=(lock_ref, world_ref),
-            request=_request("plan-review"),
-            base_commit=COMMIT,
+    try:
+        return asyncio.run(
+            reviewer.review(
+                version=VERSION,
+                mode=AgentMode.ARC_VOLUME,
+                target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+                target_payload=candidate.model_dump_json(),
+                target_artifact=target_ref,
+                trusted_source_artifacts=(lock_ref, world_ref),
+                request=_request(phase),
+                base_commit=COMMIT,
+                review_focus=review_focus,
+            )
         )
-    )
+    except PlanReviewerInvocationError as error:
+        # One changed-input repair is part of the bounded D0 diagnostic.  The first
+        # provider response and failed host draft remain durable in this repository.
+        return asyncio.run(
+            reviewer.review(
+                version=VERSION,
+                mode=AgentMode.ARC_VOLUME,
+                target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+                target_payload=candidate.model_dump_json(),
+                target_artifact=target_ref,
+                trusted_source_artifacts=(lock_ref, world_ref),
+                request=_request(f"{phase}-repair"),
+                base_commit=COMMIT,
+                review_feedback=str(error),
+                review_focus=review_focus,
+            )
+        )
 
 
 def _record(tmp_path: Path, name: str, payload: dict[str, object]) -> None:
@@ -359,40 +395,42 @@ def test_the_frozen_locks_are_read_not_restated() -> None:
 def _independent_known_defect_findings(
     candidate: PlanProposal, review: PlanReview
 ) -> tuple[PlanReviewIssue, ...]:
-    """Find model findings that independently cite the frozen repeated reveal.
+    """Find model findings that independently cite frozen repeated content.
 
     Host-generated structural findings are useful for the mechanical preflight, but
     they cannot establish that the real Reviewer understood a content defect.  D0
-    therefore requires a model-owned, blocking, field-level citation over the known
-    repeated climax descriptions.
+    therefore requires model-owned, blocking, field-level citations over the frozen
+    repeated narrative phrases.  The host has already checked the returned citations;
+    this second check keeps the diagnostic oracle tied to the immutable candidate
+    rather than accepting any unrelated model issue.
     """
 
-    descriptions: dict[str, str] = {}
+    descriptions: dict[str, dict[str, str]] = {}
     for item in candidate.items:
-        raw_climax = item.payload.get("volume_climax")
-        if not isinstance(raw_climax, dict):
-            continue
-        description = raw_climax.get("description")
-        if isinstance(description, str):
-            descriptions[item.item_id.root] = description
-    known_ids = KNOWN_REPEATED_REVEAL_IDS & {
-        item_id
-        for item_id, description in descriptions.items()
-        if KNOWN_REPEATED_REVEAL_PHRASE in description
-    }
+        fields: dict[str, str] = {}
+        for field_path in KNOWN_REPEATED_CONTENT:
+            slot, leaf = field_path.split(".", maxsplit=1)
+            raw_slot = item.payload.get(slot)
+            if isinstance(raw_slot, dict) and isinstance(raw_slot.get(leaf), str):
+                fields[field_path] = raw_slot[leaf]
+        descriptions[item.item_id.root] = fields
     findings: list[PlanReviewIssue] = []
     for issue in review.issues:
-        affected = {item_id.root for item_id in issue.affected_item_ids} & known_ids
+        phrase = KNOWN_REPEATED_CONTENT.get(issue.field_path or "")
+        affected = {item_id.root for item_id in issue.affected_item_ids}
         quote = issue.quote
         if (
             issue.blocking
             and not issue.host_issued
-            and issue.field_path == "volume_climax.description"
+            and phrase is not None
             and issue.unmet_condition
             and quote
             and len(affected) >= 2
-            and any(
-                quote == descriptions[item_id] or KNOWN_REPEATED_REVEAL_PHRASE in quote
+            and phrase in quote
+            and all(
+                item_id in descriptions
+                and issue.field_path in descriptions[item_id]
+                and quote in descriptions[item_id][issue.field_path]
                 for item_id in affected
             )
         ):
@@ -419,7 +457,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         out_of_scope_items,
         revision_scope,
     )
-    from novel_agent.domain.planning import ReviewDecision, ReviewTargetKind
+    from novel_agent.domain.planning import ReviewDecision
     from novel_agent.domain.stage2 import PlanningTask
 
     candidate = _proposal_from_frozen()
@@ -448,32 +486,45 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         VERSION,
     )
     real_review, _review_ref, _review_call = _run_review(
-        reviewer, candidate, parent_ref, lock_ref, world_ref
+        reviewer,
+        candidate,
+        parent_ref,
+        lock_ref,
+        world_ref,
+        review_focus=D0_CONTENT_REVIEW_FOCUS,
     )
     known_findings = _independent_known_defect_findings(candidate, real_review)
-    known_ids = KNOWN_REPEATED_REVEAL_IDS & {
-        item_id.root for issue in known_findings for item_id in issue.affected_item_ids
-    }
     assert known_findings, "the real Reviewer did not discover the known repeated climax defect"
-    assert known_ids >= KNOWN_REPEATED_REVEAL_IDS, (
-        "the real Reviewer did not cover every frozen volume carrying the known defect"
+    volume_findings = tuple(
+        issue for issue in known_findings if issue.field_path == "volume_climax.description"
     )
+    volume_ids = {item_id.root for issue in volume_findings for item_id in issue.affected_item_ids}
+    assert volume_ids >= KNOWN_REPEATED_REVEAL_IDS, (
+        "the real Reviewer did not cover every frozen volume carrying the repeated climax"
+    )
+    expected_fields: dict[str, set[str]] = {}
+    for issue in known_findings:
+        assert issue.field_path is not None
+        top_level_field = issue.field_path.split(".", maxsplit=1)[0]
+        for item_id in issue.affected_item_ids:
+            expected_fields.setdefault(item_id.root, set()).add(top_level_field)
+    reviewed_fields = sorted({field for fields in expected_fields.values() for field in fields})
     review = real_review.model_copy(
         update={
             "decision": ReviewDecision.REVISE,
             "issues": known_findings,
             "revision_instruction": (
-                "只修改 REVIEW 点名条目的 volume_climax.description；"  # noqa: RUF001
+                "只修改 REVIEW 点名条目的 " + "、".join(reviewed_fields) + "；"  # noqa: RUF001
                 "其余条目的 payload 必须与 PARENT_PROPOSAL 逐字一致。"
             ),
         }
     )
     scope = revision_scope(review)
-    assert set(scope.targeted_item_ids) >= KNOWN_REPEATED_REVEAL_IDS
-    for item_id in KNOWN_REPEATED_REVEAL_IDS:
+    assert set(scope.targeted_item_ids) == set(expected_fields)
+    for item_id, fields in expected_fields.items():
         target = scope.target_for(item_id)
         assert target is not None
-        assert target.field_paths == ("volume_climax",)
+        assert set(target.field_paths) == fields
 
     brief = (FROZEN_RUN / "input/brief.md").read_bytes()
     brief_ref = repo.put(brief, "text/plain", VERSION)
@@ -490,6 +541,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         f"REVIEW_REVISION={review.revision_instruction}\n"
         "REVISION_SCOPE=只修改 REVIEW 点名条目/字段；其余条目的 payload 必须与 "  # noqa: RUF001
         "PARENT_PROPOSAL 逐字一致。\n"
+        f"REVISION_SCOPE_DATA={scope.model_dump_json()}\n"
         f"PARENT_CANDIDATE_HASH={candidate.proposal_id.root}\n"
         f"REVIEW={review.model_dump_json()}\n"
         f"PARENT_PROPOSAL={candidate.model_dump_json()}"
@@ -520,11 +572,70 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     )
     raw = result.plan_proposal
 
+    def missing_revision_fields(proposal: PlanProposal) -> tuple[str, ...]:
+        produced = {item.item_id.root: item.payload for item in proposal.items}
+        missing: list[str] = []
+        for item_id, fields in expected_fields.items():
+            payload = produced.get(item_id)
+            parent = next(item.payload for item in candidate.items if item.item_id.root == item_id)
+            if payload is None:
+                missing.extend(f"{item_id}.{field}" for field in fields)
+                continue
+            missing.extend(
+                f"{item_id}.{field}" for field in fields if payload.get(field) == parent.get(field)
+            )
+        return tuple(missing)
+
+    planner_repair: dict[str, object] | None = None
+    missing = missing_revision_fields(raw)
+    if missing:
+        planner_repair = {
+            "missing_fields_after_first_revision": list(missing),
+            "request_phase": "plan-revision-repair",
+        }
+        repair_payload = (
+            "PLANNING_PHASE=plan\n"
+            f"PLANNING_TASK={task.model_dump_json()}\n"
+            f"SOURCE_DATA={source_payload}\n"
+            "PLANNER_REPAIR_FEEDBACK=上一份有界修订没有实际改变以下宿主点名字段: "
+            f"{', '.join(missing)}. 这是唯一一次 repair; 必须输出完整 plan_items, "
+            "逐一改变这些字段, 并逐字保留所有未点名 item/字段。"
+        )
+        repair_prepared = planner._runner.prepare(
+            AgentType.PLANNER,
+            AgentMode.ARC_VOLUME,
+            VERSION.root,
+            _request("plan-revision-repair"),
+            repair_payload,
+            source_hashes=(brief_ref.artifact_id,),
+            input_artifacts=(brief_ref, parent_ref),
+            base_commit=COMMIT,
+            allowed_skill_ids=planner_skill_ids_for_mode(AgentMode.ARC_VOLUME),
+        )
+        repair_execution = asyncio.run(
+            planner._runner.execute(repair_prepared, _proposal_output_type(task))
+        )
+        repair_result = planner._materialize_plan(
+            version=VERSION,
+            task=task,
+            draft=repair_execution.output,
+            prepared=repair_prepared,
+            model_call=repair_execution.model_call,
+            reviewed_inquiry_ref=None,
+            memory_need_ids=(),
+            evidence_refs=(),
+            graph_path_receipt_refs=(),
+            parent_proposal_id=candidate.proposal_id,
+        )
+        execution = repair_execution
+        raw = repair_result.plan_proposal
+        planner_repair["missing_fields_after_repair"] = list(missing_revision_fields(raw))
+
     composed = compose_scoped_revision(candidate, raw, scope)
     out_of_scope = out_of_scope_items(candidate, raw, scope)
 
     # The composed candidate carries the parent everywhere the review did not reach.
-    targets = KNOWN_REPEATED_REVEAL_IDS
+    targets = set(scope.targeted_item_ids)
     for original, produced in zip(candidate.items, composed.items, strict=True):
         if original.item_id.root in targets:
             continue
@@ -535,7 +646,9 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
         "d0.revision",
         {
             "target_items": sorted(targets),
-            "scope_field_paths": ["volume_climax"],
+            "scope_field_paths": sorted(
+                {field for fields in expected_fields.values() for field in fields}
+            ),
             "raw_items": len(raw.items),
             "raw_changed_items": sorted(
                 item.item_id.root
@@ -551,37 +664,35 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
             "composed_target_description": next(
                 item.payload["volume_climax"]
                 for item in composed.items
-                if item.item_id.root in targets
+                if item.item_id.root in volume_ids
             ),
             "usage": None
             if getattr(execution.model_call, "usage", None) is None
             else execution.model_call.usage.model_dump(mode="json"),
+            "planner_repair": planner_repair,
         },
     )
 
     # A revision that changed nothing is not convergence either; the diagnostic
     # reports it rather than asserting the model behaved.
-    for item_id in targets:
+    for item_id, fields in expected_fields.items():
         target_item = next(item for item in composed.items if item.item_id.root == item_id)
         parent_item = next(item for item in candidate.items if item.item_id.root == item_id)
-        assert target_item.payload["volume_climax"] != parent_item.payload["volume_climax"], (
-            f"the real revision did not move the field the review named: {item_id}"
-        )
+        for field in fields:
+            assert target_item.payload[field] != parent_item.payload[field], (
+                f"the real revision did not move the field the review named: {item_id}.{field}"
+            )
 
-    # Re-review the composed candidate for real.
-    rereview, _ref, _call = asyncio.run(
-        reviewer.review(
-            version=VERSION,
-            mode=AgentMode.ARC_VOLUME,
-            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-            target_payload=composed.model_dump_json(),
-            target_artifact=repo.put(
-                composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
-            ),
-            trusted_source_artifacts=(lock_ref, world_ref),
-            request=_request("plan-rereview"),
-            base_commit=COMMIT,
-        )
+    # Re-review the composed candidate for real.  The same bounded citation-repair
+    # rule applies, with a distinct request id so it cannot hide a duplicate call.
+    rereview, _ref, _call = _run_review(
+        reviewer,
+        composed,
+        repo.put(composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION),
+        lock_ref,
+        world_ref,
+        phase="plan-rereview",
+        review_focus=D0_CONTENT_REVIEW_FOCUS,
     )
     _record(
         tmp_path,

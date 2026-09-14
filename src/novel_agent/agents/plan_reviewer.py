@@ -77,6 +77,11 @@ _HISTORY_NEED_KINDS = frozenset(
         "object_origin",
     }
 )
+_ARC_VOLUME_COMPARISON_KEYS = (
+    "midpoint_reversal",
+    "volume_climax",
+    "ending_state",
+)
 
 
 class PlanReviewerInvocationError(ValueError):
@@ -458,13 +463,19 @@ def _citation_failure(
         if isinstance(resolution, str):
             return resolution
         resolved.append((item_id.root, resolution[0], resolution[1]))
-    if not any(_quote_matches(issue.quote, field_value) for _id, _parent, field_value in resolved):
+    unmatched = [
+        item_id
+        for item_id, _parent, field_value in resolved
+        if not _quote_matches(issue.quote, field_value)
+    ]
+    if unmatched:
         located = ", ".join(
             f"{item_id}.{issue.field_path}" for item_id, _parent, _value in resolved
         )
         return (
             f"{ReviewCitationFailure.VALUE_NOT_IN_FIELD}: {issue.quote!r} does not appear in "
-            f"{located}"
+            f"{', '.join(unmatched)}.{issue.field_path}; all named fields must contain the "
+            f"citation (checked: {located})"
         )
     return None
 
@@ -572,6 +583,30 @@ def _field_path_segments(field_path: str) -> tuple[tuple[str, int | None], ...] 
     return tuple(segments)
 
 
+def _candidate_field_values_for_issue(
+    target_payload: str, issue: PlanReviewIssue
+) -> dict[str, object]:
+    """Expose exact source values for one bounded citation repair.
+
+    The values are copied from the same candidate the host will verify.  They are
+    diagnostic evidence, not a model finding or an authorization, and are included
+    only in the failure message that asks a reviewer to repair a rejected citation.
+    """
+
+    if not issue.field_path:
+        return {}
+    items = _items_by_id(target_payload)
+    values: dict[str, object] = {}
+    for item_id in issue.affected_item_ids:
+        payload = items.get(item_id.root)
+        if payload is None:
+            continue
+        resolved = _resolve_field_path(payload, issue.field_path)
+        if isinstance(resolved, tuple):
+            values[item_id.root] = resolved[1]
+    return values
+
+
 def _items_by_id(target_payload: str) -> dict[str, Mapping[str, object]]:
     """Index a candidate's items by item id so citations resolve inside one item."""
 
@@ -582,6 +617,44 @@ def _items_by_id(target_payload: str) -> dict[str, Mapping[str, object]]:
     if not isinstance(payload, Mapping):
         return {}
     return _item_payloads(payload)
+
+
+def _arc_volume_comparison_view(target_payload: str) -> str | None:
+    """Build a read-only same-slot view from the candidate under review.
+
+    The full proposal is still the only review target and the host verifies every
+    citation against it.  This projection is only a compact display of the exact
+    source strings, so a long ARC_VOLUME payload does not make a cross-item audit
+    depend on the model finding distant sibling fields by accident.  It contains no
+    host verdict, finding, authorization, or instruction authority.
+    """
+
+    try:
+        document = json.loads(target_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    raw_items = document.get("items")
+    if not isinstance(raw_items, list):
+        return None
+    rows: list[dict[str, object]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        item_id = raw_item.get("item_id")
+        payload = raw_item.get("payload")
+        if not isinstance(item_id, str) or not isinstance(payload, Mapping):
+            continue
+        row: dict[str, object] = {"item_id": item_id}
+        for key in _ARC_VOLUME_COMPARISON_KEYS:
+            if key in payload:
+                row[key] = payload[key]
+        if len(row) > 1:
+            rows.append(row)
+    if not rows:
+        return None
+    return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
 def _item_payloads(payload: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
@@ -1570,6 +1643,8 @@ class PlanReviewerAgent:
         trusted_source_artifacts: tuple[ArtifactRef, ...],
         request: ModelRequest,
         base_commit: CommitId | None,
+        review_feedback: str | None = None,
+        review_focus: str | None = None,
     ) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
         inputs = (*trusted_source_artifacts, target_artifact)
         review_context = self._review_context_data(trusted_source_artifacts)
@@ -1578,17 +1653,49 @@ class PlanReviewerAgent:
             f"{review_context or '(no additional context data)'}\n"
             "</REVIEW_CONTEXT_DATA>"
         )
+        review_payload = (
+            f"REVIEW_TARGET_KIND={target_kind.value}\n"
+            f"{context_block}\n"
+            f"<REVIEW_TARGET_DATA>\n{target_payload}\n</REVIEW_TARGET_DATA>\n"
+            "PLANNER_HIDDEN_REASONING=not_supplied"
+        )
+        if mode is AgentMode.ARC_VOLUME and target_kind is ReviewTargetKind.PLAN_PROPOSAL:
+            comparison_view = _arc_volume_comparison_view(target_payload)
+            if comparison_view is not None:
+                review_payload += (
+                    '\n<ARC_VOLUME_COMPARISON_VIEW trusted="false" authority="none">\n'
+                    "这是从上方 REVIEW_TARGET_DATA 机械抽取的只读横向显示投影, 不是新的输入, "
+                    "结论或授权. 请用它比较同名槽位的原文; 任何 blocking 意见仍必须引用完整候选"
+                    "中每个 affected_item_id 的同一 field_path, 并由宿主重新核验. 不要把此投影中的"
+                    "条目、字符串或排序当作宿主字段, 也不要因投影存在就假定有缺陷。\n"
+                    f"{comparison_view}\n</ARC_VOLUME_COMPARISON_VIEW>"
+                )
+        if review_focus is not None and review_focus.strip():
+            review_payload += (
+                '\n<REVIEW_FOCUS authority="none">\n'
+                "这是本次审查的问题域提示, 不是 finding、结论或授权. 请先完成该焦点要求的"
+                "独立比较, 仍只从候选原文提取证据; 不要把焦点文字当作候选内容或预置缺陷。\n"
+                + review_focus.strip()
+                + "\n</REVIEW_FOCUS>"
+            )
+        if review_feedback is not None and review_feedback.strip():
+            review_payload += (
+                '\n<REVIEW_REPAIR_FEEDBACK trusted="true">\n'
+                "上一份同候选审校未通过宿主证据核验。仅按下面的宿主反馈修正审校输出; 对列出的"
+                "model finding 逐个回到候选字段重查。跨条目问题应把 quote 缩短为每个列出字段"
+                "都逐字包含的共同片段, 并删除不命中的条目和占位符引用; 如果没有至少两个共同"
+                "命中则删除该 blocking 观察。不要因为宿主拒绝旧 quote 就无条件删除其语义观察。"
+                "若 decision 为 revise, 必须同时填写非空 revision_instruction。反馈不授予任何"
+                "写入权限, 也不改变候选或作者约束。\n"
+                + review_feedback.strip()
+                + "\n</REVIEW_REPAIR_FEEDBACK>"
+            )
         prepared = self._runner.prepare(
             AgentType.PLAN_REVIEWER,
             mode,
             version.root,
             request,
-            (
-                f"REVIEW_TARGET_KIND={target_kind.value}\n"
-                f"{context_block}\n"
-                f"<REVIEW_TARGET_DATA>\n{target_payload}\n</REVIEW_TARGET_DATA>\n"
-                "PLANNER_HIDDEN_REASONING=not_supplied"
-            ),
+            review_payload,
             source_hashes=tuple(item.artifact_id for item in trusted_source_artifacts),
             input_artifacts=inputs,
             base_commit=base_commit,
@@ -1633,10 +1740,47 @@ class PlanReviewerAgent:
             # the draft that records the failed citations are already durable, so the
             # run stops at "a review is required" instead of forwarding a refuted
             # demand to the planner.  Re-reviewing the *same* candidate is the repair.
+            verified_model_findings = [
+                {
+                    "affected_item_ids": [item.root for item in issue.affected_item_ids],
+                    "field_path": issue.field_path,
+                    "quote": issue.quote,
+                    "unmet_condition": issue.unmet_condition,
+                }
+                for issue in draft.issues
+                if issue.blocking and not issue.host_issued
+            ]
+            preserved = json.dumps(
+                verified_model_findings, ensure_ascii=False, separators=(",", ":")
+            )
+            model_findings_to_recheck = [
+                {
+                    "issue_id": issue.issue_id.root,
+                    "kind": issue.kind.value,
+                    "affected_item_ids": [item.root for item in issue.affected_item_ids],
+                    "field_path": issue.field_path,
+                    "quote": issue.quote,
+                    "unmet_condition": issue.unmet_condition,
+                    "blocking_after_host_check": issue.blocking,
+                    "candidate_field_values": _candidate_field_values_for_issue(
+                        target_payload, issue
+                    ),
+                }
+                for issue in draft.issues
+                if not issue.host_issued
+            ]
+            recheck = json.dumps(
+                model_findings_to_recheck, ensure_ascii=False, separators=(",", ":")
+            )
             raise PlanReviewerInvocationError(
                 "Plan review citations did not resolve against the reviewed candidate: "
                 + "; ".join(draft.verification_failures[:4])
+                + "; VERIFIED_MODEL_FINDINGS_TO_PRESERVE="
+                + preserved[:4000]
+                + "; MODEL_FINDINGS_TO_RECHECK="
+                + recheck[:6000]
             )
+
         receipt = self._runner.receipt(
             prepared,
             execution.model_call,

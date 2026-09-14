@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from novel_agent.agents.plan_reviewer import (
+    _arc_volume_comparison_view,
     _field_path_segments,
     _items_by_id,
     _quote_matches,
@@ -194,6 +195,35 @@ def _payload() -> str:
     )
 
 
+def test_arc_volume_comparison_view_is_only_an_exact_candidate_projection() -> None:
+    payload = json.dumps(
+        {
+            "items": [
+                {
+                    "item_id": "vol-1",
+                    "payload": {
+                        "volume_climax": {"description": "第一卷结果"},
+                        "opening_state": {"description": "开场"},
+                    },
+                },
+                {
+                    "item_id": "vol-2",
+                    "payload": {"ending_state": {"description": "第二卷结果"}},
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    view = _arc_volume_comparison_view(payload)
+
+    assert view is not None
+    assert json.loads(view) == [
+        {"item_id": "vol-1", "volume_climax": {"description": "第一卷结果"}},
+        {"item_id": "vol-2", "ending_state": {"description": "第二卷结果"}},
+    ]
+
+
 def _locks() -> tuple[AuthorConstraint, ...]:
     """The two frozen long-range locks the candidate's stage entries serve."""
 
@@ -288,6 +318,23 @@ def test_the_same_quote_in_the_named_volume_stays_blocking() -> None:
     assert reviewed.verification_failures == ()
     assert reviewed.decision is ReviewDecision.REVISE
     assert len(_model_blocking(reviewed)) == 1
+
+
+def test_a_cross_item_quote_must_resolve_in_every_named_item() -> None:
+    reviewed = _review(
+        _draft(
+            _issue(
+                item_ids=("vol-4", "vol-5"),
+                field_path="volume_climax.description",
+                quote="正式揭露门被从对面推开",
+                unmet_condition="同一揭示不得在不同卷中重复",
+            )
+        )
+    )
+
+    assert reviewed.verification_failures
+    assert ReviewCitationFailure.VALUE_NOT_IN_FIELD in reviewed.verification_failures[0]
+    assert _model_blocking(reviewed) == []
 
 
 def test_a_nested_field_path_is_resolved_inside_the_named_item() -> None:
