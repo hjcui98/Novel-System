@@ -31,7 +31,7 @@ from novel_agent.domain.planning import (
     PlanningReference,
     PlanningTurnAction,
     PlanningTurnDraft,
-    PlanReviewDraft,
+    PlanReviewProviderDraft,
     ReviewDecision,
     ReviewTargetKind,
 )
@@ -157,7 +157,7 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                 if title == "PlannerProposalDraft"
                 else turn.model_dump_json(exclude_defaults=True)
             )
-        if title == "PlanReviewDraft":
+        if title in {"PlanReviewDraft", "PlanReviewProviderDraft"}:
             return self._review(prompt).model_dump_json()
         if title == "WriterWorkPlan" or agent == "agent.writer.work-plan":
             return self._work_plan(prompt).model_dump_json()
@@ -214,12 +214,12 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
         raise AssertionError(f"unscripted production fake request title={title!r} agent={agent!r}")
 
     @staticmethod
-    def _review(prompt: str) -> PlanReviewDraft:
+    def _review(prompt: str) -> PlanReviewProviderDraft:
         kind = ReviewTargetKind.INQUIRY
         match = re.search(r"REVIEW_TARGET_KIND=([a-z_]+)", prompt)
         if match is not None:
             kind = ReviewTargetKind(match.group(1))
-        return PlanReviewDraft(target_kind=kind, decision=ReviewDecision.ACCEPT)
+        return PlanReviewProviderDraft(target_kind=kind, decision=ReviewDecision.ACCEPT)
 
     @staticmethod
     def _inquiry(prompt: str) -> PlanningInquiryDraft:

@@ -45,7 +45,6 @@ from tests.unit.test_stage4_planning_loop_and_evaluation import (
     _post_genesis_service,
 )
 
-
 # Fields the scripted planner's item genuinely carries.  Identity is (kind, item,
 # field, constraint), so two findings that name the same field *are* the same
 # problem however differently they are worded -- the property these tests exist to
@@ -64,6 +63,8 @@ def _issue(index: int, summary: str) -> PlanReviewIssue:
         # The finding has to name an item the candidate actually contains; host
         # composition only lets a revision touch what the review named.
         affected_item_ids=(StableId("plan-item.chapter_set"),),
+        proposed_target_item_ids=(StableId("plan-item.chapter_set"),),
+        authorized_target_item_ids=(StableId("plan-item.chapter_set"),),
         field_path=_FIELDS[index % len(_FIELDS)],
     )
 
@@ -95,11 +96,7 @@ class _FindingsReviewer(_AcceptingReviewer):
         empty_plan_revise = self._revise_without_issues and (
             target_kind is ReviewTargetKind.PLAN_PROPOSAL
         )
-        decision = (
-            ReviewDecision.REVISE
-            if issues or empty_plan_revise
-            else ReviewDecision.ACCEPT
-        )
+        decision = ReviewDecision.REVISE if issues or empty_plan_revise else ReviewDecision.ACCEPT
         review = PlanReview(
             review_id=StableId(f"review.findings.{target_kind.value}.{self.plan_reviews}"),
             target_kind=target_kind,

@@ -49,7 +49,7 @@ from novel_agent.services.retrieval import InMemoryRetrievalBackend, RetrievalBa
 
 HASH = ArtifactId("sha256:" + "1" * 64)
 PERMISSION = "sha256:" + "2" * 64
-MIGRATION_HEAD = "0010_model_call_ledger"
+MIGRATION_HEAD = "0011_model_response_consumption"
 SCHEMAS = Path(__file__).parents[2] / "schemas" / "stage5"
 
 

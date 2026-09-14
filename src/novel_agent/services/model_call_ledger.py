@@ -90,6 +90,8 @@ class ModelCallLedgerPort(Protocol):
 
     def settle(self, entry: ModelCallLedgerEntry) -> ModelCallLedgerEntry: ...
 
+    def mark_response_consumed(self, request_id: StableId) -> ModelCallLedgerEntry: ...
+
     def load(self, request_id: StableId) -> ModelCallLedgerEntry | None: ...
 
     def list_for_prefix(self, request_id_prefix: str) -> tuple[ModelCallLedgerEntry, ...]: ...
@@ -189,6 +191,20 @@ class InMemoryModelCallLedger:
             raise ModelCallLedgerCollision("terminal model call cannot be overwritten")
         self._entries[entry.request_id] = entry
         return entry
+
+    def mark_response_consumed(self, request_id: StableId) -> ModelCallLedgerEntry:
+        from datetime import UTC, datetime
+
+        existing = self._entries.get(request_id)
+        if existing is None:
+            raise KeyError(f"model request was not reserved: {request_id.root}")
+        if existing.status is not ModelCallLedgerStatus.COMPLETED:
+            raise ModelCallLedgerCollision("only a completed model response may be consumed")
+        if existing.response_consumed_at is not None:
+            return existing
+        consumed = existing.model_copy(update={"response_consumed_at": datetime.now(UTC)})
+        self._entries[request_id] = consumed
+        return consumed
 
     def load(self, request_id: StableId) -> ModelCallLedgerEntry | None:
         return self._entries.get(request_id)

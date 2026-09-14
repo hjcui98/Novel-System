@@ -15,8 +15,10 @@
 
 - N1/N2 的已完成路径复用既有证据；当前增量修复为 `c745a82`、`8eb6e4b`、`d6025c6`、`4cdbb0c`、`43f9e14`、`d36ce99`。`43f9e14` 把 Planner turn 的 provider 草稿和提示词约束接到真实 `run_turn` 边界：模型不得提供 `issue_id`，宿主负责 ADD 身份，`parent_issue_id` 仅服务于授权 MODIFY/CLOSE。`d36ce99` 又把同源候选条目的显式窗口接入宿主 unresolved 范围审校，仅作为缺失范围证据，不替问题填写范围。
 - `d36ce99` 后的本 SHA 定向确定性集合（引用核验、义务窗口、合成来源证明、结构化 unresolved、attempt/ledger 恢复、阶段停止、Planner/Stage4 契约）结果为 **269 passed**；模型调用被禁止。改动文件 Ruff、格式和 `git diff --check` 均通过。全仓 `make quality` 仍受 51 个既有 Ruff 问题阻断，未把它写成整体质量通过。
+- 在上述集合基础上，`6a56ec0` 将恢复前沿固定为当前/最新已结算 Attempt：历史 `REQUESTED/UNCERTAIN` 仍阻断，只有当前 Attempt 且有 raw-response artifact 的模型完成响应进入 replay；已完成 commit/projection effect 不再伪装成模型响应；完成但缺 raw 证据的 ledger 行进入 `reconcile_first`。新增的 N4 回归后定向集合为 **272 passed**；v25 旧数据库未被改写。
 - N3 的真实候选检查已被离线重放为可审计失败：候选 `sha256:9f8bd9d7c3c957e3dcb8a0697ca0b05de340edd268d2469ea537312307dbddf6` 的三条 source-bound unresolved 现在分别被识别为 `1-800`、`201-300`、`350-500` 的 `UNRESOLVED_SCOPE_MISSING`；六条 active issue 的宿主 ID、Memory-gap 来源和责任仍保留，但候选范围证明尚未闭合。
 - N4 旧失败任务真实状态为 `leaf_schema_rejected`，failure budget 按策略为 2；旧模型响应已留存，未盲重发。修复证据 `sha256:b8661195f00e0873e128be7612e007b410e9e0cb5739b9c4c78c575772935233` 通过 `runtime unblock` 解阻 revision 4→5，随后一个有界真实切片调用 4 次 8003 请求并成功生成候选；没有增加 attempts 或预算补丁。
+- `6a56ec0` 后重新只读核对 v25：worktree clean、当前代码 SHA 为 `6a56ec0bb562d347f29fe873916c552e46864f5e`；v25 canonical commit 仍是 Genesis basis `sha256:851fc…`，roots 为 0 卷/0 正式义务/0 章节计划，`g0/g1/g2/g3_evidence_complete=false`，计划接受任务仍 `waiting_input`。这次读回没有推进或写入旧运行。
 - D0 的 v23/v24 原始工件、真实 Reviewer、Planner 局部修订、复审和公共物化预检证据继续保留；本次没有把诊断对象写入旧 Canon。既有真实 D0 证据包括候选 `f5422937…`、旧审校 `47f9a758…`、复审对象 `sha256:2b7e062c…` 和真实请求 `model-request.run.d0.diagnostic.plan-rereview`；其范围和“外部给定问题/真实发现”边界仍按旧记录区分。
 
 ## 人工审核与 G0 当前停止点

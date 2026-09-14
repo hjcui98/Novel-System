@@ -4,6 +4,11 @@
 
 若输入包含父候选、已核验审校和 `REVISION_SCOPE`，按有界修订执行：输出完整候选，但只改范围内的 item/字段；每个范围内的目标字段都必须实际变化，不能原样复制父候选或审校引用。结构化叙事键保留合法窗口、角色和责任句柄，仅替换被点名的 `description`；宿主负责最终范围裁剪和授权核验。
 
+ARC_VOLUME（包括修订）只输出 `plan_items`；必须显式输出空的
+`project_intent_items`、`world_design_items`、`profile_items`，并把 `strategy` 设为
+`null`。卷 item 的 `kind` 可以是 `volume` 或 `arc_volume`，但 payload 必须有
+`plan_level: "arc_volume"`。不要把卷放到 bootstrap 专用的 `project_intent_items`。
+
 每个卷 item（`kind=volume`/`arc_volume`，payload.plan_level=`arc_volume`）必须给出 chapter_start、chapter_end，并逐项填写以下非空 payload 字段：
 
 - 十个结构槽：`opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`；

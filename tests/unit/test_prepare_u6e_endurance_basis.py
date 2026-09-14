@@ -307,7 +307,9 @@ def test_target_preflight_requires_migrated_fresh_database(tmp_path: Path) -> No
     engine = create_engine(database_url)
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
-        connection.execute(text("INSERT INTO alembic_version VALUES ('0010_model_call_ledger')"))
+        connection.execute(
+            text("INSERT INTO alembic_version VALUES ('0011_model_response_consumption')")
+        )
     engine.dispose()
     result = _preflight_target_database(
         database_url=database_url,

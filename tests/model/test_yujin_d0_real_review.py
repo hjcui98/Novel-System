@@ -102,9 +102,14 @@ COMMIT = CommitId("sha256:" + "d" * 64)
 # the first one demands a revision.  The output budget is the run's own initial
 # allocation, not a claim about what the model needs.
 DIAGNOSTIC_OUTPUT_TOKENS = 16_000
+DIAGNOSTIC_THINKING_TOKENS = 2_048
 DIAGNOSTIC_TIMEOUT_SECONDS = 900.0
 KNOWN_REPEATED_REVEAL_PHRASE = "正式揭露门被从对面推开"
-KNOWN_REPEATED_REVEAL_IDS = frozenset({"vol-5", "vol-7", "vol-8"})
+# vol-5 is a valid comparison baseline: its initial clue is not automatically a
+# repair target merely because the later duplicate cites the same short phrase.  D0
+# therefore requires the real Reviewer to find the later no-progress repetition; the
+# host derives the actual write set from its structured proposed targets.
+KNOWN_REPEATED_REVEAL_IDS = frozenset({"vol-7", "vol-8"})
 KNOWN_REPEATED_CONTENT = {
     "midpoint_reversal.description": "意识到门被从对面推开",
     "volume_climax.description": KNOWN_REPEATED_REVEAL_PHRASE,
@@ -116,7 +121,15 @@ D0_CONTENT_REVIEW_FOCUS = (
     "事件结果或叙事后果且没有新进展, 再决定是否报告 blocking; 不要在本次诊断中报告其"
     "他槽位的模板重复。字段名只是审查范围, 不是预置问题; 只有候选原文逐字证据成立才报告。"
     "每个重复观察都要遍历比较投影的全部条目, 把该 quote 在同一 field_path 中逐字命中的"
-    "每个条目都列入 affected_item_ids, 不能只停在一对而漏掉第三个匹配条目。"
+    "每个条目都列入 affected_item_ids, 不能在找到一对后停止而漏掉其他匹配条目。"
+    "对每个槽位先扫描全部条目并求逐字共同片段的完整命中集合, 再决定是否 blocking;"
+    "不能只采用较长句子而漏掉包含较短共同片段的第三个条目。"
+    "若多个条目只共享一个短语而整句因地点或阶段不同, quote 必须缩短为所有 affected "
+    "字段都逐字包含的共同子串, 不得拿某一个条目的整句代表另一条目。修复某条失实引用时, "
+    "保留其他已经核验成立的 blocking finding, 不要用空 issues 覆盖它们。"
+    "affected_item_ids 只是逐条引用和比较证据; 必须另填 proposed_target_item_ids, "
+    "只列出你建议实际修改的条目。比较用的基准条目不因被引用而自动获得写权限, "
+    "不要用 revision_instruction 的自然语言替代这个结构化目标列表。"
 )
 
 
@@ -174,7 +187,8 @@ def _request(phase: str) -> ModelRequest:
         agent_mode=AgentMode.ARC_VOLUME.value,
         max_output_tokens=DIAGNOSTIC_OUTPUT_TOKENS,
         timeout_seconds=DIAGNOSTIC_TIMEOUT_SECONDS,
-        enable_thinking=False,
+        enable_thinking=True,
+        thinking_token_budget=DIAGNOSTIC_THINKING_TOKENS,
     )
 
 
@@ -293,6 +307,12 @@ def _run_review(
 ) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
     import asyncio
 
+    if review_focus is None:
+        # D0 is a bounded content-review diagnostic, not a generic quality sample.
+        # This names the comparison domain without supplying a finding or a target;
+        # the Reviewer still has to discover and cite the defect from the candidate.
+        review_focus = D0_CONTENT_REVIEW_FOCUS
+
     try:
         return asyncio.run(
             reviewer.review(
@@ -346,6 +366,7 @@ def test_d0_the_diagnostic_records_the_real_endpoint_identity(tmp_path: Path) ->
         "sequence_limit": getattr(endpoint, "sequence_limit", None),
         "output_limit": getattr(endpoint, "output_limit", None),
         "diagnostic_output_tokens": DIAGNOSTIC_OUTPUT_TOKENS,
+        "diagnostic_thinking_tokens": DIAGNOSTIC_THINKING_TOKENS,
         "diagnostic_timeout_seconds": DIAGNOSTIC_TIMEOUT_SECONDS,
         "candidate": FROZEN_CANDIDATE.name,
         "locks": "yujin-jiuxu-v23/input/planning-locks.json",
@@ -422,6 +443,7 @@ def _independent_known_defect_findings(
         if (
             issue.blocking
             and not issue.host_issued
+            and issue.authorized_target_item_ids
             and phrase is not None
             and issue.unmet_condition
             and quote
@@ -441,12 +463,13 @@ def _independent_known_defect_findings(
 def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Path) -> None:
     """The gap D0 left open: a real model revision, host-composed and re-reviewed.
 
-    The real review findings authorise one field on each frozen volume carrying the
-    defect.  The model, asked to revise a proposal it did not write, may rewrite more
-    than that; the host composes the candidate from the parent plus exactly the
-    authorised fields, and records the rest as out of scope.  The composed candidate
-    is then re-reviewed for real.  Passing means the candidate the *materializer
-    would receive* is inside scope and accepted -- not that the model behaved.
+    The real review findings carry comparison evidence and a separate structured
+    modification target set. The model, asked to revise a proposal it did not write,
+    may rewrite more than that; the host composes the candidate from the parent plus
+    exactly the authorized targets/fields, and records the rest as out of scope. The
+    composed candidate is then re-reviewed for real. Passing means the candidate the
+    *materializer would receive* is inside scope and accepted -- not that the model
+    behaved.
     """
 
     import asyncio
@@ -500,13 +523,14 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
     )
     volume_ids = {item_id.root for issue in volume_findings for item_id in issue.affected_item_ids}
     assert volume_ids >= KNOWN_REPEATED_REVEAL_IDS, (
-        "the real Reviewer did not cover every frozen volume carrying the repeated climax"
+        "the real Reviewer did not cover both later frozen volumes carrying the repeated climax"
     )
     expected_fields: dict[str, set[str]] = {}
     for issue in known_findings:
         assert issue.field_path is not None
         top_level_field = issue.field_path.split(".", maxsplit=1)[0]
-        for item_id in issue.affected_item_ids:
+        assert issue.authorized_target_item_ids, issue.issue_id
+        for item_id in issue.authorized_target_item_ids:
             expected_fields.setdefault(item_id.root, set()).add(top_level_field)
     reviewed_fields = sorted({field for fields in expected_fields.values() for field in fields})
     review = real_review.model_copy(

@@ -512,6 +512,10 @@ def test_model_supplied_unresolved_identity_is_rejected_by_materialization() -> 
 
 
 def test_provider_draft_rejects_model_supplied_unresolved_identity() -> None:
+    schema = _ModelPlannerProposalDraft.model_json_schema()
+    unresolved_schema = schema["$defs"]["PlanUnresolvedIssueDraft"]
+    assert "issue_id" not in unresolved_schema["properties"]
+
     with pytest.raises(ValidationError, match="must omit issue_id"):
         _ModelPlannerProposalDraft.model_validate(
             {
@@ -620,6 +624,27 @@ def test_an_arc_volume_revision_lands_in_plan_items_not_bootstrap_intent() -> No
     assert [item.item_id.root for item in aliased.plan_items] == [
         f"vol-{index}" for index in range(1, 9)
     ]
+
+
+def test_an_arc_volume_provider_alias_accepts_the_public_volume_kind() -> None:
+    volume = ProposedItem(
+        item_id=StableId("vol-provider-alias"),
+        kind="volume",
+        payload={"plan_level": "arc_volume", "chapter_start": 1, "chapter_end": 100},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+
+    aliased = PlannerProposalDraft.model_validate(
+        {
+            "mode": AgentMode.ARC_VOLUME,
+            "project_intent_items": (volume,),
+            "unresolved": ("an open historical detail",),
+            "coverage": 1.0,
+        }
+    )
+
+    assert aliased.project_intent_items == ()
+    assert aliased.plan_items == (volume,)
 
 
 def test_genuine_bootstrap_intent_is_still_refused_outside_bootstrap() -> None:

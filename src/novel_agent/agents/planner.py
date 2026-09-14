@@ -259,9 +259,9 @@ def build_planner_contract_bundle(
         ),
     )
     review_output = ContractRef(
-        contract_id=StableId("schema.plan-review-draft"),
+        contract_id=StableId("schema.plan-review-provider-draft"),
         version=version,
-        content_hash=content_id({"schema": "PlanReviewDraft", "version": version.root}),
+        content_hash=content_id({"schema": "PlanReviewProviderDraft", "version": version.root}),
     )
     zero = ArtifactId("sha256:" + "0" * 64)
     specs: list[AgentSpec] = []

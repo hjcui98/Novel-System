@@ -109,6 +109,7 @@ from novel_agent.services.planning_context_loop import (
     PlanningContextLoopService,
     _canonical_planner_memory_question,
     _planner_memory_question_chunk_size,
+    _proposal_memory_gap_bindings,
     _requested_planner_memory_question_ids,
 )
 from novel_agent.services.planning_evaluation import (
@@ -310,6 +311,8 @@ class _ScriptedReviewer(_AcceptingReviewer):
                 summary=f"scripted revision demand at revision {quote}",
                 blocking=True,
                 affected_item_ids=(StableId(item["item_id"]),),
+                proposed_target_item_ids=(StableId(item["item_id"]),),
+                authorized_target_item_ids=(StableId(item["item_id"]),),
                 field_path="revision",
                 quote=quote,
                 unmet_condition=f"the scripted revision has to move revision {quote}",
@@ -2062,7 +2065,9 @@ def test_independent_reviewer_persists_receipt_and_rejects_target_substitution(
             base_commit=None,
         )
     )
-    assert review.issues == (issue,)
+    assert len(review.issues) == 1
+    assert review.issues[0].model_copy(update={"issue_id": issue.issue_id}) == issue
+    assert review.issues[0].issue_id != issue.issue_id
     assert artifacts.read_verified(review_ref)
     assert runner.prepared is not None
 
@@ -4067,6 +4072,65 @@ def test_unsupported_planner_memory_gets_content_status_without_being_handled(
     assert gap.resolution_owner == "MEMORY"
     assert gap.source_ids
     assert gap.source_artifact_refs
+
+
+def test_story_memory_gap_scope_reuses_only_matching_plan_item_window() -> None:
+    question = "陆远与陆沉舟在斩星府禁刃库事件中的具体因果关联及招式体系变更细节是什么?"
+    source_id = StableId("planner-context.unit.anchor.state.bootstrap.2")
+    proposal = SimpleNamespace(
+        items=(
+            SimpleNamespace(
+                source_ids=(),
+                payload={
+                    "title": question.removesuffix("是什么?"),
+                    "description": "现有证据不足",
+                    "chapter_range": "1-800",
+                },
+            ),
+            SimpleNamespace(
+                source_ids=(),
+                payload={
+                    "title": "另一个未决问题",
+                    "description": "不应被错误复用",
+                    "chapter_range": "201-300",
+                },
+            ),
+        ),
+        unresolved=(
+            SimpleNamespace(
+                summary=question.removesuffix("是什么?"),
+                source_ids=(source_id,),
+            ),
+        ),
+    )
+
+    scopes, sources = _proposal_memory_gap_bindings(
+        proposal,
+        (("memory-gap.one", question, ("relation_state",)),),
+    )
+
+    assert scopes[question] == tuple(range(1, 801))
+    assert sources[question] == (source_id,)
+
+
+def test_story_memory_gap_scope_stays_empty_without_unique_source_bound_window() -> None:
+    proposal = SimpleNamespace(
+        items=(
+            SimpleNamespace(
+                source_ids=(),
+                payload={"title": "未知关联", "chapter_range": "not-a-range"},
+            ),
+        ),
+        unresolved=(),
+    )
+
+    scopes, sources = _proposal_memory_gap_bindings(
+        proposal,
+        (("memory-gap.unknown", "未知关联是什么?", ("relation_state",)),),
+    )
+
+    assert scopes == {}
+    assert sources == {}
 
 
 def test_evidence_bound_unsupported_planner_memory_enters_gap_terminal(

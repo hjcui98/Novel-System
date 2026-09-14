@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -321,11 +322,106 @@ def _has_evidence_bound_unsupported_gap(
     )
 
 
+_CHAPTER_RANGE_RE = re.compile(r"^\s*(?P<start>\d+)\s*[-~至到]\s*(?P<end>\d+)\s*$")
+
+
+def _chapter_window_from_plan_item(item: object) -> tuple[int, ...]:
+    """Read an explicit unresolved-item chapter window, never an inferred horizon.
+
+    Story and ARC_VOLUME requests intentionally have no execution horizon.  A plan
+    item may still carry a source-bound ``chapter_range``; that declaration is the
+    only valid full-scope binding for a retained Memory gap.  Unknown or malformed
+    values remain empty so the host gate can stop rather than invent a range.
+    """
+
+    if not isinstance(item, dict):
+        return ()
+    raw = item.get("chapter_range")
+    if (
+        isinstance(raw, (list, tuple))
+        and len(raw) == 2
+        and all(type(value) is int for value in raw)
+    ):
+        start, end = raw
+    elif isinstance(raw, str):
+        match = _CHAPTER_RANGE_RE.fullmatch(raw)
+        if match is None:
+            return ()
+        start, end = int(match.group("start")), int(match.group("end"))
+    else:
+        start = item.get("chapter_start")
+        end = item.get("chapter_end")
+        if type(start) is not int or type(end) is not int:
+            return ()
+    if start < 1 or end < start:
+        return ()
+    return tuple(range(start, end + 1))
+
+
+def _memory_question_stem(question: str) -> str:
+    normalized = _canonical_planner_memory_question(question)
+    normalized = re.sub(r"(?:是什么|为何|为什么)[?\uFF1F]?$", "", normalized).strip()
+    return normalized
+
+
+def _proposal_memory_gap_bindings(
+    proposal: PlanProposal,
+    unresolved_questions: Sequence[Sequence[object]],
+) -> tuple[dict[str, tuple[int, ...]], dict[str, tuple[StableId, ...]]]:
+    """Bind Memory gaps to explicit Planner unresolved items in the same proposal.
+
+    The binding is text/source evidence, not a model assertion: only an exact
+    question stem contained in one unresolved item's title/summary is accepted, and
+    that item must carry a parseable chapter window.  Distinct questions remain
+    distinct even when their windows happen to overlap.
+    """
+
+    details = _memory_gap_parts(unresolved_questions)
+    candidate_rows: list[tuple[str, tuple[int, ...], tuple[StableId, ...]]] = []
+    unresolved_by_summary = {
+        issue.summary: issue for issue in proposal.unresolved if issue.summary.strip()
+    }
+    for item in proposal.items:
+        payload = item.payload
+        title = payload.get("title")
+        description = payload.get("description")
+        searchable = " ".join(
+            value.strip()
+            for value in (title, description)
+            if isinstance(value, str) and value.strip()
+        )
+        if not searchable:
+            continue
+        window = _chapter_window_from_plan_item(payload)
+        if not window:
+            continue
+        source_ids: tuple[StableId, ...] = tuple(item.source_ids)
+        issue = unresolved_by_summary.get(str(title)) if isinstance(title, str) else None
+        if issue is not None:
+            source_ids = tuple(dict.fromkeys((*source_ids, *issue.source_ids)))
+        candidate_rows.append((searchable, window, source_ids))
+
+    scopes: dict[str, tuple[int, ...]] = {}
+    sources: dict[str, tuple[StableId, ...]] = {}
+    for _question_id, question, _facets in details:
+        stem = _memory_question_stem(question)
+        matches = [row for row in candidate_rows if stem and stem in row[0]]
+        if len(matches) != 1:
+            continue
+        _searchable, window, source_ids = matches[0]
+        scopes[question] = window
+        if source_ids:
+            sources[question] = source_ids
+    return scopes, sources
+
+
 def _retain_unsupported_memory_gaps(
     result: PlannerExecutionResult,
     unresolved_questions: Sequence[Sequence[object]],
     *,
     affected_chapters: tuple[int, ...] = (),
+    scope_by_question: Mapping[str, tuple[int, ...]] | None = None,
+    source_ids_by_question: Mapping[str, tuple[StableId, ...]] | None = None,
     source_artifact_refs: tuple[ArtifactRef, ...] = (),
 ) -> PlannerExecutionResult:
     """Carry an unsupported but relevant Memory gap without treating it as a fact."""
@@ -334,6 +430,12 @@ def _retain_unsupported_memory_gaps(
     markers = _unsupported_memory_gap_markers(unresolved_questions)
     if not markers:
         return result
+    derived_scopes, derived_sources = _proposal_memory_gap_bindings(
+        result.plan_proposal,
+        unresolved_questions,
+    )
+    effective_scopes = {**derived_scopes, **(scope_by_question or {})}
+    effective_sources = {**derived_sources, **(source_ids_by_question or {})}
     existing = {issue.summary for issue in result.plan_proposal.unresolved}
     existing_sources = {
         source.root for issue in result.plan_proposal.unresolved for source in issue.source_ids
@@ -344,12 +446,23 @@ def _retain_unsupported_memory_gaps(
             summary=marker,
             blocking=False,
             resolution_owner="MEMORY",
-            affected_chapters=affected_chapters,
-            source_ids=(StableId(question_id),),
+            affected_chapters=(
+                effective_scopes.get(question, affected_chapters)
+                if effective_scopes
+                else affected_chapters
+            ),
+            source_ids=tuple(
+                dict.fromkeys(
+                    (
+                        StableId(question_id),
+                        *(effective_sources.get(question, ())),
+                    )
+                )
+            ),
             source_artifact_refs=source_artifact_refs,
             forbidden_assumptions=("不得把该未决记忆缺口当作已证实事实",),
         )
-        for (question_id, _question, _facets), marker in zip(details, markers, strict=True)
+        for (question_id, question, _facets), marker in zip(details, markers, strict=True)
         if marker not in existing and question_id not in existing_sources
     )
     operations = tuple(
@@ -673,12 +786,12 @@ class PlanningContextLoopService:
                 resume_checkpoint_ref=resume_checkpoint_ref,
                 event_refs=event_refs,
             )
-        except PlanReviewerInvocationError:
+        except PlanReviewerInvocationError as error:
             return self._terminal(
                 request,
                 PlanningLoopTerminal.REVIEW_REQUIRED,
                 event_refs,
-                diagnostics=("REVIEWER_CONTRACT_FAILURE",),
+                diagnostics=("REVIEWER_CONTRACT_FAILURE", str(error)[:512]),
             )
         except (PlannerInvocationError, AgentExecutionError):
             return self._terminal(

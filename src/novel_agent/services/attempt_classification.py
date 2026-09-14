@@ -125,6 +125,9 @@ class AttemptClassification(DomainModel):
     outstanding_request_ids: tuple[str, ...] = ()
     # Responses already durable for this task: these are replayed, not re-requested.
     completed_response_refs: tuple[str, ...] = ()
+    # Responses already consumed by an earlier logical request.  They remain audit
+    # evidence but must not outrank a later deterministic failure as replay input.
+    consumed_response_ids: tuple[str, ...] = ()
     # Terminal ledger rows without a verifiable raw response.  They are not
     # completed evidence and must not silently turn into a fresh, billable retry.
     unavailable_response_ids: tuple[str, ...] = ()
@@ -151,6 +154,7 @@ def classify_attempt(
     unsettled_sends: tuple[str, ...] = (),
     outstanding_request_ids: tuple[str, ...] = (),
     completed_response_refs: tuple[str, ...] = (),
+    consumed_response_ids: tuple[str, ...] = (),
     unavailable_response_ids: tuple[str, ...] = (),
     frontier_attempt_id: StableId | None = None,
     block_cause: str | None = None,
@@ -175,6 +179,7 @@ def classify_attempt(
             unsettled_sends=unsettled_sends,
             outstanding_request_ids=outstanding_request_ids,
             completed_response_refs=completed_response_refs,
+            consumed_response_ids=consumed_response_ids,
             unavailable_response_ids=unavailable_response_ids,
             reason=_undetermined_reason(attempt, block_cause),
         )
@@ -192,6 +197,7 @@ def classify_attempt(
         "unsettled_sends": unsettled_sends,
         "outstanding_request_ids": outstanding_request_ids,
         "completed_response_refs": completed_response_refs,
+        "consumed_response_ids": consumed_response_ids,
         "unavailable_response_ids": unavailable_response_ids,
     }
     # Order matters.  An unresolved send outranks the failure's own classification,

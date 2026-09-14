@@ -47,7 +47,7 @@ def test_writer_selects_from_metadata_and_turn_loads_only_selected_bodies(
         spec_version=SchemaVersion("1.0.0"),
         factory_locator="novel_agent.runtime.creative_assembly:build_production_assembly",
         runtime_contract_version=SchemaVersion("1.0.0"),
-        expected_migration_head="0010_model_call_ledger",
+        expected_migration_head="0011_model_response_consumption",
         expected_planner_adapter="planner",
         expected_writer_adapter="writer",
         expected_plan_materializer="plan",

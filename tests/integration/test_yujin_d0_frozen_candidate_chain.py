@@ -352,6 +352,7 @@ def verified_findings(proposal: PlanProposal) -> tuple[PlanReviewIssue, ...]:
                 ),
                 blocking=True,
                 affected_item_ids=(item.item_id,),
+                proposed_target_item_ids=(item.item_id,),
                 field_path="volume_climax.description",
                 quote=description,
                 unmet_condition="每一次揭露必须说明它与前次是首次、验证还是新后果",

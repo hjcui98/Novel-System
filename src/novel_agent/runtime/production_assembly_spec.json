@@ -2,7 +2,7 @@
   "spec_version": "1.0.0",
   "factory_locator": "novel_agent.runtime.creative_assembly:build_production_assembly",
   "runtime_contract_version": "1.0.0",
-  "expected_migration_head": "0010_model_call_ledger",
+  "expected_migration_head": "0011_model_response_consumption",
   "expected_planner_adapter": "novel_agent.adapters.runtime.stage4_planner.Stage4PlanningLeafAdapter",
   "expected_writer_adapter": "novel_agent.adapters.runtime.stage3_writer.Stage3WritingLeafAdapter",
   "expected_plan_materializer": "novel_agent.adapters.runtime.materializers.PlanCandidateMaterializer",

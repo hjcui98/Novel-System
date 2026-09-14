@@ -15,7 +15,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from novel_agent.domain.artifacts import MODEL_RAW_RESPONSE_MEDIA_TYPE, ArtifactRef
-from novel_agent.domain.ids import ArtifactId, SchemaVersion
+from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.model_calls import (
     BudgetResolutionProfile,
     EffectiveBudgetResult,
@@ -234,6 +234,18 @@ class ModelGateway:
     def call_ledger(self) -> ModelCallLedgerPort:
         return self._call_ledger
 
+    def mark_response_consumed(self, request_id: StableId | ModelRequest) -> None:
+        """Persist that a parsed response was consumed by its logical request.
+
+        The gateway still retains the raw artifact for audit/reconciliation, but the
+        runtime recovery classifier must not treat a response already handed to a
+        caller as an unprocessed replay candidate after a later phase fails.
+        """
+
+        stable_id = request_id.request_id if isinstance(request_id, ModelRequest) else request_id
+        with self._ledger_lock:
+            self._call_ledger.mark_response_consumed(stable_id)
+
     @property
     def raw_artifacts(self) -> ArtifactRepository | None:
         return self._raw_artifacts
@@ -277,9 +289,7 @@ class ModelGateway:
             ("structured_max_retries", str(self._structured_max_retries)),
         ]
         if self._output_budget_growth_factor is not None:
-            identity.append(
-                ("output_budget_growth_factor", str(self._output_budget_growth_factor))
-            )
+            identity.append(("output_budget_growth_factor", str(self._output_budget_growth_factor)))
         if self._output_budget_timeout_limit_seconds is not None:
             identity.append(
                 (

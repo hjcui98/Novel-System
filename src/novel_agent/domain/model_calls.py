@@ -223,6 +223,10 @@ class ModelCallLedgerEntry(DomainModel):
     transport_error_type: str | None = Field(default=None, min_length=1, max_length=240)
     requested_at: datetime
     completed_at: datetime | None = None
+    # Set after the consumer has parsed/accepted this response for its logical
+    # request.  A provider completion without this marker remains replayable; a
+    # consumed response is durable history, not permission to repeat the request.
+    response_consumed_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_terminal_evidence(self) -> ModelCallLedgerEntry:

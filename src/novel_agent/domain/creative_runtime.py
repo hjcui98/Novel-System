@@ -156,6 +156,34 @@ RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE = (
     "application/vnd.novel-agent.runtime-continuation-evidence+json"
 )
 
+OPERATOR_PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.operator-plan-review+json"
+
+
+class OperatorReviewFinding(DomainModel):
+    """A host/operator finding, separate from a model ``PlanReview`` receipt."""
+
+    issue_id: StableId
+    kind: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    blocking: bool = True
+    affected_item_ids: tuple[StableId, ...] = ()
+    field_path: str | None = Field(default=None, min_length=1)
+    constraint_id: str | None = Field(default=None, min_length=1)
+    actual: str | None = Field(default=None, min_length=1)
+    expected: str | None = Field(default=None, min_length=1)
+
+
+class OperatorReviewEvidence(DomainModel):
+    """Immutable evidence supplied by the Codex/operator review boundary."""
+
+    review_id: StableId
+    target_artifact_ref: ArtifactRef
+    reviewer_id: str = Field(min_length=1, max_length=128)
+    decision: Literal["revise"] = "revise"
+    reason: str = Field(min_length=1, max_length=2048)
+    issues: tuple[OperatorReviewFinding, ...] = Field(min_length=1)
+    supporting_review_artifact_refs: tuple[ArtifactRef, ...] = ()
+
 
 class RuntimeContinuationEvidence(DomainModel):
     """Explicit provenance needed to rebind an accepted candidate to a new run."""
@@ -273,6 +301,10 @@ class AcceptanceCommand(DomainModel):
     expected_project_commit: CommitId
     idempotency_identity: StableId
     issued_at: datetime
+    # An operator rejection may cite an independently persisted review.  Author
+    # commands keep this empty; the service never treats an operator's prose as a
+    # review when these immutable source refs are absent.
+    review_artifact_refs: tuple[ArtifactRef, ...] = ()
 
     @model_validator(mode="after")
     def validate_basis(self) -> AcceptanceCommand:
@@ -472,6 +504,7 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
 
 
 __all__ = [
+    "OPERATOR_PLAN_REVIEW_MEDIA_TYPE",
     "RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE",
     "AcceptanceCommand",
     "AcceptanceDecision",
@@ -489,6 +522,8 @@ __all__ = [
     "ExtendBudgetCommand",
     "LookaheadRevalidationOutcome",
     "LookaheadRevalidationReceipt",
+    "OperatorReviewEvidence",
+    "OperatorReviewFinding",
     "PlanningLoopRequest",
     "PlanningLoopResult",
     "PlanningTerminalStatus",

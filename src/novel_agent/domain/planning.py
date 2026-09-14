@@ -12,7 +12,7 @@ from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from novel_agent.domain.agent_context import LoopRoundProgress
 from novel_agent.domain.artifacts import ArtifactRef
@@ -340,7 +340,15 @@ class PlanReviewIssue(DomainModel):
     summary: str = Field(min_length=1)
     blocking: bool
     evidence_refs: tuple[EvidenceRef, ...] = ()
+    # ``affected_item_ids`` are comparison/citation evidence: every named item must
+    # contain the cited field value.  They are deliberately not write permission.
     affected_item_ids: tuple[StableId, ...] = ()
+    # A model may propose the items it believes should change after making a
+    # cross-item comparison.  The host validates these ids against the candidate and
+    # copies them to ``authorized_target_item_ids`` only after the citation passes.
+    # Keeping the two sets separate prevents a reference/baseline item from gaining
+    # write access merely because it was needed to prove the comparison.
+    proposed_target_item_ids: tuple[StableId, ...] = ()
     # Machine-checkable citation: which field of the named item violates which
     # constraint, with the candidate text that proves it.  Optional so historical
     # artifacts stay readable, required of newly generated blocking findings.
@@ -355,6 +363,9 @@ class PlanReviewIssue(DomainModel):
     # Structural permissions are assigned by the host.  The model may suggest a
     # repair in prose, but it cannot grant itself an ADD/REMOVE/CLOSE operation.
     authorized_operations: tuple[str, ...] = ()
+    # Host-owned write scope.  A provider response may never make this non-empty by
+    # itself; the review overlay is the only producer for new findings.
+    authorized_target_item_ids: tuple[StableId, ...] = ()
     # The host decided this finding itself from the candidate and the trusted
     # catalogue, so it needs no model citation and is exempt from citation
     # verification.  Defaulted so historical artifacts stay readable.
@@ -367,6 +378,66 @@ class PlanReviewIssue(DomainModel):
             raise ValueError("review issue has an unsupported authorized operation")
         if len(set(self.authorized_operations)) != len(self.authorized_operations):
             raise ValueError("review issue authorized operations must be unique")
+        if len(set(self.affected_item_ids)) != len(self.affected_item_ids):
+            raise ValueError("review issue comparison item ids must be unique")
+        if len(set(self.proposed_target_item_ids)) != len(self.proposed_target_item_ids):
+            raise ValueError("review issue proposed target ids must be unique")
+        if len(set(self.authorized_target_item_ids)) != len(self.authorized_target_item_ids):
+            raise ValueError("review issue authorized target ids must be unique")
+        return self
+
+
+class PlanReviewProviderIssue(DomainModel):
+    """The model-facing portion of a review issue.
+
+    Stable identities, host observations and write authorization are deliberately
+    absent from this schema.  ``extra=ignore`` keeps old providers that still emit
+    those legacy keys readable while ensuring the response schema no longer asks a
+    model to fill host-owned fields.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
+
+    kind: ReviewIssueKind
+    summary: str = Field(min_length=1)
+    blocking: bool
+    affected_item_ids: tuple[StableId, ...] = ()
+    proposed_target_item_ids: tuple[StableId, ...] = ()
+    field_path: str | None = Field(default=None, min_length=1)
+    constraint_id: str | None = Field(default=None, min_length=1)
+    quote: str | None = Field(default=None, min_length=1)
+    unmet_condition: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_provider_ids(self) -> PlanReviewProviderIssue:
+        if len(set(self.affected_item_ids)) != len(self.affected_item_ids):
+            raise ValueError("review issue comparison item ids must be unique")
+        if len(set(self.proposed_target_item_ids)) != len(self.proposed_target_item_ids):
+            raise ValueError("review issue proposed target ids must be unique")
+        return self
+
+
+class PlanReviewProviderDraft(DomainModel):
+    """Provider-facing review output, before the host assigns identities/permissions."""
+
+    model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
+
+    target_kind: ReviewTargetKind
+    decision: ReviewDecision
+    issues: tuple[PlanReviewProviderIssue, ...] = ()
+    preserve_item_ids: tuple[StableId, ...] = ()
+    revision_instruction: str | None = Field(default=None, min_length=1)
+    memory_gap_questions: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> PlanReviewProviderDraft:
+        blocking = any(issue.blocking for issue in self.issues)
+        if self.decision is ReviewDecision.ACCEPT and blocking:
+            raise ValueError("ACCEPT cannot retain a blocking review issue")
+        if self.decision is ReviewDecision.REVISE and not self.revision_instruction:
+            raise ValueError("REVISE requires a bounded revision instruction")
+        if self.decision is not ReviewDecision.REVISE and self.revision_instruction is not None:
+            raise ValueError("only REVISE may carry a revision instruction")
         return self
 
 
@@ -385,6 +456,9 @@ class ReviewCitationFailure(StrEnum):
     VALUE_NOT_IN_FIELD = "value_not_in_field"
     EVIDENCE_FIELDS_MISSING = "evidence_fields_missing"
     CONSTRAINT_NOT_APPLICABLE = "constraint_not_applicable"
+    TARGETS_MISSING = "targets_missing"
+    TARGET_ITEM_NOT_FOUND = "target_item_not_found"
+    TARGET_FIELD_NOT_FOUND = "target_field_not_found"
 
 
 class PlanReviewDraft(DomainModel):

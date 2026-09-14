@@ -687,6 +687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 unsettled_sends=ledger.unsettled_sends,
                 outstanding_request_ids=ledger.outstanding_request_ids,
                 completed_response_refs=ledger.completed_response_refs,
+                consumed_response_ids=ledger.consumed_response_ids,
                 unavailable_response_ids=ledger.unavailable_response_ids,
                 frontier_attempt_id=ledger.frontier_attempt_id,
                 block_cause=task.block_cause,

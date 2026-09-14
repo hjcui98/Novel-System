@@ -336,6 +336,7 @@ def _persist_model_call(
     attempt_id: str = "attempt.n4.1",
     status: ModelCallLedgerStatus,
     raw_artifact_id: str | None = None,
+    response_consumed_at: datetime | None = None,
 ) -> None:
     with repository.session_factory() as session, session.begin():
         session.add(
@@ -362,6 +363,7 @@ def _persist_model_call(
                 completed_at=(NOW + timedelta(seconds=5))
                 if status is ModelCallLedgerStatus.COMPLETED
                 else None,
+                response_consumed_at=response_consumed_at,
             )
         )
 
@@ -530,6 +532,41 @@ def test_completed_model_call_without_raw_evidence_requires_reconciliation(
     assert evidence.unavailable_response_ids == ("request.n4.missing.raw",)
     assert result.action is RecoveryAction.RECONCILE_FIRST
     assert not result.safe_to_retry
+
+
+def test_consumed_response_does_not_mask_a_later_deterministic_failure(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    """A completed Memory response is history once the later logical phase consumed it."""
+
+    attempt = _attempt(
+        task_id="task.n4.persisted",
+        failure=FailureClass.LEAF_SCHEMA_REJECTED,
+    )
+    _persist_attempt(repository, attempt)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.memory.completed",
+        status=ModelCallLedgerStatus.COMPLETED,
+        raw_artifact_id="artifact.memory.response",
+        response_consumed_at=NOW + timedelta(seconds=6),
+    )
+
+    evidence = repository.attempt_effect_evidence(TaskId("task.n4.persisted"))
+    result = classify_attempt(
+        task_id=StableId("task.n4.persisted"),
+        task_status=TaskStatus.WAITING_RETRY,
+        attempt=attempt,
+        completed_response_refs=evidence.completed_response_refs,
+        consumed_response_ids=evidence.consumed_response_ids,
+        unavailable_response_ids=evidence.unavailable_response_ids,
+        frontier_attempt_id=evidence.frontier_attempt_id,
+    )
+
+    assert evidence.completed_response_refs == ()
+    assert evidence.consumed_response_ids == ("request.n4.memory.completed",)
+    assert result.action is RecoveryAction.REPAIR_OWNING_MODULE
+    assert result.completed_response_refs == ()
 
 
 def test_the_persisted_model_ledger_surfaces_an_uncertain_provider_request(

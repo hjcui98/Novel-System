@@ -8,6 +8,7 @@ from collections.abc import Mapping
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
     AcceptanceReceipt,
@@ -17,6 +18,7 @@ from novel_agent.domain.creative_runtime import (
     CandidateBinding,
     CandidateKind,
     CreativeRunPolicy,
+    OperatorReviewEvidence,
     commit_task_from_acceptance,
 )
 from novel_agent.domain.ids import SchemaVersion, StableId, TaskId
@@ -33,6 +35,9 @@ from novel_agent.services.runtime_commands import (
 ACCEPTANCE_MEDIA_TYPE = "application/vnd.novel-agent.stage5-acceptance-receipt+json"
 ACCEPTANCE_SCHEMA_VERSION = SchemaVersion("1.0.0")
 AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE = "application/vnd.novel-agent.author-revision-directive+json"
+OPERATOR_REVISION_DIRECTIVE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.operator-revision-directive+json"
+)
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
 
 # A rejected escalated review has to come back as a *structured* revision: prose in
@@ -118,6 +123,22 @@ class RuntimeAcceptanceService:
             return prior
         if task.status is not TaskStatus.WAITING_INPUT:
             raise RuntimeCommandConflictError("acceptance task is not waiting for input")
+        if (
+            command.actor_kind is ActorKind.OPERATOR
+            and command.decision is AcceptanceDecision.REJECT
+            and command.candidate.kind is CandidateKind.PLAN
+            and not command.review_artifact_refs
+        ):
+            raise RuntimeCommandConflictError(
+                "operator plan rejection requires immutable review_artifact_refs"
+            )
+        if command.actor_kind is ActorKind.OPERATOR and any(
+            ref.media_type != OPERATOR_PLAN_REVIEW_MEDIA_TYPE
+            for ref in command.review_artifact_refs
+        ):
+            raise RuntimeCommandConflictError(
+                "operator review_artifact_refs must use the operator review media type"
+            )
 
         accepted = None
         if command.decision is AcceptanceDecision.ACCEPT:
@@ -169,7 +190,7 @@ class RuntimeAcceptanceService:
             # acceptance task settles as CANCELLED and only a succeeded task may
             # create successors, so the revised generation is created explicitly
             # afterwards with its dependency on the rejected candidate recorded.
-            directive_ref = self._record_author_revision(task, command)
+            directive_ref = self._record_revision(task, command)
             revised = self._revised_plan_task(task, directive_ref)
         self._commands.complete_waiting_task(
             command.task_id,
@@ -181,10 +202,14 @@ class RuntimeAcceptanceService:
             self._commands.create_task(revised)
         return receipt
 
-    def _record_author_revision(self, task: TaskRecord, command: AcceptanceCommand) -> ArtifactRef:
-        """Turn one author ruling into the structured revision the planner must make."""
+    def _record_revision(self, task: TaskRecord, command: AcceptanceCommand) -> ArtifactRef:
+        """Turn a reviewed rejection into a structured, actor-labelled revision."""
 
-        issues = self._escalated_issues(task)
+        issues = self._escalated_issues(
+            task,
+            command.review_artifact_refs,
+            reviewer_id=command.actor_id if command.actor_kind is ActorKind.OPERATOR else None,
+        )
         required: list[dict[str, str]] = []
         for issue in issues:
             fields = _ISSUE_REQUIRED_FIELDS.get(str(issue.get("kind")))
@@ -195,21 +220,28 @@ class RuntimeAcceptanceService:
                 for item_id in _issue_item_ids(issue)
                 for field in fields
             )
+        operator = command.actor_kind is ActorKind.OPERATOR
         directive = {
             "directive_id": bounded_runtime_identity(
-                f"author-revision.{task.task_id.root}",
-                f"author-revision.{command.command_id.root}",
-                f"author-revision.{task.run_id.root}.{task.task_revision}",
+                f"{'operator' if operator else 'author'}-revision.{task.task_id.root}",
+                f"{'operator' if operator else 'author'}-revision.{command.command_id.root}",
+                f"{task.run_id.root}.{task.task_revision}",
             ).root,
-            "kind": "author_revision",
+            "kind": "operator_revision" if operator else "author_revision",
+            "actor_kind": command.actor_kind.value,
+            "actor_id": command.actor_id,
             "run_id": task.run_id.root,
             "project_id": task.project_id.root,
             "rejected_task_id": task.task_id.root,
             "plan_level": None if task.plan_level is None else task.plan_level.value,
             "horizon_start": task.horizon_start,
             "horizon_end": task.horizon_end,
-            "author_reason": command.reason,
+            "author_reason": command.reason if not operator else None,
+            "operator_reason": command.reason if operator else None,
             "required_fields": required,
+            "source_review_artifact_refs": [
+                ref.artifact_id.root for ref in command.review_artifact_refs
+            ],
             "escalated_issues": [
                 {
                     "issue_id": str(issue.get("issue_id")),
@@ -222,12 +254,20 @@ class RuntimeAcceptanceService:
         }
         return self._artifacts.put(
             canonical_json_bytes(directive),
-            AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE,
+            OPERATOR_REVISION_DIRECTIVE_MEDIA_TYPE
+            if operator
+            else AUTHOR_REVISION_DIRECTIVE_MEDIA_TYPE,
             self._schema_version,
         )
 
-    def _escalated_issues(self, task: TaskRecord) -> tuple[dict[str, object], ...]:
-        """Read the blocking issues of the review that escalated this candidate."""
+    def _escalated_issues(
+        self,
+        task: TaskRecord,
+        review_artifact_refs: tuple[ArtifactRef, ...] = (),
+        *,
+        reviewer_id: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Read blocking issues from the candidate and cited immutable reviews."""
 
         if task.candidate_binding_ref is None:
             return ()
@@ -237,16 +277,47 @@ class RuntimeAcceptanceService:
             )
         except (UnicodeDecodeError, ValueError):
             return ()
+        refs: list[ArtifactRef] = list(candidate.lineage_artifact_refs)
+        refs.extend(review_artifact_refs)
         collected: list[dict[str, object]] = []
-        for ref in candidate.lineage_artifact_refs:
+        seen_refs: set[str] = set()
+        for ref in refs:
+            if ref.media_type == OPERATOR_PLAN_REVIEW_MEDIA_TYPE:
+                try:
+                    evidence = OperatorReviewEvidence.model_validate_json(
+                        self._artifacts.read_verified(ref)
+                    )
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise RuntimeCommandConflictError(
+                        "operator review artifact is not valid immutable evidence"
+                    ) from error
+                if reviewer_id is not None and evidence.reviewer_id != reviewer_id:
+                    raise RuntimeCommandConflictError(
+                        "operator review artifact reviewer does not match command actor"
+                    )
+                if evidence.target_artifact_ref.artifact_id != candidate.artifact_ref.artifact_id:
+                    raise RuntimeCommandConflictError("operator review targets another candidate")
+                collected.extend(finding.model_dump(mode="json") for finding in evidence.issues)
+                continue
             if ref.media_type != PLAN_REVIEW_MEDIA_TYPE:
                 continue
+            if ref.artifact_id.root in seen_refs:
+                continue
+            seen_refs.add(ref.artifact_id.root)
             try:
                 review = json.loads(self._artifacts.read_verified(ref).decode("utf-8"))
             except (UnicodeDecodeError, ValueError):
                 continue
             if not isinstance(review, dict):
                 continue
+            if ref in review_artifact_refs:
+                target_ref = review.get("target_artifact_ref")
+                if isinstance(target_ref, dict) and target_ref.get("artifact_id") != (
+                    candidate.artifact_ref.artifact_id.root
+                ):
+                    raise RuntimeCommandConflictError(
+                        "cited operator review targets another candidate"
+                    )
             for issue in review.get("issues") or ():
                 if isinstance(issue, dict):
                     collected.append(issue)

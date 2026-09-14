@@ -82,7 +82,7 @@ from novel_agent.services.projection import snapshot_id_for_commit
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "u6e-endurance-basis.v3"
-ALEMBIC_HEAD = "0010_model_call_ledger"
+ALEMBIC_HEAD = "0011_model_response_consumption"
 REFERENCE_INPUT_MODES = ("author_initial_brief", "all")
 PLANNING_SCHEMA_VERSION = SchemaVersion("1.0.0")
 REQUIRED_TABLES = (

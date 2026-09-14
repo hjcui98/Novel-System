@@ -43,6 +43,7 @@ class AttemptEffectLedgerEvidence:
     unsettled_sends: tuple[str, ...] = ()
     outstanding_request_ids: tuple[str, ...] = ()
     completed_response_refs: tuple[str, ...] = ()
+    consumed_response_ids: tuple[str, ...] = ()
     unavailable_response_ids: tuple[str, ...] = ()
 
 
@@ -201,6 +202,7 @@ class RuntimeTaskQueryRepository:
                     ModelCallLedgerRow.attempt_id,
                     ModelCallLedgerRow.status,
                     ModelCallLedgerRow.raw_artifact_json,
+                    ModelCallLedgerRow.response_consumed_at,
                 ).where(ModelCallLedgerRow.task_id == task_id.root)
             ).all()
 
@@ -223,7 +225,14 @@ class RuntimeTaskQueryRepository:
             # placed in the replay bucket.
 
         unavailable: set[str] = set()
-        for request_id, row_attempt_id, status, raw_artifact_json in model_rows:
+        consumed: set[str] = set()
+        for (
+            request_id,
+            row_attempt_id,
+            status,
+            raw_artifact_json,
+            response_consumed_at,
+        ) in model_rows:
             if status == ModelCallLedgerStatus.REQUESTED.value:
                 record(request_id, 2, "outstanding", request_id)
             elif status == ModelCallLedgerStatus.UNCERTAIN.value:
@@ -236,7 +245,10 @@ class RuntimeTaskQueryRepository:
                     # usage before deciding whether a new provider call is legal.
                     unavailable.add(request_id)
                 elif frontier is not None and row_attempt_id == frontier.root:
-                    record(request_id, 1, "completed", response_ref)
+                    if response_consumed_at is not None:
+                        consumed.add(request_id)
+                    else:
+                        record(request_id, 1, "completed", response_ref)
 
         unsettled = tuple(
             sorted(
@@ -264,6 +276,7 @@ class RuntimeTaskQueryRepository:
             unsettled_sends=unsettled,
             outstanding_request_ids=outstanding,
             completed_response_refs=completed,
+            consumed_response_ids=tuple(sorted(consumed)),
             unavailable_response_ids=tuple(sorted(unavailable)),
         )
 

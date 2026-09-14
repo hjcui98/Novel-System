@@ -7,7 +7,14 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import Field, JsonValue, StringConstraints, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from novel_agent.domain.artifacts import ArtifactRef, PlanRootRef, RootManifest
 from novel_agent.domain.base import DomainModel
@@ -496,6 +503,10 @@ class PlanUnresolvedIssueDraft(DomainModel):
     summary string is not a stable identity or a usable scope.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra=lambda schema: schema.get("properties", {}).pop("issue_id", None)
+    )
+
     operation: PlanUnresolvedOperation = PlanUnresolvedOperation.ADD
     parent_issue_id: StableId | None = None
     # Accepted for migration diagnostics only.  Planner materialisation rejects a
@@ -573,7 +584,14 @@ def _is_post_bootstrap_plan_item(item: ProposedItem) -> bool:
     ):
         return True
     level = item.payload.get("plan_level")
-    return isinstance(level, str) and bool(level.strip()) and item.kind == level
+    if not isinstance(level, str) or not level.strip():
+        return False
+    # The public ARC_VOLUME contract permits both the semantic container name
+    # ``arc_volume`` and the provider's ordinary ``volume`` item kind.  Both carry
+    # the same explicit plan level, so filing either under the bootstrap-only field
+    # is a bounded container mistake that can be normalized; a level-less Genesis
+    # item still cannot reach this path.
+    return item.kind == level or (level == "arc_volume" and item.kind == "volume")
 
 
 # The modes that plan by emitting items, and whose drafts therefore mean `plan_items`

@@ -1588,7 +1588,7 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
         actor_kind=ActorKind.AUTHOR,
         actor_id="author.test",
         decision=AcceptanceDecision.REJECT,
-        reason="作者裁决：按既有时间锁补 not_before_chapter 后重审",
+        reason="作者裁决：按既有时间锁补 not_before_chapter 后重审",  # noqa: RUF001
         expected_project_commit=base,
         idempotency_identity=StableId("reject.revision.identity"),
         issued_at=NOW,
@@ -1618,3 +1618,104 @@ def test_rejecting_an_escalated_plan_creates_a_structured_revision_task(
         {"item_id": "story.reader_promise", "field": "not_before_chapter"}
     ]
     assert directive["escalated_issues"][0]["kind"] == "long_range_payoff_without_time_window"
+
+
+def test_operator_rejection_requires_and_preserves_independent_review_source(
+    edge_kernel: tuple[
+        sessionmaker[Session],
+        CommitService,
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    _, commits, artifacts, _, commands, base = edge_kernel
+    task = commands.create_run_and_initial_task(_request("run.operator-revision", base))
+    proposal_ref = artifacts.put(
+        b'{"plan":"operator-review"}',
+        "application/vnd.novel-agent.plan-proposal+json",
+        SchemaVersion("1.0.0"),
+    )
+    candidate = CandidateBinding(
+        candidate_id=StableId("candidate.operator-revision"),
+        kind=CandidateKind.PLAN,
+        artifact_ref=proposal_ref,
+        candidate_hash=proposal_ref.artifact_id.root,
+        basis_commit=base,
+    )
+    review_ref = artifacts.put(
+        canonical_json_bytes(
+            {
+                "review_id": "operator-review.operator-gap",
+                "target_artifact_ref": candidate.artifact_ref.model_dump(mode="json"),
+                "reviewer_id": "codex.reviewer",
+                "decision": "revise",
+                "reason": "宿主复审发现未决项缺少可执行范围",
+                "issues": [
+                    {
+                        "issue_id": "plan-issue.operator-gap",
+                        "kind": "unresolved_scope_missing",
+                        "summary": "unresolved item must declare affected chapters",
+                        "blocking": True,
+                        "affected_item_ids": ["plan-issue.operator-gap"],
+                    }
+                ],
+            }
+        ),
+        "application/vnd.novel-agent.operator-plan-review+json",
+        SchemaVersion("1.0.0"),
+    )
+    waiting = TaskRecord(
+        task_id=TaskId("run.operator-revision.plan.accept"),
+        run_id=task.run_id,
+        project_id=task.project_id,
+        kind=TaskKind.PLAN_ACCEPTANCE,
+        task_revision=0,
+        status=TaskStatus.WAITING_INPUT,
+        basis_commit=base,
+        policy_hash=HASH,
+        permission_hash=PERMISSION_HASH,
+        input_artifact_refs=(proposal_ref,),
+        dependency_task_ids=(task.task_id,),
+        candidate_binding_ref=_binding_ref(artifacts, candidate),
+        plan_level=PlanLevel.STORY,
+    )
+    commands.create_task(waiting)
+    command = AcceptanceCommand(
+        command_id=StableId("operator-revision.command"),
+        project_id=task.project_id,
+        run_id=task.run_id,
+        task_id=waiting.task_id,
+        candidate=candidate,
+        acceptance_policy_hash=HASH,
+        actor_kind=ActorKind.OPERATOR,
+        actor_id="codex.reviewer",
+        decision=AcceptanceDecision.REJECT,
+        reason="宿主复审发现未决项缺少可执行范围",
+        expected_project_commit=base,
+        idempotency_identity=StableId("operator-revision.identity"),
+        issued_at=NOW,
+        review_artifact_refs=(review_ref,),
+    )
+
+    receipt = RuntimeAcceptanceService(commands, commits, artifacts).submit(
+        command,
+        policy=_policy(),
+    )
+
+    assert receipt.accepted_binding is None
+    revised = commands.get_task(TaskId(f"{task.run_id.root}.plan.story.g1"))
+    directive_ref = next(
+        ref
+        for ref in revised.input_artifact_refs
+        if ref.media_type == "application/vnd.novel-agent.operator-revision-directive+json"
+    )
+    directive = json.loads(artifacts.read_verified(directive_ref))
+    assert directive["kind"] == "operator_revision"
+    assert directive["actor_id"] == "codex.reviewer"
+    assert directive["operator_reason"].startswith("宿主复审")
+    assert directive["source_review_artifact_refs"] == [review_ref.artifact_id.root]
+    assert directive["required_fields"] == [
+        {"item_id": "plan-issue.operator-gap", "field": "affected_chapters"}
+    ]

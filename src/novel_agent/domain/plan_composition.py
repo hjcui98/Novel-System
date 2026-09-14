@@ -178,10 +178,20 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
     for issue in review.issues:
         if not issue.blocking:
             continue
+        # ``affected_item_ids`` are the evidence rows used for comparison and
+        # citation.  Only host-authorized target ids grant write scope.  Host-issued
+        # findings predate the split and are safe to interpret through their own
+        # evidence ids; model findings without an explicit host authorization grant
+        # no scope at all.
+        target_item_ids = issue.authorized_target_item_ids
+        if not target_item_ids and issue.host_issued:
+            target_item_ids = issue.affected_item_ids
+        if not target_item_ids:
+            continue
         finding_ids.append(issue.issue_id)
         fields = _issue_field_paths(issue)
         operations = _issue_operations(issue)
-        for item_id in issue.affected_item_ids:
+        for item_id in target_item_ids:
             if item_id.root.startswith(_ADVISORY_ID_PREFIX):
                 # The host files advisory findings against these ids, so naming one is
                 # the revision's permission to restate that advisory.  It is not an
@@ -305,7 +315,8 @@ _ADVISORY_ID_PREFIX = "plan-issue."
 
 
 def _is_advisory_id(issue: PlanReviewIssue) -> bool:
-    return any(item_id.root.startswith(_ADVISORY_ID_PREFIX) for item_id in issue.affected_item_ids)
+    target_ids = issue.authorized_target_item_ids or issue.affected_item_ids
+    return any(item_id.root.startswith(_ADVISORY_ID_PREFIX) for item_id in target_ids)
 
 
 _MISSING_MARKERS = ("missing", "MISSING", "缺少", "缺卷", "未提供")

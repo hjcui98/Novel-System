@@ -326,3 +326,6 @@ class ModelCallLedgerRow(Base):
     transport_error_type: Mapped[str | None] = mapped_column(String(240), nullable=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    response_consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

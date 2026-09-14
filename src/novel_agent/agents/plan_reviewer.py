@@ -30,6 +30,7 @@ from novel_agent.domain.planning import (
     PlanReview,
     PlanReviewDraft,
     PlanReviewIssue,
+    PlanReviewProviderDraft,
     ReviewCitationFailure,
     ReviewDecision,
     ReviewIssueKind,
@@ -309,8 +310,14 @@ def _bounded_revision_instruction(
         if issue.host_issued:
             demands.append(" ".join(issue.summary.split()))
             continue
-        named = ", ".join(item.root for item in issue.affected_item_ids)
-        located = f"{named}.{issue.field_path}" if issue.field_path else named
+        evidence = ", ".join(item.root for item in issue.affected_item_ids)
+        targets = ", ".join(
+            item.root
+            for item in (issue.authorized_target_item_ids or issue.proposed_target_item_ids)
+        )
+        located = f"{targets}.{issue.field_path}" if issue.field_path else targets
+        if evidence and targets and evidence != targets:
+            located = f"targets={located}; evidence={evidence}"
         condition = " ".join((issue.unmet_condition or issue.summary).split())
         constraint = f" (constraint {issue.constraint_id})" if issue.constraint_id else ""
         demands.append(f"{located}: {condition}{constraint}")
@@ -398,6 +405,7 @@ def _verified_model_issues(
                 "actual": None,
                 "expected": None,
                 "authorized_operations": (),
+                "authorized_target_item_ids": (),
             }
         )
         if not normalized.blocking:
@@ -406,10 +414,20 @@ def _verified_model_issues(
         label = f"{normalized.kind.value}[{index}]"
         reason = _citation_failure(normalized, by_id, constraint_ids=constraint_ids)
         if reason is None:
-            verified.append(normalized)
+            reason = _target_authorization_failure(normalized, by_id)
+        if reason is None:
+            verified.append(
+                normalized.model_copy(
+                    update={
+                        "authorized_target_item_ids": normalized.proposed_target_item_ids,
+                    }
+                )
+            )
             continue
         failures.append(f"{label}: {reason}")
         detail = "the cited evidence does not resolve against this candidate"
+        if reason.startswith("targets_") or reason.startswith("target_item_"):
+            detail = "the proposed modification target is not host-authorized for this candidate"
         verified.append(
             normalized.model_copy(
                 update={
@@ -419,6 +437,147 @@ def _verified_model_issues(
             )
         )
     return tuple(verified), tuple(failures)
+
+
+def _host_materialize_provider_review(draft: PlanReviewProviderDraft) -> PlanReviewDraft:
+    """Assign host identities after parsing the provider-only review schema."""
+
+    issues: list[PlanReviewIssue] = []
+    for index, issue in enumerate(draft.issues):
+        digest = content_id(issue.model_dump(mode="json")).root.removeprefix("sha256:")[:32]
+        issues.append(
+            PlanReviewIssue(
+                issue_id=bounded_stable_id(
+                    f"review-issue.{issue.kind.value}.{digest}",
+                    f"review-issue.{index}",
+                ),
+                kind=issue.kind,
+                summary=issue.summary,
+                blocking=issue.blocking,
+                affected_item_ids=issue.affected_item_ids,
+                proposed_target_item_ids=issue.proposed_target_item_ids,
+                field_path=issue.field_path,
+                constraint_id=issue.constraint_id,
+                quote=issue.quote,
+                unmet_condition=issue.unmet_condition,
+            )
+        )
+    return PlanReviewDraft(
+        target_kind=draft.target_kind,
+        decision=draft.decision,
+        issues=tuple(issues),
+        preserve_item_ids=draft.preserve_item_ids,
+        revision_instruction=draft.revision_instruction,
+        memory_gap_questions=draft.memory_gap_questions,
+    )
+
+
+def _target_authorization_failure(
+    issue: PlanReviewIssue,
+    by_id: Mapping[str, Mapping[str, object]],
+) -> str | None:
+    """Validate a model's proposed write targets without granting them implicitly.
+
+    Comparison evidence can include a baseline item that should remain unchanged.
+    A blocking model finding therefore has to name its intended modification targets
+    separately.  The host checks that each target is a real proposal item and that a
+    cited field exists on it; only then does ``_verified_model_issues`` copy the ids
+    into the host-owned authorization field.
+    """
+
+    if not issue.proposed_target_item_ids:
+        return (
+            f"{ReviewCitationFailure.TARGETS_MISSING}: a blocking model finding must name "
+            "proposed_target_item_ids separately from comparison evidence"
+        )
+    for target_id in issue.proposed_target_item_ids:
+        if target_id.root.startswith("plan-issue."):
+            return (
+                f"{ReviewCitationFailure.TARGET_ITEM_NOT_FOUND}: advisory identities are not "
+                f"proposal write targets ({target_id.root})"
+            )
+        payload = by_id.get(target_id.root)
+        if payload is None:
+            return (
+                f"{ReviewCitationFailure.TARGET_ITEM_NOT_FOUND}: {target_id.root} is not an "
+                "item of the reviewed candidate"
+            )
+        resolved = _resolve_field_path(payload, issue.field_path) if issue.field_path else None
+        if issue.field_path and isinstance(resolved, str):
+            # A string result is the resolver's error marker.  Existing fields
+            # return ``(parent, value)`` so a valid target must pass this branch.
+            return (
+                f"{ReviewCitationFailure.TARGET_FIELD_NOT_FOUND}: {target_id.root}."
+                f"{issue.field_path} is not a writable field of the reviewed item"
+            )
+    return None
+
+
+def _review_finding_identity(issue: PlanReviewIssue) -> tuple[str, tuple[str, ...], str, str]:
+    """Return the stable identity used when carrying a valid finding into repair."""
+
+    return (
+        issue.kind.value,
+        tuple(sorted(item.root for item in issue.affected_item_ids)),
+        issue.field_path or "",
+        issue.constraint_id or "",
+    )
+
+
+def _merge_preserved_review_findings(
+    draft: PlanReviewDraft,
+    review_feedback: str | None,
+) -> PlanReviewDraft:
+    """Keep valid findings alive across a bounded citation-repair call.
+
+    A repair response is allowed to remove a finding only by explicitly returning the
+    same stable identity as non-blocking.  An empty ``issues`` list is not an implicit
+    withdrawal: the first response may already have supplied a valid blocking finding
+    alongside a bad citation that required repair.  The feedback is diagnostic data
+    emitted by this host, never a permission to add a new finding.
+    """
+
+    if not review_feedback or "VERIFIED_MODEL_FINDINGS_TO_PRESERVE=" not in review_feedback:
+        return draft
+    encoded = review_feedback.split("VERIFIED_MODEL_FINDINGS_TO_PRESERVE=", 1)[1]
+    encoded = encoded.split("; MODEL_FINDINGS_TO_RECHECK=", 1)[0]
+    try:
+        raw_findings = json.loads(encoded)
+    except json.JSONDecodeError:
+        return draft
+    if not isinstance(raw_findings, list):
+        return draft
+    current_identities = {_review_finding_identity(issue) for issue in draft.issues}
+    preserved: list[PlanReviewIssue] = []
+    for raw in raw_findings:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            issue = PlanReviewIssue.model_validate(raw, strict=False)
+        except ValueError:
+            continue
+        if issue.host_issued or not issue.blocking:
+            continue
+        identity = _review_finding_identity(issue)
+        if identity in current_identities:
+            continue
+        current_identities.add(identity)
+        preserved.append(issue)
+    if not preserved:
+        return draft
+    payload = draft.model_dump(mode="json")
+    payload.update(
+        {
+            "decision": ReviewDecision.REVISE.value,
+            "issues": [
+                *payload.get("issues", ()),
+                *(item.model_dump(mode="json") for item in preserved),
+            ],
+            "revision_instruction": draft.revision_instruction or "保留并处理宿主已核验的阻断问题",
+            "verification_failures": (),
+        }
+    )
+    return PlanReviewDraft.model_validate(payload)
 
 
 def _citation_failure(
@@ -1687,6 +1846,7 @@ def _host_issue(
         actual=actual or summary,
         expected=expected or f"{resolved_constraint} satisfied",
         authorized_operations=authorized_operations,
+        authorized_target_item_ids=(StableId(item_id),) if _is_stable_id(item_id) else (),
         host_issued=True,
     )
 
@@ -1770,6 +1930,9 @@ class PlanReviewerAgent:
                     "结论或授权. 请用它比较同名槽位的原文; 任何 blocking 意见仍必须引用完整候选"
                     "中每个 affected_item_id 的同一 field_path, 并由宿主重新核验. 不要把此投影中的"
                     "条目、字符串或排序当作宿主字段, 也不要因投影存在就假定有缺陷。\n"
+                    "不要把投影与 REVIEW_TARGET_DATA 的任何表面差异报告成 finding; 投影不是第二份"
+                    "候选, 如有疑问只以 REVIEW_TARGET_DATA 中真实存在的 item_id 和字段为准并"
+                    "忽略该差异。\n"
                     f"{comparison_view}\n</ARC_VOLUME_COMPARISON_VIEW>"
                 )
         if review_focus is not None and review_focus.strip():
@@ -1787,6 +1950,11 @@ class PlanReviewerAgent:
                 "model finding 逐个回到候选字段重查。跨条目问题应把 quote 缩短为每个列出字段"
                 "都逐字包含的共同片段, 并删除不命中的条目和占位符引用; 如果没有至少两个共同"
                 "命中则删除该 blocking 观察。不要因为宿主拒绝旧 quote 就无条件删除其语义观察。"
+                "宿主反馈中的 targets_missing 是硬性契约失败: 每一条你保留为 blocking 的 model"
+                "finding 都必须填写非空 proposed_target_item_ids, 只列 REVIEW_TARGET_DATA 中真实"
+                "存在且建议修改的 item_id; affected_item_ids 仍只表示比较证据。不得填写或复制"
+                "authorized_target_item_ids、authorized_operations、actual、expected、host_issued"
+                "或 verification_failures, 这些字段由宿主生成。"
                 "若 decision 为 revise, 必须同时填写非空 revision_instruction。反馈不授予任何"
                 "写入权限, 也不改变候选或作者约束。\n"
                 + review_feedback.strip()
@@ -1802,8 +1970,10 @@ class PlanReviewerAgent:
             input_artifacts=inputs,
             base_commit=base_commit,
         )
-        execution = await self._runner.execute(prepared, PlanReviewDraft)
-        draft = execution.output
+        execution = await self._runner.execute(prepared, PlanReviewProviderDraft)
+        draft = _merge_preserved_review_findings(
+            _host_materialize_provider_review(execution.output), review_feedback
+        )
         context_package = _planner_context_package(self._artifacts, trusted_source_artifacts)
         if draft.target_kind is not target_kind:
             raise PlanReviewerInvocationError("Reviewer changed the trusted target kind")
@@ -1844,8 +2014,16 @@ class PlanReviewerAgent:
             # demand to the planner.  Re-reviewing the *same* candidate is the repair.
             verified_model_findings = [
                 {
+                    "issue_id": issue.issue_id.root,
+                    "kind": issue.kind.value,
+                    "summary": issue.summary,
+                    "blocking": issue.blocking,
                     "affected_item_ids": [item.root for item in issue.affected_item_ids],
+                    "proposed_target_item_ids": [
+                        item.root for item in issue.proposed_target_item_ids
+                    ],
                     "field_path": issue.field_path,
+                    "constraint_id": issue.constraint_id,
                     "quote": issue.quote,
                     "unmet_condition": issue.unmet_condition,
                 }
@@ -1878,7 +2056,7 @@ class PlanReviewerAgent:
                 "Plan review citations did not resolve against the reviewed candidate: "
                 + "; ".join(draft.verification_failures[:4])
                 + "; VERIFIED_MODEL_FINDINGS_TO_PRESERVE="
-                + preserved[:4000]
+                + preserved[:12000]
                 + "; MODEL_FINDINGS_TO_RECHECK="
                 + recheck[:6000]
             )

@@ -22,6 +22,7 @@ import pytest
 from novel_agent.agents.plan_reviewer import (
     _arc_volume_comparison_view,
     _field_path_segments,
+    _host_materialize_provider_review,
     _items_by_id,
     _quote_matches,
     _resolve_field_path,
@@ -36,6 +37,7 @@ from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.planning import (
     PlanReviewDraft,
     PlanReviewIssue,
+    PlanReviewProviderDraft,
     ReviewCitationFailure,
     ReviewDecision,
     ReviewIssueKind,
@@ -55,6 +57,7 @@ _FROZEN_CANDIDATE = Path(
 def _issue(
     *,
     item_ids: tuple[str, ...] = ("vol-4",),
+    target_item_ids: tuple[str, ...] | None = None,
     field_path: str | None = "volume_climax.description",
     quote: str | None = "正式揭露",
     unmet_condition: str | None = "第四卷不得正式揭露长程真相",
@@ -68,6 +71,9 @@ def _issue(
         summary="第四卷提前正式揭露了长程真相",
         blocking=blocking,
         affected_item_ids=tuple(StableId(item) for item in item_ids),
+        proposed_target_item_ids=tuple(
+            StableId(item) for item in (item_ids if target_item_ids is None else target_item_ids)
+        ),
         field_path=field_path,
         quote=quote,
         unmet_condition=unmet_condition,
@@ -167,7 +173,7 @@ def _payload() -> str:
                         lock="lock.long-truth.vol4-hint",
                         unlock=51,
                         climax=stage(
-                            "陆沉舟获取第四碎片，出现无法解读的星门信号。",  # noqa: RUF001
+                            "陆沉舟获取第四碎片，出现无法解读的星门线索。",  # noqa: RUF001
                             "91-100",
                             "hint",
                             "lock.long-truth.vol4-hint",
@@ -193,6 +199,48 @@ def _payload() -> str:
             ],
         }
     )
+
+
+def test_provider_review_schema_excludes_host_identity_and_authorization_fields() -> None:
+    properties = PlanReviewProviderDraft.model_json_schema()["$defs"]["PlanReviewProviderIssue"][
+        "properties"
+    ]
+    assert "issue_id" not in properties
+    assert "authorized_target_item_ids" not in properties
+    assert "authorized_operations" not in properties
+    assert "actual" not in properties
+    assert "expected" not in properties
+    assert "host_issued" not in properties
+    assert "verification_failures" not in PlanReviewProviderDraft.model_json_schema()["properties"]
+
+    provider = PlanReviewProviderDraft.model_validate_json(
+        json.dumps(
+            {
+                "target_kind": "plan_proposal",
+                "decision": "revise",
+                "revision_instruction": "修订指定条目",
+                "issues": [
+                    {
+                        "kind": "contradiction",
+                        "summary": "候选字段违反约束",
+                        "blocking": True,
+                        "affected_item_ids": ["vol-4", "vol-5"],
+                        "proposed_target_item_ids": ["vol-5"],
+                        "field_path": "volume_climax.description",
+                        "constraint_id": "constraint.reveal-window",
+                        "quote": "重复揭露",
+                        "unmet_condition": "后续卷必须推进而不是重复",
+                        "issue_id": "model.must.not.own",
+                        "authorized_target_item_ids": ["vol-5"],
+                    }
+                ],
+            }
+        )
+    )
+    materialized = _host_materialize_provider_review(provider)
+    assert materialized.issues[0].issue_id.root.startswith("review-issue.")
+    assert materialized.issues[0].authorized_target_item_ids == ()
+    assert materialized.issues[0].host_issued is False
 
 
 def test_arc_volume_comparison_view_is_only_an_exact_candidate_projection() -> None:
@@ -334,6 +382,43 @@ def test_a_cross_item_quote_must_resolve_in_every_named_item() -> None:
 
     assert reviewed.verification_failures
     assert ReviewCitationFailure.VALUE_NOT_IN_FIELD in reviewed.verification_failures[0]
+    assert _model_blocking(reviewed) == []
+
+
+def test_comparison_items_do_not_implicitly_become_write_targets() -> None:
+    reviewed = _review(
+        _draft(
+            _issue(
+                item_ids=("vol-4", "vol-5"),
+                target_item_ids=("vol-5",),
+                field_path="volume_climax.description",
+                quote="线索",
+                unmet_condition="同一揭示不得在不同卷中重复",
+            )
+        )
+    )
+
+    blocking = _model_blocking(reviewed)
+    assert len(blocking) == 1
+    assert blocking[0].affected_item_ids == (StableId("vol-4"), StableId("vol-5"))
+    assert blocking[0].authorized_target_item_ids == (StableId("vol-5"),)
+
+
+def test_a_blocking_model_finding_without_structured_targets_has_no_write_scope() -> None:
+    reviewed = _review(
+        _draft(
+            _issue(
+                item_ids=("vol-4", "vol-5"),
+                target_item_ids=(),
+                field_path="volume_climax.description",
+                quote="线索",
+                unmet_condition="同一揭示不得在不同卷中重复",
+            )
+        )
+    )
+
+    assert reviewed.verification_failures
+    assert ReviewCitationFailure.TARGETS_MISSING in reviewed.verification_failures[0]
     assert _model_blocking(reviewed) == []
 
 

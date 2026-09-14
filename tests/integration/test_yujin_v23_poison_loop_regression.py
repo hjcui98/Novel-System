@@ -217,6 +217,8 @@ def test_the_model_could_have_expressed_the_same_demand_and_been_understood() ->
                         summary="第四卷高潮暗示了属于第五卷的长程真相",
                         blocking=True,
                         affected_item_ids=("vol-4",),
+                        proposed_target_item_ids=("vol-4",),
+                        authorized_target_item_ids=("vol-4",),
                         field_path="volume_climax.description",
                         quote=description,
                         unmet_condition="第四卷只允许暗示九位圣座存亡，不得暗示黑月坠世真相",

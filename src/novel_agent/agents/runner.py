@@ -151,6 +151,7 @@ class StructuredAgentRunner:
         output, call = await self._gateway.generate_structured_audited(
             prepared.request, output_type
         )
+        self._gateway.mark_response_consumed(call.request_id)
         receipt = self.receipt(
             prepared,
             call,

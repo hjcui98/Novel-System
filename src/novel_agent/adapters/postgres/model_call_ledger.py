@@ -121,6 +121,20 @@ class SqlModelCallLedger(ModelCallLedgerPort):
             self._update_row(row, entry)
             return entry
 
+    def mark_response_consumed(self, request_id: StableId) -> ModelCallLedgerEntry:
+        with self._session_factory() as session, session.begin():
+            row = session.get(ModelCallLedgerRow, request_id.root, with_for_update=True)
+            if row is None:
+                raise KeyError(f"model request was not reserved: {request_id.root}")
+            existing = self._to_domain(row)
+            if existing.status is not ModelCallLedgerStatus.COMPLETED:
+                raise ModelCallLedgerCollision("only a completed model response may be consumed")
+            if existing.response_consumed_at is not None:
+                return existing
+            consumed = existing.model_copy(update={"response_consumed_at": datetime.now(UTC)})
+            self._update_row(row, consumed)
+            return consumed
+
     def load(self, request_id: StableId) -> ModelCallLedgerEntry | None:
         with self._session_factory() as session:
             row = session.get(ModelCallLedgerRow, request_id.root)
@@ -199,6 +213,7 @@ class SqlModelCallLedger(ModelCallLedgerPort):
             "transport_error_type",
             "requested_at",
             "completed_at",
+            "response_consumed_at",
         ):
             setattr(row, column, getattr(replacement, column))
 
@@ -254,4 +269,5 @@ class SqlModelCallLedger(ModelCallLedgerPort):
             transport_error_type=row.transport_error_type,
             requested_at=requested_at,
             completed_at=SqlModelCallLedger._as_utc(row.completed_at),
+            response_consumed_at=SqlModelCallLedger._as_utc(row.response_consumed_at),
         )
