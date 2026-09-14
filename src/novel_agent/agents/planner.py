@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from novel_agent.agents.registry import AgentRegistry, seal_agent_spec
 from novel_agent.agents.runner import PreparedAgentRun, StructuredAgentRunner
@@ -352,7 +352,19 @@ class PlannerInvocationError(ValueError):
 BOOTSTRAP_UNRESOLVED_LIMIT = 24
 
 
-class _DevelopCandidatesPlannerProposalDraft(PlannerProposalDraft):
+class _ModelPlannerProposalDraft(PlannerProposalDraft):
+    """Provider-facing draft that keeps unresolved identities host-owned."""
+
+    @model_validator(mode="after")
+    def reject_model_assigned_unresolved_ids(self) -> _ModelPlannerProposalDraft:
+        if any(issue.issue_id is not None for issue in self.unresolved):
+            raise ValueError(
+                "Planner model output must omit issue_id; the host assigns unresolved identities"
+            )
+        return self
+
+
+class _DevelopCandidatesPlannerProposalDraft(_ModelPlannerProposalDraft):
     """Expose the trusted bootstrap strategy as an exact required provider schema field."""
 
     model_config = ConfigDict(json_schema_extra={"required": ["mode", "strategy", "coverage"]})
@@ -372,7 +384,7 @@ class _DevelopCandidatesPlannerProposalDraft(PlannerProposalDraft):
         return BootstrapStrategy.DEVELOP_CANDIDATES if value is None else value
 
 
-class _NormalizeOnlyPlannerProposalDraft(PlannerProposalDraft):
+class _NormalizeOnlyPlannerProposalDraft(_ModelPlannerProposalDraft):
     """Expose the alternate trusted bootstrap strategy as an exact required schema field."""
 
     model_config = ConfigDict(json_schema_extra={"required": ["mode", "strategy", "coverage"]})
@@ -389,7 +401,7 @@ def _proposal_output_type(task: PlanningTask) -> type[PlannerProposalDraft]:
         return _DevelopCandidatesPlannerProposalDraft
     if task.strategy is BootstrapStrategy.NORMALIZE_ONLY:
         return _NormalizeOnlyPlannerProposalDraft
-    return PlannerProposalDraft
+    return _ModelPlannerProposalDraft
 
 
 def _unresolved_summaries(

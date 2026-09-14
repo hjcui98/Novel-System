@@ -19,6 +19,7 @@ from novel_agent.agents.planner import (
     INQUIRY_OUTPUT_CONSTRAINTS,
     PLANNING_TURN_OUTPUT_CONSTRAINTS,
     _materialize_unresolved,
+    _ModelPlannerProposalDraft,
     _unresolved_issue_id,
 )
 from novel_agent.domain.artifacts import ArtifactRef
@@ -507,6 +508,23 @@ def test_model_supplied_unresolved_identity_is_rejected_by_materialization() -> 
 
     with pytest.raises(PlannerInvocationError, match="may not assign issue_id"):
         _materialize_unresolved((issue,), output_digest="output")
+
+
+def test_provider_draft_rejects_model_supplied_unresolved_identity() -> None:
+    with pytest.raises(ValidationError, match="must omit issue_id"):
+        _ModelPlannerProposalDraft.model_validate(
+            {
+                "mode": AgentMode.ARC_VOLUME,
+                "plan_items": (),
+                "unresolved": [
+                    {
+                        "issue_id": "plan-issue.model-owned",
+                        "summary": "需要核验当前状态",
+                    }
+                ],
+                "coverage": 0.0,
+            }
+        )
 
 
 def test_close_operation_keeps_auditable_history_without_an_active_issue() -> None:
