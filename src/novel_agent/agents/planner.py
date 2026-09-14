@@ -361,23 +361,6 @@ class _ModelPlannerProposalDraft(PlannerProposalDraft):
             raise ValueError(
                 "Planner model output must omit issue_id; the host assigns unresolved identities"
             )
-        seen: set[tuple[object, ...]] = set()
-        for issue in self.unresolved:
-            identity = (
-                "parent",
-                issue.parent_issue_id.root if issue.parent_issue_id is not None else "add",
-                issue.kind.value,
-                tuple(sorted(set(issue.affected_chapters))),
-                issue.resolution_owner.strip(),
-                tuple(sorted(source.root for source in issue.source_ids)),
-                tuple(sorted(source.artifact_id.root for source in issue.source_artifact_refs)),
-            )
-            if identity in seen:
-                raise ValueError(
-                    "Planner model output contains duplicate unresolved identity; "
-                    "merge the issue or provide distinct structured scope/source"
-                )
-            seen.add(identity)
         return self
 
 
@@ -480,10 +463,57 @@ def _materialize_unresolved(
     *,
     output_digest: str,
 ) -> tuple[tuple[PlanUnresolvedIssue, ...], tuple[PlanUnresolvedOperationRecord, ...]]:
+    # A bootstrap model can describe several open questions from one source
+    # without enough structured scope to distinguish them.  Do not invent new
+    # identities for those entries (or let list order become identity); retain
+    # every summary as one still-open ADD.  Explicit MODIFY/CLOSE duplicates are
+    # not mergeable because they must name one concrete parent operation.
+    coalesced: list[PlanUnresolvedIssueDraft] = []
+    coalesced_keys: dict[tuple[object, ...], int] = {}
+    for draft_issue in unresolved:
+        if draft_issue.operation is not PlanUnresolvedOperation.ADD:
+            coalesced.append(draft_issue)
+            continue
+        key = (
+            draft_issue.kind.value,
+            tuple(sorted(set(draft_issue.affected_chapters))),
+            draft_issue.resolution_owner.strip(),
+            tuple(sorted(source.root for source in draft_issue.source_ids)),
+            tuple(sorted(source.artifact_id.root for source in draft_issue.source_artifact_refs)),
+        )
+        existing_index = coalesced_keys.get(key)
+        if existing_index is None:
+            coalesced_keys[key] = len(coalesced)
+            coalesced.append(draft_issue)
+            continue
+        existing = coalesced[existing_index]
+        coalesced[existing_index] = existing.model_copy(
+            update={
+                "summary": f"{existing.summary}; {draft_issue.summary}",
+                "affected_chapters": tuple(
+                    sorted(set(existing.affected_chapters) | set(draft_issue.affected_chapters))
+                ),
+                "blocking": existing.blocking or draft_issue.blocking,
+                "allowed_assumptions": tuple(
+                    dict.fromkeys((*existing.allowed_assumptions, *draft_issue.allowed_assumptions))
+                ),
+                "forbidden_assumptions": tuple(
+                    dict.fromkeys(
+                        (*existing.forbidden_assumptions, *draft_issue.forbidden_assumptions)
+                    )
+                ),
+                "source_ids": tuple(dict.fromkeys((*existing.source_ids, *draft_issue.source_ids))),
+                "source_artifact_refs": tuple(
+                    dict.fromkeys(
+                        (*existing.source_artifact_refs, *draft_issue.source_artifact_refs)
+                    )
+                ),
+            }
+        )
     issues: list[PlanUnresolvedIssue] = []
     operations: list[PlanUnresolvedOperationRecord] = []
     seen_operation_ids: set[StableId] = set()
-    for index, draft_issue in enumerate(unresolved):
+    for index, draft_issue in enumerate(coalesced):
         issue_id = _unresolved_issue_id(
             draft_issue,
             output_digest=output_digest,

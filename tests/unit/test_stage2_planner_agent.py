@@ -527,19 +527,20 @@ def test_provider_draft_rejects_model_supplied_unresolved_identity() -> None:
         )
 
 
-def test_provider_draft_rejects_duplicate_unresolved_identity() -> None:
-    with pytest.raises(ValidationError, match="duplicate unresolved identity"):
-        _ModelPlannerProposalDraft.model_validate(
-            {
-                "mode": AgentMode.ARC_VOLUME,
-                "plan_items": (),
-                "unresolved": [
-                    {"summary": "第一个状态缺口", "source_ids": ["source.brief"]},
-                    {"summary": "第二个状态缺口", "source_ids": ["source.brief"]},
-                ],
-                "coverage": 0.0,
-            }
-        )
+def test_host_coalesces_duplicate_unresolved_adds_without_inventing_identity() -> None:
+    first = PlanUnresolvedIssueDraft(
+        summary="第一个状态缺口", source_ids=(StableId("source.brief"),)
+    )
+    second = PlanUnresolvedIssueDraft(
+        summary="第二个状态缺口", source_ids=(StableId("source.brief"),)
+    )
+
+    issues, operations = _materialize_unresolved((first, second), output_digest="output")
+
+    assert len(issues) == 1
+    assert len(operations) == 1
+    assert "第一个状态缺口" in issues[0].summary
+    assert "第二个状态缺口" in issues[0].summary
 
 
 def test_close_operation_keeps_auditable_history_without_an_active_issue() -> None:

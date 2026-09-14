@@ -21,4 +21,4 @@
 
 每个带有 `provenance: "author_supplied"` 的条目必须包含一个非空的 `source_ids` 数组，其中包含该条目规范化来源的 `PLANNING_TASK.source_ids` 精确标识符（例如 `source.author-initial-brief`）。此规则独立适用于项目意图及每个路由目标条目；切勿仅因来源在条目 ID 中显而易见就省略 `source_ids`。
 
-`unresolved` 中每个问题必须有可区分的结构化身份。若多个问题来自同一来源且没有影响章节，不能重复输出相同的 `kind`、责任人和来源组合；应合并为一个问题，或提供真实且不同的 `kind`、`affected_chapters` 或 `source_artifact_refs`。不要用 `issue_id`、摘要措辞或数组顺序制造区别；宿主会拒绝重复身份并由宿主分配稳定 ID。
+`unresolved` 中每个问题必须尽量有可区分的结构化身份。若多个问题来自同一来源且没有影响章节，优先合并为一个问题；也可以提供真实且不同的 `kind`、`affected_chapters` 或 `source_artifact_refs`。不要用 `issue_id`、摘要措辞或数组顺序制造区别；宿主会把无法区分的 ADD 摘要合并为一个仍未决的问题，并由宿主分配稳定 ID；显式 `MODIFY`/`CLOSE` 重复或未知父问题仍会拒绝。
