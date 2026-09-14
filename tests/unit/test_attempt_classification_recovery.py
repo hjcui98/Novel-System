@@ -569,6 +569,19 @@ def test_consumed_response_does_not_mask_a_later_deterministic_failure(
     assert result.completed_response_refs == ()
 
 
+def test_unconsumed_early_response_does_not_mask_a_deterministic_failure() -> None:
+    """A durable earlier logical response is evidence, not a retry permission."""
+
+    result = _classify(
+        attempt=_attempt(failure=FailureClass.VALIDATION_REJECTED),
+        completed=("artifact.n4.early-response",),
+    )
+
+    assert result.action is RecoveryAction.REPAIR_OWNING_MODULE
+    assert not result.safe_to_retry
+    assert result.completed_response_refs == ("artifact.n4.early-response",)
+
+
 def test_the_persisted_model_ledger_surfaces_an_uncertain_provider_request(
     repository: RuntimeTaskQueryRepository,
 ) -> None:

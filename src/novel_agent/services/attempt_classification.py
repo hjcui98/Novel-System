@@ -200,9 +200,10 @@ def classify_attempt(
         "consumed_response_ids": consumed_response_ids,
         "unavailable_response_ids": unavailable_response_ids,
     }
-    # Order matters.  An unresolved send outranks the failure's own classification,
-    # and a durable response outranks both: replaying it costs nothing and answers
-    # the question the retry was going to ask.
+    # Order matters. An unresolved send outranks the failure's own classification.
+    # A completed response is replayable only when the settled failure is not already
+    # a deterministic/drift/budget verdict: an earlier logical response must not
+    # disguise the later phase that actually stopped the Attempt.
     if outstanding_request_ids or unsettled_sends:
         return AttemptClassification(
             **common,
@@ -224,7 +225,11 @@ def classify_attempt(
                 "reconcile the response before issuing another provider call"
             ),
         )
-    if completed_response_refs:
+    if completed_response_refs and not (
+        failure in _DRIFT_CLASSES
+        or failure is FailureClass.BUDGET_EXHAUSTED
+        or failure in _DETERMINISTIC_CLASSES
+    ):
         return AttemptClassification(
             **common,
             action=RecoveryAction.REPLAY_COMPLETED,
