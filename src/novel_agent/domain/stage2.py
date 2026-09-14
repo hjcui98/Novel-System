@@ -558,22 +558,33 @@ class PlanUnresolvedIssueDraft(DomainModel):
         return any(chapter_start <= chapter <= chapter_end for chapter in self.affected_chapters)
 
 
-def _is_post_bootstrap_plan_item(item: ProposedItem) -> bool:
+def _is_post_bootstrap_plan_item(item: ProposedItem, *, mode: AgentMode) -> bool:
     """Whether one item under the bootstrap-only field is really a plan item.
 
-    Two shapes are accepted, both taken from production responses that were correct
+    Three shapes are accepted, all taken from production responses that were correct
     apart from the container they arrived in:
 
     * a chapter-set goal (``kind: "goal"`` with an integer ``chapter_index`` and a
       non-empty ``summary``), the shape the original CHAPTER_SET alias covered; and
     * a plan item that declares the level it plans at, with its ``kind`` agreeing
-      with that level.
+      with that level; and
+    * a post-Genesis STORY item whose stable id is under ``plan.story``.  STORY
+      revisions have also been returned under ``project_intent_items`` even though
+      those fields are ordinary plan items and may be author-supplied.  The stable
+      namespace and non-bootstrap kind keep this compatibility path from accepting
+      the Genesis ``plan.*`` container.
 
     Genesis intent satisfies neither.  The frozen bootstrap proposal's items are
     ``kind: "plan"`` with no ``plan_level``, so bootstrap content cannot be smuggled
     past the mode check by either shape.
     """
 
+    if (
+        mode is AgentMode.STORY
+        and item.item_id.root.startswith("plan.story.")
+        and item.kind != "plan"
+    ):
+        return True
     if item.provenance is not ProposalProvenance.PLANNER_PROPOSED:
         return False
     if (
@@ -650,7 +661,10 @@ class PlannerProposalDraft(DomainModel):
             and self.strategy is None
             and not self.plan_items
             and self.project_intent_items
-            and all(_is_post_bootstrap_plan_item(item) for item in self.project_intent_items)
+            and all(
+                _is_post_bootstrap_plan_item(item, mode=self.mode)
+                for item in self.project_intent_items
+            )
         ):
             # Production responses repeatedly place a post-Genesis plan under the
             # bootstrap-only field.  The CHAPTER_SET goal alias covered one shape of

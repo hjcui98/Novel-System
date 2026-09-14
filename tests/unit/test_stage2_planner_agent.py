@@ -647,6 +647,34 @@ def test_an_arc_volume_provider_alias_accepts_the_public_volume_kind() -> None:
     assert aliased.plan_items == (volume,)
 
 
+def test_a_story_revision_alias_keeps_story_items_out_of_bootstrap_intent() -> None:
+    premise = ProposedItem(
+        item_id=StableId("plan.story.core.premise"),
+        kind="premise",
+        payload={"title": "前提", "description": "故事前提"},
+        provenance=ProposalProvenance.AUTHOR_SUPPLIED,
+        source_ids=(StableId("source.brief"),),
+    )
+    structure = ProposedItem(
+        item_id=StableId("plan.story.volume.structure"),
+        kind="volume_structure",
+        payload={"title": "八卷结构", "volumes": []},
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+
+    aliased = PlannerProposalDraft.model_validate(
+        {
+            "mode": AgentMode.STORY,
+            "project_intent_items": (premise, structure),
+            "unresolved": ("一个待核验的故事设定",),
+            "coverage": 0.85,
+        }
+    )
+
+    assert aliased.project_intent_items == ()
+    assert aliased.plan_items == (premise, structure)
+
+
 def test_genuine_bootstrap_intent_is_still_refused_outside_bootstrap() -> None:
     """The alias must not become a way to smuggle bootstrap content past the mode check."""
 
