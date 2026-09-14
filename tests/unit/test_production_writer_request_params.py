@@ -51,7 +51,8 @@ def test_production_writer_factory_uses_longform_sampling_and_thinking() -> None
 
 
 def test_production_writing_policy_uses_longform_length_and_loop_budgets() -> None:
-    policy = _default_writing_policy(load_production_assembly_spec())
+    spec = load_production_assembly_spec()
+    policy = _default_writing_policy(spec)
     assert policy.length_policy == WritingLengthPolicy(
         minimum_characters=3_000,
         target_characters=5_000,
@@ -63,7 +64,7 @@ def test_production_writing_policy_uses_longform_length_and_loop_budgets() -> No
     assert policy.budgets.max_local_repairs == 2
     assert policy.budgets.max_major_rewrites == 1
     assert policy.budgets.max_post_draft_model_calls == 6
-    assert policy.budgets.reserved_output_tokens == 14_048
+    assert policy.budgets.reserved_output_tokens == spec.model_policy.default_output_limit
     assert isinstance(policy.budgets, WritingLoopBudgets)
 
 

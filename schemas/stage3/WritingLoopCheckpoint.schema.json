@@ -1014,6 +1014,38 @@
       "title": "EditorialLocation",
       "type": "object"
     },
+    "EditorialRepairHistoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "draft_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "repaired_draft_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "report_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "verdict": {
+          "$ref": "#/$defs/EditorialVerdict"
+        }
+      },
+      "required": [
+        "report_id",
+        "draft_id",
+        "verdict"
+      ],
+      "title": "EditorialRepairHistoryEntry",
+      "type": "object"
+    },
     "EditorialReport": {
       "additionalProperties": false,
       "description": "Read-only Editor result used for routing; it never authorizes a write.",
@@ -1111,6 +1143,36 @@
         "created_at"
       ],
       "title": "EditorialReport",
+      "type": "object"
+    },
+    "EditorialReviewInput": {
+      "additionalProperties": false,
+      "description": "Minimum trusted input for an independent read-only Editor review.",
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/WriterContextSnapshot"
+        },
+        "draft": {
+          "$ref": "#/$defs/DraftArtifact"
+        },
+        "prior_repair_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EditorialRepairHistoryEntry"
+          },
+          "title": "Prior Repair History",
+          "type": "array"
+        },
+        "writing_task": {
+          "$ref": "#/$defs/WritingTaskContract"
+        }
+      },
+      "required": [
+        "draft",
+        "writing_task",
+        "context"
+      ],
+      "title": "EditorialReviewInput",
       "type": "object"
     },
     "EditorialSeverity": {
@@ -2596,16 +2658,182 @@
       "title": "WriterWorkPlanResult",
       "type": "object"
     },
+    "WritingLengthPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_characters": {
+          "minimum": 1,
+          "title": "Maximum Characters",
+          "type": "integer"
+        },
+        "minimum_characters": {
+          "minimum": 1,
+          "title": "Minimum Characters",
+          "type": "integer"
+        },
+        "target_characters": {
+          "minimum": 1,
+          "title": "Target Characters",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_characters",
+        "target_characters",
+        "maximum_characters"
+      ],
+      "title": "WritingLengthPolicy",
+      "type": "object"
+    },
     "WritingLoopPhase": {
       "description": "Durable safe frontiers in the fixed Writer product loop.",
       "enum": [
         "REACTIVE_MEMORY_PENDING",
         "EDITOR_PENDING",
+        "REPAIR_PENDING",
         "OBSERVER_PENDING",
         "RECONCILIATION_PENDING"
       ],
       "title": "WritingLoopPhase",
       "type": "string"
+    },
+    "WritingTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "active_plan_obligations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Active Plan Obligations",
+          "type": "array"
+        },
+        "blocking_gaps": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Blocking Gaps",
+          "type": "array"
+        },
+        "chapter_goal": {
+          "minLength": 1,
+          "title": "Chapter Goal",
+          "type": "string"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "forbidden_reveals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Forbidden Reveals",
+          "type": "array"
+        },
+        "length_policy": {
+          "$ref": "#/$defs/WritingLengthPolicy"
+        },
+        "mandatory_constraints": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Mandatory Constraints",
+          "type": "array"
+        },
+        "narrative_person": {
+          "minLength": 1,
+          "title": "Narrative Person",
+          "type": "string"
+        },
+        "obligation_actions": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Obligation Actions",
+          "type": "array"
+        },
+        "participating_entity_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Participating Entity Ids",
+          "type": "array"
+        },
+        "pov": {
+          "minLength": 1,
+          "title": "Pov",
+          "type": "string"
+        },
+        "preserve_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Preserve Requirements",
+          "type": "array"
+        },
+        "required_beats": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Required Beats",
+          "type": "array"
+        },
+        "scene_goals": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Scene Goals",
+          "type": "array"
+        },
+        "style_requirements": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Style Requirements",
+          "type": "array"
+        },
+        "target_chapter": {
+          "minimum": 1,
+          "title": "Target Chapter",
+          "type": "integer"
+        },
+        "target_scenes": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Target Scenes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract_id",
+        "target_chapter",
+        "target_scenes",
+        "pov",
+        "narrative_person",
+        "chapter_goal",
+        "length_policy"
+      ],
+      "title": "WritingTaskContract",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -2695,6 +2923,18 @@
       ],
       "default": null
     },
+    "local_repairs_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Local Repairs Used",
+      "type": "integer"
+    },
+    "major_rewrites_used": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Major Rewrites Used",
+      "type": "integer"
+    },
     "memory_rounds": {
       "minimum": 0,
       "title": "Memory Rounds",
@@ -2730,6 +2970,28 @@
     },
     "recent_prose_ref": {
       "$ref": "#/$defs/ArtifactRef"
+    },
+    "repair_input": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EditorialReviewInput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repair_stage": {
+      "default": "dispatch",
+      "enum": [
+        "dispatch",
+        "local_review",
+        "rewrite_draft",
+        "rewrite_review"
+      ],
+      "title": "Repair Stage",
+      "type": "string"
     },
     "repaired_draft": {
       "anyOf": [

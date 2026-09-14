@@ -682,8 +682,8 @@ def _default_writing_policy(
         narrative_person="third person limited",
         length_policy=WritingLengthPolicy(
             minimum_characters=3_000,
-            target_characters=4_000,
-            maximum_characters=5_000,
+            target_characters=5_000,
+            maximum_characters=8_000,
         ),
         allowed_skills=spec.skills_for_writer(),
         budgets=WritingLoopBudgets(

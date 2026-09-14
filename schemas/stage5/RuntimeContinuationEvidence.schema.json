@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CommitId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Explicit provenance needed to rebind an accepted candidate to a new run.",
+  "properties": {
+    "basis_commit": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "destination_acceptance_task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "destination_run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "new_configuration_fingerprint": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "New Configuration Fingerprint",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "recovery_kind": {
+      "const": "elastic_settlement_continuation",
+      "default": "elastic_settlement_continuation",
+      "title": "Recovery Kind",
+      "type": "string"
+    },
+    "settlement_token_budget_tiers": {
+      "items": {
+        "type": "integer"
+      },
+      "maxItems": 8,
+      "minItems": 2,
+      "title": "Settlement Token Budget Tiers",
+      "type": "array"
+    },
+    "source_acceptance_task_id": {
+      "$ref": "#/$defs/TaskId"
+    },
+    "source_candidate_binding_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "source_candidate_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Candidate Hash",
+      "type": "string"
+    },
+    "source_candidate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "source_writing_result_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "source_writing_task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "source_run_id",
+    "source_acceptance_task_id",
+    "source_candidate_binding_ref",
+    "source_candidate_id",
+    "source_candidate_hash",
+    "source_writing_result_ref",
+    "source_writing_task_id",
+    "basis_commit",
+    "destination_run_id",
+    "destination_acceptance_task_id",
+    "new_configuration_fingerprint",
+    "settlement_token_budget_tiers",
+    "reason"
+  ],
+  "title": "RuntimeContinuationEvidence",
+  "type": "object"
+}

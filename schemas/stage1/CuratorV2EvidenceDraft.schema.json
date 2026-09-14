@@ -418,6 +418,48 @@
       "title": "NarrativeOrder",
       "type": "object"
     },
+    "PlannedObligationObservation": {
+      "additionalProperties": false,
+      "description": "One chapter's observed progress against an accepted durable obligation.",
+      "properties": {
+        "evidence_quotes": {
+          "default": [],
+          "items": {
+            "maxLength": 240,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Evidence Quotes",
+          "type": "array"
+        },
+        "obligation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "not_observed",
+            "progressed",
+            "resolved",
+            "abandoned"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "obligation_id",
+        "status",
+        "rationale"
+      ],
+      "title": "PlannedObligationObservation",
+      "type": "object"
+    },
     "StableId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
@@ -467,6 +509,11 @@
       "title": "Declared Vs Observed Diff",
       "type": "array"
     },
+    "has_more": {
+      "default": false,
+      "title": "Has More",
+      "type": "boolean"
+    },
     "no_durable_delta_reason": {
       "anyOf": [
         {
@@ -500,6 +547,15 @@
       "title": "Operations",
       "type": "array"
     },
+    "plan_observations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlannedObligationObservation"
+      },
+      "maxItems": 8,
+      "title": "Plan Observations",
+      "type": "array"
+    },
     "unresolved": {
       "default": [],
       "items": {
@@ -509,6 +565,17 @@
       },
       "maxItems": 4,
       "title": "Unresolved",
+      "type": "array"
+    },
+    "world_lookup_terms": {
+      "default": [],
+      "items": {
+        "maxLength": 160,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "World Lookup Terms",
       "type": "array"
     }
   },

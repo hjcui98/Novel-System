@@ -534,6 +534,19 @@
     "project_id": {
       "$ref": "#/$defs/ProjectId"
     },
+    "requested_current_chapter": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Current Chapter"
+    },
     "run_id": {
       "$ref": "#/$defs/RunId"
     },

@@ -258,6 +258,14 @@
       "title": "Reason",
       "type": "string"
     },
+    "review_artifact_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Review Artifact Refs",
+      "type": "array"
+    },
     "run_id": {
       "$ref": "#/$defs/RunId"
     },

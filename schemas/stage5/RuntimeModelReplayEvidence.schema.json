@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "byte_length": {
+          "minimum": 0,
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "media_type": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "media_type",
+        "byte_length",
+        "schema_version"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "RuntimeModelReplayResponse": {
+      "additionalProperties": false,
+      "description": "One provider response handed back to its original logical request.",
+      "properties": {
+        "logical_phase": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Logical Phase",
+          "type": "string"
+        },
+        "raw_artifact_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "request_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Request Hash",
+          "type": "string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_attempt_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "request_id",
+        "source_attempt_id",
+        "request_hash",
+        "logical_phase",
+        "raw_artifact_ref"
+      ],
+      "title": "RuntimeModelReplayResponse",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "SchemaVersion",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable recovery binding for provider output that must not be re-billed.",
+  "properties": {
+    "recovery_kind": {
+      "const": "model_response_replay",
+      "default": "model_response_replay",
+      "title": "Recovery Kind",
+      "type": "string"
+    },
+    "responses": {
+      "items": {
+        "$ref": "#/$defs/RuntimeModelReplayResponse"
+      },
+      "minItems": 1,
+      "title": "Responses",
+      "type": "array"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "source_attempt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "run_id",
+    "task_id",
+    "source_attempt_id",
+    "responses"
+  ],
+  "title": "RuntimeModelReplayEvidence",
+  "type": "object"
+}
