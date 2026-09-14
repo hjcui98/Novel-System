@@ -363,6 +363,21 @@ class RuntimeCommandService:
             project = session.get(ProjectRow, task.project_id.root)
             if project is None or project.current_commit_id is None:
                 raise RuntimeCommandConflictError("project has no current commit")
+            unresolved_model_request = session.scalar(
+                select(ModelCallLedgerRow.request_id).where(
+                    ModelCallLedgerRow.task_id == task.task_id.root,
+                    ModelCallLedgerRow.status.in_(
+                        (
+                            ModelCallLedgerStatus.REQUESTED.value,
+                            ModelCallLedgerStatus.UNCERTAIN.value,
+                        )
+                    ),
+                )
+            )
+            if unresolved_model_request is not None:
+                raise RuntimeCommandConflictError(
+                    "model-call ledger has an unresolved provider send; reconcile before claim"
+                )
             dependencies = tuple(
                 self._load_task(session, item, lock=False).status
                 for item in task.dependency_task_ids

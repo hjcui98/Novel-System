@@ -169,6 +169,66 @@ def _evidence_ref(
     )
 
 
+def test_claim_fences_ready_task_with_unsettled_model_send(
+    reconciliation_kernel: tuple[
+        sessionmaker[Session],
+        ArtifactRepository,
+        RunEventLogRepository,
+        RuntimeCommandService,
+        CommitId,
+    ],
+) -> None:
+    factory, _artifacts, _events, commands, base = reconciliation_kernel
+    task = commands.create_run_and_initial_task(
+        CreativeRunRequest(
+            run_id=RunId("run.model-reconciliation-claim"),
+            project_id=ProjectId("project.test"),
+            basis_commit=base,
+            policy=_policy(),
+        )
+    )
+    request = ModelRequest(
+        request_id=StableId("model-request.reconciliation.claim-block"),
+        run_id=task.run_id,
+        task_id=task.task_id,
+        model_role=ModelRole.IMPLEMENTATION,
+        purpose=ModelCallPurpose.DEVELOPMENT,
+        trace_id="trace.model-reconciliation-claim",
+        prompt="an unresolved request must fence the claim",
+        scheduling_stage="plan_review",
+    )
+    budget = EffectiveBudgetResult(
+        budget_source=BudgetSource.ENDPOINT_DEFAULT,
+        context_limit=1000,
+        estimated_input_tokens=10,
+        body_output_budget=20,
+        thinking_budget=0,
+        total_output_budget=20,
+        safety_allowance_tokens=5,
+        reserved_sequence_tokens=35,
+        available_input_tokens=975,
+    )
+    ledger = SqlModelCallLedger(factory)
+    requested = ledger.create_requested(
+        request,
+        effective_budget=budget,
+        reasoning_included_in_completion_tokens=False,
+    )
+    ledger.settle(
+        requested.model_copy(
+            update={
+                "status": ModelCallLedgerStatus.UNCERTAIN,
+                "provider_sent_at": datetime.now(UTC),
+                "transport_error_type": "TimeoutError",
+            }
+        )
+    )
+
+    with pytest.raises(RuntimeCommandConflictError, match="unresolved provider send"):
+        commands.claim(task.task_id, worker_id="reconciliation-claim-block")
+    assert commands.get_task(task.task_id) == task
+
+
 def test_reconcile_model_call_is_atomic_audited_and_idempotent(
     reconciliation_kernel: tuple[
         sessionmaker[Session],
