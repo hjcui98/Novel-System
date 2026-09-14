@@ -11,8 +11,9 @@
 - 若使用 `story.reveal_obligations` 条目承载多条故事义务，必须使用嵌套键
   `obligation_declarations`，且每个对象都必须完整包含
   `obligation_kind`、非空 `summary`/`description` 以及适用的
-  `not_before_chapter`；例如
-  `{"kind":"reveal_obligations","payload":{"obligation_declarations":[{"obligation_kind":"foreshadowing","summary":"...","not_before_chapter":350}]}}`。
+  `not_before_chapter`；该容器条目本身也必须有非空 `title` 与
+  `summary`/`description`，因为每一个 `plan_items` 都要能物化为 Plan 节点；例如
+  `{"kind":"reveal_obligations","payload":{"title":"信息揭示义务","summary":"本故事需要按窗口推进的揭示义务","obligation_declarations":[{"obligation_kind":"foreshadowing","summary":"...","not_before_chapter":350}]}}`。
   禁止使用 `obligations` 作为该容器键，禁止把 `reveal_obligations` 作为义务 kind，
   也禁止省略内层 kind；这些形状会被宿主明确拒绝，不能靠标题或锁 ID 代替。
 - 作者已声明的进度锁、揭露锁与时间锁属于**作者约束上下文**，不是本章新增义务：

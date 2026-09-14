@@ -20,6 +20,7 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.obligation_contract import (
+    OBLIGATION_CONTRACT_PAYLOAD_PATHS,
     compile_legacy_obligation_plan,
     compile_obligation_actions,
     parse_obligation_declarations,
@@ -66,7 +67,10 @@ _HOST_ISSUE_REQUIRED_FIELDS: dict[ReviewIssueKind, tuple[str, ...]] = {
     ReviewIssueKind.LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW: ("not_before_chapter",),
     ReviewIssueKind.UNRESOLVED_SCOPE_MISSING: ("affected_chapters",),
     ReviewIssueKind.EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION: ("target_chapter_start",),
-    ReviewIssueKind.OBLIGATION_CONTRACT: ("kind",),
+    # The finding's ``field_path=obligation_contract`` is a stable semantic
+    # category, not a literal payload key.  The actual writable surfaces are
+    # expanded below when the host builds its revision demand.
+    ReviewIssueKind.OBLIGATION_CONTRACT: OBLIGATION_CONTRACT_PAYLOAD_PATHS,
     ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION: (),
 }
 _HISTORY_NEED_KINDS = frozenset(
@@ -86,9 +90,23 @@ _ARC_VOLUME_COMPARISON_KEYS = (
 
 
 class PlanReviewerInvocationError(ValueError):
-    def __init__(self, message: str, *, review_draft_ref: ArtifactRef | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        review_draft_ref: ArtifactRef | None = None,
+        model_call: ModelCallRecord | None = None,
+        citation_repairable: bool = False,
+        mechanical_preflight: bool = False,
+    ) -> None:
         super().__init__(message)
         self.review_draft_ref = review_draft_ref
+        # A provider call can fail host validation after the provider has returned.
+        # Carry it out so the planning loop can record the real call before a
+        # bounded same-candidate repair; otherwise the ledger undercounts usage.
+        self.model_call = model_call
+        self.citation_repairable = citation_repairable
+        self.mechanical_preflight = mechanical_preflight
 
 
 def apply_host_plan_review_constraints(
@@ -252,6 +270,16 @@ def _host_required_fields(issues: Sequence[PlanReviewIssue]) -> tuple[str, ...]:
     for issue in issues:
         if issue.kind is ReviewIssueKind.VOLUME_STAGE_WINDOW_VIOLATION:
             demands.extend(_volume_window_field_paths(issue))
+            continue
+        if (
+            issue.host_issued
+            and issue.kind is ReviewIssueKind.OBLIGATION_CONTRACT
+            and issue.field_path == "obligation_contract"
+        ):
+            for item_id in issue.affected_item_ids:
+                demands.extend(
+                    f"{item_id.root}.{field}" for field in OBLIGATION_CONTRACT_PAYLOAD_PATHS
+                )
             continue
         if issue.field_path is not None:
             for item_id in issue.affected_item_ids:
@@ -531,11 +559,7 @@ def _target_authorization_failure(
                 None,
             )
             target_field_path = None if target_citation is None else target_citation.field_path
-        resolved = (
-            _resolve_field_path(payload, target_field_path)
-            if target_field_path
-            else None
-        )
+        resolved = _resolve_field_path(payload, target_field_path) if target_field_path else None
         if target_field_path and isinstance(resolved, str):
             # A string result is the resolver's error marker.  Existing fields
             # return ``(parent, value)`` so a valid target must pass this branch.
@@ -1471,9 +1495,9 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
         issues.append(
             _host_issue(
                 ReviewIssueKind.UNRESOLVED_SCOPE_MISSING,
-            "UNRESOLVED_SCOPE_MISSING: "
-            f"{source_hint} {questioned[0]}-{questioned[1]} but omits "
-            f"chapter {min(missing_chapters)} from affected_chapters",
+                "UNRESOLVED_SCOPE_MISSING: "
+                f"{source_hint} {questioned[0]}-{questioned[1]} but omits "
+                f"chapter {min(missing_chapters)} from affected_chapters",
                 issue.issue_id.root,
                 blocking=True,
                 field_path="unresolved.affected_chapters",
@@ -1597,46 +1621,35 @@ def _append_obligation_contract_issues(
     candidate must not reach acceptance with any of these defects.
     """
 
+    # Keep one stable host finding for one item's obligation contract.  The
+    # individual parser messages remain in its summary, while the scope grants
+    # exactly the declaration surfaces named by the shared contract.  Emitting
+    # one finding per parser message used to create identical issue ids and made
+    # scope/progress accounting silently collapse distinct defects.
+    discrepancies: list[str] = []
     actions = payload.get("obligation_actions")
     if actions is not None:
         compilation = compile_obligation_actions(actions)
-        for discrepancy in compilation.discrepancies:
-            issues.append(
-                _host_issue(
-                    ReviewIssueKind.OBLIGATION_CONTRACT,
-                    f"OBLIGATION_ACTION_UNREADABLE: {discrepancy}",
-                    item_id,
-                    blocking=True,
-                )
-            )
+        discrepancies.extend(
+            f"OBLIGATION_ACTION_UNREADABLE: {discrepancy}"
+            for discrepancy in compilation.discrepancies
+        )
         if accepted_obligation_ids is not None:
-            for action in compilation.actions:
-                if action.obligation_id in accepted_obligation_ids:
-                    continue
-                issues.append(
-                    _host_issue(
-                        ReviewIssueKind.OBLIGATION_CONTRACT,
-                        "OBLIGATION_ACTION_UNDECLARED: "
-                        f"{action.obligation_id} is not a declared obligation; this level "
-                        "may reference accepted obligation ids but may not invent one",
-                        item_id,
-                        blocking=True,
-                    )
-                )
+            discrepancies.extend(
+                "OBLIGATION_ACTION_UNDECLARED: "
+                f"{action.obligation_id} is not a declared obligation; this level "
+                "may reference accepted obligation ids but may not invent one"
+                for action in compilation.actions
+                if action.obligation_id not in accepted_obligation_ids
+            )
     # One declaration contract with the materializer.  Host review previously
     # had its own reading and both disagreed: a live STORY item was ACCEPTed here
     # and refused at commit, and two legal declaration shapes were refused here
     # while the materializer accepted them.
     parse = parse_obligation_declarations(payload, item_kind=item_kind, item_id=item_id)
-    for discrepancy in parse.discrepancies:
-        issues.append(
-            _host_issue(
-                ReviewIssueKind.OBLIGATION_CONTRACT,
-                f"OBLIGATION_DECLARATION_UNREADABLE: {discrepancy}",
-                item_id,
-                blocking=True,
-            )
-        )
+    discrepancies.extend(
+        f"OBLIGATION_DECLARATION_UNREADABLE: {discrepancy}" for discrepancy in parse.discrepancies
+    )
     declarations = payload.get("obligation_declarations")
     if declarations and mode in {
         AgentMode.CHAPTER_SET,
@@ -1646,35 +1659,37 @@ def _append_obligation_contract_issues(
         # The same level rule the materializer enforces: a lower-level plan may
         # project or reference accepted obligations, never create one.  Without
         # this the candidate was accepted here and only rejected later.
-        issues.append(
-            _host_issue(
-                ReviewIssueKind.OBLIGATION_CONTRACT,
-                "OBLIGATION_DECLARATION_FORBIDDEN: this planning level may reference "
-                "accepted obligation ids but may not declare a durable obligation",
-                item_id,
-                blocking=True,
-            )
+        discrepancies.append(
+            "OBLIGATION_DECLARATION_FORBIDDEN: this planning level may reference "
+            "accepted obligation ids but may not declare a durable obligation"
         )
     if payload.get("obligation_plan") is None:
+        if discrepancies:
+            issues.append(
+                _host_issue(
+                    ReviewIssueKind.OBLIGATION_CONTRACT,
+                    " | ".join(discrepancies),
+                    item_id,
+                    blocking=True,
+                )
+            )
         return
     legacy = compile_legacy_obligation_plan(payload["obligation_plan"])
     if mode in {AgentMode.CHAPTER_SET, AgentMode.CHAPTER, AgentMode.SCENE}:
         # Lower planning levels reference accepted obligations; a durable
         # responsibility may only be created by the upper-level plan.
-        issues.append(
-            _host_issue(
-                ReviewIssueKind.OBLIGATION_CONTRACT,
-                "OBLIGATION_PLAN_FORBIDDEN: this planning level may reference accepted "
-                "obligation ids but may not declare a durable responsibility table",
-                item_id,
-                blocking=True,
-            )
+        discrepancies.append(
+            "OBLIGATION_PLAN_FORBIDDEN: this planning level may reference accepted "
+            "obligation ids but may not declare a durable responsibility table"
         )
-    for discrepancy in legacy.discrepancies:
+    discrepancies.extend(
+        f"OBLIGATION_PLAN_UNREADABLE: {discrepancy}" for discrepancy in legacy.discrepancies
+    )
+    if discrepancies:
         issues.append(
             _host_issue(
                 ReviewIssueKind.OBLIGATION_CONTRACT,
-                f"OBLIGATION_PLAN_UNREADABLE: {discrepancy}",
+                " | ".join(discrepancies),
                 item_id,
                 blocking=True,
             )
@@ -2040,6 +2055,47 @@ class PlanReviewerAgent:
                 + review_feedback.strip()
                 + "\n</REVIEW_REPAIR_FEEDBACK>"
             )
+        context_package = _planner_context_package(self._artifacts, trusted_source_artifacts)
+        world = _accepted_obligations(
+            self._artifacts,
+            trusted_source_artifacts,
+            accepted_world_ref=self._world_ref_for(base_commit),
+        )
+        author_constraints = _author_constraint_catalogue(
+            self._artifacts, trusted_source_artifacts, context_package
+        )
+        if target_kind is ReviewTargetKind.PLAN_PROPOSAL:
+            # Mechanical candidate defects are host-decidable and must not spend a
+            # Reviewer call.  Persist the host draft as evidence, but do not turn it
+            # into a PlanReview: a PlanReview requires a real Reviewer receipt.
+            preflight = host_only_plan_review(
+                target_payload=target_payload,
+                mode=mode,
+                expected_volume_count=_expected_volume_count_from_context(review_context),
+                expected_target_chapters=_expected_target_chapters_from_context(review_context),
+                accepted_obligation_ids=(
+                    None
+                    if world is None
+                    else frozenset(item.obligation_id.root for item in world.obligations)
+                ),
+                accepted_obligation_windows=(
+                    None if world is None else obligation_stage_windows(world.obligations)
+                ),
+                author_constraints=author_constraints,
+            )
+            if preflight is not None:
+                draft_artifact = self._artifacts.put(
+                    canonical_json_bytes(preflight.model_dump(mode="json")),
+                    "application/vnd.novel-agent.plan-review-draft+json",
+                    version,
+                )
+                blocking = tuple(issue.summary for issue in preflight.issues if issue.blocking)
+                raise PlanReviewerInvocationError(
+                    "Plan review mechanical preflight rejected the candidate "
+                    f"{target_artifact.artifact_id.root}: " + "; ".join(blocking[:4]),
+                    review_draft_ref=draft_artifact,
+                    mechanical_preflight=True,
+                )
         prepared = self._runner.prepare(
             AgentType.PLAN_REVIEWER,
             mode,
@@ -2054,14 +2110,10 @@ class PlanReviewerAgent:
         draft = _merge_preserved_review_findings(
             _host_materialize_provider_review(execution.output), review_feedback
         )
-        context_package = _planner_context_package(self._artifacts, trusted_source_artifacts)
         if draft.target_kind is not target_kind:
-            raise PlanReviewerInvocationError("Reviewer changed the trusted target kind")
-        world = _accepted_obligations(
-            self._artifacts,
-            trusted_source_artifacts,
-            accepted_world_ref=self._world_ref_for(base_commit),
-        )
+            raise PlanReviewerInvocationError(
+                "Reviewer changed the trusted target kind", model_call=execution.model_call
+            )
         draft = apply_host_plan_review_constraints(
             draft,
             mode=mode,
@@ -2077,9 +2129,7 @@ class PlanReviewerAgent:
             accepted_obligation_windows=(
                 None if world is None else obligation_stage_windows(world.obligations)
             ),
-            author_constraints=_author_constraint_catalogue(
-                self._artifacts, trusted_source_artifacts, context_package
-            ),
+            author_constraints=author_constraints,
         )
         draft_artifact = self._artifacts.put(
             canonical_json_bytes(draft.model_dump(mode="json")),
@@ -2141,6 +2191,8 @@ class PlanReviewerAgent:
                 + "; MODEL_FINDINGS_TO_RECHECK="
                 + recheck,
                 review_draft_ref=draft_artifact,
+                model_call=execution.model_call,
+                citation_repairable=True,
             )
 
         receipt = self._runner.receipt(

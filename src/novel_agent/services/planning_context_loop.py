@@ -795,11 +795,16 @@ class PlanningContextLoopService:
         except PlanReviewerInvocationError as error:
             if error.review_draft_ref is not None:
                 event_refs.append(error.review_draft_ref)
+            diagnostic = (
+                "PLAN_REVIEW_MECHANICAL_PRECHECK"
+                if error.mechanical_preflight
+                else "REVIEWER_CONTRACT_FAILURE"
+            )
             return self._terminal(
                 request,
                 PlanningLoopTerminal.REVIEW_REQUIRED,
                 event_refs,
-                diagnostics=("REVIEWER_CONTRACT_FAILURE", str(error)[:512]),
+                diagnostics=(diagnostic, str(error)[:512]),
             )
         except (PlannerInvocationError, AgentExecutionError):
             return self._terminal(
@@ -946,6 +951,7 @@ class PlanningContextLoopService:
                     )
                 )
             )
+
         if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
             if world is not None or text_root is not None:
                 return self._terminal(
@@ -2348,20 +2354,57 @@ class PlanningContextLoopService:
                 active_revision_review_artifact_refs = ()
                 active_revision_parent_ref = None
             # First review of a proposal authored this invocation is in-flight work.
-            plan_review, plan_review_ref, _call = await self._reviewer.review(
-                version=self._schema_version,
-                mode=request.task.mode,
-                target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-                target_payload=proposal.model_dump_json(),
-                target_artifact=proposal_ref,
-                trusted_source_artifacts=(
-                    *visible_author_artifacts,
-                    planner_context_ref,
-                    projection.view_ref,
-                ),
-                request=model_request("plan_review", request.task.mode, 1),
-                base_commit=request.task.base_commit,
-            )
+            # A citation failure is repaired against this exact candidate once, as in
+            # the bounded D0 path.  The first provider call is still real usage and
+            # must be recorded even though the reviewer raises before returning a
+            # PlanReview receipt.
+            try:
+                plan_review, plan_review_ref, _call = await self._reviewer.review(
+                    version=self._schema_version,
+                    mode=request.task.mode,
+                    target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+                    target_payload=proposal.model_dump_json(),
+                    target_artifact=proposal_ref,
+                    trusted_source_artifacts=(
+                        *visible_author_artifacts,
+                        planner_context_ref,
+                        projection.view_ref,
+                    ),
+                    request=model_request("plan_review", request.task.mode, 1),
+                    base_commit=request.task.base_commit,
+                )
+            except PlanReviewerInvocationError as error:
+                if error.model_call is not None:
+                    record_model_call(error.model_call)
+                if error.review_draft_ref is not None:
+                    event_refs.append(error.review_draft_ref)
+                if not error.citation_repairable:
+                    raise
+                # This is a same-candidate Reviewer repair, not a Planner retry.  The
+                # feedback contains only host verification results and preserved valid
+                # findings; it grants no write authority and cannot change the target.
+                try:
+                    plan_review, plan_review_ref, _call = await self._reviewer.review(
+                        version=self._schema_version,
+                        mode=request.task.mode,
+                        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+                        target_payload=proposal.model_dump_json(),
+                        target_artifact=proposal_ref,
+                        trusted_source_artifacts=(
+                            *visible_author_artifacts,
+                            planner_context_ref,
+                            projection.view_ref,
+                        ),
+                        request=model_request("plan_review_citation_repair", request.task.mode, 2),
+                        base_commit=request.task.base_commit,
+                        review_feedback=str(error),
+                    )
+                except PlanReviewerInvocationError as repair_error:
+                    if repair_error.model_call is not None:
+                        record_model_call(repair_error.model_call)
+                    if repair_error.review_draft_ref is not None:
+                        event_refs.append(repair_error.review_draft_ref)
+                    raise
             record_model_call(_call)
 
         if previous_blocking_signature is not None and resumed_review:
@@ -3074,9 +3117,7 @@ class PlanningContextLoopService:
         payload = rendered_context
         if author_parts and not all(part in rendered_context for part in author_parts):
             authority = "\n\n".join(author_parts)
-            payload = (
-                f"{payload}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
-            )
+            payload = f"{payload}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
         revision_parts = self._source_parts(revision_artifacts)
         if revision_parts:
             directives = "\n\n".join(revision_parts)
@@ -3087,7 +3128,7 @@ class PlanningContextLoopService:
         review_parts = self._source_parts(revision_review_artifacts)
         if review_parts:
             payload = (
-                f"{payload}\n\n<HOST_REVISION_REVIEW authority=\"control\">\n"
+                f'{payload}\n\n<HOST_REVISION_REVIEW authority="control">\n'
                 "宿主审查工件只定义本次修订边界；它不是作者事实、Memory 证据或模型 Reviewer "  # noqa: RUF001
                 "结论。严格按其中的稳定 unresolved issue_id 生成 MODIFY，禁止为同一问题生成新的 "  # noqa: RUF001
                 "ADD 身份；最终候选仍会接受独立 Reviewer。\n"  # noqa: RUF001
@@ -3114,7 +3155,7 @@ class PlanningContextLoopService:
             for issue in parent.unresolved
         )
         return (
-            "\n\n<REVISION_PARENT_IDENTITY authority=\"control\">\n"
+            '\n\n<REVISION_PARENT_IDENTITY authority="control">\n'
             f"parent_proposal_id={parent.proposal_id.root}\n"
             "以下是宿主组合的父候选 unresolved 身份表，不是可自由改写的作者输入。"  # noqa: RUF001
             "模型输出不得填写 issue_id（该字段由宿主生成）；需要修复的既有 issue 必须"  # noqa: RUF001

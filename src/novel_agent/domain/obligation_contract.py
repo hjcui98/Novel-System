@@ -316,6 +316,20 @@ NESTED_OBLIGATION_DECLARATION_KEYS: tuple[str, ...] = (
     "key_obligations",
     "obligation_declaration",
 )
+# A host finding about the obligation contract is a semantic finding, not a
+# literal payload key.  These are the only top-level payload surfaces that the
+# scoped composer may change when such a finding is answered.  Keeping the list
+# here makes review, composition, and the materializer share one vocabulary and
+# lets a valid migration remove a legacy ``obligations``/``obligation_plan``
+# surface while adding ``obligation_declarations``.
+OBLIGATION_CONTRACT_PAYLOAD_PATHS: tuple[str, ...] = (
+    "obligation_actions",
+    "obligation",
+    "obligation_kind",
+    "obligation_type",
+    *NESTED_OBLIGATION_DECLARATION_KEYS,
+    "obligation_plan",
+)
 # The item kind the materializer treats as a declaration surface even though it is
 # not an ObligationKind value.
 BARE_OBLIGATION_ITEM_KIND = "obligation"

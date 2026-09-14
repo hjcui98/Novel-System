@@ -6,6 +6,7 @@
 `payload.obligation_declarations` 数组；数组中每项必须有
 `obligation_kind`（`foreshadowing`、`promise`、`objective` 或
 `unresolved_conflict`）、非空 `summary`/`description`，以及适用的
-`not_before_chapter`。不要使用 `payload.obligations`，不要把
+`not_before_chapter`；外层 `story.reveal_obligations` 条目也必须提供非空
+ `title` 和 `summary`/`description`，否则无法物化为 Plan 节点。不要使用 `payload.obligations`，不要把
 `reveal_obligations` 当作 obligation kind，也不要输出缺少内层
 `obligation_kind` 的锁定表；宿主不会替这些字段推断类型。

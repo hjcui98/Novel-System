@@ -37,6 +37,7 @@ from novel_agent.domain.ids import (
     SchemaVersion,
     StableId,
 )
+from novel_agent.domain.obligation_contract import parse_obligation_declarations
 from novel_agent.domain.plan_composition import (
     COMPOSITION_RULE_VERSION,
     PlanCompositionError,
@@ -169,9 +170,7 @@ def test_formal4_scope_repair_preserves_parent_memory_evidence(tmp_path: Path) -
     )
     composed_execution_ref = _put(repo, composed_execution, PLANNER_EXECUTION_MEDIA_TYPE)
     event_ref = _event_ref(repo, (composed_ref, proof_ref, composed_execution_ref))
-    materialized_ref, materialized = _materializer(repo)._planner_execution(
-        (event_ref,), composed
-    )
+    materialized_ref, materialized = _materializer(repo)._planner_execution((event_ref,), composed)
     assert materialized_ref == composed_execution_ref
     assert materialized.plan_proposal == composed
 
@@ -320,6 +319,84 @@ def test_nested_finding_preserves_sibling_stage_metadata() -> None:
     }
 
 
+def test_obligation_contract_scope_maps_semantic_finding_to_real_surfaces() -> None:
+    """A contract finding may migrate the declaration container, not a fake key."""
+
+    parent = _proposal(
+        (
+            _item(
+                "story.reveal.obligations",
+                title="旧义务容器",
+                summary="旧容器需要修订",
+                obligations=[{"lock_id": "legacy", "description": "缺少 kind"}],
+                unrelated="parent-only",
+            ),
+            _item("story.core.premise", summary="保持不变"),
+        ),
+        number=1,
+    )
+    issue = PlanReviewIssue(
+        issue_id=StableId("issue.story.obligation-contract"),
+        kind=ReviewIssueKind.OBLIGATION_CONTRACT,
+        summary="OBLIGATION_DECLARATION_UNREADABLE: missing kind",
+        blocking=True,
+        affected_item_ids=(StableId("story.reveal.obligations"),),
+        authorized_target_item_ids=(StableId("story.reveal.obligations"),),
+        field_path="obligation_contract",
+        constraint_id="host.obligation_contract",
+        actual="legacy obligations",
+        expected="readable obligation_declarations",
+        authorized_operations=("modify",),
+        host_issued=True,
+    )
+    scope = revision_scope(_review(issue))
+
+    target = scope.target_for("story.reveal.obligations")
+    assert target is not None
+    assert "obligation_contract" not in target.field_paths
+    assert "obligations" in target.field_paths
+    assert "obligation_declarations" in target.field_paths
+
+    revised = parent.model_copy(
+        update={
+            "proposal_id": StableId("plan-proposal.n3.2"),
+            "items": (
+                _item(
+                    "story.reveal.obligations",
+                    title="新义务容器",
+                    summary="本故事按窗口推进信息揭示义务",
+                    obligation_declarations=[
+                        {
+                            "obligation_kind": "foreshadowing",
+                            "summary": "首次揭示断序星纹的来历",
+                            "not_before_chapter": 350,
+                        }
+                    ],
+                    unrelated="model-moved-but-authorized-sibling",
+                ),
+                _item("story.core.premise", summary="模型不应改动"),
+            ),
+        }
+    )
+    composed = compose_scoped_revision(parent, revised, scope)
+    obligation_item = next(
+        item for item in composed.items if item.item_id.root == "story.reveal.obligations"
+    )
+    assert "obligations" not in obligation_item.payload
+    assert obligation_item.payload["obligation_declarations"]
+    assert obligation_item.payload["unrelated"] == "parent-only"
+    assert (
+        next(item for item in composed.items if item.item_id.root == "story.core.premise")
+        == parent.items[1]
+    )
+    parsed = parse_obligation_declarations(
+        obligation_item.payload,
+        item_kind=obligation_item.kind,
+        item_id=obligation_item.item_id.root,
+    )
+    assert parsed.complete
+
+
 def test_an_unnamed_item_is_restored_byte_for_byte() -> None:
     parent = _proposal((_item("vol-1", goal="父"), _item("vol-2", goal="父二")), number=1)
     revised = parent.model_copy(
@@ -385,24 +462,24 @@ def test_operator_review_is_a_direct_scope_source_without_a_model_receipt() -> N
     parent = _proposal(
         (_item("vol-1", goal="父"),),
         unresolved=(
-                PlanUnresolvedIssue(
-                    issue_id=issue_id,
-                    summary="待补范围",
-                    affected_chapters=(1, 800),
-                    resolution_owner="MEMORY",
-                    source_ids=(StableId("source.memory.parent"),),
-                    forbidden_assumptions=("不得把缺口当作事实",),
-                ),
+            PlanUnresolvedIssue(
+                issue_id=issue_id,
+                summary="待补范围",
+                affected_chapters=(1, 800),
+                resolution_owner="MEMORY",
+                source_ids=(StableId("source.memory.parent"),),
+                forbidden_assumptions=("不得把缺口当作事实",),
+            ),
         ),
         unresolved_operations=(
             PlanUnresolvedOperationRecord(
                 operation=PlanUnresolvedOperation.ADD,
                 issue_id=issue_id,
-                    summary="待补范围",
-                    affected_chapters=(1, 800),
-                    resolution_owner="MEMORY",
-                    source_ids=(StableId("source.memory.parent"),),
-                    forbidden_assumptions=("不得把缺口当作事实",),
+                summary="待补范围",
+                affected_chapters=(1, 800),
+                resolution_owner="MEMORY",
+                source_ids=(StableId("source.memory.parent"),),
+                forbidden_assumptions=("不得把缺口当作事实",),
             ),
         ),
     )

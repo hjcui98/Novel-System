@@ -27,7 +27,8 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.creative_runtime import OperatorReviewEvidence
 from novel_agent.domain.ids import StableId
-from novel_agent.domain.planning import PlanReview, PlanReviewIssue
+from novel_agent.domain.obligation_contract import OBLIGATION_CONTRACT_PAYLOAD_PATHS
+from novel_agent.domain.planning import PlanReview, PlanReviewIssue, ReviewIssueKind
 from novel_agent.domain.stage2 import (
     PlanProposal,
     PlanUnresolvedIssue,
@@ -337,7 +338,19 @@ def _issue_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
     host findings that intentionally authorise the complete item.
     """
 
-    return () if not issue.field_path else (issue.field_path,)
+    if not issue.field_path:
+        return ()
+    if (
+        issue.host_issued
+        and issue.kind is ReviewIssueKind.OBLIGATION_CONTRACT
+        and issue.field_path == "obligation_contract"
+    ):
+        # ``obligation_contract`` is the host's stable semantic identity.  It is
+        # deliberately not a payload key: a STORY repair may migrate a legacy
+        # declaration surface to ``obligation_declarations`` and must be allowed
+        # to remove the old surface and add the new one in one scoped write.
+        return OBLIGATION_CONTRACT_PAYLOAD_PATHS
+    return (issue.field_path,)
 
 
 def _issue_operations(issue: PlanReviewIssue) -> tuple[PlanRevisionOperation, ...]:
@@ -664,9 +677,7 @@ def _compose_unresolved_fields(
     return parent.model_copy(update=values)
 
 
-def _normalize_cited_window(
-    chapters: tuple[int, ...], window: tuple[int, int]
-) -> tuple[int, ...]:
+def _normalize_cited_window(chapters: tuple[int, ...], window: tuple[int, int]) -> tuple[int, ...]:
     full = tuple(range(window[0], window[1] + 1))
     if chapters == full:
         return chapters
