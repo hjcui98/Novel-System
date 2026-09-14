@@ -20,6 +20,7 @@ from novel_agent.agents.planner import (
     PLANNING_TURN_OUTPUT_CONSTRAINTS,
     _materialize_unresolved,
     _ModelPlannerProposalDraft,
+    _ModelPlanningTurnDraft,
     _unresolved_issue_id,
 )
 from novel_agent.domain.artifacts import ArtifactRef
@@ -523,6 +524,26 @@ def test_provider_draft_rejects_model_supplied_unresolved_identity() -> None:
                     }
                 ],
                 "coverage": 0.0,
+            }
+        )
+
+
+def test_provider_planning_turn_rejects_model_supplied_unresolved_identity() -> None:
+    with pytest.raises(ValidationError, match="must omit issue_id"):
+        _ModelPlanningTurnDraft.model_validate(
+            {
+                "action": PlanningTurnAction.PLAN_READY,
+                "plan_proposal_draft": {
+                    "mode": AgentMode.ARC_VOLUME,
+                    "plan_items": (),
+                    "unresolved": [
+                        {
+                            "issue_id": "plan-issue.model-owned",
+                            "summary": "需要核验当前状态",
+                        }
+                    ],
+                    "coverage": 0.0,
+                },
             }
         )
 

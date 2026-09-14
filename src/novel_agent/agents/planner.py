@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -364,6 +365,50 @@ class _ModelPlannerProposalDraft(PlannerProposalDraft):
         return self
 
 
+class _ModelPlanningTurnDraft(PlanningTurnDraft):
+    """Provider-facing turn draft with the host-owned unresolved contract."""
+
+    plan_proposal_draft: _ModelPlannerProposalDraft | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_plan_draft(cls, value: object) -> object:
+        """Keep legacy bare proposals while validating nested output at the boundary."""
+
+        if not isinstance(value, dict):
+            return value
+        if "action" not in value and "mode" in value:
+            value = {
+                "action": PlanningTurnAction.PLAN_READY,
+                "plan_proposal_draft": value,
+            }
+        nested = value.get("plan_proposal_draft")
+        if isinstance(nested, dict):
+            value = {
+                **value,
+                "plan_proposal_draft": _ModelPlannerProposalDraft.model_validate_json(
+                    json.dumps(nested)
+                ),
+            }
+        coerced = dict(value)
+        for key in (
+            "memory_questions",
+            "assumptions",
+            "unresolved",
+            "selected_skill_ids",
+            "used_context_item_ids",
+        ):
+            field = coerced.get(key)
+            if isinstance(field, list):
+                coerced[key] = tuple(field)
+        memory_questions = coerced.get("memory_questions")
+        if isinstance(memory_questions, (list, tuple)) and all(
+            isinstance(question, str) for question in memory_questions
+        ):
+            coerced["memory_questions"] = tuple(dict.fromkeys(memory_questions))
+        return coerced
+
+
 class _DevelopCandidatesPlannerProposalDraft(_ModelPlannerProposalDraft):
     """Expose the trusted bootstrap strategy as an exact required provider schema field."""
 
@@ -679,7 +724,7 @@ class PlannerAgent:
             base_commit=task.base_commit,
             allowed_skill_ids=allowed_skill_ids,
         )
-        execution = await self._runner.execute(prepared, PlanningTurnDraft)
+        execution = await self._runner.execute(prepared, _ModelPlanningTurnDraft)
         draft = execution.output
         if draft.action is PlanningTurnAction.REQUEST_MEMORY:
             output_artifact = self._artifacts.put(
