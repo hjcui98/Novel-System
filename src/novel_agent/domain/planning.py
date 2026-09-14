@@ -530,6 +530,11 @@ class PlanningLoopRequest(DomainModel):
     project_id: ProjectId
     task: PlanningTask
     author_intent_artifacts: tuple[ArtifactRef, ...]
+    # Host-owned revision directives are control inputs for the Planner turn,
+    # not author intent and not Memory evidence.  Keeping this binding
+    # separate prevents a rejected candidate's audit/rebind artifacts from
+    # becoming mandatory author context or inquiry sources.
+    revision_artifact_refs: tuple[ArtifactRef, ...] = ()
     accepted_plan_ref: ArtifactRef | None = None
     accepted_world_ref: ArtifactRef | None = None
     accepted_text_ref: ArtifactRef | None = None
@@ -547,6 +552,8 @@ class PlanningLoopRequest(DomainModel):
     def validate_basis(self) -> PlanningLoopRequest:
         if self.task.project_id != self.project_id:
             raise ValueError("planning task project differs from loop request")
+        if set(self.author_intent_artifacts) & set(self.revision_artifact_refs):
+            raise ValueError("author intent and revision artifacts must be disjoint")
         if len(self.author_intent_artifacts) != len(self.task.source_ids):
             raise ValueError("PlanningTask source ids require exact artifact bindings")
         if self.task.mode is AgentMode.PROJECT_BOOTSTRAP:

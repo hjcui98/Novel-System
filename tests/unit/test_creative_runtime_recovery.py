@@ -444,6 +444,29 @@ def test_creative_successor_ids_bound_max_length_task_identity() -> None:
     assert len(projection.task_id.root) <= 128
 
 
+def test_plan_acceptance_keeps_original_planning_inputs_for_revision_successor() -> None:
+    artifacts = Mock()
+    artifacts.put.return_value = _ref("f")
+    service = _service(artifacts=artifacts)
+    author_ref = _ref("d").model_copy(update={"media_type": "text/plain"})
+    previous = _task(
+        input_artifact_refs=(author_ref,),
+        kind=TaskKind.PLAN_CANDIDATE,
+    )
+    candidate_ref = _ref("e")
+    candidate = CandidateBinding(
+        candidate_id=StableId("candidate.revision-inputs"),
+        kind=CandidateKind.PLAN,
+        artifact_ref=candidate_ref,
+        candidate_hash=candidate_ref.artifact_id.root,
+        basis_commit=COMMIT,
+    )
+
+    acceptance = service._acceptance_task(previous, candidate)
+
+    assert acceptance.input_artifact_refs == (author_ref, candidate_ref)
+
+
 def test_submit_acceptance_rejects_unpromoted_lookahead() -> None:
     service = _service()
     candidate = CandidateBinding(

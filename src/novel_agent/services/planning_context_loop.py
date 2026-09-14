@@ -1622,6 +1622,7 @@ class PlanningContextLoopService:
                                     self._planner_source_payload(
                                         projection.rendered_context,
                                         visible_author_artifacts,
+                                        request.revision_artifact_refs,
                                     ),
                                     tuple(rejected_memory_questions.values()),
                                 ),
@@ -1833,6 +1834,7 @@ class PlanningContextLoopService:
                                     self._planner_source_payload(
                                         projection.rendered_context,
                                         visible_author_artifacts,
+                                        request.revision_artifact_refs,
                                     ),
                                     tuple(unsupported_memory_questions.values()),
                                 ),
@@ -1880,6 +1882,7 @@ class PlanningContextLoopService:
                                                 self._planner_source_payload(
                                                     projection.rendered_context,
                                                     visible_author_artifacts,
+                                                    request.revision_artifact_refs,
                                                 ),
                                                 unsupported_details_for_fallback,
                                             )
@@ -1970,6 +1973,7 @@ class PlanningContextLoopService:
                     planner_source_payload = self._planner_source_payload(
                         projection.rendered_context,
                         visible_author_artifacts,
+                        request.revision_artifact_refs,
                     )
                     if rejected_memory_questions:
                         planner_source_payload = _rejected_memory_reprompt_payload(
@@ -2004,6 +2008,7 @@ class PlanningContextLoopService:
                 planner_source_payload = self._planner_source_payload(
                     projection.rendered_context,
                     visible_author_artifacts,
+                    request.revision_artifact_refs,
                 )
                 if rejected_memory_questions:
                     planner_source_payload = _rejected_memory_reprompt_payload(
@@ -2080,6 +2085,7 @@ class PlanningContextLoopService:
                                 self._planner_source_payload(
                                     projection.rendered_context,
                                     visible_author_artifacts,
+                                    request.revision_artifact_refs,
                                 ),
                                 tuple(turn.memory_questions),
                             ),
@@ -2133,6 +2139,7 @@ class PlanningContextLoopService:
                                         self._planner_source_payload(
                                             projection.rendered_context,
                                             visible_author_artifacts,
+                                            request.revision_artifact_refs,
                                         ),
                                         tuple(turn.memory_questions),
                                     )
@@ -2656,6 +2663,7 @@ class PlanningContextLoopService:
                     self._planner_source_payload(
                         projection.rendered_context,
                         visible_author_artifacts,
+                        request.revision_artifact_refs,
                     )
                     + f"\nREVIEW_REVISION={instruction}\n"
                     "REVISION_SCOPE=只修改 REVIEW 点名条目/字段；其余条目的 payload 必须与 "  # noqa: RUF001
@@ -2888,6 +2896,7 @@ class PlanningContextLoopService:
         self,
         rendered_context: str,
         author_artifacts: tuple[ArtifactRef, ...],
+        revision_artifacts: tuple[ArtifactRef, ...] = (),
     ) -> str:
         """Keep the complete author authority in every Planner model prompt.
 
@@ -2898,12 +2907,20 @@ class PlanningContextLoopService:
         """
 
         author_parts = self._source_parts(author_artifacts)
-        if not author_parts or all(part in rendered_context for part in author_parts):
-            return rendered_context
-        authority = "\n\n".join(author_parts)
-        return (
-            f"{rendered_context}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
-        )
+        payload = rendered_context
+        if author_parts and not all(part in rendered_context for part in author_parts):
+            authority = "\n\n".join(author_parts)
+            payload = (
+                f"{payload}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
+            )
+        revision_parts = self._source_parts(revision_artifacts)
+        if revision_parts:
+            directives = "\n\n".join(revision_parts)
+            payload = (
+                f"{payload}\n\n<CONTROLLED_REVISION_DIRECTIVES>\n{directives}"
+                "\n</CONTROLLED_REVISION_DIRECTIVES>"
+            )
+        return payload
 
     def _source_parts(self, artifacts: tuple[ArtifactRef, ...]) -> tuple[str, ...]:
         parts: list[str] = []

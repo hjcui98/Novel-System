@@ -1656,7 +1656,11 @@ class CreativeRuntimeService:
             basis_snapshot=previous.basis_snapshot,
             policy_hash=previous.policy_hash,
             permission_hash=previous.permission_hash,
-            input_artifact_refs=(candidate.artifact_ref,),
+            # Keep the original planning sources on the acceptance task.  A
+            # reviewed rejection can create a new planning generation from
+            # this task; carrying only the candidate would make the successor
+            # lose the author's authority and leave only a revision directive.
+            input_artifact_refs=(*previous.input_artifact_refs, candidate.artifact_ref),
             candidate_binding_ref=binding_ref,
             dependency_task_ids=(previous.task_id,),
             failure_budget=previous.retry_tranche_size,
@@ -2406,7 +2410,7 @@ class CreativeRuntimeService:
             basis_snapshot=candidate.basis_snapshot,
             policy_hash=waiting.policy_hash,
             permission_hash=waiting.permission_hash,
-            input_artifact_refs=(candidate.artifact_ref,),
+            input_artifact_refs=(*waiting.input_artifact_refs, candidate.artifact_ref),
             candidate_binding_ref=binding_ref,
             dependency_task_ids=(projection.task_id,),
             terminal_artifact_refs=(receipt_ref,),

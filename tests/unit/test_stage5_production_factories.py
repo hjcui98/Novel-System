@@ -631,7 +631,7 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
     assert invocation.request.task.mode is AgentMode.CHAPTER_SET
     assert invocation.request.horizon_start == 21
     assert invocation.request.horizon_end == 25
-    assert invocation.request.author_intent_artifacts == ()
+    assert invocation.request.author_intent_artifacts == (author_ref,)
     assert invocation.world is not None
     assert invocation.text_root is not None
     assert invocation.resume_checkpoint_ref == checkpoint_ref
@@ -699,3 +699,60 @@ def test_production_stage4_factory_story_keeps_author_brief(tmp_path: Path) -> N
     assert invocation.request.horizon_start is None
     assert invocation.request.horizon_end is None
     assert invocation.request.author_intent_artifacts == (author_ref,)
+
+
+def test_production_stage4_factory_separates_revision_lineage_from_author_sources(
+    tmp_path: Path,
+) -> None:
+    artifacts, commits, base, _text = _canonical(tmp_path)
+    author_ref = artifacts.put(b"full author brief", "text/plain", VERSION)
+    candidate_ref = artifacts.put(
+        b"candidate",
+        "application/vnd.novel-agent.plan-proposal+json",
+        VERSION,
+    )
+    review_ref = artifacts.put(
+        b"operator review",
+        "application/vnd.novel-agent.operator-plan-review+json",
+        VERSION,
+    )
+    directive_ref = artifacts.put(
+        b"{\"kind\":\"operator_revision\"}",
+        "application/vnd.novel-agent.operator-revision-directive+json",
+        VERSION,
+    )
+    rebind_ref = artifacts.put(
+        b"rebind evidence",
+        "application/vnd.novel-agent.runtime-rebind-evidence+json",
+        VERSION,
+    )
+    request = PlanningLoopRequest(
+        run_id=RunId("run.production-revision-lineage"),
+        task_id=TaskId("task.production-revision-lineage"),
+        project_id=ProjectId("project.test"),
+        basis_commit=base,
+        basis_snapshot=StableId("snapshot.chapter.20"),
+        input_artifact_refs=(author_ref, candidate_ref, review_ref, directive_ref, rebind_ref),
+        chapter_index=20,
+        plan_level=PlanLevel.STORY,
+    )
+    policy = Stage4InvocationPolicy(
+        budgets=PlanningBudgets(
+            retrieval=RetrievalBudget(max_full_chapter_reads=1),
+            context=ContextBudget(token_budget=8_000),
+        ),
+        configuration_fingerprint=HASH,
+        model_fingerprint=HASH,
+    )
+
+    invocation = ProductionStage4InvocationFactory(
+        commits=commits,
+        artifacts=artifacts,
+        policy=policy,
+    )(request)
+
+    assert invocation.request.author_intent_artifacts == (author_ref,)
+    assert invocation.request.revision_artifact_refs == (directive_ref,)
+    assert invocation.request.task.source_ids == (
+        StableId(f"source.author-intent.{author_ref.artifact_id.root[-24:]}"),
+    )

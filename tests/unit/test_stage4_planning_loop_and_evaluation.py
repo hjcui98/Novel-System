@@ -2300,6 +2300,50 @@ def test_chapter_set_planner_prompt_contains_complete_author_authority(
     assert "<AUTHOR_AUTHORITY_TEXT>" in plan_source_payload
 
 
+def test_revision_directive_reaches_planner_but_not_inquiry_or_memory_sources(
+    tmp_path: Path,
+) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "revision-directive"))
+    author_text = "AUTHOR-REVISION-AUTHORITY"
+    directive_text = "CONTROLLED-REVISION-DIRECTIVE"
+    source = _put(artifacts, author_text)
+    directive = _put(artifacts, directive_text, "application/json")
+    accepted = tuple(_put(artifacts, f"accepted-{index}") for index in range(3))
+    planner = _ModePlanner(artifacts, AgentMode.CHAPTER_SET)
+    service, _unused_planner, _memory = _post_genesis_service(
+        artifacts,
+        planner=planner,
+        reviewer=_ScriptedReviewer(artifacts, [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT]),
+    )
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=cast(
+            tuple[ArtifactRef, ArtifactRef, ArtifactRef],
+            accepted,
+        ),
+    ).model_copy(update={"revision_artifact_refs": (directive,)})
+
+    asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert planner.inquiry_source_artifacts == [(source,)]
+    assert directive_text not in planner.inquiry_source_payloads[0]
+    assert planner.plan_requests
+    plan_source_payload = cast(str, planner.plan_requests[0]["source_payload"])
+    assert directive_text in plan_source_payload
+    assert "<CONTROLLED_REVISION_DIRECTIVES>" in plan_source_payload
+
+
 def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
     service, _planner, _memory = _post_genesis_service(

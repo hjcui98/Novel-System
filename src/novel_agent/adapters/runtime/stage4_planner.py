@@ -66,6 +66,35 @@ from novel_agent.services.planning_context_loop import (
 
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 
+# Runtime task inputs are a lineage envelope, not an assertion that every
+# referenced artifact is author intent.  In particular, an operator rejection
+# carries the original planning sources alongside a candidate, review evidence,
+# and a structured revision directive.  Only the directive is a Planner control
+# input; audit/rebind and prior-loop artifacts must remain out of the model's
+# author source binding.
+_REVISION_DIRECTIVE_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.novel-agent.author-revision-directive+json",
+        "application/vnd.novel-agent.operator-revision-directive+json",
+    }
+)
+_NON_AUTHOR_PLANNING_MEDIA_TYPES = frozenset(
+    {
+        *_REVISION_DIRECTIVE_MEDIA_TYPES,
+        "application/vnd.novel-agent.runtime-rebind-evidence+json",
+        "application/vnd.novel-agent.operator-plan-review+json",
+        "application/vnd.novel-agent.stage5-candidate-binding+json",
+        PLAN_PROPOSAL_MEDIA_TYPE,
+        "application/vnd.novel-agent.planning-inquiry+json",
+        "application/vnd.novel-agent.plan-review+json",
+        "application/vnd.novel-agent.context-package+json",
+        "application/vnd.novel-agent.planner-context-package+json",
+        "application/vnd.novel-agent.planning-loop-event+json",
+        PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE,
+        "application/vnd.novel-agent.stage5-acceptance-receipt+json",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Stage4PlanningInvocation:
@@ -159,7 +188,16 @@ class ProductionStage4InvocationFactory:
         manifest = self._commits.load_manifest(request.basis_commit)
         if manifest.project_id != request.project_id:
             raise ValueError("Stage 4 task and canonical manifest belong to different projects")
-        author_intent = request.input_artifact_refs
+        revision_artifacts = tuple(
+            ref
+            for ref in request.input_artifact_refs
+            if ref.media_type in _REVISION_DIRECTIVE_MEDIA_TYPES
+        )
+        author_intent = tuple(
+            ref
+            for ref in request.input_artifact_refs
+            if ref.media_type not in _NON_AUTHOR_PLANNING_MEDIA_TYPES
+        )
         text = TextRootDocument.model_validate_json(
             self._artifacts.read_verified(manifest.text_root), strict=True
         )
@@ -231,6 +269,7 @@ class ProductionStage4InvocationFactory:
             project_id=request.project_id,
             task=planning_task,
             author_intent_artifacts=author_intent,
+            revision_artifact_refs=revision_artifacts,
             accepted_plan_ref=manifest.plan_root,
             accepted_world_ref=manifest.world_root,
             accepted_text_ref=manifest.text_root,
@@ -343,10 +382,11 @@ class Stage4PlanningLeafAdapter:
             or detailed.snapshot_id != request.basis_snapshot
         ):
             raise ValueError("Stage 4 request factory violated the durable task basis")
-        if request.input_artifact_refs and not set(detailed.author_intent_artifacts).issubset(
-            request.input_artifact_refs
-        ):
+        bound_inputs = set(request.input_artifact_refs)
+        if not set(detailed.author_intent_artifacts).issubset(bound_inputs):
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
+        if not set(detailed.revision_artifact_refs).issubset(bound_inputs):
+            raise ValueError("Stage 4 request introduced an unbound revision artifact")
         if (
             detailed.task.mode in {AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET}
             and request.input_artifact_refs
