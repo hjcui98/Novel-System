@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One candidate-local citation for a cross-item review finding.\n\n``quote`` on :class:`PlanReviewIssue` remains the legacy compact form for a\nliteral shared substring. These rows let differently worded fields be\ncompared without weakening the host's exact field/value verification.",
+  "properties": {
+    "field_path": {
+      "minLength": 1,
+      "title": "Field Path",
+      "type": "string"
+    },
+    "item_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "quote": {
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+    }
+  },
+  "required": [
+    "item_id",
+    "field_path",
+    "quote"
+  ],
+  "title": "PlanReviewCitation",
+  "type": "object"
+}

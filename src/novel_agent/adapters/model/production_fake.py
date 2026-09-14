@@ -147,7 +147,7 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
         prompt = request.prompt
         if title == "PlanningInquiryDraft":
             return self._inquiry(prompt).model_dump_json()
-        if title in {"PlanningTurnDraft", "PlannerProposalDraft"}:
+        if title in {"PlanningTurnDraft", "_ModelPlanningTurnDraft", "PlannerProposalDraft"}:
             turn = PlanningTurnDraft(
                 action=PlanningTurnAction.PLAN_READY,
                 plan_proposal_draft=self._proposal(prompt),

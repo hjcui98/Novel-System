@@ -264,6 +264,33 @@
         "request_id": {
           "$ref": "#/$defs/StableId"
         },
+        "revision_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Revision Artifact Refs",
+          "type": "array"
+        },
+        "revision_parent_proposal_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "revision_review_artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Revision Review Artifact Refs",
+          "type": "array"
+        },
         "run_id": {
           "$ref": "#/$defs/RunId"
         },

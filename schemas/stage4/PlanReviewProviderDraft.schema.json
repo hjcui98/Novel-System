@@ -1,99 +1,5 @@
 {
   "$defs": {
-    "ArtifactId": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "ArtifactId",
-      "type": "string"
-    },
-    "CommitId": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "CommitId",
-      "type": "string"
-    },
-    "EvidenceRef": {
-      "additionalProperties": false,
-      "properties": {
-        "chapter_id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/StableId"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "evidence_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "object_hash": {
-          "$ref": "#/$defs/ArtifactId"
-        },
-        "quote_hash": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/QuoteHash"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "resolved_at_commit": {
-          "$ref": "#/$defs/CommitId"
-        },
-        "root_hash": {
-          "$ref": "#/$defs/ArtifactId"
-        },
-        "scene_id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/StableId"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "span": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextSpanRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "support_status": {
-          "$ref": "#/$defs/EvidenceSupportStatus"
-        }
-      },
-      "required": [
-        "evidence_id",
-        "root_hash",
-        "object_hash",
-        "support_status",
-        "resolved_at_commit"
-      ],
-      "title": "EvidenceRef",
-      "type": "object"
-    },
-    "EvidenceSupportStatus": {
-      "enum": [
-        "current_support",
-        "historical_support",
-        "superseded_support",
-        "orphaned",
-        "contradicted"
-      ],
-      "title": "EvidenceSupportStatus",
-      "type": "string"
-    },
     "PlanReviewCitation": {
       "additionalProperties": false,
       "description": "One candidate-local citation for a cross-item review finding.\n\n``quote`` on :class:`PlanReviewIssue` remains the legacy compact form for a\nliteral shared substring. These rows let differently worded fields be\ncompared without weakening the host's exact field/value verification.",
@@ -120,44 +26,15 @@
       "title": "PlanReviewCitation",
       "type": "object"
     },
-    "PlanReviewIssue": {
-      "additionalProperties": false,
+    "PlanReviewProviderIssue": {
+      "description": "The model-facing portion of a review issue.\n\nStable identities, host observations and write authorization are deliberately\nabsent from this schema.  ``extra=ignore`` keeps old providers that still emit\nthose legacy keys readable while ensuring the response schema no longer asks a\nmodel to fill host-owned fields.",
       "properties": {
-        "actual": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Actual"
-        },
         "affected_item_ids": {
           "default": [],
           "items": {
             "$ref": "#/$defs/StableId"
           },
           "title": "Affected Item Ids",
-          "type": "array"
-        },
-        "authorized_operations": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Authorized Operations",
-          "type": "array"
-        },
-        "authorized_target_item_ids": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/StableId"
-          },
-          "title": "Authorized Target Item Ids",
           "type": "array"
         },
         "blocking": {
@@ -185,27 +62,6 @@
           "default": null,
           "title": "Constraint Id"
         },
-        "evidence_refs": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/EvidenceRef"
-          },
-          "title": "Evidence Refs",
-          "type": "array"
-        },
-        "expected": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Expected"
-        },
         "field_path": {
           "anyOf": [
             {
@@ -218,14 +74,6 @@
           ],
           "default": null,
           "title": "Field Path"
-        },
-        "host_issued": {
-          "default": false,
-          "title": "Host Issued",
-          "type": "boolean"
-        },
-        "issue_id": {
-          "$ref": "#/$defs/StableId"
         },
         "kind": {
           "$ref": "#/$defs/ReviewIssueKind"
@@ -271,25 +119,12 @@
         }
       },
       "required": [
-        "issue_id",
         "kind",
         "summary",
         "blocking"
       ],
-      "title": "PlanReviewIssue",
+      "title": "PlanReviewProviderIssue",
       "type": "object"
-    },
-    "QuoteHash": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "QuoteHash",
-      "type": "string"
-    },
-    "RangeUnit": {
-      "enum": [
-        "unicode_codepoint"
-      ],
-      "title": "RangeUnit",
-      "type": "string"
     },
     "ReviewDecision": {
       "enum": [
@@ -334,54 +169,17 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
-    },
-    "TextSpanRef": {
-      "additionalProperties": false,
-      "properties": {
-        "block_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "end": {
-          "minimum": 0,
-          "title": "End",
-          "type": "integer"
-        },
-        "range_unit": {
-          "$ref": "#/$defs/RangeUnit",
-          "default": "unicode_codepoint"
-        },
-        "start": {
-          "minimum": 0,
-          "title": "Start",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "block_id",
-        "start",
-        "end"
-      ],
-      "title": "TextSpanRef",
-      "type": "object"
     }
   },
-  "additionalProperties": false,
+  "description": "Provider-facing review output, before the host assigns identities/permissions.",
   "properties": {
-    "coverage_evidence": {
-      "default": [],
-      "items": {
-        "type": "string"
-      },
-      "title": "Coverage Evidence",
-      "type": "array"
-    },
     "decision": {
       "$ref": "#/$defs/ReviewDecision"
     },
     "issues": {
       "default": [],
       "items": {
-        "$ref": "#/$defs/PlanReviewIssue"
+        "$ref": "#/$defs/PlanReviewProviderIssue"
       },
       "title": "Issues",
       "type": "array"
@@ -417,20 +215,12 @@
     },
     "target_kind": {
       "$ref": "#/$defs/ReviewTargetKind"
-    },
-    "verification_failures": {
-      "default": [],
-      "items": {
-        "type": "string"
-      },
-      "title": "Verification Failures",
-      "type": "array"
     }
   },
   "required": [
     "target_kind",
     "decision"
   ],
-  "title": "PlanReviewDraft",
+  "title": "PlanReviewProviderDraft",
   "type": "object"
 }
