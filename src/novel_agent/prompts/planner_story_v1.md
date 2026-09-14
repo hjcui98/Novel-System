@@ -8,6 +8,13 @@
   `obligation_kind`（只允许 `foreshadowing`、`promise`、`objective`、`unresolved_conflict`）
   与非空 `summary`/`description`。仅写标题与 `constraints` 的条目**不是**义务声明，
   会被宿主拒绝（`OBLIGATION_DECLARATION_UNREADABLE`），并在 commit 阶段阻断。
+- 若使用 `story.reveal_obligations` 条目承载多条故事义务，必须使用嵌套键
+  `obligation_declarations`，且每个对象都必须完整包含
+  `obligation_kind`、非空 `summary`/`description` 以及适用的
+  `not_before_chapter`；例如
+  `{"kind":"reveal_obligations","payload":{"obligation_declarations":[{"obligation_kind":"foreshadowing","summary":"...","not_before_chapter":350}]}}`。
+  禁止使用 `obligations` 作为该容器键，禁止把 `reveal_obligations` 作为义务 kind，
+  也禁止省略内层 kind；这些形状会被宿主明确拒绝，不能靠标题或锁 ID 代替。
 - 作者已声明的进度锁、揭露锁与时间锁属于**作者约束上下文**，不是本章新增义务：
   不要把它们汇总成一条 `kind=obligation` 的条目。需要长期跟踪时，拆成具体义务并逐条
   给出 kind 与描述；否则不要新建该条目。
