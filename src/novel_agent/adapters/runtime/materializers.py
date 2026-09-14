@@ -29,10 +29,12 @@ from novel_agent.domain.changes import (
     ValidationStatus,
 )
 from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE,
     AcceptedCandidateBinding,
     CandidateBinding,
     CandidateKind,
+    OperatorReviewEvidence,
     RuntimeContinuationEvidence,
 )
 from novel_agent.domain.editorial import ReconciliationResult
@@ -568,7 +570,16 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         # every transitive ref to be repeated in the event would reject valid frozen
         # chains; reading each ref below still fails closed on absence or tampering.
         parent = self._read(proof.parent_proposal_ref, PlanProposal)
-        review = self._read(proof.review_ref, PlanReview)
+        if proof.review_ref.media_type == PLAN_REVIEW_MEDIA_TYPE:
+            review: PlanReview | OperatorReviewEvidence = self._read(
+                proof.review_ref, PlanReview
+            )
+        elif proof.review_ref.media_type == OPERATOR_PLAN_REVIEW_MEDIA_TYPE:
+            review = self._read(proof.review_ref, OperatorReviewEvidence)
+        else:
+            raise CandidateMaterializationError(
+                "Plan composition proof names an unsupported review artifact"
+            )
         if review.target_artifact_ref != proof.parent_proposal_ref:
             raise CandidateMaterializationError(
                 "Plan composition proof names a review of a different candidate"

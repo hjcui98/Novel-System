@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.benchmark import TextRootDocument
 from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     CandidateBinding,
     CandidateKind,
     PlanningLoopRequest,
@@ -78,6 +79,7 @@ _REVISION_DIRECTIVE_MEDIA_TYPES = frozenset(
         "application/vnd.novel-agent.operator-revision-directive+json",
     }
 )
+_REVISION_REVIEW_MEDIA_TYPES = frozenset({OPERATOR_PLAN_REVIEW_MEDIA_TYPE})
 _NON_AUTHOR_PLANNING_MEDIA_TYPES = frozenset(
     {
         *_REVISION_DIRECTIVE_MEDIA_TYPES,
@@ -193,6 +195,18 @@ class ProductionStage4InvocationFactory:
             for ref in request.input_artifact_refs
             if ref.media_type in _REVISION_DIRECTIVE_MEDIA_TYPES
         )
+        revision_parent_refs = tuple(
+            ref for ref in request.input_artifact_refs if ref.media_type == PLAN_PROPOSAL_MEDIA_TYPE
+        )
+        revision_review_refs = tuple(
+            ref
+            for ref in request.input_artifact_refs
+            if ref.media_type in _REVISION_REVIEW_MEDIA_TYPES
+        )
+        if len(revision_parent_refs) > 1:
+            raise ValueError("Stage 4 revision task may bind only one parent Plan proposal")
+        if len(revision_review_refs) > 1:
+            raise ValueError("Stage 4 revision task may bind only one host revision review")
         author_intent = tuple(
             ref
             for ref in request.input_artifact_refs
@@ -270,6 +284,10 @@ class ProductionStage4InvocationFactory:
             task=planning_task,
             author_intent_artifacts=author_intent,
             revision_artifact_refs=revision_artifacts,
+            revision_parent_proposal_ref=(
+                revision_parent_refs[0] if revision_parent_refs else None
+            ),
+            revision_review_artifact_refs=revision_review_refs,
             accepted_plan_ref=manifest.plan_root,
             accepted_world_ref=manifest.world_root,
             accepted_text_ref=manifest.text_root,
@@ -387,6 +405,13 @@ class Stage4PlanningLeafAdapter:
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
         if not set(detailed.revision_artifact_refs).issubset(bound_inputs):
             raise ValueError("Stage 4 request introduced an unbound revision artifact")
+        if (
+            detailed.revision_parent_proposal_ref is not None
+            and detailed.revision_parent_proposal_ref not in bound_inputs
+        ):
+            raise ValueError("Stage 4 request introduced an unbound revision parent")
+        if not set(detailed.revision_review_artifact_refs).issubset(bound_inputs):
+            raise ValueError("Stage 4 request introduced an unbound revision review")
         if (
             detailed.task.mode in {AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET}
             and request.input_artifact_refs

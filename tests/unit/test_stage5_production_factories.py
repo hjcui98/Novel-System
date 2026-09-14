@@ -753,6 +753,8 @@ def test_production_stage4_factory_separates_revision_lineage_from_author_source
 
     assert invocation.request.author_intent_artifacts == (author_ref,)
     assert invocation.request.revision_artifact_refs == (directive_ref,)
+    assert invocation.request.revision_parent_proposal_ref == candidate_ref
+    assert invocation.request.revision_review_artifact_refs == (review_ref,)
     assert invocation.request.task.source_ids == (
         StableId(f"source.author-intent.{author_ref.artifact_id.root[-24:]}"),
     )

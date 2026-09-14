@@ -13,6 +13,10 @@ from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
 from novel_agent.agents.runner import AgentExecutionError
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
+from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+    OperatorReviewEvidence,
+)
 from novel_agent.domain.ids import SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
     FacetClosureStatus,
@@ -23,10 +27,12 @@ from novel_agent.domain.memory import (
 )
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.domain.plan_composition import (
+    PlanCompositionError,
     blocking_issue_identity,
     build_composition_proof,
     compose_scoped_revision,
     issue_identity_seed,
+    operator_revision_scope,
     out_of_scope_items,
     progress_against,
     revision_scope,
@@ -853,6 +859,48 @@ class PlanningContextLoopService:
         event_refs: list[ArtifactRef],
     ) -> PlanningLoopResult:
         visible_author_artifacts = self._visible_author_intent_artifacts(request)
+        revision_parent: PlanProposal | None = None
+        revision_review: OperatorReviewEvidence | None = None
+        revision_parent_ref = request.revision_parent_proposal_ref
+        revision_review_ref = next(iter(request.revision_review_artifact_refs), None)
+        if revision_parent_ref is not None:
+            if revision_parent_ref.media_type != "application/vnd.novel-agent.plan-proposal+json":
+                return self._terminal(
+                    request,
+                    PlanningLoopTerminal.REVIEW_REQUIRED,
+                    event_refs,
+                    diagnostics=("REVISION_PARENT_WRONG_MEDIA_TYPE",),
+                )
+            if (
+                revision_review_ref is None
+                or revision_review_ref.media_type != OPERATOR_PLAN_REVIEW_MEDIA_TYPE
+            ):
+                return self._terminal(
+                    request,
+                    PlanningLoopTerminal.REVIEW_REQUIRED,
+                    event_refs,
+                    diagnostics=("REVISION_REVIEW_MISSING_OR_WRONG_MEDIA_TYPE",),
+                )
+            revision_parent = self._read(revision_parent_ref, PlanProposal)
+            revision_review = self._read(revision_review_ref, OperatorReviewEvidence)
+            if (
+                revision_parent.project_id != request.project_id
+                or revision_parent.mode is not request.task.mode
+                or revision_parent.base_commit != request.task.base_commit
+            ):
+                return self._terminal(
+                    request,
+                    PlanningLoopTerminal.BASIS_CHANGED,
+                    event_refs,
+                    diagnostics=("REVISION_PARENT_BASIS_MISMATCH",),
+                )
+            if revision_review.target_artifact_ref != revision_parent_ref:
+                return self._terminal(
+                    request,
+                    PlanningLoopTerminal.REVIEW_REQUIRED,
+                    event_refs,
+                    diagnostics=("REVISION_REVIEW_TARGET_MISMATCH",),
+                )
         if (
             request.task.mode in {AgentMode.STORY, AgentMode.ARC_VOLUME, AgentMode.CHAPTER_SET}
             and request.task.source_ids
@@ -865,6 +913,37 @@ class PlanningContextLoopService:
                 diagnostics=("AUTHOR_AUTHORITY_NOT_VISIBLE",),
             )
         source_payload = self._source_payload(visible_author_artifacts)
+        revision_parent_id = None if revision_parent is None else revision_parent.proposal_id
+        active_revision_artifact_refs = request.revision_artifact_refs
+        active_revision_review_artifact_refs = request.revision_review_artifact_refs
+        active_revision_parent_ref = revision_parent_ref
+
+        def build_planner_source_payload(rendered_context: str) -> str:
+            return self._planner_source_payload(
+                rendered_context,
+                visible_author_artifacts,
+                active_revision_artifact_refs,
+                revision_review_artifacts=active_revision_review_artifact_refs,
+                revision_parent=revision_parent,
+            )
+
+        def planner_trusted_context_artifacts(
+            *refs: ArtifactRef,
+        ) -> tuple[ArtifactRef, ...]:
+            return tuple(
+                dict.fromkeys(
+                    (
+                        *refs,
+                        *active_revision_artifact_refs,
+                        *active_revision_review_artifact_refs,
+                        *(
+                            (active_revision_parent_ref,)
+                            if active_revision_parent_ref is not None
+                            else ()
+                        ),
+                    )
+                )
+            )
         if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
             if world is not None or text_root is not None:
                 return self._terminal(
@@ -1619,19 +1698,16 @@ class PlanningContextLoopService:
                                 version=self._schema_version,
                                 task=request.task,
                                 source_payload=_rejected_memory_reprompt_payload(
-                                    self._planner_source_payload(
-                                        projection.rendered_context,
-                                        visible_author_artifacts,
-                                        request.revision_artifact_refs,
-                                    ),
+                                    build_planner_source_payload(projection.rendered_context),
                                     tuple(rejected_memory_questions.values()),
                                 ),
                                 source_artifacts=visible_author_artifacts,
-                                trusted_context_artifacts=(
+                                trusted_context_artifacts=planner_trusted_context_artifacts(
                                     planner_context_ref,
                                     projection.view_ref,
                                     *planner_memory_context_refs,
                                 ),
+                                parent_proposal_id=revision_parent_id,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -1831,19 +1907,16 @@ class PlanningContextLoopService:
                                 version=self._schema_version,
                                 task=request.task,
                                 source_payload=_unsupported_memory_reprompt_payload(
-                                    self._planner_source_payload(
-                                        projection.rendered_context,
-                                        visible_author_artifacts,
-                                        request.revision_artifact_refs,
-                                    ),
+                                    build_planner_source_payload(projection.rendered_context),
                                     tuple(unsupported_memory_questions.values()),
                                 ),
                                 source_artifacts=visible_author_artifacts,
-                                trusted_context_artifacts=(
+                                trusted_context_artifacts=planner_trusted_context_artifacts(
                                     planner_context_ref,
                                     projection.view_ref,
                                     *planner_memory_context_refs,
                                 ),
+                                parent_proposal_id=revision_parent_id,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -1879,10 +1952,8 @@ class PlanningContextLoopService:
                                         task=request.task,
                                         source_payload=(
                                             _unsupported_memory_reprompt_payload(
-                                                self._planner_source_payload(
-                                                    projection.rendered_context,
-                                                    visible_author_artifacts,
-                                                    request.revision_artifact_refs,
+                                                build_planner_source_payload(
+                                                    projection.rendered_context
                                                 ),
                                                 unsupported_details_for_fallback,
                                             )
@@ -1892,11 +1963,12 @@ class PlanningContextLoopService:
                                             "markers; do not issue another REQUEST_MEMORY action."
                                         ),
                                         source_artifacts=visible_author_artifacts,
-                                        trusted_context_artifacts=(
+                                        trusted_context_artifacts=planner_trusted_context_artifacts(
                                             planner_context_ref,
                                             projection.view_ref,
                                             *planner_memory_context_refs,
                                         ),
+                                        parent_proposal_id=revision_parent_id,
                                         reviewed_inquiry_ref=inquiry_ref,
                                         memory_need_ids=planner_context.need_ids,
                                         evidence_refs=planner_context.evidence_refs,
@@ -1970,10 +2042,8 @@ class PlanningContextLoopService:
                             break
                     # Slice yield is a resume boundary, not a post-memory abort of plan_turn.
                 if run_turn is None:
-                    planner_source_payload = self._planner_source_payload(
-                        projection.rendered_context,
-                        visible_author_artifacts,
-                        request.revision_artifact_refs,
+                    planner_source_payload = build_planner_source_payload(
+                        projection.rendered_context
                     )
                     if rejected_memory_questions:
                         planner_source_payload = _rejected_memory_reprompt_payload(
@@ -1992,12 +2062,19 @@ class PlanningContextLoopService:
                         task=request.task,
                         source_payload=planner_source_payload,
                         source_artifacts=visible_author_artifacts,
-                        trusted_context_artifacts=(planner_context_ref, projection.view_ref),
+                        trusted_context_artifacts=planner_trusted_context_artifacts(
+                            planner_context_ref, projection.view_ref
+                        ),
                         reviewed_inquiry_ref=inquiry_ref,
                         memory_need_ids=planner_context.need_ids,
                         evidence_refs=planner_context.evidence_refs,
                         graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
-                        request=model_request("plan", request.task.mode, 1),
+                        parent_proposal_id=revision_parent_id,
+                        request=model_request(
+                            "plan_revision" if revision_parent is not None else "plan",
+                            request.task.mode,
+                            1,
+                        ),
                         allowed_skill_ids=planner_skill_allowlist(
                             include_alternative=(
                                 request.task.mode is AgentMode.REPLAN or plan_revisions > 0
@@ -2005,11 +2082,7 @@ class PlanningContextLoopService:
                         ),
                     )
                     break
-                planner_source_payload = self._planner_source_payload(
-                    projection.rendered_context,
-                    visible_author_artifacts,
-                    request.revision_artifact_refs,
-                )
+                planner_source_payload = build_planner_source_payload(projection.rendered_context)
                 if rejected_memory_questions:
                     planner_source_payload = _rejected_memory_reprompt_payload(
                         planner_source_payload,
@@ -2027,11 +2100,12 @@ class PlanningContextLoopService:
                     task=request.task,
                     source_payload=planner_source_payload,
                     source_artifacts=visible_author_artifacts,
-                    trusted_context_artifacts=(
+                    trusted_context_artifacts=planner_trusted_context_artifacts(
                         planner_context_ref,
                         projection.view_ref,
                         *planner_memory_context_refs,
                     ),
+                    parent_proposal_id=revision_parent_id,
                     reviewed_inquiry_ref=inquiry_ref,
                     memory_need_ids=planner_context.need_ids,
                     evidence_refs=planner_context.evidence_refs,
@@ -2082,19 +2156,16 @@ class PlanningContextLoopService:
                             version=self._schema_version,
                             task=request.task,
                             source_payload=_supported_memory_reprompt_payload(
-                                self._planner_source_payload(
-                                    projection.rendered_context,
-                                    visible_author_artifacts,
-                                    request.revision_artifact_refs,
-                                ),
+                                build_planner_source_payload(projection.rendered_context),
                                 tuple(turn.memory_questions),
                             ),
                             source_artifacts=visible_author_artifacts,
-                            trusted_context_artifacts=(
+                            trusted_context_artifacts=planner_trusted_context_artifacts(
                                 planner_context_ref,
                                 projection.view_ref,
                                 *planner_memory_context_refs,
                             ),
+                            parent_proposal_id=revision_parent_id,
                             reviewed_inquiry_ref=inquiry_ref,
                             memory_need_ids=planner_context.need_ids,
                             evidence_refs=planner_context.evidence_refs,
@@ -2136,11 +2207,7 @@ class PlanningContextLoopService:
                                 task=request.task,
                                 source_payload=(
                                     _supported_memory_reprompt_payload(
-                                        self._planner_source_payload(
-                                            projection.rendered_context,
-                                            visible_author_artifacts,
-                                            request.revision_artifact_refs,
-                                        ),
+                                        build_planner_source_payload(projection.rendered_context),
                                         tuple(turn.memory_questions),
                                     )
                                     + "\nPLANNER_MEMORY_FALLBACK=The requested facts are already "
@@ -2148,11 +2215,12 @@ class PlanningContextLoopService:
                                     "REQUEST_MEMORY action."
                                 ),
                                 source_artifacts=visible_author_artifacts,
-                                trusted_context_artifacts=(
+                                trusted_context_artifacts=planner_trusted_context_artifacts(
                                     planner_context_ref,
                                     projection.view_ref,
                                     *planner_memory_context_refs,
                                 ),
+                                parent_proposal_id=revision_parent_id,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -2182,6 +2250,101 @@ class PlanningContextLoopService:
                 self._schema_version,
             )
             planner_execution_lineage_refs = (proposal_ref, execution_ref)
+            if (
+                revision_parent is not None
+                and revision_parent_ref is not None
+                and revision_review is not None
+                and revision_review_ref is not None
+            ):
+                scope = operator_revision_scope(revision_review)
+                try:
+                    composed = compose_scoped_revision(revision_parent, proposal, scope)
+                except PlanCompositionError as error:
+                    event_refs.append(
+                        self._event(
+                            request,
+                            PlanningLoopPhase.PLAN_REVIEWED,
+                            "plan.revision_scope_rejected",
+                            (
+                                revision_parent_ref,
+                                proposal_ref,
+                                revision_review_ref,
+                                execution_ref,
+                            ),
+                        )
+                    )
+                    return self._terminal(
+                        request,
+                        PlanningLoopTerminal.REVIEW_REQUIRED,
+                        event_refs,
+                        inquiry_ref=inquiry_ref,
+                        inquiry_review_ref=inquiry_review_ref,
+                        memory_context_ref=memory_context_ref,
+                        planner_context_ref=planner_context_ref,
+                        proposal=proposal,
+                        diagnostics=("REVISION_SCOPE_REJECTED", str(error)[:240]),
+                    )
+                raw_proposal = proposal
+                raw_proposal_ref = proposal_ref
+                raw_execution_ref = execution_ref
+                out_of_scope = out_of_scope_items(revision_parent, raw_proposal, scope)
+                proposal = composed
+                proposal_ref = self._persist_proposal(proposal)
+                proof = build_composition_proof(
+                    parent_ref=revision_parent_ref,
+                    raw_execution_ref=raw_execution_ref,
+                    review_ref=revision_review_ref,
+                    scope=scope,
+                    composed=proposal,
+                    out_of_scope=out_of_scope,
+                )
+                proof_ref = self._artifacts.put(
+                    canonical_json_bytes(proof.model_dump(mode="json")),
+                    "application/vnd.novel-agent.plan-composition-proof+json",
+                    self._schema_version,
+                )
+                execution_ref = self._artifacts.put(
+                    canonical_json_bytes(
+                        result.model_copy(
+                            update={
+                                "plan_proposal": proposal,
+                                "composition_proof": proof_ref,
+                                "raw_plan_proposal": raw_proposal,
+                            }
+                        ).model_dump(mode="json")
+                    ),
+                    "application/vnd.novel-agent.planner-execution-result+json",
+                    self._schema_version,
+                )
+                planner_execution_lineage_refs = (
+                    revision_parent_ref,
+                    raw_proposal_ref,
+                    proposal_ref,
+                    revision_review_ref,
+                    raw_execution_ref,
+                    proof_ref,
+                    execution_ref,
+                )
+                if self._same_proposal_content(revision_parent, proposal):
+                    return self._terminal(
+                        request,
+                        PlanningLoopTerminal.REVIEW_REVISION_REQUIRED,
+                        event_refs,
+                        inquiry_ref=inquiry_ref,
+                        inquiry_review_ref=inquiry_review_ref,
+                        memory_context_ref=memory_context_ref,
+                        planner_context_ref=planner_context_ref,
+                        proposal=proposal,
+                        diagnostics=("PLAN_REVISION_NO_PROGRESS",),
+                    )
+                # The host review has been consumed into this composed parent.  Later
+                # model Reviewer revisions must use their own review scope, not repeat
+                # the operator directive as a competing prompt.
+                revision_parent = None
+                revision_parent_id = None
+                active_revision_artifact_refs = ()
+                active_revision_review_artifact_refs = ()
+                active_revision_parent_ref = None
             # First review of a proposal authored this invocation is in-flight work.
             plan_review, plan_review_ref, _call = await self._reviewer.review(
                 version=self._schema_version,
@@ -2660,11 +2823,7 @@ class PlanningContextLoopService:
                 version=self._schema_version,
                 task=request.task,
                 source_payload=(
-                    self._planner_source_payload(
-                        projection.rendered_context,
-                        visible_author_artifacts,
-                        request.revision_artifact_refs,
-                    )
+                    build_planner_source_payload(projection.rendered_context)
                     + f"\nREVIEW_REVISION={instruction}\n"
                     "REVISION_SCOPE=只修改 REVIEW 点名条目/字段；其余条目的 payload 必须与 "  # noqa: RUF001
                     "PARENT_PROPOSAL 逐字一致，不得重写整份计划。\n"  # noqa: RUF001
@@ -2673,7 +2832,7 @@ class PlanningContextLoopService:
                     f"PARENT_PROPOSAL={parent_proposal.model_dump_json()}"
                 ),
                 source_artifacts=visible_author_artifacts,
-                trusted_context_artifacts=(
+                trusted_context_artifacts=planner_trusted_context_artifacts(
                     planner_context_ref,
                     projection.view_ref,
                     plan_review_ref,
@@ -2897,6 +3056,9 @@ class PlanningContextLoopService:
         rendered_context: str,
         author_artifacts: tuple[ArtifactRef, ...],
         revision_artifacts: tuple[ArtifactRef, ...] = (),
+        *,
+        revision_review_artifacts: tuple[ArtifactRef, ...] = (),
+        revision_parent: PlanProposal | None = None,
     ) -> str:
         """Keep the complete author authority in every Planner model prompt.
 
@@ -2920,7 +3082,46 @@ class PlanningContextLoopService:
                 f"{payload}\n\n<CONTROLLED_REVISION_DIRECTIVES>\n{directives}"
                 "\n</CONTROLLED_REVISION_DIRECTIVES>"
             )
+        review_parts = self._source_parts(revision_review_artifacts)
+        if review_parts:
+            payload = (
+                f"{payload}\n\n<HOST_REVISION_REVIEW authority=\"control\">\n"
+                "宿主审查工件只定义本次修订边界；它不是作者事实、Memory 证据或模型 Reviewer "  # noqa: RUF001
+                "结论。严格按其中的稳定 unresolved issue_id 生成 MODIFY，禁止为同一问题生成新的 "  # noqa: RUF001
+                "ADD 身份；最终候选仍会接受独立 Reviewer。\n"  # noqa: RUF001
+                + "\n\n".join(review_parts)
+                + "\n</HOST_REVISION_REVIEW>"
+            )
+        if revision_parent is not None:
+            payload += self._revision_parent_payload(revision_parent)
         return payload
+
+    @staticmethod
+    def _revision_parent_payload(parent: PlanProposal) -> str:
+        """Expose only stable revision identities, not a second author source."""
+
+        unresolved = tuple(
+            {
+                "issue_id": issue.issue_id.root,
+                "operation": issue.operation.value,
+                "kind": issue.kind.value,
+                "summary": issue.summary,
+                "affected_chapters": issue.affected_chapters,
+                "blocking": issue.blocking,
+            }
+            for issue in parent.unresolved
+        )
+        return (
+            "\n\n<REVISION_PARENT_IDENTITY authority=\"control\">\n"
+            f"parent_proposal_id={parent.proposal_id.root}\n"
+            "以下是宿主组合的父候选 unresolved 身份表，不是可自由改写的作者输入。"  # noqa: RUF001
+            "模型输出不得填写 issue_id（该字段由宿主生成）；需要修复的既有 issue 必须"  # noqa: RUF001
+            "输出 operation=MODIFY，并把 parent_issue_id 原样填写为表中的既有 issue_id；"  # noqa: RUF001
+            "不得把既有 issue 改写成 ADD 或另造同义 ID。"
+            "父候选中未被宿主点名的条目由宿主按原字节恢复，模型可以省略它们。\n"  # noqa: RUF001
+            f"UNRESOLVED_IDENTITIES={unresolved}\n"
+            "</REVISION_PARENT_IDENTITY>"
+        )
 
     def _source_parts(self, artifacts: tuple[ArtifactRef, ...]) -> tuple[str, ...]:
         parts: list[str] = []

@@ -535,6 +535,14 @@ class PlanningLoopRequest(DomainModel):
     # separate prevents a rejected candidate's audit/rebind artifacts from
     # becoming mandatory author context or inquiry sources.
     revision_artifact_refs: tuple[ArtifactRef, ...] = ()
+    # A rejected candidate is the immutable parent of a host-scoped revision.  It
+    # is never author intent; the loop reads it only to restore unmentioned bytes
+    # and to validate stable unresolved identities.
+    revision_parent_proposal_ref: ArtifactRef | None = None
+    # These are host/operator findings used to derive the initial write scope.  They
+    # stay separate from the model Reviewer artifacts: the final candidate must still
+    # receive an independent Reviewer pass.
+    revision_review_artifact_refs: tuple[ArtifactRef, ...] = ()
     accepted_plan_ref: ArtifactRef | None = None
     accepted_world_ref: ArtifactRef | None = None
     accepted_text_ref: ArtifactRef | None = None
@@ -554,6 +562,17 @@ class PlanningLoopRequest(DomainModel):
             raise ValueError("planning task project differs from loop request")
         if set(self.author_intent_artifacts) & set(self.revision_artifact_refs):
             raise ValueError("author intent and revision artifacts must be disjoint")
+        control_refs = set(self.revision_artifact_refs) | set(self.revision_review_artifact_refs)
+        if self.revision_parent_proposal_ref is not None:
+            control_refs.add(self.revision_parent_proposal_ref)
+        if set(self.author_intent_artifacts) & control_refs:
+            raise ValueError("author intent and revision control artifacts must be disjoint")
+        if len(control_refs) != (
+            len(self.revision_artifact_refs)
+            + len(self.revision_review_artifact_refs)
+            + (1 if self.revision_parent_proposal_ref is not None else 0)
+        ):
+            raise ValueError("revision control artifacts must be unique")
         if len(self.author_intent_artifacts) != len(self.task.source_ids):
             raise ValueError("PlanningTask source ids require exact artifact bindings")
         if self.task.mode is AgentMode.PROJECT_BOOTSTRAP:

@@ -29,6 +29,7 @@ from novel_agent.adapters.runtime.materializers import (
     PlanCandidateMaterializer,
 )
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.creative_runtime import OperatorReviewEvidence, OperatorReviewFinding
 from novel_agent.domain.ids import (
     ArtifactId,
     CommitId,
@@ -48,6 +49,7 @@ from novel_agent.domain.plan_composition import (
     build_composition_proof,
     compose_scoped_revision,
     issue_identity_seed,
+    operator_revision_scope,
     out_of_scope_items,
     progress_against,
     proposal_digest,
@@ -240,6 +242,103 @@ def test_an_advisory_grants_no_write_permission() -> None:
 
     assert scope.targets == ()
     assert compose_scoped_revision(parent, revised, scope) == parent
+
+
+def test_operator_review_is_a_direct_scope_source_without_a_model_receipt() -> None:
+    issue_id = StableId("plan-issue.draft.operator.0")
+    parent = _proposal(
+        (_item("vol-1", goal="父"),),
+        unresolved=(
+            PlanUnresolvedIssue(
+                issue_id=issue_id,
+                summary="待补范围",
+                affected_chapters=(1, 800),
+            ),
+        ),
+        unresolved_operations=(
+            PlanUnresolvedOperationRecord(
+                operation=PlanUnresolvedOperation.ADD,
+                issue_id=issue_id,
+                summary="待补范围",
+                affected_chapters=(1, 800),
+            ),
+        ),
+    )
+    revised = parent.model_copy(
+        update={
+            "proposal_id": StableId("plan-proposal.n3.operator-revised"),
+            "unresolved": (
+                PlanUnresolvedIssue(
+                    issue_id=issue_id,
+                    operation=PlanUnresolvedOperation.MODIFY,
+                    parent_issue_id=issue_id,
+                    summary="已补范围",
+                    affected_chapters=(350, 500),
+                ),
+            ),
+            "unresolved_operations": (
+                PlanUnresolvedOperationRecord(
+                    operation=PlanUnresolvedOperation.MODIFY,
+                    issue_id=issue_id,
+                    parent_issue_id=issue_id,
+                    summary="已补范围",
+                    affected_chapters=(350, 500),
+                ),
+            ),
+        }
+    )
+    parent_ref = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "3" * 64),
+        byte_length=1,
+        media_type=PLAN_PROPOSAL_MEDIA_TYPE,
+        schema_version=VERSION,
+    )
+    operator_review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.n3"),
+        target_artifact_ref=parent_ref,
+        reviewer_id="reviewer.codex",
+        reason="范围字段缺失",
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-issue.n3"),
+                kind="unresolved_scope_missing",
+                summary="unresolved 必须声明范围",
+                affected_item_ids=(issue_id,),
+                field_path="affected_chapters",
+                actual="[]",
+                expected="350-500",
+            ),
+        ),
+    )
+
+    scope = operator_revision_scope(operator_review)
+    assert scope.advisory_ids == (issue_id,)
+    composed = compose_scoped_revision(parent, revised, scope)
+    assert composed.unresolved[0].affected_chapters == (350, 500)
+
+    proof = build_composition_proof(
+        parent_ref=parent_ref,
+        raw_execution_ref=parent_ref.model_copy(
+            update={"media_type": PLANNER_EXECUTION_MEDIA_TYPE}
+        ),
+        review_ref=ArtifactRef(
+            artifact_id=ArtifactId("sha256:" + "4" * 64),
+            byte_length=1,
+            media_type="application/vnd.novel-agent.operator-plan-review+json",
+            schema_version=VERSION,
+        ),
+        scope=scope,
+        composed=composed,
+        out_of_scope=(),
+    )
+    ok, reason = verify_composition(
+        proof,
+        parent=parent,
+        revised=revised,
+        review=operator_review,
+        composed=composed,
+    )
+    assert ok, reason
 
 
 def test_a_review_with_no_finding_cannot_rewrite_the_plan() -> None:

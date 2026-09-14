@@ -23,6 +23,7 @@ from pydantic import Field, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
+from novel_agent.domain.creative_runtime import OperatorReviewEvidence
 from novel_agent.domain.ids import StableId
 from novel_agent.domain.planning import PlanReview, PlanReviewIssue
 from novel_agent.domain.stage2 import (
@@ -252,6 +253,58 @@ def revision_scope(review: PlanReview) -> PlanRevisionScope:
         advisory_ids=tuple(dict.fromkeys(advisory_ids)),
         advisory_targets=tuple(advisory_targets),
     )
+
+
+def operator_revision_scope(review: OperatorReviewEvidence) -> PlanRevisionScope:
+    """Derive a write boundary from an immutable host/operator review.
+
+    Operator findings already are host observations, so they do not need (and must
+    not be converted into) a model ``PlanReview`` receipt.  Their affected ids are
+    the host-authorized targets; the comparison/target split is enforced at the
+    operator-review creation boundary and the parent/composition checks below still
+    verify that every target is a real parent identity.
+    """
+
+    targets: list[PlanRevisionTarget] = []
+    advisory_targets: list[PlanRevisionTarget] = []
+    finding_ids: list[StableId] = []
+    for finding in review.issues:
+        if not finding.blocking or not finding.affected_item_ids:
+            continue
+        finding_ids.append(finding.issue_id)
+        fields = () if not finding.field_path else (_top_level_key(finding.field_path),)
+        for item_id in finding.affected_item_ids:
+            target = PlanRevisionTarget(
+                item_id=item_id,
+                operations=(PlanRevisionOperation.MODIFY,),
+                field_paths=fields,
+            )
+            destination = (
+                advisory_targets if item_id.root.startswith(_ADVISORY_ID_PREFIX) else targets
+            )
+            existing = next(
+                (current for current in destination if current.item_id == item_id), None
+            )
+            if existing is None:
+                destination.append(target)
+            else:
+                destination[destination.index(existing)] = existing.model_copy(
+                    update={
+                        "field_paths": tuple(dict.fromkeys((*existing.field_paths, *fields)))
+                    }
+                )
+    return PlanRevisionScope(
+        targets=tuple(targets),
+        finding_ids=tuple(dict.fromkeys(finding_ids)),
+        advisory_ids=tuple(target.item_id for target in advisory_targets),
+        advisory_targets=tuple(advisory_targets),
+    )
+
+
+def _scope_for_review(review: PlanReview | OperatorReviewEvidence) -> PlanRevisionScope:
+    if isinstance(review, OperatorReviewEvidence):
+        return operator_revision_scope(review)
+    return revision_scope(review)
 
 
 def _issue_field_paths(issue: PlanReviewIssue) -> tuple[str, ...]:
@@ -814,7 +867,7 @@ def verify_composition(
     *,
     parent: PlanProposal,
     revised: PlanProposal,
-    review: PlanReview,
+    review: PlanReview | OperatorReviewEvidence,
     composed: PlanProposal,
 ) -> tuple[bool, str]:
     """Re-derive the composed candidate and compare it with the one presented.
@@ -826,7 +879,7 @@ def verify_composition(
 
     if proof.rule_version != COMPOSITION_RULE_VERSION:
         return False, f"unsupported composition rule {proof.rule_version!r}"
-    derived_scope = revision_scope(review)
+    derived_scope = _scope_for_review(review)
     if derived_scope != proof.scope:
         return False, "composition scope does not match the review's verified findings"
     recomposed = compose_scoped_revision(parent, revised, derived_scope)
