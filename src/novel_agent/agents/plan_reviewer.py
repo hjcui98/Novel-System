@@ -1010,6 +1010,9 @@ def _proposal_chapter_window(raw_items: object) -> tuple[int, int] | None:
                 value = payload.get(key)
                 if type(value) is int and value >= 1:
                     chapters.append(value)
+            chapter_range = _chapter_window_value(payload.get("chapter_range"))
+            if chapter_range is not None:
+                chapters.extend(chapter_range)
     if not chapters:
         return None
     return min(chapters), max(chapters)
@@ -1026,6 +1029,98 @@ def _summary_chapter_window(summary: str) -> tuple[int, int] | None:
     if not numbers:
         return None
     return min(numbers), max(numbers)
+
+
+def _chapter_window_value(value: object) -> tuple[int, int] | None:
+    """Read a candidate's explicit window as review evidence, never as issue scope."""
+
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*(\d{1,4})\s*[-~\uff5e至到]\s*(\d{1,4})\s*", value)
+        if match is not None:
+            start, end = int(match.group(1)), int(match.group(2))
+            if start >= 1 and end >= start:
+                return start, end
+        return None
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(type(item) is int and item >= 1 for item in value)
+    ):
+        values = tuple(value)
+        return min(values), max(values)
+    if isinstance(value, Mapping):
+        start = value.get("chapter_start")
+        end = value.get("chapter_end")
+        if type(start) is int and type(end) is int and start >= 1 and end >= start:
+            return start, end
+    return None
+
+
+def _source_handles(value: object) -> frozenset[str]:
+    """Extract stable source handles used to associate an unresolved item."""
+
+    if not isinstance(value, (list, tuple)):
+        return frozenset()
+    handles: set[str] = set()
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            handles.add(item.strip())
+        elif isinstance(item, Mapping):
+            artifact_id = item.get("artifact_id")
+            if isinstance(artifact_id, str) and artifact_id.strip():
+                handles.add(artifact_id.strip())
+    return frozenset(handles)
+
+
+def _unresolved_scope_hint(issue: PlanUnresolvedIssue, raw_items: object) -> tuple[int, int] | None:
+    """Find one source-bound item window that explains an empty issue scope.
+
+    The returned span is only a host finding's expected-condition evidence.  It is
+    deliberately not copied into ``affected_chapters``: a model or a reviewer must
+    still provide the structured chapter set before the issue becomes executable.
+    """
+
+    if not isinstance(raw_items, list):
+        return None
+    issue_sources = frozenset(source.root for source in issue.source_ids) | frozenset(
+        ref.artifact_id.root for ref in issue.source_artifact_refs
+    )
+    issue_text = issue.summary.strip()
+    matches: set[tuple[int, int]] = set()
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            continue
+        item_payload = raw.get("payload")
+        if not isinstance(item_payload, Mapping):
+            item_payload = raw
+        source_values = frozenset()
+        for key in ("source_ids", "source_references", "source_artifact_refs"):
+            source_values |= _source_handles(item_payload.get(key))
+        source_match = bool(issue_sources & source_values)
+        text_match = any(
+            isinstance(item_payload.get(key), str)
+            and issue_text
+            and issue_text in item_payload[key]
+            for key in ("title", "description", "summary")
+        )
+        if not source_match and not text_match:
+            continue
+        for key in (
+            "affected_chapters",
+            "chapter_range",
+            "chapter_start",
+            "target_chapter_start",
+            "chapter_end",
+            "target_chapter_end",
+        ):
+            value = item_payload.get(key)
+            if key in {"chapter_start", "target_chapter_start"}:
+                end_key = "chapter_end" if key == "chapter_start" else "target_chapter_end"
+                value = {"chapter_start": value, "chapter_end": item_payload.get(end_key)}
+            span = _chapter_window_value(value)
+            if span is not None:
+                matches.add(span)
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
@@ -1125,15 +1220,22 @@ def _unresolved_host_issues(payload: dict[str, Any]) -> list[PlanReviewIssue]:
             continue
         if issue.affected_chapters:
             continue
-        questioned = _summary_chapter_window(issue.summary)
+        summary_window = _summary_chapter_window(issue.summary)
+        questioned = summary_window or _unresolved_scope_hint(issue, payload.get("items"))
         if questioned is None:
             continue
+        source_hint = (
+            "the related candidate item questions chapters"
+            if summary_window is None
+            else "this advisory questions chapters"
+        )
         issues.append(
             _host_issue(
                 ReviewIssueKind.UNRESOLVED_SCOPE_MISSING,
-                "UNRESOLVED_SCOPE_MISSING: this advisory questions chapters "
-                f"{questioned[0]}-{questioned[1]} but declares no affected_chapters, so the "
-                "uncertainty cannot be checked at the affected chapter",
+                "UNRESOLVED_SCOPE_MISSING: "
+                f"{source_hint} {questioned[0]}-{questioned[1]} but declares no "
+                "affected_chapters, so the uncertainty cannot be checked at the affected "
+                "chapter",
                 issue.issue_id.root,
                 blocking=True,
                 field_path="unresolved.affected_chapters",

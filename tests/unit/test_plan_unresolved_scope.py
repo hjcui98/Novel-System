@@ -128,6 +128,55 @@ def test_advisory_without_any_chapter_question_needs_no_scope() -> None:
     assert not any(issue.kind.value == "unresolved_scope_missing" for issue in review.issues)
 
 
+def test_scope_missing_is_detected_from_related_candidate_item_window() -> None:
+    """A source-bound unresolved item cannot hide its window in an ordinary payload."""
+
+    source_id = "planner-context.unit.anchor.state.bootstrap.27"
+    payload = json.dumps(
+        {
+            "items": [
+                {
+                    "item_id": "plan.story.unresolved.2",
+                    "kind": "unresolved_need",
+                    "payload": {
+                        "chapter_range": "201-300",
+                        "source_references": [source_id],
+                    },
+                }
+            ],
+            "unresolved": [
+                {
+                    "affected_chapters": [],
+                    "blocking": False,
+                    "issue_id": "plan-issue.draft.scope-from-item",
+                    "kind": "UNSPECIFIED",
+                    "source_ids": [source_id],
+                    "summary": "断星六号研究站与ER-07设施的转移路径仍待核验",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    review = apply_host_plan_review_constraints(
+        PlanReviewDraft(
+            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+            decision=ReviewDecision.ACCEPT,
+            issues=(),
+        ),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload,
+        mode=AgentMode.ARC_VOLUME,
+    )
+
+    scoped = [
+        issue for issue in review.issues if issue.kind is ReviewIssueKind.UNRESOLVED_SCOPE_MISSING
+    ]
+    assert len(scoped) == 1
+    assert "questions chapters 201-300" in scoped[0].summary
+    assert scoped[0].field_path == "unresolved.affected_chapters"
+
+
 def test_blocking_advisory_still_blocks_regardless_of_scope() -> None:
     blocking = dict(_V6_ADVISORIES[1])
     blocking["blocking"] = True
