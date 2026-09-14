@@ -467,9 +467,7 @@ def test_projection_settlement_rebases_completed_draft_with_new_identity(
     )
     assert len(new_candidates) == 1
     assert new_candidates[0].task_id != old_draft.task_id
-    assert new_candidates[0].task_id.root.startswith(
-        "run.rebase-completed.draft.2.basis."
-    )
+    assert new_candidates[0].task_id.root.startswith("run.rebase-completed.draft.2.basis.")
     assert new_candidates[0].dependency_task_ids == (plan_projection.task_id,)
     _assert_replay(events, query, plan_projection.run_id)
 

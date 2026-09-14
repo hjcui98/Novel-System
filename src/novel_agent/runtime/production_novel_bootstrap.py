@@ -703,7 +703,10 @@ def _plan_root(
                 if type(candidate) is int and candidate >= 1:
                     return candidate
             elif isinstance(raw_range, str):
-                match = re.fullmatch(r"\s*(\d+)\s*[-~～至到]\s*(\d+)\s*", raw_range)
+                match = re.fullmatch(
+                    r"\s*(\d+)\s*[-~～至到]\s*(\d+)\s*",  # noqa: RUF001
+                    raw_range,
+                )
                 if match is not None:
                     candidate = match.group(1 if key == "chapter_start" else 2)
                     return int(candidate)
@@ -862,9 +865,7 @@ def _world_root(
                     declared_truth
                     if declared_truth is not None
                     else (
-                        TruthClass.PREDICTION
-                        if future_intent
-                        else TruthClass.ACCEPTED_WORLD_FACT
+                        TruthClass.PREDICTION if future_intent else TruthClass.ACCEPTED_WORLD_FACT
                     )
                 ),
             )
@@ -935,9 +936,7 @@ def _declared_truth_class(payload: dict[str, JsonValue]) -> tuple[TruthClass | N
         return resolved, None
     not_before = payload.get("not_before_chapter")
     window = (
-        f" (not_before_chapter={not_before})"
-        if type(not_before) is int and not_before >= 1
-        else ""
+        f" (not_before_chapter={not_before})" if type(not_before) is int and not_before >= 1 else ""
     )
     return resolved, f"curator declared {resolved.value}{window}"
 
@@ -1148,19 +1147,25 @@ def _profile_root(
 
 def _profile_from_brief(brief_text: str) -> dict[str, JsonValue]:
     style: dict[str, JsonValue] = {}
-    title = re.search(r"书名[^：:\n]*[：:]\s*[《“\"]?([^》”\"\n]+)[》”\"]?", brief_text)
+    title = re.search(
+        r"书名[^：:\n]*[：:]\s*[《“\"]?([^》”\"\n]+)[》”\"]?",  # noqa: RUF001
+        brief_text,
+    )
     if title is not None:
         style["title"] = title.group(1).strip()
-    genre = re.search(r"题材[^：:\n]*[：:]\s*(.+)", brief_text)
+    genre = re.search(r"题材[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
     if genre is not None:
         style["genre"] = genre.group(1).strip()
-    chapters = re.search(r"预计章节数[^：:\n]*[：:]\s*(\d+)", brief_text)
+    chapters = re.search(r"预计章节数[^：:\n]*[：:]\s*(\d+)", brief_text)  # noqa: RUF001
     if chapters is not None:
         style["target_chapters"] = int(chapters.group(1))
     volumes = re.search(r"(?:预计|共|全书)?\s*(\d+)\s*卷", brief_text)
     if volumes is not None:
         style["expected_volume_count"] = int(volumes.group(1))
-    band = re.search(r"每章\s*(\d+)\s*[-~～到至]+\s*(\d+)\s*字", brief_text)
+    band = re.search(
+        r"每章\s*(\d+)\s*[-~～到至]+\s*(\d+)\s*字",  # noqa: RUF001
+        brief_text,
+    )
     if band is not None:
         style["minimum_characters"] = int(band.group(1))
         minimum = int(band.group(1))
@@ -1170,7 +1175,7 @@ def _profile_from_brief(brief_text: str) -> dict[str, JsonValue]:
     style.setdefault("minimum_characters", 3_000)
     style.setdefault("target_characters", 4_000)
     style.setdefault("maximum_characters", 5_000)
-    premise = re.search(r"一句话概括[^：:\n]*[：:]\s*(.+)", brief_text)
+    premise = re.search(r"一句话概括[^：:\n]*[：:]\s*(.+)", brief_text)  # noqa: RUF001
     if premise is not None:
         style["premise"] = premise.group(1).strip()
     return style

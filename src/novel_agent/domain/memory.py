@@ -77,9 +77,7 @@ class PlanObligation(DomainModel):
         return self
 
     def is_future_locked(self, current_chapter: int) -> bool:
-        return (
-            self.not_before_chapter is not None and current_chapter < self.not_before_chapter
-        )
+        return self.not_before_chapter is not None and current_chapter < self.not_before_chapter
 
     def forbids_resolution(self, current_chapter: int) -> bool:
         return self.is_future_locked(current_chapter)
@@ -129,9 +127,7 @@ def long_range_kind_requires_not_before(kind: ObligationKind) -> bool:
     return kind in {ObligationKind.PROMISE, ObligationKind.FORESHADOWING}
 
 
-def require_not_before_for_kind(
-    kind: ObligationKind, not_before_chapter: int | None
-) -> None:
+def require_not_before_for_kind(kind: ObligationKind, not_before_chapter: int | None) -> None:
     if long_range_kind_requires_not_before(kind) and not_before_chapter is None:
         raise TemporalObligationError(
             "long-range PROMISE/FORESHADOWING requires not_before_chapter"
@@ -139,9 +135,8 @@ def require_not_before_for_kind(
 
 
 def forbid_early_resolution(obligation: PlanObligation, current_chapter: int) -> None:
-    if (
-        obligation.status is ObligationStatus.RESOLVED
-        and obligation.forbids_resolution(current_chapter)
+    if obligation.status is ObligationStatus.RESOLVED and obligation.forbids_resolution(
+        current_chapter
     ):
         raise TemporalObligationError(
             "future-locked obligation cannot be resolved before not_before_chapter"

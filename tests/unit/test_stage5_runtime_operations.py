@@ -174,10 +174,13 @@ def test_recovery_selects_old_safe_checkpoint_and_reconciles_effects(
         commits,
         cast(EffectStatusResolver, _Resolver(EffectStatus.COMPLETED)),
     )
-    assert recovery.select_safe_checkpoint(
-        task.task_id,
-        current_configuration_fingerprint=ArtifactId(task.policy_hash),
-    ) == safe
+    assert (
+        recovery.select_safe_checkpoint(
+            task.task_id,
+            current_configuration_fingerprint=ArtifactId(task.policy_hash),
+        )
+        == safe
+    )
     assert recovery.reconcile_uncertain_effects(task.task_id)[0].status is EffectStatus.COMPLETED
     commands.operator_reconcile_attempt(
         task.task_id,

@@ -124,9 +124,7 @@ class _ElasticEndpoint(OpenAICompatibleChatEndpoint):
     def _answer(self, incoming: httpx.Request) -> httpx.Response:
         asked = json.loads(incoming.content)["max_tokens"]
         count = (
-            int(self._count_path.read_text(encoding="utf-8"))
-            if self._count_path.exists()
-            else 0
+            int(self._count_path.read_text(encoding="utf-8")) if self._count_path.exists() else 0
         )
         self._count_path.write_text(f"{count + 1}\n", encoding="utf-8")
         complete = asked >= _ELASTIC_REQUIRED_TOKENS
@@ -137,9 +135,7 @@ class _ElasticEndpoint(OpenAICompatibleChatEndpoint):
                 "choices": [
                     {
                         "finish_reason": "stop" if complete else "length",
-                        "message": {
-                            "content": '{"answer":"grown"}' if complete else '{"answer":'
-                        },
+                        "message": {"content": '{"answer":"grown"}' if complete else '{"answer":'},
                     }
                 ],
                 "usage": {

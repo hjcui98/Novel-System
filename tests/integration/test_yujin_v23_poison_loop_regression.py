@@ -4,9 +4,9 @@ The frozen v23 ARC_VOLUME task reached attempt 24 and a ``poison_loop`` failure
 class.  Its terminal artifacts record why: the final ``plan_review`` settled
 ``decision=revise`` with ``issues=[]``, carrying only a prose instruction --
 
-    修正 vol-4 中 midpoint_reversal 与 volume_climax 的语义越界：将
+    修正 vol-4 中 midpoint_reversal 与 volume_climax 的语义越界: 将
     vol-4.payload.midpoint_reversal.description 中"发现黑月坠世并非实验失控的异常线索"
-    改为"发现九位圣座存亡的异常线索"；…
+    改为"发现九位圣座存亡的异常线索"; …
 
 The instruction is concrete and even names the fields, but it is not a structured
 finding, so the host could neither verify nor enforce it.  Every revision therefore
@@ -221,7 +221,7 @@ def test_the_model_could_have_expressed_the_same_demand_and_been_understood() ->
                         authorized_target_item_ids=("vol-4",),
                         field_path="volume_climax.description",
                         quote=description,
-                        unmet_condition="第四卷只允许暗示九位圣座存亡，不得暗示黑月坠世真相",
+                        unmet_condition="第四卷只允许暗示九位圣座存亡，不得暗示黑月坠世真相",  # noqa: RUF001
                         constraint_id="lock.long-truth.vol4-hint",
                     ).model_dump(mode="json")
                 ],

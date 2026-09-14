@@ -32,8 +32,8 @@ from novel_agent.services.memory_write_workflow import (
     InMemoryCommitPort,
     LocalMemoryWriteWorkflow,
     MemoryWriteWorkflowError,
-    _WorkflowData,
     _remaining,
+    _WorkflowData,
 )
 from tests.contract.test_memory_write_workflow_contract import (
     BASE,

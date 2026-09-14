@@ -393,7 +393,7 @@ def test_a_declaration_without_an_obligation_kind_is_revise() -> None:
                 "item_id": "story.obligation.reveal_lock",
                 "kind": "obligation",
                 "payload": {
-                    "title": "揭示义务：时间锁与进度锁",
+                    "title": "揭示义务：时间锁与进度锁",  # noqa: RUF001
                     "constraints": ["lock.copper-token.vol1-end: 铜铭须在第一卷末取得"],
                 },
             }

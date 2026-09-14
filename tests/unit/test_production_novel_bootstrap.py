@@ -1054,9 +1054,7 @@ def test_root_document_identity_is_the_manifest_content_address() -> None:
         ),
         model_profiles=("qwen38-27b-nvfp4@8003",),
     )
-    profile = profile.model_copy(
-        update={"root_hash": project_profile_root_content_id(profile)}
-    )
+    profile = profile.model_copy(update={"root_hash": project_profile_root_content_id(profile)})
     builder = BootstrapRootBuilder(artifacts)
     candidate = builder.build(
         project_id,
@@ -1090,9 +1088,9 @@ def test_root_document_identity_is_the_manifest_content_address() -> None:
         (),
     )
 
-    assert (
-        candidate.manifest.project_profile_root.artifact_id != candidate.profile.root_hash
-    ), "the fixture must reproduce the two distinct identities"
+    assert candidate.manifest.project_profile_root.artifact_id != candidate.profile.root_hash, (
+        "the fixture must reproduce the two distinct identities"
+    )
     stored = artifacts.read_verified(candidate.manifest.project_profile_root)
     assert (
         ProjectProfileRootDocument.model_validate_json(stored, strict=True).root_hash
@@ -1125,7 +1123,7 @@ def test_scheduled_later_states_are_not_written_as_accepted_facts() -> None:
                 {
                     "lock_id": "lock.forge.vol4",
                     "category": "reveal",
-                    "description": "第四卷：唐钧在钧炉城锻打武器沉曜",
+                    "description": "第四卷：唐钧在钧炉城锻打武器沉曜",  # noqa: RUF001
                     "not_before_chapter": 350,
                 },
                 {
@@ -1147,7 +1145,7 @@ def test_scheduled_later_states_are_not_written_as_accepted_facts() -> None:
                 payload={
                     "label": "唐钧",
                     "entity_type": "character",
-                    "value": "灵械师。第四卷：在钧炉城以星铁为底锻打而成武器沉曜。",
+                    "value": "灵械师。第四卷：在钧炉城以星铁为底锻打而成武器沉曜。",  # noqa: RUF001
                 },
                 provenance=ProposalProvenance.AUTHOR_SUPPLIED,
                 source_ids=(StableId("source.author-initial-brief"),),
@@ -1158,7 +1156,7 @@ def test_scheduled_later_states_are_not_written_as_accepted_facts() -> None:
                 payload={
                     "label": "斩星府",
                     "entity_type": "organization",
-                    "value": "斩星武者所属组织，内部结构包括外府与内府。",
+                    "value": "斩星武者所属组织，内部结构包括外府与内府。",  # noqa: RUF001
                 },
                 provenance=ProposalProvenance.AUTHOR_SUPPLIED,
                 source_ids=(StableId("source.author-initial-brief"),),
@@ -1244,7 +1242,7 @@ def test_a_scheduled_lock_overrides_a_curator_fact_claim() -> None:
                     "label": "唐钧",
                     "entity_type": "character",
                     "truth_class": "accepted_world_fact",
-                    "description": "第四卷：在钧炉城锻打而成武器沉曜。",
+                    "description": "第四卷：在钧炉城锻打而成武器沉曜。",  # noqa: RUF001
                 },
                 provenance=ProposalProvenance.AUTHOR_SUPPLIED,
                 source_ids=(StableId("source.author-initial-brief"),),

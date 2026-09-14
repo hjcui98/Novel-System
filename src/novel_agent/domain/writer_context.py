@@ -735,9 +735,9 @@ class WriterContextPackageV2(DomainModel):
     retrieval_requirement: HistoryRetrievalRequirement = HistoryRetrievalRequirement.UNDECIDED
     retrieval_status: RetrievalExecutionStatus = RetrievalExecutionStatus.NOT_REQUESTED
     need_generation_status: str = "INVALID"
-    semantic_status: Literal[
-        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
-    ] = "UNASSESSED"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"] = (
+        "UNASSESSED"
+    )
     usable_with_gaps: bool = True
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
@@ -851,9 +851,9 @@ class EvidenceFirstPackageManifest(DomainModel):
     # the success state (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
-    semantic_status: Literal[
-        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
-    ] = "UNASSESSED"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"] = (
+        "UNASSESSED"
+    )
     usable_with_gaps: bool = True
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
     derived_tool_call_budget: int = Field(default=0, ge=0)

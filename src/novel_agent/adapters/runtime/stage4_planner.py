@@ -391,8 +391,7 @@ class ProductionStage4InvocationFactory:
             )
             if matching_index is None:
                 raise ValueError(
-                    "model replay evidence has no response for Stage 4 logical phase "
-                    f"{phase}"
+                    f"model replay evidence has no response for Stage 4 logical phase {phase}"
                 )
             response = replay_responses.pop(matching_index)
             return candidate.model_copy(

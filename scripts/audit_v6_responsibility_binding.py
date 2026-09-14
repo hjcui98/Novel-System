@@ -103,9 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = _RecordingArtifacts()
     materializer = PlanCandidateMaterializer(artifacts, object(), schema_version=VERSION)
-    bound_world, world_ref, bindings = materializer._bind_obligation_declarations(
-        world, proposal
-    )
+    bound_world, world_ref, bindings = materializer._bind_obligation_declarations(world, proposal)
 
     print(f"compiled obligations      : {len(bound_world.obligations)}")
     print(f"world ref written         : {world_ref is not None}")

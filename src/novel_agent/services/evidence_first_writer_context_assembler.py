@@ -127,9 +127,9 @@ class EvidenceFirstAssemblyResult(DomainModel):
     # (2026-08-14 review follow-up P1).
     mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"]
     structural_mandatory_facet_closure: Literal["COMPLETE", "INCOMPLETE"] = "INCOMPLETE"
-    semantic_status: Literal[
-        "COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"
-    ] = "UNASSESSED"
+    semantic_status: Literal["COMPLETE", "INCOMPLETE", "UNASSESSED", "NOT_APPLICABLE"] = (
+        "UNASSESSED"
+    )
     usable_with_gaps: bool = True
     unclosed_mandatory_need_facets: tuple[StableId, ...] = ()
     semantic_receipts: tuple[NeedFacetSemanticReceipt, ...] = ()

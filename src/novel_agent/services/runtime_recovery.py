@@ -216,9 +216,7 @@ class RuntimeRecoveryService:
                             "completed model evidence is not a stable replay frontier"
                         )
                     source_attempt_id = responses[0].source_attempt_id
-                    if any(
-                        item.source_attempt_id != source_attempt_id for item in responses
-                    ):
+                    if any(item.source_attempt_id != source_attempt_id for item in responses):
                         raise RuntimeCommandConflictError(
                             "model replay frontier spans multiple source attempts"
                         )

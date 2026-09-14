@@ -290,8 +290,7 @@ class Stage1Validator:
                         self._finding(
                             "OBLIGATION_RESOLVED_BEFORE_NOT_BEFORE",
                             "error",
-                            "future-locked obligation cannot be resolved before "
-                            "not_before_chapter",
+                            "future-locked obligation cannot be resolved before not_before_chapter",
                         )
                     )
             self._check_narrative_order(

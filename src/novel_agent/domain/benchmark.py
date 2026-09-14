@@ -268,9 +268,7 @@ class PlanRootDocument(DomainModel):
         if len(chapter_indexes) != len(set(chapter_indexes)):
             raise ValueError("each chapter index may have at most one active chapter goal")
         parents = {
-            node.plan_node_id: node.parent_id
-            for node in self.nodes
-            if node.parent_id is not None
+            node.plan_node_id: node.parent_id for node in self.nodes if node.parent_id is not None
         }
         for node_id in parents:
             seen = {node_id}

@@ -92,12 +92,8 @@ def test_audit_reports_missing_chapter_and_blocks_exact() -> None:
         snapshots=_Snapshots(),  # type: ignore[arg-type]
         index=_Index(  # type: ignore[arg-type]
             {
-                "grounded": tuple(
-                    {"_source": {"narrative_start": chapter}} for chapter in (1, 3)
-                ),
-                "anchor": tuple(
-                    {"_source": {"narrative_start": chapter}} for chapter in (1, 2, 3)
-                ),
+                "grounded": tuple({"_source": {"narrative_start": chapter}} for chapter in (1, 3)),
+                "anchor": tuple({"_source": {"narrative_start": chapter}} for chapter in (1, 2, 3)),
             }
         ),
         grounded_index="grounded",

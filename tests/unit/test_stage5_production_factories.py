@@ -859,9 +859,7 @@ def test_production_stage4_leaf_consumes_replay_at_the_bound_phase(
     result = asyncio.run(adapter.run(request))
 
     assert result.status is PlanningTerminalStatus.YIELDED
-    assert captured[0].request_id == StableId(
-        "model.production-leaf-replay.plan-revision.1"
-    )
+    assert captured[0].request_id == StableId("model.production-leaf-replay.plan-revision.1")
     assert captured[0].attempt_id == StableId("attempt.previous")
     assert captured[0].scheduling_stage == "plan_revision"
     assert invocation.replay_completion_check is not None

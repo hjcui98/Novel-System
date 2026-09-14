@@ -508,14 +508,14 @@ def _review_payload(
         "base_review_checklist": (
             "执行当前 ChapterGoal、beats、state changes、参与实体和 obligation actions",
             "检查人物/世界状态、POV/人称、叙事时间、时间锁、揭示边界及 Profile 语言/题材/风格",
-            "对照上一章完整正文与最近3至5章的 goal/summary/beats，检查直接复写和结构循环",
+            "对照上一章完整正文与最近3至5章的 goal/summary/beats，检查直接复写和结构循环",  # noqa: RUF001
             "检查模板化连接、过度解释、说明化对话、整章单段和题材漂移",
-            "判断问题属于 LOCAL_REPAIR、MAJOR_REWRITE，还是 accepted Plan 需要人工 replan",
+            "判断问题属于 LOCAL_REPAIR、MAJOR_REWRITE，还是 accepted Plan 需要人工 replan",  # noqa: RUF001
         ),
         "writer_surface_checks": (
             "正文非空且符合 WritingTask 长度区间",
             "无内部规划标记、章节标签、替换字符或明显非目标语言段落",
-            "无近期正文长段复制，且保留换行和自然段边界",
+            "无近期正文长段复制，且保留换行和自然段边界",  # noqa: RUF001
         ),
     }
 
@@ -588,14 +588,14 @@ def _repair_payload(
         "base_review_checklist": (
             "执行当前 ChapterGoal、beats、state changes、参与实体和 obligation actions",
             "检查人物/世界状态、POV/人称、叙事时间、时间锁、揭示边界及 Profile 语言/题材/风格",
-            "对照上一章完整正文与最近3至5章的 goal/summary/beats，检查直接复写和结构循环",
+            "对照上一章完整正文与最近3至5章的 goal/summary/beats，检查直接复写和结构循环",  # noqa: RUF001
             "检查模板化连接、过度解释、说明化对话、整章单段和题材漂移",
-            "判断问题属于 LOCAL_REPAIR、MAJOR_REWRITE，还是 accepted Plan 需要人工 replan",
+            "判断问题属于 LOCAL_REPAIR、MAJOR_REWRITE，还是 accepted Plan 需要人工 replan",  # noqa: RUF001
         ),
         "writer_surface_checks": (
             "正文非空且符合 WritingTask 长度区间",
             "无内部规划标记、章节标签、替换字符或明显非目标语言段落",
-            "无近期正文长段复制，且保留换行和自然段边界",
+            "无近期正文长段复制，且保留换行和自然段边界",  # noqa: RUF001
         ),
     }
 

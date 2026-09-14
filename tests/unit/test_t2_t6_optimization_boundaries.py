@@ -645,9 +645,7 @@ def _volume_slots(index: int, *, slots: bool = True) -> dict[str, object]:
     unreadable responsibility table, so the fixture must declare a real entry.
     """
 
-    payload: dict[str, object] = {
-        key: f"{key}.{index}" for key in VOLUME_STRUCTURE_REQUIRED_KEYS
-    }
+    payload: dict[str, object] = {key: f"{key}.{index}" for key in VOLUME_STRUCTURE_REQUIRED_KEYS}
     # The narrative slots carry a window and a role now, so a fixture that wants a
     # reviewable volume declares them like the production planner must.
     start = index * 100 + 1
@@ -713,8 +711,7 @@ def test_plan_review_rejects_three_volumes_when_profile_requires_eight() -> None
     assert complete.issues == ()
     assert missing_slots.decision is ReviewDecision.REVISE
     assert any(
-        issue.kind is ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE
-        for issue in missing_slots.issues
+        issue.kind is ReviewIssueKind.VOLUME_STRUCTURE_INCOMPLETE for issue in missing_slots.issues
     )
 
 

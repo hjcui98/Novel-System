@@ -122,9 +122,7 @@ def test_reference_to_an_entity_created_in_the_same_proposal_is_accepted() -> No
         )
     )
 
-    record_types = [
-        operation.payload["record_type"] for operation in changes.operations
-    ]
+    record_types = [operation.payload["record_type"] for operation in changes.operations]
     assert WorldRecordKind.ENTITY.value in record_types
     assert WorldRecordKind.OBLIGATION.value in record_types
 

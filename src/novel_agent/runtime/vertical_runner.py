@@ -60,9 +60,7 @@ class VerticalCreativeRunner:
             # A continuation request may carry a stale 0 cursor even though the
             # canonical projection already committed later chapters; never
             # silently report or drive the run from the stale value.
-            request = request.model_copy(
-                update={"current_chapter": canonical_current_chapter}
-            )
+            request = request.model_copy(update={"current_chapter": canonical_current_chapter})
         if stop_after_chapter is not None and not (
             request.current_chapter < stop_after_chapter <= request.target_chapters
         ):

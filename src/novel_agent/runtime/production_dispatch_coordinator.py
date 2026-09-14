@@ -391,11 +391,7 @@ class ProductionDispatchCoordinator:
                 if task.project_id == descriptor.project_id and not task.superseded
             )
             drifted = next(
-                (
-                    task
-                    for task in matching
-                    if task.policy_hash != descriptor.policy.policy_hash
-                ),
+                (task for task in matching if task.policy_hash != descriptor.policy.policy_hash),
                 None,
             )
             if drifted is not None:

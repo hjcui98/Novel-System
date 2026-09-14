@@ -213,11 +213,7 @@ async def _run_long_form_generation(
             f"long-form generation returned {len(han)} Chinese characters, "
             f"fewer than the requested {minimum_characters}"
         )
-    latin = sum(
-        1
-        for character in paragraph
-        if character.isascii() and character.isalpha()
-    )
+    latin = sum(1 for character in paragraph if character.isascii() and character.isalpha())
     if len(han) and latin > len(han):
         issues.append(
             "long-form generation is mostly Latin text; the target language is not respected"
@@ -302,6 +298,7 @@ def run_endpoint_preflight(
         )
     )
 
+
 @dataclass(frozen=True, slots=True)
 class RetrievalPreflightResult:
     """Evidence for the embedding and reranker services the retrieval profile uses.
@@ -367,8 +364,7 @@ async def preflight_retrieval_services(
             )
             if response.status_code >= 400:
                 raise RuntimeError(
-                    f"embedding service returned {response.status_code}: "
-                    f"{response.text[:240]}"
+                    f"embedding service returned {response.status_code}: {response.text[:240]}"
                 )
             payload = response.json()
             vector = payload["data"][0]["embedding"]

@@ -26,7 +26,7 @@ from novel_agent.adapters.postgres.database import build_engine, build_session_f
 from novel_agent.adapters.runtime.stage4_planner import Stage4InvocationPolicy
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import CreativeRunRequest
-from novel_agent.domain.ids import ArtifactId, CommitId, RunId, TaskId
+from novel_agent.domain.ids import ArtifactId, RunId, TaskId
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRole
 from novel_agent.domain.retrieval_routing import RetrievalBackendProfile
 from novel_agent.domain.stage5_evaluation import VerticalRunStatus
@@ -42,6 +42,7 @@ from novel_agent.runtime.production_bootstrap import (
     load_production_assembly_spec,
     resolve_registered_model_endpoints,
 )
+from novel_agent.runtime.real_hybrid import CommitScopedRealHybridBackend
 from novel_agent.runtime.vertical_runner import VerticalCreativeRunner
 from novel_agent.services.artifacts import ArtifactIntegrityError, ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -52,9 +53,7 @@ from novel_agent.services.projection import (
     FullDerivedProjectionBuilder,
 )
 from novel_agent.services.r1 import R1WorldRepository
-from novel_agent.services.retrieval import RetrievalBackend
 from novel_agent.services.search_retrieval import Stage2RSearchIndexer
-from novel_agent.runtime.real_hybrid import CommitScopedRealHybridBackend
 from novel_agent.services.stage2_retrieval_backend import (
     RealHybridProjectionGateway,
     build_real_hybrid_backend,

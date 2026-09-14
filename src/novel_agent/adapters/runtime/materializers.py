@@ -571,9 +571,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         # chains; reading each ref below still fails closed on absence or tampering.
         parent = self._read(proof.parent_proposal_ref, PlanProposal)
         if proof.review_ref.media_type == PLAN_REVIEW_MEDIA_TYPE:
-            review: PlanReview | OperatorReviewEvidence = self._read(
-                proof.review_ref, PlanReview
-            )
+            review: PlanReview | OperatorReviewEvidence = self._read(proof.review_ref, PlanReview)
         elif proof.review_ref.media_type == OPERATOR_PLAN_REVIEW_MEDIA_TYPE:
             review = self._read(proof.review_ref, OperatorReviewEvidence)
         else:

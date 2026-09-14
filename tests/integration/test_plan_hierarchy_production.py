@@ -356,4 +356,3 @@ def test_rolling_plan_horizon_clamped_to_volume_end() -> None:
     )
     assert task.horizon_start == 97
     assert task.horizon_end == 100
-

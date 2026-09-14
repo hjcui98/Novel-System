@@ -139,9 +139,7 @@ def _open(
     engine = create_engine(f"sqlite+pysqlite:///{args.database}")
     Base.metadata.create_all(engine)
     factory = build_session_factory(engine)
-    return factory, CommitService(factory), ArtifactRepository(
-        FilesystemObjectStore(args.objects)
-    )
+    return factory, CommitService(factory), ArtifactRepository(FilesystemObjectStore(args.objects))
 
 
 def _policy() -> CreativeRunPolicy:
@@ -306,9 +304,7 @@ def _recover(args: argparse.Namespace) -> int:
         terminal_status=TaskStatus.SUCCEEDED,
         artifact_refs=(output_ref,),
     )
-    ledger_entry = SqlModelCallLedger(factory).load(
-        StableId(response["request_id"])
-    )
+    ledger_entry = SqlModelCallLedger(factory).load(StableId(response["request_id"]))
     if ledger_entry is None or ledger_entry.response_consumed_at is None:
         raise RuntimeError("replayed response was not consumed after durable output")
     memory_after = int(args.memory_count.read_text(encoding="utf-8"))

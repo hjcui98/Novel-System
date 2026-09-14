@@ -150,10 +150,14 @@ class NeedEvidenceSemanticJudge:
             raise ValueError("semantic judge output budget must be at least 256 tokens")
         if thinking_token_budget is not None and thinking_token_budget < 0:
             raise ValueError("semantic judge thinking token budget must be non-negative")
-        if purpose in {
-            ModelCallPurpose.BATCH_TEST,
-            ModelCallPurpose.EVALUATION,
-        } and model_role is not ModelRole.BATCH_TEST:
+        if (
+            purpose
+            in {
+                ModelCallPurpose.BATCH_TEST,
+                ModelCallPurpose.EVALUATION,
+            }
+            and model_role is not ModelRole.BATCH_TEST
+        ):
             raise ValueError("a batch/evaluation semantic judge must use the batch_test role")
         self._gateway = gateway
         self._max_input_tokens = max_input_tokens

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from itertools import pairwise
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
@@ -297,7 +298,7 @@ class MemoryWriteBudget(DomainModel):
             raise ValueError("token budget tiers must start at token_budget")
         if any(value < 0 for value in tiers):
             raise ValueError("token budget tiers must be non-negative")
-        if any(left >= right for left, right in zip(tiers, tiers[1:])):
+        if any(left >= right for left, right in pairwise(tiers)):
             raise ValueError("token budget tiers must be strictly increasing")
         return self
 

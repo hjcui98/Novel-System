@@ -151,15 +151,11 @@ PRESERVED_E16_DIGEST = "e16d6d1d3cea681972a2342afb9af5dc728fc4a17399fd6179faa012
 PRESERVED_ORIGINAL_REVIEW_DIGEST = (
     "0ad3d8b6ff128394f35283676e2771c8954189a02a4c7c57c1277b8a89861378"
 )
-PRESERVED_FINAL_REVIEW_DIGEST = (
-    "74f4d5e6b08b84b8c8fed864f57c0e731e1ffc23d3c4a6b8d76f7ec7ded6db4e"
-)
+PRESERVED_FINAL_REVIEW_DIGEST = "74f4d5e6b08b84b8c8fed864f57c0e731e1ffc23d3c4a6b8d76f7ec7ded6db4e"
 PRESERVED_R2_OPERATOR_REVIEW_DIGEST = (
     "000f43ea1e69cf89b4c967311430568cd8eccdba34940f43efcfd7b1ccd5c0cb"
 )
-PRESERVED_R2_REPAIR_RAW_DIGEST = (
-    "05151881b9122e7595c9ad782c28d386ba20a1da417d3d4f7b5e5a5f6afa4393"
-)
+PRESERVED_R2_REPAIR_RAW_DIGEST = "05151881b9122e7595c9ad782c28d386ba20a1da417d3d4f7b5e5a5f6afa4393"
 
 
 def _preserved_object(digest: str) -> Path:
@@ -175,9 +171,7 @@ def _endpoint() -> RegisteredModelEndpoint:
 def _reviewer(
     tmp_path: Path, *, object_root: Path | None = None
 ) -> tuple[PlanReviewerAgent, ArtifactRepository]:
-    repo = ArtifactRepository(
-        FilesystemObjectStore(object_root or tmp_path / "d0-real-objects")
-    )
+    repo = ArtifactRepository(FilesystemObjectStore(object_root or tmp_path / "d0-real-objects"))
     bundle = build_planner_contract_bundle(package_root=PACKAGE_ROOT, version=VERSION)
     gateway = ModelGateway(
         (_endpoint(),),
@@ -745,8 +739,7 @@ def test_d0_a_real_planner_revision_stays_inside_the_reviewed_scope(tmp_path: Pa
             actual = field_value(target_item.payload, field)
             expected = field_value(parent_item.payload, field)
             assert actual != expected, (
-                "the real revision did not move the field the review named: "
-                f"{item_id}.{field}"
+                f"the real revision did not move the field the review named: {item_id}.{field}"
             )
 
     # Re-review the composed candidate for real.  The same bounded citation-repair
@@ -802,13 +795,9 @@ def test_d0_b_real_continuation_from_preserved_e16_once(tmp_path: Path) -> None:
     diagnostic_root = Path(os.environ.get("YUJIN_D0_CONTINUATION_ROOT", str(default_root)))
     lock_path = diagnostic_root / "continuation.lock"
     if lock_path.exists():
-        pytest.fail(
-            "D0 continuation diagnostic already has a lock; refusing a second model sample"
-        )
+        pytest.fail("D0 continuation diagnostic already has a lock; refusing a second model sample")
     diagnostic_root.mkdir(parents=True, exist_ok=False)
-    lock_path.write_text(
-        "one local revision + one real rereview; do not rerun\n", encoding="utf-8"
-    )
+    lock_path.write_text("one local revision + one real rereview; do not rerun\n", encoding="utf-8")
 
     candidate_bytes = _preserved_object(PRESERVED_E16_DIGEST).read_bytes()
     candidate = PlanProposal.model_validate_json(candidate_bytes, strict=True)
@@ -956,8 +945,7 @@ def test_d0_b_real_continuation_from_preserved_e16_once(tmp_path: Path) -> None:
             AgentMode.ARC_VOLUME,
             VERSION.root,
             _request(phase),
-            f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\n"
-            f"SOURCE_DATA={payload}",
+            f"PLANNING_PHASE=plan\nPLANNING_TASK={task.model_dump_json()}\nSOURCE_DATA={payload}",
             source_hashes=(
                 brief_ref.artifact_id,
                 parent_ref.artifact_id,
@@ -1061,9 +1049,7 @@ def test_d0_b_real_continuation_from_preserved_e16_once(tmp_path: Path) -> None:
     for original, produced in zip(candidate.items, composed.items, strict=True):
         if original.item_id.root not in scope.targeted_item_ids:
             assert produced.payload == original.payload, original.item_id
-    composed_ref = repo.put(
-        composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
-    )
+    composed_ref = repo.put(composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
     _record(
         diagnostic_root,
         "d0.continuation.revision",
@@ -1157,17 +1143,14 @@ def test_d0_c_real_rereview_from_persisted_revision_once(tmp_path: Path) -> None
     candidate_bytes = _preserved_object(PRESERVED_E16_DIGEST).read_bytes()
     candidate = PlanProposal.model_validate_json(candidate_bytes, strict=True)
     r2_objects = (
-        Path(__file__).parents[2]
-        / "tmp/yujin-d0-continuation-20260914-r2/d0-real-objects/sha256"
+        Path(__file__).parents[2] / "tmp/yujin-d0-continuation-20260914-r2/d0-real-objects/sha256"
     )
 
     def r2_object(digest: str) -> Path:
         return r2_objects / digest[:2] / digest
 
     operator_review_bytes = r2_object(PRESERVED_R2_OPERATOR_REVIEW_DIGEST).read_bytes()
-    operator_review = OperatorReviewEvidence.model_validate_json(
-        operator_review_bytes, strict=True
-    )
+    operator_review = OperatorReviewEvidence.model_validate_json(operator_review_bytes, strict=True)
     repair_raw = json.loads(r2_object(PRESERVED_R2_REPAIR_RAW_DIGEST).read_bytes())
     repair_draft = PlannerProposalDraft.model_validate_json(
         repair_raw["raw_response_text"], strict=True
@@ -1304,9 +1287,7 @@ def test_d0_c_real_rereview_from_persisted_revision_once(tmp_path: Path) -> None
     for original, produced in zip(candidate.items, composed.items, strict=True):
         if original.item_id.root not in scope.targeted_item_ids:
             assert produced.payload == original.payload, original.item_id
-    composed_ref = repo.put(
-        composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION
-    )
+    composed_ref = repo.put(composed.model_dump_json().encode(), PLAN_PROPOSAL_MEDIA_TYPE, VERSION)
     _record(
         diagnostic_root,
         "d0.continuation.revision-reused",

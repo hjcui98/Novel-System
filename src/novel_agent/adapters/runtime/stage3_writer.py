@@ -505,7 +505,7 @@ class ProductionWritingRequestFactory:
         # closing chapters no longer receive the same grid.
         volume_stage_constraints = _volume_stage_constraints(plan.nodes, task.chapter_index)
         summaries = tuple(dict.fromkeys(goal.summary for goal in goals))
-        chapter_goal = "；".join(summaries)
+        chapter_goal = "；".join(summaries)  # noqa: RUF001 - preserve Chinese prompt punctuation
         payload_beats = tuple(
             beat
             for goal in goals
@@ -606,7 +606,13 @@ class ProductionWritingRequestFactory:
             profile, task.chapter_index
         )
         language = self._profile_string(profile, "language", "")
-        language_constraint = (f"正文语言：{language}",) if language else ()
+        language_constraint = (
+            (
+                f"正文语言：{language}",  # noqa: RUF001 - preserve Chinese prompt punctuation
+            )
+            if language
+            else ()
+        )
         language_allowlist = self._profile_strings(profile, "language_allowlist")
         language_allow_constraint = (
             ("允许英文代号\uff1a" + ", ".join(language_allowlist),) if language_allowlist else ()
@@ -701,8 +707,7 @@ class ProductionWritingRequestFactory:
                     advisory_artifact_refs=tuple(
                         ref
                         for ref in task.input_artifact_refs
-                        if ref.media_type
-                        == "application/vnd.novel-agent.quarantine-package+json"
+                        if ref.media_type == "application/vnd.novel-agent.quarantine-package+json"
                     ),
                     plan_root_ref=accepted_plan_ref,
                     plan_revision=plan.root_hash.root,
@@ -790,9 +795,7 @@ class ProductionWritingRequestFactory:
             writer_context_package_artifact=package_ref,
             recent_prose_context=recent,
             recent_prose_context_artifact=recent_ref,
-            resume_checkpoint_ref=(
-                None if recovery is None else recovery.checkpoint_ref
-            ),
+            resume_checkpoint_ref=(None if recovery is None else recovery.checkpoint_ref),
             future_isolation_attestation=attestation,
             allowed_skills=self._policy.allowed_skills,
             budgets=self._policy.budgets,

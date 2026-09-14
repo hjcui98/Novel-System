@@ -138,8 +138,7 @@ class _PageGateway:
 
     def attempts_for(self, request_id_root: str):
         return tuple(
-            entry.call_record
-            for entry in self.call_ledger.list_for_prefix(request_id_root)
+            entry.call_record for entry in self.call_ledger.list_for_prefix(request_id_root)
         )
 
 

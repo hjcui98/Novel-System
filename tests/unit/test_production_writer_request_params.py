@@ -133,7 +133,7 @@ def test_non_canon_world_states_are_not_injected_as_current_truth() -> None:
         state_id=StableId("state.accepted"),
         subject_id=StableId("entity.bootstrap.1"),
         predicate="character",
-        value="边镇少年，斩星武者。",
+        value="边镇少年，斩星武者。",  # noqa: RUF001
         valid_time=StoryTime(worldline="main", start_ordinal=0),
         truth_class=TruthClass.ACCEPTED_WORLD_FACT,
     )
@@ -141,7 +141,7 @@ def test_non_canon_world_states_are_not_injected_as_current_truth() -> None:
         state_id=StableId("state.planned"),
         subject_id=StableId("entity.bootstrap.1"),
         predicate="character",
-        value="第四卷：锻打而成武器沉曜。",
+        value="第四卷：锻打而成武器沉曜。",  # noqa: RUF001
         valid_time=StoryTime(worldline="main", start_ordinal=0),
         truth_class=TruthClass.PREDICTION,
     )

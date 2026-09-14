@@ -823,7 +823,7 @@ def _writer_skill_registry() -> SkillRegistry:
             ("draft", "continuation", "major-rewrite"),
         ),
         "skill.continuation": (
-            "把既有章节状态连续地接入当前场景，避免跳接与重复。",
+            "把既有章节状态连续地接入当前场景，避免跳接与重复。",  # noqa: RUF001
             ("continuity", "transition"),
             ("continuation",),
         ),
@@ -843,7 +843,7 @@ def _writer_skill_registry() -> SkillRegistry:
             ("draft", "continuation", "major-rewrite"),
         ),
         "skill.pov-epistemic-writing": (
-            "约束叙事视角，只呈现当前视角可知的事实与感知。",
+            "约束叙事视角，只呈现当前视角可知的事实与感知。",  # noqa: RUF001
             ("pov", "epistemic-boundary"),
             ("draft", "continuation", "major-rewrite"),
         ),

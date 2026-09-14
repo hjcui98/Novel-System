@@ -418,9 +418,7 @@ class WriterCognitionService:
             )
         normalized_roots = {item.root for item in normalized_skill_ids}
         filtered_checkpoints = {
-            k: v
-            for k, v in work_plan.expected_skill_checkpoints.items()
-            if k in normalized_roots
+            k: v for k, v in work_plan.expected_skill_checkpoints.items() if k in normalized_roots
         }
         work_plan = work_plan.model_copy(
             update={
@@ -532,8 +530,8 @@ class WriterCognitionService:
                 "\n\n<TRUSTED_EDITOR_REWRITE_DIRECTIVE>\n"
                 + directives[0]
                 + "\n</TRUSTED_EDITOR_REWRITE_DIRECTIVE>\n\n"
-                + "【重要约束：当前处于 MAJOR_REWRITE 模式】\n"
-                + '你的 action 字段必须且只能为 "DRAFT_READY"，严禁使用 "REQUEST_MEMORY"！\n'
+                + "【重要约束：当前处于 MAJOR_REWRITE 模式】\n"  # noqa: RUF001
+                + '你的 action 字段必须且只能为 "DRAFT_READY"，严禁使用 "REQUEST_MEMORY"！\n'  # noqa: RUF001
                 + "请直接在 draft_text 字段中输出按照审校指令完整大修重写后的章节小说正文。"
             )
             if major_rewrite_attempt > 1:
@@ -553,9 +551,10 @@ class WriterCognitionService:
             directive_prompt = ""
         language = next(
             (
-                constraint.split("：", 1)[1].strip()
+                constraint.split("：", 1)[1].strip()  # noqa: RUF001
                 for constraint in request.writing_task.mandatory_constraints
-                if constraint.startswith("正文语言：") and constraint.split("：", 1)[1].strip()
+                if constraint.startswith("正文语言：")  # noqa: RUF001
+                and constraint.split("：", 1)[1].strip()  # noqa: RUF001
             ),
             None,
         )
@@ -634,9 +633,9 @@ class WriterCognitionService:
                         "temperature": 0.8,
                         "prompt": (
                             prepared.prompt + "\n\n<WRITER_SURFACE_RETRY>\n"
-                            "【严重警告：正文严禁复读上一章或前文内容】：\n"
-                            "上一版正文草案被系统驳回，原因：开头或段落直接复读抄录了上一章/近期章节的原文！\n"
-                            "必须彻底丢弃该草案。请换一种全新动作、对话或环境感知切入当前章节，严禁复制前文任何完整段落或长句！\n"
+                            "【严重警告：正文严禁复读上一章或前文内容】：\n"  # noqa: RUF001
+                            "上一版正文草案被系统驳回，原因：开头或段落直接复读抄录了上一章/近期章节的原文！\n"  # noqa: RUF001
+                            "必须彻底丢弃该草案。请换一种全新动作、对话或环境感知切入当前章节，严禁复制前文任何完整段落或长句！\n"  # noqa: RUF001
                             "The previous draft was rejected because it copied "
                             "visible recent prose. "
                             "Discard that candidate. Write a completely distinct "
@@ -747,9 +746,7 @@ class WriterCognitionService:
             ).hexdigest()[:48]
             repair_request = prepared.model_copy(
                 update={
-                    "request_id": StableId(
-                        f"request.stage3.writer-length-repair.{digest}"
-                    ),
+                    "request_id": StableId(f"request.stage3.writer-length-repair.{digest}"),
                     "trace_id": f"{prepared.trace_id}:length-repair-{round_number}",
                     "repetition_penalty": _LENGTH_REPAIR_REPETITION_PENALTY,
                     "scheduling_stage": "stage3.writer_length_repair",
@@ -778,10 +775,7 @@ class WriterCognitionService:
                 repair_request,
                 WriterTurnOutput,
             )
-            if (
-                repaired.action is not WriterTurnAction.DRAFT_READY
-                or repaired.draft_text is None
-            ):
+            if repaired.action is not WriterTurnAction.DRAFT_READY or repaired.draft_text is None:
                 raise WriterCognitionError(
                     "length repair must return DRAFT_READY with a continuation fragment"
                 )

@@ -88,9 +88,7 @@ class MemoryProjectionAuditor:
             sorted({chapter for channel in channels for chapter in channel.extra_chapters})
         )
         canary_results = self._canary(canary_queries)
-        content_hash_mismatches = sum(
-            channel.content_hash_mismatches for channel in channels
-        )
+        content_hash_mismatches = sum(channel.content_hash_mismatches for channel in channels)
         exact = (
             not missing
             and not extra
@@ -139,9 +137,7 @@ class MemoryProjectionAuditor:
         return ProjectionChannelAudit(
             channel="r1",
             chapter_counts=counts,
-            missing_chapters=tuple(
-                chapter for chapter in canonical if chapter not in counts
-            ),
+            missing_chapters=tuple(chapter for chapter in canonical if chapter not in counts),
             extra_chapters=tuple(
                 sorted(chapter for chapter in counts if chapter not in canonical_set)
             ),

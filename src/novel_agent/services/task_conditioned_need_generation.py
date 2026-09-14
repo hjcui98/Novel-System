@@ -464,13 +464,11 @@ class TaskPlanConditionedNeedGenerator:
         if not decisions:
             return HistoryRetrievalRequirement.UNDECIDED, None, None
         if any(
-            decision.requirement is HistoryRetrievalRequirement.REQUIRED
-            for decision in decisions
+            decision.requirement is HistoryRetrievalRequirement.REQUIRED for decision in decisions
         ):
             return HistoryRetrievalRequirement.REQUIRED, None, None
         if any(
-            decision.requirement is HistoryRetrievalRequirement.UNDECIDED
-            for decision in decisions
+            decision.requirement is HistoryRetrievalRequirement.UNDECIDED for decision in decisions
         ):
             return HistoryRetrievalRequirement.UNDECIDED, None, None
         first = decisions[0]
@@ -573,9 +571,7 @@ class TaskPlanConditionedNeedGenerator:
         return tuple(candidates)
 
     @staticmethod
-    def _participating_entities(
-        goal: ChapterGoal, world: WorldRootDocument
-    ) -> tuple[Entity, ...]:
+    def _participating_entities(goal: ChapterGoal, world: WorldRootDocument) -> tuple[Entity, ...]:
         raw: list[str] = []
         for field in (
             "participating_entity_ids",
