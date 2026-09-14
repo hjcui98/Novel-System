@@ -470,26 +470,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_retrieval_preflight,
         )
 
-        result = run_endpoint_preflight(
+        preflight_result = run_endpoint_preflight(
             args.endpoint_profile,
             live_generation=bool(args.live_generation),
             generation_timeout_seconds=float(args.timeout_seconds),
         )
-        payload: dict[str, object] = dict(result.as_payload())
+        preflight_payload: dict[str, object] = dict(preflight_result.as_payload())
         retrieval_ok = True
         if args.embedding_url and args.reranker_url:
-            retrieval = run_retrieval_preflight(
+            retrieval_result = run_retrieval_preflight(
                 embedding_url=str(args.embedding_url),
                 reranker_url=str(args.reranker_url),
                 timeout_seconds=float(args.timeout_seconds),
             )
-            payload["retrieval"] = retrieval.as_payload()
-            retrieval_ok = retrieval.ok
+            preflight_payload["retrieval"] = retrieval_result.as_payload()
+            retrieval_ok = retrieval_result.ok
         elif bool(args.embedding_url) != bool(args.reranker_url):
-            payload["retrieval_error"] = "both --embedding-url and --reranker-url are required"
+            preflight_payload["retrieval_error"] = (
+                "both --embedding-url and --reranker-url are required"
+            )
             retrieval_ok = False
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        return 0 if result.ok and retrieval_ok else 2
+        print(json.dumps(preflight_payload, ensure_ascii=False, sort_keys=True))
+        return 0 if preflight_result.ok and retrieval_ok else 2
     if args.top_command == "runtime":
         from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
         from novel_agent.adapters.postgres.database import build_engine, build_session_factory
@@ -883,7 +885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 load_production_run_descriptors,
             )
 
-            manifest = load_stage5_manifest(args.manifest)
+            dispatch_manifest = load_stage5_manifest(args.manifest)
             descriptors = tuple(
                 descriptor.with_runtime_options(
                     runtime_parallelism=args.runtime_parallelism,
@@ -891,10 +893,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 for descriptor in load_production_run_descriptors(args.runs)
             )
-            retrieval = _resolve_retrieval_options(args, descriptors)
+            dispatch_retrieval = _resolve_retrieval_options(args, descriptors)
             coordinator = ProductionDispatchCoordinator(
                 database_url=args.database_url,
-                manifest=manifest,
+                manifest=dispatch_manifest,
                 runs=descriptors,
                 model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
                 assembly_factory=args.assembly_factory,
@@ -907,30 +909,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else DEFAULT_SCHEDULING_TIMEOUT_SECONDS
                 ),
                 max_total_tasks=args.max_total_tasks,
-                retrieval_backend_profile=retrieval["retrieval_backend_profile"] or "memory",
-                opensearch_url=retrieval["opensearch_url"] or "",
-                embedding_url=retrieval["embedding_url"] or "",
-                reranker_url=retrieval["reranker_url"] or "",
+                retrieval_backend_profile=(
+                    dispatch_retrieval["retrieval_backend_profile"] or "memory"
+                ),
+                opensearch_url=dispatch_retrieval["opensearch_url"] or "",
+                embedding_url=dispatch_retrieval["embedding_url"] or "",
+                reranker_url=dispatch_retrieval["reranker_url"] or "",
             )
             try:
-                result = _run_async(
+                dispatch_result = _run_async(
                     coordinator.run_watch(poll_interval_seconds=args.poll_interval_seconds)
                     if args.watch
                     else coordinator.run_once()
                 )
             except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
                 return _resource_blocked(error)
-            output = result.to_payload()
+            dispatch_output = dispatch_result.to_payload()
             if args.receipt is not None:
                 _write_json_once(
                     args.receipt,
                     {
                         "receipt_type": "runtime_cli_dispatch",
-                        **output,
+                        **dispatch_output,
                     },
                 )
-            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
-            return 2 if result.status in {"failed", "blocked"} else 0
+            print(json.dumps(dispatch_output, ensure_ascii=False, sort_keys=True))
+            return 2 if dispatch_result.status in {"failed", "blocked"} else 0
         if args.runtime_command == "advance":
             from novel_agent.domain.stage5_manifest import load_stage5_manifest
             from novel_agent.runtime.creative_assembly import (
@@ -944,7 +948,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_parallelism=args.runtime_parallelism,
                 planner_lookahead=args.planner_lookahead,
             )
-            manifest = load_stage5_manifest(args.manifest)
+            advance_manifest = load_stage5_manifest(args.manifest)
             try:
                 assembly = load_production_runtime_assembly(
                     args.assembly_factory,
@@ -954,7 +958,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         project_id=ProjectId(args.project_id),
                         run_id=RunId(args.run_id),
                         policy=policy,
-                        manifest=manifest,
+                        manifest=advance_manifest,
                         model_endpoints=resolve_registered_model_endpoints(args.endpoint_profile),
                         endpoint_request_limit=args.endpoint_request_limit,
                         kv_token_budget=args.kv_token_budget,
@@ -978,26 +982,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attestation is not None
                 and policy.policy_hash != attestation.configuration_fingerprint.root
             ):
-                output = {
+                advance_configuration_output = {
                     "status": "failed",
                     "error_type": "RUN_CONFIGURATION_CHANGED",
                     "error_message": "RUN_CONFIGURATION_CHANGED",
                 }
-                print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+                print(json.dumps(advance_configuration_output, ensure_ascii=False, sort_keys=True))
                 return 2
             try:
                 results = _run_async(assembly.dispatcher.run_bounded(max_tasks=args.max_tasks))
             except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
                 return _resource_blocked(error)
             advance_status, advance_exit_code = _advance_outcome(results)
-            output = {
+            advance_output: dict[str, object] = {
                 "status": advance_status,
                 "progressed": len(results),
                 "results": [item.model_dump(mode="json") for item in results],
             }
             admission = _admission_receipt(assembly)
             if admission is not None:
-                output["admission"] = admission
+                advance_output["admission"] = admission
             if args.receipt is not None:
                 if attestation is None:
                     raise RuntimeError("production assembly did not provide a CLI attestation")
@@ -1014,10 +1018,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "endpoints": [
                             item.model_dump(mode="json") for item in attestation.endpoints
                         ],
-                        **output,
+                        **advance_output,
                     },
                 )
-            print(json.dumps(output, sort_keys=True))
+            print(json.dumps(advance_output, sort_keys=True))
             return advance_exit_code
         if args.runtime_command in {
             "accept-plan",
@@ -1069,7 +1073,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if args.runtime_command == "export-report":
-            report = RuntimeReportService(
+            runtime_report = RuntimeReportService(
                 factory,
                 events,
                 SqlModelCallLedger(factory),
@@ -1078,8 +1082,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 manifest_path=args.manifest,
                 executable_commit=args.executable_commit,
             )
-            args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-            print(report.model_dump_json())
+            args.output.write_text(runtime_report.model_dump_json(indent=2), encoding="utf-8")
+            print(runtime_report.model_dump_json())
             return 0
         if args.runtime_command == "reconcile-effect":
             effect_task = commands.get_task(TaskId(args.task_id))
