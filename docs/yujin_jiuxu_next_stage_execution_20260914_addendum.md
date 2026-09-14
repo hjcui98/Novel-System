@@ -6,7 +6,7 @@
 
 - 修复工作树：`/home/cuihengjia/agent/novel/NS/.worktrees/yujin-unified-remediation`。
 - 分支：`codex/yujin-unified-remediation`。
-- 当前源码 HEAD：`43f9e14833203947eb361b0ab96a0007b377a277`。
+- 本次定向验证和真实恢复所用的可执行源码 SHA：`43f9e14833203947eb361b0ab96a0007b377a277`；随后只追加本执行记录，未改变可执行源码。
 - v24 冻结配置记录的旧源码为 `8e4b063…`；该差异继续作为历史，不复用为当前验收身份。
 - v25 使用独立 project/run、object store、state、receipts、logs 和 output；其逻辑 Genesis basis 为 `sha256:851fcfdae3c4d874386f4d700723881ce481937e28485de50cbd6e061baa1f25`。在最终正式阶段开始前仍需以最终源码 SHA 再次冻结并核对，v25 早于 `43f9e14` 的 Genesis 过程不单独充当最终正式冻结证明。
 - 真实服务预检：8003 `/health` 和 `/v1/models` 均 HTTP 200，实际模型 `qwen38-27b-nvfp4`；使用的 profile 为 `qwen38_27b_nvfp4_8003`。检索配置沿用 `real_hybrid`、OpenSearch 9200、embedding 8081、reranker 8082；凭证未写入记录。
