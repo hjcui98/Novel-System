@@ -553,9 +553,9 @@ def _recovery_without_memory_rerun(
         if not _ready_result_has_durable_chain(result, artifact_reader, task=task):
             continue
         result_refs = {_ref_key(ref) for ref in result.artifacts}
-        for _prior, checkpoint_ref, checkpoint in resumable:
+        for _prior, checkpoint_ref, resumable_checkpoint in resumable:
             if (
-                checkpoint.phase is not WritingLoopPhase.REACTIVE_MEMORY_PENDING
+                resumable_checkpoint.phase is not WritingLoopPhase.REACTIVE_MEMORY_PENDING
                 and _ref_key(checkpoint_ref) in result_refs
             ):
                 return True
@@ -992,8 +992,8 @@ def runtime_evidence_from_tasks(
             artifact_reader,
         )
         if settled is not None:
-            result, commit_request = settled
-            settlement_evidence.append(_SettlementEvidence(task, result, commit_request))
+            settled_result, commit_request = settled
+            settlement_evidence.append(_SettlementEvidence(task, settled_result, commit_request))
 
     atomic_writes: set[int] = set()
     known_obligations = (

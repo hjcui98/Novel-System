@@ -131,6 +131,12 @@ class _SourceBoundKwargs(TypedDict, total=False):
     source_evidence_requirement: SourceBoundEvidenceRequirement
 
 
+class _GraphBudgetKwargs(TypedDict, total=False):
+    cumulative_token_budget: int | None
+    cumulative_token_budgets: tuple[int, ...] | None
+    cumulative_tokens_used: int
+
+
 class RepositoryCanonicalReadAdapter:
     """Read a complete, hash-verified canonical basis from existing services."""
 
@@ -672,7 +678,7 @@ class TeacherForcedCuratorPort:
         cumulative_token_budget: int | None,
         cumulative_token_budgets: tuple[int, ...] | None,
         cumulative_tokens_used: int,
-    ) -> dict[str, object]:
+    ) -> _GraphBudgetKwargs:
         """Pass elastic budget kwargs only to graph ports that advertise them.
 
         A few isolated compatibility fixtures implement the older graph port
@@ -684,8 +690,9 @@ class TeacherForcedCuratorPort:
         if graph_curator is None:
             return {}
         try:
+            typed_graph_curator = cast(ModelCurator, graph_curator)
             parameters = inspect.signature(
-                graph_curator.extract_graph_candidates
+                typed_graph_curator.extract_graph_candidates
             ).parameters.values()
         except (AttributeError, TypeError, ValueError):
             return {}

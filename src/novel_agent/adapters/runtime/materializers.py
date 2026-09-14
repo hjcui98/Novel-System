@@ -1575,6 +1575,12 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
         )
         result = self._read(result_ref, WritingLoopResult)
         self._validate_evidence_chain(accepted, candidate, result_ref, result)
+        if (
+            result.initial_draft is None
+            or result.observation is None
+            or result.final_candidate_id is None
+        ):
+            raise CandidateMaterializationError("Draft candidate evidence chain is incomplete")
         basis = result.initial_draft.basis
         if (
             basis.project_id != accepted.project_id

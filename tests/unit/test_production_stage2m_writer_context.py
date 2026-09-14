@@ -675,4 +675,4 @@ def test_production_writer_context_expands_packing_then_reviews(tmp_path: Path) 
     )
     with pytest.raises(MemoryContextBudgetExhaustedError):
         context(_invocation(text))
-    assert resolves == [16, 20, 24]
+    assert resolves == [12, 24, 36]

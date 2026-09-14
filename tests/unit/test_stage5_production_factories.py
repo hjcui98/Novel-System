@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.postgres.database import Base, build_session_factory
+from novel_agent.adapters.postgres.models import DerivedSnapshotRow
 from novel_agent.adapters.runtime.isolated import StrictDeterministicCandidateMaterializer
 from novel_agent.adapters.runtime.stage3_writer import (
     ProductionWritingRequestFactory,
@@ -60,6 +61,7 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
+from novel_agent.domain.memory import DerivedBuildStatus, DerivedSnapshotLite
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.planning import (
     PlanningBudgets,
@@ -72,6 +74,10 @@ from novel_agent.domain.planning import (
 )
 from novel_agent.domain.planning import (
     PlanningLoopTerminal as Stage4PlanningLoopTerminal,
+)
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalRequirement,
+    RetrievalExecutionStatus,
 )
 from novel_agent.domain.runtime import TaskKind, TaskRecord, TaskStatus
 from novel_agent.domain.stage2 import (
@@ -90,8 +96,16 @@ from novel_agent.domain.stage2 import (
     SkillContractRef,
 )
 from novel_agent.domain.world import PlanLevel
-from novel_agent.domain.writer_context import ContextAssemblyStatus, WriterContextPackageV2
-from novel_agent.domain.writing_loop import WRITING_LOOP_CHECKPOINT_MEDIA_TYPE
+from novel_agent.domain.writer_context import (
+    ContextAssemblyStatus,
+    NeedEvidenceSemanticStatus,
+    NeedFacetSemanticReceipt,
+    WriterContextPackageV2,
+)
+from novel_agent.domain.writer_readiness import (
+    WriterContextInputNotReady,
+    WriterReadinessReasonCode,
+)
 from novel_agent.ports.creative_runtime import WritingLeafPort
 from novel_agent.runtime.production_components import (
     ProductionCuratorModelRequestFactory,
@@ -152,10 +166,18 @@ def _canonical(
     tmp_path: Path,
     *,
     extra_goals: tuple[ChapterGoal, ...] = (),
-) -> tuple[ArtifactRepository, CommitService, CommitId, TextRootDocument]:
+    publish_snapshot: bool = False,
+) -> tuple[
+    ArtifactRepository,
+    CommitService,
+    CommitId,
+    TextRootDocument,
+    DerivedSnapshotRepository,
+]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
-    commits = CommitService(build_session_factory(engine))
+    session_factory = build_session_factory(engine)
+    commits = CommitService(session_factory)
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "objects"))
     bundle = make_synthetic_bundle()
     text = next(item for item in bundle.text_roots if len(item.chapters) == 20)
@@ -165,6 +187,19 @@ def _canonical(
         goal_id=StableId("plan.chapter.21"),
         chapter_index=21,
         summary="Enter the tower while protecting the injured arm.",
+        obligation_ids=tuple(item.obligation_id for item in world.obligations),
+        payload={
+            "history_retrieval": {
+                "requirement": "REQUIRED",
+                "needs": [
+                    {
+                        "kind": "causal_history",
+                        "query": "what happened before the tower approach",
+                        "why_needed": "continuity",
+                    }
+                ],
+            }
+        },
     )
     provisional = original_plan.model_copy(
         update={
@@ -187,7 +222,31 @@ def _canonical(
         }
     )
     base = commits.initialize_project(manifest)
-    return artifacts, commits, base, text
+    if publish_snapshot:
+        published = DerivedSnapshotLite(
+            snapshot_id=StableId("snapshot.chapter.20"),
+            source_commit=base,
+            anchor_build_id=StableId("anchor.production-factory"),
+            anchor_index_version="anchor.v1",
+            grounded_index_version="grounded.v1",
+            embedding_profile="embedding.v1",
+            fusion_profile="fusion.v1",
+            build_status=DerivedBuildStatus.EXACT,
+            published_at=datetime(2026, 9, 15, tzinfo=UTC),
+        )
+        with session_factory() as session:
+            session.add(
+                DerivedSnapshotRow(
+                    snapshot_id=published.snapshot_id.root,
+                    project_id=manifest.project_id.root,
+                    source_commit=base.root,
+                    build_status=DerivedBuildStatus.EXACT.value,
+                    snapshot_json=published.model_dump(mode="json"),
+                    published_at=published.published_at,
+                )
+            )
+            session.commit()
+    return artifacts, commits, base, text, DerivedSnapshotRepository(session_factory)
 
 
 def test_production_curator_factory_uses_settlement_transport_timeout() -> None:
@@ -263,16 +322,10 @@ def _writing_policy() -> WritingRequestPolicy:
 def test_production_writing_factory_builds_v2_request_from_exact_commit(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, snapshots = _canonical(tmp_path, publish_snapshot=True)
     snapshot = StableId("snapshot.chapter.20")
     run_id = RunId("run.production-writer")
-    old_checkpoint_ref = artifacts.put(
-        b'{"checkpoint":"old"}', WRITING_LOOP_CHECKPOINT_MEDIA_TYPE, VERSION
-    )
     unrelated_ref = artifacts.put(b"terminal", "application/json", VERSION)
-    checkpoint_ref = artifacts.put(
-        b'{"checkpoint":"latest"}', WRITING_LOOP_CHECKPOINT_MEDIA_TYPE, VERSION
-    )
     advisory_ref = artifacts.put(
         b"quarantine-advisory",
         "application/vnd.novel-agent.quarantine-package+json",
@@ -293,7 +346,7 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
         target_chapters=25,
         current_attempt_id=StableId("attempt.production-writer"),
         input_artifact_refs=(advisory_ref,),
-        terminal_artifact_refs=(old_checkpoint_ref, unrelated_ref, checkpoint_ref),
+        terminal_artifact_refs=(unrelated_ref,),
     )
 
     def stage2m(invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
@@ -329,11 +382,32 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
                         ),
                     ),
                     slices=(slice_,),
+                    semantic_receipts=tuple(
+                        NeedFacetSemanticReceipt(
+                            need_id=need.need_id,
+                            need_facet_id=facet.need_facet_id,
+                            facet_kind=facet.facet_kind.value,
+                            status=NeedEvidenceSemanticStatus.SUPPORTED,
+                            mandatory=True,
+                            evaluated_slice_ids=(slice_.slice_id,),
+                            supporting_slice_ids=(slice_.slice_id,),
+                            judge_version="test",
+                        )
+                        for facet in need.need_facets
+                    ),
                 ),
             ),
             text_root=invocation.text,
             basis_commit_id=invocation.base_commit,
             basis_snapshot_id=invocation.snapshot_id,
+            gateway_context_artifact=invocation.planning_context_ref,
+            frozen_evidence_selections_artifact=invocation.plan_root_ref,
+            retrieval_requirement=HistoryRetrievalRequirement.REQUIRED,
+            retrieval_status=RetrievalExecutionStatus.EXECUTED,
+            plan_root_ref=invocation.plan_root_ref,
+            plan_revision=invocation.plan_revision,
+            chapter_goal_ids=invocation.chapter_goal_ids,
+            planning_context_ref=invocation.planning_context_ref,
         )
         assert result.status is ContextAssemblyStatus.READY
         return result
@@ -345,6 +419,7 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
         writer_context=stage2m,
         policy=_writing_policy(),
         schema_version=VERSION,
+        snapshots=snapshots,
     )(task)
 
     assert request.writing_task.target_chapter == 21
@@ -354,7 +429,7 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     assert request.recent_prose_context.previous_chapter is not None
     assert request.recent_prose_context.previous_chapter.chapter_index == 20
     assert request.future_isolation_attestation.evaluator_only_source_ids == ()
-    assert request.resume_checkpoint_ref == checkpoint_ref
+    assert request.resume_checkpoint_ref is None
     assert request.attempt_id == task.current_attempt_id
     model_request = ProductionWriterModelRequestFactory(
         role=ModelRole.IMPLEMENTATION,
@@ -398,11 +473,12 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
     assert reactive.resolution_template.snapshot_id == request.snapshot_id
 
 
-def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
+def test_production_writing_factory_rejects_multiple_goals_for_one_chapter(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(
+    artifacts, commits, base, _text, snapshots = _canonical(
         tmp_path,
+        publish_snapshot=True,
         extra_goals=(
             ChapterGoal(
                 goal_id=StableId("plan.chapter.21.candidate"),
@@ -418,10 +494,9 @@ def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
         ),
     )
     snapshot = StableId("snapshot.chapter.20")
-    run_id = RunId("run.production-writer-multi-goal")
     task = TaskRecord(
         task_id=TaskId("task.production-writer-multi-goal"),
-        run_id=run_id,
+        run_id=RunId("run.production-writer-multi-goal"),
         project_id=ProjectId("project.test"),
         kind=TaskKind.DRAFT_CANDIDATE,
         task_revision=0,
@@ -433,69 +508,24 @@ def test_production_writing_factory_accepts_multiple_goals_for_one_chapter(
         chapter_index=21,
         target_chapters=25,
     )
-
-    def stage2m(invocation: Stage2MWriterContextInvocation) -> EvidenceFirstAssemblyResult:
-        _fixture_task, needs, _units, _fixture_base = writer_context_inputs()
-        block = invocation.text.chapters[-1].scenes[0].blocks[0]
-        need = needs[0].model_copy(
-            update={
-                "run_id": run_id,
-                "task_id": invocation.task.task_id,
-                "base_commit": invocation.base_commit,
-                "horizon_target": (21, 21),
-            }
-        )
-        slice_ = EvidenceSliceResolver().resolve_block(
-            block,
-            source_commit=invocation.base_commit,
-            snapshot_id=invocation.snapshot_id,
-            access_scope=need.access_scope,
-        )[0]
-        result = EvidenceFirstWriterContextAssembler().assemble(
-            task=invocation.task,
-            selections=(
-                NeedEvidenceSelection(
-                    need=need,
-                    selections=(
-                        SliceSelectionTrace(
-                            slice_id=slice_.slice_id,
-                            unit_id=StableId("unit.production-writer-multi-goal"),
-                            route_channel="r1_exact",
-                            fused_rank=1,
-                            selection_reason="production factory multi-goal evidence",
-                        ),
-                    ),
-                    slices=(slice_,),
-                ),
+    with pytest.raises(ValueError, match="at most one active chapter goal"):
+        ProductionWritingRequestFactory(
+            commits=commits,
+            artifacts=artifacts,
+            recent_prose=RecentProseAssembler(artifacts, VERSION),
+            writer_context=cast(
+                Callable[[Stage2MWriterContextInvocation], EvidenceFirstAssemblyResult], object()
             ),
-            text_root=invocation.text,
-            basis_commit_id=invocation.base_commit,
-            basis_snapshot_id=invocation.snapshot_id,
-        )
-        assert result.status is ContextAssemblyStatus.READY
-        return result
-
-    request = ProductionWritingRequestFactory(
-        commits=commits,
-        artifacts=artifacts,
-        recent_prose=RecentProseAssembler(artifacts, VERSION),
-        writer_context=stage2m,
-        policy=_writing_policy(),
-        schema_version=VERSION,
-    )(task)
-
-    assert request.writing_task.chapter_goal == (
-        "Enter the tower while protecting the injured arm.；"  # noqa: RUF001
-        "Keep the injured arm out of the inner ward."
-    )
-    assert request.writing_task.active_plan_obligations == (StableId("obligation.arm"),)
-    assert "Keep the injured arm out of the inner ward." in request.writing_task.required_beats
+            policy=_writing_policy(),
+            schema_version=VERSION,
+            snapshots=snapshots,
+        )(task)
 
 
 def test_production_writing_factory_preserves_semantic_gaps_and_rejects_complete_rewrite(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, snapshots = _canonical(tmp_path, publish_snapshot=True)
     snapshot = StableId("snapshot.chapter.20")
     run_id = RunId("run.production-writer-gaps")
     task = TaskRecord(
@@ -576,65 +606,19 @@ def test_production_writing_factory_preserves_semantic_gaps_and_rejects_complete
         writer_context=stage2m,
         policy=_writing_policy(),
         schema_version=VERSION,
+        snapshots=snapshots,
     )
-    request = factory(task)
-    assert isinstance(request.writer_context_package, WriterContextPackageV2)
-    assert request.writer_context_package.semantic_status == "INCOMPLETE"
-    assert request.writer_context_package.usable_with_gaps is True
-    assert request.writer_context_package.unclosed_mandatory_need_facets == (unclosed,)
-
-    def not_ready(
-        invocation: Stage2MWriterContextInvocation,
-    ) -> EvidenceFirstAssemblyResult:
-        result = stage2m(invocation)
-        package = result.package.model_copy(
-            update={"assembly_status": ContextAssemblyStatus.EVIDENCE_INSUFFICIENT.value}
-        )
-        return result.model_copy(
-            update={"status": ContextAssemblyStatus.EVIDENCE_INSUFFICIENT, "package": package}
-        )
-
-    waiting = ProductionWritingRequestFactory(
-        commits=commits,
-        artifacts=artifacts,
-        recent_prose=RecentProseAssembler(artifacts, VERSION),
-        writer_context=not_ready,
-        policy=_writing_policy(),
-        schema_version=VERSION,
-    )(task)
-    assert isinstance(waiting.writer_context_package, WriterContextPackageV2)
-    assert waiting.writer_context_package.assembly_status == (
-        ContextAssemblyStatus.EVIDENCE_INSUFFICIENT.value
+    with pytest.raises(WriterContextInputNotReady) as error:
+        factory(task)
+    assert WriterReadinessReasonCode.MANDATORY_FACET_INCOMPLETE in (
+        error.value.decision.reason_codes
     )
-
-    def complete_rewrite(
-        invocation: Stage2MWriterContextInvocation,
-    ) -> EvidenceFirstAssemblyResult:
-        result = stage2m(invocation)
-        rewritten = result.package.model_copy(
-            update={
-                "semantic_status": "COMPLETE",
-                "usable_with_gaps": True,
-                "unclosed_mandatory_need_facets": (unclosed,),
-            }
-        )
-        return result.model_copy(update={"package": rewritten, "semantic_status": "COMPLETE"})
-
-    with pytest.raises(ValueError, match="semantic incompleteness"):
-        ProductionWritingRequestFactory(
-            commits=commits,
-            artifacts=artifacts,
-            recent_prose=RecentProseAssembler(artifacts, VERSION),
-            writer_context=complete_rewrite,
-            policy=_writing_policy(),
-            schema_version=VERSION,
-        )(task)
 
 
 def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     author_ref = artifacts.put(b"coarse author outline", "text/plain", VERSION)
     old_checkpoint_ref = artifacts.put(
         b'{"checkpoint":"old"}',
@@ -720,7 +704,7 @@ def test_production_stage4_factory_builds_chapter_set_horizon_from_runtime_task(
 def test_production_stage4_factory_rebinds_replay_to_its_logical_phase(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     raw_ref = artifacts.put(b"raw model response", MODEL_RAW_RESPONSE_MEDIA_TYPE, VERSION)
     replay = RuntimeModelReplayEvidence(
         run_id=RunId("run.production-replay"),
@@ -779,7 +763,7 @@ def test_production_stage4_leaf_consumes_replay_at_the_bound_phase(
 ) -> None:
     """The public Stage 4 leaf must hand the retained response to its phase."""
 
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     raw_ref = artifacts.put(b"raw model response", MODEL_RAW_RESPONSE_MEDIA_TYPE, VERSION)
     replay = RuntimeModelReplayEvidence(
         run_id=RunId("run.production-leaf-replay"),
@@ -917,7 +901,7 @@ def test_production_stage4_leaf_consumes_replay_at_the_bound_phase(
 
 
 def test_production_stage4_factory_story_keeps_author_brief(tmp_path: Path) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     author_ref = artifacts.put(b"full author brief", "text/plain", VERSION)
     request = PlanningLoopRequest(
         run_id=RunId("run.production-story"),
@@ -952,7 +936,7 @@ def test_production_stage4_factory_story_keeps_author_brief(tmp_path: Path) -> N
 def test_production_stage4_factory_separates_revision_lineage_from_author_sources(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     author_ref = artifacts.put(b"full author brief", "text/plain", VERSION)
     candidate_ref = artifacts.put(
         b"candidate",
@@ -1011,7 +995,7 @@ def test_production_stage4_factory_separates_revision_lineage_from_author_source
 def test_production_stage4_factory_reaches_public_leaf_materialization(tmp_path: Path) -> None:
     """The production request boundary must feed the public candidate materializer."""
 
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     author_ref = artifacts.put(b"full author brief", "text/plain", VERSION)
     candidate_ref = artifacts.put(
         b"candidate",

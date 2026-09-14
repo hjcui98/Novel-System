@@ -1575,29 +1575,24 @@ class WriterContextLoopService:
             and node.chapter_end is not None
             and node.chapter_start <= target <= node.chapter_end
         )
-        active_obligation_projection = tuple(
-            {
-                "goal_id": goal.goal_id.root,
-                "chapter_index": goal.chapter_index,
-                "obligation_ids": [item.root for item in goal.obligation_ids],
-                "obligation_actions": list(
-                    goal.payload.get("obligation_actions", [])
-                    if isinstance(goal.payload.get("obligation_actions"), list)
-                    else []
-                ),
-            }
-            for goal in goals
-        )
-        unresolved_advisories = tuple(
-            advisory
-            for goal in goals
-            for advisory in (
-                goal.payload.get("unresolved_advisories")
-                if isinstance(goal.payload.get("unresolved_advisories"), list)
-                else []
+        active_obligation_projection: list[dict[str, object]] = []
+        unresolved_advisories: list[dict[str, JsonValue]] = []
+        for goal in goals:
+            raw_actions = goal.payload.get("obligation_actions")
+            actions = raw_actions if isinstance(raw_actions, list) else []
+            active_obligation_projection.append(
+                {
+                    "goal_id": goal.goal_id.root,
+                    "chapter_index": goal.chapter_index,
+                    "obligation_ids": [item.root for item in goal.obligation_ids],
+                    "obligation_actions": list(actions),
+                }
             )
-            if isinstance(advisory, dict)
-        )
+            raw_advisories = goal.payload.get("unresolved_advisories")
+            if isinstance(raw_advisories, list):
+                unresolved_advisories.extend(
+                    advisory for advisory in raw_advisories if isinstance(advisory, dict)
+                )
         return canonical_json_bytes(
             {
                 "revision": request.accepted_plan.revision,

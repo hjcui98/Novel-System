@@ -609,6 +609,8 @@ class WriterCognitionService:
                 output,
                 call,
             )
+            if output.draft_text is None:
+                raise WriterCognitionError("DRAFT_READY output lost its draft text during repair")
             draft_text = output.draft_text
             surface_error = _writer_draft_surface_error(
                 draft_text,

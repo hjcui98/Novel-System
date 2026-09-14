@@ -169,13 +169,14 @@ def compile_planning_coverage_report(
     would report a real-looking zero that says nothing about the volume plan.
     """
 
-    chapter_indexes = {
-        index
-        for item in items
-        if isinstance(item.get("payload"), Mapping)
-        for index in (_chapter_indexes(item["payload"]),)
-        if index is not None
-    }
+    chapter_indexes: set[int] = set()
+    for item in items:
+        payload = item.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        index = _chapter_indexes(payload)
+        if index is not None:
+            chapter_indexes.add(index)
     level = (mode or "").lower()
     chapter_level = level in {"chapter_set", "chapter", "scene"}
     if not chapter_level and level:
@@ -200,14 +201,16 @@ def compile_planning_coverage_report(
             denominator_source="declared planning horizon",
         )
 
-    proposal_text = " ".join(
-        value
-        for item in items
-        if isinstance(item.get("payload"), Mapping)
-        for key in ("summary", "goal", "title", "chapter_goal")
-        for value in (item["payload"].get(key),)
-        if isinstance(value, str)
-    )
+    proposal_text_parts: list[str] = []
+    for item in items:
+        payload = item.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        for key in ("summary", "goal", "title", "chapter_goal"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                proposal_text_parts.append(value)
+    proposal_text = " ".join(proposal_text_parts)
     payload_texts = [
         str(item["payload"]) for item in items if isinstance(item.get("payload"), Mapping)
     ]

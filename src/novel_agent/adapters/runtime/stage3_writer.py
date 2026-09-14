@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from pydantic import JsonValue
+
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import (
     AuthorPlanningContext,
@@ -576,31 +578,27 @@ class ProductionWritingRequestFactory:
                 for action in self._payload_obligation_actions(goal.payload, world_obligation_ids)
             )
         )
-        advisory_entries = tuple(
-            raw
-            for goal in goals
-            for raw in (
-                goal.payload.get("unresolved_advisories")
-                if isinstance(goal.payload.get("unresolved_advisories"), list)
-                else ()
-            )
-            if isinstance(raw, dict)
-        )
+        advisory_entries: list[dict[str, JsonValue]] = []
+        for goal in goals:
+            raw_advisories = goal.payload.get("unresolved_advisories")
+            if isinstance(raw_advisories, list):
+                advisory_entries.extend(raw for raw in raw_advisories if isinstance(raw, dict))
         advisory_constraints = tuple(
             "未决 advisory (不得当作已证实事实)\uff1a" + summary
             for raw in advisory_entries
             if isinstance(summary := raw.get("summary"), str) and summary.strip()
         )
-        advisory_forbidden = tuple(
-            assumption.strip()
-            for raw in advisory_entries
-            for assumption in (
-                raw.get("forbidden_assumptions")
-                if isinstance(raw.get("forbidden_assumptions"), list)
-                else ()
+        advisory_forbidden_values: list[str] = []
+        for raw in advisory_entries:
+            raw_forbidden = raw.get("forbidden_assumptions")
+            if not isinstance(raw_forbidden, list):
+                continue
+            advisory_forbidden_values.extend(
+                assumption.strip()
+                for assumption in raw_forbidden
+                if isinstance(assumption, str) and assumption.strip()
             )
-            if isinstance(assumption, str) and assumption.strip()
-        )
+        advisory_forbidden = tuple(advisory_forbidden_values)
         lock_constraints, lock_forbids = self._future_lock_constraints(world, task.chapter_index)
         profile_lock_constraints, profile_lock_forbids = self._profile_lock_constraints(
             profile, task.chapter_index

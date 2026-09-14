@@ -272,7 +272,7 @@ class PlanRootDocument(DomainModel):
         }
         for node_id in parents:
             seen = {node_id}
-            current = parents[node_id]
+            current: StableId | None = parents[node_id]
             while current is not None:
                 if current in seen:
                     raise ValueError("plan node parent chain contains a cycle")

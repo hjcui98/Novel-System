@@ -223,7 +223,7 @@ class _TextMaterializer:
 def test_atomic_chapter_settlement_updates_text_and_world_in_one_commit(
     tmp_path: Path,
 ) -> None:
-    artifacts, commits, base, _text = _canonical(tmp_path)
+    artifacts, commits, base, _text, _snapshots = _canonical(tmp_path)
     manifest = commits.load_manifest(base)
     world = WorldRootDocument.model_validate_json(
         artifacts.read_verified(manifest.world_root), strict=True

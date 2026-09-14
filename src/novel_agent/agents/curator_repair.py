@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from pydantic import ValidationError
 
 from novel_agent.agents.runner import StructuredAgentRunner
@@ -38,6 +40,12 @@ class CuratorRepairContractError(CuratorRepairRejectedError):
     """The model returned a repair outside the trusted repair scope."""
 
 
+class _CumulativeBudgetKwargs(TypedDict, total=False):
+    cumulative_token_budget: int | None
+    cumulative_token_budgets: tuple[int, ...] | None
+    cumulative_tokens_used: int
+
+
 class CuratorRepairAgent:
     """Run a bounded repair while keeping candidate materialization trusted.
 
@@ -59,7 +67,7 @@ class CuratorRepairAgent:
         self._evidence_contract = evidence_contract
 
     @staticmethod
-    def _cumulative_budget_kwargs(request: CuratorRepairRequest) -> dict[str, object]:
+    def _cumulative_budget_kwargs(request: CuratorRepairRequest) -> _CumulativeBudgetKwargs:
         """Keep legacy lightweight repair fixtures free of workflow-only fields."""
 
         workflow_request = getattr(request, "request", None)
