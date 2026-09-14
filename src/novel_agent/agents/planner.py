@@ -138,7 +138,9 @@ PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "Keep the request bounded to at most three unique memory_questions. "
     "For a relation question, use exact labels for every named subject and object. "
     "If action is PLAN_READY, place source_ids directly on each ProposedItem alongside item_id "
-    "and kind, never nested inside payload. "
+    "and kind, never nested inside payload. For every unresolved item, omit issue_id entirely; "
+    "the host assigns issue_id. Use parent_issue_id only for an authorized MODIFY or CLOSE, "
+    "and never invent a parent identity. "
     "Do not emit markdown, reasoning, or commentary outside JSON."
 )
 
@@ -355,6 +357,21 @@ BOOTSTRAP_UNRESOLVED_LIMIT = 24
 
 class _ModelPlannerProposalDraft(PlannerProposalDraft):
     """Provider-facing draft that keeps unresolved identities host-owned."""
+
+    @field_validator("unresolved", mode="before")
+    @classmethod
+    def reject_model_assigned_unresolved_ids_before(cls, value: object) -> object:
+        """Reject host identities before the migration validator creates domain objects."""
+
+        if isinstance(value, (list, tuple)) and any(
+            (isinstance(item, dict) and item.get("issue_id") is not None)
+            or (isinstance(item, PlanUnresolvedIssueDraft) and item.issue_id is not None)
+            for item in value
+        ):
+            raise ValueError(
+                "Planner model output must omit issue_id; the host assigns unresolved identities"
+            )
+        return value
 
     @model_validator(mode="after")
     def reject_model_assigned_unresolved_ids(self) -> _ModelPlannerProposalDraft:
