@@ -361,6 +361,23 @@ class _ModelPlannerProposalDraft(PlannerProposalDraft):
             raise ValueError(
                 "Planner model output must omit issue_id; the host assigns unresolved identities"
             )
+        seen: set[tuple[object, ...]] = set()
+        for issue in self.unresolved:
+            identity = (
+                "parent",
+                issue.parent_issue_id.root if issue.parent_issue_id is not None else "add",
+                issue.kind.value,
+                tuple(sorted(set(issue.affected_chapters))),
+                issue.resolution_owner.strip(),
+                tuple(sorted(source.root for source in issue.source_ids)),
+                tuple(sorted(source.artifact_id.root for source in issue.source_artifact_refs)),
+            )
+            if identity in seen:
+                raise ValueError(
+                    "Planner model output contains duplicate unresolved identity; "
+                    "merge the issue or provide distinct structured scope/source"
+                )
+            seen.add(identity)
         return self
 
 

@@ -20,3 +20,5 @@
 每个条目的 payload 在适用时应包含 `title`，且必须包含保留了源文档专有名词的 `description` 或 `summary`。`description` 最多可达 1200 字符。切勿针对未来的每一章都输出条目，且 `chapter_index` 不得设置超过 5。将 `deviations` 和 `alternatives` 置空。仅在 `unresolved` 中保留源文档真实缺失的信息缺口。目标数组为空时无法报告大于 0 的覆盖率（coverage）。
 
 每个带有 `provenance: "author_supplied"` 的条目必须包含一个非空的 `source_ids` 数组，其中包含该条目规范化来源的 `PLANNING_TASK.source_ids` 精确标识符（例如 `source.author-initial-brief`）。此规则独立适用于项目意图及每个路由目标条目；切勿仅因来源在条目 ID 中显而易见就省略 `source_ids`。
+
+`unresolved` 中每个问题必须有可区分的结构化身份。若多个问题来自同一来源且没有影响章节，不能重复输出相同的 `kind`、责任人和来源组合；应合并为一个问题，或提供真实且不同的 `kind`、`affected_chapters` 或 `source_artifact_refs`。不要用 `issue_id`、摘要措辞或数组顺序制造区别；宿主会拒绝重复身份并由宿主分配稳定 ID。
