@@ -129,6 +129,15 @@ def test_planner_failure_code_preserves_failure_semantics() -> None:
         TaskStatus.BLOCKED,
         CreativeRunTerminal.BLOCKED,
     )
+    context_limit = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.BLOCKED,
+        "context_limit",
+    )
+    assert context_limit == (
+        FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE,
+        TaskStatus.BLOCKED,
+        CreativeRunTerminal.BLOCKED,
+    )
     recovery = CreativeRuntimeService._planner_failure(
         PlanningTerminalStatus.SUSPENDED,
         "CONTEXT_RUNTIME_FAILURE",

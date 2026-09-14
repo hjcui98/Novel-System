@@ -2518,6 +2518,16 @@ class CreativeRuntimeService:
                 TaskStatus.BUDGET_REVIEW,
                 CreativeRunTerminal.BUDGET_REVIEW,
             )
+        if code == "CONTEXT_LIMIT":
+            # The host could not assemble a request within the frozen context
+            # contract.  Replaying the same immutable inputs cannot change that
+            # result, and increasing attempts would only hide a deterministic
+            # admission failure; an operator must supply changed evidence/input.
+            return (
+                FailureClass.SCHEDULING_BUDGET_UNSATISFIABLE,
+                TaskStatus.BLOCKED,
+                CreativeRunTerminal.BLOCKED,
+            )
         if code in {
             "INQUIRY_REVISION_NO_PROGRESS",
             "PLAN_REVISION_NO_PROGRESS",
