@@ -12,11 +12,13 @@ from pydantic import JsonValue
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from novel_agent.adapters.postgres.model_call_ledger import SqlModelCallLedger
 from novel_agent.adapters.postgres.models import (
     ModelCallLedgerRow,
     ProjectRow,
     ProjectWriterClaimRow,
     RunCheckpointRow,
+    RunEventRow,
     RunStreamRow,
     RuntimeEffectProjectionRow,
     RuntimeTaskAttemptRow,
@@ -34,15 +36,16 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunRequest,
     RuntimeModelReplayEvidence,
 )
-from novel_agent.domain.ids import CommitId, RunId, StableId, TaskId
+from novel_agent.domain.ids import ArtifactId, CommitId, RunId, StableId, TaskId
 from novel_agent.domain.memory_write import (
     MemoryGapClassification,
     MemoryRepairFinding,
     MemoryWriteWorkflowResult,
     MemoryWriteWorkflowStatus,
 )
-from novel_agent.domain.model_calls import ModelCallLedgerStatus
+from novel_agent.domain.model_calls import ModelCallLedgerEntry, ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
+    MODEL_CALL_RECONCILIATION_MEDIA_TYPE,
     STAGE5_EVENT_SCHEMA_VERSION,
     AcceptanceRecordedPayload,
     AttemptFence,
@@ -54,6 +57,7 @@ from novel_agent.domain.runtime import (
     EffectStatus,
     EffectTerminalPayload,
     FailureClass,
+    ModelCallReconciliationEvidence,
     ResumabilityStatus,
     RunCheckpoint,
     RunEvent,
@@ -132,7 +136,7 @@ def _task_created_identity(task_id: TaskId) -> StableId:
 
 
 class RuntimeCommandService:
-    """The sole writer of runtime task, attempt, effect, and writer-lane projections."""
+    """Owner of runtime projections and audited model-call reconciliation."""
 
     def __init__(
         self,
@@ -1299,6 +1303,148 @@ class RuntimeCommandService:
             )
             return receipt
 
+    def reconcile_model_call(
+        self,
+        task_id: TaskId,
+        *,
+        request_id: StableId,
+        request_hash: ArtifactId,
+        evidence_ref: ArtifactRef,
+        command_id: StableId,
+        actor_id: str,
+        reason: str,
+        observed_revision: int | None = None,
+    ) -> ModelCallLedgerEntry:
+        """Close one uncertain model send only with immutable, identity-bound evidence.
+
+        This command intentionally settles the model ledger without changing the task
+        projection.  A later recovery classification can then decide whether the
+        existing completed responses are replayable or a fresh request is legal.
+        """
+
+        if self._artifacts is None:
+            raise RuntimeCommandConflictError(
+                "model-call reconciliation requires an ArtifactRepository"
+            )
+        if evidence_ref.media_type != MODEL_CALL_RECONCILIATION_MEDIA_TYPE:
+            raise RuntimeCommandConflictError("model-call evidence has an unsupported media type")
+        try:
+            evidence = ModelCallReconciliationEvidence.model_validate_json(
+                self._artifacts.read_verified(evidence_ref),
+                strict=True,
+            )
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise RuntimeCommandConflictError(
+                "model-call evidence is invalid or unavailable"
+            ) from error
+        if (
+            evidence.request_id != request_id
+            or evidence.request_hash != request_hash
+            or evidence.task_id != task_id
+        ):
+            raise RuntimeCommandConflictError("model-call evidence identity does not match command")
+        if evidence_ref.schema_version != STAGE5_EVENT_SCHEMA_VERSION:
+            raise RuntimeCommandConflictError(
+                "model-call evidence has an unsupported schema version"
+            )
+        observed_at = evidence.observed_at
+        if observed_at.tzinfo is None:
+            raise RuntimeCommandConflictError(
+                "model-call evidence timestamp must include a timezone"
+            )
+        observed_at = observed_at.astimezone(UTC)
+
+        control_payload = ControlIntentPayload(
+            command_id=command_id,
+            action="reconcile_model_call",
+            actor_id=actor_id,
+            reason=reason,
+            model_call_request_id=request_id,
+            model_call_request_hash=request_hash,
+            model_call_attempt_id=evidence.attempt_id,
+            model_call_evidence_ref=evidence_ref,
+        )
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            self._require_observed_revision(task, observed_revision)
+            if task.run_id != evidence.run_id:
+                raise RuntimeCommandConflictError(
+                    "model-call evidence run identity does not match task"
+                )
+            row = session.get(ModelCallLedgerRow, request_id.root, with_for_update=True)
+            if row is None:
+                raise RuntimeCommandConflictError("model-call ledger row does not exist")
+            if (
+                row.run_id != task.run_id.root
+                or row.task_id != task_id.root
+                or row.request_hash != request_hash.root
+                or row.attempt_id
+                != (None if evidence.attempt_id is None else evidence.attempt_id.root)
+            ):
+                raise RuntimeCommandConflictError(
+                    "model-call ledger identity does not match evidence"
+                )
+            requested_at = row.requested_at
+            if requested_at.tzinfo is None:
+                requested_at = requested_at.replace(tzinfo=UTC)
+            if observed_at < requested_at.astimezone(UTC):
+                raise RuntimeCommandConflictError("model-call evidence predates the request")
+            existing = SqlModelCallLedger._to_domain(row)
+            if existing.status is not ModelCallLedgerStatus.UNCERTAIN:
+                if existing.status is ModelCallLedgerStatus.TRANSPORT_EXHAUSTED:
+                    prior_event = session.scalar(
+                        select(RunEventRow).where(
+                            RunEventRow.run_id == task.run_id.root,
+                            RunEventRow.idempotency_identity == command_id.root,
+                        )
+                    )
+                    if prior_event is not None:
+                        prior = RunEvent.model_validate_json(json.dumps(prior_event.event_json))
+                        prior_payload = ControlIntentPayload.model_validate(
+                            prior.payload, strict=False
+                        )
+                        if prior_payload == control_payload and prior.artifact_refs == (
+                            evidence_ref,
+                        ):
+                            return existing
+                raise RuntimeCommandConflictError("only an uncertain model call may be reconciled")
+            if (
+                row.completed_at is not None
+                or row.raw_response_hash is not None
+                or row.raw_artifact_json is not None
+                or row.call_record_json is not None
+                or row.response_consumed_at is not None
+            ):
+                raise RuntimeCommandConflictError(
+                    "uncertain model call already contains terminal response evidence"
+                )
+            if (
+                row.provider_request_id is not None
+                and evidence.provider_request_id != row.provider_request_id
+            ):
+                raise RuntimeCommandConflictError("provider request identity differs from ledger")
+            reconciled_provider_id = evidence.provider_request_id or row.provider_request_id
+            reconciled = existing.model_copy(
+                update={
+                    "status": ModelCallLedgerStatus.TRANSPORT_EXHAUSTED,
+                    "provider_request_id": reconciled_provider_id,
+                    "transport_error_type": existing.transport_error_type
+                    or f"reconciled_{evidence.outcome.value}",
+                    "completed_at": observed_at,
+                }
+            )
+            SqlModelCallLedger._update_row(row, reconciled)
+            self._append(
+                session,
+                task.run_id,
+                task.task_id,
+                RunEventType.RUNTIME_CONTROL_RECORDED,
+                control_payload.model_dump(mode="json"),
+                command_id,
+                artifact_refs=(evidence_ref,),
+            )
+            return reconciled
+
     def operator_reconcile_attempt(
         self,
         task_id: TaskId,
@@ -1677,9 +1823,7 @@ class RuntimeCommandService:
                     else TaskAttempt.model_validate_json(json.dumps(latest.attempt_json))
                 )
                 model_ledger_rows = session.scalars(
-                    select(ModelCallLedgerRow).where(
-                        ModelCallLedgerRow.task_id == task_id.root
-                    )
+                    select(ModelCallLedgerRow).where(ModelCallLedgerRow.task_id == task_id.root)
                 ).all()
                 completed_statement = select(ModelCallLedgerRow).where(
                     ModelCallLedgerRow.task_id == task_id.root,
@@ -1698,9 +1842,7 @@ class RuntimeCommandService:
                     and isinstance(row.raw_artifact_json.get("artifact_id"), str)
                 )
                 unavailable_ids = tuple(
-                    row.request_id
-                    for row in completed_rows
-                    if row.raw_artifact_json is None
+                    row.request_id for row in completed_rows if row.raw_artifact_json is None
                 )
                 unsettled_sends = tuple(
                     session.scalars(
@@ -2620,8 +2762,7 @@ class RuntimeCommandService:
             .with_for_update()
         ).all()
         tasks = {
-            row.task_id: TaskRecord.model_validate_json(json.dumps(row.task_json))
-            for row in rows
+            row.task_id: TaskRecord.model_validate_json(json.dumps(row.task_json)) for row in rows
         }
         frontier = {root.task_id.root}
         visited = set(frontier)
@@ -2649,9 +2790,7 @@ class RuntimeCommandService:
                     TaskStatus.RUNNING,
                     TaskStatus.RECOVERY_PENDING,
                 }:
-                    raise RuntimeCommandConflictError(
-                        "stale successor lineage is still active"
-                    )
+                    raise RuntimeCommandConflictError("stale successor lineage is still active")
                 if not candidate.superseded and candidate.status in supersedable:
                     updated = candidate.model_copy(
                         update={

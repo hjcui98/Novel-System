@@ -126,7 +126,7 @@ def project_runtime_events(events: tuple[RunEvent, ...]) -> RuntimeProjectionSta
             )
         elif event.event_type is RunEventType.RUNTIME_CONTROL_RECORDED:
             control_payload = ControlIntentPayload.model_validate(event.payload, strict=False)
-            if control_payload.action == "operator_reconcile":
+            if control_payload.action in {"operator_reconcile", "reconcile_model_call"}:
                 continue
             status = task.status
             paused = task.paused

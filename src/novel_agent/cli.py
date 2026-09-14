@@ -347,6 +347,21 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--observed-revision", type=int, required=True)
     reconcile.add_argument("--command-id", required=True)
     reconcile.add_argument("--receipt", type=Path, required=True)
+    reconcile_model_call = runtime_commands.add_parser(
+        "reconcile-model-call",
+        help="close one uncertain model send with identity-bound operator evidence",
+    )
+    reconcile_model_call.add_argument("--project-id", required=True)
+    reconcile_model_call.add_argument("--run-id", required=True)
+    reconcile_model_call.add_argument("--task-id", required=True)
+    reconcile_model_call.add_argument("--request-id", required=True)
+    reconcile_model_call.add_argument("--request-hash", required=True)
+    reconcile_model_call.add_argument("--observed-revision", type=int, required=True)
+    reconcile_model_call.add_argument("--command-id", required=True)
+    reconcile_model_call.add_argument("--actor-id", required=True)
+    reconcile_model_call.add_argument("--reason", required=True)
+    reconcile_model_call.add_argument("--evidence", type=Path, required=True)
+    reconcile_model_call.add_argument("--object-store-root", type=Path, required=True)
     reconcile_attempt = runtime_commands.add_parser("reconcile")
     reconcile_attempt.add_argument("--project-id", required=True)
     reconcile_attempt.add_argument("--run-id", required=True)
@@ -489,8 +504,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             UnblockCommand,
             commit_task_from_acceptance,
         )
-        from novel_agent.domain.ids import ProjectId, RunId, StableId, TaskId
-        from novel_agent.domain.runtime import EffectReceipt, TaskStatus
+        from novel_agent.domain.ids import (
+            ArtifactId,
+            ProjectId,
+            RunId,
+            SchemaVersion,
+            StableId,
+            TaskId,
+        )
+        from novel_agent.domain.runtime import (
+            MODEL_CALL_RECONCILIATION_MEDIA_TYPE,
+            EffectReceipt,
+            TaskStatus,
+        )
         from novel_agent.services.artifacts import ArtifactRepository
         from novel_agent.services.commits import CommitService
         from novel_agent.services.event_log import RunEventLogRepository
@@ -512,6 +538,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 RuntimeError("runtime CLI does not claim work; dispatcher must inject permissions")
             ),
         )
+        if args.runtime_command == "reconcile-model-call":
+            commands = RuntimeCommandService(
+                factory,
+                events,
+                permission_hash_resolver=lambda _project_id: (_ for _ in ()).throw(
+                    RuntimeError(
+                        "runtime CLI does not claim work; dispatcher must inject permissions"
+                    )
+                ),
+                artifacts=ArtifactRepository(FilesystemObjectStore(args.object_store_root)),
+            )
         if args.runtime_command == "audit-memory-projection":
             from novel_agent.domain.benchmark import TextRootDocument
             from novel_agent.services.memory_projection_audit import MemoryProjectionAuditor
@@ -1058,6 +1095,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 observed_revision=args.observed_revision,
             )
             print(effect_result.model_dump_json())
+            return 0
+        if args.runtime_command == "reconcile-model-call":
+            model_call_task = commands.get_task(TaskId(args.task_id))
+            if model_call_task.project_id != ProjectId(
+                args.project_id
+            ) or model_call_task.run_id != RunId(args.run_id):
+                raise ValueError("explicit project/run/task identity mismatch")
+            artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
+            evidence_bytes = args.evidence.read_bytes()
+            evidence_ref = artifacts.put(
+                evidence_bytes,
+                MODEL_CALL_RECONCILIATION_MEDIA_TYPE,
+                SchemaVersion("1.0.0"),
+            )
+            model_call_result = commands.reconcile_model_call(
+                model_call_task.task_id,
+                request_id=StableId(args.request_id),
+                request_hash=ArtifactId(args.request_hash),
+                evidence_ref=evidence_ref,
+                command_id=StableId(args.command_id),
+                actor_id=args.actor_id,
+                reason=args.reason,
+                observed_revision=args.observed_revision,
+            )
+            print(
+                json.dumps(
+                    {
+                        "entry": model_call_result.model_dump(mode="json"),
+                        "evidence_ref": evidence_ref.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
             return 0
         if args.runtime_command == "reconcile":
             reconcile_task = commands.get_task(TaskId(args.task_id))

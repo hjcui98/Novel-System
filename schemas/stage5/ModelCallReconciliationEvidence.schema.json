@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "ArtifactId",
+      "type": "string"
+    },
+    "ModelCallReconciliationOutcome": {
+      "enum": [
+        "provider_rejected",
+        "provider_expired",
+        "provider_cancelled"
+      ],
+      "title": "ModelCallReconciliationOutcome",
+      "type": "string"
+    },
+    "ModelCallReconciliationSource": {
+      "enum": [
+        "provider_api",
+        "provider_audit",
+        "authorized_operator"
+      ],
+      "title": "ModelCallReconciliationSource",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "RunId",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    },
+    "TaskId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "TaskId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable evidence that an uncertain provider send did not produce a usable response.",
+  "properties": {
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "attested_by": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Attested By",
+      "type": "string"
+    },
+    "evidence_locator": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Evidence Locator",
+      "type": "string"
+    },
+    "evidence_version": {
+      "const": "model_call_reconciliation.v1",
+      "default": "model_call_reconciliation.v1",
+      "title": "Evidence Version",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/ModelCallReconciliationOutcome"
+    },
+    "provider_request_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Request Id"
+    },
+    "request_hash": {
+      "$ref": "#/$defs/ArtifactId"
+    },
+    "request_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "source": {
+      "$ref": "#/$defs/ModelCallReconciliationSource"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "task_id",
+    "request_hash",
+    "outcome",
+    "source",
+    "evidence_locator",
+    "attested_by",
+    "observed_at"
+  ],
+  "title": "ModelCallReconciliationEvidence",
+  "type": "object"
+}

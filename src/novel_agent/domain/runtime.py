@@ -5,12 +5,21 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
-from novel_agent.domain.ids import CommitId, ProjectId, RunId, SchemaVersion, StableId, TaskId
+from novel_agent.domain.ids import (
+    ArtifactId,
+    CommitId,
+    ProjectId,
+    RunId,
+    SchemaVersion,
+    StableId,
+    TaskId,
+)
 from novel_agent.domain.model_calls import (
     ModelCallRecord,
     ModelRole,
@@ -19,6 +28,7 @@ from novel_agent.domain.model_calls import (
 from novel_agent.domain.world import PlanLevel
 
 STAGE5_EVENT_SCHEMA_VERSION = SchemaVersion("1.0.0")
+MODEL_CALL_RECONCILIATION_MEDIA_TYPE = "application/vnd.novel-agent.model-call-reconciliation+json"
 
 
 class RunEventType(StrEnum):
@@ -692,6 +702,10 @@ class ControlIntentPayload(DomainModel):
     additional_attempts: int = Field(default=0, ge=0)
     additional_planner_memory_tranches: int = Field(default=0, ge=0)
     writer_generation_after: int | None = Field(default=None, ge=0)
+    model_call_request_id: StableId | None = None
+    model_call_request_hash: ArtifactId | None = None
+    model_call_attempt_id: StableId | None = None
+    model_call_evidence_ref: ArtifactRef | None = None
 
     @model_validator(mode="after")
     def validate_budget_extension(self) -> ControlIntentPayload:
@@ -703,6 +717,53 @@ class ControlIntentPayload(DomainModel):
             self.action not in {"retry", "unblock"} or self.writer_generation_after != 0
         ):
             raise ValueError("only retry or unblock may release writer generation")
+        model_call_fields = (
+            self.model_call_request_id,
+            self.model_call_request_hash,
+            self.model_call_evidence_ref,
+        )
+        if self.action == "reconcile_model_call":
+            if any(value is None for value in model_call_fields):
+                raise ValueError("model-call reconciliation requires complete request evidence")
+        elif any(value is not None for value in (*model_call_fields, self.model_call_attempt_id)):
+            raise ValueError("model-call identity is only valid for model-call reconciliation")
+        return self
+
+
+class ModelCallReconciliationOutcome(StrEnum):
+    PROVIDER_REJECTED = "provider_rejected"
+    PROVIDER_EXPIRED = "provider_expired"
+    PROVIDER_CANCELLED = "provider_cancelled"
+
+
+class ModelCallReconciliationSource(StrEnum):
+    PROVIDER_API = "provider_api"
+    PROVIDER_AUDIT = "provider_audit"
+    AUTHORIZED_OPERATOR = "authorized_operator"
+
+
+class ModelCallReconciliationEvidence(DomainModel):
+    """Immutable evidence that an uncertain provider send did not produce a usable response."""
+
+    evidence_version: Literal["model_call_reconciliation.v1"] = "model_call_reconciliation.v1"
+    request_id: StableId
+    run_id: RunId
+    task_id: TaskId
+    attempt_id: StableId | None = None
+    request_hash: ArtifactId
+    outcome: ModelCallReconciliationOutcome
+    source: ModelCallReconciliationSource
+    evidence_locator: str = Field(min_length=1, max_length=512)
+    attested_by: str = Field(min_length=1, max_length=128)
+    provider_request_id: str | None = Field(default=None, min_length=1, max_length=256)
+    observed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_source_identity(self) -> ModelCallReconciliationEvidence:
+        if self.source is ModelCallReconciliationSource.PROVIDER_API and (
+            self.provider_request_id is None
+        ):
+            raise ValueError("provider API evidence requires a provider request id")
         return self
 
 
