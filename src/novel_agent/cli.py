@@ -679,14 +679,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_id = TaskId(args.task_id)
             task = repository.get_task(task_id)
             attempt = repository.last_settled_attempt(task_id)
-            unsettled, outstanding, completed = repository.attempt_effect_ledger(task_id)
+            ledger = repository.attempt_effect_evidence(task_id)
             classification = classify_attempt(
                 task_id=StableId(task_id.root),
                 task_status=task.status,
                 attempt=attempt,
-                unsettled_sends=unsettled,
-                outstanding_request_ids=outstanding,
-                completed_response_refs=completed,
+                unsettled_sends=ledger.unsettled_sends,
+                outstanding_request_ids=ledger.outstanding_request_ids,
+                completed_response_refs=ledger.completed_response_refs,
+                unavailable_response_ids=ledger.unavailable_response_ids,
+                frontier_attempt_id=ledger.frontier_attempt_id,
                 block_cause=task.block_cause,
             )
             print(

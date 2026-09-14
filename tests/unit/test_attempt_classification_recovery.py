@@ -333,6 +333,7 @@ def _persist_model_call(
     *,
     request_id: str,
     task_id: str = "task.n4.persisted",
+    attempt_id: str = "attempt.n4.1",
     status: ModelCallLedgerStatus,
     raw_artifact_id: str | None = None,
 ) -> None:
@@ -342,7 +343,7 @@ def _persist_model_call(
                 request_id=request_id,
                 run_id=RUN.root,
                 task_id=task_id,
-                attempt_id="attempt.n4.1",
+                attempt_id=attempt_id,
                 request_hash=HASH,
                 status=status.value,
                 logical_phase="plan",
@@ -428,8 +429,107 @@ def test_the_read_path_surfaces_a_completed_response(
         completed_response_refs=completed,
     )
 
-    assert result.action is RecoveryAction.REPLAY_COMPLETED
-    assert completed == ("effect.done",)
+    # A completed commit/projection effect is not a model response and must not
+    # make a provider retry look replayable.
+    assert result.action is RecoveryAction.RETRY_UNDER_POLICY
+    assert completed == ()
+
+
+def test_historical_completed_response_is_not_the_current_recovery_frontier(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    first = _attempt(task_id="task.n4.persisted", attempt_no=1)
+    _persist_attempt(repository, first)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.old.completed",
+        attempt_id=first.attempt_id.root,
+        status=ModelCallLedgerStatus.COMPLETED,
+        raw_artifact_id="artifact.old.response",
+    )
+    current = _attempt(
+        task_id="task.n4.persisted",
+        attempt_no=2,
+        failure=FailureClass.PROVIDER_TRANSIENT,
+    )
+    _persist_attempt(repository, current)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.current.uncertain",
+        attempt_id=current.attempt_id.root,
+        status=ModelCallLedgerStatus.UNCERTAIN,
+    )
+
+    evidence = repository.attempt_effect_evidence(TaskId("task.n4.persisted"))
+    result = classify_attempt(
+        task_id=StableId("task.n4.persisted"),
+        task_status=TaskStatus.WAITING_RETRY,
+        attempt=repository.last_settled_attempt(TaskId("task.n4.persisted")),
+        unsettled_sends=evidence.unsettled_sends,
+        outstanding_request_ids=evidence.outstanding_request_ids,
+        completed_response_refs=evidence.completed_response_refs,
+        unavailable_response_ids=evidence.unavailable_response_ids,
+        frontier_attempt_id=evidence.frontier_attempt_id,
+    )
+
+    assert evidence.frontier_attempt_id == current.attempt_id
+    assert evidence.completed_response_refs == ()
+    assert evidence.unsettled_sends == ("request.n4.current.uncertain",)
+    assert result.action is RecoveryAction.RECONCILE_FIRST
+    assert not result.safe_to_retry
+
+
+def test_current_completed_response_is_replayable_but_old_one_is_not(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    first = _attempt(task_id="task.n4.persisted", attempt_no=1)
+    _persist_attempt(repository, first)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.old.completed",
+        attempt_id=first.attempt_id.root,
+        status=ModelCallLedgerStatus.COMPLETED,
+        raw_artifact_id="artifact.old.response",
+    )
+    current = _attempt(task_id="task.n4.persisted", attempt_no=2)
+    _persist_attempt(repository, current)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.current.completed",
+        attempt_id=current.attempt_id.root,
+        status=ModelCallLedgerStatus.COMPLETED,
+        raw_artifact_id="artifact.current.response",
+    )
+
+    evidence = repository.attempt_effect_evidence(TaskId("task.n4.persisted"))
+
+    assert evidence.completed_response_refs == ("artifact.current.response",)
+
+
+def test_completed_model_call_without_raw_evidence_requires_reconciliation(
+    repository: RuntimeTaskQueryRepository,
+) -> None:
+    attempt = _attempt(task_id="task.n4.persisted")
+    _persist_attempt(repository, attempt)
+    _persist_model_call(
+        repository,
+        request_id="request.n4.missing.raw",
+        status=ModelCallLedgerStatus.COMPLETED,
+    )
+
+    evidence = repository.attempt_effect_evidence(TaskId("task.n4.persisted"))
+    result = classify_attempt(
+        task_id=StableId("task.n4.persisted"),
+        task_status=TaskStatus.WAITING_RETRY,
+        attempt=repository.last_settled_attempt(TaskId("task.n4.persisted")),
+        unavailable_response_ids=evidence.unavailable_response_ids,
+        frontier_attempt_id=evidence.frontier_attempt_id,
+    )
+
+    assert evidence.completed_response_refs == ()
+    assert evidence.unavailable_response_ids == ("request.n4.missing.raw",)
+    assert result.action is RecoveryAction.RECONCILE_FIRST
+    assert not result.safe_to_retry
 
 
 def test_the_persisted_model_ledger_surfaces_an_uncertain_provider_request(

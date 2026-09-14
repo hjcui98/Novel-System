@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -15,7 +16,8 @@ from novel_agent.adapters.postgres.models import (
     RuntimeTaskAttemptRow,
     RuntimeTaskProjectionRow,
 )
-from novel_agent.domain.ids import ProjectId, RunId, TaskId
+from novel_agent.domain.artifacts import MODEL_RAW_RESPONSE_MEDIA_TYPE
+from novel_agent.domain.ids import ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.model_calls import ModelCallLedgerStatus
 from novel_agent.domain.runtime import (
     EffectStatus,
@@ -23,6 +25,39 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptEffectLedgerEvidence:
+    """The provider/effect frontier that is safe to use for task recovery.
+
+    Unsettled effects are retained across all historical attempts: an old request
+    whose outcome is unknown still has to be reconciled before a new request can be
+    issued.  Completed model responses are narrower: only a response attached to
+    the current recovery attempt and backed by a raw-response artifact is a replay
+    input.  A completed commit or projection effect is deliberately never returned
+    as a model response.
+    """
+
+    frontier_attempt_id: StableId | None = None
+    unsettled_sends: tuple[str, ...] = ()
+    outstanding_request_ids: tuple[str, ...] = ()
+    completed_response_refs: tuple[str, ...] = ()
+    unavailable_response_ids: tuple[str, ...] = ()
+
+
+def _raw_response_artifact_id(raw_artifact_json: object) -> str | None:
+    """Return an artifact id only when the ledger points at raw model evidence."""
+
+    if not isinstance(raw_artifact_json, dict):
+        return None
+    artifact_id = raw_artifact_json.get("artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id:
+        return None
+    media_type = raw_artifact_json.get("media_type")
+    if media_type is not None and media_type != MODEL_RAW_RESPONSE_MEDIA_TYPE:
+        return None
+    return artifact_id
 
 
 class RuntimeTaskQueryRepository:
@@ -118,17 +153,42 @@ class RuntimeTaskQueryRepository:
             return None
         return TaskAttempt.model_validate_json(json.dumps(row.attempt_json))
 
-    def attempt_effect_ledger(
-        self, task_id: TaskId
-    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-        """Provider sends for one task: unsettled, still outstanding, and answered.
+    def attempt_effect_evidence(
+        self,
+        task_id: TaskId,
+        *,
+        attempt_id: StableId | None = None,
+    ) -> AttemptEffectLedgerEvidence:
+        """Read one task's current recovery frontier from both durable ledgers.
 
-        A send that happened and whose result is unknown is why a blind retry is
-        unsafe, so a driver has to be able to see it.  The three groups are returned
-        separately because they call for three different handlings.
+        ``RuntimeEffectProjectionRow`` and ``ModelCallLedgerRow`` have different
+        responsibilities.  The former can fence any external effect; the latter
+        is the only source that can provide a replayable model response.  Historical
+        completed rows are therefore not replay candidates, while historical
+        REQUESTED/UNCERTAIN rows remain visible so a retry cannot bypass them by
+        changing the request prefix.
         """
 
         with self._session_factory() as session:
+            task_row = session.get(RuntimeTaskProjectionRow, task_id.root)
+            if task_row is None:
+                raise KeyError(f"unknown task {task_id.root}")
+            frontier = attempt_id
+            if frontier is None and task_row.current_attempt_id is not None:
+                frontier = StableId(task_row.current_attempt_id)
+            if frontier is None:
+                latest_attempt = session.scalars(
+                    select(RuntimeTaskAttemptRow)
+                    .where(
+                        RuntimeTaskAttemptRow.task_id == task_id.root,
+                        RuntimeTaskAttemptRow.ended_at.is_not(None),
+                    )
+                    .order_by(RuntimeTaskAttemptRow.attempt_no.desc())
+                    .limit(1)
+                ).first()
+                if latest_attempt is not None:
+                    frontier = StableId(latest_attempt.attempt_id)
+
             effect_rows = session.execute(
                 select(
                     RuntimeEffectProjectionRow.effect_identity,
@@ -138,15 +198,15 @@ class RuntimeTaskQueryRepository:
             model_rows = session.execute(
                 select(
                     ModelCallLedgerRow.request_id,
+                    ModelCallLedgerRow.attempt_id,
                     ModelCallLedgerRow.status,
                     ModelCallLedgerRow.raw_artifact_json,
                 ).where(ModelCallLedgerRow.task_id == task_id.root)
             ).all()
 
-        # One identity may be projected by both ledgers during recovery.  Keep the
-        # strongest unresolved state so a completed effect can never hide a later
-        # uncertain provider send.  A completed response is only a response reference;
-        # rejected/incomplete/transport-terminal rows are deliberately not replayable.
+        # One identity may be present in both ledgers.  An unresolved state always
+        # wins over a terminal one, so a completed projection can never hide a
+        # later uncertain provider send.
         states: dict[str, tuple[int, str, str]] = {}
 
         def record(identity: str, priority: int, bucket: str, reference: str) -> None:
@@ -159,33 +219,64 @@ class RuntimeTaskQueryRepository:
                 record(effect_identity, 2, "outstanding", effect_identity)
             elif status == EffectStatus.UNCERTAIN.value:
                 record(effect_identity, 3, "unsettled", effect_identity)
-            elif status == EffectStatus.COMPLETED.value:
-                record(effect_identity, 1, "completed", effect_identity)
-        for request_id, status, raw_artifact_json in model_rows:
+            # A completed commit/projection is not a model response and is not
+            # placed in the replay bucket.
+
+        unavailable: set[str] = set()
+        for request_id, row_attempt_id, status, raw_artifact_json in model_rows:
             if status == ModelCallLedgerStatus.REQUESTED.value:
                 record(request_id, 2, "outstanding", request_id)
             elif status == ModelCallLedgerStatus.UNCERTAIN.value:
                 record(request_id, 3, "unsettled", request_id)
             elif status == ModelCallLedgerStatus.COMPLETED.value:
-                response_ref = request_id
-                if isinstance(raw_artifact_json, dict):
-                    artifact_id = raw_artifact_json.get("artifact_id")
-                    if isinstance(artifact_id, str) and artifact_id:
-                        response_ref = artifact_id
-                record(request_id, 1, "completed", response_ref)
-        unsettled = [
-            reference for _priority, bucket, reference in states.values() if bucket == "unsettled"
-        ]
-        outstanding = [
-            reference for _priority, bucket, reference in states.values() if bucket == "outstanding"
-        ]
-        completed = [
-            reference for _priority, bucket, reference in states.values() if bucket == "completed"
-        ]
+                response_ref = _raw_response_artifact_id(raw_artifact_json)
+                if response_ref is None:
+                    # Do not turn an internally inconsistent terminal row into a
+                    # free retry.  The caller must account for the response and
+                    # usage before deciding whether a new provider call is legal.
+                    unavailable.add(request_id)
+                elif frontier is not None and row_attempt_id == frontier.root:
+                    record(request_id, 1, "completed", response_ref)
+
+        unsettled = tuple(
+            sorted(
+                reference
+                for _priority, bucket, reference in states.values()
+                if bucket == "unsettled"
+            )
+        )
+        outstanding = tuple(
+            sorted(
+                reference
+                for _priority, bucket, reference in states.values()
+                if bucket == "outstanding"
+            )
+        )
+        completed = tuple(
+            sorted(
+                reference
+                for _priority, bucket, reference in states.values()
+                if bucket == "completed"
+            )
+        )
+        return AttemptEffectLedgerEvidence(
+            frontier_attempt_id=frontier,
+            unsettled_sends=unsettled,
+            outstanding_request_ids=outstanding,
+            completed_response_refs=completed,
+            unavailable_response_ids=tuple(sorted(unavailable)),
+        )
+
+    def attempt_effect_ledger(
+        self, task_id: TaskId
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Backward-compatible tuple view of the current recovery frontier."""
+
+        evidence = self.attempt_effect_evidence(task_id)
         return (
-            tuple(sorted(unsettled)),
-            tuple(sorted(outstanding)),
-            tuple(sorted(completed)),
+            evidence.unsettled_sends,
+            evidence.outstanding_request_ids,
+            evidence.completed_response_refs,
         )
 
     def next_scheduled_at(

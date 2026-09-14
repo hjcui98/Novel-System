@@ -111,6 +111,9 @@ class AttemptClassification(DomainModel):
     # The canonical classification, or ``None`` when no attempt has settled one.
     failure_class: FailureClass | None = None
     settled_attempt_id: StableId | None = None
+    # The Attempt whose completed model responses may be replayed.  Historical
+    # unresolved sends are reported separately and still block a blind retry.
+    frontier_attempt_id: StableId | None = None
     retryable: bool = False
     retry_owner: RetryOwner | None = None
     consumes_task_budget: bool = False
@@ -122,6 +125,9 @@ class AttemptClassification(DomainModel):
     outstanding_request_ids: tuple[str, ...] = ()
     # Responses already durable for this task: these are replayed, not re-requested.
     completed_response_refs: tuple[str, ...] = ()
+    # Terminal ledger rows without a verifiable raw response.  They are not
+    # completed evidence and must not silently turn into a fresh, billable retry.
+    unavailable_response_ids: tuple[str, ...] = ()
     reason: str = Field(min_length=1)
 
     @property
@@ -133,6 +139,7 @@ class AttemptClassification(DomainModel):
             and self.retryable
             and not self.unsettled_sends
             and not self.outstanding_request_ids
+            and not self.unavailable_response_ids
         )
 
 
@@ -144,6 +151,8 @@ def classify_attempt(
     unsettled_sends: tuple[str, ...] = (),
     outstanding_request_ids: tuple[str, ...] = (),
     completed_response_refs: tuple[str, ...] = (),
+    unavailable_response_ids: tuple[str, ...] = (),
+    frontier_attempt_id: StableId | None = None,
     block_cause: str | None = None,
 ) -> AttemptClassification:
     """Decide the next handling for one task from its canonical evidence.
@@ -162,9 +171,11 @@ def classify_attempt(
             task_status=task_status,
             action=RecoveryAction.UNDETERMINED,
             settled_attempt_id=settled_attempt_id,
+            frontier_attempt_id=frontier_attempt_id,
             unsettled_sends=unsettled_sends,
             outstanding_request_ids=outstanding_request_ids,
             completed_response_refs=completed_response_refs,
+            unavailable_response_ids=unavailable_response_ids,
             reason=_undetermined_reason(attempt, block_cause),
         )
     policy = failure_policy(failure)
@@ -173,6 +184,7 @@ def classify_attempt(
         "task_status": task_status,
         "failure_class": failure,
         "settled_attempt_id": settled_attempt_id,
+        "frontier_attempt_id": frontier_attempt_id,
         "retryable": policy.retryable,
         "retry_owner": policy.retry_owner,
         "consumes_task_budget": policy.consumes_task_budget,
@@ -180,6 +192,7 @@ def classify_attempt(
         "unsettled_sends": unsettled_sends,
         "outstanding_request_ids": outstanding_request_ids,
         "completed_response_refs": completed_response_refs,
+        "unavailable_response_ids": unavailable_response_ids,
     }
     # Order matters.  An unresolved send outranks the failure's own classification,
     # and a durable response outranks both: replaying it costs nothing and answers
@@ -193,6 +206,16 @@ def classify_attempt(
                 f"{len(outstanding_request_ids)} outstanding request(s) and "
                 f"{len(unsettled_sends)} unsettled send(s); reconcile them before "
                 "issuing another provider call"
+            ),
+        )
+    if unavailable_response_ids:
+        return AttemptClassification(
+            **common,
+            action=RecoveryAction.RECONCILE_FIRST,
+            reason=(
+                "the model-call ledger has terminal response(s) without verifiable raw "
+                f"evidence ({len(unavailable_response_ids)}); preserve unknown usage and "
+                "reconcile the response before issuing another provider call"
             ),
         )
     if completed_response_refs:
