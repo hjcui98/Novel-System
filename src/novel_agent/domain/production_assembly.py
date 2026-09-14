@@ -16,6 +16,7 @@ class ProductionModelPolicy(DomainModel):
     default_output_limit: int = Field(default=8_000, ge=1)
     output_budget_growth_factor: float | None = Field(default=None, ge=2, allow_inf_nan=False)
     output_budget_timeout_limit_seconds: float | None = Field(default=None, gt=0, le=900)
+    structured_max_retries: int = Field(default=1, ge=0, le=2)
     reasoning_billing_mode: str = Field(default="unknown_not_applicable", min_length=1)
 
 

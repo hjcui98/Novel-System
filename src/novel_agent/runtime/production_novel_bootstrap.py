@@ -1607,7 +1607,7 @@ def bind_bootstrap_model_agents(
     gateway = ModelGateway(
         endpoints,
         forbid_external_calls=all(not endpoint.adapter.is_external for endpoint in endpoints),
-        structured_max_retries=1,
+        structured_max_retries=model_policy.structured_max_retries,
         budget_profile=BudgetResolutionProfile.STRICT,
         output_budget_growth_factor=model_policy.output_budget_growth_factor,
         output_budget_timeout_limit_seconds=model_policy.output_budget_timeout_limit_seconds,

@@ -51,6 +51,13 @@
       "minimum": 1,
       "title": "Sequence Limit",
       "type": "integer"
+    },
+    "structured_max_retries": {
+      "default": 1,
+      "maximum": 2,
+      "minimum": 0,
+      "title": "Structured Max Retries",
+      "type": "integer"
     }
   },
   "title": "ProductionModelPolicy",

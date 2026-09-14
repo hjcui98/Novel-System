@@ -259,6 +259,7 @@ def test_factory_starts_and_freezes_attestation_without_model_calls(tmp_path: Pa
     assert isinstance(assembly.task_reader, RuntimeTaskQueryRepository)
     assert assembly.task_reader.session_factory is assembly.session_factory
     assert assembly.model_gateway is not None
+    assert assembly.model_gateway.structured_max_retries == 1
     assert assembly.model_gateway.admission_controller is not None
     assert assembly.attestation.reranker_declared is False
     assert assembly.memory_maintenance is not None

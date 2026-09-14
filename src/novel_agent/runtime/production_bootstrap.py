@@ -1568,6 +1568,7 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
     model_gateway = ModelGateway(
         model_endpoints,
         forbid_external_calls=all(not endpoint.adapter.is_external for endpoint in model_endpoints),
+        structured_max_retries=spec.model_policy.structured_max_retries,
         admission_controller=admission,
         call_ledger=SqlModelCallLedger(session_factory),
         raw_artifacts=artifacts,

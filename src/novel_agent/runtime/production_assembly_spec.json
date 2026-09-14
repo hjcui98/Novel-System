@@ -15,6 +15,7 @@
     "default_output_limit": 16000,
     "output_budget_growth_factor": 2.0,
     "output_budget_timeout_limit_seconds": 900.0,
+    "structured_max_retries": 1,
     "reasoning_billing_mode": "unknown_not_applicable"
   },
   "expected_prompt_ids": [
